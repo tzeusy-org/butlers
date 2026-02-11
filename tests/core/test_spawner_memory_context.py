@@ -4,8 +4,8 @@ Covers:
 - fetch_memory_context returns context on success
 - fetch_memory_context returns None on connection error
 - fetch_memory_context returns None on timeout
-- fetch_memory_context returns None on non-200 response
-- fetch_memory_context returns None on malformed response
+- fetch_memory_context returns None on error result
+- fetch_memory_context returns None on empty content
 - Memory context is appended to system prompt when available
 - Spawner works without memory context when Memory Butler is unreachable
 - Timeout on memory context fetch doesn't block spawner
@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 from butlers.config import ButlerConfig
@@ -43,12 +42,27 @@ def _make_config(
     )
 
 
-def _mock_response(*, status_code: int = 200, json_data: Any = None) -> httpx.Response:
-    """Create a mock httpx.Response with the given status and JSON body."""
-    response = MagicMock(spec=httpx.Response)
-    response.status_code = status_code
-    response.json.return_value = json_data
-    return response
+def _make_call_tool_result(*, is_error: bool = False, text: str | None = None):
+    """Create a mock CallToolResult."""
+    result = MagicMock()
+    result.is_error = is_error
+    if text is not None:
+        block = MagicMock()
+        block.text = text
+        result.content = [block]
+    else:
+        result.content = []
+    return result
+
+
+def _mock_mcp_client(*, call_tool_return=None, call_tool_side_effect=None):
+    """Create a mock MCPClient preconfigured for async context manager use."""
+    mock_client = AsyncMock()
+    if call_tool_side_effect is not None:
+        mock_client.call_tool.side_effect = call_tool_side_effect
+    else:
+        mock_client.call_tool.return_value = call_tool_return
+    return mock_client
 
 
 # ---------------------------------------------------------------------------
@@ -61,162 +75,119 @@ class TestFetchMemoryContext:
 
     async def test_returns_context_on_success(self):
         """When Memory Butler responds with valid content, return it."""
-        mock_response = _mock_response(
-            status_code=200,
-            json_data={"content": "You previously discussed project deadlines."},
-        )
+        mock_result = _make_call_tool_result(text="You previously discussed project deadlines.")
+        mock_client = _mock_mcp_client(call_tool_return=mock_result)
 
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "butlers.core.spawner.MCPClient",
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_client),
+                __aexit__=AsyncMock(return_value=False),
+            ),
+        ):
             result = await fetch_memory_context("my-butler", "hello world")
 
         assert result == "You previously discussed project deadlines."
-        mock_client.post.assert_called_once_with(
-            "http://localhost:8150/call-tool",
-            json={
-                "name": "memory_context",
-                "arguments": {
-                    "trigger_prompt": "hello world",
-                    "butler": "my-butler",
-                },
-            },
+        mock_client.call_tool.assert_called_once_with(
+            "memory_context",
+            {"trigger_prompt": "hello world", "butler": "my-butler"},
         )
 
     async def test_returns_none_on_connection_error(self):
         """When Memory Butler is unreachable, return None."""
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post.side_effect = httpx.ConnectError("Connection refused")
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "butlers.core.spawner.MCPClient",
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(side_effect=ConnectionError("Connection refused")),
+                __aexit__=AsyncMock(return_value=False),
+            ),
+        ):
             result = await fetch_memory_context("my-butler", "hello")
 
         assert result is None
 
     async def test_returns_none_on_timeout(self):
         """When the request times out, return None."""
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post.side_effect = httpx.TimeoutException("Request timed out")
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client = _mock_mcp_client(call_tool_side_effect=TimeoutError("timed out"))
 
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "butlers.core.spawner.MCPClient",
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_client),
+                __aexit__=AsyncMock(return_value=False),
+            ),
+        ):
             result = await fetch_memory_context("my-butler", "hello")
 
         assert result is None
 
-    async def test_returns_none_on_non_200_response(self):
-        """When Memory Butler returns a non-200 status, return None."""
-        mock_response = _mock_response(status_code=500, json_data={"error": "internal"})
+    async def test_returns_none_on_error_result(self):
+        """When Memory Butler returns an error result, return None."""
+        mock_result = _make_call_tool_result(is_error=True, text="internal error")
+        mock_client = _mock_mcp_client(call_tool_return=mock_result)
 
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
-            result = await fetch_memory_context("my-butler", "hello")
-
-        assert result is None
-
-    async def test_returns_none_on_malformed_json(self):
-        """When the response JSON lacks 'content', return None."""
-        mock_response = _mock_response(
-            status_code=200,
-            json_data={"unexpected_key": "value"},
-        )
-
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "butlers.core.spawner.MCPClient",
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_client),
+                __aexit__=AsyncMock(return_value=False),
+            ),
+        ):
             result = await fetch_memory_context("my-butler", "hello")
 
         assert result is None
 
     async def test_returns_none_on_empty_content(self):
-        """When content is an empty string, return None."""
-        mock_response = _mock_response(
-            status_code=200,
-            json_data={"content": ""},
-        )
+        """When content is empty, return None."""
+        mock_result = _make_call_tool_result(text="")
+        mock_client = _mock_mcp_client(call_tool_return=mock_result)
 
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "butlers.core.spawner.MCPClient",
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_client),
+                __aexit__=AsyncMock(return_value=False),
+            ),
+        ):
             result = await fetch_memory_context("my-butler", "hello")
 
         assert result is None
 
-    async def test_returns_none_on_non_string_content(self):
-        """When content is not a string (e.g. a dict), return None."""
-        mock_response = _mock_response(
-            status_code=200,
-            json_data={"content": {"nested": "object"}},
-        )
+    async def test_returns_none_on_no_content_blocks(self):
+        """When result has no content blocks, return None."""
+        mock_result = _make_call_tool_result()  # empty content list
+        mock_client = _mock_mcp_client(call_tool_return=mock_result)
 
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "butlers.core.spawner.MCPClient",
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_client),
+                __aexit__=AsyncMock(return_value=False),
+            ),
+        ):
             result = await fetch_memory_context("my-butler", "hello")
 
         assert result is None
 
     async def test_custom_port(self):
-        """Verify the custom port parameter is used in the URL."""
-        mock_response = _mock_response(
-            status_code=200,
-            json_data={"content": "context from port 9999"},
+        """Verify the custom port parameter is used in the SSE URL."""
+        mock_result = _make_call_tool_result(text="context from port 9999")
+        mock_client = _mock_mcp_client(call_tool_return=mock_result)
+
+        mock_constructor = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_client),
+                __aexit__=AsyncMock(return_value=False),
+            ),
         )
 
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with patch("butlers.core.spawner.MCPClient", mock_constructor):
             result = await fetch_memory_context("my-butler", "hello", memory_butler_port=9999)
 
         assert result == "context from port 9999"
-        mock_client.post.assert_called_once_with(
-            "http://localhost:9999/call-tool",
-            json={
-                "name": "memory_context",
-                "arguments": {
-                    "trigger_prompt": "hello",
-                    "butler": "my-butler",
-                },
-            },
+        mock_constructor.assert_called_once_with(
+            "http://localhost:9999/sse", name="spawner-memory"
         )
-
-    async def test_json_decode_error(self):
-        """When response.json() raises, return None."""
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 200
-        mock_response.json.side_effect = ValueError("Invalid JSON")
-
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
-            result = await fetch_memory_context("my-butler", "hello")
-
-        assert result is None
 
 
 # ---------------------------------------------------------------------------

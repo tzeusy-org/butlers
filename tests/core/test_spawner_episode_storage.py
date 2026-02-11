@@ -4,8 +4,8 @@ Covers:
 - store_session_episode returns True on success
 - store_session_episode returns False on connection error
 - store_session_episode returns False on timeout
-- store_session_episode returns False on non-200 response
-- store_session_episode sends correct payload
+- store_session_episode returns False on error result
+- store_session_episode sends correct arguments
 - store_session_episode passes session_id when provided
 - store_session_episode omits session_id when None
 - Episode stored after successful session in spawner
@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 from butlers.config import ButlerConfig
@@ -46,26 +45,38 @@ def _make_config(
     )
 
 
-def _mock_response(*, status_code: int = 200, json_data: Any = None) -> httpx.Response:
-    """Create a mock httpx.Response with the given status and JSON body."""
-    response = MagicMock(spec=httpx.Response)
-    response.status_code = status_code
-    response.json.return_value = json_data
-    return response
-
-
-def _mock_httpx_client(
-    *, response: httpx.Response | None = None, side_effect: Exception | None = None
-) -> AsyncMock:
-    """Create a mock httpx.AsyncClient preconfigured for context-manager use."""
-    mock_client = AsyncMock(spec=httpx.AsyncClient)
-    if side_effect is not None:
-        mock_client.post.side_effect = side_effect
+def _make_call_tool_result(*, is_error: bool = False, text: str | None = None):
+    """Create a mock CallToolResult."""
+    result = MagicMock()
+    result.is_error = is_error
+    if text is not None:
+        block = MagicMock()
+        block.text = text
+        result.content = [block]
     else:
-        mock_client.post.return_value = response
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
+        result.content = []
+    return result
+
+
+def _mock_mcp_client(*, call_tool_return=None, call_tool_side_effect=None):
+    """Create a mock MCPClient preconfigured for async context manager use."""
+    mock_client = AsyncMock()
+    if call_tool_side_effect is not None:
+        mock_client.call_tool.side_effect = call_tool_side_effect
+    else:
+        mock_client.call_tool.return_value = call_tool_return
     return mock_client
+
+
+def _patch_mcp_client(mock_client):
+    """Return a patch context for MCPClient that yields mock_client from async with."""
+    return patch(
+        "butlers.core.spawner.MCPClient",
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_client),
+            __aexit__=AsyncMock(return_value=False),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -77,91 +88,92 @@ class TestStoreSessionEpisode:
     """Tests for the store_session_episode helper function."""
 
     async def test_returns_true_on_success(self):
-        """When Memory Butler responds 200, return True."""
-        mock_client = _mock_httpx_client(response=_mock_response(status_code=200))
+        """When Memory Butler responds successfully, return True."""
+        mock_result = _make_call_tool_result()
+        mock_client = _mock_mcp_client(call_tool_return=mock_result)
 
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with _patch_mcp_client(mock_client):
             result = await store_session_episode("my-butler", "session output text")
 
         assert result is True
 
     async def test_returns_false_on_connection_error(self):
         """When Memory Butler is unreachable, return False."""
-        mock_client = _mock_httpx_client(side_effect=httpx.ConnectError("Connection refused"))
-
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "butlers.core.spawner.MCPClient",
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(side_effect=ConnectionError("Connection refused")),
+                __aexit__=AsyncMock(return_value=False),
+            ),
+        ):
             result = await store_session_episode("my-butler", "session output")
 
         assert result is False
 
     async def test_returns_false_on_timeout(self):
         """When the request times out, return False."""
-        mock_client = _mock_httpx_client(side_effect=httpx.TimeoutException("Request timed out"))
+        mock_client = _mock_mcp_client(call_tool_side_effect=TimeoutError("timed out"))
 
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with _patch_mcp_client(mock_client):
             result = await store_session_episode("my-butler", "session output")
 
         assert result is False
 
-    async def test_returns_false_on_non_200_response(self):
-        """When Memory Butler returns a non-200 status, return False."""
-        mock_client = _mock_httpx_client(
-            response=_mock_response(status_code=500, json_data={"error": "internal"})
-        )
+    async def test_returns_false_on_error_result(self):
+        """When Memory Butler returns an error result, return False."""
+        mock_result = _make_call_tool_result(is_error=True, text="internal error")
+        mock_client = _mock_mcp_client(call_tool_return=mock_result)
 
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with _patch_mcp_client(mock_client):
             result = await store_session_episode("my-butler", "session output")
 
         assert result is False
 
-    async def test_sends_correct_payload(self):
-        """Verify the correct JSON payload is sent to Memory Butler."""
-        mock_client = _mock_httpx_client(response=_mock_response(status_code=200))
+    async def test_sends_correct_arguments(self):
+        """Verify the correct arguments are passed to call_tool."""
+        mock_result = _make_call_tool_result()
+        mock_client = _mock_mcp_client(call_tool_return=mock_result)
 
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with _patch_mcp_client(mock_client):
             await store_session_episode("my-butler", "task completed successfully")
 
-        mock_client.post.assert_called_once_with(
-            "http://localhost:8150/call-tool",
-            json={
-                "name": "memory_store_episode",
-                "arguments": {
-                    "content": "task completed successfully",
-                    "butler": "my-butler",
-                },
+        mock_client.call_tool.assert_called_once_with(
+            "memory_store_episode",
+            {
+                "content": "task completed successfully",
+                "butler": "my-butler",
             },
         )
 
     async def test_passes_session_id_when_provided(self):
         """When session_id is given, it appears in the arguments."""
-        mock_client = _mock_httpx_client(response=_mock_response(status_code=200))
+        mock_result = _make_call_tool_result()
+        mock_client = _mock_mcp_client(call_tool_return=mock_result)
         sid = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with _patch_mcp_client(mock_client):
             await store_session_episode("my-butler", "output text", session_id=sid)
 
-        mock_client.post.assert_called_once_with(
-            "http://localhost:8150/call-tool",
-            json={
-                "name": "memory_store_episode",
-                "arguments": {
-                    "content": "output text",
-                    "butler": "my-butler",
-                    "session_id": "12345678-1234-5678-1234-567812345678",
-                },
+        mock_client.call_tool.assert_called_once_with(
+            "memory_store_episode",
+            {
+                "content": "output text",
+                "butler": "my-butler",
+                "session_id": "12345678-1234-5678-1234-567812345678",
             },
         )
 
     async def test_omits_session_id_when_none(self):
         """When session_id is None, it is not included in arguments."""
-        mock_client = _mock_httpx_client(response=_mock_response(status_code=200))
+        mock_result = _make_call_tool_result()
+        mock_client = _mock_mcp_client(call_tool_return=mock_result)
 
-        with patch("butlers.core.spawner.httpx.AsyncClient", return_value=mock_client):
+        with _patch_mcp_client(mock_client):
             await store_session_episode("my-butler", "output text", session_id=None)
 
-        call_args = mock_client.post.call_args
-        payload = call_args.kwargs.get("json") or call_args[1].get("json")
-        assert "session_id" not in payload["arguments"]
+        call_args = mock_client.call_tool.call_args
+        arguments = call_args[0][1]  # second positional arg
+        assert "session_id" not in arguments
 
 
 # ---------------------------------------------------------------------------

@@ -11,11 +11,18 @@ Provides:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from fastmcp import Client as MCPClient
 
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
+from butlers.api.db import DatabaseManager
 from butlers.api.pricing import PricingConfig, load_pricing
 from butlers.config import ConfigError, load_config
 
@@ -32,6 +39,7 @@ class ButlerConnectionInfo:
     name: str
     port: int
     description: str | None = None
+    db_name: str | None = None
 
     @property
     def sse_url(self) -> str:
@@ -202,6 +210,7 @@ def discover_butlers(
                     name=config.name,
                     port=config.port,
                     description=config.description,
+                    db_name=config.db_name or None,
                 )
             )
         except ConfigError as exc:
@@ -304,3 +313,104 @@ def get_pricing() -> PricingConfig:
     if _pricing_config is None:
         raise RuntimeError("PricingConfig not initialized — call init_pricing() first")
     return _pricing_config
+
+
+# ---------------------------------------------------------------------------
+# DatabaseManager singleton
+# ---------------------------------------------------------------------------
+
+_db_manager: DatabaseManager | None = None
+
+
+def _db_params_from_env() -> dict[str, str | int]:
+    """Read DB connection params from environment variables."""
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        parsed = urlparse(database_url)
+        return {
+            "host": parsed.hostname or "localhost",
+            "port": parsed.port or 5432,
+            "user": parsed.username or "butlers",
+            "password": parsed.password or "butlers",
+        }
+    return {
+        "host": os.environ.get("POSTGRES_HOST", "localhost"),
+        "port": int(os.environ.get("POSTGRES_PORT", "5432")),
+        "user": os.environ.get("POSTGRES_USER", "butlers"),
+        "password": os.environ.get("POSTGRES_PASSWORD", "butlers"),
+    }
+
+
+async def init_db_manager(
+    butler_configs: list[ButlerConnectionInfo],
+) -> DatabaseManager:
+    """Create the DatabaseManager singleton and add pools for each butler.
+
+    Called once during app startup (in the lifespan handler).
+    """
+    global _db_manager  # noqa: PLW0603
+
+    params = _db_params_from_env()
+    mgr = DatabaseManager(**params)
+
+    for cfg in butler_configs:
+        try:
+            await mgr.add_butler(cfg.name, db_name=cfg.db_name)
+        except Exception:
+            logger.warning("Failed to add DB pool for butler %s", cfg.name, exc_info=True)
+
+    _db_manager = mgr
+    return mgr
+
+
+async def shutdown_db_manager() -> None:
+    """Close the DatabaseManager singleton. Called during app shutdown."""
+    global _db_manager  # noqa: PLW0603
+    if _db_manager is not None:
+        await _db_manager.close()
+        _db_manager = None
+
+
+def get_db_manager() -> DatabaseManager:
+    """FastAPI dependency: provides the DatabaseManager singleton."""
+    if _db_manager is None:
+        raise RuntimeError("DatabaseManager not initialized — call init_db_manager() first")
+    return _db_manager
+
+
+def wire_db_dependencies(app: FastAPI) -> None:
+    """Override all router-level ``_get_db_manager`` stubs with the singleton."""
+    from butlers.api.routers import (
+        audit,
+        butlers,
+        general,
+        health,
+        memory,
+        notifications,
+        relationship,
+        schedules,
+        search,
+        sessions,
+        state,
+        switchboard_views,
+        timeline,
+        traces,
+    )
+
+    for module in [
+        audit,
+        butlers,
+        general,
+        health,
+        memory,
+        notifications,
+        relationship,
+        schedules,
+        search,
+        sessions,
+        state,
+        switchboard_views,
+        timeline,
+        traces,
+    ]:
+        app.dependency_overrides[module._get_db_manager] = get_db_manager

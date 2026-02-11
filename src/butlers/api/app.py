@@ -18,7 +18,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
 
-from butlers.api.deps import init_dependencies, init_pricing, shutdown_dependencies
+from butlers.api.deps import (
+    get_butler_configs,
+    init_db_manager,
+    init_dependencies,
+    init_pricing,
+    shutdown_db_manager,
+    shutdown_dependencies,
+    wire_db_dependencies,
+)
 from butlers.api.middleware import register_error_handlers
 from butlers.api.routers.audit import router as audit_router
 from butlers.api.routers.butlers import router as butlers_router
@@ -64,8 +72,20 @@ async def lifespan(app: FastAPI):
         init_pricing()
     except Exception:
         logger.warning("Failed to load pricing config; cost estimation disabled")
+
+    # Initialize DB pools for all discovered butlers
+    butler_configs = get_butler_configs()
+    try:
+        await init_db_manager(butler_configs)
+        wire_db_dependencies(app)
+        logger.info("DatabaseManager initialized for %d butler(s)", len(butler_configs))
+    except Exception:
+        logger.warning("Failed to initialize DatabaseManager; DB endpoints will be unavailable")
+
     yield
+
     # Shutdown
+    await shutdown_db_manager()
     await shutdown_dependencies()
 
 

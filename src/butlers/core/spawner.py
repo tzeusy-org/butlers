@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
-import httpx
+from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
 from butlers.config import ButlerConfig
@@ -95,9 +95,8 @@ async def fetch_memory_context(
 ) -> str | None:
     """Fetch memory context from the Memory Butler's MCP server.
 
-    Makes an HTTP POST to the Memory Butler's ``/call-tool`` endpoint,
-    requesting the ``memory_context`` tool with the given prompt and
-    butler name.
+    Connects to the Memory Butler via SSE and calls the ``memory_context``
+    tool with the given prompt and butler name.
 
     Parameters
     ----------
@@ -106,7 +105,7 @@ async def fetch_memory_context(
     prompt:
         The trigger prompt to send for context retrieval.
     timeout:
-        HTTP request timeout in seconds. Defaults to 5.0.
+        Request timeout in seconds. Defaults to 5.0.
     memory_butler_port:
         Port the Memory Butler listens on. Defaults to 8150.
 
@@ -115,34 +114,33 @@ async def fetch_memory_context(
     str | None
         The memory context string on success, or None on any failure.
     """
-    url = f"http://localhost:{memory_butler_port}/call-tool"
-    payload = {
-        "name": "memory_context",
-        "arguments": {
-            "trigger_prompt": prompt,
-            "butler": butler_name,
-        },
-    }
+    url = f"http://localhost:{memory_butler_port}/sse"
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(url, json=payload)
-            if response.status_code != 200:
+        async with MCPClient(url, name="spawner-memory") as client:
+            result = await asyncio.wait_for(
+                client.call_tool(
+                    "memory_context",
+                    {"trigger_prompt": prompt, "butler": butler_name},
+                ),
+                timeout=timeout,
+            )
+            if result.is_error:
                 logger.warning(
-                    "Memory Butler returned status %d for butler %s",
-                    response.status_code,
+                    "Memory Butler returned error for butler %s: %s",
                     butler_name,
+                    result.content,
                 )
                 return None
-            data = response.json()
-            context = data.get("content")
-            if not isinstance(context, str) or not context:
-                logger.warning(
-                    "Memory Butler returned unexpected response for butler %s: %r",
-                    butler_name,
-                    data,
-                )
-                return None
-            return context
+            # Extract text from first content block
+            if result.content:
+                text = getattr(result.content[0], "text", None)
+                if isinstance(text, str) and text:
+                    return text
+            logger.warning(
+                "Memory Butler returned empty response for butler %s",
+                butler_name,
+            )
+            return None
     except Exception:
         logger.warning(
             "Failed to fetch memory context for butler %s",
@@ -162,8 +160,8 @@ async def store_session_episode(
 ) -> bool:
     """Store a session episode to the Memory Butler after CC session completes.
 
-    Posts to the Memory Butler's ``/call-tool`` endpoint to store the session
-    output as an episode via the ``memory_store_episode`` tool.
+    Connects to the Memory Butler via SSE and calls the
+    ``memory_store_episode`` tool.
 
     Parameters
     ----------
@@ -174,7 +172,7 @@ async def store_session_episode(
     session_id:
         Optional session UUID to associate with the episode.
     timeout:
-        HTTP request timeout in seconds. Defaults to 5.0.
+        Request timeout in seconds. Defaults to 5.0.
     memory_butler_port:
         Port the Memory Butler listens on. Defaults to 8150.
 
@@ -183,25 +181,24 @@ async def store_session_episode(
     bool
         True on success, False on any failure.
     """
-    url = f"http://localhost:{memory_butler_port}/call-tool"
+    url = f"http://localhost:{memory_butler_port}/sse"
     arguments: dict[str, str] = {
         "content": session_output,
         "butler": butler_name,
     }
     if session_id is not None:
         arguments["session_id"] = str(session_id)
-    payload = {
-        "name": "memory_store_episode",
-        "arguments": arguments,
-    }
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(url, json=payload)
-            if response.status_code != 200:
+        async with MCPClient(url, name="spawner-memory") as client:
+            result = await asyncio.wait_for(
+                client.call_tool("memory_store_episode", arguments),
+                timeout=timeout,
+            )
+            if result.is_error:
                 logger.warning(
-                    "Memory Butler returned status %d storing episode for butler %s",
-                    response.status_code,
+                    "Memory Butler returned error storing episode for butler %s: %s",
                     butler_name,
+                    result.content,
                 )
                 return False
             return True

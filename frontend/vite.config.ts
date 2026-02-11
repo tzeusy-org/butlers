@@ -12,6 +12,7 @@ export default defineConfig({
     },
   },
   server: {
+    allowedHosts: ["tzeusy.parrot-hen.ts.net"],
     proxy: {
       "/api": {
         target: "http://localhost:8200",

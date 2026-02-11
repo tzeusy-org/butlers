@@ -39,11 +39,11 @@ tmux send-keys -t "$PANE_BACKEND" \
 
 # Dashboard API
 tmux send-keys -t "$PANE_DASHBOARD" \
-  "uv run butlers dashboard --port 8200" Enter
+  "POSTGRES_PORT=54320 uv run butlers dashboard --host 0.0.0.0 --port 8200" Enter
 
 # Frontend: install + vite dev server
 tmux send-keys -t "$PANE_FRONTEND" \
-  "npm install && npm run dev" Enter
+  "npm install && npm run dev -- --host 0.0.0.0" Enter
 
 # Even out the layout and focus backend
 tmux select-layout -t "${SESSION}:${WINDOW}" main-vertical

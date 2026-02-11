@@ -155,3 +155,6 @@ uv run ruff check src/ tests/ roster/ conftest.py
 uv run ruff format --check src/ tests/ roster/ conftest.py
 uv run pytest tests/ -v --ignore=tests/test_db.py --ignore=tests/test_migrations.py
 ```
+
+### Switchboard Classification Contract
+- `classify_message()` returns decomposition entries (`list[{"butler","prompt"}]`), not a bare butler string. Callers must normalize both legacy string and list formats before routing.

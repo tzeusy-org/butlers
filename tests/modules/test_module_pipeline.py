@@ -9,6 +9,7 @@ Tests cover:
 from __future__ import annotations
 
 import logging
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -108,6 +109,34 @@ class TestMessagePipelineProcess:
 
         assert captured_args["message"] == "hello world"
         assert captured_args["extra"] == "data"
+
+    async def test_classification_list_uses_first_entry_and_sub_prompt(self):
+        """Pipeline supports decomposed classifier output and routes first sub-prompt."""
+        captured: dict[str, Any] = {}
+
+        async def mock_classify(pool, message, dispatch_fn):
+            return [
+                {"butler": "health", "prompt": "Log my headache"},
+                {"butler": "relationship", "prompt": "Remind me to call Mom"},
+            ]
+
+        async def mock_route(pool, target, tool_name, args, source):
+            captured["target"] = target
+            captured["args"] = dict(args)
+            return {"result": "ok"}
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            classify_fn=mock_classify,
+            route_fn=mock_route,
+        )
+
+        result = await pipeline.process("I have a headache and call Mom tomorrow")
+
+        assert result.target_butler == "health"
+        assert captured["target"] == "health"
+        assert captured["args"]["message"] == "Log my headache"
 
     async def test_passes_tool_name_to_route(self):
         """Pipeline passes the specified tool_name to route()."""

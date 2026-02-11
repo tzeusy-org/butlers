@@ -86,6 +86,32 @@ class MessagePipeline:
         fields.update(extra)
         return fields
 
+    @staticmethod
+    def _normalize_classification(
+        classification: Any,
+        *,
+        fallback_message: str,
+    ) -> tuple[str, str]:
+        """Normalize classifier output into ``(target_butler, routed_message)``.
+
+        Supports both legacy return values (a plain butler-name string) and the
+        newer decomposition format (a list of ``{"butler": ..., "prompt": ...}``
+        entries). Falls back to ``("general", fallback_message)`` when the
+        payload is empty or invalid.
+        """
+        if isinstance(classification, str):
+            target = classification.strip() or "general"
+            return target, fallback_message
+
+        if isinstance(classification, list) and classification:
+            first = classification[0]
+            if isinstance(first, dict):
+                target = str(first.get("butler", "")).strip() or "general"
+                routed_message = str(first.get("prompt", "")).strip() or fallback_message
+                return target, routed_message
+
+        return "general", fallback_message
+
     async def process(
         self,
         message_text: str,
@@ -119,7 +145,6 @@ class MessagePipeline:
         route_to = self._route_fn or route
 
         args = dict(tool_args or {})
-        args["message"] = message_text
 
         source = str(args.get("source") or "unknown")
         raw_chat_id = args.get("chat_id")
@@ -143,7 +168,11 @@ class MessagePipeline:
         # Step 1: Classify
         classify_start = time.perf_counter()
         try:
-            target = await classify(self._pool, message_text, self._dispatch_fn)
+            classification = await classify(self._pool, message_text, self._dispatch_fn)
+            target, routed_message = self._normalize_classification(
+                classification,
+                fallback_message=message_text,
+            )
         except Exception as exc:
             error_msg = f"{type(exc).__name__}: {exc}"
             classification_latency_ms = (time.perf_counter() - classify_start) * 1000
@@ -162,6 +191,7 @@ class MessagePipeline:
                 classification_error=error_msg,
             )
         classification_latency_ms = (time.perf_counter() - classify_start) * 1000
+        args["message"] = routed_message
         logger.info(
             "Pipeline classified message",
             extra=self._log_fields(
