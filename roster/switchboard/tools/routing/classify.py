@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from butlers.tools.switchboard.registry import list_butlers
@@ -58,6 +59,55 @@ async def classify_message(
         logger.exception("Classification failed")
 
     return fallback
+
+
+async def classify_message_multi(
+    pool: Any,
+    message: str,
+    dispatch_fn: Any,
+) -> list[str]:
+    """Back-compat helper returning only target butler names.
+
+    Older callers/tests expect a list like ``["health", "email"]`` rather than
+    structured decomposition entries. This wrapper preserves that interface while
+    delegating classification to :func:`classify_message`.
+    """
+    butlers = await list_butlers(pool)
+    known = {b["name"] for b in butlers}
+
+    def _extract_targets(entries: list[dict[str, str]]) -> list[str]:
+        targets: list[str] = []
+        for entry in entries:
+            butler_name = entry.get("butler", "").strip().lower()
+            if butler_name and butler_name not in targets:
+                targets.append(butler_name)
+        return targets
+
+    try:
+        result = await dispatch_fn(prompt=message, trigger_source="tick")
+        if result and hasattr(result, "result") and result.result:
+            raw = str(result.result).strip()
+
+            # Newer format: JSON decomposition payload.
+            parsed_entries = _parse_classification(raw, butlers, message)
+            parsed_targets = _extract_targets(parsed_entries)
+            if parsed_targets != ["general"]:
+                return parsed_targets
+
+            # Legacy format: comma/newline separated names (e.g. "health, email").
+            candidates = [c.strip().lower() for c in re.split(r"[,\n]", raw) if c.strip()]
+            legacy_targets: list[str] = []
+            for candidate in candidates:
+                if candidate in known and candidate not in legacy_targets:
+                    legacy_targets.append(candidate)
+            if legacy_targets:
+                return legacy_targets
+    except Exception:
+        logger.exception("Legacy multi-classification failed")
+
+    entries = await classify_message(pool, message, dispatch_fn)
+    targets = _extract_targets(entries)
+    return targets or ["general"]
 
 
 def _parse_classification(

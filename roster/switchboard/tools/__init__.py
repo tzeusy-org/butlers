@@ -25,12 +25,14 @@ from butlers.tools.switchboard.registry.registry import (
 from butlers.tools.switchboard.routing.classify import (
     _parse_classification,
     classify_message,
+    classify_message_multi,
 )
 from butlers.tools.switchboard.routing.dispatch import (
     ButlerResult,
     _fallback_concatenate,
     aggregate_responses,
     dispatch_decomposed,
+    dispatch_to_targets,
 )
 from butlers.tools.switchboard.routing.route import (
     _call_butler_tool,
@@ -49,9 +51,11 @@ __all__ = [
     "_parse_classification",
     "aggregate_responses",
     "classify_message",
+    "classify_message_multi",
     "deliver",
     "discover_butlers",
     "dispatch_decomposed",
+    "dispatch_to_targets",
     "extraction_log_list",
     "extraction_log_undo",
     "list_butlers",
