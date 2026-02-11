@@ -68,7 +68,7 @@ def _extract_snippet(text: str, query: str, max_len: int = 200) -> str:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/", response_model=SearchResponse)
+@router.get("", response_model=SearchResponse)
 async def search(
     q: str = Query("", description="Search query (ILIKE pattern)"),
     limit: int = Query(20, ge=1, le=100, description="Max results per category"),

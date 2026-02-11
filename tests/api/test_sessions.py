@@ -135,7 +135,7 @@ class TestListSessions:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/sessions/")
+            resp = await client.get("/api/sessions")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -170,7 +170,7 @@ class TestListSessions:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/sessions/")
+            resp = await client.get("/api/sessions")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -188,7 +188,7 @@ class TestListSessions:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/sessions/",
+                "/api/sessions",
                 params={
                     "butler": "atlas",
                     "trigger_source": "schedule",
@@ -208,7 +208,7 @@ class TestListSessions:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/sessions/")
+            resp = await client.get("/api/sessions")
 
         assert resp.status_code == 200
         body = resp.json()

@@ -83,7 +83,7 @@ def _notification_to_event(row, *, butler: str) -> TimelineEvent:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/", response_model=TimelineResponse)
+@router.get("", response_model=TimelineResponse)
 async def list_timeline(
     before: datetime | None = Query(
         None, description="Cursor: only return events before this timestamp"

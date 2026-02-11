@@ -75,7 +75,7 @@ async def log_audit_entry(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/", response_model=PaginatedResponse[AuditEntry])
+@router.get("", response_model=PaginatedResponse[AuditEntry])
 async def list_audit_log(
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),

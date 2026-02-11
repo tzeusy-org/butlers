@@ -138,7 +138,7 @@ class TestSearchResponseStructure:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/search/", params={"q": "test"})
+            resp = await client.get("/api/search", params={"q": "test"})
 
         assert resp.status_code == 200
         body = resp.json()
@@ -153,7 +153,7 @@ class TestSearchResponseStructure:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/search/", params={"q": ""})
+            resp = await client.get("/api/search", params={"q": ""})
 
         assert resp.status_code == 200
         body = resp.json()
@@ -166,7 +166,7 @@ class TestSearchResponseStructure:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/search/", params={"q": "   "})
+            resp = await client.get("/api/search", params={"q": "   "})
 
         assert resp.status_code == 200
         body = resp.json()
@@ -199,7 +199,7 @@ class TestSearchFanOut:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/search/", params={"q": "deploy"})
+            resp = await client.get("/api/search", params={"q": "deploy"})
 
         assert resp.status_code == 200
         sessions = resp.json()["sessions"]
@@ -228,7 +228,7 @@ class TestSearchFanOut:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/search/", params={"q": "deploy"})
+            resp = await client.get("/api/search", params={"q": "deploy"})
 
         assert resp.status_code == 200
         state = resp.json()["state"]
@@ -254,7 +254,7 @@ class TestSearchFanOut:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/search/", params={"q": "deploy"})
+            resp = await client.get("/api/search", params={"q": "deploy"})
 
         assert resp.status_code == 200
         sessions = resp.json()["sessions"]
@@ -274,7 +274,7 @@ class TestSearchFanOut:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/search/", params={"q": "nonexistent"})
+            resp = await client.get("/api/search", params={"q": "nonexistent"})
 
         assert resp.status_code == 200
         body = resp.json()
@@ -303,7 +303,7 @@ class TestSearchResultGrouping:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/search/", params={"q": "search"})
+            resp = await client.get("/api/search", params={"q": "search"})
 
         assert resp.status_code == 200
         body = resp.json()
@@ -327,7 +327,7 @@ class TestSearchResultGrouping:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/search/", params={"q": "match", "limit": 3})
+            resp = await client.get("/api/search", params={"q": "match", "limit": 3})
 
         assert resp.status_code == 200
         sessions = resp.json()["sessions"]
@@ -351,7 +351,7 @@ class TestSearchResultGrouping:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/search/", params={"q": "specific"})
+            resp = await client.get("/api/search", params={"q": "specific"})
 
         assert resp.status_code == 200
         result = resp.json()["sessions"][0]
@@ -375,7 +375,7 @@ class TestSearchResultGrouping:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/search/", params={"q": "specific"})
+            resp = await client.get("/api/search", params={"q": "specific"})
 
         assert resp.status_code == 200
         result = resp.json()["sessions"][0]

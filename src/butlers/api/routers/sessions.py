@@ -142,7 +142,7 @@ def _row_to_detail(row, *, butler: str | None = None) -> SessionDetail:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/", response_model=PaginatedResponse[SessionSummary])
+@router.get("", response_model=PaginatedResponse[SessionSummary])
 async def list_sessions(
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),

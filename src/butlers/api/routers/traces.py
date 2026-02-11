@@ -131,7 +131,7 @@ def assemble_span_tree(sessions: list[dict]) -> list[SpanNode]:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/", response_model=PaginatedResponse[TraceSummary])
+@router.get("", response_model=PaginatedResponse[TraceSummary])
 async def list_traces(
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),

@@ -125,7 +125,7 @@ class TestTimelineResponseStructure:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/")
+            resp = await client.get("/api/timeline")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -139,7 +139,7 @@ class TestTimelineResponseStructure:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/")
+            resp = await client.get("/api/timeline")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -162,7 +162,7 @@ class TestEventMerging:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/")
+            resp = await client.get("/api/timeline")
 
         assert resp.status_code == 200
         events = resp.json()["data"]
@@ -183,7 +183,7 @@ class TestEventMerging:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/")
+            resp = await client.get("/api/timeline")
 
         assert resp.status_code == 200
         events = resp.json()["data"]
@@ -202,7 +202,7 @@ class TestEventMerging:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/")
+            resp = await client.get("/api/timeline")
 
         assert resp.status_code == 200
         events = resp.json()["data"]
@@ -238,7 +238,7 @@ class TestEventMerging:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/")
+            resp = await client.get("/api/timeline")
 
         assert resp.status_code == 200
         events = resp.json()["data"]
@@ -263,7 +263,7 @@ class TestEventMerging:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/")
+            resp = await client.get("/api/timeline")
 
         assert resp.status_code == 200
         events = resp.json()["data"]
@@ -294,7 +294,7 @@ class TestTimelinePagination:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/", params={"limit": 3})
+            resp = await client.get("/api/timeline", params={"limit": 3})
 
         assert resp.status_code == 200
         body = resp.json()
@@ -313,7 +313,7 @@ class TestTimelinePagination:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/", params={"limit": 10})
+            resp = await client.get("/api/timeline", params={"limit": 10})
 
         assert resp.status_code == 200
         body = resp.json()
@@ -335,7 +335,7 @@ class TestTimelinePagination:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/", params={"before": before_ts})
+            resp = await client.get("/api/timeline", params={"before": before_ts})
 
         assert resp.status_code == 200
         # The fan_out was called, so we get results (the SQL WHERE handles filtering)
@@ -360,7 +360,7 @@ class TestTimelineFiltering:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/", params={"butler": "atlas"})
+            resp = await client.get("/api/timeline", params={"butler": "atlas"})
 
         assert resp.status_code == 200
         events = resp.json()["data"]
@@ -377,7 +377,7 @@ class TestTimelineFiltering:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/", params={"event_type": "session"})
+            resp = await client.get("/api/timeline", params={"event_type": "session"})
 
         assert resp.status_code == 200
         events = resp.json()["data"]
@@ -396,7 +396,7 @@ class TestTimelineFiltering:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/", params={"event_type": "notification"})
+            resp = await client.get("/api/timeline", params={"event_type": "notification"})
 
         assert resp.status_code == 200
         events = resp.json()["data"]
@@ -415,7 +415,7 @@ class TestTimelineFiltering:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/", params={"event_type": "error"})
+            resp = await client.get("/api/timeline", params={"event_type": "error"})
 
         assert resp.status_code == 200
         events = resp.json()["data"]
@@ -435,7 +435,7 @@ class TestTimelineFiltering:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/")
+            resp = await client.get("/api/timeline")
 
         assert resp.status_code == 200
         events = resp.json()["data"]
@@ -457,7 +457,7 @@ class TestEventEnvelope:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/")
+            resp = await client.get("/api/timeline")
 
         assert resp.status_code == 200
         event = resp.json()["data"][0]
@@ -479,7 +479,7 @@ class TestEventEnvelope:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/")
+            resp = await client.get("/api/timeline")
 
         data = resp.json()["data"][0]["data"]
         assert data["trigger_source"] == "schedule"
@@ -499,7 +499,7 @@ class TestEventEnvelope:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/timeline/")
+            resp = await client.get("/api/timeline")
 
         data = resp.json()["data"][0]["data"]
         assert data["channel"] == "telegram"

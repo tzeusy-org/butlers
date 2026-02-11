@@ -383,7 +383,7 @@ class TestListTraces:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/traces/")
+            resp = await client.get("/api/traces")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -412,7 +412,7 @@ class TestListTraces:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/traces/")
+            resp = await client.get("/api/traces")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -433,7 +433,7 @@ class TestListTraces:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/traces/")
+            resp = await client.get("/api/traces")
 
         assert resp.status_code == 200
         data = resp.json()["data"]
@@ -452,7 +452,7 @@ class TestListTraces:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/traces/")
+            resp = await client.get("/api/traces")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -483,7 +483,7 @@ class TestListTraces:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/traces/")
+            resp = await client.get("/api/traces")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -511,7 +511,7 @@ class TestListTraces:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/traces/", params={"offset": 1, "limit": 2})
+            resp = await client.get("/api/traces", params={"offset": 1, "limit": 2})
 
         assert resp.status_code == 200
         body = resp.json()

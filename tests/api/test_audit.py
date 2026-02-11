@@ -104,7 +104,7 @@ class TestAuditLogListEndpoint:
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
         ) as client:
-            resp = await client.get("/api/audit-log/")
+            resp = await client.get("/api/audit-log")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -125,7 +125,7 @@ class TestAuditLogListEndpoint:
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
         ) as client:
-            resp = await client.get("/api/audit-log/")
+            resp = await client.get("/api/audit-log")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -140,7 +140,7 @@ class TestAuditLogListEndpoint:
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
         ) as client:
-            resp = await client.get("/api/audit-log/?butler=atlas")
+            resp = await client.get("/api/audit-log?butler=atlas")
 
         assert resp.status_code == 200
 
@@ -159,7 +159,7 @@ class TestAuditLogListEndpoint:
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
         ) as client:
-            resp = await client.get("/api/audit-log/?operation=trigger")
+            resp = await client.get("/api/audit-log?operation=trigger")
 
         assert resp.status_code == 200
 
@@ -179,7 +179,7 @@ class TestAuditLogListEndpoint:
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
         ) as client:
-            resp = await client.get(f"/api/audit-log/?since={since}&until={until}")
+            resp = await client.get(f"/api/audit-log?since={since}&until={until}")
 
         assert resp.status_code == 200
 
@@ -196,7 +196,7 @@ class TestAuditLogListEndpoint:
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
         ) as client:
-            resp = await client.get("/api/audit-log/?offset=20&limit=10")
+            resp = await client.get("/api/audit-log?offset=20&limit=10")
 
         assert resp.status_code == 200
         body = resp.json()
