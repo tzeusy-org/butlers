@@ -18,7 +18,10 @@ from pydantic import BaseModel
 from butlers.credentials import CredentialError
 from butlers.daemon import ButlerDaemon, RuntimeBinaryNotFoundError
 from butlers.modules.base import Module
+from butlers.modules.email import EmailModule
+from butlers.modules.pipeline import MessagePipeline
 from butlers.modules.registry import ModuleRegistry
+from butlers.modules.telegram import TelegramModule
 
 pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
@@ -129,17 +132,21 @@ def _make_butler_toml(
     tmp_path: Path,
     modules: dict | None = None,
     runtime_type: str | None = None,
+    *,
+    butler_name: str = "test-butler",
+    port: int = 9100,
+    db_name: str = "butler_test",
 ) -> Path:
     """Write a minimal butler.toml in tmp_path and return the directory."""
     modules = modules or {}
     toml_lines = [
         "[butler]",
-        'name = "test-butler"',
-        "port = 9100",
+        f'name = "{butler_name}"',
+        f"port = {port}",
         'description = "A test butler"',
         "",
         "[butler.db]",
-        'name = "butler_test"',
+        f'name = "{db_name}"',
         "",
         "[[butler.schedule]]",
         'name = "daily-check"',
@@ -1578,6 +1585,87 @@ class TestRuntimeAdapterPassedToSpawner:
         assert "runtime" in call_kwargs
         # The runtime should be the instance created by mock_adapter_cls()
         assert call_kwargs["runtime"] is patches["mock_adapter"]
+
+
+class TestMessagePipelineWiring:
+    """Verify switchboard-only MessagePipeline wiring for channel modules."""
+
+    async def test_switchboard_wires_pipeline_to_telegram_and_email(self, tmp_path: Path) -> None:
+        """Switchboard startup should attach a MessagePipeline to both channel modules."""
+        butler_dir = _make_butler_toml(
+            tmp_path,
+            modules={"telegram": {}, "email": {}},
+            butler_name="switchboard",
+            port=8100,
+            db_name="butler_switchboard",
+        )
+        registry = _make_registry(TelegramModule, EmailModule)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+            patch.object(TelegramModule, "on_startup", new_callable=AsyncMock),
+            patch.object(EmailModule, "on_startup", new_callable=AsyncMock),
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        telegram_module = next(m for m in daemon._modules if m.name == "telegram")
+        email_module = next(m for m in daemon._modules if m.name == "email")
+
+        assert isinstance(telegram_module, TelegramModule)
+        assert isinstance(email_module, EmailModule)
+        assert isinstance(telegram_module._pipeline, MessagePipeline)
+        assert email_module._pipeline is telegram_module._pipeline
+        assert telegram_module._pipeline._pool is patches["mock_pool"]
+        assert telegram_module._pipeline._source_butler == "switchboard"
+        assert telegram_module._pipeline._dispatch_fn is daemon.spawner.trigger
+        assert telegram_module._pipeline._dispatch_fn is patches["mock_spawner"].trigger
+
+    async def test_non_switchboard_does_not_wire_pipeline(self, tmp_path: Path) -> None:
+        """Non-switchboard butlers should not attach a MessagePipeline to channel modules."""
+        butler_dir = _make_butler_toml(
+            tmp_path,
+            modules={"telegram": {}, "email": {}},
+        )
+        registry = _make_registry(TelegramModule, EmailModule)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+            patch.object(TelegramModule, "on_startup", new_callable=AsyncMock),
+            patch.object(EmailModule, "on_startup", new_callable=AsyncMock),
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        telegram_module = next(m for m in daemon._modules if m.name == "telegram")
+        email_module = next(m for m in daemon._modules if m.name == "email")
+
+        assert isinstance(telegram_module, TelegramModule)
+        assert isinstance(email_module, EmailModule)
+        assert telegram_module._pipeline is None
+        assert email_module._pipeline is None
 
 
 class TestRuntimeBinaryCheck:

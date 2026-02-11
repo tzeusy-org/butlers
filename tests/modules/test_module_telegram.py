@@ -11,6 +11,7 @@ import pytest
 from pydantic import BaseModel
 
 from butlers.modules.base import Module
+from butlers.modules.pipeline import RoutingResult
 from butlers.modules.telegram import TelegramConfig, TelegramModule
 
 pytestmark = pytest.mark.unit
@@ -342,6 +343,63 @@ class TestPollingMode:
             await telegram_module._poll_loop()
 
         assert call_count >= 2
+
+    async def test_poll_loop_calls_process_update_for_each_update(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """Polling forwards each update into process_update()."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+
+        updates = [
+            {"update_id": 1, "message": {"text": "one"}},
+            {"update_id": 2, "message": {"text": "two"}},
+        ]
+
+        call_count = 0
+
+        async def mock_get_updates():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return updates
+            raise asyncio.CancelledError
+
+        telegram_module._get_updates = mock_get_updates  # type: ignore[method-assign]
+        telegram_module.process_update = AsyncMock()  # type: ignore[method-assign]
+        telegram_module._config = TelegramConfig(poll_interval=0.01)
+        telegram_module._client = AsyncMock(spec=httpx.AsyncClient)
+
+        with pytest.raises(asyncio.CancelledError):
+            await telegram_module._poll_loop()
+
+        assert telegram_module._updates_buffer == updates
+        assert telegram_module.process_update.await_count == len(updates)
+
+
+class TestPipelineIntegration:
+    """Verify classification pipeline integration for incoming updates."""
+
+    async def test_process_update_forwards_to_pipeline(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """process_update forwards text and metadata into pipeline.process()."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+
+        mock_pipeline = MagicMock()
+        mock_result = RoutingResult(target_butler="general", route_result={"status": "ok"})
+        mock_pipeline.process = AsyncMock(return_value=mock_result)
+        telegram_module.set_pipeline(mock_pipeline)
+
+        update = {"message": {"text": "Need help", "chat": {"id": 12345}}}
+        result = await telegram_module.process_update(update)
+
+        assert result is mock_result
+        mock_pipeline.process.assert_awaited_once_with(
+            message_text="Need help",
+            tool_name="handle_message",
+            tool_args={"source": "telegram", "chat_id": "12345"},
+        )
+        assert telegram_module._routed_messages == [mock_result]
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ The ButlerDaemon manages the lifecycle of a butler:
 7. Run module Alembic migrations
 8. Module on_startup (topological order)
 9. Create Spawner with runtime adapter (verify binary on PATH)
+9b. Wire message classification pipeline (switchboard only)
 10. Sync TOML schedules to DB
 10b. Open MCP client connection to Switchboard (non-switchboard butlers)
 11. Create FastMCP server and register core tools
@@ -63,6 +64,7 @@ from butlers.db import Database
 from butlers.migrations import has_butler_chain, run_migrations
 from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.base import Module
+from butlers.modules.pipeline import MessagePipeline
 from butlers.modules.registry import ModuleRegistry, default_registry
 
 logger = logging.getLogger(__name__)
@@ -254,6 +256,9 @@ class ButlerDaemon:
             runtime=runtime,
         )
 
+        # 9b. Wire message classification pipeline for switchboard modules
+        self._wire_pipelines(pool)
+
         # 10. Sync TOML schedules to DB
         schedules = [
             {"name": s.name, "cron": s.cron, "prompt": s.prompt} for s in self.config.schedules
@@ -280,6 +285,36 @@ class ButlerDaemon:
         self._accepting_connections = True
         self._started_at = time.monotonic()
         logger.info("Butler %s started on port %d", self.config.name, self.config.port)
+
+    def _wire_pipelines(self, pool: Any) -> None:
+        """Attach a MessagePipeline to modules that support set_pipeline().
+
+        Only the switchboard butler classifies and routes inbound channel
+        messages. Other butlers skip pipeline wiring entirely.
+        """
+        if self.config.name != "switchboard":
+            return
+        if self.spawner is None:
+            return
+
+        pipeline = MessagePipeline(
+            switchboard_pool=pool,
+            dispatch_fn=self.spawner.trigger,
+            source_butler="switchboard",
+        )
+
+        wired_modules: list[str] = []
+        for mod in self._modules:
+            set_pipeline = getattr(mod, "set_pipeline", None)
+            if callable(set_pipeline):
+                set_pipeline(pipeline)
+                wired_modules.append(mod.name)
+
+        if wired_modules:
+            logger.info(
+                "Wired message pipeline for module(s): %s",
+                ", ".join(sorted(wired_modules)),
+            )
 
     async def _start_mcp_server(self) -> None:
         """Start the FastMCP SSE server as a background asyncio task.
@@ -525,9 +560,15 @@ class ButlerDaemon:
             enabled: bool | None = None,
         ) -> dict:
             """Update a scheduled task. Only provided fields are changed."""
+            update_fields = {
+                "name": name,
+                "cron": cron,
+                "prompt": prompt,
+                "enabled": enabled,
+            }
             fields = {
                 k: v
-                for k, v in {"name": name, "cron": cron, "prompt": prompt, "enabled": enabled}.items()
+                for k, v in update_fields.items()
                 if v is not None
             }
             await _schedule_update(pool, uuid.UUID(task_id), **fields)
