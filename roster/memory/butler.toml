@@ -56,3 +56,5 @@ default_limit = 20
 default_mode = "hybrid"
 context_token_budget = 3000
 score_weights = { relevance = 0.4, importance = 0.3, recency = 0.2, confidence = 0.1 }
+
+[modules.memory]
