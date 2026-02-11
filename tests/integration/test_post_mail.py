@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 
@@ -295,7 +296,7 @@ async def test_post_mail_passes_optional_fields(pool):
 
     assert captured_args["subject"] == "Urgent"
     assert captured_args["priority"] == 0
-    assert captured_args["metadata"] == {"thread_id": "t-99"}
+    assert json.loads(captured_args["metadata"]) == {"thread_id": "t-99"}
 
 
 async def test_post_mail_omits_optional_fields_when_not_provided(pool):

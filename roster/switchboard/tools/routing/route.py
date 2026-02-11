@@ -173,7 +173,7 @@ async def post_mail(
     if priority is not None:
         args["priority"] = priority
     if metadata is not None:
-        args["metadata"] = metadata
+        args["metadata"] = metadata if isinstance(metadata, str) else json.dumps(metadata)
 
     # 4. Route to target butler's mailbox_post tool
     result = await route(
@@ -188,9 +188,12 @@ async def post_mail(
     # 5. Extract message_id from successful result
     if "result" in result:
         inner = result["result"]
+        wrapped: dict[str, Any] = {"result": inner}
         if isinstance(inner, dict) and "message_id" in inner:
-            return {"message_id": inner["message_id"]}
-        return {"message_id": str(inner)}
+            wrapped["message_id"] = inner["message_id"]
+            return wrapped
+        wrapped["message_id"] = str(inner)
+        return wrapped
 
     return result
 
