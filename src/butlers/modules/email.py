@@ -1,4 +1,4 @@
-"""Email module — send_email, search_inbox, read_email MCP tools.
+"""Email module — identity-prefixed email MCP tools.
 
 Uses IMAP for inbox access and SMTP for sending.
 Configured via [modules.email] in butler.toml.
@@ -20,7 +20,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolIODescriptor
 from butlers.modules.pipeline import MessagePipeline, RoutingResult
 
 logger = logging.getLogger(__name__)
@@ -37,10 +37,10 @@ class EmailConfig(BaseModel):
 
 
 class EmailModule(Module):
-    """Email module providing send_email, search_inbox, and read_email tools.
+    """Email module providing user_*/bot_* email tools.
 
     When a ``MessagePipeline`` is set via ``set_pipeline()``, the
-    ``check_and_route_inbox`` tool becomes functional: it fetches unseen
+    ``bot_email_check_and_route_inbox`` tool becomes functional: it fetches unseen
     emails, classifies each via ``classify_message()``, and routes them
     to the appropriate butler.
     """
@@ -62,6 +62,65 @@ class EmailModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
+    def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Declare user-identity email input tools."""
+        return (
+            ToolIODescriptor(
+                name="user_email_search_inbox",
+                description="Search inbox via user identity.",
+            ),
+            ToolIODescriptor(
+                name="user_email_read_message",
+                description="Read a specific message via user identity.",
+            ),
+        )
+
+    def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Declare user-identity email output tools.
+
+        User send/reply actions are approval-required defaults.
+        """
+        return (
+            ToolIODescriptor(
+                name="user_email_send_message",
+                description="Send outbound email as user (approval-required default).",
+            ),
+            ToolIODescriptor(
+                name="user_email_reply_to_thread",
+                description="Reply to email thread as user (approval-required default).",
+            ),
+        )
+
+    def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Declare bot-identity email input tools."""
+        return (
+            ToolIODescriptor(
+                name="bot_email_search_inbox",
+                description="Search inbox via bot identity.",
+            ),
+            ToolIODescriptor(
+                name="bot_email_read_message",
+                description="Read a specific message via bot identity.",
+            ),
+            ToolIODescriptor(
+                name="bot_email_check_and_route_inbox",
+                description="Classify and route unseen bot-inbox emails.",
+            ),
+        )
+
+    def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Declare bot-identity email output tools."""
+        return (
+            ToolIODescriptor(
+                name="bot_email_send_message",
+                description="Send outbound email as bot identity.",
+            ),
+            ToolIODescriptor(
+                name="bot_email_reply_to_thread",
+                description="Reply to email thread as bot identity.",
+            ),
+        )
+
     @property
     def credentials_env(self) -> list[str]:
         """Environment variables required for email authentication."""
@@ -73,34 +132,69 @@ class EmailModule(Module):
     def set_pipeline(self, pipeline: MessagePipeline) -> None:
         """Attach a classification/routing pipeline for incoming messages.
 
-        When set, ``check_and_route_inbox`` will classify and route each
+        When set, ``bot_email_check_and_route_inbox`` will classify and route each
         unseen email to the appropriate butler.
         """
         self._pipeline = pipeline
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        """Register send_email, search_inbox, read_email, check_and_route_inbox MCP tools."""
+        """Register identity-prefixed email MCP tools."""
         self._config = config if isinstance(config, EmailConfig) else EmailConfig(**(config or {}))
         module = self  # capture for closures
 
         @mcp.tool()
-        async def send_email(to: str, subject: str, body: str) -> dict:
-            """Send an email via SMTP."""
+        async def user_email_send_message(to: str, subject: str, body: str) -> dict:
+            """Send an email via SMTP using user identity."""
             return await module._send_email(to, subject, body)
 
         @mcp.tool()
-        async def search_inbox(query: str) -> list[dict]:
-            """Search inbox via IMAP SEARCH."""
+        async def user_email_reply_to_thread(
+            to: str,
+            thread_id: str,
+            body: str,
+            subject: str | None = None,
+        ) -> dict:
+            """Reply to an email thread using user identity."""
+            return await module._reply_to_thread(to, thread_id, body, subject)
+
+        @mcp.tool()
+        async def user_email_search_inbox(query: str) -> list[dict]:
+            """Search inbox via IMAP SEARCH using user identity."""
             return await module._search_inbox(query)
 
         @mcp.tool()
-        async def read_email(message_id: str) -> dict:
-            """Read a specific email by message ID."""
+        async def user_email_read_message(message_id: str) -> dict:
+            """Read a specific email by message ID using user identity."""
             return await module._read_email(message_id)
 
         @mcp.tool()
-        async def check_and_route_inbox() -> dict:
-            """Check for unseen emails and route each through the classification pipeline."""
+        async def bot_email_send_message(to: str, subject: str, body: str) -> dict:
+            """Send an email via SMTP using bot identity."""
+            return await module._send_email(to, subject, body)
+
+        @mcp.tool()
+        async def bot_email_reply_to_thread(
+            to: str,
+            thread_id: str,
+            body: str,
+            subject: str | None = None,
+        ) -> dict:
+            """Reply to an email thread using bot identity."""
+            return await module._reply_to_thread(to, thread_id, body, subject)
+
+        @mcp.tool()
+        async def bot_email_search_inbox(query: str) -> list[dict]:
+            """Search inbox via IMAP SEARCH using bot identity."""
+            return await module._search_inbox(query)
+
+        @mcp.tool()
+        async def bot_email_read_message(message_id: str) -> dict:
+            """Read a specific email by message ID using bot identity."""
+            return await module._read_email(message_id)
+
+        @mcp.tool()
+        async def bot_email_check_and_route_inbox() -> dict:
+            """Check unseen emails and route each through the classification pipeline."""
             return await module._check_and_route_inbox()
 
     async def on_startup(self, config: Any, db: Any) -> None:
@@ -352,6 +446,24 @@ class EmailModule(Module):
     async def _send_email(self, to: str, subject: str, body: str) -> dict:
         """Send email via SMTP. Uses asyncio.to_thread for blocking SMTP calls."""
         return await asyncio.to_thread(self._smtp_send, to, subject, body)
+
+    async def _reply_to_thread(
+        self,
+        to: str,
+        thread_id: str,
+        body: str,
+        subject: str | None = None,
+    ) -> dict:
+        """Send a reply-like email payload tied to a thread identifier."""
+        if not thread_id:
+            raise ValueError("thread_id is required")
+
+        resolved_subject = subject.strip() if subject else ""
+        if not resolved_subject:
+            resolved_subject = f"Re: {thread_id}"
+
+        result = await self._send_email(to, resolved_subject, body)
+        return {**result, "thread_id": thread_id}
 
     async def _search_inbox(self, query: str) -> list[dict]:
         """Search inbox via IMAP. Uses asyncio.to_thread for blocking IMAP calls."""

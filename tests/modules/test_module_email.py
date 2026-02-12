@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import smtplib
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
@@ -44,6 +44,39 @@ class TestModuleABC:
     def test_migration_revisions_none(self):
         mod = EmailModule()
         assert mod.migration_revisions() is None
+
+
+# ---------------------------------------------------------------------------
+# I/O descriptors
+# ---------------------------------------------------------------------------
+
+
+class TestIODDescriptors:
+    """Verify user/bot I/O descriptor declarations."""
+
+    def test_user_inputs_declared(self):
+        mod = EmailModule()
+        names = {descriptor.name for descriptor in mod.user_inputs()}
+        assert names == {"user_email_search_inbox", "user_email_read_message"}
+
+    def test_user_outputs_declared(self):
+        mod = EmailModule()
+        names = {descriptor.name for descriptor in mod.user_outputs()}
+        assert names == {"user_email_send_message", "user_email_reply_to_thread"}
+
+    def test_bot_inputs_declared(self):
+        mod = EmailModule()
+        names = {descriptor.name for descriptor in mod.bot_inputs()}
+        assert names == {
+            "bot_email_search_inbox",
+            "bot_email_read_message",
+            "bot_email_check_and_route_inbox",
+        }
+
+    def test_bot_outputs_declared(self):
+        mod = EmailModule()
+        names = {descriptor.name for descriptor in mod.bot_outputs()}
+        assert names == {"bot_email_send_message", "bot_email_reply_to_thread"}
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +177,7 @@ class TestLifecycle:
 class TestRegisterTools:
     """Verify that register_tools creates the expected MCP tools."""
 
-    async def test_registers_four_tools(self):
+    async def test_registers_nine_tools(self):
         mod = EmailModule()
         mcp = MagicMock()
         # mcp.tool() returns a decorator that returns the function unchanged
@@ -152,9 +185,10 @@ class TestRegisterTools:
 
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
-        # tool() should have been called 4 times
-        # (send_email, search_inbox, read_email, check_and_route_inbox)
-        assert mcp.tool.call_count == 4
+        # 9 prefixed tools:
+        # user: send/reply/search/read
+        # bot: send/reply/search/read/check_and_route
+        assert mcp.tool.call_count == 9
 
     async def test_tool_decorator_called(self):
         mod = EmailModule()
@@ -172,10 +206,37 @@ class TestRegisterTools:
 
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
-        assert "send_email" in registered_tools
-        assert "search_inbox" in registered_tools
-        assert "read_email" in registered_tools
-        assert "check_and_route_inbox" in registered_tools
+        expected_tools = {
+            "user_email_send_message",
+            "user_email_reply_to_thread",
+            "user_email_search_inbox",
+            "user_email_read_message",
+            "bot_email_send_message",
+            "bot_email_reply_to_thread",
+            "bot_email_search_inbox",
+            "bot_email_read_message",
+            "bot_email_check_and_route_inbox",
+        }
+        assert set(registered_tools) == expected_tools
+
+    async def test_legacy_tool_names_not_registered(self):
+        mod = EmailModule()
+        mcp = MagicMock()
+        registered_tools: dict[str, Any] = {}
+
+        def capture_tool():
+            def decorator(fn):
+                registered_tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool.side_effect = capture_tool
+
+        await mod.register_tools(mcp=mcp, config=None, db=None)
+
+        legacy_names = {"send_email", "search_inbox", "read_email", "check_and_route_inbox"}
+        assert legacy_names.isdisjoint(registered_tools)
 
     async def test_registered_tools_are_async(self):
         mod = EmailModule()
@@ -291,6 +352,56 @@ class TestSendEmail:
 
         # quit() should still be called via finally block
         mock_smtp_instance.quit.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Reply helper
+# ---------------------------------------------------------------------------
+
+
+class TestReplyToThread:
+    """Verify reply helper behavior."""
+
+    async def test_reply_to_thread_uses_explicit_subject(self, monkeypatch: pytest.MonkeyPatch):
+        mod = EmailModule()
+        mocked_send = AsyncMock(return_value={"status": "sent", "to": "person@example.com"})
+        monkeypatch.setattr(mod, "_send_email", mocked_send)
+
+        result = await mod._reply_to_thread(
+            to="person@example.com",
+            thread_id="thread-123",
+            body="reply body",
+            subject="Re: Existing Subject",
+        )
+
+        mocked_send.assert_awaited_once_with(
+            "person@example.com", "Re: Existing Subject", "reply body"
+        )
+        assert result["thread_id"] == "thread-123"
+
+    async def test_reply_to_thread_uses_default_subject(self, monkeypatch: pytest.MonkeyPatch):
+        mod = EmailModule()
+        mocked_send = AsyncMock(return_value={"status": "sent", "to": "person@example.com"})
+        monkeypatch.setattr(mod, "_send_email", mocked_send)
+
+        await mod._reply_to_thread(
+            to="person@example.com",
+            thread_id="thread-123",
+            body="reply body",
+            subject=None,
+        )
+
+        mocked_send.assert_awaited_once_with("person@example.com", "Re: thread-123", "reply body")
+
+    async def test_reply_to_thread_requires_thread_id(self):
+        mod = EmailModule()
+        with pytest.raises(ValueError, match="thread_id is required"):
+            await mod._reply_to_thread(
+                to="person@example.com",
+                thread_id="",
+                body="reply body",
+                subject="Re: Whatever",
+            )
 
 
 # ---------------------------------------------------------------------------

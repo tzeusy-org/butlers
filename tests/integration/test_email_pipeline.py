@@ -347,7 +347,7 @@ class TestCheckAndRouteInbox:
         assert result["results"] == []
 
     async def test_registers_check_and_route_tool(self):
-        """register_tools creates a check_and_route_inbox tool."""
+        """register_tools creates a bot_email_check_and_route_inbox tool."""
         mod = EmailModule()
         mcp = MagicMock()
         tools: dict[str, Any] = {}
@@ -363,5 +363,5 @@ class TestCheckAndRouteInbox:
 
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
-        assert "check_and_route_inbox" in tools
-        assert callable(tools["check_and_route_inbox"])
+        assert "bot_email_check_and_route_inbox" in tools
+        assert callable(tools["bot_email_check_and_route_inbox"])
