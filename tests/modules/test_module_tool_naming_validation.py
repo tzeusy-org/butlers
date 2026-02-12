@@ -183,6 +183,8 @@ async def test_register_module_tools_rejects_declared_descriptors_not_registered
 
     with pytest.raises(
         ModuleToolValidationError,
-        match="declared tool descriptors that were not registered: bot_email_send, user_email_receive",
+        match=(
+            "declared tool descriptors that were not registered: bot_email_send, user_email_receive"
+        ),
     ):
         await daemon._register_module_tools()  # noqa: SLF001
