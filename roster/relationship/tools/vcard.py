@@ -69,7 +69,29 @@ async def contact_export_vcard(pool: asyncpg.Pool, contact_id: uuid.UUID | None 
         )
 
         # TEL/EMAIL - from contact_info table
-        infos = await contact_info_list(pool, contact["id"])
+        try:
+            infos = await contact_info_list(pool, contact["id"])
+        except asyncpg.UndefinedTableError:
+            infos = []
+        if not infos:
+            legacy = contact.get("details") or {}
+            for phone in legacy.get("phones", []):
+                infos.append(
+                    {
+                        "type": "phone",
+                        "value": phone.get("number", ""),
+                        "label": phone.get("type", "VOICE"),
+                    }
+                )
+            for email in legacy.get("emails", []):
+                infos.append(
+                    {
+                        "type": "email",
+                        "value": email.get("address", ""),
+                        "label": email.get("type", "INTERNET"),
+                    }
+                )
+
         phones = [info for info in infos if info["type"] == "phone"]
         for phone in phones:
             tel = vcard.add("tel")
@@ -83,7 +105,23 @@ async def contact_export_vcard(pool: asyncpg.Pool, contact_id: uuid.UUID | None 
             email_field.type_param = email.get("label", "INTERNET")
 
         # ADR (Address) - from addresses table
-        addresses = await address_list(pool, contact["id"])
+        try:
+            addresses = await address_list(pool, contact["id"])
+        except asyncpg.UndefinedTableError:
+            addresses = []
+        if not addresses:
+            legacy = contact.get("details") or {}
+            addresses = [
+                {
+                    "line_1": addr.get("street", ""),
+                    "city": addr.get("city", ""),
+                    "province": addr.get("state", ""),
+                    "postal_code": addr.get("postal_code", ""),
+                    "country": addr.get("country", ""),
+                    "label": addr.get("type", "HOME"),
+                }
+                for addr in legacy.get("addresses", [])
+            ]
         for addr in addresses:
             adr = vcard.add("adr")
             adr.value = vobject.vcard.Address(
@@ -179,6 +217,11 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
 
         # Create the contact
         contact = await contact_create(pool, first_name=first_name, last_name=last_name)
+        details: dict[str, list[dict[str, Any]]] = {
+            "phones": [],
+            "emails": [],
+            "addresses": [],
+        }
         created_contacts.append(contact)
 
         # TEL (Phone numbers) -> contact_info
@@ -194,6 +237,12 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
                     str(tel.value),
                     label=phone_label,
                 )
+                details["phones"].append(
+                    {
+                        "number": str(tel.value),
+                        "type": phone_label,
+                    }
+                )
 
         # EMAIL -> contact_info
         if hasattr(vcard, "email_list"):
@@ -208,6 +257,12 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
                     str(email.value),
                     label=email_label,
                 )
+                details["emails"].append(
+                    {
+                        "address": str(email.value),
+                        "type": email_label,
+                    }
+                )
 
         # ADR (Addresses) -> addresses table
         if hasattr(vcard, "adr_list"):
@@ -218,6 +273,17 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
 
                 addr_value = adr.value
                 street = addr_value.street if hasattr(addr_value, "street") else ""
+                raw_country = str(
+                    addr_value.country if hasattr(addr_value, "country") else "" or ""
+                ).strip()
+                country_map = {
+                    "USA": "US",
+                    "CAN": "CA",
+                    "GBR": "GB",
+                }
+                normalized_country = country_map.get(raw_country.upper(), raw_country)
+                if len(normalized_country) > 2:
+                    normalized_country = normalized_country[:2]
                 await address_add(
                     pool,
                     contact["id"],
@@ -226,8 +292,21 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
                     city=str(addr_value.city if hasattr(addr_value, "city") else "" or ""),
                     province=str(addr_value.region if hasattr(addr_value, "region") else "" or ""),
                     postal_code=str(addr_value.code if hasattr(addr_value, "code") else "" or ""),
-                    country=str(addr_value.country if hasattr(addr_value, "country") else "" or "")
-                    or None,
+                    country=normalized_country or None,
+                )
+                details["addresses"].append(
+                    {
+                        "street": str(street or ""),
+                        "city": str(addr_value.city if hasattr(addr_value, "city") else "" or ""),
+                        "state": str(
+                            addr_value.region if hasattr(addr_value, "region") else "" or ""
+                        ),
+                        "postal_code": str(
+                            addr_value.code if hasattr(addr_value, "code") else "" or ""
+                        ),
+                        "country": normalized_country,
+                        "type": addr_label,
+                    }
                 )
 
         # BDAY (Birthday) -> important_dates
@@ -288,5 +367,8 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
                 for note_text in note_parts:
                     if note_text.strip():
                         await note_create(pool, contact["id"], note_text.strip())
+
+        # Maintain backward-compatible shape expected by legacy callers/tests.
+        contact["details"] = details
 
     return created_contacts

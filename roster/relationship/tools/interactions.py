@@ -9,6 +9,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.relationship._schema import table_columns
 from butlers.tools.relationship.feed import _log_activity
 
 _VALID_DIRECTIONS = ("incoming", "outgoing", "mutual")
@@ -27,20 +28,60 @@ async def interaction_log(
     """Log an interaction with a contact."""
     if direction is not None and direction not in _VALID_DIRECTIONS:
         raise ValueError(f"Invalid direction '{direction}'. Must be one of {_VALID_DIRECTIONS}")
+    cols = await table_columns(pool, "interactions")
+    effective_occurred_at = occurred_at if occurred_at is not None else datetime.now()
+
+    # Idempotency guard: same contact + type + date skips duplicate insert.
+    if "occurred_at" in cols:
+        existing = await pool.fetchrow(
+            """
+            SELECT id
+            FROM interactions
+            WHERE contact_id = $1
+              AND type = $2
+              AND occurred_at::date = $3::date
+            LIMIT 1
+            """,
+            contact_id,
+            type,
+            effective_occurred_at,
+        )
+        if existing is not None:
+            return {
+                "skipped": "duplicate",
+                "existing_id": str(existing["id"]),
+            }
+
+    insert_cols: list[str] = []
+    values: list[Any] = []
+
+    def add(col: str, val: Any) -> None:
+        if col in cols:
+            insert_cols.append(col)
+            values.append(val)
+
+    add("contact_id", contact_id)
+    add("type", type)
+    add("summary", summary)
+    add("occurred_at", effective_occurred_at)
+    add("direction", direction)
+    add("duration_minutes", duration_minutes)
+    add("metadata", json.dumps(metadata) if metadata is not None else None)
+
+    placeholders: list[str] = []
+    for idx, col in enumerate(insert_cols, start=1):
+        if col == "metadata":
+            placeholders.append(f"${idx}::jsonb")
+        else:
+            placeholders.append(f"${idx}")
+
     row = await pool.fetchrow(
-        """
-        INSERT INTO interactions (contact_id, type, summary, occurred_at,
-                                  direction, duration_minutes, metadata)
-        VALUES ($1, $2, $3, COALESCE($4, now()), $5, $6, $7::jsonb)
+        f"""
+        INSERT INTO interactions ({", ".join(insert_cols)})
+        VALUES ({", ".join(placeholders)})
         RETURNING *
         """,
-        contact_id,
-        type,
-        summary,
-        occurred_at,
-        direction,
-        duration_minutes,
-        json.dumps(metadata) if metadata is not None else None,
+        *values,
     )
     result = dict(row)
     if isinstance(result.get("metadata"), str):
@@ -63,11 +104,12 @@ async def interaction_list(
 
     Optionally filter by direction and/or type.
     """
+    cols = await table_columns(pool, "interactions")
     conditions = ["contact_id = $1"]
     params: list[Any] = [contact_id]
     idx = 2
 
-    if direction is not None:
+    if direction is not None and "direction" in cols:
         conditions.append(f"direction = ${idx}")
         params.append(direction)
         idx += 1

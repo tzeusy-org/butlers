@@ -50,15 +50,25 @@ async def pool(postgres_container):
     await p.execute("""
         CREATE TABLE IF NOT EXISTS contacts (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
+            name TEXT,
             details JSONB DEFAULT '{}',
             archived_at TIMESTAMPTZ,
+            first_name TEXT,
+            last_name TEXT,
+            nickname TEXT,
+            company TEXT,
+            job_title TEXT,
+            gender TEXT,
+            pronouns TEXT,
+            avatar_url TEXT,
+            listed BOOLEAN DEFAULT true,
+            metadata JSONB DEFAULT '{}',
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ DEFAULT now()
         )
     """)
     await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (name)
+        CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
     """)
     await p.execute("""
         CREATE TABLE IF NOT EXISTS important_dates (
@@ -75,9 +85,38 @@ async def pool(postgres_container):
         CREATE TABLE IF NOT EXISTS notes (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            content TEXT NOT NULL,
+            title TEXT,
+            body TEXT,
+            content TEXT,
             emotion TEXT,
             created_at TIMESTAMPTZ DEFAULT now()
+        )
+    """)
+    await p.execute("""
+        CREATE TABLE IF NOT EXISTS contact_info (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            type TEXT NOT NULL,
+            value TEXT NOT NULL,
+            label TEXT,
+            is_primary BOOLEAN DEFAULT false,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )
+    """)
+    await p.execute("""
+        CREATE TABLE IF NOT EXISTS addresses (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            label TEXT NOT NULL DEFAULT 'Home',
+            line_1 TEXT NOT NULL,
+            line_2 TEXT,
+            city TEXT,
+            province TEXT,
+            postal_code TEXT,
+            country TEXT,
+            is_current BOOLEAN DEFAULT false,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ DEFAULT now()
         )
     """)
     await p.execute("""
@@ -95,8 +134,12 @@ async def pool(postgres_container):
         CREATE TABLE IF NOT EXISTS activity_feed (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            action TEXT,
+            summary TEXT,
             type TEXT NOT NULL,
             description TEXT NOT NULL,
+            entity_type TEXT,
+            entity_id UUID,
             created_at TIMESTAMPTZ DEFAULT now()
         )
     """)
@@ -298,7 +341,7 @@ END:VCARD"""
     assert addr["city"] == "Boston"
     assert addr["state"] == "MA"
     assert addr["postal_code"] == "02101"
-    assert addr["country"] == "USA"
+    assert addr["country"] == "US"
 
 
 async def test_import_vcard_with_birthday(pool):

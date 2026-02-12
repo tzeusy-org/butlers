@@ -26,6 +26,7 @@ async def loan_create(
 ) -> dict[str, Any]:
     """Create a loan record with legacy + spec-compatible fields."""
     cols = await table_columns(pool, "loans")
+    effective_description = description or "Loan"
 
     if amount_cents is None and amount is not None:
         amount_cents = int((amount * 100).quantize(Decimal("1")))
@@ -50,6 +51,7 @@ async def loan_create(
     add("amount", amount)
     add("direction", direction)
     add("description", description)
+    add("name", effective_description)
     add("lender_contact_id", lender_contact_id)
     add("borrower_contact_id", borrower_contact_id)
     add("amount_cents", amount_cents)
@@ -65,6 +67,8 @@ async def loan_create(
         *values,
     )
     result = dict(row)
+    if "description" not in result and result.get("name") is not None:
+        result["description"] = result["name"]
     if "amount" not in result and result.get("amount_cents") is not None:
         result["amount"] = (Decimal(result["amount_cents"]) / Decimal(100)).quantize(
             Decimal("0.01")
@@ -111,7 +115,7 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
             pool,
             actor_contact,
             "loan_settled",
-            f"Settled loan: {row.get('direction')} {row.get('amount')}",
+            f"Settled loan: {result.get('description') or result.get('name')}",
             entity_type="loan",
             entity_id=loan_id,
         )
@@ -126,12 +130,18 @@ async def loan_list(
     if contact_id is None:
         rows = await pool.fetch("SELECT * FROM loans ORDER BY created_at DESC")
     elif {"lender_contact_id", "borrower_contact_id"}.issubset(cols):
+        predicates: list[str] = [
+            "lender_contact_id = $1",
+            "borrower_contact_id = $1",
+        ]
+        if "contact_id" in cols:
+            predicates.insert(0, "contact_id = $1")
         rows = await pool.fetch(
             """
             SELECT * FROM loans
-            WHERE contact_id = $1
-               OR lender_contact_id = $1
-               OR borrower_contact_id = $1
+            WHERE """
+            + " OR ".join(predicates)
+            + """
             ORDER BY created_at DESC
             """,
             contact_id,
