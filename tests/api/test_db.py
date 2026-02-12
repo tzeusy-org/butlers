@@ -65,6 +65,32 @@ async def test_add_butler_custom_db_name(mock_create: AsyncMock, mgr: DatabaseMa
 
 
 @patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_add_butler_forwards_ssl_mode(mock_create: AsyncMock) -> None:
+    """Configured SSL mode is forwarded to asyncpg.create_pool."""
+    mock_create.return_value = _make_mock_pool()
+    mgr = DatabaseManager(
+        host="localhost",
+        port=5432,
+        user="pg",
+        password="secret",
+        ssl="disable",
+    )
+
+    await mgr.add_butler("atlas")
+
+    mock_create.assert_called_once_with(
+        host="localhost",
+        port=5432,
+        user="pg",
+        password="secret",
+        database="atlas",
+        min_size=1,
+        max_size=5,
+        ssl="disable",
+    )
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
 async def test_add_butler_duplicate_skipped(
     mock_create: AsyncMock, mgr: DatabaseManager, caplog: pytest.LogCaptureFixture
 ) -> None:

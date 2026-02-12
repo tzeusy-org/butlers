@@ -35,6 +35,7 @@ class DatabaseManager:
         port: int = 5432,
         user: str = "postgres",
         password: str = "postgres",
+        ssl: str | None = None,
         min_pool_size: int = 1,
         max_pool_size: int = 5,
     ) -> None:
@@ -42,6 +43,7 @@ class DatabaseManager:
         self._port = port
         self._user = user
         self._password = password
+        self._ssl = ssl
         self._min_pool_size = min_pool_size
         self._max_pool_size = max_pool_size
         self._pools: dict[str, asyncpg.Pool] = {}
@@ -61,15 +63,18 @@ class DatabaseManager:
             return
 
         effective_db = db_name or butler_name
-        pool = await asyncpg.create_pool(
-            host=self._host,
-            port=self._port,
-            user=self._user,
-            password=self._password,
-            database=effective_db,
-            min_size=self._min_pool_size,
-            max_size=self._max_pool_size,
-        )
+        pool_kwargs: dict[str, Any] = {
+            "host": self._host,
+            "port": self._port,
+            "user": self._user,
+            "password": self._password,
+            "database": effective_db,
+            "min_size": self._min_pool_size,
+            "max_size": self._max_pool_size,
+        }
+        if self._ssl is not None:
+            pool_kwargs["ssl"] = self._ssl
+        pool = await asyncpg.create_pool(**pool_kwargs)
         self._pools[butler_name] = pool
         logger.info("Added pool for butler: %s (db=%s)", butler_name, effective_db)
 

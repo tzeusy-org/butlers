@@ -11,11 +11,9 @@ Provides:
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
 from fastmcp import Client as MCPClient
 
@@ -25,6 +23,7 @@ if TYPE_CHECKING:
 from butlers.api.db import DatabaseManager
 from butlers.api.pricing import PricingConfig, load_pricing
 from butlers.config import ConfigError, load_config
+from butlers.db import db_params_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -322,23 +321,9 @@ def get_pricing() -> PricingConfig:
 _db_manager: DatabaseManager | None = None
 
 
-def _db_params_from_env() -> dict[str, str | int]:
+def _db_params_from_env() -> dict[str, str | int | None]:
     """Read DB connection params from environment variables."""
-    database_url = os.environ.get("DATABASE_URL")
-    if database_url:
-        parsed = urlparse(database_url)
-        return {
-            "host": parsed.hostname or "localhost",
-            "port": parsed.port or 5432,
-            "user": parsed.username or "butlers",
-            "password": parsed.password or "butlers",
-        }
-    return {
-        "host": os.environ.get("POSTGRES_HOST", "localhost"),
-        "port": int(os.environ.get("POSTGRES_PORT", "5432")),
-        "user": os.environ.get("POSTGRES_USER", "butlers"),
-        "password": os.environ.get("POSTGRES_PASSWORD", "butlers"),
-    }
+    return db_params_from_env()
 
 
 async def init_db_manager(

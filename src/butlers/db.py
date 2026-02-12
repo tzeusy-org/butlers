@@ -4,11 +4,54 @@ from __future__ import annotations
 
 import logging
 import os
-from urllib.parse import urlparse
+from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import asyncpg
 
 logger = logging.getLogger(__name__)
+
+_VALID_SSL_MODES = {"disable", "prefer", "allow", "require", "verify-ca", "verify-full"}
+
+
+def _normalize_ssl_mode(value: str | None) -> str | None:
+    """Normalize an SSL mode value for asyncpg or return None if unset/invalid."""
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized in _VALID_SSL_MODES:
+        return normalized
+    logger.warning("Ignoring invalid PostgreSQL sslmode value: %s", value)
+    return None
+
+
+def _db_params_from_database_url(database_url: str) -> dict[str, str | int | None]:
+    """Parse connection params from a libpq-style DATABASE_URL."""
+    parsed = urlparse(database_url)
+    sslmode = _normalize_ssl_mode(parse_qs(parsed.query).get("sslmode", [None])[0])
+    return {
+        "host": parsed.hostname or "localhost",
+        "port": parsed.port or 5432,
+        "user": parsed.username or "butlers",
+        "password": parsed.password or "butlers",
+        "ssl": sslmode,
+    }
+
+
+def db_params_from_env() -> dict[str, str | int | None]:
+    """Read DB connection params from environment variables."""
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        return _db_params_from_database_url(database_url)
+    return {
+        "host": os.environ.get("POSTGRES_HOST", "localhost"),
+        "port": int(os.environ.get("POSTGRES_PORT", "5432")),
+        "user": os.environ.get("POSTGRES_USER", "butlers"),
+        "password": os.environ.get("POSTGRES_PASSWORD", "butlers"),
+        "ssl": _normalize_ssl_mode(os.environ.get("POSTGRES_SSLMODE")),
+    }
 
 
 class Database:
@@ -26,6 +69,7 @@ class Database:
         port: int = 5432,
         user: str = "postgres",
         password: str = "postgres",
+        ssl: str | None = None,
         min_pool_size: int = 2,
         max_pool_size: int = 10,
     ) -> None:
@@ -34,6 +78,7 @@ class Database:
         self.port = port
         self.user = user
         self.password = password
+        self.ssl = ssl
         self.min_pool_size = min_pool_size
         self.max_pool_size = max_pool_size
         self.pool: asyncpg.Pool | None = None
@@ -44,13 +89,16 @@ class Database:
         Connects to the 'postgres' maintenance database to check for and
         optionally create the butler's database.
         """
-        conn = await asyncpg.connect(
-            host=self.host,
-            port=self.port,
-            user=self.user,
-            password=self.password,
-            database="postgres",
-        )
+        connect_kwargs: dict[str, Any] = {
+            "host": self.host,
+            "port": self.port,
+            "user": self.user,
+            "password": self.password,
+            "database": "postgres",
+        }
+        if self.ssl is not None:
+            connect_kwargs["ssl"] = self.ssl
+        conn = await asyncpg.connect(**connect_kwargs)
         try:
             exists = await conn.fetchval(
                 "SELECT 1 FROM pg_database WHERE datname = $1",
@@ -69,15 +117,18 @@ class Database:
 
     async def connect(self) -> asyncpg.Pool:
         """Create and return a connection pool to the butler's database."""
-        self.pool = await asyncpg.create_pool(
-            host=self.host,
-            port=self.port,
-            user=self.user,
-            password=self.password,
-            database=self.db_name,
-            min_size=self.min_pool_size,
-            max_size=self.max_pool_size,
-        )
+        pool_kwargs: dict[str, Any] = {
+            "host": self.host,
+            "port": self.port,
+            "user": self.user,
+            "password": self.password,
+            "database": self.db_name,
+            "min_size": self.min_pool_size,
+            "max_size": self.max_pool_size,
+        }
+        if self.ssl is not None:
+            pool_kwargs["ssl"] = self.ssl
+        self.pool = await asyncpg.create_pool(**pool_kwargs)
         logger.info("Connection pool created for: %s", self.db_name)
         return self.pool
 
@@ -93,29 +144,18 @@ class Database:
         """Create Database instance from environment variables.
 
         Checks DATABASE_URL first (spec requirement), then falls back to
-        individual POSTGRES_* vars for backward compatibility.
+        individual POSTGRES_* vars for backward compatibility. Supports
+        ``sslmode`` in DATABASE_URL query params and ``POSTGRES_SSLMODE``.
 
         DATABASE_URL format: postgres://user:password@host:port/database
         Default: postgres://butlers:butlers@localhost/postgres
         """
-        database_url = os.environ.get("DATABASE_URL")
-
-        if database_url:
-            # Parse DATABASE_URL (postgres://user:password@host:port/database)
-            parsed = urlparse(database_url)
-            return cls(
-                db_name=db_name,
-                host=parsed.hostname or "localhost",
-                port=parsed.port or 5432,
-                user=parsed.username or "butlers",
-                password=parsed.password or "butlers",
-            )
-
-        # Fall back to individual POSTGRES_* vars for backward compatibility
+        params = db_params_from_env()
         return cls(
             db_name=db_name,
-            host=os.environ.get("POSTGRES_HOST", "localhost"),
-            port=int(os.environ.get("POSTGRES_PORT", "5432")),
-            user=os.environ.get("POSTGRES_USER", "butlers"),
-            password=os.environ.get("POSTGRES_PASSWORD", "butlers"),
+            host=str(params["host"]),
+            port=int(params["port"]),
+            user=str(params["user"]),
+            password=str(params["password"]),
+            ssl=params["ssl"] if isinstance(params["ssl"], str) else None,
         )
