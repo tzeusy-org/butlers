@@ -14,12 +14,28 @@ Butlers is an AI agent framework where each "butler" is a long-running MCP serve
 uv sync --dev          # Install dependencies
 make lint              # Lint with ruff
 make format            # Format with ruff
-make test              # Run all tests (pytest -v)
+make test              # Run all tests (prefer quiet pytest flags for agent runs)
 make check             # Lint + test
-uv run pytest tests/test_foo.py -v          # Run a single test file
+uv run pytest tests/test_foo.py -q --tb=short          # Run a single test file (quiet)
 uv run pytest tests/test_foo.py::test_bar   # Run a single test
-uv run ruff check src/ tests/               # Lint only
+uv run ruff check src/ tests/ --output-format concise  # Lint only (quiet)
 uv run ruff format src/ tests/              # Format only
+```
+
+Test execution policy for bugfixes and features:
+
+- During active development or investigation, prefer targeted `pytest` runs to keep feedback fast and reduce context usage.
+- Run the full test suite only when branch changes are finalized and you are doing final pre-merge validation.
+- Increase test scope gradually as needed; do not default to full-suite runs early.
+
+For low-context quality gates during agent runs:
+
+```bash
+uv run ruff check src/ tests/ roster/ conftest.py --output-format concise
+uv run ruff format --check src/ tests/ roster/ conftest.py -q
+mkdir -p .tmp/test-logs
+PYTEST_LOG=".tmp/test-logs/pytest-$(basename "$PWD")-$(date +%Y%m%d-%H%M%S)-$$.log"
+uv run pytest tests/ --ignore=tests/test_db.py --ignore=tests/test_migrations.py -q --maxfail=1 --tb=short >"$PYTEST_LOG" 2>&1 || tail -n 120 "$PYTEST_LOG"
 ```
 
 ## Architecture

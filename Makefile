@@ -1,4 +1,6 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules check
+.PHONY: lint format test test-unit test-integration test-core test-modules test-qg test-qg-parallel check
+
+QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py
 
 lint:
 	uv run ruff check src/ tests/
@@ -25,5 +27,13 @@ test-core:
 # Module tests — tests/modules/ directory
 test-modules:
 	uv run pytest tests/modules/ -v
+
+# Quality-gate scope in serial mode
+test-qg:
+	uv run pytest $(QG_PYTEST_ARGS)
+
+# Quality-gate scope in parallel mode (opt-in local speed-up)
+test-qg-parallel:
+	uv run pytest $(QG_PYTEST_ARGS) -n auto
 
 check: lint test

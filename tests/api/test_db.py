@@ -9,6 +9,8 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def mgr() -> DatabaseManager:
@@ -88,6 +90,22 @@ async def test_add_butler_forwards_ssl_mode(mock_create: AsyncMock) -> None:
         max_size=5,
         ssl="disable",
     )
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_add_butler_retries_with_ssl_disable_on_ssl_upgrade_connection_lost(
+    mock_create: AsyncMock, mgr: DatabaseManager
+) -> None:
+    """Unset SSL mode retries once with ssl=disable on upgrade connection loss."""
+    pool = _make_mock_pool()
+    mock_create.side_effect = [ConnectionError("unexpected connection_lost() call"), pool]
+
+    await mgr.add_butler("atlas")
+
+    assert mgr.pool("atlas") is pool
+    assert mock_create.await_count == 2
+    assert mock_create.await_args_list[0].kwargs.get("ssl") is None
+    assert mock_create.await_args_list[1].kwargs["ssl"] == "disable"
 
 
 @patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)

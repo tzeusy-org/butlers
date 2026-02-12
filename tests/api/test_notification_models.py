@@ -10,6 +10,8 @@ import pytest
 
 from butlers.api.models import NotificationStats, NotificationSummary
 
+pytestmark = pytest.mark.unit
+
 # ---------------------------------------------------------------------------
 # NotificationSummary
 # ---------------------------------------------------------------------------

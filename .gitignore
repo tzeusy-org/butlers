@@ -49,3 +49,6 @@ pgdata/
 # Frontend
 /frontend/node_modules/
 /frontend/dist/
+
+# tmp
+.tmp

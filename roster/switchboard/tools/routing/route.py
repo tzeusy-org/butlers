@@ -8,11 +8,30 @@ import time
 from typing import Any
 
 import asyncpg
+from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
 from butlers.core.telemetry import inject_trace_context
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_mcp_error_text(result: Any) -> str:
+    """Best-effort extraction of MCP error text from a CallToolResult."""
+    content = getattr(result, "content", None) or []
+    if content:
+        first = content[0]
+        return str(getattr(first, "text", "") or first)
+    return ""
+
+
+def _build_trigger_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Map legacy handle_message args to trigger args."""
+    prompt = str(args.get("prompt") or args.get("message") or "")
+    trigger_args: dict[str, Any] = {"prompt": prompt}
+    if args.get("context") is not None:
+        trigger_args["context"] = str(args["context"])
+    return trigger_args
 
 
 async def route(
@@ -201,12 +220,50 @@ async def post_mail(
 async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, Any]) -> Any:
     """Call a tool on another butler via MCP SSE client.
 
-    In production this would use the MCP SDK client; for now it raises
-    ConnectionError to signal that real MCP integration is pending.
+    Raises
+    ------
+    ConnectionError
+        If the target endpoint cannot be reached.
+    RuntimeError
+        If the target tool returns an MCP error result.
     """
-    raise ConnectionError(
-        f"Failed to call tool {tool_name} on {endpoint_url} — requires MCP client SDK integration"
-    )
+    try:
+        async with MCPClient(endpoint_url, name="switchboard-router") as client:
+            result = await client.call_tool(tool_name, args, raise_on_error=False)
+            if getattr(result, "is_error", False):
+                error_text = _extract_mcp_error_text(result)
+                # Backward compatibility: many callers still route "handle_message"
+                # while daemon core exposes "trigger". Retry automatically.
+                if tool_name == "handle_message" and "Unknown tool" in error_text:
+                    trigger_args = _build_trigger_args(args)
+                    result = await client.call_tool("trigger", trigger_args, raise_on_error=False)
+    except Exception as exc:
+        raise ConnectionError(f"Failed to call tool {tool_name} on {endpoint_url}: {exc}") from exc
+
+    if getattr(result, "is_error", False):
+        error_text = _extract_mcp_error_text(result)
+        if not error_text:
+            error_text = f"Tool '{tool_name}' returned an error."
+        raise RuntimeError(error_text)
+
+    # FastMCP 2.x CallToolResult carries structured data directly.
+    if hasattr(result, "data"):
+        return result.data
+
+    # Backward-compat fallback for list-of-block results.
+    if result and hasattr(result, "__iter__"):
+        for block in result:
+            text = getattr(block, "text", None)
+            if text is None:
+                continue
+            if isinstance(text, str):
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return text
+            return text
+
+    return result
 
 
 async def _log_routing(

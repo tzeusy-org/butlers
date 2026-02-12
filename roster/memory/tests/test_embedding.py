@@ -73,6 +73,10 @@ class TestEmbedUnit:
         result = engine.embed("   ")
         assert len(result) == 384
 
+    def test_embed_disables_progress_bar(self, engine):
+        engine.embed("hello world")
+        engine._model.encode.assert_called_once_with("hello world", show_progress_bar=False)
+
 
 @pytest.mark.unit
 class TestEmbedBatchUnit:
@@ -95,6 +99,11 @@ class TestEmbedBatchUnit:
         result = engine.embed_batch(["solo"])
         assert len(result) == 1
         assert len(result[0]) == 384
+
+    def test_batch_disables_progress_bar(self, engine):
+        texts = ["one", "two", "three"]
+        engine.embed_batch(texts)
+        engine._model.encode.assert_called_once_with(texts, show_progress_bar=False)
 
 
 @pytest.mark.unit

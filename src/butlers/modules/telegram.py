@@ -93,6 +93,17 @@ class TelegramModule(Module):
             self._client = httpx.AsyncClient()
         return self._client
 
+    def _get_db_pool(self) -> Any | None:
+        """Return an asyncpg-compatible pool-like object if available."""
+        if self._db is None:
+            return None
+        pool = getattr(self._db, "pool", None)
+        if pool is not None:
+            return pool
+        if hasattr(self._db, "acquire"):
+            return self._db
+        return None
+
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         """Register send_message and get_updates MCP tools."""
         self._config = (
@@ -171,8 +182,9 @@ class TelegramModule(Module):
 
         # Phase 1: Log receipt
         message_inbox_id = None
-        if self._db:
-            async with self._db.acquire() as conn:
+        db_pool = self._get_db_pool()
+        if db_pool is not None:
+            async with db_pool.acquire() as conn:
                 message_inbox_id = await conn.fetchval(
                     """
                     INSERT INTO message_inbox
