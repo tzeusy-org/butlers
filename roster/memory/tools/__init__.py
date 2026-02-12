@@ -6,9 +6,9 @@ continues to work as before.
 
 from butlers.tools.memory._helpers import (
     EmbeddingEngine,
+    _search,
     _serialize_row,
     _storage,
-    _search,
     get_embedding_engine,
 )
 from butlers.tools.memory.context import memory_context
