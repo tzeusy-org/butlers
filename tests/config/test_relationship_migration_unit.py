@@ -37,9 +37,7 @@ def _get_migration_files() -> list[Path]:
     return sorted(p for p in migration_dir.glob("*.py") if p.name != "__init__.py")
 
 
-@pytest.mark.parametrize(
-    "migration_file", _get_migration_files(), ids=lambda p: p.name
-)
+@pytest.mark.parametrize("migration_file", _get_migration_files(), ids=lambda p: p.name)
 def test_migration_branch_label(migration_file: Path) -> None:
     """Only the branch root should have branch_labels=('relationship',)."""
     module = _load_migration(migration_file.name)
@@ -48,6 +46,4 @@ def test_migration_branch_label(migration_file: Path) -> None:
             f"{migration_file.name} should have branch_labels=('relationship',)"
         )
     else:
-        assert module.branch_labels is None, (
-            f"{migration_file.name} should have branch_labels=None"
-        )
+        assert module.branch_labels is None, f"{migration_file.name} should have branch_labels=None"
