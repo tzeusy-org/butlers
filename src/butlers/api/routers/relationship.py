@@ -230,7 +230,7 @@ async def get_contact(
         """
         SELECT month, day, year
         FROM important_dates
-        WHERE contact_id = $1 AND date_type = 'birthday'
+        WHERE contact_id = $1 AND label = 'birthday'
         LIMIT 1
         """,
         contact_id,
@@ -594,7 +594,7 @@ async def list_upcoming_dates(
         SELECT
             id.contact_id,
             c.name AS contact_name,
-            id.date_type,
+            id.label AS date_type,
             id.month,
             id.day,
             id.year
