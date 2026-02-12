@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,18 +11,16 @@ import pytest
 # ---------------------------------------------------------------------------
 # Load tools module (mocking sentence_transformers first)
 # ---------------------------------------------------------------------------
-
 # ---------------------------------------------------------------------------
 # Load tools module
 # ---------------------------------------------------------------------------
-
 from butlers.tools.memory import (
+    _helpers,
+    get_embedding_engine,
     memory_store_episode,
     memory_store_fact,
     memory_store_rule,
-    get_embedding_engine,
 )
-from butlers.tools.memory import _helpers
 
 pytestmark = pytest.mark.unit
 
@@ -111,9 +106,7 @@ class TestMemoryStoreEpisode:
 
         with patch.object(_helpers._storage, "store_episode", new_callable=AsyncMock) as mock_store:
             mock_store.return_value = storage_result
-            await memory_store_episode(
-                mock_pool, "test", "butler", session_id=sid_str
-            )
+            await memory_store_episode(mock_pool, "test", "butler", session_id=sid_str)
             call_kwargs = mock_store.call_args.kwargs
             assert call_kwargs["session_id"] == sid
 
@@ -123,9 +116,7 @@ class TestMemoryStoreEpisode:
 
         with patch.object(_helpers._storage, "store_episode", new_callable=AsyncMock) as mock_store:
             mock_store.return_value = storage_result
-            await memory_store_episode(
-                mock_pool, "test", "butler", importance=8.5
-            )
+            await memory_store_episode(mock_pool, "test", "butler", importance=8.5)
             call_kwargs = mock_store.call_args.kwargs
             assert call_kwargs["importance"] == 8.5
 
@@ -166,9 +157,7 @@ class TestMemoryStoreFact:
 
         with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as mock_store:
             mock_store.return_value = storage_result
-            await memory_store_fact(
-                mock_pool, mock_embedding_engine, "user", "name", "Alice"
-            )
+            await memory_store_fact(mock_pool, mock_embedding_engine, "user", "name", "Alice")
             mock_store.assert_awaited_once_with(
                 mock_pool,
                 "user",
@@ -279,9 +268,7 @@ class TestMemoryStoreRule:
 
         with patch.object(_helpers._storage, "store_rule", new_callable=AsyncMock) as mock_store:
             mock_store.return_value = storage_result
-            await memory_store_rule(
-                mock_pool, mock_embedding_engine, "Always greet the user"
-            )
+            await memory_store_rule(mock_pool, mock_embedding_engine, "Always greet the user")
             mock_store.assert_awaited_once_with(
                 mock_pool,
                 "Always greet the user",
@@ -299,9 +286,7 @@ class TestMemoryStoreRule:
 
         with patch.object(_helpers._storage, "store_rule", new_callable=AsyncMock) as mock_store:
             mock_store.return_value = storage_result
-            result = await memory_store_rule(
-                mock_pool, mock_embedding_engine, "Be helpful"
-            )
+            result = await memory_store_rule(mock_pool, mock_embedding_engine, "Be helpful")
             assert result["id"] == str(rule_id)
 
     async def test_passes_custom_scope(
@@ -343,9 +328,7 @@ class TestMemoryStoreRule:
 
         with patch.object(_helpers._storage, "store_rule", new_callable=AsyncMock) as mock_store:
             mock_store.return_value = storage_result
-            result = await memory_store_rule(
-                mock_pool, mock_embedding_engine, "Test"
-            )
+            result = await memory_store_rule(mock_pool, mock_embedding_engine, "Test")
             assert set(result.keys()) == {"id"}
 
 
@@ -361,9 +344,7 @@ class TestGetEmbeddingEngine:
         """get_embedding_engine should return an EmbeddingEngine instance."""
         # Reset the singleton before testing
         _helpers._embedding_engine = None
-        with patch.object(
-            _helpers, "EmbeddingEngine", return_value=MagicMock()
-        ) as mock_cls:
+        with patch.object(_helpers, "EmbeddingEngine", return_value=MagicMock()) as mock_cls:
             engine = get_embedding_engine()
             mock_cls.assert_called_once()
             assert engine is mock_cls.return_value

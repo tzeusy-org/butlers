@@ -124,10 +124,20 @@ class TestRecall:
 
         assert hs_mock.await_count == 2
         hs_mock.assert_any_await(
-            pool, "topic", _DUMMY_EMBEDDING, "facts", limit=5, scope="butler-a",
+            pool,
+            "topic",
+            _DUMMY_EMBEDDING,
+            "facts",
+            limit=5,
+            scope="butler-a",
         )
         hs_mock.assert_any_await(
-            pool, "topic", _DUMMY_EMBEDDING, "rules", limit=5, scope="butler-a",
+            pool,
+            "topic",
+            _DUMMY_EMBEDDING,
+            "rules",
+            limit=5,
+            scope="butler-a",
         )
 
     async def test_tags_results_with_memory_type(self) -> None:
@@ -158,7 +168,8 @@ class TestRecall:
         fact = _make_fact(rrf_score=0.02, importance=7.0, confidence=0.9)
 
         with patch.object(
-            _mod, "hybrid_search",
+            _mod,
+            "hybrid_search",
             AsyncMock(side_effect=lambda *a, **kw: [fact] if a[3] == "facts" else []),
         ):
             results = await recall(pool, "topic", engine)
@@ -294,7 +305,10 @@ class TestRecall:
 
         # Score with all weight on relevance
         custom_weights = CompositeWeights(
-            relevance=1.0, importance=0.0, recency=0.0, confidence=0.0,
+            relevance=1.0,
+            importance=0.0,
+            recency=0.0,
+            confidence=0.0,
         )
         with patch.object(_mod, "hybrid_search", AsyncMock(side_effect=hs_side_effect)):
             results_custom = await recall(pool, "topic", engine, weights=custom_weights)
@@ -379,8 +393,10 @@ class TestRecall:
         engine = _make_engine()
 
         fact_no_conf = {
-            "id": uuid.uuid4(), "content": "no conf",
-            "rrf_score": 0.02, "importance": 5.0,
+            "id": uuid.uuid4(),
+            "content": "no conf",
+            "rrf_score": 0.02,
+            "importance": 5.0,
         }
 
         async def hs_side_effect(pool, text, emb, table, **kw):
@@ -400,8 +416,10 @@ class TestRecall:
         engine = _make_engine()
 
         fact_no_imp = {
-            "id": uuid.uuid4(), "content": "no imp",
-            "rrf_score": 0.02, "confidence": 0.8,
+            "id": uuid.uuid4(),
+            "content": "no imp",
+            "rrf_score": 0.02,
+            "confidence": 0.8,
         }
 
         async def hs_side_effect(pool, text, emb, table, **kw):

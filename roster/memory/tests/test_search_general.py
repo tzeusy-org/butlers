@@ -301,10 +301,7 @@ async def test_limit_applied_to_final_output():
 
     async def fake_hybrid(p, q, e, table, **kw):
         # Return 5 results per table (15 total for 3 types)
-        return [
-            _make_result(f"{table}-{i}", rrf_score=0.9 - i * 0.01)
-            for i in range(5)
-        ]
+        return [_make_result(f"{table}-{i}", rrf_score=0.9 - i * 0.01) for i in range(5)]
 
     with patch.object(search_mod, "hybrid_search", side_effect=fake_hybrid):
         results = await search_fn(pool, "q", engine, limit=3)

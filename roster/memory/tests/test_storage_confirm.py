@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
-import sys
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -20,8 +19,7 @@ _STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage.py"
 
 def _load_storage_module():
     # Pre-mock sentence_transformers to avoid import failure
-    st_mock = MagicMock()
-    # sys.modules.setdefault("sentence_transformers", st_mock)
+    # (mock setup removed — no longer needed after refactor)
 
     spec = importlib.util.spec_from_file_location("storage", _STORAGE_PATH)
     assert spec is not None and spec.loader is not None
@@ -111,25 +109,19 @@ class TestConfirmMemory:
         result = await confirm_memory(mock_pool, "fact", memory_id)
         assert result is False
 
-    async def test_correct_table_for_fact(
-        self, mock_pool: AsyncMock, memory_id: uuid.UUID
-    ) -> None:
+    async def test_correct_table_for_fact(self, mock_pool: AsyncMock, memory_id: uuid.UUID) -> None:
         """Fact confirmation targets the 'facts' table."""
         await confirm_memory(mock_pool, "fact", memory_id)
         sql = mock_pool.execute.call_args[0][0]
         assert "UPDATE facts" in sql
 
-    async def test_correct_table_for_rule(
-        self, mock_pool: AsyncMock, memory_id: uuid.UUID
-    ) -> None:
+    async def test_correct_table_for_rule(self, mock_pool: AsyncMock, memory_id: uuid.UUID) -> None:
         """Rule confirmation targets the 'rules' table."""
         await confirm_memory(mock_pool, "rule", memory_id)
         sql = mock_pool.execute.call_args[0][0]
         assert "UPDATE rules" in sql
 
-    async def test_uuid_passed_correctly(
-        self, mock_pool: AsyncMock, memory_id: uuid.UUID
-    ) -> None:
+    async def test_uuid_passed_correctly(self, mock_pool: AsyncMock, memory_id: uuid.UUID) -> None:
         """The memory_id UUID is passed as the $1 parameter."""
         await confirm_memory(mock_pool, "fact", memory_id)
         passed_id = mock_pool.execute.call_args[0][1]

@@ -99,9 +99,7 @@ class TestListCollections:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(
-                "/api/general/collections", params={"offset": 10, "limit": 25}
-            )
+            resp = await client.get("/api/general/collections", params={"offset": 10, "limit": 25})
 
         assert resp.status_code == 200
 
@@ -195,9 +193,7 @@ class TestListEntities:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(
-                "/api/general/entities", params={"collection": "bookmarks"}
-            )
+            resp = await client.get("/api/general/entities", params={"collection": "bookmarks"})
 
         assert resp.status_code == 200
 

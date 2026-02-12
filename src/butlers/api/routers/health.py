@@ -432,8 +432,7 @@ async def list_research(
 
     if q is not None:
         conditions.append(
-            f"(title ILIKE '%' || ${idx} || '%'"
-            f" OR content ILIKE '%' || ${idx} || '%')"
+            f"(title ILIKE '%' || ${idx} || '%' OR content ILIKE '%' || ${idx} || '%')"
         )
         args.append(q)
         idx += 1

@@ -102,9 +102,7 @@ async def run_episode_cleanup(
         - ``remaining``: total episodes still in the table.
     """
     # Step 1: delete expired episodes
-    expired_result = await pool.execute(
-        "DELETE FROM episodes WHERE expires_at < now()"
-    )
+    expired_result = await pool.execute("DELETE FROM episodes WHERE expires_at < now()")
     # asyncpg returns e.g. "DELETE 42"
     expired_deleted = int(expired_result.split()[-1])
 

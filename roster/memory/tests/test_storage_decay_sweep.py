@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
-import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -21,8 +20,7 @@ _STORAGE_PATH = __import__("pathlib").Path(__file__).resolve().parent.parent / "
 
 
 def _load_storage_module():
-    st_mock = MagicMock()
-    # sys.modules.setdefault("sentence_transformers", st_mock)
+    # (sentence_transformers mock removed — no longer needed after refactor)
     spec = importlib.util.spec_from_file_location("storage", _STORAGE_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -323,17 +321,11 @@ class TestDecaySweepStats:
     async def test_mixed_facts_and_rules_stats(self) -> None:
         """Run with a mix of healthy, fading, and expired facts and rules."""
         healthy_fact = _fact_row(confidence=1.0, decay_rate=0.008, days_ago=1.0)
-        fading_fact = _fact_row(
-            confidence=1.0, decay_rate=0.008, days_ago=-math.log(0.15) / 0.008
-        )
-        expired_fact = _fact_row(
-            confidence=1.0, decay_rate=0.008, days_ago=-math.log(0.01) / 0.008
-        )
+        fading_fact = _fact_row(confidence=1.0, decay_rate=0.008, days_ago=-math.log(0.15) / 0.008)
+        expired_fact = _fact_row(confidence=1.0, decay_rate=0.008, days_ago=-math.log(0.01) / 0.008)
 
         healthy_rule = _rule_row(confidence=0.8, decay_rate=0.01, days_ago=1.0)
-        expired_rule = _rule_row(
-            confidence=0.5, decay_rate=0.01, days_ago=-math.log(0.08) / 0.01
-        )
+        expired_rule = _rule_row(confidence=0.5, decay_rate=0.01, days_ago=-math.log(0.08) / 0.01)
 
         conn = AsyncMock()
         conn.fetch = AsyncMock(

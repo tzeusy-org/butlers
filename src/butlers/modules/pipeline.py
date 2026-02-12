@@ -199,7 +199,7 @@ class MessagePipeline:
                     source_channel=source,
                     source_id=source_id,
                 )
-                
+
                 aggregated = aggregate_responses(sub_results, dispatch_fn=self._dispatch_fn)
                 if hasattr(aggregated, "__await__"):
                     aggregated = await aggregated

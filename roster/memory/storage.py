@@ -72,9 +72,8 @@ def validate_permanence(permanence: str) -> float:
         return _PERMANENCE_DECAY[permanence]
     except KeyError:
         valid = sorted(_PERMANENCE_DECAY)
-        raise ValueError(
-            f"Invalid permanence: {permanence!r}. Must be one of {valid}"
-        ) from None
+        raise ValueError(f"Invalid permanence: {permanence!r}. Must be one of {valid}") from None
+
 
 # ---------------------------------------------------------------------------
 # Constants for memory types and link relations
@@ -642,9 +641,7 @@ async def mark_helpful(
 
             # Persist effectiveness score and (possibly promoted) maturity
             await conn.execute(
-                "UPDATE rules "
-                "SET effectiveness_score = $1, maturity = $2 "
-                "WHERE id = $3",
+                "UPDATE rules SET effectiveness_score = $1, maturity = $2 WHERE id = $3",
                 effectiveness,
                 new_maturity,
                 rule_id,

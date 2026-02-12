@@ -11,7 +11,6 @@ Verifies that:
 from __future__ import annotations
 
 import importlib.util
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -79,9 +78,10 @@ class TestSemanticSearchScopeFiltering:
         """scope=None on facts produces no scope or butler condition."""
         await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "facts", scope=None)
         sql = mock_pool.fetch.call_args[0][0]
-        assert "scope" not in sql.lower().split("from")[1].split("order")[0].replace(
-            "similarity", ""
-        ) or "scope IN" not in sql
+        assert (
+            "scope" not in sql.lower().split("from")[1].split("order")[0].replace("similarity", "")
+            or "scope IN" not in sql
+        )
         # More precise: no scope IN and no butler = in WHERE
         assert "scope IN" not in sql
         assert "butler =" not in sql
@@ -102,9 +102,7 @@ class TestSemanticSearchScopeFiltering:
 
     async def test_scope_facts_uses_in_global(self, mock_pool: AsyncMock) -> None:
         """scope='butler-x' on facts generates scope IN ('global', $N)."""
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "facts", scope="butler-x"
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "facts", scope="butler-x")
         sql = mock_pool.fetch.call_args[0][0]
         assert "scope IN ('global', $2)" in sql
         args = mock_pool.fetch.call_args[0]
@@ -112,9 +110,7 @@ class TestSemanticSearchScopeFiltering:
 
     async def test_scope_rules_uses_in_global(self, mock_pool: AsyncMock) -> None:
         """scope='butler-x' on rules generates scope IN ('global', $N)."""
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "rules", scope="butler-x"
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "rules", scope="butler-x")
         sql = mock_pool.fetch.call_args[0][0]
         assert "scope IN ('global', $2)" in sql
         args = mock_pool.fetch.call_args[0]
@@ -122,9 +118,7 @@ class TestSemanticSearchScopeFiltering:
 
     async def test_scope_episodes_uses_butler_column(self, mock_pool: AsyncMock) -> None:
         """scope='butler-x' on episodes generates butler = $N."""
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "episodes", scope="butler-x"
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "episodes", scope="butler-x")
         sql = mock_pool.fetch.call_args[0][0]
         assert "butler = $2" in sql
         assert "scope" not in sql
@@ -133,9 +127,7 @@ class TestSemanticSearchScopeFiltering:
 
     async def test_scope_episodes_param_index(self, mock_pool: AsyncMock) -> None:
         """Episodes with scope: $1=embedding, $2=butler, $3=limit."""
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "episodes", scope="butler-x", limit=5
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "episodes", scope="butler-x", limit=5)
         args = mock_pool.fetch.call_args[0]
         sql = args[0]
         assert "$1" in sql
@@ -147,9 +139,7 @@ class TestSemanticSearchScopeFiltering:
 
     async def test_scope_facts_param_index(self, mock_pool: AsyncMock) -> None:
         """Facts with scope: $1=embedding, $2=scope, $3=limit."""
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "facts", scope="butler-x", limit=7
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "facts", scope="butler-x", limit=7)
         args = mock_pool.fetch.call_args[0]
         sql = args[0]
         assert "scope IN ('global', $2)" in sql
@@ -215,9 +205,7 @@ class TestKeywordSearchScopeFiltering:
 
     async def test_scope_episodes_param_index(self, mock_pool: AsyncMock) -> None:
         """Episodes with scope: $1=query, $2=butler, $3=limit."""
-        await keyword_search(
-            mock_pool, "test", "episodes", scope="butler-x", limit=5
-        )
+        await keyword_search(mock_pool, "test", "episodes", scope="butler-x", limit=5)
         args = mock_pool.fetch.call_args[0]
         sql = args[0]
         assert "butler = $2" in sql
@@ -255,13 +243,9 @@ class TestHybridSearchScopeFiltering:
             patch.object(
                 _mod, "semantic_search", new_callable=AsyncMock, return_value=[]
             ) as mock_sem,
-            patch.object(
-                _mod, "keyword_search", new_callable=AsyncMock, return_value=[]
-            ),
+            patch.object(_mod, "keyword_search", new_callable=AsyncMock, return_value=[]),
         ):
-            await hybrid_search(
-                mock_pool, "test", _SAMPLE_EMBEDDING, "facts", scope="butler-x"
-            )
+            await hybrid_search(mock_pool, "test", _SAMPLE_EMBEDDING, "facts", scope="butler-x")
             _, kwargs = mock_sem.call_args
             assert kwargs["scope"] == "butler-x"
 
@@ -270,16 +254,12 @@ class TestHybridSearchScopeFiltering:
         mock_pool.fetch.return_value = []
 
         with (
-            patch.object(
-                _mod, "semantic_search", new_callable=AsyncMock, return_value=[]
-            ),
+            patch.object(_mod, "semantic_search", new_callable=AsyncMock, return_value=[]),
             patch.object(
                 _mod, "keyword_search", new_callable=AsyncMock, return_value=[]
             ) as mock_kw,
         ):
-            await hybrid_search(
-                mock_pool, "test", _SAMPLE_EMBEDDING, "facts", scope="butler-x"
-            )
+            await hybrid_search(mock_pool, "test", _SAMPLE_EMBEDDING, "facts", scope="butler-x")
             _, kwargs = mock_kw.call_args
             assert kwargs["scope"] == "butler-x"
 
@@ -295,9 +275,7 @@ class TestHybridSearchScopeFiltering:
                 _mod, "keyword_search", new_callable=AsyncMock, return_value=[]
             ) as mock_kw,
         ):
-            await hybrid_search(
-                mock_pool, "test", _SAMPLE_EMBEDDING, "facts"
-            )
+            await hybrid_search(mock_pool, "test", _SAMPLE_EMBEDDING, "facts")
             _, sem_kwargs = mock_sem.call_args
             _, kw_kwargs = mock_kw.call_args
             assert sem_kwargs["scope"] is None

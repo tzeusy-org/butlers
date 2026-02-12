@@ -112,7 +112,9 @@ class ApprovalsModule(Module):
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         """Register all 13 approval MCP tools (7 queue + 6 rules CRUD)."""
-        self._config = config if isinstance(config, ApprovalsConfig) else ApprovalsConfig(**(config or {}))
+        self._config = (
+            config if isinstance(config, ApprovalsConfig) else ApprovalsConfig(**(config or {}))
+        )
         self._db = db
         module = self  # capture for closures
 
@@ -220,7 +222,9 @@ class ApprovalsModule(Module):
 
     async def on_startup(self, config: Any, db: Any) -> None:
         """Initialize config and store db reference."""
-        self._config = config if isinstance(config, ApprovalsConfig) else ApprovalsConfig(**(config or {}))
+        self._config = (
+            config if isinstance(config, ApprovalsConfig) else ApprovalsConfig(**(config or {}))
+        )
         self._db = db
 
     async def on_shutdown(self) -> None:

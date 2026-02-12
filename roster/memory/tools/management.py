@@ -73,8 +73,7 @@ async def memory_stats(
     )
     facts_fading = await pool.fetchval(
         "SELECT COUNT(*) FROM facts WHERE validity = 'active'"
-        " AND metadata->>'status' = 'fading'"
-        + scope_filter_facts,
+        " AND metadata->>'status' = 'fading'" + scope_filter_facts,
         *scope_params,
     )
     facts_superseded = await pool.fetchval(
@@ -93,20 +92,17 @@ async def memory_stats(
 
     rules_candidate = await pool.fetchval(
         "SELECT COUNT(*) FROM rules WHERE maturity = 'candidate'"
-        " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
-        + scope_filter_rules,
+        " AND (metadata->>'forgotten')::boolean IS NOT TRUE" + scope_filter_rules,
         *scope_params,
     )
     rules_established = await pool.fetchval(
         "SELECT COUNT(*) FROM rules WHERE maturity = 'established'"
-        " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
-        + scope_filter_rules,
+        " AND (metadata->>'forgotten')::boolean IS NOT TRUE" + scope_filter_rules,
         *scope_params,
     )
     rules_proven = await pool.fetchval(
         "SELECT COUNT(*) FROM rules WHERE maturity = 'proven'"
-        " AND (metadata->>'forgotten')::boolean IS NOT TRUE"
-        + scope_filter_rules,
+        " AND (metadata->>'forgotten')::boolean IS NOT TRUE" + scope_filter_rules,
         *scope_params,
     )
     rules_anti_pattern = await pool.fetchval(

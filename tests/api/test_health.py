@@ -86,9 +86,7 @@ class TestListMeasurements:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(
-                "/api/health/measurements", params={"type": "blood_pressure"}
-            )
+            resp = await client.get("/api/health/measurements", params={"type": "blood_pressure"})
 
         assert resp.status_code == 200
 
@@ -133,9 +131,7 @@ class TestListMeasurements:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(
-                "/api/health/measurements", params={"offset": 10, "limit": 25}
-            )
+            resp = await client.get("/api/health/measurements", params={"offset": 10, "limit": 25})
 
         assert resp.status_code == 200
 

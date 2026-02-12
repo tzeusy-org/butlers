@@ -566,11 +566,7 @@ class ButlerDaemon:
                 "prompt": prompt,
                 "enabled": enabled,
             }
-            fields = {
-                k: v
-                for k, v in update_fields.items()
-                if v is not None
-            }
+            fields = {k: v for k, v in update_fields.items() if v is not None}
             await _schedule_update(pool, uuid.UUID(task_id), **fields)
             return {"id": task_id, "status": "updated"}
 

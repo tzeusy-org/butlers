@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import sys
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -109,9 +108,7 @@ class TestNewFacts:
         ):
             mock_sf.return_value = fact_id
 
-            result = await execute_consolidation(
-                pool, engine, parsed, episode_ids, "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
         assert result["facts_created"] == 1
         assert result["errors"] == []
@@ -133,9 +130,7 @@ class TestNewFacts:
         # Verify derived_from links created for each episode
         assert mock_cl.await_count == 2
         for i, episode_id in enumerate(episode_ids):
-            mock_cl.assert_any_await(
-                pool, "fact", fact_id, "episode", episode_id, "derived_from"
-            )
+            mock_cl.assert_any_await(pool, "fact", fact_id, "episode", episode_id, "derived_from")
 
     async def test_multiple_new_facts(self) -> None:
         """Multiple new facts are all stored and linked."""
@@ -158,9 +153,7 @@ class TestNewFacts:
         ):
             mock_sf.return_value = uuid.uuid4()
 
-            result = await execute_consolidation(
-                pool, engine, parsed, episode_ids, "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
         assert result["facts_created"] == 3
         assert mock_sf.await_count == 3
@@ -203,9 +196,7 @@ class TestUpdatedFacts:
         ):
             mock_sf.return_value = new_id
 
-            result = await execute_consolidation(
-                pool, engine, parsed, episode_ids, "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
         assert result["facts_updated"] == 1
         assert result["errors"] == []
@@ -258,9 +249,7 @@ class TestNewRules:
         ):
             mock_sr.return_value = rule_id
 
-            result = await execute_consolidation(
-                pool, engine, parsed, episode_ids, "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
         assert result["rules_created"] == 1
         assert result["errors"] == []
@@ -277,9 +266,7 @@ class TestNewRules:
         # derived_from links for each episode
         assert mock_cl.await_count == 2
         for episode_id in episode_ids:
-            mock_cl.assert_any_await(
-                pool, "rule", rule_id, "episode", episode_id, "derived_from"
-            )
+            mock_cl.assert_any_await(pool, "rule", rule_id, "episode", episode_id, "derived_from")
 
 
 # ---------------------------------------------------------------------------
@@ -310,9 +297,7 @@ class TestConfirmations:
         ):
             mock_cm.return_value = True
 
-            result = await execute_consolidation(
-                pool, engine, parsed, episode_ids, "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
         assert result["confirmations_made"] == 2
         assert result["errors"] == []
@@ -343,9 +328,7 @@ class TestEpisodeConsolidation:
             patch.object(_exec_mod, "store_rule", new_callable=AsyncMock),
             patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock),
         ):
-            result = await execute_consolidation(
-                pool, engine, parsed, episode_ids, "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
         assert result["episodes_consolidated"] == 3
 
@@ -395,9 +378,7 @@ class TestPartialFailureResilience:
         ):
             mock_sr.return_value = rule_id
 
-            result = await execute_consolidation(
-                pool, engine, parsed, episode_ids, "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
         assert result["facts_created"] == 0
         assert result["rules_created"] == 1
@@ -439,9 +420,7 @@ class TestPartialFailureResilience:
                 side_effect=confirm_side_effect,
             ),
         ):
-            result = await execute_consolidation(
-                pool, engine, parsed, episode_ids, "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
         assert result["confirmations_made"] == 1
         assert len(result["errors"]) == 1
@@ -462,9 +441,7 @@ class TestPartialFailureResilience:
             patch.object(_exec_mod, "store_rule", new_callable=AsyncMock),
             patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock),
         ):
-            result = await execute_consolidation(
-                pool, engine, parsed, episode_ids, "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
         assert result["episodes_consolidated"] == 0
         assert len(result["errors"]) == 1
@@ -493,9 +470,7 @@ class TestEmptyResult:
             patch.object(_exec_mod, "store_rule", new_callable=AsyncMock) as mock_sr,
             patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock) as mock_cm,
         ):
-            result = await execute_consolidation(
-                pool, engine, parsed, episode_ids, "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
         assert result["facts_created"] == 0
         assert result["facts_updated"] == 0
@@ -522,9 +497,7 @@ class TestEmptyResult:
             patch.object(_exec_mod, "store_rule", new_callable=AsyncMock),
             patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock),
         ):
-            result = await execute_consolidation(
-                pool, engine, parsed, [], "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, [], "test-butler")
 
         assert result["episodes_consolidated"] == 0
         pool.execute.assert_not_awaited()
@@ -558,9 +531,7 @@ class TestScopeDefault:
             mock_sf.return_value = uuid.uuid4()
             mock_sr.return_value = uuid.uuid4()
 
-            await execute_consolidation(
-                pool, engine, parsed, episode_ids, "my-butler"
-            )
+            await execute_consolidation(pool, engine, parsed, episode_ids, "my-butler")
 
         # scope should be "my-butler" (the butler_name)
         sf_kwargs = mock_sf.call_args

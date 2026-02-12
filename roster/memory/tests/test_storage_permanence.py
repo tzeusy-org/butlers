@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -139,9 +138,7 @@ class TestStoreFactPermanenceValidation:
     async def test_store_fact_rejects_invalid_permanence(self, mock_pool, embedding_engine):
         pool, _conn = mock_pool
         with pytest.raises(ValueError, match="Invalid permanence"):
-            await store_fact(
-                pool, "user", "data", "value", embedding_engine, permanence="invented"
-            )
+            await store_fact(pool, "user", "data", "value", embedding_engine, permanence="invented")
 
     async def test_store_fact_accepts_valid_permanence(self, mock_pool, embedding_engine):
         pool, _conn = mock_pool

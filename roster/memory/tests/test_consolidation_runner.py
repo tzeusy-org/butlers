@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock

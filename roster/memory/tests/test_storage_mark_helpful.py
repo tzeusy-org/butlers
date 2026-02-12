@@ -18,7 +18,6 @@ _STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage.py"
 
 
 def _load_storage_module():
-    import sys
 
     mock_st = MagicMock()
     mock_st.SentenceTransformer.return_value = MagicMock()

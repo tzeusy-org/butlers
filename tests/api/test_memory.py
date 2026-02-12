@@ -562,16 +562,23 @@ class TestMemoryActivity:
     async def test_returns_activity_list(self):
         """Response should wrap a list of MemoryActivity in ApiResponse."""
         ep_row = {
-            "id": "ep-1", "butler": "atlas",
-            "content": "Test episode", "created_at": "2025-06-02T12:00:00",
+            "id": "ep-1",
+            "butler": "atlas",
+            "content": "Test episode",
+            "created_at": "2025-06-02T12:00:00",
         }
         fact_row = {
-            "id": "f-1", "subject": "user", "predicate": "likes",
-            "source_butler": "atlas", "created_at": "2025-06-02T11:00:00",
+            "id": "f-1",
+            "subject": "user",
+            "predicate": "likes",
+            "source_butler": "atlas",
+            "created_at": "2025-06-02T11:00:00",
         }
         rule_row = {
-            "id": "r-1", "content": "Be polite",
-            "source_butler": "atlas", "created_at": "2025-06-02T10:00:00",
+            "id": "r-1",
+            "content": "Be polite",
+            "source_butler": "atlas",
+            "created_at": "2025-06-02T10:00:00",
         }
 
         app = _app_with_mock_db(
@@ -595,8 +602,10 @@ class TestMemoryActivity:
     async def test_activity_item_fields(self):
         """Each activity item should have id, type, summary, butler, created_at."""
         ep_row = {
-            "id": "ep-1", "butler": "atlas",
-            "content": "Hello world", "created_at": "2025-06-01T12:00:00",
+            "id": "ep-1",
+            "butler": "atlas",
+            "content": "Hello world",
+            "created_at": "2025-06-01T12:00:00",
         }
         app = _app_with_mock_db(
             fetch_side_effect=[[ep_row], [], []],

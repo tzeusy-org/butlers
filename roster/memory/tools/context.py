@@ -37,9 +37,7 @@ async def memory_context(
     Returns:
         Formatted memory context string with Key Facts and Active Rules sections.
     """
-    results = await _search.recall(
-        pool, trigger_prompt, embedding_engine, scope=butler, limit=20
-    )
+    results = await _search.recall(pool, trigger_prompt, embedding_engine, scope=butler, limit=20)
 
     # Separate facts and rules, already sorted by composite_score descending
     facts = [r for r in results if r.get("memory_type") == "fact"]

@@ -8,7 +8,6 @@ permanence->decay mapping, and reference bumping.
 from __future__ import annotations
 
 import importlib.util
-import sys
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock

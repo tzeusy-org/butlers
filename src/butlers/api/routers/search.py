@@ -121,9 +121,7 @@ async def search(
                         "prompt": row["prompt"],
                         "trigger_source": row["trigger_source"],
                         "success": row["success"],
-                        "started_at": row["started_at"].isoformat()
-                        if row["started_at"]
-                        else None,
+                        "started_at": row["started_at"].isoformat() if row["started_at"] else None,
                         "duration_ms": row["duration_ms"],
                     },
                 )
@@ -158,9 +156,7 @@ async def search(
                     data={
                         "key": row["key"],
                         "value": row["value_text"],
-                        "updated_at": row["updated_at"].isoformat()
-                        if row["updated_at"]
-                        else None,
+                        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
                     },
                 )
             )

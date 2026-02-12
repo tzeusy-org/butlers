@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,21 +11,19 @@ import pytest
 # ---------------------------------------------------------------------------
 # Load tools module (mocking sentence_transformers first)
 # ---------------------------------------------------------------------------
-
 # ---------------------------------------------------------------------------
 # Load tools module
 # ---------------------------------------------------------------------------
-
 from butlers.tools.memory import (
-    memory_search,
-    memory_recall,
-    memory_get,
-    memory_confirm,
-    memory_mark_helpful,
-    memory_mark_harmful,
+    _helpers,
     _serialize_row,
+    memory_confirm,
+    memory_get,
+    memory_mark_harmful,
+    memory_mark_helpful,
+    memory_recall,
+    memory_search,
 )
-from butlers.tools.memory import _helpers
 
 pytestmark = pytest.mark.unit
 

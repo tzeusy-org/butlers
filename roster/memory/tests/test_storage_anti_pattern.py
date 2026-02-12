@@ -19,7 +19,6 @@ _STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage.py"
 
 
 def _load_storage_module():
-    import sys
 
     mock_st = MagicMock()
     mock_st.SentenceTransformer.return_value = MagicMock()
@@ -206,9 +205,7 @@ class TestInvertContentRewrite:
         assert "always deploy on Fridays" in result["content"]
 
     async def test_includes_harmful_reasons_in_content(self) -> None:
-        row = _make_row(
-            metadata={"harmful_reasons": ["broke prod", "caused outage", "data loss"]}
-        )
+        row = _make_row(metadata={"harmful_reasons": ["broke prod", "caused outage", "data loss"]})
         pool, conn = _make_pool_and_conn(fetchrow_return=row)
         engine = _make_embedding_engine()
 

@@ -79,12 +79,8 @@ async def get_memory_stats(
 
     # Fact counts
     total_facts = await pool.fetchval("SELECT count(*) FROM facts") or 0
-    active_facts = (
-        await pool.fetchval("SELECT count(*) FROM facts WHERE validity = 'active'") or 0
-    )
-    fading_facts = (
-        await pool.fetchval("SELECT count(*) FROM facts WHERE validity = 'fading'") or 0
-    )
+    active_facts = await pool.fetchval("SELECT count(*) FROM facts WHERE validity = 'active'") or 0
+    fading_facts = await pool.fetchval("SELECT count(*) FROM facts WHERE validity = 'fading'") or 0
 
     # Rule counts
     total_rules = await pool.fetchval("SELECT count(*) FROM rules") or 0
@@ -94,9 +90,7 @@ async def get_memory_stats(
     established_rules = (
         await pool.fetchval("SELECT count(*) FROM rules WHERE maturity = 'established'") or 0
     )
-    proven_rules = (
-        await pool.fetchval("SELECT count(*) FROM rules WHERE maturity = 'proven'") or 0
-    )
+    proven_rules = await pool.fetchval("SELECT count(*) FROM rules WHERE maturity = 'proven'") or 0
     anti_pattern_rules = (
         await pool.fetchval("SELECT count(*) FROM rules WHERE maturity = 'anti_pattern'") or 0
     )
@@ -402,8 +396,7 @@ async def list_activity(
 
     # Fetch recent items from each table
     episode_rows = await pool.fetch(
-        "SELECT id, butler, content, created_at"
-        " FROM episodes ORDER BY created_at DESC LIMIT $1",
+        "SELECT id, butler, content, created_at FROM episodes ORDER BY created_at DESC LIMIT $1",
         limit,
     )
 

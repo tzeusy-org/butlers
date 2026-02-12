@@ -76,9 +76,7 @@ def cli() -> None:
 def up(only: tuple[str, ...], butlers_dir: Path) -> None:
     """Start all butler daemons (or filtered by --only)."""
     # Flatten: support both --only a --only b and --only a,b
-    only = tuple(
-        name.strip() for entry in only for name in entry.split(",") if name.strip()
-    )
+    only = tuple(name.strip() for entry in only for name in entry.split(",") if name.strip())
 
     configs = _discover_configs(butlers_dir)
     if not configs:

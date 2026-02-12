@@ -312,10 +312,7 @@ class TestSearchResultGrouping:
 
     async def test_limit_parameter_respected(self):
         """The limit parameter should cap the number of results per category."""
-        rows = [
-            _make_session_search_row(prompt=f"match {i}")
-            for i in range(10)
-        ]
+        rows = [_make_session_search_row(prompt=f"match {i}") for i in range(10)]
 
         app = _app_with_mock_db(
             fan_out_results=[

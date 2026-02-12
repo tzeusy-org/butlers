@@ -104,9 +104,7 @@ async def execute_consolidation(
                 source_butler=butler_name,
             )
             for episode_id in source_episode_ids:
-                await create_link(
-                    pool, "fact", new_fact_id, "episode", episode_id, "derived_from"
-                )
+                await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
             facts_created += 1
         except Exception as exc:
             msg = f"Failed to store new fact ({fact.subject}/{fact.predicate}): {exc}"
@@ -127,9 +125,7 @@ async def execute_consolidation(
                 source_butler=butler_name,
             )
             for episode_id in source_episode_ids:
-                await create_link(
-                    pool, "fact", new_fact_id, "episode", episode_id, "derived_from"
-                )
+                await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
             facts_updated += 1
         except Exception as exc:
             msg = f"Failed to update fact ({fact.target_id}): {exc}"
@@ -148,9 +144,7 @@ async def execute_consolidation(
                 source_butler=butler_name,
             )
             for episode_id in source_episode_ids:
-                await create_link(
-                    pool, "rule", new_rule_id, "episode", episode_id, "derived_from"
-                )
+                await create_link(pool, "rule", new_rule_id, "episode", episode_id, "derived_from")
             rules_created += 1
         except Exception as exc:
             msg = f"Failed to store new rule: {exc}"

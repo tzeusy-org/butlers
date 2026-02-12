@@ -249,12 +249,8 @@ class TestEventMerging:
 
     async def test_cross_butler_sessions_merged(self):
         """Sessions from multiple butlers should all appear."""
-        atlas_row = _make_session_row(
-            prompt="atlas task", started_at=_NOW - timedelta(minutes=1)
-        )
-        sw_row = _make_session_row(
-            prompt="switchboard task", started_at=_NOW
-        )
+        atlas_row = _make_session_row(prompt="atlas task", started_at=_NOW - timedelta(minutes=1))
+        sw_row = _make_session_row(prompt="switchboard task", started_at=_NOW)
 
         app = _app_with_mock_db(
             fan_out_results=[{"atlas": [atlas_row], "switchboard": [sw_row]}],
@@ -303,10 +299,7 @@ class TestTimelinePagination:
 
     async def test_no_cursor_when_all_returned(self):
         """When all events fit in the limit, next_cursor should be null."""
-        rows = [
-            _make_session_row(session_id=uuid4(), prompt=f"task {i}")
-            for i in range(2)
-        ]
+        rows = [_make_session_row(session_id=uuid4(), prompt=f"task {i}") for i in range(2)]
 
         app = _app_with_mock_db(fan_out_results=[{"atlas": rows}])
 
@@ -471,9 +464,7 @@ class TestEventEnvelope:
 
     async def test_session_event_data_fields(self):
         """Session events should include trigger_source, success, duration_ms in data."""
-        row = _make_session_row(
-            trigger_source="schedule", success=True, duration_ms=1234
-        )
+        row = _make_session_row(trigger_source="schedule", success=True, duration_ms=1234)
         app = _app_with_mock_db(fan_out_results=[{"atlas": [row]}])
 
         async with httpx.AsyncClient(

@@ -20,7 +20,6 @@ _SEARCH_PATH = Path(__file__).resolve().parent.parent / "search.py"
 
 def _load_search_module():
     """Load search.py from disk."""
-    import sys
 
     # Ensure sentence_transformers is mocked so any transitive import of
     # embedding.py does not fail.
@@ -95,9 +94,7 @@ class TestSemanticSearchBasic:
         row2 = _make_row(similarity=0.80, content="somewhat relevant")
         mock_pool.fetch.return_value = [row1, row2]
 
-        results = await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "episodes"
-        )
+        results = await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "episodes")
 
         assert len(results) == 2
         assert results[0]["similarity"] == 0.95
@@ -107,9 +104,7 @@ class TestSemanticSearchBasic:
         """When no rows match, an empty list is returned."""
         mock_pool.fetch.return_value = []
 
-        results = await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "facts"
-        )
+        results = await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "facts")
 
         assert results == []
 
@@ -123,9 +118,7 @@ class TestSemanticSearchBasic:
         )
         mock_pool.fetch.return_value = [row]
 
-        results = await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "facts"
-        )
+        results = await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "facts")
 
         assert "similarity" in results[0]
         assert "content" in results[0]
@@ -164,9 +157,7 @@ class TestSemanticSearchScope:
         """When scope is given for facts, the SQL includes global+scope condition."""
         mock_pool.fetch.return_value = []
 
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "facts", scope="butler-a"
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "facts", scope="butler-a")
 
         sql = mock_pool.fetch.call_args[0][0]
         assert "scope IN ('global', $2)" in sql
@@ -178,9 +169,7 @@ class TestSemanticSearchScope:
         """When scope is given for rules, the SQL includes global+scope condition."""
         mock_pool.fetch.return_value = []
 
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "rules", scope="butler-b"
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "rules", scope="butler-b")
 
         sql = mock_pool.fetch.call_args[0][0]
         assert "scope IN ('global', $2)" in sql
@@ -191,9 +180,7 @@ class TestSemanticSearchScope:
         """Episodes use butler column for scope filtering, not scope column."""
         mock_pool.fetch.return_value = []
 
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "episodes", scope="butler-c"
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "episodes", scope="butler-c")
 
         sql = mock_pool.fetch.call_args[0][0]
         assert "butler = $2" in sql
@@ -203,9 +190,7 @@ class TestSemanticSearchScope:
         """When scope is None, no scope condition appears in the SQL."""
         mock_pool.fetch.return_value = []
 
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "facts", scope=None
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "facts", scope=None)
 
         sql = mock_pool.fetch.call_args[0][0]
         assert "scope =" not in sql
@@ -271,9 +256,7 @@ class TestSemanticSearchLimit:
         """A custom limit is passed as a query parameter."""
         mock_pool.fetch.return_value = []
 
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "episodes", limit=5
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "episodes", limit=5)
 
         args = mock_pool.fetch.call_args[0]
         assert args[-1] == 5
@@ -291,9 +274,7 @@ class TestSemanticSearchEmbedding:
         """The embedding is converted to its string representation for pgvector."""
         mock_pool.fetch.return_value = []
 
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "episodes"
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "episodes")
 
         args = mock_pool.fetch.call_args[0]
         # $1 parameter (second positional arg, first after sql) is the embedding string.
@@ -310,7 +291,8 @@ class TestSemanticSearchEmbedding:
         assert "<=>" in sql
 
     async def test_similarity_computed_as_one_minus_distance(
-        self, mock_pool: AsyncMock,
+        self,
+        mock_pool: AsyncMock,
     ) -> None:
         """The SQL computes similarity as 1 - cosine_distance."""
         mock_pool.fetch.return_value = []
@@ -330,7 +312,8 @@ class TestSemanticSearchSQL:
     """Verify generated SQL structure."""
 
     async def test_orders_by_cosine_distance_ascending(
-        self, mock_pool: AsyncMock,
+        self,
+        mock_pool: AsyncMock,
     ) -> None:
         """Results are ordered by cosine distance ascending (closest first)."""
         mock_pool.fetch.return_value = []
@@ -352,9 +335,7 @@ class TestSemanticSearchSQL:
         """When scope is provided, parameter indices are correct."""
         mock_pool.fetch.return_value = []
 
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "facts", scope="global", limit=20
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "facts", scope="global", limit=20)
 
         args = mock_pool.fetch.call_args[0]
         sql = args[0]
@@ -370,9 +351,7 @@ class TestSemanticSearchSQL:
         """When no scope, parameter indices skip the scope param."""
         mock_pool.fetch.return_value = []
 
-        await semantic_search(
-            mock_pool, _SAMPLE_EMBEDDING, "episodes", limit=3
-        )
+        await semantic_search(mock_pool, _SAMPLE_EMBEDDING, "episodes", limit=3)
 
         args = mock_pool.fetch.call_args[0]
         sql = args[0]

@@ -20,7 +20,6 @@ _STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage.py"
 
 def _load_storage_module():
     """Load storage.py with sentence_transformers mocked out."""
-    import sys
 
     # Provide a mock for sentence_transformers so embedding.py loads without
     # the real ML library installed.
@@ -179,9 +178,7 @@ class TestPermanenceDecayMapping:
     async def test_unknown_permanence_raises_value_error(self, mock_pool, embedding_engine):
         pool, conn = mock_pool
         with pytest.raises(ValueError, match="Invalid permanence"):
-            await store_fact(
-                pool, "user", "data", "value", embedding_engine, permanence="invented"
-            )
+            await store_fact(pool, "user", "data", "value", embedding_engine, permanence="invented")
 
 
 class TestSupersession:

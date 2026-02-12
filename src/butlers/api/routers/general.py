@@ -197,8 +197,7 @@ async def list_entities(
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
     count_sql = (
-        f"SELECT count(*) FROM entities e"
-        f" JOIN collections c ON c.id = e.collection_id{where}"
+        f"SELECT count(*) FROM entities e JOIN collections c ON c.id = e.collection_id{where}"
     )
     total = await pool.fetchval(count_sql, *args) or 0
 

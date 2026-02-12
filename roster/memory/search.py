@@ -79,9 +79,7 @@ async def semantic_search(
         ValueError: If *table* is not one of the valid table names.
     """
     if table not in _VALID_TABLES:
-        raise ValueError(
-            f"Invalid table: {table!r}. Must be one of {sorted(_VALID_TABLES)}"
-        )
+        raise ValueError(f"Invalid table: {table!r}. Must be one of {sorted(_VALID_TABLES)}")
 
     embedding_str = str(query_embedding)
 
@@ -461,10 +459,20 @@ async def recall(
 
     # Search both facts and rules
     facts_results = await hybrid_search(
-        pool, topic, query_embedding, "facts", limit=limit, scope=scope,
+        pool,
+        topic,
+        query_embedding,
+        "facts",
+        limit=limit,
+        scope=scope,
     )
     rules_results = await hybrid_search(
-        pool, topic, query_embedding, "rules", limit=limit, scope=scope,
+        pool,
+        topic,
+        query_embedding,
+        "rules",
+        limit=limit,
+        scope=scope,
     )
 
     # Tag each result with its memory type
@@ -555,9 +563,7 @@ async def search(
         ValueError: If mode or types are invalid.
     """
     if mode not in _VALID_SEARCH_MODES:
-        raise ValueError(
-            f"Invalid mode: {mode!r}. Must be one of {sorted(_VALID_SEARCH_MODES)}"
-        )
+        raise ValueError(f"Invalid mode: {mode!r}. Must be one of {sorted(_VALID_SEARCH_MODES)}")
 
     if types is None:
         types = list(_VALID_SEARCH_TYPES)
@@ -579,13 +585,9 @@ async def search(
         table = _TYPE_TO_TABLE[mem_type]
 
         if mode == "semantic":
-            results = await semantic_search(
-                pool, query_embedding, table, limit=limit, scope=scope
-            )
+            results = await semantic_search(pool, query_embedding, table, limit=limit, scope=scope)
         elif mode == "keyword":
-            results = await keyword_search(
-                pool, query, table, limit=limit, scope=scope
-            )
+            results = await keyword_search(pool, query, table, limit=limit, scope=scope)
         else:  # hybrid
             results = await hybrid_search(
                 pool, query, query_embedding, table, limit=limit, scope=scope

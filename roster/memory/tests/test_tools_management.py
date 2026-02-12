@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import uuid
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,17 +10,15 @@ import pytest
 # ---------------------------------------------------------------------------
 # Load tools module (mocking sentence_transformers first)
 # ---------------------------------------------------------------------------
-
 # ---------------------------------------------------------------------------
 # Load tools module
 # ---------------------------------------------------------------------------
-
 from butlers.tools.memory import (
+    _helpers,
+    memory_context,
     memory_forget,
     memory_stats,
-    memory_context,
 )
-from butlers.tools.memory import _helpers
 
 pytestmark = pytest.mark.unit
 
@@ -107,9 +102,7 @@ class TestMemoryForget:
 class TestMemoryStats:
     """Tests for memory_stats tool wrapper."""
 
-    async def test_returns_all_expected_top_level_keys(
-        self, mock_pool: AsyncMock
-    ) -> None:
+    async def test_returns_all_expected_top_level_keys(self, mock_pool: AsyncMock) -> None:
         """memory_stats returns episodes, facts, and rules top-level keys."""
         result = await memory_stats(mock_pool)
         assert "episodes" in result
@@ -163,9 +156,7 @@ class TestMemoryStats:
         result = await memory_stats(mock_pool)
         assert result["episodes"]["backlog_age_hours"] is None
 
-    async def test_backlog_age_hours_float_when_present(
-        self, mock_pool: AsyncMock
-    ) -> None:
+    async def test_backlog_age_hours_float_when_present(self, mock_pool: AsyncMock) -> None:
         """backlog_age_hours is a float when backlog exists."""
         call_count = 0
 
@@ -180,16 +171,15 @@ class TestMemoryStats:
         result = await memory_stats(mock_pool)
         assert result["episodes"]["backlog_age_hours"] == 48.5
 
-    async def test_scope_filtering_passes_scope_param(
-        self, mock_pool: AsyncMock
-    ) -> None:
+    async def test_scope_filtering_passes_scope_param(self, mock_pool: AsyncMock) -> None:
         """When scope is provided, SQL queries for facts/rules include scope filter."""
         mock_pool.fetchval = AsyncMock(return_value=0)
         await memory_stats(mock_pool, scope="my-butler")
 
         # Check that at least some calls passed the scope parameter
         calls_with_scope = [
-            c for c in mock_pool.fetchval.call_args_list
+            c
+            for c in mock_pool.fetchval.call_args_list
             if len(c.args) > 1 and c.args[-1] == "my-butler"
         ]
         # Facts have 4 queries and rules have 5 queries that need scope
@@ -272,9 +262,13 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """memory_context includes a Key Facts section with formatted entries."""
-        _helpers._search.recall = AsyncMock(return_value=[
-            _make_fact(subject="user", predicate="prefers", content="dark mode", confidence=0.9),
-        ])
+        _helpers._search.recall = AsyncMock(
+            return_value=[
+                _make_fact(
+                    subject="user", predicate="prefers", content="dark mode", confidence=0.9
+                ),
+            ]
+        )
         result = await memory_context(
             mock_pool, mock_embedding_engine, "user preferences", "butler-1"
         )
@@ -286,13 +280,15 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """memory_context includes an Active Rules section with formatted entries."""
-        _helpers._search.recall = AsyncMock(return_value=[
-            _make_rule(
-                content="Always greet warmly",
-                maturity="established",
-                effectiveness_score=0.75,
-            ),
-        ])
+        _helpers._search.recall = AsyncMock(
+            return_value=[
+                _make_rule(
+                    content="Always greet warmly",
+                    maturity="established",
+                    effectiveness_score=0.75,
+                ),
+            ]
+        )
         result = await memory_context(
             mock_pool, mock_embedding_engine, "greeting behavior", "butler-1"
         )
@@ -303,13 +299,13 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """When recall returns both facts and rules, both sections appear."""
-        _helpers._search.recall = AsyncMock(return_value=[
-            _make_fact(composite_score=0.9),
-            _make_rule(composite_score=0.7),
-        ])
-        result = await memory_context(
-            mock_pool, mock_embedding_engine, "anything", "butler-1"
+        _helpers._search.recall = AsyncMock(
+            return_value=[
+                _make_fact(composite_score=0.9),
+                _make_rule(composite_score=0.7),
+            ]
         )
+        result = await memory_context(mock_pool, mock_embedding_engine, "anything", "butler-1")
         assert "## Key Facts" in result
         assert "## Active Rules" in result
 
@@ -318,9 +314,7 @@ class TestMemoryContext:
     ) -> None:
         """When recall returns nothing, the context is just the header."""
         _helpers._search.recall = AsyncMock(return_value=[])
-        result = await memory_context(
-            mock_pool, mock_embedding_engine, "anything", "butler-1"
-        )
+        result = await memory_context(mock_pool, mock_embedding_engine, "anything", "butler-1")
         assert "# Memory Context" in result
         assert "## Key Facts" not in result
         assert "## Active Rules" not in result
@@ -360,9 +354,7 @@ class TestMemoryContext:
         )
         _helpers._search.recall = AsyncMock(return_value=[fact_high, fact_low])
 
-        result = await memory_context(
-            mock_pool, mock_embedding_engine, "test", "butler-1"
-        )
+        result = await memory_context(mock_pool, mock_embedding_engine, "test", "butler-1")
 
         # "important" should appear before "trivial"
         idx_high = result.index("important")
@@ -374,9 +366,7 @@ class TestMemoryContext:
     ) -> None:
         """memory_context calls recall with the right arguments."""
         _helpers._search.recall = AsyncMock(return_value=[])
-        await memory_context(
-            mock_pool, mock_embedding_engine, "my topic", "butler-x"
-        )
+        await memory_context(mock_pool, mock_embedding_engine, "my topic", "butler-x")
         _helpers._search.recall.assert_awaited_once_with(
             mock_pool, "my topic", mock_embedding_engine, scope="butler-x", limit=20
         )
@@ -385,12 +375,12 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """When recall returns only rules, the Key Facts section is absent."""
-        _helpers._search.recall = AsyncMock(return_value=[
-            _make_rule(content="Be helpful"),
-        ])
-        result = await memory_context(
-            mock_pool, mock_embedding_engine, "test", "butler-1"
+        _helpers._search.recall = AsyncMock(
+            return_value=[
+                _make_rule(content="Be helpful"),
+            ]
         )
+        result = await memory_context(mock_pool, mock_embedding_engine, "test", "butler-1")
         assert "## Key Facts" not in result
         assert "## Active Rules" in result
         assert "Be helpful" in result
@@ -399,12 +389,12 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """When recall returns only facts, the Active Rules section is absent."""
-        _helpers._search.recall = AsyncMock(return_value=[
-            _make_fact(content="likes coffee"),
-        ])
-        result = await memory_context(
-            mock_pool, mock_embedding_engine, "test", "butler-1"
+        _helpers._search.recall = AsyncMock(
+            return_value=[
+                _make_fact(content="likes coffee"),
+            ]
         )
+        result = await memory_context(mock_pool, mock_embedding_engine, "test", "butler-1")
         assert "## Key Facts" in result
         assert "## Active Rules" not in result
         assert "likes coffee" in result

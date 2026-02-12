@@ -185,9 +185,7 @@ class TestFetchMemoryContext:
             result = await fetch_memory_context("my-butler", "hello", memory_butler_port=9999)
 
         assert result == "context from port 9999"
-        mock_constructor.assert_called_once_with(
-            "http://localhost:9999/sse", name="spawner-memory"
-        )
+        mock_constructor.assert_called_once_with("http://localhost:9999/sse", name="spawner-memory")
 
 
 # ---------------------------------------------------------------------------

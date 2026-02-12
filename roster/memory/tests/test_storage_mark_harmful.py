@@ -19,7 +19,6 @@ _STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage.py"
 
 
 def _load_storage_module():
-    import sys
 
     mock_st = MagicMock()
     mock_st.SentenceTransformer.return_value = MagicMock()
@@ -212,9 +211,7 @@ class TestMarkHarmfulNoDemotionCandidate:
 
     async def test_candidate_stays_candidate(self) -> None:
         # Candidate can't be demoted further
-        row = _make_row(
-            applied_count=5, success_count=0, harmful_count=3, maturity="candidate"
-        )
+        row = _make_row(applied_count=5, success_count=0, harmful_count=3, maturity="candidate")
         pool, conn = _make_pool_and_conn(fetchrow_return=row)
 
         result = await mark_harmful(pool, _RULE_ID)
@@ -228,9 +225,7 @@ class TestMarkHarmfulDemoteEstablishedToCandidate:
 
     async def test_demotes_when_effectiveness_below_06(self) -> None:
         # success=1, harmful=2 -> 1 / (1 + 4*2 + 0.01) = 1/9.01 ~ 0.111 < 0.6
-        row = _make_row(
-            applied_count=5, success_count=1, harmful_count=2, maturity="established"
-        )
+        row = _make_row(applied_count=5, success_count=1, harmful_count=2, maturity="established")
         pool, conn = _make_pool_and_conn(fetchrow_return=row)
 
         result = await mark_harmful(pool, _RULE_ID)
@@ -244,9 +239,7 @@ class TestMarkHarmfulDemoteEstablishedToCandidate:
         # Actually 0.5994... which IS < 0.6, so demotion triggers.
         # Let's use values that give >= 0.6:
         # success=10, harmful=1 -> 10 / (10 + 4 + 0.01) = 10/14.01 ~ 0.714 >= 0.6
-        row = _make_row(
-            applied_count=12, success_count=10, harmful_count=1, maturity="established"
-        )
+        row = _make_row(applied_count=12, success_count=10, harmful_count=1, maturity="established")
         pool, conn = _make_pool_and_conn(fetchrow_return=row)
 
         result = await mark_harmful(pool, _RULE_ID)
@@ -255,9 +248,7 @@ class TestMarkHarmfulDemoteEstablishedToCandidate:
         assert result["maturity"] == "established"
 
     async def test_demotion_maturity_written_to_db(self) -> None:
-        row = _make_row(
-            applied_count=5, success_count=1, harmful_count=2, maturity="established"
-        )
+        row = _make_row(applied_count=5, success_count=1, harmful_count=2, maturity="established")
         pool, conn = _make_pool_and_conn(fetchrow_return=row)
 
         await mark_harmful(pool, _RULE_ID)
@@ -272,9 +263,7 @@ class TestMarkHarmfulDemoteProvenToEstablished:
 
     async def test_demotes_when_effectiveness_below_08(self) -> None:
         # success=5, harmful=1 -> 5 / (5 + 4 + 0.01) = 5/9.01 ~ 0.555 < 0.8
-        row = _make_row(
-            applied_count=7, success_count=5, harmful_count=1, maturity="proven"
-        )
+        row = _make_row(applied_count=7, success_count=5, harmful_count=1, maturity="proven")
         pool, conn = _make_pool_and_conn(fetchrow_return=row)
 
         result = await mark_harmful(pool, _RULE_ID)
@@ -284,9 +273,7 @@ class TestMarkHarmfulDemoteProvenToEstablished:
 
     async def test_no_demotion_when_effectiveness_above_08(self) -> None:
         # success=20, harmful=1 -> 20 / (20 + 4 + 0.01) = 20/24.01 ~ 0.833 >= 0.8
-        row = _make_row(
-            applied_count=22, success_count=20, harmful_count=1, maturity="proven"
-        )
+        row = _make_row(applied_count=22, success_count=20, harmful_count=1, maturity="proven")
         pool, conn = _make_pool_and_conn(fetchrow_return=row)
 
         result = await mark_harmful(pool, _RULE_ID)
@@ -428,9 +415,7 @@ class TestMarkHarmfulReturnsUpdatedDict:
         assert result["effectiveness_score"] == pytest.approx(expected)
 
     async def test_returned_dict_has_new_maturity(self) -> None:
-        row = _make_row(
-            applied_count=5, success_count=1, harmful_count=2, maturity="established"
-        )
+        row = _make_row(applied_count=5, success_count=1, harmful_count=2, maturity="established")
         pool, conn = _make_pool_and_conn(fetchrow_return=row)
 
         result = await mark_harmful(pool, _RULE_ID)
