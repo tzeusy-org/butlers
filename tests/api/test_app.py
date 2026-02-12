@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from butlers.api import app as app_module
 from butlers.api.app import FastAPI, create_app
 
 pytestmark = pytest.mark.unit
@@ -78,3 +79,56 @@ class TestRouteSlashBehavior:
             )
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+class TestLifespan:
+    async def test_lifespan_initializes_and_shuts_down_dependencies(self, monkeypatch):
+        calls = {
+            "init_dependencies": 0,
+            "init_pricing": 0,
+            "init_db_manager": 0,
+            "wire_db_dependencies": 0,
+            "shutdown_db_manager": 0,
+            "shutdown_dependencies": 0,
+        }
+
+        def fake_init_dependencies():
+            calls["init_dependencies"] += 1
+
+        def fake_init_pricing():
+            calls["init_pricing"] += 1
+
+        def fake_get_butler_configs():
+            return []
+
+        async def fake_init_db_manager(_butler_configs):
+            calls["init_db_manager"] += 1
+
+        def fake_wire_db_dependencies(_app):
+            calls["wire_db_dependencies"] += 1
+
+        async def fake_shutdown_db_manager():
+            calls["shutdown_db_manager"] += 1
+
+        async def fake_shutdown_dependencies():
+            calls["shutdown_dependencies"] += 1
+
+        monkeypatch.setattr(app_module, "init_dependencies", fake_init_dependencies)
+        monkeypatch.setattr(app_module, "init_pricing", fake_init_pricing)
+        monkeypatch.setattr(app_module, "get_butler_configs", fake_get_butler_configs)
+        monkeypatch.setattr(app_module, "init_db_manager", fake_init_db_manager)
+        monkeypatch.setattr(app_module, "wire_db_dependencies", fake_wire_db_dependencies)
+        monkeypatch.setattr(app_module, "shutdown_db_manager", fake_shutdown_db_manager)
+        monkeypatch.setattr(app_module, "shutdown_dependencies", fake_shutdown_dependencies)
+
+        app = create_app()
+
+        async with app.router.lifespan_context(app):
+            pass
+
+        assert calls["init_dependencies"] == 1
+        assert calls["init_pricing"] == 1
+        assert calls["init_db_manager"] == 1
+        assert calls["wire_db_dependencies"] == 1
+        assert calls["shutdown_db_manager"] == 1
+        assert calls["shutdown_dependencies"] == 1
