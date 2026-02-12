@@ -48,6 +48,36 @@ function EmptyState() {
   );
 }
 
+function normalizeModules(rawModules: unknown): string[] {
+  if (Array.isArray(rawModules)) {
+    return rawModules
+      .map((moduleName) => String(moduleName).trim())
+      .filter((moduleName) => moduleName.length > 0);
+  }
+
+  if (typeof rawModules !== "string") {
+    return [];
+  }
+
+  const trimmed = rawModules.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    try {
+      return normalizeModules(JSON.parse(trimmed));
+    } catch {
+      // Fall through to delimiter-based parsing below.
+    }
+  }
+
+  return trimmed
+    .split(",")
+    .map((moduleName) => moduleName.trim())
+    .filter((moduleName) => moduleName.length > 0);
+}
+
 // ---------------------------------------------------------------------------
 // RegistryTable
 // ---------------------------------------------------------------------------
@@ -76,8 +106,11 @@ export default function RegistryTable() {
             {isLoading ? (
               <SkeletonRows />
             ) : (
-              entries.map((entry) => (
-                <TableRow key={entry.name}>
+              entries.map((entry) => {
+                const modules = normalizeModules(entry.modules);
+
+                return (
+                  <TableRow key={entry.name}>
                   <TableCell className="font-medium">{entry.name}</TableCell>
                   <TableCell>
                     <code className="text-xs text-muted-foreground">
@@ -86,10 +119,10 @@ export default function RegistryTable() {
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap gap-1">
-                      {entry.modules.length > 0 ? (
-                        entry.modules.map((mod, idx) => (
-                          <Badge key={idx} variant="secondary" className="text-xs">
-                            {String(mod)}
+                      {modules.length > 0 ? (
+                        modules.map((mod, idx) => (
+                          <Badge key={`${mod}-${idx}`} variant="secondary" className="text-xs">
+                            {mod}
                           </Badge>
                         ))
                       ) : (
@@ -107,8 +140,9 @@ export default function RegistryTable() {
                         })
                       : "\u2014"}
                   </TableCell>
-                </TableRow>
-              ))
+                  </TableRow>
+                );
+              })
             )}
           </TableBody>
         </Table>
