@@ -22,6 +22,19 @@ class ToolMeta:
     arg_sensitivities: dict[str, bool] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ToolIODescriptor:
+    """Structured descriptor for a module's MCP tool I/O surface.
+
+    Attributes:
+        name: Registered MCP tool name.
+        description: Optional short description of the tool intent.
+    """
+
+    name: str
+    description: str = ""
+
+
 class Module(abc.ABC):
     """Abstract base class for butler modules.
 
@@ -77,3 +90,19 @@ class Module(abc.ABC):
         approvals subsystem will fall back to heuristic classification.
         """
         return {}
+
+    def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Return user-facing input tool descriptors declared by this module."""
+        return ()
+
+    def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Return user-facing output tool descriptors declared by this module."""
+        return ()
+
+    def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Return bot-facing input tool descriptors declared by this module."""
+        return ()
+
+    def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Return bot-facing output tool descriptors declared by this module."""
+        return ()
