@@ -158,8 +158,9 @@ make test-qg
 ```
 
 ### Parallel Test Command
-- Opt-in local parallel run for the quality-gate scope: `make test-qg-parallel`
-- `test-qg-parallel` uses `pytest-xdist` (`-n auto`) and should produce the same pass/fail set as `make test-qg`.
+- Default quality-gate pytest scope uses `pytest-xdist` (`-n auto`) via `make test-qg`.
+- Serial fallback/debug path remains available via `make test-qg-serial`.
+- `make test-qg-parallel` is an explicit alias to the same parallel default.
 
 ### Switchboard Classification Contract
 - `classify_message()` returns decomposition entries (`list[{"butler","prompt"}]`), not a bare butler string. Callers must normalize both legacy string and list formats before routing.
@@ -175,3 +176,7 @@ make test-qg
 ### Frontend test harness
 - Frontend route/component tests run with Vitest (`frontend/package.json` has `npm test` -> `vitest run`).
 - Colocate tests as `frontend/src/**/*.test.tsx` (example: `frontend/src/pages/ButlersPage.test.tsx`).
+
+### Quality-gate command contract
+- `make test-qg` is the default full-scope pytest gate and runs with xdist parallelization (`-n auto`).
+- `make test-qg-serial` is the documented serial fallback for debugging order-dependent behavior.
