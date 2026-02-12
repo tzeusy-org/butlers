@@ -86,6 +86,9 @@ class TestLifespan:
         calls = {
             "init_dependencies": 0,
             "init_pricing": 0,
+            "init_db_manager": 0,
+            "wire_db_dependencies": 0,
+            "shutdown_db_manager": 0,
             "shutdown_dependencies": 0,
         }
 
@@ -95,11 +98,27 @@ class TestLifespan:
         def fake_init_pricing():
             calls["init_pricing"] += 1
 
+        def fake_get_butler_configs():
+            return []
+
+        async def fake_init_db_manager(_butler_configs):
+            calls["init_db_manager"] += 1
+
+        def fake_wire_db_dependencies(_app):
+            calls["wire_db_dependencies"] += 1
+
+        async def fake_shutdown_db_manager():
+            calls["shutdown_db_manager"] += 1
+
         async def fake_shutdown_dependencies():
             calls["shutdown_dependencies"] += 1
 
         monkeypatch.setattr(app_module, "init_dependencies", fake_init_dependencies)
         monkeypatch.setattr(app_module, "init_pricing", fake_init_pricing)
+        monkeypatch.setattr(app_module, "get_butler_configs", fake_get_butler_configs)
+        monkeypatch.setattr(app_module, "init_db_manager", fake_init_db_manager)
+        monkeypatch.setattr(app_module, "wire_db_dependencies", fake_wire_db_dependencies)
+        monkeypatch.setattr(app_module, "shutdown_db_manager", fake_shutdown_db_manager)
         monkeypatch.setattr(app_module, "shutdown_dependencies", fake_shutdown_dependencies)
 
         app = create_app()
@@ -109,4 +128,7 @@ class TestLifespan:
 
         assert calls["init_dependencies"] == 1
         assert calls["init_pricing"] == 1
+        assert calls["init_db_manager"] == 1
+        assert calls["wire_db_dependencies"] == 1
+        assert calls["shutdown_db_manager"] == 1
         assert calls["shutdown_dependencies"] == 1
