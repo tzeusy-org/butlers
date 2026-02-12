@@ -7,7 +7,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship._schema import contact_name_expr, table_columns
 from butlers.tools.relationship.contacts import _parse_contact
 from butlers.tools.relationship.feed import _log_activity
 
@@ -54,10 +53,8 @@ async def contacts_overdue(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     Contacts with no cadence (NULL) are never returned.
     Archived contacts are excluded.
     """
-    contact_cols = await table_columns(pool, "contacts")
-    name_sql = contact_name_expr(contact_cols, alias="c")
     rows = await pool.fetch(
-        f"""
+        """
         SELECT
             c.*,
             MAX(i.occurred_at) AS last_interaction_at,
@@ -68,11 +65,11 @@ async def contacts_overdue(pool: asyncpg.Pool) -> list[dict[str, Any]]:
         FROM contacts c
         LEFT JOIN interactions i ON c.id = i.contact_id
         WHERE c.stay_in_touch_days IS NOT NULL
-          AND c.archived_at IS NULL
+          AND c.listed = true
         GROUP BY c.id
         HAVING MAX(i.occurred_at) IS NULL
             OR MAX(i.occurred_at) < now() - make_interval(days => c.stay_in_touch_days)
-        ORDER BY {name_sql}
+        ORDER BY c.first_name, c.last_name, c.nickname
         """
     )
     return [_parse_contact(row) for row in rows]

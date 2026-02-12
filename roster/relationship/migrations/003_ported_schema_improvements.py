@@ -12,8 +12,8 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "rel_003"
-down_revision = "rel_002"
-branch_labels = ("relationship",)
+down_revision = "rel_002f"
+branch_labels = None
 depends_on = None
 
 

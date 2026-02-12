@@ -7,7 +7,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship._schema import contact_name_expr, table_columns
 from butlers.tools.relationship.feed import _log_activity
 
 
@@ -239,11 +238,14 @@ async def relationship_add(
 
 async def relationship_list(pool: asyncpg.Pool, contact_id: uuid.UUID) -> list[dict[str, Any]]:
     """List all relationships for a contact."""
-    contact_cols = await table_columns(pool, "contacts")
-    name_sql = contact_name_expr(contact_cols, alias="c")
     rows = await pool.fetch(
-        f"""
-        SELECT r.*, {name_sql} as related_name
+        """
+        SELECT r.*,
+               COALESCE(
+                   NULLIF(TRIM(CONCAT_WS(' ', c.first_name, c.last_name)), ''),
+                   c.nickname,
+                   'Unknown'
+               ) AS related_name
         FROM relationships r
         JOIN contacts c ON r.contact_b = c.id
         WHERE r.contact_a = $1
