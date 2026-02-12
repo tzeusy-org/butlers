@@ -81,4 +81,21 @@ describe("ButlersPage", () => {
     expect(html).toContain("Failed to load butlers.");
     expect(html).toContain("network offline");
   });
+
+  it("keeps cached butlers visible on refetch error", () => {
+    setQueryState({
+      data: {
+        data: [{ name: "general", status: "ok", port: 8101 }],
+        meta: {},
+      },
+      isError: true,
+      error: new Error("timed out"),
+    });
+
+    const html = renderPage();
+
+    expect(html).toContain("Showing last known butler status.");
+    expect(html).toContain("general");
+    expect(html).toContain("timed out");
+  });
 });

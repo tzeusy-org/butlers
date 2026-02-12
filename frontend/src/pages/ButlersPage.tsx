@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Link } from "react-router";
 
 import type { ButlerSummary } from "@/api/types";
@@ -93,8 +94,11 @@ function LoadingState() {
 
 export default function ButlersPage() {
   const { data: response, isLoading, isError, error } = useButlers();
-  const butlers = [...(response?.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
-  const onlineCount = butlers.filter((b) => b.status === "ok" || b.status === "online").length;
+  const { butlers, onlineCount } = useMemo(() => {
+    const sortedButlers = [...(response?.data ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+    const count = sortedButlers.filter((b) => b.status === "ok" || b.status === "online").length;
+    return { butlers: sortedButlers, onlineCount: count };
+  }, [response?.data]);
 
   return (
     <div className="space-y-6">
@@ -107,7 +111,7 @@ export default function ButlersPage() {
 
       {isLoading ? (
         <LoadingState />
-      ) : isError ? (
+      ) : isError && butlers.length === 0 ? (
         <Card>
           <CardContent className="py-10">
             <p className="text-sm text-destructive">
@@ -126,6 +130,17 @@ export default function ButlersPage() {
         </Card>
       ) : (
         <>
+          {isError ? (
+            <Card>
+              <CardContent className="py-4">
+                <p className="text-sm text-destructive">
+                  Showing last known butler status. Refresh failed:{" "}
+                  {error instanceof Error ? error.message : "Unknown error"}
+                </p>
+              </CardContent>
+            </Card>
+          ) : null}
+
           <div className="grid gap-4 sm:grid-cols-2">
             <Card>
               <CardHeader className="pb-2">
