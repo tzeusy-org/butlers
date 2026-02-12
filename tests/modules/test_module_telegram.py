@@ -398,6 +398,7 @@ class TestPipelineIntegration:
             message_text="Need help",
             tool_name="handle_message",
             tool_args={"source": "telegram", "chat_id": "12345"},
+            message_inbox_id=None,
         )
         assert telegram_module._routed_messages == [mock_result]
 

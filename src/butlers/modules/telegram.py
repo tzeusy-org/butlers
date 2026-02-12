@@ -11,8 +11,10 @@ switchboard.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -50,6 +52,7 @@ class TelegramModule(Module):
         self._updates_buffer: list[dict[str, Any]] = []
         self._pipeline: MessagePipeline | None = None
         self._routed_messages: list[RoutingResult] = []
+        self._db: Any = None
 
     @property
     def name(self) -> str:
@@ -115,6 +118,7 @@ class TelegramModule(Module):
         self._client = httpx.AsyncClient()
         self._last_update_id = 0
         self._updates_buffer = []
+        self._db = db
 
         if self._config.mode == "webhook" and self._config.webhook_url:
             await self._set_webhook(self._config.webhook_url)
@@ -165,6 +169,25 @@ class TelegramModule(Module):
         if not text:
             return None
 
+        # Phase 1: Log receipt
+        message_inbox_id = None
+        if self._db:
+            async with self._db.acquire() as conn:
+                message_inbox_id = await conn.fetchval(
+                    """
+                    INSERT INTO message_inbox
+                        (source_channel, sender_id, raw_content, raw_metadata, received_at)
+                    VALUES
+                        ($1, $2, $3, $4, $5)
+                    RETURNING id
+                    """,
+                    "telegram",
+                    chat_id,
+                    text,
+                    json.dumps(update),
+                    datetime.now(UTC),
+                )
+
         result = await self._pipeline.process(
             message_text=text,
             tool_name="handle_message",
@@ -172,6 +195,7 @@ class TelegramModule(Module):
                 "source": "telegram",
                 "chat_id": chat_id,
             },
+            message_inbox_id=message_inbox_id,
         )
 
         self._routed_messages.append(result)

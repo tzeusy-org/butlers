@@ -110,8 +110,10 @@ class TestMessagePipelineProcess:
         assert captured_args["message"] == "hello world"
         assert captured_args["extra"] == "data"
 
-    async def test_classification_list_uses_first_entry_and_sub_prompt(self):
-        """Pipeline supports decomposed classifier output and routes first sub-prompt."""
+    async def test_classification_list_dispatches_multi_targets(self, monkeypatch):
+        """Pipeline dispatches decomposed classifier output to multiple targets."""
+        import importlib
+
         captured: dict[str, Any] = {}
 
         async def mock_classify(pool, message, dispatch_fn):
@@ -120,23 +122,63 @@ class TestMessagePipelineProcess:
                 {"butler": "relationship", "prompt": "Remind me to call Mom"},
             ]
 
-        async def mock_route(pool, target, tool_name, args, source):
-            captured["target"] = target
-            captured["args"] = dict(args)
-            return {"result": "ok"}
+        async def mock_dispatch_decomposed(
+            pool: Any,
+            targets: list[dict[str, str]],
+            source_channel: str = "switchboard",
+            source_id: str | None = None,
+            *,
+            call_fn: Any | None = None,
+        ) -> list[dict[str, Any]]:
+            captured["targets"] = targets
+            captured["source_channel"] = source_channel
+            captured["source_id"] = source_id
+            return [
+                {"butler": "health", "result": "logged", "error": None},
+                {"butler": "relationship", "result": "reminder set", "error": None},
+            ]
+
+        def mock_aggregate_responses(
+            results: list[dict[str, Any]],
+            *,
+            dispatch_fn: Any | None = None,
+        ) -> str:
+            captured["results"] = results
+            return "combined response"
+
+        switchboard = importlib.import_module("butlers.tools.switchboard")
+
+        monkeypatch.setattr(
+            switchboard,
+            "dispatch_decomposed",
+            mock_dispatch_decomposed,
+        )
+        monkeypatch.setattr(
+            switchboard,
+            "aggregate_responses",
+            mock_aggregate_responses,
+        )
 
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
             classify_fn=mock_classify,
-            route_fn=mock_route,
         )
 
-        result = await pipeline.process("I have a headache and call Mom tomorrow")
+        result = await pipeline.process(
+            "I have a headache and call Mom tomorrow",
+            tool_args={"source": "telegram", "source_id": "msg-1"},
+        )
 
-        assert result.target_butler == "health"
-        assert captured["target"] == "health"
-        assert captured["args"]["message"] == "Log my headache"
+        assert result.target_butler == "multi"
+        assert result.route_result == {"result": "combined response"}
+        assert captured["targets"][0] == {"butler": "health", "prompt": "Log my headache"}
+        assert captured["targets"][1] == {
+            "butler": "relationship",
+            "prompt": "Remind me to call Mom",
+        }
+        assert captured["source_channel"] == "telegram"
+        assert captured["source_id"] == "msg-1"
 
     async def test_passes_tool_name_to_route(self):
         """Pipeline passes the specified tool_name to route()."""

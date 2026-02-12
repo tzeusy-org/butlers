@@ -117,6 +117,7 @@ class MessagePipeline:
         message_text: str,
         tool_name: str = "handle_message",
         tool_args: dict[str, Any] | None = None,
+        message_inbox_id: Any | None = None,
     ) -> RoutingResult:
         """Classify a message and route it to the appropriate butler.
 
@@ -132,12 +133,17 @@ class MessagePipeline:
         tool_args:
             Additional arguments to pass along with the message.
             The message text is always included as ``"message"``.
+        message_inbox_id:
+            The ID of the message in the message_inbox table.
 
         Returns
         -------
         RoutingResult
             Contains the target butler name, route result, and any errors.
         """
+        import json
+        from datetime import UTC, datetime
+
         # Lazy import to avoid circular dependencies
         from butlers.tools.switchboard import (
             aggregate_responses,
@@ -172,15 +178,16 @@ class MessagePipeline:
 
         # Step 1: Classify
         classify_start = time.perf_counter()
+        classification = None
         try:
             classification = await classify(self._pool, message_text, self._dispatch_fn)
+            classification_latency_ms = (time.perf_counter() - classify_start) * 1000
 
             # Handle decomposition (list of sub-tasks)
             if isinstance(classification, list) and classification:
                 # We need source_id from args if available for tracing
                 source_id = str(args.get("source_id")) if args.get("source_id") else None
 
-                classification_latency_ms = (time.perf_counter() - classify_start) * 1000
                 logger.info(
                     "Pipeline classified message as decomposition",
                     extra=self._log_fields(
@@ -219,6 +226,29 @@ class MessagePipeline:
                     ),
                 )
 
+                if message_inbox_id:
+                    async with self._pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            UPDATE message_inbox
+                            SET
+                                classification = $1,
+                                classified_at = $2,
+                                classification_duration_ms = $3,
+                                routing_results = $4,
+                                response_summary = $5,
+                                completed_at = $6
+                            WHERE id = $7
+                            """,
+                            json.dumps(classification),
+                            datetime.now(UTC),
+                            int(classification_latency_ms),
+                            json.dumps(sub_results),
+                            aggregated,
+                            datetime.now(UTC),
+                            message_inbox_id,
+                        )
+
                 return RoutingResult(
                     target_butler="multi",
                     route_result={"result": aggregated},
@@ -241,6 +271,28 @@ class MessagePipeline:
                     classification_error=error_msg,
                 ),
             )
+
+            if message_inbox_id:
+                async with self._pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE message_inbox
+                        SET
+                            classification = $1,
+                            classified_at = $2,
+                            classification_duration_ms = $3,
+                            response_summary = $4,
+                            completed_at = $5
+                        WHERE id = $6
+                        """,
+                        json.dumps({"error": error_msg}),
+                        datetime.now(UTC),
+                        int(classification_latency_ms),
+                        "Classification failed",
+                        datetime.now(UTC),
+                        message_inbox_id,
+                    )
+
             return RoutingResult(
                 target_butler="general",
                 classification_error=error_msg,
@@ -259,6 +311,7 @@ class MessagePipeline:
 
         # Step 2: Route
         route_start = time.perf_counter()
+        result = None
         try:
             result = await route_to(
                 self._pool,
@@ -281,6 +334,30 @@ class MessagePipeline:
                     routing_error=error_msg,
                 ),
             )
+
+            if message_inbox_id:
+                async with self._pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE message_inbox
+                        SET
+                            classification = $1,
+                            classified_at = $2,
+                            classification_duration_ms = $3,
+                            routing_results = $4,
+                            response_summary = $5,
+                            completed_at = $6
+                        WHERE id = $7
+                        """,
+                        json.dumps(classification),
+                        datetime.now(UTC),
+                        int(classification_latency_ms),
+                        json.dumps({"error": error_msg}),
+                        "Routing failed",
+                        datetime.now(UTC),
+                        message_inbox_id,
+                    )
+
             return RoutingResult(
                 target_butler=target,
                 routing_error=error_msg,
@@ -298,6 +375,29 @@ class MessagePipeline:
                 routing_latency_ms=routing_latency_ms,
             ),
         )
+
+        if message_inbox_id:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE message_inbox
+                    SET
+                        classification = $1,
+                        classified_at = $2,
+                        classification_duration_ms = $3,
+                        routing_results = $4,
+                        response_summary = $5,
+                        completed_at = $6
+                    WHERE id = $7
+                    """,
+                    json.dumps(classification),
+                    datetime.now(UTC),
+                    int(classification_latency_ms),
+                    json.dumps(result),
+                    "Success",
+                    datetime.now(UTC),
+                    message_inbox_id,
+                )
 
         return RoutingResult(
             target_butler=target,
