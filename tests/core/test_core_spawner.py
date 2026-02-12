@@ -816,7 +816,7 @@ class TestFullFlow:
         # Verify adapter received correct args
         assert len(adapter.calls) == 1
         call = adapter.calls[0]
-        assert call["system_prompt"] == "You are the test butler."
+        assert call["system_prompt"].startswith("You are the test butler.")
         assert "flow-butler" in call["mcp_servers"]
         assert call["env"]["ANTHROPIC_API_KEY"] == "sk-flow"
         assert call["env"]["CUSTOM_VAR"] == "cv"

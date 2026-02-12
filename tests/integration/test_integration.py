@@ -335,6 +335,7 @@ class TestButlerStartupIntegration:
 
         expected_tools = {
             "status",
+            "notify",
             "trigger",
             "tick",
             "state_get",

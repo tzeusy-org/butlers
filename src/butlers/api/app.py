@@ -115,6 +115,7 @@ def create_app(
         version="0.1.0",
         lifespan=lifespan,
     )
+    app.router.redirect_slashes = False
 
     app.add_middleware(
         CORSMiddleware,
