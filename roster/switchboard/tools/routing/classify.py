@@ -12,6 +12,111 @@ from butlers.tools.switchboard.registry import discover_butlers, list_butlers
 
 logger = logging.getLogger(__name__)
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3]
+_SCHEDULING_INTENT_RE = re.compile(
+    r"\b("
+    r"schedule(?:d|ing)?|"
+    r"reschedule(?:d|ing)?|"
+    r"meeting(?:s)?|"
+    r"appointment(?:s)?|"
+    r"calendar|"
+    r"availability|"
+    r"free[- ]?busy|"
+    r"time ?slot(?:s)?|"
+    r"book time|"
+    r"set up (?:a )?(?:meeting|call)|"
+    r"invite(?:s|d)?"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _normalize_modules(raw_modules: Any) -> set[str]:
+    """Normalize registry module payloads into a lowercase module-name set."""
+    if raw_modules is None:
+        return set()
+
+    modules_data = raw_modules
+    if isinstance(raw_modules, str):
+        candidate = raw_modules.strip()
+        if not candidate:
+            return set()
+        try:
+            modules_data = json.loads(candidate)
+        except json.JSONDecodeError:
+            modules_data = [candidate]
+
+    if isinstance(modules_data, dict):
+        items = modules_data.keys()
+    elif isinstance(modules_data, (list, tuple, set)):
+        items = modules_data
+    else:
+        return set()
+
+    modules: set[str] = set()
+    for item in items:
+        if isinstance(item, str):
+            name = item.strip().lower()
+            if name:
+                modules.add(name)
+    return modules
+
+
+def _calendar_capable_butlers(butlers: list[dict[str, Any]]) -> set[str]:
+    """Return butler names that advertise calendar capability."""
+    capable: set[str] = set()
+    for butler in butlers:
+        name = str(butler.get("name", "")).strip().lower()
+        if not name:
+            continue
+        if "calendar" in _normalize_modules(butler.get("modules")):
+            capable.add(name)
+    return capable
+
+
+def _pick_preferred_calendar_butler(butlers: list[dict[str, Any]]) -> str | None:
+    """Pick the preferred calendar-capable butler for schedule-centric fallbacks."""
+    capable = _calendar_capable_butlers(butlers)
+    if not capable:
+        return None
+    if "calendar" in capable:
+        return "calendar"
+    return sorted(capable)[0]
+
+
+def _format_capabilities(butler: dict[str, Any]) -> str:
+    """Format module capabilities for prompt context."""
+    modules = sorted(_normalize_modules(butler.get("modules")))
+    return ", ".join(modules) if modules else "none"
+
+
+def _is_scheduling_intent(text: str) -> bool:
+    """Return True when text appears to describe calendar scheduling intent."""
+    return bool(_SCHEDULING_INTENT_RE.search(text))
+
+
+def _apply_capability_preferences(
+    entries: list[dict[str, str]],
+    butlers: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Apply conservative capability preferences while preserving domain ownership.
+
+    We only rewrite general-fallback entries for scheduling intents when a
+    calendar-capable butler exists.
+    """
+    preferred_calendar = _pick_preferred_calendar_butler(butlers)
+    if not preferred_calendar:
+        return entries
+
+    calendar_capable = _calendar_capable_butlers(butlers)
+    adjusted: list[dict[str, str]] = []
+    for entry in entries:
+        target = entry.get("butler", "").strip().lower()
+        prompt = entry.get("prompt", "")
+        if target == "general" and target not in calendar_capable and _is_scheduling_intent(prompt):
+            adjusted.append({"butler": preferred_calendar, "prompt": prompt})
+            continue
+        adjusted.append(entry)
+    return adjusted
 
 
 async def _load_available_butlers(pool: Any) -> list[dict[str, Any]]:
@@ -53,13 +158,20 @@ async def classify_message(
 
     butlers = await _load_available_butlers(pool)
     butler_list = "\n".join(
-        f"- {b['name']}: {b.get('description') or 'No description'}" for b in butlers
+        (
+            f"- {b['name']}: {b.get('description') or 'No description'} "
+            f"(capabilities: {_format_capabilities(b)})"
+        )
+        for b in butlers
     )
 
     prompt = (
         "Analyze the following message and determine which butler(s) should handle it.\n"
         "If the message spans multiple domains, decompose it into distinct sub-messages,\n"
         "each tagged with the appropriate butler.\n\n"
+        "Routing guidance:\n"
+        "- Preserve domain ownership for specialist domains.\n"
+        "- For calendar/scheduling intents, prefer butlers that list calendar capability.\n\n"
         f"Available butlers:\n{butler_list}\n\n"
         f"Message: {message}\n\n"
         'Respond with ONLY a JSON array. Each element must have keys "butler" and "prompt".\n'
@@ -74,11 +186,12 @@ async def classify_message(
     try:
         result = await dispatch_fn(prompt=prompt, trigger_source="tick")
         if result and hasattr(result, "result") and result.result:
-            return _parse_classification(result.result, butlers, message)
+            parsed = _parse_classification(result.result, butlers, message)
+            return _apply_capability_preferences(parsed, butlers)
     except Exception:
         logger.exception("Classification failed")
 
-    return fallback
+    return _apply_capability_preferences(fallback, butlers)
 
 
 async def classify_message_multi(
