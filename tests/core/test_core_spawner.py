@@ -583,6 +583,38 @@ class TestSessionLogging:
             assert kwargs["success"] is False
             assert "RuntimeError" in kwargs["error"]
 
+    async def test_session_create_failure_preserves_original_error(self, tmp_path: Path):
+        """Errors before runtime invocation should not be masked by t0 handling."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+
+        mock_pool = AsyncMock()
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
+        ):
+            mock_create.side_effect = ValueError("Invalid trigger_source 'trigger_tool'")
+
+            adapter = MockAdapter(result_text="unused")
+            spawner = Spawner(
+                config=config,
+                config_dir=config_dir,
+                pool=mock_pool,
+                runtime=adapter,
+            )
+
+            result = await spawner.trigger("fail before invoke", "trigger_tool")
+
+            assert result.success is False
+            assert result.error is not None
+            assert "ValueError" in result.error
+            assert "Invalid trigger_source 'trigger_tool'" in result.error
+            assert "UnboundLocalError" not in result.error
+            assert result.duration_ms >= 0
+            mock_complete.assert_not_called()
+
     async def test_no_session_logging_without_pool(self, tmp_path: Path):
         """When pool is None, no session logging occurs (no errors either)."""
         config_dir = tmp_path / "config"

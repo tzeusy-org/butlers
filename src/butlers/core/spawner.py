@@ -285,7 +285,8 @@ class Spawner:
         prompt:
             The prompt to send to the runtime instance.
         trigger_source:
-            What caused this invocation (schedule, trigger_tool, tick, heartbeat).
+            What caused this invocation. Expected values are ``tick``,
+            ``external``, ``trigger``, or ``schedule:<task-name>``.
         context:
             Optional text to prepend to the prompt. If provided and non-empty,
             this will be prepended to the prompt with two newlines separating them.
@@ -395,6 +396,7 @@ class Spawner:
 
         # Attach span to context
         token = trace.context_api.attach(trace.set_span_in_context(span))
+        t0 = time.monotonic()
 
         try:
             # Extract trace_id from active span
@@ -409,8 +411,6 @@ class Spawner:
                 )
                 # Set session_id on span
                 span.set_attribute("session_id", str(session_id))
-
-            t0 = time.monotonic()
 
             # Read system prompt
             system_prompt = read_system_prompt(self._config_dir, self._config.name)

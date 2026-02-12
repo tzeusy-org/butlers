@@ -516,9 +516,7 @@ class ButlerDaemon:
             context:
                 Optional text to prepend to the prompt.
             """
-            result = await spawner.trigger(
-                prompt=prompt, context=context, trigger_source="trigger_tool"
-            )
+            result = await spawner.trigger(prompt=prompt, context=context, trigger_source="trigger")
             return {
                 "output": result.output,
                 "success": result.success,
