@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import re
 import shutil
 import time
 import uuid
@@ -63,7 +64,7 @@ from butlers.credentials import detect_secrets, validate_credentials
 from butlers.db import Database
 from butlers.migrations import has_butler_chain, run_migrations
 from butlers.modules.approvals.gate import apply_approval_gates
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolIODescriptor
 from butlers.modules.pipeline import MessagePipeline
 from butlers.modules.registry import ModuleRegistry, default_registry
 
@@ -72,6 +73,23 @@ logger = logging.getLogger(__name__)
 
 class ModuleConfigError(Exception):
     """Raised when a module's configuration fails Pydantic validation."""
+
+
+class ModuleToolValidationError(ValueError):
+    """Raised when module I/O descriptors or registered tool names are invalid."""
+
+
+_TOOL_NAME_RE = re.compile(r"^(user|bot)_[a-z0-9]+_[a-z0-9_]+$")
+
+
+def _validate_tool_name(name: str, module_name: str, *, context: str = "registered tool") -> None:
+    """Validate a tool name against the identity-prefixed naming contract."""
+    if _TOOL_NAME_RE.fullmatch(name):
+        return
+    raise ModuleToolValidationError(
+        f"Module '{module_name}' has invalid {context} name '{name}'. "
+        "Expected 'user_<channel>_<action>' or 'bot_<channel>_<action>'."
+    )
 
 
 def _flatten_config_for_secret_scan(config: ButlerConfig) -> dict[str, Any]:
@@ -118,18 +136,38 @@ class _SpanWrappingMCP:
     All other attribute access is forwarded to the underlying FastMCP instance.
     """
 
-    def __init__(self, mcp: FastMCP, butler_name: str) -> None:
+    def __init__(
+        self,
+        mcp: FastMCP,
+        butler_name: str,
+        *,
+        module_name: str | None = None,
+        declared_tool_names: set[str] | None = None,
+    ) -> None:
         self._mcp = mcp
         self._butler_name = butler_name
+        self._module_name = module_name or "unknown"
+        self._declared_tool_names = declared_tool_names or set()
 
-    def tool(self):
+    def tool(self, *args, **kwargs):
         """Return a decorator that wraps the handler with tool_span."""
-        original_decorator = self._mcp.tool()
+        declared_name = kwargs.get("name")
+        original_decorator = self._mcp.tool(*args, **kwargs)
 
         def wrapper(fn):  # noqa: ANN001, ANN202
+            resolved_tool_name = declared_name or fn.__name__
+            if self._declared_tool_names:
+                _validate_tool_name(resolved_tool_name, self._module_name)
+                if resolved_tool_name not in self._declared_tool_names:
+                    raise ModuleToolValidationError(
+                        f"Module '{self._module_name}' registered undeclared tool "
+                        f"'{resolved_tool_name}'. Declare it in user_inputs/user_outputs/"
+                        "bot_inputs/bot_outputs descriptors."
+                    )
+
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-                with tool_span(fn.__name__, butler_name=self._butler_name):
+                with tool_span(resolved_tool_name, butler_name=self._butler_name):
                     return await fn(*args, **kwargs)
 
             return original_decorator(instrumented)
@@ -750,10 +788,56 @@ class ButlerDaemon:
         automatically wraps each tool handler with a ``butler.tool.<name>``
         span carrying the ``butler.name`` attribute.
         """
-        wrapped_mcp = _SpanWrappingMCP(self.mcp, self.config.name)
         for mod in self._modules:
+            declared_tool_names = self._validate_module_io_descriptors(mod)
+            wrapped_mcp = _SpanWrappingMCP(
+                self.mcp,
+                self.config.name,
+                module_name=mod.name,
+                declared_tool_names=declared_tool_names,
+            )
             validated_config = self._module_configs.get(mod.name)
             await mod.register_tools(wrapped_mcp, validated_config, self.db)
+
+    def _validate_module_io_descriptors(self, mod: Module) -> set[str]:
+        """Validate I/O descriptor names and return the declared tool-name set."""
+        descriptor_groups = {
+            "user_inputs": mod.user_inputs(),
+            "user_outputs": mod.user_outputs(),
+            "bot_inputs": mod.bot_inputs(),
+            "bot_outputs": mod.bot_outputs(),
+        }
+        names: set[str] = set()
+
+        for group_name, descriptors in descriptor_groups.items():
+            expected_prefix = "user_" if group_name.startswith("user_") else "bot_"
+            for descriptor in descriptors:
+                if not isinstance(descriptor, ToolIODescriptor):
+                    raise ModuleToolValidationError(
+                        f"Module '{mod.name}' has invalid descriptor in {group_name}. "
+                        "Expected ToolIODescriptor instances."
+                    )
+
+                tool_name = descriptor.name
+                _validate_tool_name(
+                    tool_name,
+                    mod.name,
+                    context=f"descriptor in {group_name}",
+                )
+
+                if not tool_name.startswith(expected_prefix):
+                    raise ModuleToolValidationError(
+                        f"Module '{mod.name}' descriptor '{tool_name}' in {group_name} "
+                        f"must start with '{expected_prefix}'."
+                    )
+
+                if tool_name in names:
+                    raise ModuleToolValidationError(
+                        f"Module '{mod.name}' declares duplicate tool descriptor '{tool_name}'."
+                    )
+                names.add(tool_name)
+
+        return names
 
     def _apply_approval_gates(self) -> dict[str, Any]:
         """Parse approval config and wrap gated tools with approval interception.
