@@ -362,6 +362,27 @@ make lint            # Lint
 make format          # Format
 ```
 
+### Marker-Based Test Runs
+
+Tests are split by cost profile using pytest markers:
+
+- `unit`: fast tests with no Docker/testcontainers dependency
+- `integration`: Docker-backed tests (testcontainers/PostgreSQL)
+
+```bash
+uv run pytest -m unit -q          # unit-only
+uv run pytest -m integration -q   # integration-only
+
+# Or use Makefile shortcuts:
+make test-unit
+make test-integration
+```
+
+Recommended quality gates:
+
+- Local dev loop: run `-m unit` for fast feedback.
+- CI or pre-merge (Docker available): run both `-m unit` and `-m integration`.
+
 ## Tech Stack
 
 Python 3.12+ · FastMCP · Claude Code SDK · PostgreSQL · asyncpg · Docker · asyncio · OpenTelemetry · Alembic · Click · Pydantic

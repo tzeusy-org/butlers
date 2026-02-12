@@ -9,6 +9,8 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def mgr() -> DatabaseManager:
