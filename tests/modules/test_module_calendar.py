@@ -73,6 +73,32 @@ class TestCalendarConfig:
         assert config.calendar_id == "primary"
         assert config.timezone == "America/New_York"
 
+    def test_non_empty_errors_include_field_name(self):
+        with pytest.raises(ValidationError, match="calendar_id must be a non-empty string"):
+            CalendarConfig(provider="google", calendar_id="   ")
+
+        with pytest.raises(ValidationError, match="timezone must be a non-empty string"):
+            CalendarConfig(provider="google", calendar_id="primary", timezone="   ")
+
+    def test_nested_defaults_forbid_unknown_keys(self):
+        with pytest.raises(ValidationError) as conflict_error:
+            CalendarConfig(
+                provider="google",
+                calendar_id="primary",
+                conflicts={"policy": "suggest", "unexpected": True},
+            )
+        assert conflict_error.value.errors()[0]["loc"] == ("conflicts", "unexpected")
+        assert conflict_error.value.errors()[0]["type"] == "extra_forbidden"
+
+        with pytest.raises(ValidationError) as defaults_error:
+            CalendarConfig(
+                provider="google",
+                calendar_id="primary",
+                event_defaults={"minutes_beforee": 10},
+            )
+        assert defaults_error.value.errors()[0]["loc"] == ("event_defaults", "minutes_beforee")
+        assert defaults_error.value.errors()[0]["type"] == "extra_forbidden"
+
 
 class TestCalendarProviderInterface:
     """Verify the provider interface exposes required tool operations."""
@@ -106,11 +132,12 @@ class TestModuleStartup:
 
     async def test_startup_fails_clearly_on_unsupported_provider(self):
         mod = CalendarModule()
-        with pytest.raises(RuntimeError, match="Unsupported calendar provider 'outlook'"):
+        with pytest.raises(RuntimeError) as excinfo:
             await mod.on_startup({"provider": "outlook", "calendar_id": "primary"}, db=None)
 
-        with pytest.raises(RuntimeError, match="Supported providers: google"):
-            await mod.on_startup({"provider": "outlook", "calendar_id": "primary"}, db=None)
+        error_message = str(excinfo.value)
+        assert "Unsupported calendar provider 'outlook'" in error_message
+        assert "Supported providers: google" in error_message
 
     async def test_register_tools_accepts_validated_config(self):
         mod = CalendarModule()

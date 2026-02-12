@@ -12,7 +12,7 @@ import abc
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from butlers.modules.base import Module
 
@@ -20,12 +20,16 @@ from butlers.modules.base import Module
 class CalendarConflictDefaults(BaseModel):
     """Default behavior for overlapping event handling."""
 
+    model_config = ConfigDict(extra="forbid")
+
     policy: Literal["suggest", "allow", "reject"] = "suggest"
     require_approval_for_overlap: bool = True
 
 
 class CalendarNotificationDefaults(BaseModel):
     """Default notification and color behavior for new events."""
+
+    model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
     minutes_before: int = Field(default=15, ge=0)
@@ -53,10 +57,10 @@ class CalendarConfig(BaseModel):
 
     @field_validator("calendar_id", "timezone")
     @classmethod
-    def _normalize_non_empty(cls, value: str) -> str:
+    def _normalize_non_empty(cls, value: str, info: ValidationInfo) -> str:
         normalized = value.strip()
         if not normalized:
-            raise ValueError("value must be a non-empty string")
+            raise ValueError(f"{info.field_name} must be a non-empty string")
         return normalized
 
 
@@ -252,17 +256,17 @@ class CalendarModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
+    @staticmethod
+    def _coerce_config(config: Any) -> CalendarConfig:
+        return config if isinstance(config, CalendarConfig) else CalendarConfig(**(config or {}))
+
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         # Calendar tools are introduced in later tasks; we still keep the
         # validated config available for parity with other modules.
-        self._config = (
-            config if isinstance(config, CalendarConfig) else CalendarConfig(**(config or {}))
-        )
+        self._config = self._coerce_config(config)
 
     async def on_startup(self, config: Any, db: Any) -> None:
-        self._config = (
-            config if isinstance(config, CalendarConfig) else CalendarConfig(**(config or {}))
-        )
+        self._config = self._coerce_config(config)
 
         provider_cls = self._PROVIDER_CLASSES.get(self._config.provider)
         if provider_cls is None:
