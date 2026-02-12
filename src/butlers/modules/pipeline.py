@@ -23,6 +23,9 @@ class RoutingResult:
     route_result: dict[str, Any] = field(default_factory=dict)
     classification_error: str | None = None
     routing_error: str | None = None
+    routed_targets: list[str] = field(default_factory=list)
+    acked_targets: list[str] = field(default_factory=list)
+    failed_targets: list[str] = field(default_factory=list)
 
 
 class MessagePipeline:
@@ -206,6 +209,23 @@ class MessagePipeline:
                     source_channel=source,
                     source_id=source_id,
                 )
+                routed_targets = [
+                    str(entry.get("butler", "")).strip()
+                    for entry in classification
+                    if isinstance(entry, dict) and str(entry.get("butler", "")).strip()
+                ]
+                acked_targets: list[str] = []
+                failed_targets: list[str] = []
+                failed_details: list[str] = []
+                for sub_result in sub_results:
+                    butler = str(sub_result.get("butler", "")).strip()
+                    if not butler:
+                        continue
+                    if sub_result.get("error"):
+                        failed_targets.append(butler)
+                        failed_details.append(f"{butler}: {sub_result['error']}")
+                    else:
+                        acked_targets.append(butler)
 
                 aggregated = aggregate_responses(sub_results, dispatch_fn=self._dispatch_fn)
                 if hasattr(aggregated, "__await__"):
@@ -252,6 +272,10 @@ class MessagePipeline:
                 return RoutingResult(
                     target_butler="multi",
                     route_result={"result": aggregated},
+                    routing_error="; ".join(failed_details) if failed_details else None,
+                    routed_targets=routed_targets,
+                    acked_targets=acked_targets,
+                    failed_targets=failed_targets,
                 )
 
             target, routed_message = self._normalize_classification(
@@ -361,6 +385,53 @@ class MessagePipeline:
             return RoutingResult(
                 target_butler=target,
                 routing_error=error_msg,
+                routed_targets=[target],
+                failed_targets=[target],
+            )
+        if isinstance(result, dict) and result.get("error"):
+            error_msg = str(result["error"])
+            routing_latency_ms = (time.perf_counter() - route_start) * 1000
+            logger.warning(
+                "Routing returned error for message to butler %s",
+                target,
+                extra=self._log_fields(
+                    source=source,
+                    chat_id=chat_id,
+                    target_butler=target,
+                    latency_ms=routing_latency_ms,
+                    routing_error=error_msg,
+                ),
+            )
+
+            if message_inbox_id:
+                async with self._pool.acquire() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE message_inbox
+                        SET
+                            classification = $1,
+                            classified_at = $2,
+                            classification_duration_ms = $3,
+                            routing_results = $4,
+                            response_summary = $5,
+                            completed_at = $6
+                        WHERE id = $7
+                        """,
+                        json.dumps(classification),
+                        datetime.now(UTC),
+                        int(classification_latency_ms),
+                        json.dumps(result),
+                        "Routing failed",
+                        datetime.now(UTC),
+                        message_inbox_id,
+                    )
+
+            return RoutingResult(
+                target_butler=target,
+                route_result=result,
+                routing_error=error_msg,
+                routed_targets=[target],
+                failed_targets=[target],
             )
         routing_latency_ms = (time.perf_counter() - route_start) * 1000
         total_latency_ms = (time.perf_counter() - start) * 1000
@@ -402,4 +473,6 @@ class MessagePipeline:
         return RoutingResult(
             target_butler=target,
             route_result=result,
+            routed_targets=[target],
+            acked_targets=[target],
         )

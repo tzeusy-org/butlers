@@ -484,10 +484,163 @@ class TestPipelineIntegration:
         mock_pipeline.process.assert_awaited_once_with(
             message_text="Need help",
             tool_name="handle_message",
-            tool_args={"source": "telegram", "chat_id": "12345"},
+            tool_args={"source": "telegram", "chat_id": "12345", "source_id": None},
             message_inbox_id=None,
         )
         assert telegram_module._routed_messages == [mock_result]
+
+    async def test_reaction_lifecycle_single_route_success(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """Single-route success transitions :eye -> :done."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
+            return_value={"ok": True}
+        )
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.process = AsyncMock(
+            return_value=RoutingResult(
+                target_butler="general",
+                route_result={"result": "ok"},
+                routed_targets=["general"],
+                acked_targets=["general"],
+            )
+        )
+        telegram_module.set_pipeline(mock_pipeline)
+
+        update = {
+            "update_id": 101,
+            "message": {
+                "message_id": 77,
+                "text": "Need help",
+                "chat": {"id": 12345},
+            },
+        }
+
+        await telegram_module.process_update(update)
+
+        assert telegram_module._set_message_reaction.await_count == 2
+        calls = telegram_module._set_message_reaction.await_args_list
+        assert calls[0].kwargs["reaction"] == ":eye"
+        assert calls[1].kwargs["reaction"] == ":done"
+
+    async def test_reaction_lifecycle_multi_route_waits_for_all_acks(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """Fan-out keeps :eye until all routed targets are acknowledged."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
+            return_value={"ok": True}
+        )
+
+        first = RoutingResult(
+            target_butler="multi",
+            route_result={"result": "partial"},
+            routed_targets=["health", "general"],
+            acked_targets=["health"],
+            failed_targets=[],
+        )
+        second = RoutingResult(
+            target_butler="multi",
+            route_result={"result": "done"},
+            routed_targets=["general"],
+            acked_targets=["general"],
+            failed_targets=[],
+        )
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.process = AsyncMock(side_effect=[first, second])
+        telegram_module.set_pipeline(mock_pipeline)
+
+        update = {
+            "update_id": 202,
+            "message": {
+                "message_id": 88,
+                "text": "Split this message",
+                "chat": {"id": 222},
+            },
+        }
+
+        await telegram_module.process_update(update)
+        await telegram_module.process_update(update)
+
+        calls = telegram_module._set_message_reaction.await_args_list
+        reactions = [call.kwargs["reaction"] for call in calls]
+        assert reactions == [":eye", ":eye", ":done"]
+
+    async def test_reaction_lifecycle_any_failed_route_sets_failure(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """Any sub-route failure transitions to :space invader."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
+            return_value={"ok": True}
+        )
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.process = AsyncMock(
+            return_value=RoutingResult(
+                target_butler="multi",
+                route_result={"result": "partial"},
+                routing_error="general: ConnectionError: timeout",
+                routed_targets=["health", "general"],
+                acked_targets=["health"],
+                failed_targets=["general"],
+            )
+        )
+        telegram_module.set_pipeline(mock_pipeline)
+
+        update = {
+            "update_id": 303,
+            "message": {
+                "message_id": 99,
+                "text": "Fanout with error",
+                "chat": {"id": 333},
+            },
+        }
+
+        await telegram_module.process_update(update)
+
+        calls = telegram_module._set_message_reaction.await_args_list
+        reactions = [call.kwargs["reaction"] for call in calls]
+        assert reactions == [":eye", ":space invader"]
+
+    async def test_terminal_reaction_does_not_regress_to_in_progress(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """Terminal reaction is idempotent and never regresses back to :eye."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
+            return_value={"ok": True}
+        )
+
+        done = RoutingResult(
+            target_butler="general",
+            route_result={"result": "ok"},
+            routed_targets=["general"],
+            acked_targets=["general"],
+        )
+        mock_pipeline = MagicMock()
+        mock_pipeline.process = AsyncMock(side_effect=[done, done])
+        telegram_module.set_pipeline(mock_pipeline)
+
+        update = {
+            "update_id": 404,
+            "message": {
+                "message_id": 1001,
+                "text": "Finalize once",
+                "chat": {"id": 444},
+            },
+        }
+
+        await telegram_module.process_update(update)
+        first_count = telegram_module._set_message_reaction.await_count
+        assert first_count == 2
+
+        await telegram_module.process_update(update)
+
+        assert telegram_module._set_message_reaction.await_count == first_count
 
 
 # ---------------------------------------------------------------------------
