@@ -370,6 +370,10 @@ Tests are split by cost profile using pytest markers:
 ```bash
 uv run pytest -m unit -q          # unit-only
 uv run pytest -m integration -q   # integration-only
+
+# Or use Makefile shortcuts:
+make test-unit
+make test-integration
 ```
 
 Recommended quality gates:
