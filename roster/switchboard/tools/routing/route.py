@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -14,6 +15,112 @@ from opentelemetry import trace
 from butlers.core.telemetry import inject_trace_context
 
 logger = logging.getLogger(__name__)
+_ROUTER_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
+_ROUTER_CLIENT_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _router_lock(endpoint_url: str) -> asyncio.Lock:
+    lock = _ROUTER_CLIENT_LOCKS.get(endpoint_url)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ROUTER_CLIENT_LOCKS[endpoint_url] = lock
+    return lock
+
+
+def _is_cached_router_client_healthy(client_ctx: MCPClient, client: Any) -> bool:
+    probe = client_ctx if hasattr(client_ctx, "is_connected") else client
+    checker = getattr(probe, "is_connected", None)
+    if callable(checker):
+        try:
+            return bool(checker())
+        except Exception:
+            return False
+    return True
+
+
+async def _close_cached_router_client(endpoint_url: str) -> None:
+    cached = _ROUTER_CLIENTS.pop(endpoint_url, None)
+    if cached is None:
+        return
+
+    client_ctx, _client = cached
+    try:
+        await client_ctx.__aexit__(None, None, None)
+    except asyncio.CancelledError:
+        logger.debug(
+            "Cancelled while closing cached switchboard router client for %s",
+            endpoint_url,
+            exc_info=True,
+        )
+    except Exception:
+        logger.debug(
+            "Failed to close cached switchboard router client for %s",
+            endpoint_url,
+            exc_info=True,
+        )
+
+
+async def _get_cached_router_client(
+    endpoint_url: str,
+    *,
+    reconnect: bool = False,
+) -> Any:
+    async with _router_lock(endpoint_url):
+        if reconnect:
+            await _close_cached_router_client(endpoint_url)
+
+        cached = _ROUTER_CLIENTS.get(endpoint_url)
+        if cached is not None:
+            client_ctx, client = cached
+            if _is_cached_router_client_healthy(client_ctx, client):
+                return client
+            await _close_cached_router_client(endpoint_url)
+
+        client_ctx = MCPClient(endpoint_url, name="switchboard-router")
+        entered_client = await client_ctx.__aenter__()
+        client = entered_client if entered_client is not None else client_ctx
+        _ROUTER_CLIENTS[endpoint_url] = (client_ctx, client)
+        return client
+
+
+async def _call_tool_with_router_client(
+    endpoint_url: str,
+    tool_name: str,
+    args: dict[str, Any],
+) -> Any:
+    first_exc: Exception | None = None
+
+    for reconnect in (False, True):
+        try:
+            client = await _get_cached_router_client(endpoint_url, reconnect=reconnect)
+            return await client.call_tool(tool_name, args, raise_on_error=False)
+        except Exception as exc:
+            if reconnect:
+                if first_exc is None:
+                    message = f"Failed to call tool {tool_name} on {endpoint_url}: {exc}"
+                else:
+                    message = (
+                        f"Failed to call tool {tool_name} on {endpoint_url}: "
+                        f"{first_exc} (reconnect failed: {exc})"
+                    )
+                raise ConnectionError(message) from exc
+
+            first_exc = exc
+            logger.info(
+                "Switchboard router call failed for %s (%s); reconnecting once",
+                endpoint_url,
+                tool_name,
+            )
+
+    raise ConnectionError(f"Failed to call tool {tool_name} on {endpoint_url}")
+
+
+async def _reset_router_client_cache_for_tests() -> None:
+    """Test helper: close and clear cached router clients."""
+    endpoints = list(_ROUTER_CLIENTS.keys())
+    for endpoint_url in endpoints:
+        await _close_cached_router_client(endpoint_url)
+    _ROUTER_CLIENT_LOCKS.clear()
 
 
 def _extract_mcp_error_text(result: Any) -> str:
@@ -227,18 +334,14 @@ async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, A
     RuntimeError
         If the target tool returns an MCP error result.
     """
-    try:
-        async with MCPClient(endpoint_url, name="switchboard-router") as client:
-            result = await client.call_tool(tool_name, args, raise_on_error=False)
-            if getattr(result, "is_error", False):
-                error_text = _extract_mcp_error_text(result)
-                # Backward compatibility: many callers still route "handle_message"
-                # while daemon core exposes "trigger". Retry automatically.
-                if tool_name == "handle_message" and "Unknown tool" in error_text:
-                    trigger_args = _build_trigger_args(args)
-                    result = await client.call_tool("trigger", trigger_args, raise_on_error=False)
-    except Exception as exc:
-        raise ConnectionError(f"Failed to call tool {tool_name} on {endpoint_url}: {exc}") from exc
+    result = await _call_tool_with_router_client(endpoint_url, tool_name, args)
+    if getattr(result, "is_error", False):
+        error_text = _extract_mcp_error_text(result)
+        # Backward compatibility: many callers still route "handle_message"
+        # while daemon core exposes "trigger". Retry automatically.
+        if tool_name == "handle_message" and "Unknown tool" in error_text:
+            trigger_args = _build_trigger_args(args)
+            result = await _call_tool_with_router_client(endpoint_url, "trigger", trigger_args)
 
     if getattr(result, "is_error", False):
         error_text = _extract_mcp_error_text(result)

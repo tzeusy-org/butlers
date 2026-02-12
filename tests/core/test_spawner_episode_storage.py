@@ -87,6 +87,14 @@ def _patch_mcp_client(mock_client):
 class TestStoreSessionEpisode:
     """Tests for the store_session_episode helper function."""
 
+    @pytest.fixture(autouse=True)
+    async def _reset_memory_client_cache(self):
+        from butlers.core.spawner import _reset_memory_client_cache_for_tests
+
+        await _reset_memory_client_cache_for_tests()
+        yield
+        await _reset_memory_client_cache_for_tests()
+
     async def test_returns_true_on_success(self):
         """When Memory Butler responds successfully, return True."""
         mock_result = _make_call_tool_result()
@@ -96,6 +104,52 @@ class TestStoreSessionEpisode:
             result = await store_session_episode("my-butler", "session output text")
 
         assert result is True
+
+    async def test_reuses_cached_client_for_consecutive_store_calls(self):
+        """Consecutive episode writes should reuse a healthy cached client."""
+        mock_result = _make_call_tool_result()
+        mock_client = _mock_mcp_client(call_tool_side_effect=[mock_result, mock_result])
+
+        mock_ctor = MagicMock()
+        mock_ctx = mock_ctor.return_value
+        mock_ctx.is_connected = MagicMock(return_value=True)
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("butlers.core.spawner.MCPClient", mock_ctor):
+            first = await store_session_episode("my-butler", "output 1")
+            second = await store_session_episode("my-butler", "output 2")
+
+        assert first is True
+        assert second is True
+        mock_ctor.assert_called_once_with("http://localhost:8150/sse", name="spawner-memory")
+        assert mock_client.call_tool.await_count == 2
+
+    async def test_reconnects_disconnected_cached_client_for_store(self):
+        """Episode write should reconnect when the cached client is disconnected."""
+        first_client = _mock_mcp_client(call_tool_return=_make_call_tool_result())
+        second_client = _mock_mcp_client(call_tool_return=_make_call_tool_result())
+
+        first_ctx = MagicMock()
+        first_ctx.is_connected = MagicMock(return_value=True)
+        first_ctx.__aenter__ = AsyncMock(return_value=first_client)
+        first_ctx.__aexit__ = AsyncMock(return_value=False)
+        second_ctx = MagicMock()
+        second_ctx.is_connected = MagicMock(return_value=True)
+        second_ctx.__aenter__ = AsyncMock(return_value=second_client)
+        second_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "butlers.core.spawner.MCPClient",
+            MagicMock(side_effect=[first_ctx, second_ctx]),
+        ):
+            first = await store_session_episode("my-butler", "output 1")
+            first_ctx.is_connected.return_value = False
+            second = await store_session_episode("my-butler", "output 2")
+
+        assert first is True
+        assert second is True
+        first_ctx.__aexit__.assert_awaited_once()
 
     async def test_returns_false_on_connection_error(self):
         """When Memory Butler is unreachable, return False."""
