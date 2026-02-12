@@ -222,3 +222,8 @@ make test-qg
 ### Switchboard MCP routing contract
 - `roster/switchboard/tools/routing/route.py::_call_butler_tool` calls butler endpoints via `fastmcp.Client` and should return `CallToolResult.data` when present.
 - For backward compatibility, if a target returns `Unknown tool: handle_message`, routing retries `trigger` with mapped args (`prompt` from `prompt`/`message`, optional `context`).
+
+### Telegram identity tool contract
+- `src/butlers/modules/telegram.py` registers only identity-prefixed tools: `user_telegram_{get_updates,send_message,reply_to_message}` and `bot_telegram_{get_updates,send_message,reply_to_message}`.
+- `send_message`/`get_updates` legacy tool names must not be registered.
+- User-output descriptors (`user_telegram_send_message`, `user_telegram_reply_to_message`) are marked as approval-required defaults in descriptor descriptions (`approval_default=always`).
