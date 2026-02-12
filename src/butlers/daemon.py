@@ -148,6 +148,7 @@ class _SpanWrappingMCP:
         self._butler_name = butler_name
         self._module_name = module_name or "unknown"
         self._declared_tool_names = declared_tool_names or set()
+        self._registered_tool_names: set[str] = set()
 
     def tool(self, *args, **kwargs):
         """Return a decorator that wraps the handler with tool_span."""
@@ -164,6 +165,7 @@ class _SpanWrappingMCP:
                         f"'{resolved_tool_name}'. Declare it in user_inputs/user_outputs/"
                         "bot_inputs/bot_outputs descriptors."
                     )
+                self._registered_tool_names.add(resolved_tool_name)
 
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
@@ -173,6 +175,12 @@ class _SpanWrappingMCP:
             return original_decorator(instrumented)
 
         return wrapper
+
+    def missing_declared_tool_names(self) -> set[str]:
+        """Return declared tool names that were never registered."""
+        if not self._declared_tool_names:
+            return set()
+        return self._declared_tool_names - self._registered_tool_names
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._mcp, name)
@@ -798,6 +806,13 @@ class ButlerDaemon:
             )
             validated_config = self._module_configs.get(mod.name)
             await mod.register_tools(wrapped_mcp, validated_config, self.db)
+            missing_declared = wrapped_mcp.missing_declared_tool_names()
+            if missing_declared:
+                missing = ", ".join(sorted(missing_declared))
+                raise ModuleToolValidationError(
+                    f"Module '{mod.name}' declared tool descriptors that were not registered: "
+                    f"{missing}"
+                )
 
     def _validate_module_io_descriptors(self, mod: Module) -> set[str]:
         """Validate I/O descriptor names and return the declared tool-name set."""

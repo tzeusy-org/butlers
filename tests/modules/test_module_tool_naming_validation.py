@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -68,6 +69,15 @@ class WrongPrefixDescriptorModule(DescriptorModule):
 
     def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
         return (ToolIODescriptor(name="bot_email_send"),)
+
+
+class MissingRegistrationDescriptorModule(DescriptorModule):
+    """Module that intentionally skips registering all declared descriptors."""
+
+    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+        @mcp.tool(name="user_email_send")
+        async def _user_email_send() -> dict[str, str]:
+            return {"status": "ok"}
 
 
 class FakeMCP:
@@ -158,3 +168,21 @@ def test_wrapping_mcp_keeps_legacy_modules_compatible_without_descriptors():
         return {"status": "ok"}
 
     assert fake.registered == ["send_email"]
+
+
+@pytest.mark.asyncio
+async def test_register_module_tools_rejects_declared_descriptors_not_registered():
+    """Daemon rejects modules that declare descriptors but skip registration."""
+    module = MissingRegistrationDescriptorModule()
+    daemon = _daemon()
+    daemon._modules = [module]  # noqa: SLF001
+    daemon._module_configs = {module.name: None}  # noqa: SLF001
+    daemon.config = SimpleNamespace(name="switchboard")
+    daemon.db = object()
+    daemon.mcp = FakeMCP()
+
+    with pytest.raises(
+        ModuleToolValidationError,
+        match="declared tool descriptors that were not registered: bot_email_send, user_email_receive",
+    ):
+        await daemon._register_module_tools()  # noqa: SLF001
