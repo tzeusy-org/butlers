@@ -40,7 +40,7 @@ class EmbeddingEngine:
             A list of 384 floats.
         """
         text = self._normalise(text)
-        vec = self._model.encode(text)
+        vec = self._model.encode(text, show_progress_bar=False)
         return vec.tolist()
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
@@ -56,7 +56,7 @@ class EmbeddingEngine:
         if not texts:
             return []
         normalised = [self._normalise(t) for t in texts]
-        vecs = self._model.encode(normalised)
+        vecs = self._model.encode(normalised, show_progress_bar=False)
         return [v.tolist() for v in vecs]
 
     # ------------------------------------------------------------------

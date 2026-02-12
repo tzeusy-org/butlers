@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_BUTLERS_DIR = Path("roster")
 
 
+def _configure_logging() -> None:
+    """Configure app logging and suppress verbose HTTP client request logs."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
 def _parse_comma_separated(ctx, param, value):
     """Parse comma-separated butler names from --only flag."""
     if not value:
@@ -57,7 +64,7 @@ def _check_port_status(port: int, timeout: float = 0.5) -> bool:
 @click.version_option(version="0.1.0")
 def cli() -> None:
     """Butlers — AI agent framework with pluggable MCP server daemons."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
+    _configure_logging()
 
 
 @cli.command()
