@@ -31,32 +31,23 @@ def _load_migration(filename: str):
     return module
 
 
-@pytest.mark.parametrize(
-    ("filename", "expected_revision"),
-    [
-        ("rel_004_notes_rework.py", "rel_004"),
-        ("rel_005_reminders_rework.py", "rel_005"),
-    ],
-)
-def test_rel_004_and_rel_005_have_no_branch_labels(filename: str, expected_revision: str) -> None:
-    """Non-root relationship migrations must not redeclare branch labels."""
-    module = _load_migration(filename)
-    assert module.revision == expected_revision
-    assert module.branch_labels is None, f"{filename} should have branch_labels=None"
-
-
-def test_only_rel_001_declares_relationship_branch_label() -> None:
-    """Only the branch root should have branch_labels=('relationship',)."""
+def _get_migration_files() -> list[Path]:
+    """Return a sorted list of all relationship migration files."""
     migration_dir = _relationship_migration_dir()
-    migration_files = sorted(p for p in migration_dir.glob("*.py") if p.name != "__init__.py")
+    return sorted(p for p in migration_dir.glob("*.py") if p.name != "__init__.py")
 
-    for migration_file in migration_files:
-        module = _load_migration(migration_file.name)
-        if module.revision == "rel_001":
-            assert module.branch_labels == ("relationship",), (
-                f"{migration_file.name} should have branch_labels=('relationship',)"
-            )
-        else:
-            assert module.branch_labels is None, (
-                f"{migration_file.name} should have branch_labels=None"
-            )
+
+@pytest.mark.parametrize(
+    "migration_file", _get_migration_files(), ids=lambda p: p.name
+)
+def test_migration_branch_label(migration_file: Path) -> None:
+    """Only the branch root should have branch_labels=('relationship',)."""
+    module = _load_migration(migration_file.name)
+    if module.revision == "rel_001":
+        assert module.branch_labels == ("relationship",), (
+            f"{migration_file.name} should have branch_labels=('relationship',)"
+        )
+    else:
+        assert module.branch_labels is None, (
+            f"{migration_file.name} should have branch_labels=None"
+        )
