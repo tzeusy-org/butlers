@@ -8,6 +8,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.relationship._schema import contact_name_expr, table_columns
 from butlers.tools.relationship.feed import _log_activity
 
 
@@ -70,9 +71,11 @@ async def upcoming_dates(pool: asyncpg.Pool, days_ahead: int = 30) -> list[dict[
     today = now.date()
     end_date = today + timedelta(days=days_ahead)
 
+    contact_cols = await table_columns(pool, "contacts")
+    name_sql = contact_name_expr(contact_cols, alias="c")
     rows = await pool.fetch(
-        """
-        SELECT d.*, c.name as contact_name
+        f"""
+        SELECT d.*, {name_sql} as contact_name
         FROM important_dates d
         JOIN contacts c ON d.contact_id = c.id
         WHERE c.archived_at IS NULL

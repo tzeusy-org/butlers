@@ -7,6 +7,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.relationship._schema import contact_name_expr, table_columns
 from butlers.tools.relationship.feed import _log_activity
 
 
@@ -51,10 +52,12 @@ async def task_list(
         conditions.append("t.completed = false")
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    contact_cols = await table_columns(pool, "contacts")
+    name_sql = contact_name_expr(contact_cols, alias="c")
 
     rows = await pool.fetch(
         f"""
-        SELECT t.*, c.name as contact_name
+        SELECT t.*, {name_sql} as contact_name
         FROM tasks t
         JOIN contacts c ON t.contact_id = c.id
         {where}
