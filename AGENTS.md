@@ -167,3 +167,7 @@ uv run pytest tests/ -v --ignore=tests/test_db.py --ignore=tests/test_migrations
 ### DB SSL config contract
 - `src/butlers/db.py` now parses `sslmode` from `DATABASE_URL` and `POSTGRES_SSLMODE`; parsed mode is forwarded to both `asyncpg.connect()` (provisioning) and `asyncpg.create_pool()` (runtime).
 - Dashboard DB setup in `src/butlers/api/deps.py` and `src/butlers/api/db.py` reuses the same env parser and forwards the same SSL mode to API pools, keeping daemon/API behavior aligned.
+
+### Frontend test harness
+- Frontend route/component tests run with Vitest (`frontend/package.json` has `npm test` -> `vitest run`).
+- Colocate tests as `frontend/src/**/*.test.tsx` (example: `frontend/src/pages/ButlersPage.test.tsx`).
