@@ -26,7 +26,7 @@ def _load_search_module():
     # embedding.py does not fail.
     mock_st = MagicMock()
     mock_st.SentenceTransformer.return_value = MagicMock()
-    sys.modules.setdefault("sentence_transformers", mock_st)
+    # sys.modules.setdefault("sentence_transformers", mock_st)
 
     spec = importlib.util.spec_from_file_location("search", _SEARCH_PATH)
     assert spec is not None and spec.loader is not None

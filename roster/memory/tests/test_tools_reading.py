@@ -12,32 +12,23 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 # ---------------------------------------------------------------------------
-# Load tools module from disk (roster/ is not a Python package).
-# sentence_transformers must be mocked before import.
+# Load tools module (mocking sentence_transformers first)
 # ---------------------------------------------------------------------------
 
-sys.modules.setdefault("sentence_transformers", MagicMock())
+# ---------------------------------------------------------------------------
+# Load tools module
+# ---------------------------------------------------------------------------
 
-_TOOLS_PATH = Path(__file__).resolve().parent.parent / "tools.py"
-
-
-def _load_tools_module():
-    spec = importlib.util.spec_from_file_location("tools", _TOOLS_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_mod = _load_tools_module()
-
-memory_search = _mod.memory_search
-memory_recall = _mod.memory_recall
-memory_get = _mod.memory_get
-memory_confirm = _mod.memory_confirm
-memory_mark_helpful = _mod.memory_mark_helpful
-memory_mark_harmful = _mod.memory_mark_harmful
-_serialize_row = _mod._serialize_row
+from butlers.tools.memory import (
+    memory_search,
+    memory_recall,
+    memory_get,
+    memory_confirm,
+    memory_mark_helpful,
+    memory_mark_harmful,
+    _serialize_row,
+)
+from butlers.tools.memory import _helpers
 
 pytestmark = pytest.mark.unit
 
@@ -130,7 +121,7 @@ class TestMemorySearch:
         raw_results = [
             {"id": sample_uuid, "content": "test", "memory_type": "fact"},
         ]
-        _mod._search.search = AsyncMock(return_value=raw_results)
+        _helpers._search.search = AsyncMock(return_value=raw_results)
 
         results = await memory_search(
             mock_pool,
@@ -138,7 +129,7 @@ class TestMemorySearch:
             "test query",
         )
 
-        _mod._search.search.assert_awaited_once_with(
+        _helpers._search.search.assert_awaited_once_with(
             mock_pool,
             "test query",
             mock_embedding_engine,
@@ -156,7 +147,7 @@ class TestMemorySearch:
         mock_pool: AsyncMock,
         mock_embedding_engine: MagicMock,
     ) -> None:
-        _mod._search.search = AsyncMock(return_value=[])
+        _helpers._search.search = AsyncMock(return_value=[])
 
         await memory_search(
             mock_pool,
@@ -169,7 +160,7 @@ class TestMemorySearch:
             min_confidence=0.5,
         )
 
-        _mod._search.search.assert_awaited_once_with(
+        _helpers._search.search.assert_awaited_once_with(
             mock_pool,
             "query",
             mock_embedding_engine,
@@ -190,7 +181,7 @@ class TestMemorySearch:
         raw_results = [
             {"id": sample_uuid, "created_at": dt, "content": "fact content"},
         ]
-        _mod._search.search = AsyncMock(return_value=raw_results)
+        _helpers._search.search = AsyncMock(return_value=raw_results)
 
         results = await memory_search(mock_pool, mock_embedding_engine, "q")
 
@@ -215,7 +206,7 @@ class TestMemoryRecall:
         raw_results = [
             {"id": sample_uuid, "content": "rule content", "composite_score": 0.8},
         ]
-        _mod._search.recall = AsyncMock(return_value=raw_results)
+        _helpers._search.recall = AsyncMock(return_value=raw_results)
 
         results = await memory_recall(
             mock_pool,
@@ -223,7 +214,7 @@ class TestMemoryRecall:
             "some topic",
         )
 
-        _mod._search.recall.assert_awaited_once_with(
+        _helpers._search.recall.assert_awaited_once_with(
             mock_pool,
             "some topic",
             mock_embedding_engine,
@@ -238,7 +229,7 @@ class TestMemoryRecall:
         mock_pool: AsyncMock,
         mock_embedding_engine: MagicMock,
     ) -> None:
-        _mod._search.recall = AsyncMock(return_value=[])
+        _helpers._search.recall = AsyncMock(return_value=[])
 
         await memory_recall(
             mock_pool,
@@ -248,7 +239,7 @@ class TestMemoryRecall:
             limit=5,
         )
 
-        _mod._search.recall.assert_awaited_once_with(
+        _helpers._search.recall.assert_awaited_once_with(
             mock_pool,
             "topic",
             mock_embedding_engine,
@@ -266,7 +257,7 @@ class TestMemoryRecall:
         raw_results = [
             {"id": sample_uuid, "last_referenced_at": dt, "composite_score": 0.75},
         ]
-        _mod._search.recall = AsyncMock(return_value=raw_results)
+        _helpers._search.recall = AsyncMock(return_value=raw_results)
 
         results = await memory_recall(mock_pool, mock_embedding_engine, "t")
 
@@ -287,7 +278,7 @@ class TestMemoryGet:
         mock_pool: AsyncMock,
         sample_uuid_str: str,
     ) -> None:
-        _mod._storage.get_memory = AsyncMock(return_value=None)
+        _helpers._storage.get_memory = AsyncMock(return_value=None)
 
         result = await memory_get(mock_pool, "fact", sample_uuid_str)
 
@@ -299,11 +290,11 @@ class TestMemoryGet:
         sample_uuid: uuid.UUID,
         sample_uuid_str: str,
     ) -> None:
-        _mod._storage.get_memory = AsyncMock(return_value={"id": sample_uuid, "content": "c"})
+        _helpers._storage.get_memory = AsyncMock(return_value={"id": sample_uuid, "content": "c"})
 
         await memory_get(mock_pool, "episode", sample_uuid_str)
 
-        call_args = _mod._storage.get_memory.call_args[0]
+        call_args = _helpers._storage.get_memory.call_args[0]
         assert call_args[0] is mock_pool
         assert call_args[1] == "episode"
         assert call_args[2] == sample_uuid
@@ -316,7 +307,7 @@ class TestMemoryGet:
         sample_uuid_str: str,
     ) -> None:
         dt = datetime(2025, 4, 10, 14, 0, 0, tzinfo=UTC)
-        _mod._storage.get_memory = AsyncMock(
+        _helpers._storage.get_memory = AsyncMock(
             return_value={"id": sample_uuid, "created_at": dt, "content": "hello"}
         )
 
@@ -341,7 +332,7 @@ class TestMemoryConfirm:
         mock_pool: AsyncMock,
         sample_uuid_str: str,
     ) -> None:
-        _mod._storage.confirm_memory = AsyncMock(return_value=True)
+        _helpers._storage.confirm_memory = AsyncMock(return_value=True)
 
         result = await memory_confirm(mock_pool, "fact", sample_uuid_str)
 
@@ -352,7 +343,7 @@ class TestMemoryConfirm:
         mock_pool: AsyncMock,
         sample_uuid_str: str,
     ) -> None:
-        _mod._storage.confirm_memory = AsyncMock(return_value=False)
+        _helpers._storage.confirm_memory = AsyncMock(return_value=False)
 
         result = await memory_confirm(mock_pool, "rule", sample_uuid_str)
 
@@ -364,11 +355,11 @@ class TestMemoryConfirm:
         sample_uuid: uuid.UUID,
         sample_uuid_str: str,
     ) -> None:
-        _mod._storage.confirm_memory = AsyncMock(return_value=True)
+        _helpers._storage.confirm_memory = AsyncMock(return_value=True)
 
         await memory_confirm(mock_pool, "fact", sample_uuid_str)
 
-        call_args = _mod._storage.confirm_memory.call_args[0]
+        call_args = _helpers._storage.confirm_memory.call_args[0]
         assert call_args[2] == sample_uuid
         assert isinstance(call_args[2], uuid.UUID)
 
@@ -388,7 +379,7 @@ class TestMemoryMarkHelpful:
         sample_uuid_str: str,
     ) -> None:
         dt = datetime(2025, 7, 1, tzinfo=UTC)
-        _mod._storage.mark_helpful = AsyncMock(
+        _helpers._storage.mark_helpful = AsyncMock(
             return_value={
                 "id": sample_uuid,
                 "last_applied_at": dt,
@@ -408,7 +399,7 @@ class TestMemoryMarkHelpful:
         mock_pool: AsyncMock,
         sample_uuid_str: str,
     ) -> None:
-        _mod._storage.mark_helpful = AsyncMock(return_value=None)
+        _helpers._storage.mark_helpful = AsyncMock(return_value=None)
 
         result = await memory_mark_helpful(mock_pool, sample_uuid_str)
 
@@ -420,11 +411,11 @@ class TestMemoryMarkHelpful:
         sample_uuid: uuid.UUID,
         sample_uuid_str: str,
     ) -> None:
-        _mod._storage.mark_helpful = AsyncMock(return_value={"id": sample_uuid})
+        _helpers._storage.mark_helpful = AsyncMock(return_value={"id": sample_uuid})
 
         await memory_mark_helpful(mock_pool, sample_uuid_str)
 
-        call_args = _mod._storage.mark_helpful.call_args[0]
+        call_args = _helpers._storage.mark_helpful.call_args[0]
         assert call_args[1] == sample_uuid
         assert isinstance(call_args[1], uuid.UUID)
 
@@ -444,7 +435,7 @@ class TestMemoryMarkHarmful:
         sample_uuid_str: str,
     ) -> None:
         dt = datetime(2025, 8, 1, tzinfo=UTC)
-        _mod._storage.mark_harmful = AsyncMock(
+        _helpers._storage.mark_harmful = AsyncMock(
             return_value={
                 "id": sample_uuid,
                 "last_applied_at": dt,
@@ -464,7 +455,7 @@ class TestMemoryMarkHarmful:
         mock_pool: AsyncMock,
         sample_uuid_str: str,
     ) -> None:
-        _mod._storage.mark_harmful = AsyncMock(return_value=None)
+        _helpers._storage.mark_harmful = AsyncMock(return_value=None)
 
         result = await memory_mark_harmful(mock_pool, sample_uuid_str)
 
@@ -476,7 +467,7 @@ class TestMemoryMarkHarmful:
         sample_uuid: uuid.UUID,
         sample_uuid_str: str,
     ) -> None:
-        _mod._storage.mark_harmful = AsyncMock(
+        _helpers._storage.mark_harmful = AsyncMock(
             return_value={"id": sample_uuid, "harmful_count": 1}
         )
 
@@ -486,8 +477,8 @@ class TestMemoryMarkHarmful:
             reason="caused timeout",
         )
 
-        _mod._storage.mark_harmful.assert_awaited_once()
-        call_kwargs = _mod._storage.mark_harmful.call_args[1]
+        _helpers._storage.mark_harmful.assert_awaited_once()
+        call_kwargs = _helpers._storage.mark_harmful.call_args[1]
         assert call_kwargs["reason"] == "caused timeout"
 
     async def test_reason_defaults_to_none(
@@ -496,13 +487,13 @@ class TestMemoryMarkHarmful:
         sample_uuid: uuid.UUID,
         sample_uuid_str: str,
     ) -> None:
-        _mod._storage.mark_harmful = AsyncMock(
+        _helpers._storage.mark_harmful = AsyncMock(
             return_value={"id": sample_uuid, "harmful_count": 1}
         )
 
         await memory_mark_harmful(mock_pool, sample_uuid_str)
 
-        call_kwargs = _mod._storage.mark_harmful.call_args[1]
+        call_kwargs = _helpers._storage.mark_harmful.call_args[1]
         assert call_kwargs["reason"] is None
 
     async def test_converts_string_id_to_uuid(
@@ -511,12 +502,12 @@ class TestMemoryMarkHarmful:
         sample_uuid: uuid.UUID,
         sample_uuid_str: str,
     ) -> None:
-        _mod._storage.mark_harmful = AsyncMock(
+        _helpers._storage.mark_harmful = AsyncMock(
             return_value={"id": sample_uuid, "harmful_count": 1}
         )
 
         await memory_mark_harmful(mock_pool, sample_uuid_str)
 
-        call_args = _mod._storage.mark_harmful.call_args[0]
+        call_args = _helpers._storage.mark_harmful.call_args[0]
         assert call_args[1] == sample_uuid
         assert isinstance(call_args[1], uuid.UUID)

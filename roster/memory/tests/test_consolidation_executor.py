@@ -32,7 +32,7 @@ def _load_parser_module():
 
 
 def _load_executor_module():
-    sys.modules.setdefault("sentence_transformers", MagicMock())
+    # sys.modules.setdefault("sentence_transformers", MagicMock())
     spec = importlib.util.spec_from_file_location("consolidation_executor", _EXECUTOR_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)

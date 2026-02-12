@@ -21,7 +21,7 @@ _STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage.py"
 def _load_storage_module():
     # Pre-mock sentence_transformers to avoid import failure
     st_mock = MagicMock()
-    sys.modules.setdefault("sentence_transformers", st_mock)
+    # sys.modules.setdefault("sentence_transformers", st_mock)
 
     spec = importlib.util.spec_from_file_location("storage", _STORAGE_PATH)
     assert spec is not None and spec.loader is not None

@@ -11,27 +11,19 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 # ---------------------------------------------------------------------------
-# Mock sentence_transformers before loading tools (transitive dep via
-# embedding.py which is loaded by storage.py / search.py).
+# Load tools module (mocking sentence_transformers first)
 # ---------------------------------------------------------------------------
 
-sys.modules.setdefault("sentence_transformers", MagicMock())
+# ---------------------------------------------------------------------------
+# Load tools module
+# ---------------------------------------------------------------------------
 
-_TOOLS_PATH = Path(__file__).resolve().parent.parent / "tools.py"
-
-
-def _load_tools_module():
-    spec = importlib.util.spec_from_file_location("tools", _TOOLS_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_mod = _load_tools_module()
-memory_forget = _mod.memory_forget
-memory_stats = _mod.memory_stats
-memory_context = _mod.memory_context
+from butlers.tools.memory import (
+    memory_forget,
+    memory_stats,
+    memory_context,
+)
+from butlers.tools.memory import _helpers
 
 pytestmark = pytest.mark.unit
 
@@ -74,16 +66,16 @@ class TestMemoryForget:
         self, mock_pool: AsyncMock, memory_id: uuid.UUID
     ) -> None:
         """memory_forget delegates to _storage.forget_memory."""
-        _mod._storage.forget_memory = AsyncMock(return_value=True)
+        _helpers._storage.forget_memory = AsyncMock(return_value=True)
         result = await memory_forget(mock_pool, "fact", str(memory_id))
-        _mod._storage.forget_memory.assert_awaited_once_with(mock_pool, "fact", memory_id)
+        _helpers._storage.forget_memory.assert_awaited_once_with(mock_pool, "fact", memory_id)
         assert result == {"forgotten": True}
 
     async def test_returns_forgotten_false_when_not_found(
         self, mock_pool: AsyncMock, memory_id: uuid.UUID
     ) -> None:
         """memory_forget returns {'forgotten': False} when storage returns False."""
-        _mod._storage.forget_memory = AsyncMock(return_value=False)
+        _helpers._storage.forget_memory = AsyncMock(return_value=False)
         result = await memory_forget(mock_pool, "fact", str(memory_id))
         assert result == {"forgotten": False}
 
@@ -91,9 +83,9 @@ class TestMemoryForget:
         self, mock_pool: AsyncMock, memory_id: uuid.UUID
     ) -> None:
         """memory_forget converts the string memory_id to a uuid.UUID."""
-        _mod._storage.forget_memory = AsyncMock(return_value=True)
+        _helpers._storage.forget_memory = AsyncMock(return_value=True)
         await memory_forget(mock_pool, "rule", str(memory_id))
-        call_args = _mod._storage.forget_memory.call_args[0]
+        call_args = _helpers._storage.forget_memory.call_args[0]
         assert isinstance(call_args[2], uuid.UUID)
         assert call_args[2] == memory_id
 
@@ -101,10 +93,10 @@ class TestMemoryForget:
         self, mock_pool: AsyncMock, memory_id: uuid.UUID
     ) -> None:
         """memory_forget passes memory_type verbatim to storage."""
-        _mod._storage.forget_memory = AsyncMock(return_value=True)
+        _helpers._storage.forget_memory = AsyncMock(return_value=True)
         for mtype in ("episode", "fact", "rule"):
             await memory_forget(mock_pool, mtype, str(memory_id))
-            assert _mod._storage.forget_memory.call_args[0][1] == mtype
+            assert _helpers._storage.forget_memory.call_args[0][1] == mtype
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +272,7 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """memory_context includes a Key Facts section with formatted entries."""
-        _mod._search.recall = AsyncMock(return_value=[
+        _helpers._search.recall = AsyncMock(return_value=[
             _make_fact(subject="user", predicate="prefers", content="dark mode", confidence=0.9),
         ])
         result = await memory_context(
@@ -294,7 +286,7 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """memory_context includes an Active Rules section with formatted entries."""
-        _mod._search.recall = AsyncMock(return_value=[
+        _helpers._search.recall = AsyncMock(return_value=[
             _make_rule(
                 content="Always greet warmly",
                 maturity="established",
@@ -311,7 +303,7 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """When recall returns both facts and rules, both sections appear."""
-        _mod._search.recall = AsyncMock(return_value=[
+        _helpers._search.recall = AsyncMock(return_value=[
             _make_fact(composite_score=0.9),
             _make_rule(composite_score=0.7),
         ])
@@ -325,7 +317,7 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """When recall returns nothing, the context is just the header."""
-        _mod._search.recall = AsyncMock(return_value=[])
+        _helpers._search.recall = AsyncMock(return_value=[])
         result = await memory_context(
             mock_pool, mock_embedding_engine, "anything", "butler-1"
         )
@@ -347,7 +339,7 @@ class TestMemoryContext:
             )
             for i in range(50)
         ]
-        _mod._search.recall = AsyncMock(return_value=many_facts)
+        _helpers._search.recall = AsyncMock(return_value=many_facts)
 
         # Very small budget: 100 tokens = ~400 chars
         result = await memory_context(
@@ -366,7 +358,7 @@ class TestMemoryContext:
         fact_low = _make_fact(
             subject="low", predicate="score", content="trivial", composite_score=0.3
         )
-        _mod._search.recall = AsyncMock(return_value=[fact_high, fact_low])
+        _helpers._search.recall = AsyncMock(return_value=[fact_high, fact_low])
 
         result = await memory_context(
             mock_pool, mock_embedding_engine, "test", "butler-1"
@@ -381,11 +373,11 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """memory_context calls recall with the right arguments."""
-        _mod._search.recall = AsyncMock(return_value=[])
+        _helpers._search.recall = AsyncMock(return_value=[])
         await memory_context(
             mock_pool, mock_embedding_engine, "my topic", "butler-x"
         )
-        _mod._search.recall.assert_awaited_once_with(
+        _helpers._search.recall.assert_awaited_once_with(
             mock_pool, "my topic", mock_embedding_engine, scope="butler-x", limit=20
         )
 
@@ -393,7 +385,7 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """When recall returns only rules, the Key Facts section is absent."""
-        _mod._search.recall = AsyncMock(return_value=[
+        _helpers._search.recall = AsyncMock(return_value=[
             _make_rule(content="Be helpful"),
         ])
         result = await memory_context(
@@ -407,7 +399,7 @@ class TestMemoryContext:
         self, mock_pool: AsyncMock, mock_embedding_engine: MagicMock
     ) -> None:
         """When recall returns only facts, the Active Rules section is absent."""
-        _mod._search.recall = AsyncMock(return_value=[
+        _helpers._search.recall = AsyncMock(return_value=[
             _make_fact(content="likes coffee"),
         ])
         result = await memory_context(

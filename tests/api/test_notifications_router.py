@@ -98,7 +98,7 @@ class TestListNotificationsDefaults:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/")
+            resp = await client.get("/api/notifications")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -113,7 +113,7 @@ class TestListNotificationsDefaults:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/")
+            resp = await client.get("/api/notifications")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -131,7 +131,7 @@ class TestListNotificationsPagination:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"offset": 10, "limit": 5})
+            resp = await client.get("/api/notifications", params={"offset": 10, "limit": 5})
 
         assert resp.status_code == 200
         body = resp.json()
@@ -151,7 +151,7 @@ class TestListNotificationsPagination:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"offset": -1})
+            resp = await client.get("/api/notifications", params={"offset": -1})
 
         assert resp.status_code == 422
 
@@ -161,7 +161,7 @@ class TestListNotificationsPagination:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"limit": 0})
+            resp = await client.get("/api/notifications", params={"limit": 0})
 
         assert resp.status_code == 422
 
@@ -176,7 +176,7 @@ class TestListNotificationsFilterByButler:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"butler": "atlas"})
+            resp = await client.get("/api/notifications", params={"butler": "atlas"})
 
         assert resp.status_code == 200
 
@@ -203,7 +203,7 @@ class TestListNotificationsFilterByChannel:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"channel": "email"})
+            resp = await client.get("/api/notifications", params={"channel": "email"})
 
         assert resp.status_code == 200
 
@@ -224,7 +224,7 @@ class TestListNotificationsFilterByStatus:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"status": "failed"})
+            resp = await client.get("/api/notifications", params={"status": "failed"})
 
         assert resp.status_code == 200
 
@@ -246,7 +246,7 @@ class TestListNotificationsFilterByDateRange:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/notifications/",
+                "/api/notifications",
                 params={"since": "2026-01-01T00:00:00Z"},
             )
 
@@ -263,7 +263,7 @@ class TestListNotificationsFilterByDateRange:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/notifications/",
+                "/api/notifications",
                 params={"until": "2026-12-31T23:59:59Z"},
             )
 
@@ -280,7 +280,7 @@ class TestListNotificationsFilterByDateRange:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/notifications/",
+                "/api/notifications",
                 params={
                     "since": "2026-01-01T00:00:00Z",
                     "until": "2026-12-31T23:59:59Z",
@@ -305,7 +305,7 @@ class TestListNotificationsCombinedFilters:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/notifications/",
+                "/api/notifications",
                 params={"butler": "atlas", "status": "sent"},
             )
 
@@ -346,7 +346,7 @@ class TestListNotificationsResponseShape:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/")
+            resp = await client.get("/api/notifications")
 
         assert resp.status_code == 200
         item = resp.json()["data"][0]
@@ -368,6 +368,6 @@ class TestListNotificationsResponseShape:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            await client.get("/api/notifications/")
+            await client.get("/api/notifications")
 
         mock_db.pool.assert_called_with("switchboard")

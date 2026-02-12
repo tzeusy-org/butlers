@@ -29,6 +29,7 @@ async def memory_store_episode(
     new episode's ID and expiry timestamp.
     """
     parsed_session_id = uuid.UUID(session_id) if session_id is not None else None
+    print(f"DEBUG: calling store_episode on {_storage.store_episode}")
     result = await _storage.store_episode(
         pool,
         content,

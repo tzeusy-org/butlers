@@ -113,7 +113,7 @@ class TestListNotificationsCombinedFiltersAdvanced:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/notifications/",
+                "/api/notifications",
                 params={
                     "butler": "atlas",
                     "channel": "email",
@@ -156,7 +156,7 @@ class TestListNotificationsCombinedFiltersAdvanced:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/notifications/",
+                "/api/notifications",
                 params={
                     "butler": "health",
                     "channel": "telegram",
@@ -183,7 +183,7 @@ class TestListNotificationsCombinedFiltersAdvanced:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/notifications/",
+                "/api/notifications",
                 params={
                     "channel": "email",
                     "since": "2026-06-01T00:00:00Z",
@@ -214,7 +214,7 @@ class TestListNotificationsLimitCapping:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"limit": 201})
+            resp = await client.get("/api/notifications", params={"limit": 201})
 
         assert resp.status_code == 422
 
@@ -226,7 +226,7 @@ class TestListNotificationsLimitCapping:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"limit": 200})
+            resp = await client.get("/api/notifications", params={"limit": 200})
 
         assert resp.status_code == 200
         assert resp.json()["meta"]["limit"] == 200
@@ -239,7 +239,7 @@ class TestListNotificationsLimitCapping:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"limit": 1})
+            resp = await client.get("/api/notifications", params={"limit": 1})
 
         assert resp.status_code == 200
         assert resp.json()["meta"]["limit"] == 1
@@ -259,7 +259,7 @@ class TestListNotificationsEmptyDatabase:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/")
+            resp = await client.get("/api/notifications")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -276,7 +276,7 @@ class TestListNotificationsEmptyDatabase:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
-                "/api/notifications/",
+                "/api/notifications",
                 params={"butler": "nonexistent", "status": "sent"},
             )
 
@@ -301,7 +301,7 @@ class TestListNotificationsOrdering:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            await client.get("/api/notifications/")
+            await client.get("/api/notifications")
 
         data_sql = mock_pool.fetch.call_args[0][0]
         assert "ORDER BY created_at DESC" in data_sql
@@ -315,7 +315,7 @@ class TestListNotificationsOrdering:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             await client.get(
-                "/api/notifications/",
+                "/api/notifications",
                 params={"butler": "atlas", "status": "sent"},
             )
 
@@ -427,7 +427,7 @@ class TestPaginationHasMore:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"offset": 0, "limit": 10})
+            resp = await client.get("/api/notifications", params={"offset": 0, "limit": 10})
 
         body = resp.json()
         meta = body["meta"]
@@ -445,7 +445,7 @@ class TestPaginationHasMore:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"offset": 0, "limit": 50})
+            resp = await client.get("/api/notifications", params={"offset": 0, "limit": 50})
 
         body = resp.json()
         meta = body["meta"]
@@ -461,7 +461,7 @@ class TestPaginationHasMore:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"offset": 0, "limit": 10})
+            resp = await client.get("/api/notifications", params={"offset": 0, "limit": 10})
 
         body = resp.json()
         meta = body["meta"]
@@ -476,7 +476,7 @@ class TestPaginationHasMore:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"offset": 100, "limit": 10})
+            resp = await client.get("/api/notifications", params={"offset": 100, "limit": 10})
 
         assert resp.status_code == 200
         body = resp.json()
@@ -492,7 +492,7 @@ class TestPaginationHasMore:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"offset": 5, "limit": 5})
+            resp = await client.get("/api/notifications", params={"offset": 5, "limit": 5})
 
         assert resp.status_code == 200
         body = resp.json()
@@ -520,7 +520,7 @@ class TestNotificationEndpointValidationErrors:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"offset": -1})
+            resp = await client.get("/api/notifications", params={"offset": -1})
 
         assert resp.status_code == 422
 
@@ -530,7 +530,7 @@ class TestNotificationEndpointValidationErrors:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"limit": -5})
+            resp = await client.get("/api/notifications", params={"limit": -5})
 
         assert resp.status_code == 422
 
@@ -540,7 +540,7 @@ class TestNotificationEndpointValidationErrors:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"limit": 0})
+            resp = await client.get("/api/notifications", params={"limit": 0})
 
         assert resp.status_code == 422
 
@@ -550,7 +550,7 @@ class TestNotificationEndpointValidationErrors:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"limit": 999})
+            resp = await client.get("/api/notifications", params={"limit": 999})
 
         assert resp.status_code == 422
 
@@ -560,7 +560,7 @@ class TestNotificationEndpointValidationErrors:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"since": "not-a-date"})
+            resp = await client.get("/api/notifications", params={"since": "not-a-date"})
 
         assert resp.status_code == 422
 
@@ -570,7 +570,7 @@ class TestNotificationEndpointValidationErrors:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"until": "not-a-date"})
+            resp = await client.get("/api/notifications", params={"until": "not-a-date"})
 
         assert resp.status_code == 422
 
@@ -580,7 +580,7 @@ class TestNotificationEndpointValidationErrors:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"offset": "abc"})
+            resp = await client.get("/api/notifications", params={"offset": "abc"})
 
         assert resp.status_code == 422
 
@@ -590,7 +590,7 @@ class TestNotificationEndpointValidationErrors:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get("/api/notifications/", params={"limit": "xyz"})
+            resp = await client.get("/api/notifications", params={"limit": "xyz"})
 
         assert resp.status_code == 422
 
@@ -610,7 +610,7 @@ class TestListNotificationsQueryConstruction:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            await client.get("/api/notifications/")
+            await client.get("/api/notifications")
 
         count_sql = mock_pool.fetchval.call_args[0][0]
         assert "WHERE" not in count_sql
@@ -627,7 +627,7 @@ class TestListNotificationsQueryConstruction:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            await client.get("/api/notifications/")
+            await client.get("/api/notifications")
 
         data_sql = mock_pool.fetch.call_args[0][0]
         for col in [
@@ -654,7 +654,7 @@ class TestListNotificationsQueryConstruction:
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             await client.get(
-                "/api/notifications/",
+                "/api/notifications",
                 params={"butler": "atlas", "offset": 20, "limit": 10},
             )
 

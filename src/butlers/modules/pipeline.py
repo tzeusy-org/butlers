@@ -139,7 +139,12 @@ class MessagePipeline:
             Contains the target butler name, route result, and any errors.
         """
         # Lazy import to avoid circular dependencies
-        from butlers.tools.switchboard import classify_message, route
+        from butlers.tools.switchboard import (
+            aggregate_responses,
+            classify_message,
+            dispatch_decomposed,
+            route,
+        )
 
         classify = self._classify_fn or classify_message
         route_to = self._route_fn or route
@@ -169,6 +174,56 @@ class MessagePipeline:
         classify_start = time.perf_counter()
         try:
             classification = await classify(self._pool, message_text, self._dispatch_fn)
+
+            # Handle decomposition (list of sub-tasks)
+            if isinstance(classification, list) and classification:
+                # We need source_id from args if available for tracing
+                source_id = str(args.get("source_id")) if args.get("source_id") else None
+
+                classification_latency_ms = (time.perf_counter() - classify_start) * 1000
+                logger.info(
+                    "Pipeline classified message as decomposition",
+                    extra=self._log_fields(
+                        source=source,
+                        chat_id=chat_id,
+                        target_butler="multi",
+                        latency_ms=classification_latency_ms,
+                        subtask_count=len(classification),
+                    ),
+                )
+
+                route_start = time.perf_counter()
+                sub_results = await dispatch_decomposed(
+                    self._pool,
+                    targets=classification,
+                    source_channel=source,
+                    source_id=source_id,
+                )
+                
+                aggregated = aggregate_responses(sub_results, dispatch_fn=self._dispatch_fn)
+                if hasattr(aggregated, "__await__"):
+                    aggregated = await aggregated
+
+                routing_latency_ms = (time.perf_counter() - route_start) * 1000
+                total_latency_ms = (time.perf_counter() - start) * 1000
+
+                logger.info(
+                    "Pipeline routed decomposed message",
+                    extra=self._log_fields(
+                        source=source,
+                        chat_id=chat_id,
+                        target_butler="multi",
+                        latency_ms=total_latency_ms,
+                        classification_latency_ms=classification_latency_ms,
+                        routing_latency_ms=routing_latency_ms,
+                    ),
+                )
+
+                return RoutingResult(
+                    target_butler="multi",
+                    route_result={"result": aggregated},
+                )
+
             target, routed_message = self._normalize_classification(
                 classification,
                 fallback_message=message_text,

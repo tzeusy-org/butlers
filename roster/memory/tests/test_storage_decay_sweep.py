@@ -22,7 +22,7 @@ _STORAGE_PATH = __import__("pathlib").Path(__file__).resolve().parent.parent / "
 
 def _load_storage_module():
     st_mock = MagicMock()
-    sys.modules.setdefault("sentence_transformers", st_mock)
+    # sys.modules.setdefault("sentence_transformers", st_mock)
     spec = importlib.util.spec_from_file_location("storage", _STORAGE_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)

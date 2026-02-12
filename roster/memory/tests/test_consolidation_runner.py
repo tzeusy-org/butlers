@@ -21,7 +21,7 @@ _CONSOLIDATION_PATH = (
 
 
 def _load_consolidation_module():
-    sys.modules.setdefault("sentence_transformers", MagicMock())
+    # sys.modules.setdefault("sentence_transformers", MagicMock())
     spec = importlib.util.spec_from_file_location("consolidation", _CONSOLIDATION_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
