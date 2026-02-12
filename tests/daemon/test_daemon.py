@@ -242,7 +242,7 @@ class TestStartupSequence:
     """Verify the startup sequence executes in the documented order."""
 
     async def test_startup_calls_in_order(self, butler_dir: Path) -> None:
-        """Steps 1-13 should execute in documented order."""
+        """Key startup stages should execute in documented order."""
         patches = _patch_infra()
         call_order: list[str] = []
 
@@ -1412,6 +1412,71 @@ class TestModuleCredentialsTomlSource:
         mock_spawner_cls.assert_called_once()
         spawner_kwargs = mock_spawner_cls.call_args.kwargs
         assert spawner_kwargs["module_credentials_env"] == {"stub_a": ["TOML_KEY"]}
+
+    async def test_identity_scoped_credentials_are_collected(self, tmp_path: Path) -> None:
+        """Identity-scoped user/bot env vars are collected with scope-qualified sources."""
+        (tmp_path / "butler.toml").write_text(
+            """
+[butler]
+name = "switchboard"
+port = 9100
+description = "A test butler"
+
+[butler.db]
+name = "butler_test"
+
+[modules.telegram]
+mode = "polling"
+
+[modules.telegram.user]
+enabled = false
+
+[modules.telegram.bot]
+token_env = "TG_BOT_TOKEN"
+
+[modules.email]
+
+[modules.email.user]
+enabled = false
+
+[modules.email.bot]
+address_env = "BOT_EMAIL_ADDRESS"
+password_env = "BOT_EMAIL_PASSWORD"
+"""
+        )
+        registry = _make_registry(TelegramModule, EmailModule)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"] as mock_validate,
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"] as mock_spawner_cls,
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["connect_switchboard"],
+            patches["start_mcp_server"],
+        ):
+            daemon = ButlerDaemon(tmp_path, registry=registry)
+            await daemon.start()
+
+        mock_validate.assert_called_once()
+        call_kwargs = mock_validate.call_args
+        module_creds = call_kwargs.kwargs.get(
+            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
+        )
+        assert module_creds is not None
+        assert module_creds["telegram.bot"] == ["TG_BOT_TOKEN"]
+        assert module_creds["email.bot"] == ["BOT_EMAIL_ADDRESS", "BOT_EMAIL_PASSWORD"]
+        assert "telegram.user" not in module_creds
+        assert "email.user" not in module_creds
+
+        mock_spawner_cls.assert_called_once()
+        spawner_kwargs = mock_spawner_cls.call_args.kwargs
+        assert spawner_kwargs["module_credentials_env"] == module_creds
 
     async def test_multiple_secrets_detected(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

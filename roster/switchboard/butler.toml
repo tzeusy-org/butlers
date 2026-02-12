@@ -9,4 +9,17 @@ name = "butler_switchboard"
 [modules.telegram]
 mode = "polling"
 
+[modules.telegram.user]
+enabled = false
+
+[modules.telegram.bot]
+token_env = "BUTLER_TELEGRAM_TOKEN"
+
 [modules.email]
+
+[modules.email.user]
+enabled = false
+
+[modules.email.bot]
+address_env = "BUTLER_EMAIL_ADDRESS"
+password_env = "BUTLER_EMAIL_PASSWORD"

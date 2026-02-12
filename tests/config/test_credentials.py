@@ -164,6 +164,24 @@ def test_error_message_identifies_sources(monkeypatch: pytest.MonkeyPatch):
     assert "required by module:telegram" in msg
 
 
+def test_error_message_identifies_identity_scoped_module_source(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Identity-scoped module sources are preserved in the aggregated message."""
+    _set_anthropic_key(monkeypatch)
+    monkeypatch.delenv("BOT_EMAIL_ADDRESS", raising=False)
+
+    with pytest.raises(CredentialError) as exc_info:
+        validate_credentials(
+            env_required=[],
+            env_optional=[],
+            module_credentials={"email.bot": ["BOT_EMAIL_ADDRESS"]},
+        )
+
+    msg = str(exc_info.value)
+    assert "required by module:email.bot" in msg
+
+
 # ---------------------------------------------------------------------------
 # Tests for detect_secrets function
 # ---------------------------------------------------------------------------
