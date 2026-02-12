@@ -5,11 +5,31 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
-from butlers.tools.switchboard.registry import list_butlers
+from butlers.tools.switchboard.registry import discover_butlers, list_butlers
 
 logger = logging.getLogger(__name__)
+_DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3]
+
+
+async def _load_available_butlers(pool: Any) -> list[dict[str, Any]]:
+    """Load butlers from registry; auto-discover from roster when empty."""
+    butlers = await list_butlers(pool)
+    if butlers:
+        return butlers
+
+    try:
+        await discover_butlers(pool, _DEFAULT_ROSTER_DIR)
+        butlers = await list_butlers(pool)
+    except Exception:
+        logger.exception(
+            "classify_message: failed to auto-discover butlers from %s",
+            _DEFAULT_ROSTER_DIR,
+        )
+
+    return butlers
 
 
 async def classify_message(
@@ -31,7 +51,7 @@ async def classify_message(
     """
     fallback = [{"butler": "general", "prompt": message}]
 
-    butlers = await list_butlers(pool)
+    butlers = await _load_available_butlers(pool)
     butler_list = "\n".join(
         f"- {b['name']}: {b.get('description') or 'No description'}" for b in butlers
     )
@@ -72,7 +92,7 @@ async def classify_message_multi(
     structured decomposition entries. This wrapper preserves that interface while
     delegating classification to :func:`classify_message`.
     """
-    butlers = await list_butlers(pool)
+    butlers = await _load_available_butlers(pool)
     known = {b["name"] for b in butlers}
 
     def _extract_targets(entries: list[dict[str, str]]) -> list[str]:

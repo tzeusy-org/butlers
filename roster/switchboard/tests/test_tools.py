@@ -501,6 +501,46 @@ async def test_classify_message_prompt_includes_decomposition_instruction(pool):
     assert "multiple domains" in captured_prompt or "multiple" in captured_prompt.lower()
 
 
+async def test_classify_message_auto_discovers_when_registry_empty(pool, tmp_path, monkeypatch):
+    """classify_message auto-discovers butlers from roster when registry is empty."""
+    from butlers.tools.switchboard import classify_message, list_butlers
+    from butlers.tools.switchboard.routing import classify as classify_module
+
+    await pool.execute("DELETE FROM butler_registry")
+
+    health_dir = tmp_path / "health"
+    health_dir.mkdir()
+    (health_dir / "butler.toml").write_text('[butler]\nname = "health"\nport = 8101\n')
+
+    general_dir = tmp_path / "general"
+    general_dir.mkdir()
+    (general_dir / "butler.toml").write_text('[butler]\nname = "general"\nport = 8102\n')
+
+    monkeypatch.setattr(classify_module, "_DEFAULT_ROSTER_DIR", tmp_path)
+
+    captured_prompt = None
+
+    @dataclass
+    class FakeResult:
+        result: str = '[{"butler": "general", "prompt": "I like chicken rice"}]'
+
+    async def capturing_dispatch(**kwargs):
+        nonlocal captured_prompt
+        captured_prompt = kwargs.get("prompt", "")
+        return FakeResult()
+
+    result = await classify_message(pool, "I like chicken rice", capturing_dispatch)
+    assert result == [{"butler": "general", "prompt": "I like chicken rice"}]
+
+    discovered = await list_butlers(pool)
+    names = [b["name"] for b in discovered]
+    assert "health" in names
+    assert "general" in names
+    assert captured_prompt is not None
+    assert "- health:" in captured_prompt
+    assert "- general:" in captured_prompt
+
+
 # ------------------------------------------------------------------
 # _parse_classification (unit tests for the parser)
 # ------------------------------------------------------------------
