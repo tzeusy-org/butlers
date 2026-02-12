@@ -134,14 +134,17 @@ class _GoogleOAuthClient:
 
     async def get_access_token(self, *, force_refresh: bool = False) -> str:
         if not force_refresh and self._token_is_fresh():
-            return self._access_token or ""
+            assert self._access_token is not None
+            return self._access_token
 
         async with self._refresh_lock:
             if not force_refresh and self._token_is_fresh():
-                return self._access_token or ""
+                assert self._access_token is not None
+                return self._access_token
 
             await self._refresh_access_token()
-            return self._access_token or ""
+            assert self._access_token is not None
+            return self._access_token
 
     def _token_is_fresh(self) -> bool:
         if self._access_token is None or self._access_token_expires_at is None:
@@ -400,9 +403,10 @@ class _GoogleProvider(CalendarProvider):
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._config = config
-        self._http_client = http_client or httpx.AsyncClient(timeout=30.0)
         self._owns_http_client = http_client is None
-        self._oauth = _GoogleOAuthClient(_GoogleOAuthCredentials.from_env(), self._http_client)
+        credentials = _GoogleOAuthCredentials.from_env()
+        self._http_client = http_client or httpx.AsyncClient(timeout=30.0)
+        self._oauth = _GoogleOAuthClient(credentials, self._http_client)
 
     @property
     def name(self) -> str:

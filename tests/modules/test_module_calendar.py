@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -235,6 +235,22 @@ class TestGoogleCredentialParsing:
         assert creds.client_id == "installed-client-id"
         assert creds.client_secret == "installed-client-secret"
         assert creds.refresh_token == "installed-refresh-token"
+
+
+class TestGoogleProviderInitialization:
+    """Verify provider init does not leak resources on credential failures."""
+
+    def test_invalid_credentials_do_not_create_owned_http_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv(GOOGLE_CALENDAR_CREDENTIALS_ENV, "{not-valid-json")
+        async_client_ctor = Mock()
+        monkeypatch.setattr("butlers.modules.calendar.httpx.AsyncClient", async_client_ctor)
+
+        with pytest.raises(CalendarCredentialError):
+            _GoogleProvider(config=CalendarConfig(provider="google", calendar_id="primary"))
+
+        async_client_ctor.assert_not_called()
 
 
 def _mock_response(
