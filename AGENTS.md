@@ -19,7 +19,7 @@ bd sync               # Sync with git
 **MANDATORY WORKFLOW:**
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
+2. **Run right-sized quality gates** (if code changed) - Targeted tests during active development; full suite only for final merge-readiness checks
 3. **Update issue status** - Close finished work, update in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
@@ -37,6 +37,12 @@ bd sync               # Sync with git
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+## Test Scope Policy
+
+- For bugfixes and new features under active development or investigation, prefer targeted `pytest` runs (single test, file, or focused subset).
+- Run the full test suite only when branch changes are finalized and you want a final merge-readiness signal.
+- Expand test scope incrementally if risk is broader, instead of defaulting to full-suite runs early.
 
 
 <!-- bv-agent-instructions-v1 -->
@@ -161,6 +167,10 @@ make test-qg
 - Opt-in local parallel run for the quality-gate scope: `make test-qg-parallel`
 - `test-qg-parallel` uses `pytest-xdist` (`-n auto`) and should produce the same pass/fail set as `make test-qg`.
 
+### Testing cadence policy
+- For bugfixes/features under active development or investigation, default to targeted `pytest` runs to keep loops fast and context lean.
+- Run full-suite tests when branch changes are finalized and you need a pre-merge readiness signal.
+
 ### Switchboard Classification Contract
 - `classify_message()` returns decomposition entries (`list[{"butler","prompt"}]`), not a bare butler string. Callers must normalize both legacy string and list formats before routing.
 - When `butler_registry` is empty, `classify_message()` auto-discovers butlers from `roster/` (see `roster/switchboard/tools/routing/classify.py`) before composing the "Available butlers" prompt.
@@ -175,3 +185,14 @@ make test-qg
 ### Frontend test harness
 - Frontend route/component tests run with Vitest (`frontend/package.json` has `npm test` -> `vitest run`).
 - Colocate tests as `frontend/src/**/*.test.tsx` (example: `frontend/src/pages/ButlersPage.test.tsx`).
+
+### Beads coordinator handoff guardrail
+- Some worker runs can finish with branch pushed but bead still `in_progress` (no PR/bead transition). Coordinator should detect `agent/<id>` ahead of `main` with no PR and normalize by creating a PR and marking the bead `blocked` with `pr-review` + `external_ref`.
+
+### Beads push guardrail
+- Repo push checks enforce a clean beads state; `git push` can fail with "Uncommitted changes detected" even after commits if `.beads/issues.jsonl` was re-synced/staged during pre-push checks.
+- If this happens, run `bd sync --status`, inspect staged `.beads/issues.jsonl`, commit the sync normalization (or intentionally restore it), then re-run `git push`.
+
+### Beads lint template contract
+- `bd lint` enforces section headers in issue descriptions, not only structured fields.
+- For `task` issues include `## Acceptance Criteria` in `description`; for `epic` issues include `## Success Criteria`.
