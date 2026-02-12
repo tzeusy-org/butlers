@@ -356,6 +356,8 @@ Module credentials are only required when the module is enabled in `butler.toml`
 uv sync --dev       # Install dependencies
 make check           # Lint + test
 make test            # Run tests
+make test-qg         # Quality-gate pytest scope (serial)
+make test-qg-parallel # Quality-gate pytest scope (parallel, -n auto)
 make lint            # Lint
 make format          # Format
 ```

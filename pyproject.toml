@@ -33,6 +33,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "testcontainers[postgres]",
+    "pytest-xdist>=3.8.0",
 ]
 
 [project.scripts]
