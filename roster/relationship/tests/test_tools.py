@@ -17,299 +17,272 @@ pytestmark = [
 ]
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for the test module."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16") as pg:
-        yield pg
-
-
 @pytest.fixture
-async def pool(postgres_container):
+async def pool(provisioned_postgres_pool):
     """Provision a fresh database with relationship tables and return a pool."""
-    from butlers.db import Database
+    async with provisioned_postgres_pool() as p:
+        # Create relationship tables (mirrors Alembic relationship migration)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL,
+                details JSONB DEFAULT '{}',
+                archived_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (name)
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS relationships (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_a UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_b UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                type TEXT NOT NULL,
+                notes TEXT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS important_dates (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                label TEXT NOT NULL,
+                month INT NOT NULL,
+                day INT NOT NULL,
+                year INT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS notes (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                content TEXT NOT NULL,
+                emotion TEXT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS interactions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                type TEXT NOT NULL,
+                summary TEXT,
+                occurred_at TIMESTAMPTZ DEFAULT now(),
+                created_at TIMESTAMPTZ DEFAULT now(),
+                direction VARCHAR(10),
+                duration_minutes INTEGER,
+                metadata JSONB
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_interactions_contact_occurred
+                ON interactions (contact_id, occurred_at)
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                message TEXT NOT NULL,
+                reminder_type TEXT NOT NULL CHECK (reminder_type IN ('one_time', 'recurring')),
+                cron TEXT,
+                due_at TIMESTAMPTZ,
+                dismissed BOOLEAN DEFAULT false,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS gifts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                description TEXT NOT NULL,
+                occasion TEXT,
+                status TEXT NOT NULL DEFAULT 'idea'
+                    CHECK (status IN ('idea', 'purchased', 'wrapped', 'given', 'thanked')),
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS loans (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                amount NUMERIC NOT NULL,
+                direction TEXT NOT NULL CHECK (direction IN ('lent', 'borrowed')),
+                description TEXT,
+                settled BOOLEAN DEFAULT false,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                settled_at TIMESTAMPTZ
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS groups (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS group_members (
+                group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                PRIMARY KEY (group_id, contact_id)
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS labels (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL UNIQUE,
+                color TEXT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS contact_labels (
+                label_id UUID NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                PRIMARY KEY (label_id, contact_id)
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS quick_facts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now(),
+                UNIQUE (contact_id, key)
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS activity_feed (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                type TEXT NOT NULL,
+                description TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_activity_feed_contact_created
+                ON activity_feed (contact_id, created_at)
+        """)
 
-    db = Database(
-        db_name=_unique_db_name(),
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        min_pool_size=1,
-        max_pool_size=3,
-    )
-    await db.provision()
-    p = await db.connect()
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS addresses (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                label VARCHAR NOT NULL DEFAULT 'Home',
+                line_1 TEXT NOT NULL,
+                line_2 TEXT,
+                city VARCHAR,
+                province VARCHAR,
+                postal_code VARCHAR,
+                country VARCHAR(2),
+                is_current BOOLEAN NOT NULL DEFAULT false,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_addresses_contact_id
+                ON addresses (contact_id)
+        """)
+        # Life event tables (migration 002)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS life_event_categories (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL UNIQUE,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS life_event_types (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                category_id UUID NOT NULL REFERENCES life_event_categories(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                UNIQUE (category_id, name)
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_life_event_types_category
+                ON life_event_types (category_id)
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS life_events (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                life_event_type_id UUID NOT NULL REFERENCES life_event_types(id),
+                summary TEXT NOT NULL,
+                description TEXT,
+                happened_at DATE,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                title VARCHAR NOT NULL,
+                description TEXT,
+                completed BOOLEAN DEFAULT false,
+                completed_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_life_events_contact_happened
+                ON life_events (contact_id, happened_at)
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_life_events_type
+                ON life_events (life_event_type_id)
+        """)
+        # Seed categories
+        await p.execute("""
+            INSERT INTO life_event_categories (name) VALUES
+                ('Career'), ('Personal'), ('Social')
+        """)
+        # Seed Career types
+        await p.execute("""
+            INSERT INTO life_event_types (category_id, name)
+            SELECT id, type_name FROM life_event_categories
+            CROSS JOIN (VALUES
+                ('new job'), ('promotion'), ('quit'), ('retired'), ('graduated')
+            ) AS t(type_name)
+            WHERE name = 'Career'
+        """)
+        # Seed Personal types
+        await p.execute("""
+            INSERT INTO life_event_types (category_id, name)
+            SELECT id, type_name FROM life_event_categories
+            CROSS JOIN (VALUES
+                ('married'), ('divorced'), ('had a child'), ('moved'), ('passed away')
+            ) AS t(type_name)
+            WHERE name = 'Personal'
+        """)
+        # Seed Social types
+        await p.execute("""
+            INSERT INTO life_event_types (category_id, name)
+            SELECT id, type_name FROM life_event_categories
+            CROSS JOIN (VALUES
+                ('met for first time'), ('reconnected')
+            ) AS t(type_name)
+            WHERE name = 'Social'
+        """)
 
-    # Create relationship tables (mirrors Alembic relationship migration)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS contacts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
-            details JSONB DEFAULT '{}',
-            archived_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ DEFAULT now(),
-            updated_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (name)
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS relationships (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_a UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            contact_b UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            type TEXT NOT NULL,
-            notes TEXT,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS important_dates (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            label TEXT NOT NULL,
-            month INT NOT NULL,
-            day INT NOT NULL,
-            year INT,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS notes (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            content TEXT NOT NULL,
-            emotion TEXT,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS interactions (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            type TEXT NOT NULL,
-            summary TEXT,
-            occurred_at TIMESTAMPTZ DEFAULT now(),
-            created_at TIMESTAMPTZ DEFAULT now(),
-            direction VARCHAR(10),
-            duration_minutes INTEGER,
-            metadata JSONB
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_interactions_contact_occurred
-            ON interactions (contact_id, occurred_at)
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS reminders (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            message TEXT NOT NULL,
-            reminder_type TEXT NOT NULL CHECK (reminder_type IN ('one_time', 'recurring')),
-            cron TEXT,
-            due_at TIMESTAMPTZ,
-            dismissed BOOLEAN DEFAULT false,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS gifts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            description TEXT NOT NULL,
-            occasion TEXT,
-            status TEXT NOT NULL DEFAULT 'idea'
-                CHECK (status IN ('idea', 'purchased', 'wrapped', 'given', 'thanked')),
-            created_at TIMESTAMPTZ DEFAULT now(),
-            updated_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS loans (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            amount NUMERIC NOT NULL,
-            direction TEXT NOT NULL CHECK (direction IN ('lent', 'borrowed')),
-            description TEXT,
-            settled BOOLEAN DEFAULT false,
-            created_at TIMESTAMPTZ DEFAULT now(),
-            settled_at TIMESTAMPTZ
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS groups (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL UNIQUE,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS group_members (
-            group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            PRIMARY KEY (group_id, contact_id)
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS labels (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL UNIQUE,
-            color TEXT,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS contact_labels (
-            label_id UUID NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            PRIMARY KEY (label_id, contact_id)
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS quick_facts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            key TEXT NOT NULL,
-            value TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT now(),
-            updated_at TIMESTAMPTZ DEFAULT now(),
-            UNIQUE (contact_id, key)
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS activity_feed (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            type TEXT NOT NULL,
-            description TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_activity_feed_contact_created
-            ON activity_feed (contact_id, created_at)
-    """)
-
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS addresses (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            label VARCHAR NOT NULL DEFAULT 'Home',
-            line_1 TEXT NOT NULL,
-            line_2 TEXT,
-            city VARCHAR,
-            province VARCHAR,
-            postal_code VARCHAR,
-            country VARCHAR(2),
-            is_current BOOLEAN NOT NULL DEFAULT false,
-            created_at TIMESTAMPTZ DEFAULT now(),
-            updated_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_addresses_contact_id
-            ON addresses (contact_id)
-    """)
-    # Life event tables (migration 002)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS life_event_categories (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL UNIQUE,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS life_event_types (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            category_id UUID NOT NULL REFERENCES life_event_categories(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT now(),
-            UNIQUE (category_id, name)
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_life_event_types_category
-            ON life_event_types (category_id)
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS life_events (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            life_event_type_id UUID NOT NULL REFERENCES life_event_types(id),
-            summary TEXT NOT NULL,
-            description TEXT,
-            happened_at DATE,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS tasks (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            title VARCHAR NOT NULL,
-            description TEXT,
-            completed BOOLEAN DEFAULT false,
-            completed_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_life_events_contact_happened
-            ON life_events (contact_id, happened_at)
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_life_events_type
-            ON life_events (life_event_type_id)
-    """)
-    # Seed categories
-    await p.execute("""
-        INSERT INTO life_event_categories (name) VALUES
-            ('Career'), ('Personal'), ('Social')
-    """)
-    # Seed Career types
-    await p.execute("""
-        INSERT INTO life_event_types (category_id, name)
-        SELECT id, type_name FROM life_event_categories
-        CROSS JOIN (VALUES
-            ('new job'), ('promotion'), ('quit'), ('retired'), ('graduated')
-        ) AS t(type_name)
-        WHERE name = 'Career'
-    """)
-    # Seed Personal types
-    await p.execute("""
-        INSERT INTO life_event_types (category_id, name)
-        SELECT id, type_name FROM life_event_categories
-        CROSS JOIN (VALUES
-            ('married'), ('divorced'), ('had a child'), ('moved'), ('passed away')
-        ) AS t(type_name)
-        WHERE name = 'Personal'
-    """)
-    # Seed Social types
-    await p.execute("""
-        INSERT INTO life_event_types (category_id, name)
-        SELECT id, type_name FROM life_event_categories
-        CROSS JOIN (VALUES
-            ('met for first time'), ('reconnected')
-        ) AS t(type_name)
-        WHERE name = 'Social'
-    """)
-
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_tasks_contact_id ON tasks (contact_id)
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks (completed)
-    """)
-    yield p
-    await db.close()
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_tasks_contact_id ON tasks (contact_id)
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks (completed)
+        """)
+        yield p
 
 
 # ------------------------------------------------------------------
