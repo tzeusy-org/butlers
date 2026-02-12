@@ -1,7 +1,7 @@
 """tasks_table
 
 Revision ID: rel_002f
-Revises: rel_001
+Revises: rel_002e
 Create Date: 2025-01-01 00:00:00.000000
 
 """

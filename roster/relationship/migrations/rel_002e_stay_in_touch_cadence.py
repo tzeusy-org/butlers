@@ -1,7 +1,7 @@
 """stay_in_touch_cadence
 
 Revision ID: rel_002e
-Revises: rel_001
+Revises: rel_002d
 Create Date: 2026-02-10 00:00:00.000000
 
 """

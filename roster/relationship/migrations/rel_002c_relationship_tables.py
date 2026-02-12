@@ -1,7 +1,7 @@
 """add relationship tables: contact_info, addresses, life_events
 
 Revision ID: rel_002c
-Revises: rel_001
+Revises: rel_002a
 Create Date: 2026-02-09 00:00:00.000000
 
 """
