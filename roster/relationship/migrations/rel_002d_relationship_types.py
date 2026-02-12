@@ -1,7 +1,7 @@
 """relationship_types taxonomy
 
 Revision ID: rel_002d
-Revises: rel_001
+Revises: rel_002c
 Create Date: 2026-02-10 00:00:00.000000
 
 """
