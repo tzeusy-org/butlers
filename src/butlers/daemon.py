@@ -79,7 +79,7 @@ class ModuleToolValidationError(ValueError):
     """Raised when module I/O descriptors or registered tool names are invalid."""
 
 
-_TOOL_NAME_RE = re.compile(r"^(user|bot)_[a-z0-9]+_[a-z0-9_]+$")
+_TOOL_NAME_RE = re.compile(r"^(user|bot)_[a-z0-9_]+_[a-z0-9_]+$")
 
 
 def _validate_tool_name(name: str, module_name: str, *, context: str = "registered tool") -> None:
