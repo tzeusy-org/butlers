@@ -203,3 +203,12 @@ make test-qg
 ### Beads lint template contract
 - `bd lint` enforces section headers in issue descriptions, not only structured fields.
 - For `task` issues include `## Acceptance Criteria` in `description`; for `epic` issues include `## Success Criteria`.
+- For `bug` issues created with `--validate`, include `## Acceptance Criteria` in `description` (the separate `--acceptance` flag alone is not sufficient).
+
+### Relationship `important_dates` column contract
+- Relationship schema stores date kind in `important_dates.label` (not `important_dates.date_type`).
+- API queries touching birthdays/upcoming dates should use `label` consistently to avoid `UndefinedColumnError` on production schema.
+
+### Switchboard MCP routing contract
+- `roster/switchboard/tools/routing/route.py::_call_butler_tool` calls butler endpoints via `fastmcp.Client` and should return `CallToolResult.data` when present.
+- For backward compatibility, if a target returns `Unknown tool: handle_message`, routing retries `trigger` with mapped args (`prompt` from `prompt`/`message`, optional `context`).
