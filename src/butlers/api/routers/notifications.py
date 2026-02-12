@@ -32,6 +32,17 @@ def _get_db_manager() -> DatabaseManager:
     raise RuntimeError("DatabaseManager not initialized")
 
 
+def _get_switchboard_pool(db: DatabaseManager) -> asyncpg.Pool | None:
+    """Return the switchboard pool, or ``None`` when it's unavailable."""
+    try:
+        return db.pool("switchboard")
+    except KeyError:
+        logger.warning(
+            "Switchboard DB pool unavailable; returning empty notification payloads",
+        )
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Shared query logic
 # ---------------------------------------------------------------------------
@@ -145,7 +156,12 @@ async def list_notifications(
     Supports filtering by butler, channel, status, and date range.
     Results are ordered by ``created_at DESC`` (newest first).
     """
-    pool = db.pool("switchboard")
+    pool = _get_switchboard_pool(db)
+    if pool is None:
+        return PaginatedResponse[NotificationSummary](
+            data=[],
+            meta=PaginationMeta(total=0, offset=offset, limit=limit),
+        )
     return await _query_notifications(
         pool,
         offset=offset,
@@ -182,7 +198,12 @@ async def list_butler_notifications(
     Identical to ``GET /api/notifications`` but with ``source_butler``
     pre-filtered to the butler identified by *name* in the URL path.
     """
-    pool = db.pool("switchboard")
+    pool = _get_switchboard_pool(db)
+    if pool is None:
+        return PaginatedResponse[NotificationSummary](
+            data=[],
+            meta=PaginationMeta(total=0, offset=offset, limit=limit),
+        )
     return await _query_notifications(
         pool,
         offset=offset,
@@ -204,7 +225,17 @@ async def notification_stats(
     Queries the Switchboard database for total counts, sent/failed breakdowns,
     and per-channel / per-butler distributions.
     """
-    pool = db.pool("switchboard")
+    pool = _get_switchboard_pool(db)
+    if pool is None:
+        return ApiResponse[NotificationStats](
+            data=NotificationStats(
+                total=0,
+                sent=0,
+                failed=0,
+                by_channel={},
+                by_butler={},
+            )
+        )
 
     total = await pool.fetchval("SELECT count(*) FROM notifications") or 0
     sent = await pool.fetchval("SELECT count(*) FROM notifications WHERE status = 'sent'") or 0

@@ -13,6 +13,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.db import should_retry_with_ssl_disable
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,7 +76,18 @@ class DatabaseManager:
         }
         if self._ssl is not None:
             pool_kwargs["ssl"] = self._ssl
-        pool = await asyncpg.create_pool(**pool_kwargs)
+        try:
+            pool = await asyncpg.create_pool(**pool_kwargs)
+        except Exception as exc:
+            if not should_retry_with_ssl_disable(exc, self._ssl):
+                raise
+            retry_kwargs = dict(pool_kwargs)
+            retry_kwargs["ssl"] = "disable"
+            logger.info(
+                "Retrying DB pool creation with ssl=disable for butler %s after SSL upgrade loss",
+                butler_name,
+            )
+            pool = await asyncpg.create_pool(**retry_kwargs)
         self._pools[butler_name] = pool
         logger.info("Added pool for butler: %s (db=%s)", butler_name, effective_db)
 
