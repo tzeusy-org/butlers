@@ -391,6 +391,12 @@ Quality-gate default rationale and scope contract:
 - Benchmark outcome: `make test-qg` (`-n auto`) measured `126.42s` wall time vs `216.58s` serial baseline (~41.6% faster). See `docs/PYTEST_QG_ALTERNATIVES_QKX5.md`.
 - Coverage expectation is unchanged: `make test-qg`, `make test-qg-serial`, and `make test-qg-parallel` all run the same `QG_PYTEST_ARGS` test selection (`tests/` excluding `tests/test_db.py` and `tests/test_migrations.py`). Only execution mode changes.
 
+Docker flake triage under parallel quality gates:
+
+- Startup-timeout class: `Error while fetching server API version ... Read timed out` occurs during `docker.from_env(version=\"auto\")` before container launch. Mitigation is bounded startup retry and/or reducing host contention.
+- Teardown-race class: `did not receive an exit event` occurs during container removal and is handled by bounded teardown retry.
+- Use `make test-qg-serial` as a diagnostic fallback when host contention is high and startup-timeout failures persist.
+
 ## Tech Stack
 
 Python 3.12+ · FastMCP · Claude Code SDK · PostgreSQL · asyncpg · Docker · asyncio · OpenTelemetry · Alembic · Click · Pydantic

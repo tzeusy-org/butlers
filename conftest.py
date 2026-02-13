@@ -31,6 +31,10 @@ _TEARDOWN_TRANSIENT_ALREADY_IN_PROGRESS_SNIPPET = "is already in progress"
 _TEARDOWN_TRANSIENT_NO_SUCH_CONTAINER_SNIPPET = "no such container"
 _TESTCONTAINER_STOP_RETRY_ATTEMPTS = 4
 _TESTCONTAINER_STOP_BASE_DELAY_SECONDS = 0.1
+_TRANSIENT_DOCKER_STARTUP_ERROR_MARKERS = (
+    "error while fetching server api version",
+    "read timed out",
+)
 _TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS = (
     "did not receive an exit event",
     "tried to kill container",
@@ -117,6 +121,26 @@ def _is_transient_docker_teardown_error(exc: Exception) -> bool:
     )
 
 
+def _is_transient_docker_startup_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return all(marker in message for marker in _TRANSIENT_DOCKER_STARTUP_ERROR_MARKERS)
+
+
+def _initialize_docker_client_with_retry(
+    initialize: Callable[[], None],
+    *,
+    max_attempts: int = 3,
+) -> None:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            initialize()
+            return
+        except Exception as exc:
+            if not _is_transient_docker_startup_error(exc) or attempt >= max_attempts:
+                raise
+            time.sleep(0.5 * attempt)
+
+
 def _remove_container_with_retry(
     container: object,
     *,
@@ -143,6 +167,22 @@ def _remove_container_with_retry(
             return
 
 
+def _install_resilient_testcontainers_startup() -> None:
+    from testcontainers.core.docker_client import DockerClient
+
+    if getattr(DockerClient.__init__, "__butlers_resilient_startup__", False):
+        return
+
+    original_init = DockerClient.__init__
+
+    def _resilient_init(self: object, **kwargs: object) -> None:
+        _initialize_docker_client_with_retry(lambda: original_init(self, **kwargs))
+
+    _resilient_init.__butlers_resilient_startup__ = True
+    _resilient_init.__wrapped__ = original_init
+    DockerClient.__init__ = _resilient_init
+
+
 def _install_resilient_testcontainers_stop() -> None:
     from testcontainers.core.container import DockerContainer
 
@@ -165,6 +205,7 @@ def _install_resilient_testcontainers_stop() -> None:
     DockerContainer.stop = _resilient_stop
 
 
+_install_resilient_testcontainers_startup()
 _install_resilient_testcontainers_stop()
 
 
