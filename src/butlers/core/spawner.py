@@ -379,7 +379,8 @@ class Spawner:
         prompt:
             The prompt to send to the runtime instance.
         trigger_source:
-            What caused this invocation (schedule, trigger_tool, tick, heartbeat).
+            What caused this invocation. Expected values are ``tick``,
+            ``external``, ``trigger``, or ``schedule:<task-name>``.
         context:
             Optional text to prepend to the prompt. If provided and non-empty,
             this will be prepended to the prompt with two newlines separating them.
@@ -398,6 +399,21 @@ class Spawner:
         """
         if not self._accepting:
             raise RuntimeError("Spawner is shutting down; not accepting new triggers")
+
+        # Prevent self-trigger deadlocks: an in-flight trigger-sourced session can
+        # invoke the trigger tool again via MCP. Waiting on the same lock here
+        # would deadlock the runtime call graph.
+        if trigger_source == "trigger" and self._lock.locked():
+            error_msg = (
+                "Runtime invocation rejected: trigger tool cannot be called while "
+                "another session is in flight"
+            )
+            logger.warning(error_msg)
+            return SpawnerResult(
+                success=False,
+                error=error_msg,
+                model=self._config.runtime.model,
+            )
 
         self._in_flight_event.clear()
         task = asyncio.current_task()
@@ -489,6 +505,7 @@ class Spawner:
 
         # Attach span to context
         token = trace.context_api.attach(trace.set_span_in_context(span))
+        t0 = time.monotonic()
 
         try:
             # Extract trace_id from active span
@@ -503,8 +520,6 @@ class Spawner:
                 )
                 # Set session_id on span
                 span.set_attribute("session_id", str(session_id))
-
-            t0 = time.monotonic()
 
             # Read system prompt
             system_prompt = read_system_prompt(self._config_dir, self._config.name)

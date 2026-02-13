@@ -411,6 +411,58 @@ class TestCoreToolRegistration:
         assert set(registered_tools) == self.EXPECTED_TOOLS
 
 
+class TestTriggerToolDispatch:
+    """Verify trigger MCP tool dispatch uses canonical trigger_source values."""
+
+    async def test_trigger_tool_uses_trigger_source_contract(self, butler_dir: Path) -> None:
+        """trigger() should call spawner.trigger with trigger_source='trigger'."""
+        patches = _patch_infra()
+        trigger_fn = None
+
+        patches["mock_spawner"].trigger = AsyncMock(
+            return_value=MagicMock(output="ok", success=True, error=None, duration_ms=12)
+        )
+
+        mock_mcp = MagicMock()
+
+        def tool_decorator():
+            def decorator(fn):
+                nonlocal trigger_fn
+                if fn.__name__ == "trigger":
+                    trigger_fn = fn
+                return fn
+
+            return decorator
+
+        mock_mcp.tool = tool_decorator
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patch("butlers.daemon.FastMCP", return_value=mock_mcp),
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir)
+            await daemon.start()
+
+        assert trigger_fn is not None
+        result = await trigger_fn("hello", "extra context")
+        patches["mock_spawner"].trigger.assert_awaited_once_with(
+            prompt="hello",
+            context="extra context",
+            trigger_source="trigger",
+        )
+        assert result["success"] is True
+        assert result["duration_ms"] == 12
+
+
 class TestModuleToolRegistration:
     """Verify module tools are registered in topological order."""
 
