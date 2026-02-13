@@ -245,9 +245,7 @@ class TelegramModule(Module):
                 return await module._get_updates()
 
             get_updates_tool.__name__ = f"{identity}_telegram_get_updates"
-            get_updates_tool.__doc__ = (
-                f"Get recent updates for the {identity} Telegram identity."
-            )
+            get_updates_tool.__doc__ = f"Get recent updates for the {identity} Telegram identity."
             mcp.tool()(get_updates_tool)
 
         for identity in ("user", "bot"):

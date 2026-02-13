@@ -112,6 +112,7 @@ async def _call_tool_with_router_client(
                 tool_name,
             )
 
+
 async def _reset_router_client_cache_for_tests() -> None:
     """Test helper: close and clear cached router clients."""
     endpoints = list(_ROUTER_CLIENTS.keys())

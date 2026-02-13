@@ -173,6 +173,7 @@ async def _call_memory_tool_with_reconnect(
             first_exc = exc
             logger.info("Memory tool call failed (%s); reconnecting once", tool_name)
 
+
 async def _reset_memory_client_cache_for_tests() -> None:
     """Test helper: close and clear cached Memory Butler clients."""
     urls = list(_MEMORY_CLIENTS.keys())
