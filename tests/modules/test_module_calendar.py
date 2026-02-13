@@ -881,6 +881,24 @@ class TestEventPayloadNormalization:
                 },
                 "must not include DTSTART/DTEND",
             ),
+            (
+                {
+                    "title": "Invalid recurrence lowercase dtstart",
+                    "start_at": datetime(2026, 4, 1, 9, 0),
+                    "end_at": datetime(2026, 4, 1, 10, 0),
+                    "recurrence": "RRULE:FREQ=DAILY;dtstart=20260401T090000Z",
+                },
+                "must not include DTSTART/DTEND",
+            ),
+            (
+                {
+                    "title": "Invalid recurrence newline injection",
+                    "start_at": datetime(2026, 4, 1, 9, 0),
+                    "end_at": datetime(2026, 4, 1, 10, 0),
+                    "recurrence": "RRULE:FREQ=DAILY\nDTSTART:20260401T090000Z",
+                },
+                "must not contain newline characters",
+            ),
         ],
     )
     def test_invalid_payloads_raise_clear_errors(self, payload, message):

@@ -491,12 +491,7 @@ class CalendarEventPayloadInput(BaseModel):
     @field_validator("attendees")
     @classmethod
     def _normalize_attendees(cls, value: list[str]) -> list[str]:
-        normalized: list[str] = []
-        for attendee in value:
-            attendee_value = attendee.strip()
-            if attendee_value:
-                normalized.append(attendee_value)
-        return normalized
+        return [attendee.strip() for attendee in value if attendee.strip()]
 
 
 class CalendarNormalizedEventTime(BaseModel):
@@ -629,11 +624,14 @@ def _normalize_notification(
             "notification.minutes_before cannot be set when notification.enabled is false"
         )
 
-    enabled = defaults.enabled if normalized.enabled is None else normalized.enabled
-    minutes_before = normalized.minutes_before
-    if enabled and minutes_before is None:
-        minutes_before = defaults.minutes_before
-    if not enabled:
+    enabled = normalized.enabled if normalized.enabled is not None else defaults.enabled
+    if enabled:
+        minutes_before = (
+            normalized.minutes_before
+            if normalized.minutes_before is not None
+            else defaults.minutes_before
+        )
+    else:
         minutes_before = None
     return CalendarNormalizedNotification(enabled=enabled, minutes_before=minutes_before)
 
@@ -647,11 +645,14 @@ def _normalize_recurrence(recurrence: str | list[str] | None) -> list[str]:
         rule = raw_rule.strip()
         if not rule:
             raise ValueError("recurrence rules must be non-empty strings")
+        if "\n" in rule or "\r" in rule:
+            raise ValueError("recurrence rules must not contain newline characters")
         if not rule.startswith("RRULE:"):
             raise ValueError("recurrence rules must start with 'RRULE:'")
-        if "FREQ=" not in rule:
+        upper_rule = rule.upper()
+        if "FREQ=" not in upper_rule:
             raise ValueError("recurrence rules must include a FREQ component")
-        if "DTSTART" in rule or "DTEND" in rule:
+        if "DTSTART" in upper_rule or "DTEND" in upper_rule:
             raise ValueError("recurrence rules must not include DTSTART/DTEND components")
         normalized_rules.append(rule)
     return normalized_rules
