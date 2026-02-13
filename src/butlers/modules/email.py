@@ -1,10 +1,15 @@
-"""Email module — send_email, search_inbox, read_email MCP tools.
+"""Email module — identity-prefixed email MCP tools.
 
 Uses IMAP for inbox access and SMTP for sending.
-Configured via [modules.email] in butler.toml.
+Configured via [modules.email] with optional
+[modules.email.user] and [modules.email.bot] credential scopes in butler.toml.
 
 When a ``MessagePipeline`` is attached, incoming emails can be classified
 and routed to the appropriate butler via ``check_and_route_inbox``.
+
+The ``user_*`` and ``bot_*`` tool prefixes model caller scope for routing
+and approvals. Today both scopes use the same configured email account
+(``SOURCE_EMAIL`` / ``SOURCE_EMAIL_PASSWORD``).
 """
 
 from __future__ import annotations
@@ -14,16 +19,71 @@ import email as email_lib
 import imaplib
 import logging
 import os
+import re
 import smtplib
 from email.mime.text import MIMEText
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolIODescriptor
 from butlers.modules.pipeline import MessagePipeline, RoutingResult
 
 logger = logging.getLogger(__name__)
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_env_var_name(value: str, *, scope: str, field_name: str) -> str:
+    """Validate a configured env var name for an identity credential field."""
+    if not value or not value.strip():
+        raise ValueError(
+            f"modules.email.{scope}.{field_name} must be a non-empty environment variable name"
+        )
+    name = value.strip()
+    if not _ENV_VAR_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"modules.email.{scope}.{field_name} must be a valid environment variable name "
+            "(letters, numbers, underscores; cannot start with a number)"
+        )
+    return name
+
+
+class EmailUserCredentialsConfig(BaseModel):
+    """Identity-scoped credentials for user mailbox operations."""
+
+    enabled: bool = False
+    address_env: str = "USER_EMAIL_ADDRESS"
+    password_env: str = "USER_EMAIL_PASSWORD"
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("address_env")
+    @classmethod
+    def _validate_address_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="user", field_name="address_env")
+
+    @field_validator("password_env")
+    @classmethod
+    def _validate_password_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="user", field_name="password_env")
+
+
+class EmailBotCredentialsConfig(BaseModel):
+    """Identity-scoped credentials for bot mailbox operations."""
+
+    enabled: bool = True
+    address_env: str = "BUTLER_EMAIL_ADDRESS"
+    password_env: str = "BUTLER_EMAIL_PASSWORD"
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("address_env")
+    @classmethod
+    def _validate_address_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="bot", field_name="address_env")
+
+    @field_validator("password_env")
+    @classmethod
+    def _validate_password_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="bot", field_name="password_env")
 
 
 class EmailConfig(BaseModel):
@@ -34,15 +94,21 @@ class EmailConfig(BaseModel):
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993
     use_tls: bool = True
+    user: EmailUserCredentialsConfig = Field(default_factory=EmailUserCredentialsConfig)
+    bot: EmailBotCredentialsConfig = Field(default_factory=EmailBotCredentialsConfig)
+    model_config = ConfigDict(extra="forbid")
 
 
 class EmailModule(Module):
-    """Email module providing send_email, search_inbox, and read_email tools.
+    """Email module providing user_*/bot_* email tools.
 
     When a ``MessagePipeline`` is set via ``set_pipeline()``, the
-    ``check_and_route_inbox`` tool becomes functional: it fetches unseen
+    ``bot_email_check_and_route_inbox`` tool becomes functional: it fetches unseen
     emails, classifies each via ``classify_message()``, and routes them
     to the appropriate butler.
+
+    The ``user_*`` and ``bot_*`` prefixes represent tool scope. Both currently
+    use the same configured SMTP/IMAP credentials.
     """
 
     def __init__(self) -> None:
@@ -62,10 +128,87 @@ class EmailModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
+    def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Declare user-identity email input tools."""
+        return (
+            ToolIODescriptor(
+                name="user_email_search_inbox",
+                description="Search inbox from user-scoped tool surface.",
+            ),
+            ToolIODescriptor(
+                name="user_email_read_message",
+                description="Read a specific message from user-scoped tool surface.",
+            ),
+        )
+
+    def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Declare user-identity email output tools.
+
+        User send/reply actions are approval-required defaults.
+        """
+        return (
+            ToolIODescriptor(
+                name="user_email_send_message",
+                description=(
+                    "Send outbound email from user-scoped tool surface (approval-required default)."
+                ),
+            ),
+            ToolIODescriptor(
+                name="user_email_reply_to_thread",
+                description=(
+                    "Reply to email thread from user-scoped tool surface "
+                    "(approval-required default)."
+                ),
+            ),
+        )
+
+    def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Declare bot-identity email input tools."""
+        return (
+            ToolIODescriptor(
+                name="bot_email_search_inbox",
+                description="Search inbox from bot-scoped tool surface.",
+            ),
+            ToolIODescriptor(
+                name="bot_email_read_message",
+                description="Read a specific message from bot-scoped tool surface.",
+            ),
+            ToolIODescriptor(
+                name="bot_email_check_and_route_inbox",
+                description="Classify and route unseen bot-inbox emails.",
+            ),
+        )
+
+    def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Declare bot-identity email output tools.
+
+        Bot send/reply actions are approval-required defaults.
+        """
+        return (
+            ToolIODescriptor(
+                name="bot_email_send_message",
+                description=(
+                    "Send outbound email from bot-scoped tool surface (approval-required default)."
+                ),
+            ),
+            ToolIODescriptor(
+                name="bot_email_reply_to_thread",
+                description=(
+                    "Reply to email thread from bot-scoped tool surface "
+                    "(approval-required default)."
+                ),
+            ),
+        )
+
     @property
     def credentials_env(self) -> list[str]:
         """Environment variables required for email authentication."""
-        return ["SOURCE_EMAIL", "SOURCE_EMAIL_PASSWORD"]
+        envs: list[str] = []
+        if self._config.bot.enabled:
+            envs.extend([self._config.bot.address_env, self._config.bot.password_env])
+        if self._config.user.enabled:
+            envs.extend([self._config.user.address_env, self._config.user.password_env])
+        return envs
 
     def migration_revisions(self) -> str | None:
         return None  # No custom tables needed
@@ -73,34 +216,73 @@ class EmailModule(Module):
     def set_pipeline(self, pipeline: MessagePipeline) -> None:
         """Attach a classification/routing pipeline for incoming messages.
 
-        When set, ``check_and_route_inbox`` will classify and route each
+        When set, ``bot_email_check_and_route_inbox`` will classify and route each
         unseen email to the appropriate butler.
         """
         self._pipeline = pipeline
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        """Register send_email, search_inbox, read_email, check_and_route_inbox MCP tools."""
+        """Register identity-prefixed email MCP tools.
+
+        Tool prefixes represent caller scope only; all handlers currently use
+        the same configured email account credentials.
+        """
         self._config = config if isinstance(config, EmailConfig) else EmailConfig(**(config or {}))
         module = self  # capture for closures
 
         @mcp.tool()
-        async def send_email(to: str, subject: str, body: str) -> dict:
-            """Send an email via SMTP."""
+        async def user_email_send_message(to: str, subject: str, body: str) -> dict:
+            """Send an email via SMTP from the user-scoped tool surface."""
             return await module._send_email(to, subject, body)
 
         @mcp.tool()
-        async def search_inbox(query: str) -> list[dict]:
-            """Search inbox via IMAP SEARCH."""
+        async def user_email_reply_to_thread(
+            to: str,
+            thread_id: str,
+            body: str,
+            subject: str | None = None,
+        ) -> dict:
+            """Reply to an email thread from the user-scoped tool surface."""
+            return await module._reply_to_thread(to, thread_id, body, subject)
+
+        @mcp.tool()
+        async def user_email_search_inbox(query: str) -> list[dict]:
+            """Search inbox via IMAP SEARCH from the user-scoped tool surface."""
             return await module._search_inbox(query)
 
         @mcp.tool()
-        async def read_email(message_id: str) -> dict:
-            """Read a specific email by message ID."""
+        async def user_email_read_message(message_id: str) -> dict:
+            """Read a specific email by message ID from the user-scoped tool surface."""
             return await module._read_email(message_id)
 
         @mcp.tool()
-        async def check_and_route_inbox() -> dict:
-            """Check for unseen emails and route each through the classification pipeline."""
+        async def bot_email_send_message(to: str, subject: str, body: str) -> dict:
+            """Send an email via SMTP from the bot-scoped tool surface."""
+            return await module._send_email(to, subject, body)
+
+        @mcp.tool()
+        async def bot_email_reply_to_thread(
+            to: str,
+            thread_id: str,
+            body: str,
+            subject: str | None = None,
+        ) -> dict:
+            """Reply to an email thread from the bot-scoped tool surface."""
+            return await module._reply_to_thread(to, thread_id, body, subject)
+
+        @mcp.tool()
+        async def bot_email_search_inbox(query: str) -> list[dict]:
+            """Search inbox via IMAP SEARCH from the bot-scoped tool surface."""
+            return await module._search_inbox(query)
+
+        @mcp.tool()
+        async def bot_email_read_message(message_id: str) -> dict:
+            """Read a specific email by message ID from the bot-scoped tool surface."""
+            return await module._read_email(message_id)
+
+        @mcp.tool()
+        async def bot_email_check_and_route_inbox() -> dict:
+            """Check unseen emails and route each through the classification pipeline."""
             return await module._check_and_route_inbox()
 
     async def on_startup(self, config: Any, db: Any) -> None:
@@ -229,17 +411,24 @@ class EmailModule(Module):
     # Implementation helpers using stdlib imaplib/smtplib
     # ------------------------------------------------------------------
 
-    def _get_credentials(self) -> tuple[str, str]:
+    def _get_credentials(self, *, scope: str = "bot") -> tuple[str, str]:
         """Read email credentials from environment variables.
 
-        Raises ``RuntimeError`` if either SOURCE_EMAIL or SOURCE_EMAIL_PASSWORD
-        is not set.
+        Raises ``RuntimeError`` if configured credential env vars for the
+        selected identity scope are not set.
         """
-        address = os.environ.get("SOURCE_EMAIL")
-        password = os.environ.get("SOURCE_EMAIL_PASSWORD")
+        scope_cfg = self._config.bot if scope == "bot" else self._config.user
+        if not scope_cfg.enabled:
+            raise RuntimeError(f"Email credential scope modules.email.{scope} is disabled")
+
+        address_env = scope_cfg.address_env
+        password_env = scope_cfg.password_env
+        address = os.environ.get(address_env)
+        password = os.environ.get(password_env)
         if not address or not password:
             raise RuntimeError(
-                "SOURCE_EMAIL and SOURCE_EMAIL_PASSWORD environment variables must be set"
+                f"Missing email credentials for modules.email.{scope}: set "
+                f"{address_env} and {password_env}"
             )
         return address, password
 
@@ -352,6 +541,24 @@ class EmailModule(Module):
     async def _send_email(self, to: str, subject: str, body: str) -> dict:
         """Send email via SMTP. Uses asyncio.to_thread for blocking SMTP calls."""
         return await asyncio.to_thread(self._smtp_send, to, subject, body)
+
+    async def _reply_to_thread(
+        self,
+        to: str,
+        thread_id: str,
+        body: str,
+        subject: str | None = None,
+    ) -> dict:
+        """Send a reply-like email payload tied to a thread identifier."""
+        if not thread_id:
+            raise ValueError("thread_id is required")
+
+        resolved_subject = subject.strip() if subject else ""
+        if not resolved_subject:
+            resolved_subject = f"Re: {thread_id}"
+
+        result = await self._send_email(to, resolved_subject, body)
+        return {**result, "thread_id": thread_id}
 
     async def _search_inbox(self, query: str) -> list[dict]:
         """Search inbox via IMAP. Uses asyncio.to_thread for blocking IMAP calls."""

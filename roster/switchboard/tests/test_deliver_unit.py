@@ -874,6 +874,14 @@ class TestDeliverResultData:
 class TestCallButlerTool:
     """Unit tests for direct MCP calls in routing._call_butler_tool."""
 
+    @pytest.fixture(autouse=True)
+    async def _reset_router_client_cache(self):
+        from butlers.tools.switchboard.routing.route import _reset_router_client_cache_for_tests
+
+        await _reset_router_client_cache_for_tests()
+        yield
+        await _reset_router_client_cache_for_tests()
+
     async def test_uses_mcp_client_and_returns_data(self) -> None:
         """_call_butler_tool should call FastMCP and return result.data."""
         from butlers.tools.switchboard import _call_butler_tool
@@ -893,6 +901,65 @@ class TestCallButlerTool:
         assert result == {"ok": True}
         mock_ctor.assert_called_once_with("http://localhost:8101/sse", name="switchboard-router")
         mock_client.call_tool.assert_awaited_once_with("handle_message", {}, raise_on_error=False)
+
+    async def test_reuses_cached_client_for_same_endpoint(self) -> None:
+        """Consecutive calls should reuse a healthy cached router client."""
+        from butlers.tools.switchboard import _call_butler_tool
+
+        result_one = SimpleNamespace(is_error=False, data={"n": 1}, content=[])
+        result_two = SimpleNamespace(is_error=False, data={"n": 2}, content=[])
+
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(side_effect=[result_one, result_two])
+
+        mock_ctor = MagicMock()
+        mock_ctx = mock_ctor.return_value
+        mock_ctx.is_connected = MagicMock(return_value=True)
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("butlers.tools.switchboard.routing.route.MCPClient", mock_ctor):
+            first = await _call_butler_tool("http://localhost:8101/sse", "handle_message", {})
+            second = await _call_butler_tool("http://localhost:8101/sse", "handle_message", {})
+
+        assert first == {"n": 1}
+        assert second == {"n": 2}
+        mock_ctor.assert_called_once_with("http://localhost:8101/sse", name="switchboard-router")
+        assert mock_client.call_tool.await_count == 2
+
+    async def test_reconnects_when_cached_client_disconnected(self) -> None:
+        """A disconnected cached client should be replaced on the next call."""
+        from butlers.tools.switchboard import _call_butler_tool
+
+        first_client = AsyncMock()
+        first_client.call_tool = AsyncMock(
+            return_value=SimpleNamespace(is_error=False, data={"step": 1}, content=[])
+        )
+        second_client = AsyncMock()
+        second_client.call_tool = AsyncMock(
+            return_value=SimpleNamespace(is_error=False, data={"step": 2}, content=[])
+        )
+
+        first_ctx = MagicMock()
+        first_ctx.is_connected = MagicMock(return_value=True)
+        first_ctx.__aenter__ = AsyncMock(return_value=first_client)
+        first_ctx.__aexit__ = AsyncMock(return_value=False)
+        second_ctx = MagicMock()
+        second_ctx.is_connected = MagicMock(return_value=True)
+        second_ctx.__aenter__ = AsyncMock(return_value=second_client)
+        second_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "butlers.tools.switchboard.routing.route.MCPClient",
+            MagicMock(side_effect=[first_ctx, second_ctx]),
+        ) as mock_ctor:
+            first = await _call_butler_tool("http://localhost:8101/sse", "handle_message", {})
+            first_ctx.is_connected.return_value = False
+            second = await _call_butler_tool("http://localhost:8101/sse", "handle_message", {})
+
+        assert first == {"step": 1}
+        assert second == {"step": 2}
+        assert mock_ctor.call_count == 2
 
     async def test_wraps_client_failure_as_connection_error(self) -> None:
         """_call_butler_tool should preserve failed-call context in the exception."""

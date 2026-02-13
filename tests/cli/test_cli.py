@@ -95,7 +95,14 @@ class TestListCommand:
         butler_dir = tmp_path / "butlers" / "modular"
         butler_dir.mkdir(parents=True)
         (butler_dir / "butler.toml").write_text(
-            '[butler]\nname = "modular"\nport = 9010\n\n[modules.email]\n\n[modules.telegram]\n'
+            '[butler]\nname = "modular"\nport = 9010\n\n'
+            "[modules.email]\n"
+            "[modules.email.user]\nenabled = false\n"
+            '[modules.email.bot]\naddress_env = "BUTLER_EMAIL_ADDRESS"\n'
+            'password_env = "BUTLER_EMAIL_PASSWORD"\n\n'
+            "[modules.telegram]\n"
+            "[modules.telegram.user]\nenabled = false\n"
+            '[modules.telegram.bot]\ntoken_env = "BUTLER_TELEGRAM_TOKEN"\n'
         )
         result = runner.invoke(cli, ["list", "--dir", str(tmp_path / "butlers")])
         assert result.exit_code == 0
