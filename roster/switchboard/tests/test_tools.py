@@ -567,6 +567,70 @@ async def test_classify_message_preserves_specialist_domain_ownership(calendar_r
     assert result == [{"butler": "health", "prompt": "Schedule my blood test for next week"}]
 
 
+async def test_classify_message_prefers_calendar_in_multi_domain(calendar_routing_pool):
+    """Scheduling entries in decomposition prefer a calendar-capable butler."""
+    from butlers.tools.switchboard import classify_message, register_butler
+
+    await register_butler(
+        calendar_routing_pool,
+        "relationship",
+        "http://localhost:8105/sse",
+        "Relationship butler",
+    )
+
+    @dataclass
+    class FakeResult:
+        result: str = (
+            '[{"butler": "general", "prompt": "Schedule lunch with Alex next Tuesday at 1pm"}, '
+            '{"butler": "relationship", '
+            '"prompt": "Remind me to congratulate Alex on the promotion"}]'
+        )
+
+    async def decomposed_dispatch(**kwargs):
+        return FakeResult()
+
+    result = await classify_message(
+        calendar_routing_pool,
+        (
+            "Schedule lunch with Alex next Tuesday at 1pm and remind me to "
+            "congratulate Alex on the promotion"
+        ),
+        decomposed_dispatch,
+    )
+    assert result == [
+        {"butler": "scheduler", "prompt": "Schedule lunch with Alex next Tuesday at 1pm"},
+        {"butler": "relationship", "prompt": "Remind me to congratulate Alex on the promotion"},
+    ]
+
+
+async def test_classify_message_rewrites_only_scheduling_entries_in_decomposition(
+    calendar_routing_pool,
+):
+    """Only scheduling general entries are rewritten in mixed decompositions."""
+    from butlers.tools.switchboard import classify_message
+
+    @dataclass
+    class FakeResult:
+        result: str = (
+            '[{"butler": "general", '
+            '"prompt": "Schedule a dentist appointment for Friday morning"}, '
+            '{"butler": "general", "prompt": "What should I pack for the trip?"}]'
+        )
+
+    async def mixed_dispatch(**kwargs):
+        return FakeResult()
+
+    result = await classify_message(
+        calendar_routing_pool,
+        ("Schedule a dentist appointment for Friday morning and what should I pack for the trip?"),
+        mixed_dispatch,
+    )
+    assert result == [
+        {"butler": "scheduler", "prompt": "Schedule a dentist appointment for Friday morning"},
+        {"butler": "general", "prompt": "What should I pack for the trip?"},
+    ]
+
+
 async def test_classify_message_auto_discovers_when_registry_empty(pool, tmp_path, monkeypatch):
     """classify_message auto-discovers butlers from roster when registry is empty."""
     from butlers.tools.switchboard import classify_message, list_butlers
