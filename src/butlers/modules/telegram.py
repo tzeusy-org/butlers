@@ -76,7 +76,7 @@ class TelegramBotCredentialsConfig(BaseModel):
 
 REACTION_IN_PROGRESS = ":eye"
 REACTION_SUCCESS = ":done"
-# Lifecycle labels are internal keys; Telegram receives the mapped Unicode emoji.
+# Internal lifecycle alias; Telegram receives the mapped Unicode emoji (👾), not this key.
 REACTION_FAILURE = ":space invader"
 REACTION_TO_EMOJI = {
     REACTION_IN_PROGRESS: "\U0001f440",
@@ -84,34 +84,16 @@ REACTION_TO_EMOJI = {
     REACTION_FAILURE: "\U0001f47e",
 }
 TERMINAL_REACTION_CACHE_SIZE = 2048
-_REACTION_ERROR_HINTS = ("reaction", "react", "emoji")
-
-
-def _telegram_error_description(response: httpx.Response | None) -> str | None:
-    """Extract Telegram API error description from a response payload."""
-    if response is None:
-        return None
-    try:
-        payload = response.json()
-    except ValueError:
-        return None
-    description = payload.get("description")
-    if not isinstance(description, str):
-        return None
-    normalized = description.strip()
-    return normalized or None
-
-
-def _is_expected_reaction_rejection(exc: httpx.HTTPStatusError) -> bool:
-    """Return True for expected Telegram reaction-availability 400 responses."""
-    response = exc.response
-    if response is None or response.status_code != 400:
-        return False
-    description = _telegram_error_description(response)
-    if description is None:
-        return False
-    lowered = description.lower()
-    return any(hint in lowered for hint in _REACTION_ERROR_HINTS)
+_REACTION_400_HINTS = (
+    "reaction_invalid",
+    "reaction is invalid",
+    "unsupported reaction",
+    "reactions are disabled",
+    "can't be reacted",
+    "cannot be reacted",
+    "reaction not available",
+    "reaction unavailable",
+)
 
 
 @dataclass
@@ -318,6 +300,42 @@ class TelegramModule(Module):
         if lock is not None and not lock.locked():
             self._reaction_locks.pop(message_key, None)
 
+    @staticmethod
+    def _telegram_error_description(response: httpx.Response | None) -> str | None:
+        if response is None:
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            description = payload.get("description")
+            if isinstance(description, str):
+                description = description.strip()
+                if description:
+                    return description
+        return None
+
+    @staticmethod
+    def _is_expected_reaction_http_400(
+        *, reaction: str, error: httpx.HTTPStatusError, description: str | None
+    ) -> bool:
+        response = error.response
+        if response is None or response.status_code != 400:
+            return False
+
+        normalized = description.lower() if description is not None else None
+        if normalized is not None:
+            if any(hint in normalized for hint in _REACTION_400_HINTS):
+                return True
+            if "reaction" in normalized and any(
+                token in normalized for token in ("not available", "disabled", "unsupported")
+            ):
+                return True
+
+        # Terminal failure reaction is best-effort; some chats reject this lifecycle emoji.
+        return reaction == REACTION_FAILURE
+
     def _track_routing_progress(
         self, lifecycle: ProcessingLifecycle, result: RoutingResult
     ) -> None:
@@ -382,35 +400,26 @@ class TelegramModule(Module):
                 message_id=message_id,
                 reaction=reaction,
             )
-        except httpx.HTTPStatusError as exc:
-            telegram_error = _telegram_error_description(exc.response)
-            if _is_expected_reaction_rejection(exc):
-                logger.warning(
-                    "Telegram rejected message reaction; skipping lifecycle reaction update",
-                    extra={
-                        "source": "telegram",
-                        "chat_id": chat_id,
-                        "message_id": message_id,
-                        "reaction": reaction,
-                        "status_code": exc.response.status_code
-                        if exc.response is not None
-                        else None,
-                        "telegram_error": telegram_error,
-                    },
-                )
-                return
-            logger.exception(
-                "Failed to set Telegram message reaction",
-                extra={
-                    "source": "telegram",
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "reaction": reaction,
-                    "status_code": exc.response.status_code if exc.response is not None else None,
-                    "telegram_error": telegram_error,
-                },
-            )
-        except Exception:
+        except Exception as error:
+            if isinstance(error, httpx.HTTPStatusError):
+                description = self._telegram_error_description(error.response)
+                if self._is_expected_reaction_http_400(
+                    reaction=reaction,
+                    error=error,
+                    description=description,
+                ):
+                    logger.warning(
+                        "Skipping Telegram message reaction after expected API constraint",
+                        extra={
+                            "source": "telegram",
+                            "chat_id": chat_id,
+                            "message_id": message_id,
+                            "reaction": reaction,
+                            "telegram_status_code": error.response.status_code,
+                            "telegram_error_description": description,
+                        },
+                    )
+                    return
             logger.exception(
                 "Failed to set Telegram message reaction",
                 extra={
@@ -675,7 +684,7 @@ class TelegramModule(Module):
     async def _set_message_reaction(
         self, *, chat_id: str, message_id: int, reaction: str
     ) -> dict[str, Any]:
-        """Call Telegram setMessageReaction API with a mapped lifecycle reaction."""
+        """Call Telegram setMessageReaction API with a mapped lifecycle reaction emoji."""
         emoji = REACTION_TO_EMOJI[reaction]
         url = f"{self._base_url()}/setMessageReaction"
         client = self._get_client()
