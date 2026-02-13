@@ -43,6 +43,7 @@ class MockPool:
     def __init__(self) -> None:
         self.pending_actions: dict[uuid.UUID, dict[str, Any]] = {}
         self.approval_rules: list[dict[str, Any]] = []
+        self.approval_events: list[dict[str, Any]] = []
         self.execute_calls: list[tuple[str, tuple]] = []
 
     def add_rule(
@@ -92,6 +93,18 @@ class MockPool:
                 "decided_at": None,
                 "execution_result": None,
             }
+        elif "INSERT INTO approval_events" in query:
+            self.approval_events.append(
+                {
+                    "event_type": args[0],
+                    "action_id": args[1],
+                    "rule_id": args[2],
+                    "actor": args[3],
+                    "reason": args[4],
+                    "event_metadata": json.loads(args[5]),
+                    "occurred_at": args[6],
+                }
+            )
         elif "UPDATE pending_actions" in query and "status" in query:
             # Update from executor or gate
             if "AND status = $5" in query:
@@ -520,6 +533,27 @@ class TestApplyApprovalGates:
         stored = pool.pending_actions[action_id]
         assert stored["expires_at"] is not None
 
+    async def test_pending_path_emits_action_queued_event(self):
+        """Parking a gated call should append an action_queued event."""
+        tools: dict[str, Any] = {}
+        mock_mcp = _make_mock_mcp(tools)
+        pool = MockPool()
+
+        @mock_mcp.tool()
+        async def email_send(to: str) -> dict:
+            return {"status": "sent"}
+
+        config = _make_approval_config(gated_tools={"email_send": GatedToolConfig()})
+        apply_approval_gates(mock_mcp, config, pool)
+
+        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        result = await wrapper(to="alice@example.com")
+
+        action_id = uuid.UUID(result["action_id"])
+        event = next(e for e in pool.approval_events if e["action_id"] == action_id)
+        assert event["event_type"] == "action_queued"
+        assert event["actor"] == "system:approval_gate"
+
     async def test_auto_approve_via_standing_rule(self):
         """When a standing rule matches, the tool should be auto-approved and executed."""
         tools: dict[str, Any] = {}
@@ -549,6 +583,28 @@ class TestApplyApprovalGates:
         assert result == {"status": "sent"}
         assert len(executed) == 1
         assert executed[0]["to"] == "alice@example.com"
+
+    async def test_auto_approve_emits_lifecycle_events(self):
+        """Auto-approve flow should emit queue, auto-approve, and execution events."""
+        tools: dict[str, Any] = {}
+        mock_mcp = _make_mock_mcp(tools)
+        pool = MockPool()
+
+        @mock_mcp.tool()
+        async def email_send(to: str) -> dict:
+            return {"status": "sent"}
+
+        config = _make_approval_config(gated_tools={"email_send": GatedToolConfig()})
+        pool.add_rule("email_send", arg_constraints={"to": "alice@example.com"})
+        apply_approval_gates(mock_mcp, config, pool)
+
+        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        await wrapper(to="alice@example.com")
+
+        event_types = {event["event_type"] for event in pool.approval_events}
+        assert "action_queued" in event_types
+        assert "action_auto_approved" in event_types
+        assert "action_execution_succeeded" in event_types
 
     async def test_auto_approve_persists_action_with_rule_id(self):
         """Auto-approved actions should be persisted with approval_rule_id."""

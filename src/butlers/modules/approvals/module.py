@@ -29,6 +29,7 @@ from typing import Any
 from fastmcp.server.dependencies import AccessToken, get_access_token
 from pydantic import BaseModel
 
+from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.executor import (
     list_executed_actions as _list_executed_actions_query,
@@ -455,6 +456,15 @@ class ApprovalsModule(Module):
                 )
             }
         action = PendingAction.from_row(approved_row)
+        await record_approval_event(
+            self._db,
+            ApprovalEventType.ACTION_APPROVED,
+            actor="user:manual",
+            action_id=parsed_id,
+            reason="approved by operator",
+            metadata={"tool_name": action.tool_name},
+            occurred_at=now,
+        )
 
         # Execute the original tool via the executor
         if self._tool_executor is not None:
@@ -521,6 +531,16 @@ class ApprovalsModule(Module):
                 rule.created_from,
                 rule.created_at,
                 rule.active,
+            )
+            await record_approval_event(
+                self._db,
+                ApprovalEventType.RULE_CREATED,
+                actor="user:manual",
+                action_id=parsed_id,
+                rule_id=rule.id,
+                reason="create_rule=true during approve_action",
+                metadata={"tool_name": rule.tool_name},
+                occurred_at=now,
             )
             rule_dict = rule.to_dict()
 
@@ -592,6 +612,15 @@ class ApprovalsModule(Module):
                     f"to '{ActionStatus.REJECTED.value}'"
                 )
             }
+        await record_approval_event(
+            self._db,
+            ApprovalEventType.ACTION_REJECTED,
+            actor="user:manual",
+            action_id=parsed_id,
+            reason=reason or "rejected by operator",
+            metadata={"tool_name": action.tool_name},
+            occurred_at=now,
+        )
 
         final_row = await self._db.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1", parsed_id
@@ -637,6 +666,15 @@ class ApprovalsModule(Module):
                 ActionStatus.PENDING.value,
             )
             if expired_row is not None:
+                await record_approval_event(
+                    self._db,
+                    ApprovalEventType.ACTION_EXPIRED,
+                    actor="system:expiry",
+                    action_id=action.id,
+                    reason="approval window elapsed",
+                    metadata={"tool_name": action.tool_name},
+                    occurred_at=now,
+                )
                 expired_ids.append(str(action.id))
 
         return {
@@ -696,6 +734,15 @@ class ApprovalsModule(Module):
             rule.expires_at,
             rule.max_uses,
             rule.active,
+        )
+        await record_approval_event(
+            self._db,
+            ApprovalEventType.RULE_CREATED,
+            actor="user:manual",
+            rule_id=rule.id,
+            reason="create_approval_rule",
+            metadata={"tool_name": rule.tool_name},
+            occurred_at=now,
         )
 
         return rule.to_dict()
@@ -757,6 +804,16 @@ class ApprovalsModule(Module):
             rule.created_from,
             rule.created_at,
             rule.active,
+        )
+        await record_approval_event(
+            self._db,
+            ApprovalEventType.RULE_CREATED,
+            actor="user:manual",
+            action_id=parsed_id,
+            rule_id=rule.id,
+            reason="create_rule_from_action",
+            metadata={"tool_name": rule.tool_name},
+            occurred_at=now,
         )
 
         return rule.to_dict()
@@ -825,6 +882,14 @@ class ApprovalsModule(Module):
             "UPDATE approval_rules SET active = $1 WHERE id = $2",
             False,
             parsed_id,
+        )
+        await record_approval_event(
+            self._db,
+            ApprovalEventType.RULE_REVOKED,
+            actor="user:manual",
+            rule_id=parsed_id,
+            reason="rule revoked by operator",
+            metadata={"tool_name": rule.tool_name},
         )
 
         # Re-read to return updated state

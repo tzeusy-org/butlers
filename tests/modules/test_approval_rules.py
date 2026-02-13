@@ -50,6 +50,7 @@ class MockDB:
     def __init__(self) -> None:
         self.pending_actions: dict[uuid.UUID, dict[str, Any]] = {}
         self.approval_rules: dict[uuid.UUID, dict[str, Any]] = {}
+        self.approval_events: list[dict[str, Any]] = []
 
     def _insert_action(self, **kwargs: Any) -> uuid.UUID:
         """Helper to seed a pending action for testing."""
@@ -235,6 +236,18 @@ class MockDB:
                 "decided_at": None,
                 "execution_result": None,
             }
+        elif "INSERT INTO approval_events" in query:
+            self.approval_events.append(
+                {
+                    "event_type": args[0],
+                    "action_id": args[1],
+                    "rule_id": args[2],
+                    "actor": args[3],
+                    "reason": args[4],
+                    "event_metadata": json.loads(args[5]),
+                    "occurred_at": args[6],
+                }
+            )
 
 
 @pytest.fixture
@@ -792,6 +805,23 @@ class TestCreateApprovalRule:
         )
         assert result["error_code"] == "human_actor_required"
 
+    async def test_create_rule_emits_rule_created_event(
+        self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]
+    ):
+        await module.on_startup(config=None, db=mock_db)
+
+        result = await module._create_approval_rule(
+            tool_name="email_send",
+            arg_constraints={"to": "alice"},
+            description="test",
+            actor=human_actor,
+        )
+
+        rule_id = uuid.UUID(result["id"])
+        event = next(e for e in mock_db.approval_events if e["rule_id"] == rule_id)
+        assert event["event_type"] == "rule_created"
+        assert event["actor"] == "user:manual"
+
 
 class TestCreateRuleFromAction:
     """Test create_rule_from_action tool."""
@@ -1015,6 +1045,22 @@ class TestRevokeApprovalRule:
         rule_id = mock_db._insert_rule(tool_name="email_send", active=True)
         result = await module._revoke_approval_rule(str(rule_id))
         assert result["error_code"] == "human_actor_required"
+
+    async def test_revoke_emits_rule_revoked_event(
+        self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]
+    ):
+        await module.on_startup(config=None, db=mock_db)
+
+        rule_id = mock_db._insert_rule(
+            tool_name="email_send",
+            description="Active rule",
+            active=True,
+        )
+        await module._revoke_approval_rule(str(rule_id), actor=human_actor)
+
+        event = next(e for e in mock_db.approval_events if e["rule_id"] == rule_id)
+        assert event["event_type"] == "rule_revoked"
+        assert event["actor"] == "user:manual"
 
 
 class TestSuggestRuleConstraints:

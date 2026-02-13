@@ -44,6 +44,7 @@ class MockPool:
     def __init__(self) -> None:
         self.pending_actions: dict[uuid.UUID, dict[str, Any]] = {}
         self.approval_rules: dict[uuid.UUID, dict[str, Any]] = {}
+        self.approval_events: list[dict[str, Any]] = []
         self.execute_calls: list[tuple[str, tuple]] = []
 
     def seed_action(
@@ -120,6 +121,18 @@ class MockPool:
             rule_id = args[0]
             if rule_id in self.approval_rules:
                 self.approval_rules[rule_id]["use_count"] += 1
+        elif "INSERT INTO approval_events" in query:
+            self.approval_events.append(
+                {
+                    "event_type": args[0],
+                    "action_id": args[1],
+                    "rule_id": args[2],
+                    "actor": args[3],
+                    "reason": args[4],
+                    "event_metadata": json.loads(args[5]),
+                    "occurred_at": args[6],
+                }
+            )
 
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
         """Simulate asyncpg fetch() for list_executed_actions queries."""
@@ -291,6 +304,28 @@ class TestExecuteSuccess:
         assert result.success is True
         assert result.result == {"sync": True}
 
+    async def test_success_emits_execution_succeeded_event(self, pool: MockPool):
+        action_id = uuid.uuid4()
+        rule_id = uuid.uuid4()
+        pool.seed_action(action_id, approval_rule_id=rule_id)
+
+        async def tool_fn(**kwargs: Any) -> dict:
+            return {"ok": True}
+
+        await execute_approved_action(
+            pool=pool,
+            action_id=action_id,
+            tool_name="test_tool",
+            tool_args={},
+            tool_fn=tool_fn,
+            approval_rule_id=rule_id,
+        )
+
+        event = next(e for e in pool.approval_events if e["action_id"] == action_id)
+        assert event["event_type"] == "action_execution_succeeded"
+        assert event["rule_id"] == rule_id
+        assert event["actor"] == "system:executor"
+
     async def test_retry_returns_stored_result_without_reinvoking_tool(self, pool: MockPool):
         action_id = uuid.uuid4()
         stored_result = {
@@ -423,6 +458,26 @@ class TestExecuteFailure:
         )
 
         assert "SMTP connection refused" in result.error
+
+    async def test_failure_emits_execution_failed_event(self, pool: MockPool):
+        action_id = uuid.uuid4()
+        pool.seed_action(action_id)
+
+        async def failing_tool(**kwargs: Any) -> dict:
+            raise RuntimeError("tool exploded")
+
+        await execute_approved_action(
+            pool=pool,
+            action_id=action_id,
+            tool_name="test_tool",
+            tool_args={},
+            tool_fn=failing_tool,
+        )
+
+        event = next(e for e in pool.approval_events if e["action_id"] == action_id)
+        assert event["event_type"] == "action_execution_failed"
+        assert event["actor"] == "system:executor"
+        assert event["reason"] == "tool exploded"
 
 
 # ---------------------------------------------------------------------------

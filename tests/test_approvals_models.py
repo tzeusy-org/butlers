@@ -301,6 +301,7 @@ class TestApprovalsMigration:
 
         assert _table_exists(db_url, "pending_actions"), "pending_actions table should exist"
         assert _table_exists(db_url, "approval_rules"), "approval_rules table should exist"
+        assert _table_exists(db_url, "approval_events"), "approval_events table should exist"
 
     def test_migration_creates_indexes(self, postgres_container):
         """Running approvals migration creates required indexes."""
@@ -316,6 +317,10 @@ class TestApprovalsMigration:
         assert _index_exists(db_url, "idx_pending_actions_status_requested")
         assert _index_exists(db_url, "idx_pending_actions_session_id")
         assert _index_exists(db_url, "idx_approval_rules_tool_active")
+        assert _index_exists(db_url, "idx_approval_events_action_id")
+        assert _index_exists(db_url, "idx_approval_events_rule_id")
+        assert _index_exists(db_url, "idx_approval_events_occurred_at")
+        assert _index_exists(db_url, "idx_approval_events_event_type")
 
     def test_migration_idempotent(self, postgres_container):
         """Running the approvals migration twice should not raise."""
@@ -351,7 +356,73 @@ class TestApprovalsMigration:
             versions = [row[0] for row in result]
         engine.dispose()
 
-        assert "approvals_001" in versions
+        assert "approvals_002" in versions
+
+    def test_approval_events_append_only(self, postgres_container):
+        """approval_events should reject UPDATE/DELETE mutations."""
+        import asyncio
+
+        from sqlalchemy import create_engine, exc, text
+
+        from butlers.migrations import run_migrations
+
+        db_name = _unique_db_name()
+        db_url = _create_db(postgres_container, db_name)
+
+        asyncio.run(run_migrations(db_url, chain="approvals"))
+
+        engine = create_engine(db_url)
+        action_id = uuid.uuid4()
+
+        with engine.connect() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at)
+                    VALUES (:id, :tool_name, :tool_args, :status, :requested_at)
+                """),
+                {
+                    "id": str(action_id),
+                    "tool_name": "email_send",
+                    "tool_args": "{}",
+                    "status": "pending",
+                    "requested_at": datetime.now(UTC),
+                },
+            )
+            conn.execute(
+                text("""
+                    INSERT INTO approval_events (action_id, event_type, actor, reason)
+                    VALUES (:action_id, :event_type, :actor, :reason)
+                """),
+                {
+                    "action_id": str(action_id),
+                    "event_type": "action_queued",
+                    "actor": "system:test",
+                    "reason": "queued for approval",
+                },
+            )
+            conn.commit()
+
+        with pytest.raises(exc.DBAPIError):
+            with engine.connect() as conn:
+                conn.execute(
+                    text("""
+                        UPDATE approval_events
+                        SET reason = :reason
+                        WHERE action_id = :action_id
+                    """),
+                    {"reason": "mutated", "action_id": str(action_id)},
+                )
+                conn.commit()
+
+        with pytest.raises(exc.DBAPIError):
+            with engine.connect() as conn:
+                conn.execute(
+                    text("DELETE FROM approval_events WHERE action_id = :action_id"),
+                    {"action_id": str(action_id)},
+                )
+                conn.commit()
+
+        engine.dispose()
 
     def test_model_round_trip_pending_action(self, postgres_container):
         """PendingAction model round-trips through the database."""

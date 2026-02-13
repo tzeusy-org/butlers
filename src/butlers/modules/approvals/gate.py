@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from butlers.config import ApprovalConfig
+from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import ActionStatus
 
@@ -237,6 +238,25 @@ def _make_gate_wrapper(
                 rule_id,
                 f"rule:{rule_id}",
             )
+            await record_approval_event(
+                pool,
+                ApprovalEventType.ACTION_QUEUED,
+                actor="system:approval_gate",
+                action_id=action_id,
+                reason="gated invocation intercepted",
+                metadata={"tool_name": tool_name, "path": "auto_approve"},
+                occurred_at=now,
+            )
+            await record_approval_event(
+                pool,
+                ApprovalEventType.ACTION_AUTO_APPROVED,
+                actor=f"rule:{rule_id}",
+                action_id=action_id,
+                rule_id=rule_id,
+                reason="standing rule matched",
+                metadata={"tool_name": tool_name},
+                occurred_at=now,
+            )
 
             # Execute via the shared executor (handles DB update + use_count)
             exec_result = await execute_approved_action(
@@ -273,6 +293,15 @@ def _make_gate_wrapper(
             ActionStatus.PENDING.value,
             now,
             expires_at,
+        )
+        await record_approval_event(
+            pool,
+            ApprovalEventType.ACTION_QUEUED,
+            actor="system:approval_gate",
+            action_id=action_id,
+            reason="gated invocation intercepted",
+            metadata={"tool_name": tool_name, "path": "pending"},
+            occurred_at=now,
         )
 
         logger.info(

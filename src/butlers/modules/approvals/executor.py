@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.models import ActionStatus
 
 logger = logging.getLogger(__name__)
@@ -232,6 +233,20 @@ async def execute_approved_action(
         tool_name,
         execution_result.success,
         approval_rule_id,
+    )
+    await record_approval_event(
+        pool,
+        (
+            ApprovalEventType.ACTION_EXECUTION_SUCCEEDED
+            if execution_result.success
+            else ApprovalEventType.ACTION_EXECUTION_FAILED
+        ),
+        actor="system:executor",
+        action_id=action_id,
+        rule_id=approval_rule_id,
+        reason=execution_result.error,
+        metadata={"tool_name": tool_name},
+        occurred_at=now,
     )
 
     return execution_result
