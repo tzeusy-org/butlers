@@ -88,6 +88,28 @@ def test_user_send_and_reply_outputs_are_gated_by_default() -> None:
     }
 
 
+def test_user_send_and_reply_outputs_are_gated_by_name_safety_net() -> None:
+    daemon = _make_daemon({"enabled": True})
+    module = daemon._modules[0]
+    unsafe_defaults = (
+        ToolIODescriptor(name="user_im_send_message", approval_default="none"),
+        ToolIODescriptor(name="user_im_reply_to_message", approval_default="conditional"),
+        ToolIODescriptor(name="user_im_create_draft", approval_default="none"),
+    )
+
+    with (
+        patch.object(module, "user_outputs", return_value=unsafe_defaults),
+        patch("butlers.daemon.apply_approval_gates", return_value={}) as mock_apply,
+    ):
+        daemon._apply_approval_gates()  # noqa: SLF001
+
+    approval_config = mock_apply.call_args.args[1]
+    assert set(approval_config.gated_tools) == {
+        "user_im_send_message",
+        "user_im_reply_to_message",
+    }
+
+
 def test_bot_outputs_are_not_default_gated() -> None:
     daemon = _make_daemon({"enabled": True})
 
