@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+from collections import OrderedDict
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -81,6 +82,7 @@ REACTION_TO_EMOJI = {
     REACTION_SUCCESS: "\u2705",
     REACTION_FAILURE: "\U0001f47e",
 }
+TERMINAL_REACTION_CACHE_SIZE = 2048
 
 
 @dataclass
@@ -123,6 +125,7 @@ class TelegramModule(Module):
         self._db: Any = None
         self._processing_lifecycle: dict[str, ProcessingLifecycle] = {}
         self._reaction_locks: dict[str, asyncio.Lock] = {}
+        self._terminal_reactions: OrderedDict[str, str] = OrderedDict()
 
     @property
     def name(self) -> str:
@@ -249,17 +252,38 @@ class TelegramModule(Module):
 
     def _message_lock(self, message_key: str) -> asyncio.Lock:
         lock = self._reaction_locks.get(message_key)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._reaction_locks[message_key] = lock
-        return lock
+        if lock is not None:
+            return lock
+        lock = asyncio.Lock()
+        return self._reaction_locks.setdefault(message_key, lock)
 
     def _lifecycle(self, message_key: str) -> ProcessingLifecycle:
         lifecycle = self._processing_lifecycle.get(message_key)
-        if lifecycle is None:
-            lifecycle = ProcessingLifecycle()
-            self._processing_lifecycle[message_key] = lifecycle
-        return lifecycle
+        if lifecycle is not None:
+            return lifecycle
+        lifecycle = ProcessingLifecycle()
+        return self._processing_lifecycle.setdefault(message_key, lifecycle)
+
+    def _record_terminal_reaction(self, message_key: str, reaction: str) -> None:
+        self._terminal_reactions[message_key] = reaction
+        self._terminal_reactions.move_to_end(message_key)
+        while len(self._terminal_reactions) > TERMINAL_REACTION_CACHE_SIZE:
+            self._terminal_reactions.popitem(last=False)
+
+    def _cached_terminal_reaction(self, message_key: str) -> str | None:
+        reaction = self._terminal_reactions.get(message_key)
+        if reaction is not None:
+            self._terminal_reactions.move_to_end(message_key)
+        return reaction
+
+    def _cleanup_message_state(self, message_key: str) -> None:
+        lifecycle = self._processing_lifecycle.get(message_key)
+        if lifecycle is None or lifecycle.terminal_reaction is None:
+            return
+        self._processing_lifecycle.pop(message_key, None)
+        lock = self._reaction_locks.get(message_key)
+        if lock is not None and not lock.locked():
+            self._reaction_locks.pop(message_key, None)
 
     def _track_routing_progress(
         self, lifecycle: ProcessingLifecycle, result: RoutingResult
@@ -299,6 +323,14 @@ class TelegramModule(Module):
         if reaction not in REACTION_TO_EMOJI:
             return
 
+        terminal_reaction = self._cached_terminal_reaction(message_key)
+        if terminal_reaction is not None:
+            if reaction == REACTION_IN_PROGRESS:
+                return
+            if reaction == terminal_reaction:
+                return
+            return
+
         lifecycle = self._lifecycle(message_key)
         if lifecycle.terminal_reaction is not None:
             if lifecycle.terminal_reaction == reaction:
@@ -309,6 +341,7 @@ class TelegramModule(Module):
 
         if reaction in (REACTION_SUCCESS, REACTION_FAILURE):
             lifecycle.terminal_reaction = reaction
+            self._record_terminal_reaction(message_key, reaction)
 
         try:
             await self._set_message_reaction(
@@ -391,6 +424,9 @@ class TelegramModule(Module):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        self._processing_lifecycle.clear()
+        self._reaction_locks.clear()
+        self._terminal_reactions.clear()
 
     # ------------------------------------------------------------------
     # Classification pipeline integration
@@ -499,6 +535,8 @@ class TelegramModule(Module):
         finally:
             if lock is not None and lock.locked():
                 lock.release()
+            if message_key is not None:
+                self._cleanup_message_state(message_key)
 
         self._routed_messages.append(result)
         logger.info(

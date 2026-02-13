@@ -10,6 +10,7 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
+from butlers.modules import telegram as telegram_module_impl
 from butlers.modules.base import Module
 from butlers.modules.pipeline import RoutingResult
 from butlers.modules.telegram import TelegramConfig, TelegramModule
@@ -641,6 +642,52 @@ class TestPipelineIntegration:
         await telegram_module.process_update(update)
 
         assert telegram_module._set_message_reaction.await_count == first_count
+
+    async def test_terminal_cleanup_prunes_per_message_tracking(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """Terminal transitions clear per-message lock/lifecycle tracking."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
+            return_value={"ok": True}
+        )
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.process = AsyncMock(
+            return_value=RoutingResult(
+                target_butler="general",
+                route_result={"result": "ok"},
+                routed_targets=["general"],
+                acked_targets=["general"],
+            )
+        )
+        telegram_module.set_pipeline(mock_pipeline)
+
+        update = {
+            "update_id": 505,
+            "message": {
+                "message_id": 111,
+                "text": "cleanup tracking",
+                "chat": {"id": 555},
+            },
+        }
+
+        await telegram_module.process_update(update)
+
+        message_key = "555:111"
+        assert message_key not in telegram_module._processing_lifecycle
+        assert message_key not in telegram_module._reaction_locks
+        assert telegram_module._terminal_reactions[message_key] == ":done"
+
+    def test_terminal_reaction_cache_is_bounded(self, telegram_module: TelegramModule, monkeypatch):
+        """Terminal cache evicts oldest keys to avoid unbounded growth."""
+        monkeypatch.setattr(telegram_module_impl, "TERMINAL_REACTION_CACHE_SIZE", 2)
+
+        telegram_module._record_terminal_reaction("one", ":done")
+        telegram_module._record_terminal_reaction("two", ":done")
+        telegram_module._record_terminal_reaction("three", ":done")
+
+        assert list(telegram_module._terminal_reactions.keys()) == ["two", "three"]
 
 
 # ---------------------------------------------------------------------------
