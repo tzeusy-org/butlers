@@ -5,3 +5,8 @@ description = "Flexible catch-all assistant for freeform data"
 
 [butler.db]
 name = "butler_general"
+
+[modules.calendar]
+provider = "google"
+calendar_id = "butler-general@group.calendar.google.com"
+default_conflict_policy = "suggest"

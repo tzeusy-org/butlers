@@ -244,6 +244,10 @@ make test-qg
 - Tool responses are normalized as `{provider, calendar_id, ...}` with event payload keys `event_id`, `title`, `start_at`, `end_at`, `timezone`, `description`, `location`, `attendees`, `recurrence_rule`, and `color_id`.
 - Optional `calendar_id` overrides must be stripped/non-empty and must not mutate the module's default configured `calendar_id`.
 
+### Calendar roster rollout contract
+- `roster/general/butler.toml`, `roster/health/butler.toml`, and `roster/relationship/butler.toml` must each declare `[modules.calendar]` with provider `google`, explicit dedicated subcalendar `calendar_id` values (not `primary`), and default conflict policy `suggest`.
+- `roster/general/CLAUDE.md`, `roster/health/CLAUDE.md`, and `roster/relationship/CLAUDE.md` must document calendar tool usage, dedicated subcalendar assumption, default conflict behavior (`suggest`), and that attendee invites are out of v1 scope.
+
 ### Beads coordinator handoff guardrail
 - Some worker runs can finish with branch pushed but bead still `in_progress` (no PR/bead transition). Coordinator should detect `agent/<id>` ahead of `main` with no PR and normalize by creating a PR and marking the bead `blocked` with `pr-review` + `external_ref`.
 

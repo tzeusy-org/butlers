@@ -23,3 +23,8 @@ Review contacts I haven't interacted with in 30+ days.
 Suggest 3 people I should reach out to this week, with context
 on our last interaction and any upcoming dates.
 """
+
+[modules.calendar]
+provider = "google"
+calendar_id = "butler-relationship@group.calendar.google.com"
+default_conflict_policy = "suggest"

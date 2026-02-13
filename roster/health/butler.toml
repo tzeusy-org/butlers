@@ -44,3 +44,8 @@ Generate a comprehensive weekly health summary including:
 - Any notable changes or patterns identified from the data
 Use the health_summary and trend_report tools to compile this data.
 """
+
+[modules.calendar]
+provider = "google"
+calendar_id = "butler-health@group.calendar.google.com"
+default_conflict_policy = "suggest"
