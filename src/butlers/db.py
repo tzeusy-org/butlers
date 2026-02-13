@@ -12,6 +12,7 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 _VALID_SSL_MODES = {"disable", "prefer", "allow", "require", "verify-ca", "verify-full"}
+_SSL_UPGRADE_CONNECTION_LOST = "unexpected connection_lost() call"
 
 
 def _normalize_ssl_mode(value: str | None) -> str | None:
@@ -38,6 +39,15 @@ def _db_params_from_database_url(database_url: str) -> dict[str, str | int | Non
         "password": parsed.password or "butlers",
         "ssl": sslmode,
     }
+
+
+def should_retry_with_ssl_disable(exc: Exception, configured_ssl: str | None) -> bool:
+    """Return True when asyncpg SSL STARTTLS fallback should retry with ssl=disable."""
+    return (
+        configured_ssl is None
+        and isinstance(exc, ConnectionError)
+        and _SSL_UPGRADE_CONNECTION_LOST in str(exc)
+    )
 
 
 def db_params_from_env() -> dict[str, str | int | None]:
@@ -98,7 +108,17 @@ class Database:
         }
         if self.ssl is not None:
             connect_kwargs["ssl"] = self.ssl
-        conn = await asyncpg.connect(**connect_kwargs)
+        try:
+            conn = await asyncpg.connect(**connect_kwargs)
+        except Exception as exc:
+            if not should_retry_with_ssl_disable(exc, self.ssl):
+                raise
+            retry_kwargs = dict(connect_kwargs)
+            retry_kwargs["ssl"] = "disable"
+            logger.info(
+                "Retrying PostgreSQL provision connection with ssl=disable after SSL upgrade loss"
+            )
+            conn = await asyncpg.connect(**retry_kwargs)
         try:
             exists = await conn.fetchval(
                 "SELECT 1 FROM pg_database WHERE datname = $1",
@@ -128,7 +148,15 @@ class Database:
         }
         if self.ssl is not None:
             pool_kwargs["ssl"] = self.ssl
-        self.pool = await asyncpg.create_pool(**pool_kwargs)
+        try:
+            self.pool = await asyncpg.create_pool(**pool_kwargs)
+        except Exception as exc:
+            if not should_retry_with_ssl_disable(exc, self.ssl):
+                raise
+            retry_kwargs = dict(pool_kwargs)
+            retry_kwargs["ssl"] = "disable"
+            logger.info("Retrying PostgreSQL pool creation with ssl=disable after SSL upgrade loss")
+            self.pool = await asyncpg.create_pool(**retry_kwargs)
         logger.info("Connection pool created for: %s", self.db_name)
         return self.pool
 

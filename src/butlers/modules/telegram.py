@@ -1,7 +1,8 @@
-"""Telegram module — send_message and get_updates MCP tools.
+"""Telegram module — identity-prefixed Telegram MCP tools.
 
 Supports polling mode (dev, no public URL needed) and webhook mode (production).
-Configured via [modules.telegram] in butler.toml.
+Configured via [modules.telegram] with optional
+[modules.telegram.user] and [modules.telegram.bot] credential scopes in butler.toml.
 
 When a ``MessagePipeline`` is attached, incoming messages from polling are
 automatically classified and routed to the appropriate butler via the
@@ -14,18 +15,61 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolIODescriptor
 from butlers.modules.pipeline import MessagePipeline, RoutingResult
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_env_var_name(value: str, *, scope: str, field_name: str) -> str:
+    """Validate a configured env var name for an identity credential field."""
+    if not value or not value.strip():
+        raise ValueError(
+            f"modules.telegram.{scope}.{field_name} must be a non-empty environment variable name"
+        )
+    name = value.strip()
+    if not _ENV_VAR_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"modules.telegram.{scope}.{field_name} must be a valid environment variable name "
+            "(letters, numbers, underscores; cannot start with a number)"
+        )
+    return name
+
+
+class TelegramUserCredentialsConfig(BaseModel):
+    """Identity-scoped credentials for user Telegram operations."""
+
+    enabled: bool = False
+    token_env: str = "USER_TELEGRAM_TOKEN"
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("token_env")
+    @classmethod
+    def _validate_token_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="user", field_name="token_env")
+
+
+class TelegramBotCredentialsConfig(BaseModel):
+    """Identity-scoped credentials for bot Telegram operations."""
+
+    enabled: bool = True
+    token_env: str = "BUTLER_TELEGRAM_TOKEN"
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("token_env")
+    @classmethod
+    def _validate_token_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="bot", field_name="token_env")
 
 
 class TelegramConfig(BaseModel):
@@ -34,10 +78,13 @@ class TelegramConfig(BaseModel):
     mode: str = "polling"  # "polling" or "webhook"
     webhook_url: str | None = None
     poll_interval: float = 1.0
+    user: TelegramUserCredentialsConfig = Field(default_factory=TelegramUserCredentialsConfig)
+    bot: TelegramBotCredentialsConfig = Field(default_factory=TelegramBotCredentialsConfig)
+    model_config = ConfigDict(extra="forbid")
 
 
 class TelegramModule(Module):
-    """Telegram module providing send_message and get_updates MCP tools.
+    """Telegram module providing identity-prefixed Telegram MCP tools.
 
     When a ``MessagePipeline`` is set via ``set_pipeline()``, incoming
     Telegram messages are forwarded through ``classify_message()`` then
@@ -66,10 +113,62 @@ class TelegramModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
+    def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
+        """User-identity Telegram input tools."""
+        return (
+            ToolIODescriptor(
+                name="user_telegram_get_updates",
+                description="Read updates from the user Telegram identity.",
+            ),
+        )
+
+    def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
+        """User-identity Telegram output tools.
+
+        User send/reply tools are marked as approval-required defaults.
+        """
+        return (
+            ToolIODescriptor(
+                name="user_telegram_send_message",
+                description="Send as user. approval_default=always (approval required).",
+            ),
+            ToolIODescriptor(
+                name="user_telegram_reply_to_message",
+                description="Reply as user. approval_default=always (approval required).",
+            ),
+        )
+
+    def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Bot-identity Telegram input tools."""
+        return (
+            ToolIODescriptor(
+                name="bot_telegram_get_updates",
+                description="Read updates from the bot Telegram identity.",
+            ),
+        )
+
+    def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Bot-identity Telegram output tools."""
+        return (
+            ToolIODescriptor(
+                name="bot_telegram_send_message",
+                description="Send as bot. approval_default=conditional.",
+            ),
+            ToolIODescriptor(
+                name="bot_telegram_reply_to_message",
+                description="Reply as bot. approval_default=conditional.",
+            ),
+        )
+
     @property
     def credentials_env(self) -> list[str]:
         """Environment variables required by this module."""
-        return ["BUTLER_TELEGRAM_TOKEN"]
+        envs: list[str] = []
+        if self._config.bot.enabled:
+            envs.append(self._config.bot.token_env)
+        if self._config.user.enabled:
+            envs.append(self._config.user.token_env)
+        return envs
 
     def migration_revisions(self) -> str | None:
         return None  # No custom tables needed
@@ -82,9 +181,21 @@ class TelegramModule(Module):
         """
         self._pipeline = pipeline
 
+    def _get_bot_token(self) -> str:
+        """Resolve Telegram bot token from configured bot credential scope."""
+        if not self._config.bot.enabled:
+            raise RuntimeError("Telegram bot scope modules.telegram.bot is disabled")
+        token_env = self._config.bot.token_env
+        token = os.environ.get(token_env)
+        if not token:
+            raise RuntimeError(
+                f"Missing Telegram bot token for modules.telegram.bot: set {token_env}"
+            )
+        return token
+
     def _base_url(self) -> str:
         """Build the Telegram API base URL using the bot token."""
-        token = os.environ.get("BUTLER_TELEGRAM_TOKEN", "")
+        token = self._get_bot_token()
         return TELEGRAM_API_BASE.format(token=token)
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -93,22 +204,56 @@ class TelegramModule(Module):
             self._client = httpx.AsyncClient()
         return self._client
 
+    def _get_db_pool(self) -> Any | None:
+        """Return an asyncpg-compatible pool-like object if available."""
+        if self._db is None:
+            return None
+        pool = getattr(self._db, "pool", None)
+        if pool is not None:
+            return pool
+        if hasattr(self._db, "acquire"):
+            return self._db
+        return None
+
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        """Register send_message and get_updates MCP tools."""
+        """Register identity-prefixed Telegram MCP tools."""
         self._config = (
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))
         )
         module = self  # capture for closures
 
-        @mcp.tool()
-        async def send_message(chat_id: str, text: str) -> dict[str, Any]:
-            """Send a message to a Telegram chat."""
-            return await module._send_message(chat_id, text)
+        def _register_send_tool(identity: str) -> None:
+            async def send_message_tool(chat_id: str, text: str) -> dict[str, Any]:
+                return await module._send_message(chat_id, text)
 
-        @mcp.tool()
-        async def get_updates() -> list[dict[str, Any]]:
-            """Get recent messages from Telegram."""
-            return await module._get_updates()
+            send_message_tool.__name__ = f"{identity}_telegram_send_message"
+            send_message_tool.__doc__ = f"Send a message as the {identity} Telegram identity."
+            mcp.tool()(send_message_tool)
+
+        def _register_reply_tool(identity: str) -> None:
+            async def reply_to_message_tool(
+                chat_id: str, message_id: int, text: str
+            ) -> dict[str, Any]:
+                return await module._reply_to_message(chat_id, message_id, text)
+
+            reply_to_message_tool.__name__ = f"{identity}_telegram_reply_to_message"
+            reply_to_message_tool.__doc__ = f"Reply as the {identity} Telegram identity."
+            mcp.tool()(reply_to_message_tool)
+
+        def _register_get_updates_tool(identity: str) -> None:
+            async def get_updates_tool() -> list[dict[str, Any]]:
+                return await module._get_updates()
+
+            get_updates_tool.__name__ = f"{identity}_telegram_get_updates"
+            get_updates_tool.__doc__ = (
+                f"Get recent updates for the {identity} Telegram identity."
+            )
+            mcp.tool()(get_updates_tool)
+
+        for identity in ("user", "bot"):
+            _register_send_tool(identity)
+            _register_reply_tool(identity)
+            _register_get_updates_tool(identity)
 
     async def on_startup(self, config: Any, db: Any) -> None:
         """Start polling or set webhook based on config."""
@@ -171,8 +316,9 @@ class TelegramModule(Module):
 
         # Phase 1: Log receipt
         message_inbox_id = None
-        if self._db:
-            async with self._db.acquire() as conn:
+        db_pool = self._get_db_pool()
+        if db_pool is not None:
+            async with db_pool.acquire() as conn:
                 message_inbox_id = await conn.fetchval(
                     """
                     INSERT INTO message_inbox
@@ -214,14 +360,23 @@ class TelegramModule(Module):
     # Telegram API helpers
     # ------------------------------------------------------------------
 
-    async def _send_message(self, chat_id: str, text: str) -> dict[str, Any]:
+    async def _send_message(
+        self, chat_id: str, text: str, reply_to_message_id: int | None = None
+    ) -> dict[str, Any]:
         """Call Telegram sendMessage API."""
         url = f"{self._base_url()}/sendMessage"
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
         client = self._get_client()
-        resp = await client.post(url, json={"chat_id": chat_id, "text": text})
+        resp = await client.post(url, json=payload)
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
         return data
+
+    async def _reply_to_message(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:
+        """Reply to a specific Telegram message."""
+        return await self._send_message(chat_id, text, reply_to_message_id=message_id)
 
     async def _get_updates(self) -> list[dict[str, Any]]:
         """Call Telegram getUpdates API and return new messages."""

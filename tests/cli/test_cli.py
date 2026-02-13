@@ -1,9 +1,11 @@
 """Tests for the CLI commands."""
 
+import logging
+
 import pytest
 from click.testing import CliRunner
 
-from butlers.cli import _discover_configs, cli
+from butlers.cli import _configure_logging, _discover_configs, cli
 
 pytestmark = pytest.mark.unit
 
@@ -44,6 +46,36 @@ class TestVersion:
         assert "0.1.0" in result.output
 
 
+class TestLoggingConfiguration:
+    def test_configure_logging_suppresses_http_client_request_logs(self, monkeypatch):
+        calls: list[dict[str, object]] = []
+        httpx_logger = logging.getLogger("httpx")
+        httpcore_logger = logging.getLogger("httpcore")
+        original_httpx_level = httpx_logger.level
+        original_httpcore_level = httpcore_logger.level
+        httpx_logger.setLevel(logging.NOTSET)
+        httpcore_logger.setLevel(logging.NOTSET)
+
+        monkeypatch.setattr(
+            "butlers.cli.logging.basicConfig",
+            lambda **kwargs: calls.append(kwargs),
+        )
+        try:
+            _configure_logging()
+
+            assert calls == [
+                {
+                    "level": logging.INFO,
+                    "format": "%(levelname)s: %(name)s: %(message)s",
+                }
+            ]
+            assert httpx_logger.level == logging.WARNING
+            assert httpcore_logger.level == logging.WARNING
+        finally:
+            httpx_logger.setLevel(original_httpx_level)
+            httpcore_logger.setLevel(original_httpcore_level)
+
+
 class TestListCommand:
     def test_list_with_configs(self, runner, butler_config_dir):
         result = runner.invoke(cli, ["list", "--dir", str(butler_config_dir)])
@@ -63,7 +95,14 @@ class TestListCommand:
         butler_dir = tmp_path / "butlers" / "modular"
         butler_dir.mkdir(parents=True)
         (butler_dir / "butler.toml").write_text(
-            '[butler]\nname = "modular"\nport = 9010\n\n[modules.email]\n\n[modules.telegram]\n'
+            '[butler]\nname = "modular"\nport = 9010\n\n'
+            "[modules.email]\n"
+            "[modules.email.user]\nenabled = false\n"
+            '[modules.email.bot]\naddress_env = "BUTLER_EMAIL_ADDRESS"\n'
+            'password_env = "BUTLER_EMAIL_PASSWORD"\n\n'
+            "[modules.telegram]\n"
+            "[modules.telegram.user]\nenabled = false\n"
+            '[modules.telegram.bot]\ntoken_env = "BUTLER_TELEGRAM_TOKEN"\n'
         )
         result = runner.invoke(cli, ["list", "--dir", str(tmp_path / "butlers")])
         assert result.exit_code == 0

@@ -3,20 +3,21 @@
 The ButlerDaemon manages the lifecycle of a butler:
 1. Load config from butler.toml
 2. Initialize telemetry
-3. Validate credentials (env vars)
-4. Provision database
-5. Run core Alembic migrations
-6. Initialize modules (topological order)
-7. Run module Alembic migrations
-8. Module on_startup (topological order)
-9. Create Spawner with runtime adapter (verify binary on PATH)
-9b. Wire message classification pipeline (switchboard only)
-10. Sync TOML schedules to DB
-10b. Open MCP client connection to Switchboard (non-switchboard butlers)
-11. Create FastMCP server and register core tools
-12. Register module MCP tools
-12b. Apply approval gates to configured gated tools
-13. Start FastMCP SSE server on configured port
+3. Initialize modules (topological order)
+4. Validate module config schemas
+5. Validate credentials (env vars)
+6. Provision database
+7. Run core Alembic migrations
+8. Run module Alembic migrations
+9. Module on_startup (topological order)
+10. Create Spawner with runtime adapter (verify binary on PATH)
+10b. Wire message classification pipeline (switchboard only)
+11. Sync TOML schedules to DB
+11b. Open MCP client connection to Switchboard (non-switchboard butlers)
+12. Create FastMCP server and register core tools
+13. Register module MCP tools
+13b. Apply approval gates to configured gated tools
+14. Start FastMCP SSE server on configured port
 
 On startup failure, already-initialized modules get on_shutdown() called.
 
@@ -31,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import re
 import shutil
 import time
 import uuid
@@ -63,7 +65,7 @@ from butlers.credentials import detect_secrets, validate_credentials
 from butlers.db import Database
 from butlers.migrations import has_butler_chain, run_migrations
 from butlers.modules.approvals.gate import apply_approval_gates
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolIODescriptor
 from butlers.modules.pipeline import MessagePipeline
 from butlers.modules.registry import ModuleRegistry, default_registry
 
@@ -72,6 +74,23 @@ logger = logging.getLogger(__name__)
 
 class ModuleConfigError(Exception):
     """Raised when a module's configuration fails Pydantic validation."""
+
+
+class ModuleToolValidationError(ValueError):
+    """Raised when module I/O descriptors or registered tool names are invalid."""
+
+
+_TOOL_NAME_RE = re.compile(r"^(user|bot)_[a-z0-9_]+_[a-z0-9_]+$")
+
+
+def _validate_tool_name(name: str, module_name: str, *, context: str = "registered tool") -> None:
+    """Validate a tool name against the identity-prefixed naming contract."""
+    if _TOOL_NAME_RE.fullmatch(name):
+        return
+    raise ModuleToolValidationError(
+        f"Module '{module_name}' has invalid {context} name '{name}'. "
+        "Expected 'user_<channel>_<action>' or 'bot_<channel>_<action>'."
+    )
 
 
 def _flatten_config_for_secret_scan(config: ButlerConfig) -> dict[str, Any]:
@@ -94,18 +113,59 @@ def _flatten_config_for_secret_scan(config: ButlerConfig) -> dict[str, Any]:
         flat[f"butler.schedule[{i}].cron"] = schedule.cron
         flat[f"butler.schedule[{i}].prompt"] = schedule.prompt
 
-    # Module configs (flatten nested dicts, skip credentials_env keys)
+    # Module configs (flatten nested dicts, skip env-var name declaration keys)
+    def _flatten_module_value(prefix: str, value: Any) -> None:
+        if isinstance(value, dict):
+            for key, nested_value in value.items():
+                if key == "credentials_env" or key.endswith("_env"):
+                    continue
+                _flatten_module_value(f"{prefix}.{key}", nested_value)
+            return
+        flat[prefix] = value
+
     for mod_name, mod_cfg in config.modules.items():
-        for key, value in mod_cfg.items():
-            # Skip credentials_env as it's just a list of env var names
-            if key == "credentials_env":
-                continue
-            flat[f"modules.{mod_name}.{key}"] = value
+        _flatten_module_value(f"modules.{mod_name}", mod_cfg)
 
     # NOTE: [butler.env].required and [butler.env].optional are lists of
     # env var *names* (not values), so they are exempt from scanning.
 
     return flat
+
+
+def _extract_identity_scope_credentials(
+    module_name: str, module_config: Any
+) -> dict[str, list[str]]:
+    """Extract scoped env-var names from ``user``/``bot`` config sections."""
+    if hasattr(module_config, "model_dump"):
+        config_dict = module_config.model_dump()
+    elif isinstance(module_config, dict):
+        config_dict = module_config
+    else:
+        return {}
+
+    scoped_credentials: dict[str, list[str]] = {}
+    for scope_name in ("user", "bot"):
+        scope_cfg = config_dict.get(scope_name)
+        if not isinstance(scope_cfg, dict):
+            continue
+        if scope_cfg.get("enabled", True) is False:
+            continue
+
+        env_vars: list[str] = []
+        for key, value in scope_cfg.items():
+            if key.endswith("_env") and isinstance(value, str) and value:
+                env_vars.append(value)
+            if key == "credentials_env":
+                if isinstance(value, str) and value:
+                    env_vars.append(value)
+                elif isinstance(value, list):
+                    env_vars.extend(item for item in value if isinstance(item, str) and item)
+
+        if env_vars:
+            # Preserve declaration order while deduplicating.
+            scoped_credentials[f"{module_name}.{scope_name}"] = list(dict.fromkeys(env_vars))
+
+    return scoped_credentials
 
 
 class _SpanWrappingMCP:
@@ -118,23 +178,51 @@ class _SpanWrappingMCP:
     All other attribute access is forwarded to the underlying FastMCP instance.
     """
 
-    def __init__(self, mcp: FastMCP, butler_name: str) -> None:
+    def __init__(
+        self,
+        mcp: FastMCP,
+        butler_name: str,
+        *,
+        module_name: str | None = None,
+        declared_tool_names: set[str] | None = None,
+    ) -> None:
         self._mcp = mcp
         self._butler_name = butler_name
+        self._module_name = module_name or "unknown"
+        self._declared_tool_names = declared_tool_names or set()
+        self._registered_tool_names: set[str] = set()
 
-    def tool(self):
+    def tool(self, *args, **kwargs):
         """Return a decorator that wraps the handler with tool_span."""
-        original_decorator = self._mcp.tool()
+        declared_name = kwargs.get("name")
+        original_decorator = self._mcp.tool(*args, **kwargs)
 
         def wrapper(fn):  # noqa: ANN001, ANN202
+            resolved_tool_name = declared_name or fn.__name__
+            if self._declared_tool_names:
+                _validate_tool_name(resolved_tool_name, self._module_name)
+                if resolved_tool_name not in self._declared_tool_names:
+                    raise ModuleToolValidationError(
+                        f"Module '{self._module_name}' registered undeclared tool "
+                        f"'{resolved_tool_name}'. Declare it in user_inputs/user_outputs/"
+                        "bot_inputs/bot_outputs descriptors."
+                    )
+                self._registered_tool_names.add(resolved_tool_name)
+
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-                with tool_span(fn.__name__, butler_name=self._butler_name):
+                with tool_span(resolved_tool_name, butler_name=self._butler_name):
                     return await fn(*args, **kwargs)
 
             return original_decorator(instrumented)
 
         return wrapper
+
+    def missing_declared_tool_names(self) -> set[str]:
+        """Return declared tool names that were never registered."""
+        if not self._declared_tool_names:
+            return set()
+        return self._declared_tool_names - self._registered_tool_names
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._mcp, name)
@@ -185,7 +273,14 @@ class ButlerDaemon:
         for warning in secret_warnings:
             logger.warning(warning)
 
-        # 3. Validate credentials
+        # 3. Initialize modules (topological order)
+        self._modules = self._registry.load_from_config(self.config.modules)
+
+        # 4. Validate module config schemas before env credential checks.
+        # This gives clearer feedback for malformed identity-scoped config.
+        self._module_configs = self._validate_module_configs()
+
+        # 5. Validate credentials
         module_creds = self._collect_module_credentials()
         validate_credentials(
             self.config.env_required,
@@ -193,31 +288,27 @@ class ButlerDaemon:
             module_credentials=module_creds,
         )
 
-        # 4. Provision database
+        # 6. Provision database
         self.db = Database.from_env(self.config.db_name)
         await self.db.provision()
         pool = await self.db.connect()
 
-        # 5. Run core Alembic migrations
+        # 7. Run core Alembic migrations
         db_url = self._build_db_url()
         await run_migrations(db_url, chain="core")
 
-        # 5b. Run butler-specific Alembic migrations (if chain exists)
+        # 7b. Run butler-specific Alembic migrations (if chain exists)
         if has_butler_chain(self.config.name):
             logger.info("Running butler-specific migrations for: %s", self.config.name)
             await run_migrations(db_url, chain=self.config.name)
 
-        # 6. Initialize modules (topological order)
-        self._modules = self._registry.load_from_config(self.config.modules)
-
-        # 7. Run module Alembic migrations
+        # 8. Run module Alembic migrations
         for mod in self._modules:
             rev = mod.migration_revisions()
             if rev:
                 await run_migrations(db_url, chain=rev)
 
-        # 8. Validate module configs and call on_startup (topological order)
-        self._module_configs = self._validate_module_configs()
+        # 9. Call module on_startup (topological order)
         started_modules: list[Module] = []
         try:
             for mod in self._modules:
@@ -237,7 +328,7 @@ class ButlerDaemon:
                     logger.exception("Error during cleanup shutdown of module: %s", mod.name)
             raise
 
-        # 9. Create Spawner with runtime adapter (verify binary on PATH)
+        # 10. Create Spawner with runtime adapter (verify binary on PATH)
         adapter_cls = get_adapter(self.config.runtime.type)
         runtime = adapter_cls()
 
@@ -256,29 +347,29 @@ class ButlerDaemon:
             runtime=runtime,
         )
 
-        # 9b. Wire message classification pipeline for switchboard modules
+        # 10b. Wire message classification pipeline for switchboard modules
         self._wire_pipelines(pool)
 
-        # 10. Sync TOML schedules to DB
+        # 11. Sync TOML schedules to DB
         schedules = [
             {"name": s.name, "cron": s.cron, "prompt": s.prompt} for s in self.config.schedules
         ]
         await sync_schedules(pool, schedules)
 
-        # 10b. Open MCP client connection to Switchboard (non-switchboard butlers)
+        # 11b. Open MCP client connection to Switchboard (non-switchboard butlers)
         await self._connect_switchboard()
 
-        # 11. Create FastMCP and register core tools
+        # 12. Create FastMCP and register core tools
         self.mcp = FastMCP(self.config.name)
         self._register_core_tools()
 
-        # 12. Register module MCP tools
+        # 13. Register module MCP tools
         await self._register_module_tools()
 
-        # 12b. Apply approval gates to configured gated tools
+        # 13b. Apply approval gates to configured gated tools
         self._gated_tool_originals = self._apply_approval_gates()
 
-        # 13. Start FastMCP SSE server on configured port
+        # 14. Start FastMCP SSE server on configured port
         await self._start_mcp_server()
 
         # Mark as accepting connections and record startup time
@@ -386,29 +477,47 @@ class ButlerDaemon:
 
         Sources (in priority order):
         1. ``credentials_env`` declared in butler.toml under ``[modules.<name>]``
-        2. Module class ``credentials_env`` property (fallback)
+        2. Identity-scoped ``user``/``bot`` config sections (if present/enabled)
+        3. Module class ``credentials_env`` property (fallback)
 
         This aligns with the spec: credential declarations are config-driven
         via butler.toml, with the module class providing defaults.
         """
         creds: dict[str, list[str]] = {}
+        loaded_modules = {mod.name: mod for mod in self._modules}
         for mod_name, mod_cfg in self.config.modules.items():
             # 1. Check TOML config first (spec-driven)
             toml_creds = mod_cfg.get("credentials_env")
             if toml_creds is not None:
-                creds[mod_name] = list(toml_creds)
+                if isinstance(toml_creds, str):
+                    creds[mod_name] = [toml_creds] if toml_creds else []
+                elif isinstance(toml_creds, list):
+                    creds[mod_name] = [
+                        item for item in toml_creds if isinstance(item, str) and item
+                    ]
+                else:
+                    logger.warning(
+                        "Ignoring invalid type for credentials_env in module '%s' config. "
+                        "Expected a string or list of strings, but got %s.",
+                        mod_name,
+                        type(toml_creds).__name__,
+                    )
+                    creds[mod_name] = []
                 continue
 
-            # 2. Fallback to module class property
-            try:
-                temp_modules = self._registry.load_from_config({mod_name: {}})
-                if temp_modules:
-                    mod = temp_modules[0]
-                    env_list = getattr(mod, "credentials_env", [])
-                    if env_list:
-                        creds[mod_name] = list(env_list)
-            except Exception:
-                pass  # Module may have deps not met; skip credential collection
+            # 2. Extract identity-scoped env vars from validated config.
+            validated_cfg = self._module_configs.get(mod_name)
+            scoped_creds = _extract_identity_scope_credentials(mod_name, validated_cfg)
+            if scoped_creds:
+                creds.update(scoped_creds)
+                continue
+
+            # 3. Fallback to module class property
+            mod = loaded_modules.get(mod_name)
+            if mod is not None:
+                env_list = getattr(mod, "credentials_env", [])
+                if env_list:
+                    creds[mod_name] = list(env_list)
         return creds
 
     def _build_db_url(self) -> str:
@@ -750,10 +859,63 @@ class ButlerDaemon:
         automatically wraps each tool handler with a ``butler.tool.<name>``
         span carrying the ``butler.name`` attribute.
         """
-        wrapped_mcp = _SpanWrappingMCP(self.mcp, self.config.name)
         for mod in self._modules:
+            declared_tool_names = self._validate_module_io_descriptors(mod)
+            wrapped_mcp = _SpanWrappingMCP(
+                self.mcp,
+                self.config.name,
+                module_name=mod.name,
+                declared_tool_names=declared_tool_names,
+            )
             validated_config = self._module_configs.get(mod.name)
             await mod.register_tools(wrapped_mcp, validated_config, self.db)
+            missing_declared = wrapped_mcp.missing_declared_tool_names()
+            if missing_declared:
+                missing = ", ".join(sorted(missing_declared))
+                raise ModuleToolValidationError(
+                    f"Module '{mod.name}' declared tool descriptors that were not registered: "
+                    f"{missing}"
+                )
+
+    def _validate_module_io_descriptors(self, mod: Module) -> set[str]:
+        """Validate I/O descriptor names and return the declared tool-name set."""
+        descriptor_groups = {
+            "user_inputs": mod.user_inputs(),
+            "user_outputs": mod.user_outputs(),
+            "bot_inputs": mod.bot_inputs(),
+            "bot_outputs": mod.bot_outputs(),
+        }
+        names: set[str] = set()
+
+        for group_name, descriptors in descriptor_groups.items():
+            expected_prefix = "user_" if group_name.startswith("user_") else "bot_"
+            for descriptor in descriptors:
+                if not isinstance(descriptor, ToolIODescriptor):
+                    raise ModuleToolValidationError(
+                        f"Module '{mod.name}' has invalid descriptor in {group_name}. "
+                        "Expected ToolIODescriptor instances."
+                    )
+
+                tool_name = descriptor.name
+                _validate_tool_name(
+                    tool_name,
+                    mod.name,
+                    context=f"descriptor in {group_name}",
+                )
+
+                if not tool_name.startswith(expected_prefix):
+                    raise ModuleToolValidationError(
+                        f"Module '{mod.name}' descriptor '{tool_name}' in {group_name} "
+                        f"must start with '{expected_prefix}'."
+                    )
+
+                if tool_name in names:
+                    raise ModuleToolValidationError(
+                        f"Module '{mod.name}' declares duplicate tool descriptor '{tool_name}'."
+                    )
+                names.add(tool_name)
+
+        return names
 
     def _apply_approval_gates(self) -> dict[str, Any]:
         """Parse approval config and wrap gated tools with approval interception.

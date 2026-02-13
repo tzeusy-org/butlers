@@ -287,7 +287,55 @@ class TestListNotificationsEmptyDatabase:
 
 
 # ---------------------------------------------------------------------------
-# 4. Result ordering verification
+# 4. Missing switchboard pool
+# ---------------------------------------------------------------------------
+
+
+class TestNotificationsWithoutSwitchboardPool:
+    """Notifications endpoints should degrade gracefully when switchboard DB is absent."""
+
+    def _build_app_with_missing_switchboard_pool(self):
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        return app
+
+    async def test_list_returns_empty_payload(self):
+        app = self._build_app_with_missing_switchboard_pool()
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/notifications", params={"limit": 5, "status": "failed"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"] == []
+        assert body["meta"]["total"] == 0
+        assert body["meta"]["offset"] == 0
+        assert body["meta"]["limit"] == 5
+
+    async def test_stats_returns_zero_payload(self):
+        app = self._build_app_with_missing_switchboard_pool()
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/notifications/stats")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["total"] == 0
+        assert data["sent"] == 0
+        assert data["failed"] == 0
+        assert data["by_channel"] == {}
+        assert data["by_butler"] == {}
+
+
+# ---------------------------------------------------------------------------
+# 5. Result ordering verification
 # ---------------------------------------------------------------------------
 
 
@@ -324,7 +372,7 @@ class TestListNotificationsOrdering:
 
 
 # ---------------------------------------------------------------------------
-# 5. Stats endpoint
+# 6. Stats endpoint
 # ---------------------------------------------------------------------------
 
 
@@ -407,7 +455,7 @@ class TestNotificationStatsEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# 6. Pagination behaviour — has_more semantics
+# 7. Pagination behaviour — has_more semantics
 # ---------------------------------------------------------------------------
 
 
@@ -507,7 +555,7 @@ class TestPaginationHasMore:
 
 
 # ---------------------------------------------------------------------------
-# 7. Validation error cases
+# 8. Validation error cases
 # ---------------------------------------------------------------------------
 
 

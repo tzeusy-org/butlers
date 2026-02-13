@@ -19,7 +19,7 @@ bd sync               # Sync with git
 **MANDATORY WORKFLOW:**
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
+2. **Run right-sized quality gates** (if code changed) - Targeted tests during active development; full suite only for final merge-readiness checks
 3. **Update issue status** - Close finished work, update in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
@@ -37,6 +37,12 @@ bd sync               # Sync with git
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+## Test Scope Policy
+
+- For bugfixes and new features under active development or investigation, prefer targeted `pytest` runs (single test, file, or focused subset).
+- Run the full test suite only when branch changes are finalized and you want a final merge-readiness signal.
+- Expand test scope incrementally if risk is broader, instead of defaulting to full-suite runs early.
 
 
 <!-- bv-agent-instructions-v1 -->
@@ -162,16 +168,33 @@ make test-qg
 - Serial fallback/debug path remains available via `make test-qg-serial`.
 - `make test-qg-parallel` is an explicit alias to the same parallel default.
 
+### Testing cadence policy
+- For bugfixes/features under active development or investigation, default to targeted `pytest` runs to keep loops fast and context lean.
+- Run full-suite tests when branch changes are finalized and you need a pre-merge readiness signal.
+
 ### Switchboard Classification Contract
 - `classify_message()` returns decomposition entries (`list[{"butler","prompt"}]`), not a bare butler string. Callers must normalize both legacy string and list formats before routing.
 - When `butler_registry` is empty, `classify_message()` auto-discovers butlers from `roster/` (see `roster/switchboard/tools/routing/classify.py`) before composing the "Available butlers" prompt.
 
+### Notifications DB fallback contract
+- `src/butlers/api/routers/notifications.py` should degrade gracefully when the switchboard DB pool is unavailable: `GET /api/notifications` and `GET /api/butlers/{name}/notifications` return empty paginated payloads, and `GET /api/notifications/stats` returns zeroed stats instead of propagating a `KeyError`/404.
+
 ### Memory Writing Tool Contract
 - `roster/memory/storage.py` write APIs return UUIDs (`store_episode`, `store_fact`, `store_rule`); MCP wrappers in `roster/memory/tools/writing.py` are responsible for shaping tool responses (`id`, `expires_at`, `superseded_id`) and must pass `embedding_engine` in the current positional order.
+
+### Memory embedding progress-bar contract
+- `roster/memory/embedding.py` must call `SentenceTransformer.encode(..., show_progress_bar=False)` for both single and batch embedding paths; otherwise `sentence-transformers` enables `tqdm` "Batches" output at INFO/DEBUG log levels, causing noisy interleaved logs.
 
 ### DB SSL config contract
 - `src/butlers/db.py` now parses `sslmode` from `DATABASE_URL` and `POSTGRES_SSLMODE`; parsed mode is forwarded to both `asyncpg.connect()` (provisioning) and `asyncpg.create_pool()` (runtime).
 - Dashboard DB setup in `src/butlers/api/deps.py` and `src/butlers/api/db.py` reuses the same env parser and forwards the same SSL mode to API pools, keeping daemon/API behavior aligned.
+- When SSL mode is unset (`None`), DB connect/pool creation retries once with `ssl="disable"` if asyncpg fails during STARTTLS negotiation with `ConnectionError: unexpected connection_lost() call` (covers servers/proxies that drop SSLRequest instead of replying `S/N`).
+
+### Telegram DB contract
+- Module lifecycle receives the `Database` wrapper (not a raw pool). Telegram message-inbox logging should acquire connections via `db.pool.acquire()`, with optional backward compatibility for pool-like objects.
+
+### HTTP client logging contract
+- CLI logging config (`src/butlers/cli.py::_configure_logging`) sets `httpx` and `httpcore` logger levels to `WARNING` to prevent request-URL token leakage (notably Telegram bot tokens in `/bot<token>/...` paths).
 
 ### Frontend test harness
 - Frontend route/component tests run with Vitest (`frontend/package.json` has `npm test` -> `vitest run`).
@@ -180,3 +203,41 @@ make test-qg
 ### Quality-gate command contract
 - `make test-qg` is the default full-scope pytest gate and runs with xdist parallelization (`-n auto`).
 - `make test-qg-serial` is the documented serial fallback for debugging order-dependent behavior.
+
+### Calendar OAuth init contract
+- In `src/butlers/modules/calendar.py`, `_GoogleProvider.__init__` should validate `_GoogleOAuthCredentials.from_env()` before creating an owned `httpx.AsyncClient` so credential errors cannot leak unclosed clients.
+- `_GoogleOAuthClient.get_access_token()` should enforce token non-null invariants with explicit asserts rather than returning a fallback empty string.
+
+### Beads coordinator handoff guardrail
+- Some worker runs can finish with branch pushed but bead still `in_progress` (no PR/bead transition). Coordinator should detect `agent/<id>` ahead of `main` with no PR and normalize by creating a PR and marking the bead `blocked` with `pr-review` + `external_ref`.
+
+### Beads push guardrail
+- Repo push checks enforce a clean beads state; `git push` can fail with "Uncommitted changes detected" even after commits if `.beads/issues.jsonl` was re-synced/staged during pre-push checks.
+- If this happens, run `bd sync --status`, inspect staged `.beads/issues.jsonl`, commit the sync normalization (or intentionally restore it), then re-run `git push`.
+
+### Beads lint template contract
+- `bd lint` enforces section headers in issue descriptions, not only structured fields.
+- For `task` issues include `## Acceptance Criteria` in `description`; for `epic` issues include `## Success Criteria`.
+- For `bug` issues created with `--validate`, include `## Acceptance Criteria` in `description` (the separate `--acceptance` flag alone is not sufficient).
+
+### Relationship `important_dates` column contract
+- Relationship schema stores date kind in `important_dates.label` (not `important_dates.date_type`).
+- API queries touching birthdays/upcoming dates should use `label` consistently to avoid `UndefinedColumnError` on production schema.
+
+### Switchboard MCP routing contract
+- `roster/switchboard/tools/routing/route.py::_call_butler_tool` calls butler endpoints via `fastmcp.Client` and should return `CallToolResult.data` when present.
+- For backward compatibility, if a target returns `Unknown tool: handle_message`, routing retries `trigger` with mapped args (`prompt` from `prompt`/`message`, optional `context`).
+
+### Telegram identity tool contract
+- `src/butlers/modules/telegram.py` registers only identity-prefixed tools: `user_telegram_{get_updates,send_message,reply_to_message}` and `bot_telegram_{get_updates,send_message,reply_to_message}`.
+- `send_message`/`get_updates` legacy tool names must not be registered.
+- User-output descriptors (`user_telegram_send_message`, `user_telegram_reply_to_message`) are marked as approval-required defaults in descriptor descriptions (`approval_default=always`).
+
+### Email tool scope/approval contract
+- In `src/butlers/modules/email.py`, `user_*` and `bot_*` prefixes currently represent scoped tool surfaces; both still use the same configured SMTP/IMAP credentials (`SOURCE_EMAIL` / `SOURCE_EMAIL_PASSWORD`).
+- Both `user_*` and `bot_*` email send/reply output descriptors are documented as `approval-required default`; tests in `tests/modules/test_module_email.py` assert this marker.
+
+### Telegram/Email identity-credential config contract
+- Telegram and Email module config now supports identity-scoped credential tables: `[modules.telegram.user]` / `[modules.telegram.bot]` and `[modules.email.user]` / `[modules.email.bot]`.
+- Env var name fields in those scopes (`*_env`) must be valid environment variable identifiers and are schema-validated in module config models.
+- Butler startup credential validation collects enabled identity-scope env vars and reports missing values with scope-qualified sources (for example `module:telegram.bot`, `module:email.bot`).

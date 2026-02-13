@@ -73,6 +73,14 @@ def _mock_mcp_client(*, call_tool_return=None, call_tool_side_effect=None):
 class TestFetchMemoryContext:
     """Tests for the fetch_memory_context helper function."""
 
+    @pytest.fixture(autouse=True)
+    async def _reset_memory_client_cache(self):
+        from butlers.core.spawner import _reset_memory_client_cache_for_tests
+
+        await _reset_memory_client_cache_for_tests()
+        yield
+        await _reset_memory_client_cache_for_tests()
+
     async def test_returns_context_on_success(self):
         """When Memory Butler responds with valid content, return it."""
         mock_result = _make_call_tool_result(text="You previously discussed project deadlines.")
@@ -92,6 +100,53 @@ class TestFetchMemoryContext:
             "memory_context",
             {"trigger_prompt": "hello world", "butler": "my-butler"},
         )
+
+    async def test_reuses_cached_client_across_consecutive_calls(self):
+        """Consecutive context lookups should reuse a healthy cached client."""
+        first_result = _make_call_tool_result(text="ctx-1")
+        second_result = _make_call_tool_result(text="ctx-2")
+        mock_client = _mock_mcp_client(call_tool_side_effect=[first_result, second_result])
+
+        mock_ctor = MagicMock()
+        mock_ctx = mock_ctor.return_value
+        mock_ctx.is_connected = MagicMock(return_value=True)
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("butlers.core.spawner.MCPClient", mock_ctor):
+            first = await fetch_memory_context("my-butler", "hello 1")
+            second = await fetch_memory_context("my-butler", "hello 2")
+
+        assert first == "ctx-1"
+        assert second == "ctx-2"
+        mock_ctor.assert_called_once_with("http://localhost:8150/sse", name="spawner-memory")
+        assert mock_client.call_tool.await_count == 2
+
+    async def test_reconnects_when_cached_client_is_disconnected(self):
+        """Disconnected cached clients should be replaced before the next call."""
+        first_client = _mock_mcp_client(call_tool_return=_make_call_tool_result(text="ctx-1"))
+        second_client = _mock_mcp_client(call_tool_return=_make_call_tool_result(text="ctx-2"))
+
+        first_ctx = MagicMock()
+        first_ctx.is_connected = MagicMock(return_value=True)
+        first_ctx.__aenter__ = AsyncMock(return_value=first_client)
+        first_ctx.__aexit__ = AsyncMock(return_value=False)
+        second_ctx = MagicMock()
+        second_ctx.is_connected = MagicMock(return_value=True)
+        second_ctx.__aenter__ = AsyncMock(return_value=second_client)
+        second_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "butlers.core.spawner.MCPClient",
+            MagicMock(side_effect=[first_ctx, second_ctx]),
+        ):
+            first = await fetch_memory_context("my-butler", "hello 1")
+            first_ctx.is_connected.return_value = False
+            second = await fetch_memory_context("my-butler", "hello 2")
+
+        assert first == "ctx-1"
+        assert second == "ctx-2"
+        first_ctx.__aexit__.assert_awaited_once()
 
     async def test_returns_none_on_connection_error(self):
         """When Memory Butler is unreachable, return None."""

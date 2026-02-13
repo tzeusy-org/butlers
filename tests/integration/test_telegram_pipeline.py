@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from butlers.modules.pipeline import MessagePipeline
+from butlers.modules.pipeline import MessagePipeline, RoutingResult
 from butlers.modules.telegram import TelegramModule, _extract_chat_id, _extract_text
 
 pytestmark = pytest.mark.unit
@@ -286,6 +286,41 @@ class TestProcessUpdate:
 
         assert result is not None
         assert result.target_butler == "general"
+
+    async def test_uses_database_pool_for_message_inbox_logging(self):
+        """process_update logs to message_inbox via db.pool.acquire()."""
+        mod = TelegramModule()
+
+        pipeline = MagicMock()
+        expected = {"routed": True}
+        pipeline.process = AsyncMock(
+            return_value=RoutingResult(
+                target_butler="general",
+                route_result=expected,
+            )
+        )
+        mod.set_pipeline(pipeline)
+
+        conn = AsyncMock()
+        conn.fetchval = AsyncMock(return_value=123)
+        acquire_cm = AsyncMock()
+        acquire_cm.__aenter__.return_value = conn
+        acquire_cm.__aexit__.return_value = False
+        pool = MagicMock()
+        pool.acquire.return_value = acquire_cm
+
+        db = MagicMock()
+        db.pool = pool
+        mod._db = db
+
+        update = {"update_id": 1, "message": {"text": "hello", "chat": {"id": 7}}}
+        result = await mod.process_update(update)
+
+        assert result is not None
+        pool.acquire.assert_called_once()
+        conn.fetchval.assert_awaited_once()
+        pipeline.process.assert_awaited_once()
+        assert pipeline.process.await_args.kwargs["message_inbox_id"] == 123
 
 
 # ---------------------------------------------------------------------------
