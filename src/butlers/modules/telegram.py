@@ -1,4 +1,4 @@
-"""Telegram module — send_message and get_updates MCP tools.
+"""Telegram module — identity-prefixed Telegram MCP tools.
 
 Supports polling mode (dev, no public URL needed) and webhook mode (production).
 Configured via [modules.telegram] with optional
@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from butlers.modules.base import Module
+from butlers.modules.base import Module, ToolIODescriptor
 from butlers.modules.pipeline import MessagePipeline, RoutingResult
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ class TelegramConfig(BaseModel):
 
 
 class TelegramModule(Module):
-    """Telegram module providing send_message and get_updates MCP tools.
+    """Telegram module providing identity-prefixed Telegram MCP tools.
 
     When a ``MessagePipeline`` is set via ``set_pipeline()``, incoming
     Telegram messages are forwarded through ``classify_message()`` then
@@ -112,6 +112,53 @@ class TelegramModule(Module):
     @property
     def dependencies(self) -> list[str]:
         return []
+
+    def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
+        """User-identity Telegram input tools."""
+        return (
+            ToolIODescriptor(
+                name="user_telegram_get_updates",
+                description="Read updates from the user Telegram identity.",
+            ),
+        )
+
+    def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
+        """User-identity Telegram output tools.
+
+        User send/reply tools are marked as approval-required defaults.
+        """
+        return (
+            ToolIODescriptor(
+                name="user_telegram_send_message",
+                description="Send as user. approval_default=always (approval required).",
+            ),
+            ToolIODescriptor(
+                name="user_telegram_reply_to_message",
+                description="Reply as user. approval_default=always (approval required).",
+            ),
+        )
+
+    def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Bot-identity Telegram input tools."""
+        return (
+            ToolIODescriptor(
+                name="bot_telegram_get_updates",
+                description="Read updates from the bot Telegram identity.",
+            ),
+        )
+
+    def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
+        """Bot-identity Telegram output tools."""
+        return (
+            ToolIODescriptor(
+                name="bot_telegram_send_message",
+                description="Send as bot. approval_default=conditional.",
+            ),
+            ToolIODescriptor(
+                name="bot_telegram_reply_to_message",
+                description="Reply as bot. approval_default=conditional.",
+            ),
+        )
 
     @property
     def credentials_env(self) -> list[str]:
@@ -169,21 +216,44 @@ class TelegramModule(Module):
         return None
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        """Register send_message and get_updates MCP tools."""
+        """Register identity-prefixed Telegram MCP tools."""
         self._config = (
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))
         )
         module = self  # capture for closures
 
-        @mcp.tool()
-        async def send_message(chat_id: str, text: str) -> dict[str, Any]:
-            """Send a message to a Telegram chat."""
-            return await module._send_message(chat_id, text)
+        def _register_send_tool(identity: str) -> None:
+            async def send_message_tool(chat_id: str, text: str) -> dict[str, Any]:
+                return await module._send_message(chat_id, text)
 
-        @mcp.tool()
-        async def get_updates() -> list[dict[str, Any]]:
-            """Get recent messages from Telegram."""
-            return await module._get_updates()
+            send_message_tool.__name__ = f"{identity}_telegram_send_message"
+            send_message_tool.__doc__ = f"Send a message as the {identity} Telegram identity."
+            mcp.tool()(send_message_tool)
+
+        def _register_reply_tool(identity: str) -> None:
+            async def reply_to_message_tool(
+                chat_id: str, message_id: int, text: str
+            ) -> dict[str, Any]:
+                return await module._reply_to_message(chat_id, message_id, text)
+
+            reply_to_message_tool.__name__ = f"{identity}_telegram_reply_to_message"
+            reply_to_message_tool.__doc__ = f"Reply as the {identity} Telegram identity."
+            mcp.tool()(reply_to_message_tool)
+
+        def _register_get_updates_tool(identity: str) -> None:
+            async def get_updates_tool() -> list[dict[str, Any]]:
+                return await module._get_updates()
+
+            get_updates_tool.__name__ = f"{identity}_telegram_get_updates"
+            get_updates_tool.__doc__ = (
+                f"Get recent updates for the {identity} Telegram identity."
+            )
+            mcp.tool()(get_updates_tool)
+
+        for identity in ("user", "bot"):
+            _register_send_tool(identity)
+            _register_reply_tool(identity)
+            _register_get_updates_tool(identity)
 
     async def on_startup(self, config: Any, db: Any) -> None:
         """Start polling or set webhook based on config."""
@@ -290,14 +360,23 @@ class TelegramModule(Module):
     # Telegram API helpers
     # ------------------------------------------------------------------
 
-    async def _send_message(self, chat_id: str, text: str) -> dict[str, Any]:
+    async def _send_message(
+        self, chat_id: str, text: str, reply_to_message_id: int | None = None
+    ) -> dict[str, Any]:
         """Call Telegram sendMessage API."""
         url = f"{self._base_url()}/sendMessage"
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
         client = self._get_client()
-        resp = await client.post(url, json={"chat_id": chat_id, "text": text})
+        resp = await client.post(url, json=payload)
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
         return data
+
+    async def _reply_to_message(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:
+        """Reply to a specific Telegram message."""
+        return await self._send_message(chat_id, text, reply_to_message_id=message_id)
 
     async def _get_updates(self) -> list[dict[str, Any]]:
         """Call Telegram getUpdates API and return new messages."""
