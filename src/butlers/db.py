@@ -155,9 +155,7 @@ class Database:
                 raise
             retry_kwargs = dict(pool_kwargs)
             retry_kwargs["ssl"] = "disable"
-            logger.info(
-                "Retrying PostgreSQL pool creation with ssl=disable after SSL upgrade loss"
-            )
+            logger.info("Retrying PostgreSQL pool creation with ssl=disable after SSL upgrade loss")
             self.pool = await asyncpg.create_pool(**retry_kwargs)
         logger.info("Connection pool created for: %s", self.db_name)
         return self.pool

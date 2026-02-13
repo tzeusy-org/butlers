@@ -164,8 +164,9 @@ make test-qg
 ```
 
 ### Parallel Test Command
-- Opt-in local parallel run for the quality-gate scope: `make test-qg-parallel`
-- `test-qg-parallel` uses `pytest-xdist` (`-n auto`) and should produce the same pass/fail set as `make test-qg`.
+- Default quality-gate pytest scope uses `pytest-xdist` (`-n auto`) via `make test-qg`.
+- Serial fallback/debug path remains available via `make test-qg-serial`.
+- `make test-qg-parallel` is an explicit alias to the same parallel default.
 
 ### Testing cadence policy
 - For bugfixes/features under active development or investigation, default to targeted `pytest` runs to keep loops fast and context lean.
@@ -199,6 +200,10 @@ make test-qg
 - Frontend route/component tests run with Vitest (`frontend/package.json` has `npm test` -> `vitest run`).
 - Colocate tests as `frontend/src/**/*.test.tsx` (example: `frontend/src/pages/ButlersPage.test.tsx`).
 
+### Quality-gate command contract
+- `make test-qg` is the default full-scope pytest gate and runs with xdist parallelization (`-n auto`).
+- `make test-qg-serial` is the documented serial fallback for debugging order-dependent behavior.
+
 ### Calendar OAuth init contract
 - In `src/butlers/modules/calendar.py`, `_GoogleProvider.__init__` should validate `_GoogleOAuthCredentials.from_env()` before creating an owned `httpx.AsyncClient` so credential errors cannot leak unclosed clients.
 - `_GoogleOAuthClient.get_access_token()` should enforce token non-null invariants with explicit asserts rather than returning a fallback empty string.
@@ -231,3 +236,16 @@ make test-qg
 ### MCP client lifecycle hotspot
 - `roster/switchboard/tools/routing/route.py::_call_butler_tool` currently opens a new `fastmcp.Client` (`async with`) per routed tool call, which can generate high `/sse` + `ListToolsRequest` log volume under heartbeat fanout.
 - `src/butlers/core/spawner.py` memory hooks (`fetch_memory_context`, `store_session_episode`) also create one-off Memory MCP clients per call; this is another source of SSE session churn.
+### Telegram identity tool contract
+- `src/butlers/modules/telegram.py` registers only identity-prefixed tools: `user_telegram_{get_updates,send_message,reply_to_message}` and `bot_telegram_{get_updates,send_message,reply_to_message}`.
+- `send_message`/`get_updates` legacy tool names must not be registered.
+- User-output descriptors (`user_telegram_send_message`, `user_telegram_reply_to_message`) are marked as approval-required defaults in descriptor descriptions (`approval_default=always`).
+
+### Email tool scope/approval contract
+- In `src/butlers/modules/email.py`, `user_*` and `bot_*` prefixes currently represent scoped tool surfaces; both still use the same configured SMTP/IMAP credentials (`SOURCE_EMAIL` / `SOURCE_EMAIL_PASSWORD`).
+- Both `user_*` and `bot_*` email send/reply output descriptors are documented as `approval-required default`; tests in `tests/modules/test_module_email.py` assert this marker.
+
+### Telegram/Email identity-credential config contract
+- Telegram and Email module config now supports identity-scoped credential tables: `[modules.telegram.user]` / `[modules.telegram.bot]` and `[modules.email.user]` / `[modules.email.bot]`.
+- Env var name fields in those scopes (`*_env`) must be valid environment variable identifiers and are schema-validated in module config models.
+- Butler startup credential validation collects enabled identity-scope env vars and reports missing values with scope-qualified sources (for example `module:telegram.bot`, `module:email.bot`).

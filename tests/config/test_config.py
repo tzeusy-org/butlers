@@ -50,11 +50,23 @@ cron = "0 9 * * 1"
 prompt = "Generate weekly status report"
 
 [modules.email]
-provider = "gmail"
 max_threads = 50
 
 [modules.telegram]
-bot_token_env = "TG_TOKEN"
+mode = "polling"
+
+[modules.telegram.user]
+enabled = false
+
+[modules.telegram.bot]
+token_env = "TG_TOKEN"
+
+[modules.email.user]
+enabled = false
+
+[modules.email.bot]
+address_env = "BOT_EMAIL_ADDRESS"
+password_env = "BOT_EMAIL_PASSWORD"
 """
 
 MINIMAL_TOML = """\
@@ -100,9 +112,20 @@ def test_load_full_config(tmp_path: Path):
 
     # Modules
     assert "email" in cfg.modules
-    assert cfg.modules["email"] == {"provider": "gmail", "max_threads": 50}
+    assert cfg.modules["email"] == {
+        "max_threads": 50,
+        "user": {"enabled": False},
+        "bot": {
+            "address_env": "BOT_EMAIL_ADDRESS",
+            "password_env": "BOT_EMAIL_PASSWORD",
+        },
+    }
     assert "telegram" in cfg.modules
-    assert cfg.modules["telegram"] == {"bot_token_env": "TG_TOKEN"}
+    assert cfg.modules["telegram"] == {
+        "mode": "polling",
+        "user": {"enabled": False},
+        "bot": {"token_env": "TG_TOKEN"},
+    }
 
     # Env
     assert cfg.env_required == ["OPENAI_API_KEY", "PG_DSN"]

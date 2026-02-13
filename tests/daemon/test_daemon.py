@@ -242,7 +242,7 @@ class TestStartupSequence:
     """Verify the startup sequence executes in the documented order."""
 
     async def test_startup_calls_in_order(self, butler_dir: Path) -> None:
-        """Steps 1-13 should execute in documented order."""
+        """Key startup stages should execute in documented order."""
         patches = _patch_infra()
         call_order: list[str] = []
 
@@ -1398,6 +1398,71 @@ class TestModuleCredentialsTomlSource:
         assert "stub_a" in module_creds
         assert module_creds["stub_a"] == []
 
+    async def test_toml_invalid_credentials_type_no_crash(self, tmp_path: Path) -> None:
+        """Invalid TOML credentials_env types are ignored without crashing startup."""
+        butler_dir = _make_butler_toml(
+            tmp_path,
+            modules={"stub_a": {"credentials_env": 123}},
+        )
+        registry = _make_registry(StubModuleA)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"] as mock_validate,
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        mock_validate.assert_called_once()
+        call_kwargs = mock_validate.call_args
+        module_creds = call_kwargs.kwargs.get(
+            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
+        )
+        assert module_creds is not None
+        # Invalid TOML type should be treated as explicitly empty (no class fallback).
+        assert module_creds["stub_a"] == []
+
+    async def test_toml_credentials_filter_empty_and_non_strings(self, tmp_path: Path) -> None:
+        """Only non-empty string entries are kept from TOML credentials_env lists."""
+        butler_dir = _make_butler_toml(
+            tmp_path,
+            modules={"stub_a": {"credentials_env": ["TOKEN_A", "", 123, "TOKEN_B"]}},
+        )
+        registry = _make_registry(StubModuleA)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"] as mock_validate,
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        mock_validate.assert_called_once()
+        call_kwargs = mock_validate.call_args
+        module_creds = call_kwargs.kwargs.get(
+            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
+        )
+        assert module_creds is not None
+        assert module_creds["stub_a"] == ["TOKEN_A", "TOKEN_B"]
+
     async def test_mixed_toml_and_class_credentials(self, tmp_path: Path) -> None:
         """One module uses TOML creds, another falls back to class property."""
         # stub_a: TOML overrides, stub_b: no class credentials_env, no TOML
@@ -1464,6 +1529,71 @@ class TestModuleCredentialsTomlSource:
         mock_spawner_cls.assert_called_once()
         spawner_kwargs = mock_spawner_cls.call_args.kwargs
         assert spawner_kwargs["module_credentials_env"] == {"stub_a": ["TOML_KEY"]}
+
+    async def test_identity_scoped_credentials_are_collected(self, tmp_path: Path) -> None:
+        """Identity-scoped user/bot env vars are collected with scope-qualified sources."""
+        (tmp_path / "butler.toml").write_text(
+            """
+[butler]
+name = "switchboard"
+port = 9100
+description = "A test butler"
+
+[butler.db]
+name = "butler_test"
+
+[modules.telegram]
+mode = "polling"
+
+[modules.telegram.user]
+enabled = false
+
+[modules.telegram.bot]
+token_env = "TG_BOT_TOKEN"
+
+[modules.email]
+
+[modules.email.user]
+enabled = false
+
+[modules.email.bot]
+address_env = "BOT_EMAIL_ADDRESS"
+password_env = "BOT_EMAIL_PASSWORD"
+"""
+        )
+        registry = _make_registry(TelegramModule, EmailModule)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"] as mock_validate,
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"] as mock_spawner_cls,
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["connect_switchboard"],
+            patches["start_mcp_server"],
+        ):
+            daemon = ButlerDaemon(tmp_path, registry=registry)
+            await daemon.start()
+
+        mock_validate.assert_called_once()
+        call_kwargs = mock_validate.call_args
+        module_creds = call_kwargs.kwargs.get(
+            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
+        )
+        assert module_creds is not None
+        assert module_creds["telegram.bot"] == ["TG_BOT_TOKEN"]
+        assert module_creds["email.bot"] == ["BOT_EMAIL_ADDRESS", "BOT_EMAIL_PASSWORD"]
+        assert "telegram.user" not in module_creds
+        assert "email.user" not in module_creds
+
+        mock_spawner_cls.assert_called_once()
+        spawner_kwargs = mock_spawner_cls.call_args.kwargs
+        assert spawner_kwargs["module_credentials_env"] == module_creds
 
     async def test_multiple_secrets_detected(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

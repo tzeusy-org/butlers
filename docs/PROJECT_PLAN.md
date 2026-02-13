@@ -210,9 +210,13 @@ prompt = "Check for new emails. Flag anything urgent and draft replies for routi
 # The table contents are module-specific configuration.
 
 [modules.email]
-provider = "gmail"
-address = "assistant@example.com"
-credentials_env = "GMAIL_ASSISTANT_CREDS"
+
+[modules.email.user]
+enabled = false
+
+[modules.email.bot]
+address_env = "BUTLER_EMAIL_ADDRESS"
+password_env = "BUTLER_EMAIL_PASSWORD"
 
 [modules.calendar]
 provider = "google"
@@ -409,12 +413,22 @@ port = 8100
 name = "butler_switchboard"
 
 [modules.telegram]
-bot_token_env = "BUTLER_TELEGRAM_TOKEN"
+mode = "polling"
+
+[modules.telegram.user]
+enabled = false
+
+[modules.telegram.bot]
+token_env = "BUTLER_TELEGRAM_TOKEN"
 
 [modules.email]
-provider = "gmail"
-address = "butlers@example.com"
-credentials_env = "GMAIL_SWITCHBOARD_CREDS"
+
+[modules.email.user]
+enabled = false
+
+[modules.email.bot]
+address_env = "BUTLER_EMAIL_ADDRESS"
+password_env = "BUTLER_EMAIL_PASSWORD"
 ```
 
 **Switchboard DB schema (in addition to core tables):**

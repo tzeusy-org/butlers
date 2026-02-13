@@ -15,6 +15,16 @@ from butlers.modules.pipeline import RoutingResult
 from butlers.modules.telegram import TelegramConfig, TelegramModule
 
 pytestmark = pytest.mark.unit
+
+EXPECTED_TELEGRAM_TOOLS = {
+    "user_telegram_get_updates",
+    "user_telegram_send_message",
+    "user_telegram_reply_to_message",
+    "bot_telegram_get_updates",
+    "bot_telegram_send_message",
+    "bot_telegram_reply_to_message",
+}
+LEGACY_TELEGRAM_TOOLS = {"send_message", "get_updates"}
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -81,6 +91,30 @@ class TestModuleABCCompliance:
         """Module declares BUTLER_TELEGRAM_TOKEN as required credential."""
         assert telegram_module.credentials_env == ["BUTLER_TELEGRAM_TOKEN"]
 
+    def test_io_descriptors_expose_identity_prefixed_tools(
+        self, telegram_module: TelegramModule
+    ) -> None:
+        """Module I/O descriptors expose the expected prefixed Telegram tools."""
+        assert tuple(d.name for d in telegram_module.user_inputs()) == (
+            "user_telegram_get_updates",
+        )
+        assert tuple(d.name for d in telegram_module.user_outputs()) == (
+            "user_telegram_send_message",
+            "user_telegram_reply_to_message",
+        )
+        assert tuple(d.name for d in telegram_module.bot_inputs()) == ("bot_telegram_get_updates",)
+        assert tuple(d.name for d in telegram_module.bot_outputs()) == (
+            "bot_telegram_send_message",
+            "bot_telegram_reply_to_message",
+        )
+
+    def test_user_output_descriptors_mark_approval_required_default(
+        self, telegram_module: TelegramModule
+    ) -> None:
+        """User send/reply descriptors are marked as approval-required defaults."""
+        descriptions = [d.description.lower() for d in telegram_module.user_outputs()]
+        assert all("approval required" in description for description in descriptions)
+
 
 # ---------------------------------------------------------------------------
 # TelegramConfig
@@ -96,6 +130,10 @@ class TestTelegramConfig:
         assert config.mode == "polling"
         assert config.webhook_url is None
         assert config.poll_interval == 1.0
+        assert config.user.enabled is False
+        assert config.user.token_env == "USER_TELEGRAM_TOKEN"
+        assert config.bot.enabled is True
+        assert config.bot.token_env == "BUTLER_TELEGRAM_TOKEN"
 
     def test_polling_mode(self):
         """Polling mode can be set explicitly."""
@@ -119,6 +157,14 @@ class TestTelegramConfig:
         config = TelegramConfig(**{})
         assert config.mode == "polling"
 
+    def test_invalid_bot_token_env_rejected(self):
+        with pytest.raises(ValueError, match="modules.telegram.bot.token_env"):
+            TelegramConfig(**{"bot": {"token_env": "1INVALID"}})
+
+    def test_invalid_user_token_env_rejected(self):
+        with pytest.raises(ValueError, match="modules.telegram.user.token_env"):
+            TelegramConfig(**{"user": {"token_env": "bad-value"}})
+
 
 # ---------------------------------------------------------------------------
 # Tool registration
@@ -128,33 +174,27 @@ class TestTelegramConfig:
 class TestToolRegistration:
     """Verify register_tools creates the expected MCP tools."""
 
-    async def test_registers_send_message(
+    async def test_registers_prefixed_tools(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock
     ):
-        """register_tools creates a send_message tool."""
+        """register_tools creates only identity-prefixed Telegram tools."""
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        assert "send_message" in mock_mcp._registered_tools
+        assert set(mock_mcp._registered_tools.keys()) == EXPECTED_TELEGRAM_TOOLS
 
-    async def test_registers_get_updates(
+    async def test_does_not_register_legacy_tool_names(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock
     ):
-        """register_tools creates a get_updates tool."""
+        """Legacy unprefixed tool names are no longer registered."""
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        assert "get_updates" in mock_mcp._registered_tools
+        assert LEGACY_TELEGRAM_TOOLS.isdisjoint(mock_mcp._registered_tools.keys())
 
-    async def test_send_message_is_callable(
+    async def test_all_registered_tools_are_callable(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock
     ):
-        """The registered send_message tool is callable."""
+        """Every prefixed Telegram tool registration is callable."""
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        assert callable(mock_mcp._registered_tools["send_message"])
-
-    async def test_get_updates_is_callable(
-        self, telegram_module: TelegramModule, mock_mcp: MagicMock
-    ):
-        """The registered get_updates tool is callable."""
-        await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        assert callable(mock_mcp._registered_tools["get_updates"])
+        for name in EXPECTED_TELEGRAM_TOOLS:
+            assert callable(mock_mcp._registered_tools[name])
 
 
 # ---------------------------------------------------------------------------
@@ -191,10 +231,10 @@ class TestSendMessage:
         assert result["ok"] is True
         assert result["result"]["message_id"] == 42
 
-    async def test_send_message_via_tool(
+    async def test_user_send_message_via_tool(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock, monkeypatch
     ):
-        """send_message tool delegates to _send_message."""
+        """user_telegram_send_message delegates to _send_message."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -202,11 +242,53 @@ class TestSendMessage:
         telegram_module._client = mock_client
 
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        tool_fn = mock_mcp._registered_tools["send_message"]
+        tool_fn = mock_mcp._registered_tools["user_telegram_send_message"]
         result = await tool_fn(chat_id="999", text="Test msg")
 
         assert result["ok"] is True
         mock_client.post.assert_called_once()
+
+
+class TestReplyToMessage:
+    """Test reply_to_message API interaction."""
+
+    async def test_reply_to_message_sets_reply_to_message_id(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """_reply_to_message includes reply_to_message_id payload."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.return_value = _mock_response({"ok": True, "result": {}})
+        telegram_module._client = mock_client
+
+        result = await telegram_module._reply_to_message("12345", 77, "Reply text")
+
+        assert result["ok"] is True
+        mock_client.post.assert_called_once_with(
+            "https://api.telegram.org/bottest-token/sendMessage",
+            json={"chat_id": "12345", "text": "Reply text", "reply_to_message_id": 77},
+        )
+
+    async def test_user_reply_tool_via_registration(
+        self, telegram_module: TelegramModule, mock_mcp: MagicMock, monkeypatch
+    ):
+        """user_telegram_reply_to_message delegates to reply helper."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.return_value = _mock_response({"ok": True, "result": {}})
+        telegram_module._client = mock_client
+
+        await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
+        tool_fn = mock_mcp._registered_tools["user_telegram_reply_to_message"]
+        result = await tool_fn(chat_id="999", message_id=12, text="Thread reply")
+
+        assert result["ok"] is True
+        mock_client.post.assert_called_once_with(
+            "https://api.telegram.org/bottest-token/sendMessage",
+            json={"chat_id": "999", "text": "Thread reply", "reply_to_message_id": 12},
+        )
 
 
 class TestGetUpdates:
@@ -282,10 +364,15 @@ class TestGetUpdates:
         assert updates == []
         assert telegram_module._last_update_id == 0
 
-    async def test_get_updates_via_tool(
-        self, telegram_module: TelegramModule, mock_mcp: MagicMock, monkeypatch
+    @pytest.mark.parametrize("tool_name", ["user_telegram_get_updates", "bot_telegram_get_updates"])
+    async def test_get_updates_via_tools(
+        self,
+        telegram_module: TelegramModule,
+        mock_mcp: MagicMock,
+        monkeypatch,
+        tool_name: str,
     ):
-        """get_updates tool delegates to _get_updates."""
+        """Identity-prefixed get-updates tools delegate to _get_updates."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -293,7 +380,7 @@ class TestGetUpdates:
         telegram_module._client = mock_client
 
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        tool_fn = mock_mcp._registered_tools["get_updates"]
+        tool_fn = mock_mcp._registered_tools[tool_name]
         result = await tool_fn()
 
         assert result == []
