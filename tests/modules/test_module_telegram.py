@@ -493,23 +493,24 @@ class TestPipelineIntegration:
         result = await telegram_module.process_update(update)
 
         assert result is mock_result
-        mock_pipeline.process.assert_awaited_once_with(
-            message_text="Need help",
-            tool_name="bot_telegram_handle_message",
-            tool_args={
-                "source": "telegram",
-                "source_channel": "telegram",
-                "source_identity": "bot",
-                "source_endpoint_identity": "telegram:bot",
-                "sender_identity": "12345",
-                "external_event_id": None,
-                "external_thread_id": "12345",
-                "source_tool": "bot_telegram_get_updates",
-                "chat_id": "12345",
-                "source_id": None,
-                "raw_metadata": update,
-            },
-        )
+        mock_pipeline.process.assert_awaited_once()
+        _, call_kwargs = mock_pipeline.process.await_args
+        assert call_kwargs["message_text"] == "Need help"
+        assert call_kwargs["tool_name"] == "bot_telegram_handle_message"
+        assert call_kwargs["tool_args"] == {
+            "source": "telegram",
+            "source_channel": "telegram",
+            "source_identity": "bot",
+            "source_endpoint_identity": "telegram:bot",
+            "sender_identity": "12345",
+            "external_event_id": None,
+            "external_thread_id": "12345",
+            "source_tool": "bot_telegram_get_updates",
+            "chat_id": "12345",
+            "source_id": None,
+            "raw_metadata": update,
+        }
+        assert call_kwargs["message_inbox_id"] is None
         assert telegram_module._routed_messages == [mock_result]
 
     async def test_reaction_lifecycle_single_route_success(

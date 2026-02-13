@@ -12,11 +12,13 @@ switchboard.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -530,6 +532,25 @@ class TelegramModule(Module):
         if not text:
             return None
 
+        message_inbox_id = None
+        pool = self._get_db_pool()
+        if pool is not None:
+            async with pool.acquire() as conn:
+                message_inbox_id = await conn.fetchval(
+                    """
+                    INSERT INTO message_inbox
+                        (source_channel, sender_id, raw_content, raw_metadata, received_at)
+                    VALUES
+                        ($1, $2, $3, $4, $5)
+                    RETURNING id
+                    """,
+                    "telegram",
+                    chat_id,
+                    text,
+                    json.dumps(update),
+                    datetime.now(UTC),
+                )
+
         lock = self._message_lock(message_key) if message_key is not None else None
         if lock is not None:
             await lock.acquire()
@@ -557,6 +578,7 @@ class TelegramModule(Module):
                     "source_id": message_key,
                     "raw_metadata": update,
                 },
+                message_inbox_id=message_inbox_id,
             )
 
             if message_key is not None:
