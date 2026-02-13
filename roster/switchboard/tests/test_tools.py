@@ -621,7 +621,7 @@ async def test_classify_message_rewrites_only_scheduling_entries_in_decompositio
 
     result = await classify_message(
         calendar_routing_pool,
-        "Schedule a dentist appointment for Friday morning and what should I pack for the trip?",
+        ("Schedule a dentist appointment for Friday morning and what should I pack for the trip?"),
         mixed_dispatch,
     )
     assert result == [
