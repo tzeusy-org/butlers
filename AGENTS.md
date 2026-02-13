@@ -172,6 +172,10 @@ make test-qg
 - For bugfixes/features under active development or investigation, default to targeted `pytest` runs to keep loops fast and context lean.
 - Run full-suite tests when branch changes are finalized and you need a pre-merge readiness signal.
 
+### Calendar recurrence normalization contract
+- `_normalize_recurrence()` in `src/butlers/modules/calendar.py` must reject any rule containing `\\n` or `\\r` to prevent iCalendar CRLF/newline injection.
+- `FREQ` presence and `DTSTART`/`DTEND` exclusion checks should be case-insensitive (`rule.upper()`), so lowercase property names cannot bypass validation.
+
 ### Switchboard Classification Contract
 - `classify_message()` returns decomposition entries (`list[{"butler","prompt"}]`), not a bare butler string. Callers must normalize both legacy string and list formats before routing.
 - When `butler_registry` is empty, `classify_message()` auto-discovers butlers from `roster/` (see `roster/switchboard/tools/routing/classify.py`) before composing the "Available butlers" prompt.
