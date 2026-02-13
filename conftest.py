@@ -7,6 +7,7 @@ re-exports them so they are equally visible from ``roster/*/tests/``.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import time
 import uuid
@@ -14,7 +15,7 @@ import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -23,6 +24,13 @@ if TYPE_CHECKING:
     from testcontainers.postgres import PostgresContainer
 
 docker_available = shutil.which("docker") is not None
+logger = logging.getLogger(__name__)
+
+_TEARDOWN_TRANSIENT_EXIT_EVENT_SNIPPET = "did not receive an exit event"
+_TEARDOWN_TRANSIENT_ALREADY_IN_PROGRESS_SNIPPET = "is already in progress"
+_TEARDOWN_TRANSIENT_NO_SUCH_CONTAINER_SNIPPET = "no such container"
+_TESTCONTAINER_STOP_RETRY_ATTEMPTS = 4
+_TESTCONTAINER_STOP_BASE_DELAY_SECONDS = 0.1
 _TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS = (
     "did not receive an exit event",
     "no such container",
@@ -126,6 +134,100 @@ _install_resilient_testcontainers_stop()
 
 def _unique_test_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
+
+
+def _safe_exception_text(exc: BaseException) -> str:
+    explanation_text = str(getattr(exc, "explanation", "") or "")
+    try:
+        rendered_error = str(exc)
+    except Exception:
+        rendered_error = ""
+    return " ".join(part for part in (explanation_text, rendered_error) if part)
+
+
+def _is_transient_testcontainer_teardown_error(exc: BaseException) -> bool:
+    """True for known transient Docker API teardown races from force-remove."""
+    try:
+        from requests.exceptions import ReadTimeout
+    except Exception:
+        ReadTimeout = tuple()  # type: ignore[assignment]
+
+    if isinstance(exc, ReadTimeout):
+        return True
+
+    try:
+        from docker.errors import APIError
+    except Exception:
+        return False
+
+    if not isinstance(exc, APIError):
+        return False
+
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    if status_code != 500:
+        return False
+
+    error_text = _safe_exception_text(exc).lower()
+    return any(
+        marker in error_text
+        for marker in (
+            _TEARDOWN_TRANSIENT_EXIT_EVENT_SNIPPET,
+            _TEARDOWN_TRANSIENT_ALREADY_IN_PROGRESS_SNIPPET,
+            _TEARDOWN_TRANSIENT_NO_SUCH_CONTAINER_SNIPPET,
+        )
+    )
+
+
+def _retry_testcontainer_stop(
+    stop_call: Callable[[], None],
+    *,
+    max_attempts: int = _TESTCONTAINER_STOP_RETRY_ATTEMPTS,
+    base_delay_seconds: float = _TESTCONTAINER_STOP_BASE_DELAY_SECONDS,
+) -> None:
+    """Retry transient Docker teardown races with bounded backoff."""
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
+
+    delay = base_delay_seconds
+    for attempt in range(1, max_attempts + 1):
+        try:
+            stop_call()
+            return
+        except Exception as exc:
+            if attempt >= max_attempts or not _is_transient_testcontainer_teardown_error(exc):
+                raise
+            logger.warning(
+                "Transient Docker API teardown race (attempt %s/%s): %s",
+                attempt,
+                max_attempts,
+                _safe_exception_text(exc),
+            )
+            time.sleep(delay)
+            delay *= 2
+
+
+def _patch_testcontainers_stop_with_retry() -> None:
+    """Patch testcontainers stop() to tolerate transient Docker daemon races."""
+    try:
+        from testcontainers.core.container import DockerContainer
+    except Exception:
+        return
+
+    if getattr(DockerContainer.stop, "_butlers_retry_patch", False):
+        return
+
+    original_stop = DockerContainer.stop
+
+    def _stop_with_retry(self: Any, force: bool = True, delete_volume: bool = True) -> None:
+        _retry_testcontainer_stop(
+            lambda: original_stop(self, force=force, delete_volume=delete_volume)
+        )
+
+    setattr(_stop_with_retry, "_butlers_retry_patch", True)
+    DockerContainer.stop = _stop_with_retry
+
+
+_patch_testcontainers_stop_with_retry()
 
 
 @pytest.fixture(scope="session")
