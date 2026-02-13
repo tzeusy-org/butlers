@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -622,28 +621,37 @@ class TestPipelineIntegration:
         reactions = [call.kwargs["reaction"] for call in calls]
         assert reactions == [":eye", ":space invader"]
 
-    async def test_reaction_lifecycle_failure_400_logs_warning_without_exception_trace(
-        self, telegram_module: TelegramModule, monkeypatch, caplog
-    ):
-        """Expected Telegram 400 reaction errors log warning context, not stack traces."""
+    async def test_failure_reaction_400_logs_warning_and_skips_stack_trace(
+        self, telegram_module: TelegramModule, monkeypatch
+    ) -> None:
+        """Terminal failure reaction 400 is treated as expected and non-fatal."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-        response = httpx.Response(
-            status_code=400,
-            json={
+
+        response = _mock_response(
+            {
                 "ok": False,
                 "error_code": 400,
-                "description": "Bad Request: chosen reaction is not available",
+                "description": "Bad Request: message reactions are disabled in this chat",
             },
-            request=httpx.Request("POST", "https://api.telegram.org/test/setMessageReaction"),
+            status_code=400,
         )
-        set_reaction_error = httpx.HTTPStatusError(
-            "Client error '400 Bad Request'",
+        status_error = httpx.HTTPStatusError(
+            "400 Client Error",
             request=response.request,
             response=response,
         )
-        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
-            side_effect=[{"ok": True}, set_reaction_error]
-        )
+
+        async def mock_set_message_reaction(**kwargs: Any) -> dict[str, Any]:
+            if kwargs["reaction"] == ":space invader":
+                raise status_error
+            return {"ok": True}
+
+        telegram_module._set_message_reaction = mock_set_message_reaction  # type: ignore[method-assign]
+
+        warning_mock = MagicMock()
+        exception_mock = MagicMock()
+        monkeypatch.setattr(telegram_module_impl.logger, "warning", warning_mock)
+        monkeypatch.setattr(telegram_module_impl.logger, "exception", exception_mock)
 
         mock_pipeline = MagicMock()
         mock_pipeline.process = AsyncMock(
@@ -659,28 +667,26 @@ class TestPipelineIntegration:
         telegram_module.set_pipeline(mock_pipeline)
 
         update = {
-            "update_id": 306,
+            "update_id": 304,
             "message": {
                 "message_id": 100,
-                "text": "Fanout with error",
-                "chat": {"id": 333},
+                "text": "Fanout with reaction-disabled error",
+                "chat": {"id": 334},
             },
         }
 
-        with caplog.at_level(logging.WARNING, logger=telegram_module_impl.__name__):
-            await telegram_module.process_update(update)
+        result = await telegram_module.process_update(update)
 
-        warning_records = [
-            record
-            for record in caplog.records
-            if record.message
-            == "Telegram rejected message reaction; skipping lifecycle reaction update"
-        ]
-        assert len(warning_records) == 1
-        assert warning_records[0].telegram_error == "Bad Request: chosen reaction is not available"
-        assert not any(
-            record.message == "Failed to set Telegram message reaction" for record in caplog.records
+        assert result is not None
+        exception_mock.assert_not_called()
+        warning_mock.assert_called_once()
+        warning_extra = warning_mock.call_args.kwargs["extra"]
+        assert warning_extra["reaction"] == ":space invader"
+        assert warning_extra["telegram_status_code"] == 400
+        assert warning_extra["telegram_error_description"] == (
+            "Bad Request: message reactions are disabled in this chat"
         )
+        assert telegram_module._terminal_reactions["334:100"] == ":space invader"
 
     async def test_terminal_reaction_does_not_regress_to_in_progress(
         self, telegram_module: TelegramModule, monkeypatch
