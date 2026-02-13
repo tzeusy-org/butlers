@@ -348,6 +348,10 @@ class TestButlerStartupIntegration:
             "schedule_delete",
             "sessions_list",
             "sessions_get",
+            "sessions_summary",
+            "sessions_daily",
+            "top_sessions",
+            "schedule_costs",
         }
         assert set(registered_tools) == expected_tools
 

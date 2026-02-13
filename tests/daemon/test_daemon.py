@@ -372,11 +372,15 @@ class TestCoreToolRegistration:
         "schedule_delete",
         "sessions_list",
         "sessions_get",
+        "sessions_summary",
+        "sessions_daily",
+        "top_sessions",
+        "schedule_costs",
         "notify",
     }
 
     async def test_all_core_tools_registered(self, butler_dir: Path) -> None:
-        """All 14 core tools should be registered on FastMCP via @mcp.tool()."""
+        """All core tools should be registered on FastMCP via @mcp.tool()."""
         patches = _patch_infra()
         registered_tools: list[str] = []
 

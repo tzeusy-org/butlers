@@ -53,8 +53,12 @@ from butlers.core.scheduler import schedule_list as _schedule_list
 from butlers.core.scheduler import schedule_update as _schedule_update
 from butlers.core.scheduler import sync_schedules
 from butlers.core.scheduler import tick as _tick
+from butlers.core.sessions import schedule_costs as _schedule_costs
+from butlers.core.sessions import sessions_daily as _sessions_daily
 from butlers.core.sessions import sessions_get as _sessions_get
 from butlers.core.sessions import sessions_list as _sessions_list
+from butlers.core.sessions import sessions_summary as _sessions_summary
+from butlers.core.sessions import top_sessions as _top_sessions
 from butlers.core.spawner import Spawner
 from butlers.core.state import state_delete as _state_delete
 from butlers.core.state import state_get as _state_get
@@ -699,6 +703,26 @@ class ButlerDaemon:
             if session:
                 session["id"] = str(session["id"])
             return session
+
+        @mcp.tool()
+        async def sessions_summary(period: str = "today") -> dict:
+            """Return aggregate session/token stats for a period."""
+            return await _sessions_summary(pool, period)
+
+        @mcp.tool()
+        async def sessions_daily(from_date: str, to_date: str) -> dict:
+            """Return daily session/token aggregates for a date range."""
+            return await _sessions_daily(pool, from_date, to_date)
+
+        @mcp.tool()
+        async def top_sessions(limit: int = 10) -> dict:
+            """Return the highest-token completed sessions."""
+            return await _top_sessions(pool, limit)
+
+        @mcp.tool()
+        async def schedule_costs() -> dict:
+            """Return per-schedule token usage aggregates."""
+            return await _schedule_costs(pool)
 
         # Notification tool
         @mcp.tool()
