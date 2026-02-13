@@ -2,7 +2,7 @@
 
 ### Requirement: Consolidation scheduled task
 
-The Memory Butler SHALL run consolidation every 6 hours via a scheduled task (`cron = "0 */6 * * *"`). The task SHALL fetch episodes pending consolidation, group them by `(tenant_id, source butler)`, and process each group in deterministic order.
+For each butler with memory module enabled, the runtime SHALL run consolidation every 6 hours via a scheduled task (`cron = "0 */6 * * *"`). The task SHALL fetch episodes pending consolidation, group them by `(tenant_id, source butler)`, and process each group in deterministic order.
 
 #### Scenario: Consolidation processes unconsolidated episodes
 - **WHEN** the consolidation task fires
@@ -65,7 +65,7 @@ Consolidation lifecycle transitions and materialized outputs SHALL append entrie
 
 ### Requirement: Decay sweep scheduled task
 
-The Memory Butler SHALL run a daily decay sweep (`cron = "0 3 * * *"`) that computes `effective_confidence = confidence × exp(-decay_rate × days_since_last_confirmed)` for all active facts and rules.
+For each butler with memory module enabled, the runtime SHALL run a daily decay sweep (`cron = "0 3 * * *"`) that computes `effective_confidence = confidence × exp(-decay_rate × days_since_last_confirmed)` for all active facts and rules.
 
 #### Scenario: Fact transitions to fading
 - **WHEN** the decay sweep runs
@@ -84,7 +84,7 @@ The Memory Butler SHALL run a daily decay sweep (`cron = "0 3 * * *"`) that comp
 
 ### Requirement: Episode cleanup scheduled task
 
-The Memory Butler SHALL run daily episode cleanup (`cron = "0 4 * * *"`) that deletes episodes where `expires_at < now()`. If episode count exceeds `max_entries` (default 10,000), the oldest episodes SHALL be deleted first. Episodes that have not reached a terminal consolidation state and have not expired SHALL never be deleted by cleanup.
+For each butler with memory module enabled, the runtime SHALL run daily episode cleanup (`cron = "0 4 * * *"`) that deletes episodes where `expires_at < now()`. If episode count exceeds `max_entries` (default 10,000), the oldest episodes SHALL be deleted first. Episodes that have not reached a terminal consolidation state and have not expired SHALL never be deleted by cleanup.
 
 #### Scenario: Expired episodes deleted
 - **WHEN** episode cleanup runs

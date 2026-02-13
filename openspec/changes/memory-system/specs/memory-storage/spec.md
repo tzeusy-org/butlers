@@ -105,11 +105,11 @@ The system SHALL require PostgreSQL extensions `vector` (pgvector) and `uuid-oss
 - **WHEN** a cosine similarity query is executed against the facts embedding column
 - **THEN** the query plan SHALL use the IVFFlat index
 
-### Requirement: Alembic migration chain for memory tables
+### Requirement: Alembic migration chain for memory module tables
 
-The system SHALL provide Alembic migrations with `branch_labels = ("memory",)` that create the episodes, facts, rules, memory_links, and memory_events tables, enable required extensions, and add search vectors and indexes. Migrations SHALL run programmatically at Memory Butler startup.
+The system SHALL provide Alembic migrations (memory chain) that create the episodes, facts, rules, memory_links, and memory_events tables, enable required extensions, and add search vectors and indexes. For each butler with memory module enabled, migrations SHALL run programmatically at that butler's startup against its own database.
 
 #### Scenario: Clean database migration
-- **WHEN** the Memory Butler starts against an empty `butler_memory` database
+- **WHEN** a butler starts with memory module enabled against an empty `butler_<name>` database
 - **THEN** all memory tables SHALL be created via Alembic upgrade to head
 - **AND** pgvector and uuid-ossp extensions SHALL be enabled

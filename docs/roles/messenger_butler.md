@@ -90,6 +90,16 @@ Channel tool naming and identity scope rules:
 - Bot-scoped send/reply outputs may default to `approval_default="conditional"` and remain policy-gated.
 - Legacy non-prefixed channel tool names are not allowed in target state.
 
+Canonical Telegram/Email examples:
+- Telegram inputs: `user_telegram_get_updates`, `bot_telegram_get_updates`
+- Telegram outputs: `user_telegram_send_message`, `user_telegram_reply_to_message`, `bot_telegram_send_message`, `bot_telegram_reply_to_message`
+- Email inputs: `user_email_search_inbox`, `bot_email_search_inbox`
+- Email outputs: `user_email_send_message`, `user_email_reply_to_thread`, `bot_email_send_message`, `bot_email_reply_to_thread`
+
+Approval behavior by identity:
+- User-scoped send/reply outputs are always approval-gated by default.
+- Bot-scoped outputs are not default-gated; they become gated only when policy/config opts in.
+
 Switchboard dispatch policy:
 - Default outbound notify execution should target bot-scoped channel outputs unless policy explicitly requests user-scoped identity.
 

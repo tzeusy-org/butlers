@@ -17,6 +17,12 @@ Source of truth:
 Scope note:
 - This document defines connector expectations; Switchboard remains the authoritative owner of ingress semantics.
 
+Project-specific connector profiles:
+- `docs/connectors/telegram_bot.md`
+- `docs/connectors/telegram_user_client.md`
+- `docs/connectors/gmail.md`
+- `docs/connectors/draft_discord.md` (DRAFT, v2-only WIP)
+
 ## 2. Connector Responsibilities
 Connectors MUST:
 - Read source events/messages from an external system (Telegram, email, webhook, etc.).

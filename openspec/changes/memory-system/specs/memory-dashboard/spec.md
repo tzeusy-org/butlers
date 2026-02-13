@@ -14,7 +14,7 @@ The dashboard SHALL expose REST API endpoints for memory data: `GET /api/memory/
 
 ### Requirement: Fact editing via dashboard creates superseding fact
 
-When a fact is edited via `PUT /api/memory/facts/:id`, the system SHALL create a new fact with the updated content that supersedes the original. The original fact's validity SHALL be set to 'superseded'. The edit SHALL go through the Memory MCP server (not direct SQL).
+When a fact is edited via `PUT /api/memory/facts/:id`, the system SHALL create a new fact with the updated content that supersedes the original. The original fact's validity SHALL be set to 'superseded'. The edit SHALL go through memory module tool APIs (not direct SQL writes).
 
 #### Scenario: Edit fact creates supersession
 - **WHEN** `PUT /api/memory/facts/<id>` is called with `content="Lactose and gluten intolerant"`
@@ -24,7 +24,7 @@ When a fact is edited via `PUT /api/memory/facts/:id`, the system SHALL create a
 
 ### Requirement: Fact and rule deletion via dashboard is soft-delete
 
-When a fact or rule is deleted via `DELETE /api/memory/facts/:id` or `DELETE /api/memory/rules/:id`, the system SHALL apply canonical soft-delete semantics via the Memory MCP server. Facts SHALL transition to validity `retracted` (legacy `forgotten` accepted only as compatibility alias). Rules SHALL be marked retrieval-excluded tombstones per schema. Records SHALL remain in the database.
+When a fact or rule is deleted via `DELETE /api/memory/facts/:id` or `DELETE /api/memory/rules/:id`, the system SHALL apply canonical soft-delete semantics via memory module tool APIs. Facts SHALL transition to validity `retracted` (legacy `forgotten` accepted only as compatibility alias). Rules SHALL be marked retrieval-excluded tombstones per schema. Records SHALL remain in the database.
 
 #### Scenario: Delete fact via dashboard
 - **WHEN** `DELETE /api/memory/facts/<id>` is called
@@ -48,6 +48,11 @@ The butler detail page SHALL include a memory tab at `/butlers/:name/memory` wit
 ### Requirement: Cross-butler memory page
 
 A top-level `/memory` page SHALL display: overview cards (total facts by permanence, total rules by maturity, active episodes, fading count), a knowledge browser (unified search across all types with type/scope/permanence filters), a consolidation activity feed (recent fact creations, rule promotions, supersessions, expirations, anti-pattern inversions), and health indicators (confidence distribution chart, episode backlog, rule effectiveness distribution). By default this page aggregates all butlers within the caller tenant.
+
+#### Scenario: Aggregation avoids direct cross-butler DB reads
+- **WHEN** the dashboard builds `/memory` aggregates
+- **THEN** data SHALL be composed via butler API/tool fanout
+- **AND** direct SQL reads into another butler's database SHALL NOT be required
 
 #### Scenario: Overview cards show system-wide counts
 - **WHEN** the user navigates to `/memory`

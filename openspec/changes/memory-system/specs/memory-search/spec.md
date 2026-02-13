@@ -52,7 +52,7 @@ The system SHALL support hybrid search that executes both semantic and keyword s
 
 ### Requirement: Composite scoring for memory recall
 
-The `memory_recall` tool SHALL score results using a composite of four signals: `final_score = w_relevance × relevance + w_importance × importance + w_recency × recency + w_confidence × effective_confidence`. Default weights SHALL be: relevance=0.4, importance=0.3, recency=0.2, confidence=0.1. Weights SHALL be configurable per butler via `butler.toml`.
+The `memory_recall` tool SHALL score results using a composite of four signals: `final_score = w_relevance × relevance + w_importance × importance + w_recency × recency + w_confidence × effective_confidence`. Default weights SHALL be: relevance=0.4, importance=0.3, recency=0.2, confidence=0.1. Weights SHALL be configurable per butler via `[modules.memory.retrieval]`.
 
 #### Scenario: High-importance recent fact ranks above low-importance old fact
 - **WHEN** memory_recall is called with a topic
@@ -61,8 +61,8 @@ The `memory_recall` tool SHALL score results using a composite of four signals: 
 - **AND** both have equal relevance and confidence
 - **THEN** the high-importance recent fact SHALL rank higher
 
-#### Scenario: Custom weights from butler config
-- **WHEN** a butler's `butler.toml` specifies `score_weights = { relevance = 0.6, importance = 0.1, recency = 0.2, confidence = 0.1 }`
+#### Scenario: Custom weights from module config
+- **WHEN** a butler's `[modules.memory.retrieval]` config specifies `score_weights = { relevance = 0.6, importance = 0.1, recency = 0.2, confidence = 0.1 }`
 - **THEN** memory_recall for that butler SHALL use those weights
 
 ### Requirement: Scope filtering on retrieval

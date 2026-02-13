@@ -2,7 +2,7 @@
 
 ### Requirement: Tenant boundary and caller identity for memory tools
 
-All Memory MCP tools SHALL resolve `tenant_id` from authenticated request context. Non-admin callers SHALL NOT select arbitrary tenant IDs via tool arguments.
+All memory tools (registered by the memory module on hosting butler MCP servers) SHALL resolve `tenant_id` from authenticated request context. Non-admin callers SHALL NOT select arbitrary tenant IDs via tool arguments.
 
 #### Scenario: Non-admin tenant override rejected
 - **WHEN** a non-admin caller attempts to pass a tenant selector in tool args
@@ -14,7 +14,7 @@ All Memory MCP tools SHALL resolve `tenant_id` from authenticated request contex
 
 ### Requirement: memory_store_episode tool
 
-The Memory MCP server SHALL expose a `memory_store_episode(content, butler, session_id?, importance?)` tool that stores a raw episode. The tool SHALL generate an embedding, populate the search vector, set `expires_at` to now + configured TTL (default 7 days), and return the episode ID.
+The hosting butler MCP server SHALL expose a `memory_store_episode(content, butler, session_id?, importance?)` tool when memory module is enabled. The tool SHALL generate an embedding, populate the search vector, set `expires_at` to now + configured TTL (default 7 days), and return the episode ID.
 
 #### Scenario: Store episode with defaults
 - **WHEN** `memory_store_episode(content="User asked about recipes", butler="general")` is called
@@ -27,7 +27,7 @@ The Memory MCP server SHALL expose a `memory_store_episode(content, butler, sess
 
 ### Requirement: memory_store_fact tool
 
-The Memory MCP server SHALL expose a `memory_store_fact(subject, predicate, content, importance?, permanence?, scope?, tags?)` tool. The tool SHALL generate an embedding, populate the search vector, map permanence to decay_rate, check for subject-predicate conflicts (triggering supersession if found), and return the fact ID.
+The hosting butler MCP server SHALL expose a `memory_store_fact(subject, predicate, content, importance?, permanence?, scope?, tags?)` tool when memory module is enabled. The tool SHALL generate an embedding, populate the search vector, map permanence to decay_rate, check for subject-predicate conflicts (triggering supersession if found), and return the fact ID.
 
 #### Scenario: Store fact with supersession
 - **WHEN** `memory_store_fact(subject="user", predicate="favorite_color", content="blue")` is called
@@ -41,7 +41,7 @@ The Memory MCP server SHALL expose a `memory_store_fact(subject, predicate, cont
 
 ### Requirement: memory_store_rule tool
 
-The Memory MCP server SHALL expose a `memory_store_rule(content, scope?, tags?)` tool that stores a new rule as a candidate with confidence=0.5. The tool SHALL generate an embedding, populate the search vector, and return the rule ID.
+The hosting butler MCP server SHALL expose a `memory_store_rule(content, scope?, tags?)` tool when memory module is enabled that stores a new rule as a candidate with confidence=0.5. The tool SHALL generate an embedding, populate the search vector, and return the rule ID.
 
 #### Scenario: Store new rule
 - **WHEN** `memory_store_rule(content="Always confirm before sending messages", scope="global")` is called
@@ -50,7 +50,7 @@ The Memory MCP server SHALL expose a `memory_store_rule(content, scope?, tags?)`
 
 ### Requirement: memory_search tool
 
-The Memory MCP server SHALL expose a `memory_search(query, types?, scope?, mode?, limit?, min_confidence?)` tool. `types` defaults to all three types. `mode` defaults to 'hybrid'. `limit` defaults to 20. The tool SHALL return scored results with type, ID, content, score, and confidence.
+The hosting butler MCP server SHALL expose a `memory_search(query, types?, scope?, mode?, limit?, min_confidence?)` tool when memory module is enabled. `types` defaults to all three types. `mode` defaults to 'hybrid'. `limit` defaults to 20. The tool SHALL return scored results with type, ID, content, score, and confidence.
 
 #### Scenario: Search across all types
 - **WHEN** `memory_search(query="diet preferences")` is called
@@ -62,7 +62,7 @@ The Memory MCP server SHALL expose a `memory_search(query, types?, scope?, mode?
 
 ### Requirement: memory_recall tool
 
-The Memory MCP server SHALL expose a `memory_recall(topic, scope?, limit?)` tool that performs composite-scored retrieval of facts and rules (not episodes). This is the primary tool CC instances SHALL use. The tool SHALL bump reference counts on returned results.
+The hosting butler MCP server SHALL expose a `memory_recall(topic, scope?, limit?)` tool when memory module is enabled that performs composite-scored retrieval of facts and rules (not episodes). This is the primary tool CC instances SHALL use. The tool SHALL bump reference counts on returned results.
 
 #### Scenario: Recall returns composite-scored results
 - **WHEN** `memory_recall(topic="user dietary needs", scope="health")` is called
@@ -71,7 +71,7 @@ The Memory MCP server SHALL expose a `memory_recall(topic, scope?, limit?)` tool
 
 ### Requirement: memory_get tool
 
-The Memory MCP server SHALL expose a `memory_get(type, id)` tool that retrieves a specific memory by type ('episode', 'fact', 'rule') and UUID. The tool SHALL bump reference count and return the full record.
+The hosting butler MCP server SHALL expose a `memory_get(type, id)` tool when memory module is enabled that retrieves a specific memory by type ('episode', 'fact', 'rule') and UUID. The tool SHALL bump reference count and return the full record.
 
 #### Scenario: Get specific fact
 - **WHEN** `memory_get(type="fact", id="<uuid>")` is called with a valid fact ID
@@ -84,7 +84,7 @@ The Memory MCP server SHALL expose a `memory_get(type, id)` tool that retrieves 
 
 ### Requirement: memory_confirm tool
 
-The Memory MCP server SHALL expose a `memory_confirm(type, id)` tool that resets `last_confirmed_at` to the current timestamp for a fact or rule. This restores confidence to its original level by resetting the decay clock.
+The hosting butler MCP server SHALL expose a `memory_confirm(type, id)` tool when memory module is enabled that resets `last_confirmed_at` to the current timestamp for a fact or rule. This restores confidence to its original level by resetting the decay clock.
 
 #### Scenario: Confirm fact resets decay clock
 - **WHEN** `memory_confirm(type="fact", id="<uuid>")` is called
@@ -97,7 +97,7 @@ The Memory MCP server SHALL expose a `memory_confirm(type, id)` tool that resets
 
 ### Requirement: memory_mark_helpful tool
 
-The Memory MCP server SHALL expose a `memory_mark_helpful(rule_id)` tool that increments a rule's `success_count` and `applied_count`, recalculates `effectiveness_score`, updates `last_applied_at`, and evaluates maturity promotion.
+The hosting butler MCP server SHALL expose a `memory_mark_helpful(rule_id)` tool when memory module is enabled that increments a rule's `success_count` and `applied_count`, recalculates `effectiveness_score`, updates `last_applied_at`, and evaluates maturity promotion.
 
 #### Scenario: Mark rule helpful increments counts
 - **WHEN** `memory_mark_helpful(rule_id="<uuid>")` is called on a rule with success_count=4
@@ -105,7 +105,7 @@ The Memory MCP server SHALL expose a `memory_mark_helpful(rule_id)` tool that in
 
 ### Requirement: memory_mark_harmful tool
 
-The Memory MCP server SHALL expose a `memory_mark_harmful(rule_id, reason?)` tool that increments a rule's `harmful_count` and `applied_count`, recalculates `effectiveness_score` (with 4x harmful weight), updates `last_applied_at`, and evaluates maturity demotion or anti-pattern inversion.
+The hosting butler MCP server SHALL expose a `memory_mark_harmful(rule_id, reason?)` tool when memory module is enabled that increments a rule's `harmful_count` and `applied_count`, recalculates `effectiveness_score` (with 4x harmful weight), updates `last_applied_at`, and evaluates maturity demotion or anti-pattern inversion.
 
 #### Scenario: Mark rule harmful with reason
 - **WHEN** `memory_mark_harmful(rule_id="<uuid>", reason="caused incorrect response")` is called
@@ -114,7 +114,7 @@ The Memory MCP server SHALL expose a `memory_mark_harmful(rule_id, reason?)` too
 
 ### Requirement: memory_forget tool
 
-The Memory MCP server SHALL expose a `memory_forget(type, id)` tool that soft-deletes a memory while preserving auditability and dashboard visibility. Facts SHALL use canonical validity `retracted` (legacy `forgotten` is accepted only as alias). Rules and episodes SHALL use retrieval-excluded tombstone semantics per schema.
+The hosting butler MCP server SHALL expose a `memory_forget(type, id)` tool when memory module is enabled that soft-deletes a memory while preserving auditability and dashboard visibility. Facts SHALL use canonical validity `retracted` (legacy `forgotten` is accepted only as alias). Rules and episodes SHALL use retrieval-excluded tombstone semantics per schema.
 
 #### Scenario: Forget a fact
 - **WHEN** `memory_forget(type="fact", id="<uuid>")` is called
@@ -127,7 +127,7 @@ The Memory MCP server SHALL expose a `memory_forget(type, id)` tool that soft-de
 
 ### Requirement: memory_stats tool
 
-The Memory MCP server SHALL expose a `memory_stats(scope?)` tool that returns counts and health indicators: total/active/fading/expired facts, total/candidate/established/proven rules, total/unconsolidated/expired episodes, and episode backlog age.
+The hosting butler MCP server SHALL expose a `memory_stats(scope?)` tool when memory module is enabled that returns counts and health indicators: total/active/fading/expired facts, total/candidate/established/proven rules, total/unconsolidated/expired episodes, and episode backlog age.
 
 #### Scenario: Stats with scope
 - **WHEN** `memory_stats(scope="health")` is called
@@ -135,7 +135,7 @@ The Memory MCP server SHALL expose a `memory_stats(scope?)` tool that returns co
 
 ### Requirement: memory_context tool
 
-The Memory MCP server SHALL expose a `memory_context(trigger_prompt, butler, token_budget?)` tool that builds a formatted memory block for CC system prompt injection. The tool SHALL embed the trigger prompt, query top-scored facts and rules scoped to the butler, and format them within the token budget (default 3000 tokens). Output SHALL be ordered by score (highest first) with facts, rules, and recent episodes in separate sections. Token budgeting SHALL use a deterministic tokenizer (not character-count approximation), with deterministic tie-breakers (`score DESC`, `created_at DESC`, `id ASC`) and configurable section quotas.
+The hosting butler MCP server SHALL expose a `memory_context(trigger_prompt, butler, token_budget?)` tool when memory module is enabled that builds a formatted memory block for CC system prompt injection. The tool SHALL embed the trigger prompt, query top-scored facts and rules scoped to the butler, and format them within the token budget (default 3000 tokens). Output SHALL be ordered by score (highest first) with facts, rules, and recent episodes in separate sections. Token budgeting SHALL use a deterministic tokenizer (not character-count approximation), with deterministic tie-breakers (`score DESC`, `created_at DESC`, `id ASC`) and configurable section quotas.
 
 #### Scenario: Context within token budget
 - **WHEN** `memory_context(trigger_prompt="Help user with diet", butler="health", token_budget=3000)` is called

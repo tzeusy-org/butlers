@@ -5,7 +5,7 @@ Last updated: 2026-02-13
 Primary owner: Platform/Core
 
 ## 1. Role
-The Base Butler specification defines the mandatory platform contract for all butlers other than role-specific overrides (for example Switchboard, Heartbeat, Memory).
+The Base Butler specification defines the mandatory platform contract for all butlers other than role-specific overrides (for example Switchboard and Heartbeat).
 
 This document is the source of truth for shared butler behavior: identity, configuration, lifecycle, core tools, plugin/module architecture, persistence, scheduling, heartbeat integration, routing integration, and observability.
 
@@ -57,7 +57,7 @@ Strongly recommended fields:
 - `[butler.switchboard].url` for non-switchboard butlers
 - `[butler.env].required` and `[butler.env].optional`
 - `[butler.shutdown].timeout_s`
-- `[butler.memory]` retrieval/context settings
+- `[modules.memory]` retrieval/context settings (when memory module is enabled)
 
 Target-state `[butler.switchboard]` routing fields:
 - `url`: Switchboard MCP endpoint URL.
@@ -191,6 +191,7 @@ Module loading rules:
 Module tool contract:
 - Base contract enforces channel delivery ownership boundaries in section `11` (`messenger_butler` owns external user-channel delivery). Module tool naming details remain role-specific.
 - Modules may declare tool I/O descriptors via `user_inputs`, `user_outputs`, `bot_inputs`, `bot_outputs` when identity-scoped I/O surfaces are part of that role contract.
+- For roles that define identity-scoped channel tools (for example `messenger_butler`), user-vs-bot identity split must be explicit in descriptor metadata and tool names (for example `user_<channel>_<verb>` / `bot_<channel>_<verb>`).
 - When descriptors are declared, registered tool names must match declared descriptors.
 - When descriptors are declared, missing declared tools or undeclared registered tools are startup-blocking errors.
 
@@ -210,8 +211,8 @@ Approval policy/config rules:
 - Approval gating is configured under `[modules.approvals]` and applied after module tool registration.
 - Gated-tool config is authoritative (`gated_tools` with optional per-tool expiry overrides).
 - Identity-aware defaults are mandatory:
-- User-scoped send/reply outputs (`approval_default="always"` and user send/reply safety fallback) are default-gated.
-- Bot-scoped outputs are gated only when explicitly configured.
+  - User-scoped send/reply outputs (`approval_default="always"` and user send/reply safety fallback) are default-gated.
+  - Bot-scoped outputs are gated only when explicitly configured.
 
 Gate interception rules:
 - A gated tool invocation must be intercepted before calling the original tool handler.
@@ -228,23 +229,23 @@ Approval data/state rules:
 - Executed-action audit history must remain queryable for operator review.
 
 ### 9.2 Memory Contract
-Memory is a shared service contract between butlers and the Memory Butler; direct cross-butler DB memory access is prohibited.
+Memory is a module contract implemented locally inside each butler that enables it; direct cross-butler DB memory access is prohibited.
 
 Memory integration rules:
-- Non-memory butlers integrate with memory only via Memory Butler MCP tools/endpoints.
+- Memory tools are registered on the hosting butler MCP server by the memory module.
 - Runtime context retrieval uses `memory_context(trigger_prompt, butler, token_budget)` semantics and should be injected into system prompt context when available.
 - Session episode capture should call `memory_store_episode` on successful session completion, including originating butler identity and session linkage when available.
 - Memory retrieval/storage failures must be fail-open for runtime execution (log and continue; do not fail the primary user task solely due to memory unavailability).
 
 Memory model rules:
-- Shared memory types are `episodes`, `facts`, and `rules`.
+- Memory types are `episodes`, `facts`, and `rules`.
 - Episode memory is high-volume and TTL-managed (short-lived observational history).
 - Fact memory supports validity lifecycle (for example active/superseded/retracted) and supersession linking for corrections/updates.
 - Rule memory supports maturity progression (candidate -> established -> proven) and helpful/harmful feedback tracking.
-- Memory scope must support cross-butler shared context (`global`) plus butler-scoped context.
+- Memory scope is butler-local and supports `global` plus role-local scopes.
 
 Memory retrieval/config rules:
-- Butler memory integration config is defined in `[butler.memory]` (enable flag, port, retrieval defaults, scoring weights, and context token budget).
+- Butler memory integration config is defined in `[modules.memory]` (enable flag, retrieval defaults, scoring weights, and context token budget).
 - Retrieval modes and limits must be deterministic and configurable (for example hybrid/semantic/keyword mode, recall/search limits).
 - Retrieval surfaces must preserve request lineage metadata where available so memory reads/writes remain trace-correlated.
 
@@ -504,7 +505,7 @@ Idempotency and replay:
 ## 12. Runtime Isolation and Execution Contract
 Runtime invocation rules:
 - Each invocation uses an ephemeral runtime context.
-- Runtime access is limited to the butler's MCP server plus explicitly configured shared services (for example Memory).
+- Runtime access is limited to the butler's MCP server plus explicitly configured modules/services (for example the memory module when enabled).
 - Runtime working directory is the butler config directory.
 - Runtime environment includes only validated env vars and module credentials.
 
@@ -663,4 +664,4 @@ Implementation quality checklist for all examples:
 - Emits trace/log/metric metadata with required low-cardinality attributes.
 
 ## 18. Non-Normative Note
-Role-specific docs (for example Switchboard, Heartbeat, Memory) should focus on role behavior and only restate base contracts when introducing stricter constraints or explicit overrides.
+Role-specific docs (for example Switchboard, Heartbeat) should focus on role behavior and only restate base contracts when introducing stricter constraints or explicit overrides. Shared modules (for example memory) should define module-specific contracts in `docs/modules/`.

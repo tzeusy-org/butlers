@@ -1,5 +1,7 @@
 # Butlers Dashboard — Frontend & API Project Plan
 
+> **Status (Current):** Historical planning document. The canonical, implementation-grounded frontend specifications now live under `docs/frontend/`.
+
 > **Goal:** A "single pane of glass" web dashboard over the deployed butler infrastructure — topology, health, sessions, schedules, state, traces, costs, errors, skills, memory, and butler-specific domain data. Full read/write admin control. Not the primary interaction method (chat is), but the definitive place to understand what the system is doing, what it costs, and what's broken.
 
 ---
