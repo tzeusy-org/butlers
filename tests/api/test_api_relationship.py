@@ -8,6 +8,7 @@ Issue: butlers-26h.10.3
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -30,6 +31,8 @@ def _app_with_mock_db(
     fetch_rows: list | None = None,
     fetchval_result: int = 0,
     fetchrow_result: dict | None = None,
+    fetchrow_side_effect: list | None = None,
+    include_mock_pool: bool = False,
 ):
     """Create a FastAPI app with a mocked DatabaseManager.
 
@@ -41,13 +44,19 @@ def _app_with_mock_db(
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_pool.fetchval = AsyncMock(return_value=fetchval_result)
-    mock_pool.fetchrow = AsyncMock(return_value=fetchrow_result)
+    if fetchrow_side_effect is not None:
+        mock_pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
+    else:
+        mock_pool.fetchrow = AsyncMock(return_value=fetchrow_result)
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
 
     app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    if include_mock_pool:
+        return app, mock_pool
 
     return app
 
@@ -111,6 +120,49 @@ class TestGetContact:
             )
 
         assert resp.status_code == 404
+
+    async def test_birthday_query_uses_label_column(self):
+        """Birthday lookup must filter by important_dates.label."""
+        contact_id = "00000000-0000-0000-0000-000000000001"
+        now = datetime.now(UTC)
+        app, mock_pool = _app_with_mock_db(
+            fetchrow_side_effect=[
+                {
+                    "id": contact_id,
+                    "full_name": "Alice Example",
+                    "nickname": None,
+                    "notes": None,
+                    "company": None,
+                    "job_title": None,
+                    "metadata": {},
+                    "created_at": now,
+                    "updated_at": now,
+                    "email": None,
+                    "phone": None,
+                    "last_interaction_at": None,
+                },
+                None,  # birthday row
+                None,  # address row
+            ],
+            include_mock_pool=True,
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/api/relationship/contacts/{contact_id}")
+
+        assert resp.status_code == 200
+        important_dates_queries = [
+            call.args[0]
+            for call in mock_pool.fetchrow.await_args_list
+            if "FROM important_dates" in call.args[0]
+        ]
+        assert len(important_dates_queries) == 1, (
+            "Expected exactly one fetchrow call to important_dates"
+        )
+        birthday_sql = important_dates_queries[0]
+        assert "label = 'birthday'" in birthday_sql
+        assert "date_type = 'birthday'" not in birthday_sql
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +233,19 @@ class TestListUpcomingDates:
             resp = await client.get("/api/relationship/upcoming-dates", params={"days": 30})
 
         assert resp.status_code == 200
+
+    async def test_query_uses_label_column_alias(self):
+        """Upcoming-dates query must select important_dates.label, not date_type."""
+        app, mock_pool = _app_with_mock_db(include_mock_pool=True)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/relationship/upcoming-dates")
+
+        assert resp.status_code == 200
+        query = mock_pool.fetch.await_args.args[0]
+        assert "id.label AS date_type" in query
+        assert "id.date_type" not in query
 
 
 # ---------------------------------------------------------------------------
