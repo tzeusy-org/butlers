@@ -291,6 +291,8 @@ Tasks:
 - Accept and validate RRULE recurrence payloads.
 - Support recurring create and recurring update semantics (series-level in v1).
 - Add guardrails for timezone + recurrence interactions.
+- Document and enforce `calendar_update_event(recurrence_scope="series")` as the only
+  supported recurring update scope in v1.
 
 ## Phase 5: Routing + Butler Prompt Updates
 

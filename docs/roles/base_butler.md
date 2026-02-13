@@ -312,7 +312,7 @@ Inbound route envelope:
 Dispatch interface rule:
 - Canonical routed execution entrypoint is `route.execute`.
 - `trigger` is a direct/manual invocation surface and must not be the primary routed fanout contract.
-- Legacy aliases (for example `bot_switchboard_handle_message`) are backward-compatibility shims and must not be the long-term contract.
+- Legacy message-handler aliases are backward-compatibility shims and must not be the long-term contract.
 
 Canonical `route.execute` request envelope shape (target-state):
 

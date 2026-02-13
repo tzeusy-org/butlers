@@ -83,6 +83,29 @@ from butlers.modules.registry import ModuleRegistry, default_registry
 
 logger = logging.getLogger(__name__)
 
+CORE_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "status",
+        "trigger",
+        "tick",
+        "state_get",
+        "state_set",
+        "state_delete",
+        "state_list",
+        "schedule_list",
+        "schedule_create",
+        "schedule_update",
+        "schedule_delete",
+        "sessions_list",
+        "sessions_get",
+        "sessions_summary",
+        "sessions_daily",
+        "top_sessions",
+        "schedule_costs",
+        "notify",
+    }
+)
+
 
 class _McpSseDisconnectGuard:
     """Catch expected SSE POST disconnects before they become error traces."""

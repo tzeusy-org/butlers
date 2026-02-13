@@ -184,6 +184,11 @@ make test-qg
 - `_normalize_recurrence()` in `src/butlers/modules/calendar.py` must reject any rule containing `\\n` or `\\r` to prevent iCalendar CRLF/newline injection.
 - `FREQ` presence and `DTSTART`/`DTEND` exclusion checks should be case-insensitive (`rule.upper()`), so lowercase property names cannot bypass validation.
 
+### Calendar recurring write contract
+- `CalendarEventCreate` and `CalendarEventUpdate` validate/normalize `recurrence_rule` via `_normalize_recurrence_rule`; invalid RRULEs must raise clear `ValueError`s before provider calls.
+- Recurring writes with naive datetime boundaries require explicit `timezone`; omit timezone only when datetime boundaries already carry tzinfo.
+- `calendar_update_event` is series-only for recurrence in v1 (`recurrence_scope="series"`); non-series scope values must be rejected at validation time.
+
 ### Switchboard Classification Contract
 - `classify_message()` returns decomposition entries (`list[{"butler","prompt"}]`), not a bare butler string. Callers must normalize both legacy string and list formats before routing.
 - When `butler_registry` is empty, `classify_message()` auto-discovers butlers from `roster/` (see `roster/switchboard/tools/routing/classify.py`) before composing the "Available butlers" prompt.
@@ -222,6 +227,11 @@ make test-qg
 - `make test-qg` is the default full-scope pytest gate and runs with xdist parallelization (`-n auto`).
 - `make test-qg-serial` is the documented serial fallback for debugging order-dependent behavior.
 
+### Pytest benchmark snapshot (butlers-vrs, 2026-02-13)
+- Unit-scope serial benchmark (`.venv/bin/pytest tests/ -m unit ...`) measured `114.87s` wall (`1854 passed, 358 deselected`).
+- Unit-scope parallel benchmark (`.venv/bin/pytest tests/ -m unit ... -n 4`) measured `56.12s` wall (`1854 passed`), ~51% faster than the unit serial run.
+- Full required gate `make test-qg` completed in this worktree at `129.15s` wall (`2211 passed, 1 skipped`), but intermittent Docker teardown flakes remain possible on DB-backed scopes (see `butlers-kle`).
+
 ### Calendar OAuth init contract
 - In `src/butlers/modules/calendar.py`, `_GoogleProvider.__init__` should validate `_GoogleOAuthCredentials.from_env()` before creating an owned `httpx.AsyncClient` so credential errors cannot leak unclosed clients.
 - `_GoogleOAuthClient.get_access_token()` should enforce token non-null invariants with explicit asserts rather than returning a fallback empty string.
@@ -240,6 +250,17 @@ make test-qg
 ### Beads push guardrail
 - Repo push checks enforce a clean beads state; `git push` can fail with "Uncommitted changes detected" even after commits if `.beads/issues.jsonl` was re-synced/staged during pre-push checks.
 - If this happens, run `bd sync --status`, inspect staged `.beads/issues.jsonl`, commit the sync normalization (or intentionally restore it), then re-run `git push`.
+
+### Beads PR-review `external_ref` uniqueness contract
+- Beads enforces global uniqueness for `issues.external_ref`; a dedicated `pr-review-task` bead cannot reuse the same `gh-pr:<number>` already attached to the original implementation bead.
+- For split original/review-bead workflows, keep `external_ref` on the original bead and store PR metadata (`PR URL`, `PR NUMBER`, original bead id) in review-bead notes/labels, then dispatch reviewer workers with explicit PR context.
+
+### Beads merge-blocker dedupe guardrail
+- Before creating a new `Resolve merge blockers for PR #<n>` bead from a blocked `pr-review-task`, check for an existing open blocker bead tied to the same PR/original issue and reuse it by wiring dependencies instead of creating duplicates.
+
+### PR merge + worktree cleanup guardrail
+- `gh pr merge --delete-branch` can return non-zero even after a successful remote merge when local branch deletion fails because that branch is checked out in another worktree (common in `.worktrees/parallel-agents/*`).
+- Always verify merge via `gh pr view --json state,mergedAt` before deciding blocked vs merged, then remove the checked-out worktree and delete the local branch separately.
 
 ### Beads lint template contract
 - `bd lint` enforces section headers in issue descriptions, not only structured fields.
@@ -303,5 +324,8 @@ make test-qg
 - Bot outputs are **not** auto-gated by defaults; they remain configurable via `[modules.approvals.gated_tools]` entries.
 - `tests/daemon/test_approval_defaults.py::test_user_send_and_reply_outputs_are_gated_by_name_safety_net` verifies the name-based safety fallback still gates user send/reply tools even when descriptor `approval_default` is not `always`.
 
-### Legacy tool-name compliance gate contract
-- `tests/test_tool_name_compliance.py` scans repo text surfaces (including docs and agent notes) and fails when standalone legacy unprefixed tool tokens appear; documentation examples should use identity-prefixed names (for example `bot_switchboard_handle_message`).
+### Tool-name compliance scan contract
+- `tests/test_tool_name_compliance.py::test_legacy_unprefixed_tool_names_absent_from_repo_text_surfaces` scans docs/spec text in addition to code; avoid bare legacy tool tokens in prose/examples and use identity-prefixed names instead (for example `bot_switchboard_handle_message`).
+
+### Core tool registration contract
+- `src/butlers/daemon.py` exports `CORE_TOOL_NAMES` as the canonical core-tool set (including `notify`); registration tests should assert against this set to prevent drift between `_register_core_tools()` behavior and expected tool coverage.

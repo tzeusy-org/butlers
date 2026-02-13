@@ -299,7 +299,7 @@ class TestButlerStartupIntegration:
         """Verify that the daemon registers the expected set of core tools."""
         from unittest.mock import MagicMock
 
-        from butlers.daemon import ButlerDaemon
+        from butlers.daemon import CORE_TOOL_NAMES, ButlerDaemon
 
         # We cannot easily call daemon.start() without extensive mocking,
         # but we can test _register_core_tools by setting up the daemon's
@@ -333,26 +333,7 @@ class TestButlerStartupIntegration:
 
         daemon._register_core_tools()
 
-        expected_tools = {
-            "status",
-            "notify",
-            "trigger",
-            "tick",
-            "state_get",
-            "state_set",
-            "state_delete",
-            "state_list",
-            "schedule_list",
-            "schedule_create",
-            "schedule_update",
-            "schedule_delete",
-            "sessions_list",
-            "sessions_get",
-            "sessions_summary",
-            "sessions_daily",
-            "top_sessions",
-            "schedule_costs",
-        }
+        expected_tools = CORE_TOOL_NAMES
         assert set(registered_tools) == expected_tools
 
 
