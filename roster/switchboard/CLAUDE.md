@@ -35,11 +35,17 @@ Return a JSON array of routing objects:
 [
   {
     "butler": "relationship",
-    "prompt": "Self-contained prompt for this butler..."
+    "prompt": "Self-contained prompt for this butler...",
+    "segment": {
+      "rationale": "Why this segment belongs to relationship"
+    }
   },
   {
     "butler": "health",
-    "prompt": "Self-contained prompt for this butler..."
+    "prompt": "Self-contained prompt for this butler...",
+    "segment": {
+      "offsets": {"start": 32, "end": 94}
+    }
   }
 ]
 ```
@@ -47,8 +53,12 @@ Return a JSON array of routing objects:
 **Rules:**
 - Each `prompt` MUST be self-contained (include all necessary context)
 - Each `prompt` should focus on the relevant domain for that butler
+- Each `segment` MUST include at least one of:
+  - `sentence_spans` (list of sentence references from source text)
+  - `offsets` (`{"start": <int>, "end": <int>}`)
+  - `rationale` (explicit decomposition rationale)
 - If only one butler needed, return array with single object
-- If ambiguous or general, return `[{"butler": "general", "prompt": "<original message>"}]`
+- If ambiguous or general, return `[{"butler": "general", "prompt": "<original message>", "segment": {"rationale": "Fallback to general due to ambiguity"}}]`
 
 ### Examples
 
@@ -61,7 +71,8 @@ Return a JSON array of routing objects:
 [
   {
     "butler": "relationship",
-    "prompt": "Remind me to call Mom next week"
+    "prompt": "Remind me to call Mom next week",
+    "segment": {"rationale": "Social reminder intent"}
   }
 ]
 ```
@@ -75,11 +86,13 @@ Return a JSON array of routing objects:
 [
   {
     "butler": "health",
-    "prompt": "I saw Dr. Smith today and got prescribed metformin 500mg twice daily. Please track this medication."
+    "prompt": "I saw Dr. Smith today and got prescribed metformin 500mg twice daily. Please track this medication.",
+    "segment": {"offsets": {"start": 0, "end": 91}}
   },
   {
     "butler": "relationship",
-    "prompt": "I saw Dr. Smith today. Remind me to send her a thank-you card next week."
+    "prompt": "I saw Dr. Smith today. Remind me to send her a thank-you card next week.",
+    "segment": {"rationale": "Thank-you card is relationship-oriented follow-up"}
   }
 ]
 ```
@@ -93,11 +106,13 @@ Return a JSON array of routing objects:
 [
   {
     "butler": "relationship",
-    "prompt": "Had lunch with Sarah today. Need to schedule a call with her next month to discuss the project."
+    "prompt": "Had lunch with Sarah today. Need to schedule a call with her next month to discuss the project.",
+    "segment": {"sentence_spans": ["Had lunch with Sarah today.", "Need to schedule a call with her next month to discuss the project."]}
   },
   {
     "butler": "health",
-    "prompt": "Sarah recommended I try yoga for my back pain."
+    "prompt": "Sarah recommended I try yoga for my back pain.",
+    "segment": {"rationale": "Back pain and yoga recommendation map to health"}
   }
 ]
 ```
@@ -111,7 +126,8 @@ Return a JSON array of routing objects:
 [
   {
     "butler": "general",
-    "prompt": "What's the weather today?"
+    "prompt": "What's the weather today?",
+    "segment": {"rationale": "General informational query"}
   }
 ]
 ```
@@ -126,16 +142,24 @@ Each sub-prompt must be independently understandable. Include:
 **Bad example:**
 ```json
 [
-  {"butler": "health", "prompt": "Track the medication"},
-  {"butler": "relationship", "prompt": "Send a card"}
+  {"butler": "health", "prompt": "Track the medication", "segment": {"rationale": "..." }},
+  {"butler": "relationship", "prompt": "Send a card", "segment": {"rationale": "..."}}
 ]
 ```
 
 **Good example:**
 ```json
 [
-  {"butler": "health", "prompt": "Track metformin 500mg prescribed by Dr. Smith, taken twice daily"},
-  {"butler": "relationship", "prompt": "Remind me to send Dr. Smith a thank-you card next week"}
+  {
+    "butler": "health",
+    "prompt": "Track metformin 500mg prescribed by Dr. Smith, taken twice daily",
+    "segment": {"offsets": {"start": 0, "end": 66}}
+  },
+  {
+    "butler": "relationship",
+    "prompt": "Remind me to send Dr. Smith a thank-you card next week",
+    "segment": {"rationale": "Social follow-up request"}
+  }
 ]
 ```
 
@@ -147,7 +171,8 @@ If classification is uncertain or fails, ALWAYS default to `general`:
 [
   {
     "butler": "general",
-    "prompt": "<original message verbatim>"
+    "prompt": "<original message verbatim>",
+    "segment": {"rationale": "Fallback to general due to ambiguity"}
   }
 ]
 ```
