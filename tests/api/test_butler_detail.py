@@ -45,7 +45,12 @@ def _make_roster_with_modules(tmp_path: Path, name: str = "switchboard", port: i
         f"[runtime]\n"
         f'type = "claude-code"\n'
         f'[modules.telegram]\nmode = "polling"\n'
+        f"[modules.telegram.user]\nenabled = false\n"
+        f'[modules.telegram.bot]\ntoken_env = "BUTLER_TELEGRAM_TOKEN"\n'
         f"[modules.email]\n"
+        f"[modules.email.user]\nenabled = false\n"
+        f'[modules.email.bot]\naddress_env = "BUTLER_EMAIL_ADDRESS"\n'
+        f'password_env = "BUTLER_EMAIL_PASSWORD"\n'
     )
     return butler_dir
 

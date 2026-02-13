@@ -3,20 +3,21 @@
 The ButlerDaemon manages the lifecycle of a butler:
 1. Load config from butler.toml
 2. Initialize telemetry
-3. Validate credentials (env vars)
-4. Provision database
-5. Run core Alembic migrations
-6. Initialize modules (topological order)
-7. Run module Alembic migrations
-8. Module on_startup (topological order)
-9. Create Spawner with runtime adapter (verify binary on PATH)
-9b. Wire message classification pipeline (switchboard only)
-10. Sync TOML schedules to DB
-10b. Open MCP client connection to Switchboard (non-switchboard butlers)
-11. Create FastMCP server and register core tools
-12. Register module MCP tools
-12b. Apply approval gates to configured gated tools
-13. Start FastMCP SSE server on configured port
+3. Initialize modules (topological order)
+4. Validate module config schemas
+5. Validate credentials (env vars)
+6. Provision database
+7. Run core Alembic migrations
+8. Run module Alembic migrations
+9. Module on_startup (topological order)
+10. Create Spawner with runtime adapter (verify binary on PATH)
+10b. Wire message classification pipeline (switchboard only)
+11. Sync TOML schedules to DB
+11b. Open MCP client connection to Switchboard (non-switchboard butlers)
+12. Create FastMCP server and register core tools
+13. Register module MCP tools
+13b. Apply approval gates to configured gated tools
+14. Start FastMCP SSE server on configured port
 
 On startup failure, already-initialized modules get on_shutdown() called.
 
@@ -112,18 +113,59 @@ def _flatten_config_for_secret_scan(config: ButlerConfig) -> dict[str, Any]:
         flat[f"butler.schedule[{i}].cron"] = schedule.cron
         flat[f"butler.schedule[{i}].prompt"] = schedule.prompt
 
-    # Module configs (flatten nested dicts, skip credentials_env keys)
+    # Module configs (flatten nested dicts, skip env-var name declaration keys)
+    def _flatten_module_value(prefix: str, value: Any) -> None:
+        if isinstance(value, dict):
+            for key, nested_value in value.items():
+                if key == "credentials_env" or key.endswith("_env"):
+                    continue
+                _flatten_module_value(f"{prefix}.{key}", nested_value)
+            return
+        flat[prefix] = value
+
     for mod_name, mod_cfg in config.modules.items():
-        for key, value in mod_cfg.items():
-            # Skip credentials_env as it's just a list of env var names
-            if key == "credentials_env":
-                continue
-            flat[f"modules.{mod_name}.{key}"] = value
+        _flatten_module_value(f"modules.{mod_name}", mod_cfg)
 
     # NOTE: [butler.env].required and [butler.env].optional are lists of
     # env var *names* (not values), so they are exempt from scanning.
 
     return flat
+
+
+def _extract_identity_scope_credentials(
+    module_name: str, module_config: Any
+) -> dict[str, list[str]]:
+    """Extract scoped env-var names from ``user``/``bot`` config sections."""
+    if hasattr(module_config, "model_dump"):
+        config_dict = module_config.model_dump()
+    elif isinstance(module_config, dict):
+        config_dict = module_config
+    else:
+        return {}
+
+    scoped_credentials: dict[str, list[str]] = {}
+    for scope_name in ("user", "bot"):
+        scope_cfg = config_dict.get(scope_name)
+        if not isinstance(scope_cfg, dict):
+            continue
+        if scope_cfg.get("enabled", True) is False:
+            continue
+
+        env_vars: list[str] = []
+        for key, value in scope_cfg.items():
+            if key.endswith("_env") and isinstance(value, str) and value:
+                env_vars.append(value)
+            if key == "credentials_env":
+                if isinstance(value, str) and value:
+                    env_vars.append(value)
+                elif isinstance(value, list):
+                    env_vars.extend(item for item in value if isinstance(item, str) and item)
+
+        if env_vars:
+            # Preserve declaration order while deduplicating.
+            scoped_credentials[f"{module_name}.{scope_name}"] = list(dict.fromkeys(env_vars))
+
+    return scoped_credentials
 
 
 class _SpanWrappingMCP:
@@ -231,7 +273,14 @@ class ButlerDaemon:
         for warning in secret_warnings:
             logger.warning(warning)
 
-        # 3. Validate credentials
+        # 3. Initialize modules (topological order)
+        self._modules = self._registry.load_from_config(self.config.modules)
+
+        # 4. Validate module config schemas before env credential checks.
+        # This gives clearer feedback for malformed identity-scoped config.
+        self._module_configs = self._validate_module_configs()
+
+        # 5. Validate credentials
         module_creds = self._collect_module_credentials()
         validate_credentials(
             self.config.env_required,
@@ -239,31 +288,27 @@ class ButlerDaemon:
             module_credentials=module_creds,
         )
 
-        # 4. Provision database
+        # 6. Provision database
         self.db = Database.from_env(self.config.db_name)
         await self.db.provision()
         pool = await self.db.connect()
 
-        # 5. Run core Alembic migrations
+        # 7. Run core Alembic migrations
         db_url = self._build_db_url()
         await run_migrations(db_url, chain="core")
 
-        # 5b. Run butler-specific Alembic migrations (if chain exists)
+        # 7b. Run butler-specific Alembic migrations (if chain exists)
         if has_butler_chain(self.config.name):
             logger.info("Running butler-specific migrations for: %s", self.config.name)
             await run_migrations(db_url, chain=self.config.name)
 
-        # 6. Initialize modules (topological order)
-        self._modules = self._registry.load_from_config(self.config.modules)
-
-        # 7. Run module Alembic migrations
+        # 8. Run module Alembic migrations
         for mod in self._modules:
             rev = mod.migration_revisions()
             if rev:
                 await run_migrations(db_url, chain=rev)
 
-        # 8. Validate module configs and call on_startup (topological order)
-        self._module_configs = self._validate_module_configs()
+        # 9. Call module on_startup (topological order)
         started_modules: list[Module] = []
         try:
             for mod in self._modules:
@@ -283,7 +328,7 @@ class ButlerDaemon:
                     logger.exception("Error during cleanup shutdown of module: %s", mod.name)
             raise
 
-        # 9. Create Spawner with runtime adapter (verify binary on PATH)
+        # 10. Create Spawner with runtime adapter (verify binary on PATH)
         adapter_cls = get_adapter(self.config.runtime.type)
         runtime = adapter_cls()
 
@@ -302,29 +347,29 @@ class ButlerDaemon:
             runtime=runtime,
         )
 
-        # 9b. Wire message classification pipeline for switchboard modules
+        # 10b. Wire message classification pipeline for switchboard modules
         self._wire_pipelines(pool)
 
-        # 10. Sync TOML schedules to DB
+        # 11. Sync TOML schedules to DB
         schedules = [
             {"name": s.name, "cron": s.cron, "prompt": s.prompt} for s in self.config.schedules
         ]
         await sync_schedules(pool, schedules)
 
-        # 10b. Open MCP client connection to Switchboard (non-switchboard butlers)
+        # 11b. Open MCP client connection to Switchboard (non-switchboard butlers)
         await self._connect_switchboard()
 
-        # 11. Create FastMCP and register core tools
+        # 12. Create FastMCP and register core tools
         self.mcp = FastMCP(self.config.name)
         self._register_core_tools()
 
-        # 12. Register module MCP tools
+        # 13. Register module MCP tools
         await self._register_module_tools()
 
-        # 12b. Apply approval gates to configured gated tools
+        # 13b. Apply approval gates to configured gated tools
         self._gated_tool_originals = self._apply_approval_gates()
 
-        # 13. Start FastMCP SSE server on configured port
+        # 14. Start FastMCP SSE server on configured port
         await self._start_mcp_server()
 
         # Mark as accepting connections and record startup time
@@ -432,29 +477,47 @@ class ButlerDaemon:
 
         Sources (in priority order):
         1. ``credentials_env`` declared in butler.toml under ``[modules.<name>]``
-        2. Module class ``credentials_env`` property (fallback)
+        2. Identity-scoped ``user``/``bot`` config sections (if present/enabled)
+        3. Module class ``credentials_env`` property (fallback)
 
         This aligns with the spec: credential declarations are config-driven
         via butler.toml, with the module class providing defaults.
         """
         creds: dict[str, list[str]] = {}
+        loaded_modules = {mod.name: mod for mod in self._modules}
         for mod_name, mod_cfg in self.config.modules.items():
             # 1. Check TOML config first (spec-driven)
             toml_creds = mod_cfg.get("credentials_env")
             if toml_creds is not None:
-                creds[mod_name] = list(toml_creds)
+                if isinstance(toml_creds, str):
+                    creds[mod_name] = [toml_creds] if toml_creds else []
+                elif isinstance(toml_creds, list):
+                    creds[mod_name] = [
+                        item for item in toml_creds if isinstance(item, str) and item
+                    ]
+                else:
+                    logger.warning(
+                        "Ignoring invalid type for credentials_env in module '%s' config. "
+                        "Expected a string or list of strings, but got %s.",
+                        mod_name,
+                        type(toml_creds).__name__,
+                    )
+                    creds[mod_name] = []
                 continue
 
-            # 2. Fallback to module class property
-            try:
-                temp_modules = self._registry.load_from_config({mod_name: {}})
-                if temp_modules:
-                    mod = temp_modules[0]
-                    env_list = getattr(mod, "credentials_env", [])
-                    if env_list:
-                        creds[mod_name] = list(env_list)
-            except Exception:
-                pass  # Module may have deps not met; skip credential collection
+            # 2. Extract identity-scoped env vars from validated config.
+            validated_cfg = self._module_configs.get(mod_name)
+            scoped_creds = _extract_identity_scope_credentials(mod_name, validated_cfg)
+            if scoped_creds:
+                creds.update(scoped_creds)
+                continue
+
+            # 3. Fallback to module class property
+            mod = loaded_modules.get(mod_name)
+            if mod is not None:
+                env_list = getattr(mod, "credentials_env", [])
+                if env_list:
+                    creds[mod_name] = list(env_list)
         return creds
 
     def _build_db_url(self) -> str:

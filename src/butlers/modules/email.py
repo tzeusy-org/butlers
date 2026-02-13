@@ -1,7 +1,8 @@
 """Email module — identity-prefixed email MCP tools.
 
 Uses IMAP for inbox access and SMTP for sending.
-Configured via [modules.email] in butler.toml.
+Configured via [modules.email] with optional
+[modules.email.user] and [modules.email.bot] credential scopes in butler.toml.
 
 When a ``MessagePipeline`` is attached, incoming emails can be classified
 and routed to the appropriate butler via ``check_and_route_inbox``.
@@ -18,16 +19,71 @@ import email as email_lib
 import imaplib
 import logging
 import os
+import re
 import smtplib
 from email.mime.text import MIMEText
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.modules.base import Module, ToolIODescriptor
 from butlers.modules.pipeline import MessagePipeline, RoutingResult
 
 logger = logging.getLogger(__name__)
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_env_var_name(value: str, *, scope: str, field_name: str) -> str:
+    """Validate a configured env var name for an identity credential field."""
+    if not value or not value.strip():
+        raise ValueError(
+            f"modules.email.{scope}.{field_name} must be a non-empty environment variable name"
+        )
+    name = value.strip()
+    if not _ENV_VAR_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"modules.email.{scope}.{field_name} must be a valid environment variable name "
+            "(letters, numbers, underscores; cannot start with a number)"
+        )
+    return name
+
+
+class EmailUserCredentialsConfig(BaseModel):
+    """Identity-scoped credentials for user mailbox operations."""
+
+    enabled: bool = False
+    address_env: str = "USER_EMAIL_ADDRESS"
+    password_env: str = "USER_EMAIL_PASSWORD"
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("address_env")
+    @classmethod
+    def _validate_address_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="user", field_name="address_env")
+
+    @field_validator("password_env")
+    @classmethod
+    def _validate_password_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="user", field_name="password_env")
+
+
+class EmailBotCredentialsConfig(BaseModel):
+    """Identity-scoped credentials for bot mailbox operations."""
+
+    enabled: bool = True
+    address_env: str = "BUTLER_EMAIL_ADDRESS"
+    password_env: str = "BUTLER_EMAIL_PASSWORD"
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("address_env")
+    @classmethod
+    def _validate_address_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="bot", field_name="address_env")
+
+    @field_validator("password_env")
+    @classmethod
+    def _validate_password_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="bot", field_name="password_env")
 
 
 class EmailConfig(BaseModel):
@@ -38,6 +94,9 @@ class EmailConfig(BaseModel):
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993
     use_tls: bool = True
+    user: EmailUserCredentialsConfig = Field(default_factory=EmailUserCredentialsConfig)
+    bot: EmailBotCredentialsConfig = Field(default_factory=EmailBotCredentialsConfig)
+    model_config = ConfigDict(extra="forbid")
 
 
 class EmailModule(Module):
@@ -144,7 +203,12 @@ class EmailModule(Module):
     @property
     def credentials_env(self) -> list[str]:
         """Environment variables required for email authentication."""
-        return ["SOURCE_EMAIL", "SOURCE_EMAIL_PASSWORD"]
+        envs: list[str] = []
+        if self._config.bot.enabled:
+            envs.extend([self._config.bot.address_env, self._config.bot.password_env])
+        if self._config.user.enabled:
+            envs.extend([self._config.user.address_env, self._config.user.password_env])
+        return envs
 
     def migration_revisions(self) -> str | None:
         return None  # No custom tables needed
@@ -347,17 +411,24 @@ class EmailModule(Module):
     # Implementation helpers using stdlib imaplib/smtplib
     # ------------------------------------------------------------------
 
-    def _get_credentials(self) -> tuple[str, str]:
+    def _get_credentials(self, *, scope: str = "bot") -> tuple[str, str]:
         """Read email credentials from environment variables.
 
-        Raises ``RuntimeError`` if either SOURCE_EMAIL or SOURCE_EMAIL_PASSWORD
-        is not set.
+        Raises ``RuntimeError`` if configured credential env vars for the
+        selected identity scope are not set.
         """
-        address = os.environ.get("SOURCE_EMAIL")
-        password = os.environ.get("SOURCE_EMAIL_PASSWORD")
+        scope_cfg = self._config.bot if scope == "bot" else self._config.user
+        if not scope_cfg.enabled:
+            raise RuntimeError(f"Email credential scope modules.email.{scope} is disabled")
+
+        address_env = scope_cfg.address_env
+        password_env = scope_cfg.password_env
+        address = os.environ.get(address_env)
+        password = os.environ.get(password_env)
         if not address or not password:
             raise RuntimeError(
-                "SOURCE_EMAIL and SOURCE_EMAIL_PASSWORD environment variables must be set"
+                f"Missing email credentials for modules.email.{scope}: set "
+                f"{address_env} and {password_env}"
             )
         return address, password
 

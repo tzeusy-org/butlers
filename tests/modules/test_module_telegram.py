@@ -96,6 +96,10 @@ class TestTelegramConfig:
         assert config.mode == "polling"
         assert config.webhook_url is None
         assert config.poll_interval == 1.0
+        assert config.user.enabled is False
+        assert config.user.token_env == "USER_TELEGRAM_TOKEN"
+        assert config.bot.enabled is True
+        assert config.bot.token_env == "BUTLER_TELEGRAM_TOKEN"
 
     def test_polling_mode(self):
         """Polling mode can be set explicitly."""
@@ -118,6 +122,14 @@ class TestTelegramConfig:
         """Empty dict produces default config."""
         config = TelegramConfig(**{})
         assert config.mode == "polling"
+
+    def test_invalid_bot_token_env_rejected(self):
+        with pytest.raises(ValueError, match="modules.telegram.bot.token_env"):
+            TelegramConfig(**{"bot": {"token_env": "1INVALID"}})
+
+    def test_invalid_user_token_env_rejected(self):
+        with pytest.raises(ValueError, match="modules.telegram.user.token_env"):
+            TelegramConfig(**{"user": {"token_env": "bad-value"}})
 
 
 # ---------------------------------------------------------------------------
