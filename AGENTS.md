@@ -157,6 +157,10 @@ Alembic revisions are chain-prefixed (`core_*`, `mem_*`, `sw_*`) rather than bar
 ### Known Warnings (not bugs)
 - 2 RuntimeWarnings in CLI tests from monkeypatched `asyncio.run` — unawaited coroutines in test mocking
 
+### Testcontainers teardown flake
+- `make test-qg` / xdist pytest runs can intermittently fail during fixture teardown with Docker API 500 (`could not kill ... did not receive an exit event`) while removing Postgres testcontainers.
+- A rerun can pass without code changes; track stabilization work in `butlers-kle`.
+
 ### Quality Gates
 ```bash
 uv run ruff check src/ tests/ roster/ conftest.py
