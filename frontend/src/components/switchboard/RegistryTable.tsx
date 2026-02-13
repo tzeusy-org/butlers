@@ -48,6 +48,46 @@ function EmptyState() {
   );
 }
 
+const MAX_MODULE_PARSE_DEPTH = 10;
+
+function splitModuleString(rawModules: string): string[] {
+  return rawModules
+    .split(",")
+    .map((moduleName) => moduleName.trim())
+    .filter((moduleName) => moduleName.length > 0);
+}
+
+function normalizeModules(rawModules: unknown, depth = 0): string[] {
+  if (depth > MAX_MODULE_PARSE_DEPTH) {
+    return [];
+  }
+
+  if (Array.isArray(rawModules)) {
+    return rawModules
+      .flatMap((moduleName) => normalizeModules(moduleName, depth + 1));
+  }
+
+  if (typeof rawModules !== "string") {
+    return [];
+  }
+
+  const trimmed = rawModules.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    try {
+      return normalizeModules(JSON.parse(trimmed), depth + 1);
+    } catch {
+      const stripped = trimmed.slice(1, -1).trim();
+      return stripped ? splitModuleString(stripped) : [];
+    }
+  }
+
+  return splitModuleString(trimmed);
+}
+
 // ---------------------------------------------------------------------------
 // RegistryTable
 // ---------------------------------------------------------------------------
@@ -76,8 +116,11 @@ export default function RegistryTable() {
             {isLoading ? (
               <SkeletonRows />
             ) : (
-              entries.map((entry) => (
-                <TableRow key={entry.name}>
+              entries.map((entry) => {
+                const modules = normalizeModules(entry.modules);
+
+                return (
+                  <TableRow key={entry.name}>
                   <TableCell className="font-medium">{entry.name}</TableCell>
                   <TableCell>
                     <code className="text-xs text-muted-foreground">
@@ -86,10 +129,10 @@ export default function RegistryTable() {
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-wrap gap-1">
-                      {entry.modules.length > 0 ? (
-                        entry.modules.map((mod, idx) => (
-                          <Badge key={idx} variant="secondary" className="text-xs">
-                            {String(mod)}
+                      {modules.length > 0 ? (
+                        modules.map((mod, idx) => (
+                          <Badge key={`${mod}-${idx}`} variant="secondary" className="text-xs">
+                            {mod}
                           </Badge>
                         ))
                       ) : (
@@ -107,8 +150,9 @@ export default function RegistryTable() {
                         })
                       : "\u2014"}
                   </TableCell>
-                </TableRow>
-              ))
+                  </TableRow>
+                );
+              })
             )}
           </TableBody>
         </Table>
