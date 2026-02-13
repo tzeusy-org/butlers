@@ -33,9 +33,11 @@ _TESTCONTAINER_STOP_RETRY_ATTEMPTS = 4
 _TESTCONTAINER_STOP_BASE_DELAY_SECONDS = 0.1
 _TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS = (
     "did not receive an exit event",
+    "tried to kill container",
     "no such container",
     "removal of container",
     "is already in progress",
+    "is dead or marked for removal",
 )
 
 
@@ -76,9 +78,43 @@ def mock_spawner() -> MockSpawner:
     return MockSpawner()
 
 
+def _iter_exception_messages(exc: BaseException) -> Iterator[str]:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+
+        message = str(current).strip()
+        if message:
+            yield message.lower()
+
+        explanation = getattr(current, "explanation", None)
+        if explanation:
+            if isinstance(explanation, bytes):
+                explanation_text = explanation.decode("utf-8", errors="replace")
+            else:
+                explanation_text = str(explanation)
+            explanation_text = explanation_text.strip()
+            if explanation_text:
+                yield explanation_text.lower()
+
+        if current.__cause__ is not None:
+            current = current.__cause__
+            continue
+
+        if current.__context__ is not None and not current.__suppress_context__:
+            current = current.__context__
+            continue
+
+        current = None
+
+
 def _is_transient_docker_teardown_error(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return any(marker in message for marker in _TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS)
+    return any(
+        marker in message
+        for message in _iter_exception_messages(exc)
+        for marker in _TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS
+    )
 
 
 def _remove_container_with_retry(
