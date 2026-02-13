@@ -381,6 +381,121 @@ async def test_sessions_get_missing_returns_none(pool):
 
 
 # ---------------------------------------------------------------------------
+# sessions_summary
+# ---------------------------------------------------------------------------
+
+
+async def test_sessions_summary_aggregates_totals_and_by_model(pool):
+    """sessions_summary should return period totals and per-model token stats."""
+    from butlers.core.sessions import session_complete, session_create, sessions_summary
+
+    sid_a = await session_create(
+        pool,
+        prompt="sum-a",
+        trigger_source="trigger",
+        model="claude-sonnet-4-20250514",
+    )
+    await session_complete(
+        pool,
+        sid_a,
+        output="ok",
+        tool_calls=[],
+        duration_ms=10,
+        success=True,
+        input_tokens=1200,
+        output_tokens=300,
+    )
+
+    sid_b = await session_create(
+        pool,
+        prompt="sum-b",
+        trigger_source="tick",
+        model="claude-haiku-35-20241022",
+    )
+    await session_complete(
+        pool,
+        sid_b,
+        output="ok",
+        tool_calls=[],
+        duration_ms=20,
+        success=True,
+        input_tokens=800,
+        output_tokens=100,
+    )
+
+    summary = await sessions_summary(pool, period="today")
+    assert summary["period"] == "today"
+    assert summary["total_sessions"] == 2
+    assert summary["total_input_tokens"] == 2000
+    assert summary["total_output_tokens"] == 400
+    assert summary["by_model"] == {
+        "claude-haiku-35-20241022": {"input_tokens": 800, "output_tokens": 100},
+        "claude-sonnet-4-20250514": {"input_tokens": 1200, "output_tokens": 300},
+    }
+
+
+async def test_sessions_summary_respects_period_filter(pool):
+    """sessions_summary should filter rows based on the requested period window."""
+    from butlers.core.sessions import session_complete, session_create, sessions_summary
+
+    sid_old = await session_create(
+        pool,
+        prompt="old",
+        trigger_source="trigger",
+        model="claude-sonnet-4-20250514",
+    )
+    await session_complete(
+        pool,
+        sid_old,
+        output="ok",
+        tool_calls=[],
+        duration_ms=10,
+        success=True,
+        input_tokens=700,
+        output_tokens=200,
+    )
+    await pool.execute(
+        "UPDATE sessions SET started_at = now() - INTERVAL '10 days' WHERE id = $1",
+        sid_old,
+    )
+
+    sid_recent = await session_create(
+        pool,
+        prompt="recent",
+        trigger_source="trigger",
+        model="claude-sonnet-4-20250514",
+    )
+    await session_complete(
+        pool,
+        sid_recent,
+        output="ok",
+        tool_calls=[],
+        duration_ms=10,
+        success=True,
+        input_tokens=300,
+        output_tokens=100,
+    )
+
+    summary_7d = await sessions_summary(pool, period="7d")
+    assert summary_7d["total_sessions"] == 1
+    assert summary_7d["total_input_tokens"] == 300
+    assert summary_7d["total_output_tokens"] == 100
+
+    summary_30d = await sessions_summary(pool, period="30d")
+    assert summary_30d["total_sessions"] == 2
+    assert summary_30d["total_input_tokens"] == 1000
+    assert summary_30d["total_output_tokens"] == 300
+
+
+async def test_sessions_summary_rejects_invalid_period(pool):
+    """sessions_summary raises ValueError for unsupported periods."""
+    from butlers.core.sessions import sessions_summary
+
+    with pytest.raises(ValueError, match="Invalid period"):
+        await sessions_summary(pool, period="90d")
+
+
+# ---------------------------------------------------------------------------
 # append-only contract
 # ---------------------------------------------------------------------------
 

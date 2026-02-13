@@ -24,6 +24,7 @@ TRIGGER_SOURCES = frozenset({"tick", "external", "trigger"})
 
 # JSONB columns that need deserialization from string → Python object
 _JSONB_FIELDS = ("tool_calls", "cost")
+_SUMMARY_PERIODS = frozenset({"today", "7d", "30d"})
 
 
 def _is_valid_trigger_source(trigger_source: str) -> bool:
@@ -293,6 +294,9 @@ def _estimate_runs_per_day(cron: str) -> float:
 
 async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[str, Any]:
     """Return aggregate session/token stats grouped by model for a period."""
+    if period not in _SUMMARY_PERIODS:
+        raise ValueError(f"Invalid period {period!r}; must be one of {sorted(_SUMMARY_PERIODS)}")
+
     since = _period_start(period)
     totals = await pool.fetchrow(
         """
@@ -329,6 +333,7 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
 
     if totals is None:
         return {
+            "period": period,
             "total_sessions": 0,
             "total_input_tokens": 0,
             "total_output_tokens": 0,
@@ -336,6 +341,7 @@ async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[st
         }
 
     return {
+        "period": period,
         "total_sessions": int(totals["total_sessions"]),
         "total_input_tokens": int(totals["total_input_tokens"]),
         "total_output_tokens": int(totals["total_output_tokens"]),

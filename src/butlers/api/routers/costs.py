@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/costs", tags=["costs"])
 
 _STATUS_TIMEOUT_S = 5.0
+_SESSIONS_SUMMARY_TOOL = "sessions_summary"
 
 
 async def _get_butler_session_stats(
@@ -45,7 +46,7 @@ async def _get_butler_session_stats(
     try:
         client = await asyncio.wait_for(mgr.get_client(info.name), timeout=_STATUS_TIMEOUT_S)
         result = await asyncio.wait_for(
-            client.call_tool("sessions_summary", {"period": period}),
+            client.call_tool(_SESSIONS_SUMMARY_TOOL, {"period": period}),
             timeout=_STATUS_TIMEOUT_S,
         )
         if result.content:
@@ -71,8 +72,27 @@ async def _get_butler_session_stats(
                     data.get("total_output_tokens", 0),
                     by_model,
                 )
-    except (ButlerUnreachableError, TimeoutError, Exception):
-        pass
+    except (ButlerUnreachableError, TimeoutError):
+        logger.debug(
+            "Cost summary unavailable for butler %s via %s",
+            info.name,
+            _SESSIONS_SUMMARY_TOOL,
+        )
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Invalid JSON from butler %s via %s: %s",
+            info.name,
+            _SESSIONS_SUMMARY_TOOL,
+            exc,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Cost summary tool call failed for butler %s via %s (%s: %s)",
+            info.name,
+            _SESSIONS_SUMMARY_TOOL,
+            type(exc).__name__,
+            exc,
+        )
     return (info.name, 0.0, 0, 0, 0, {})
 
 
