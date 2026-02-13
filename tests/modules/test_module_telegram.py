@@ -673,13 +673,13 @@ class TestPipelineIntegration:
         warning_records = [
             record
             for record in caplog.records
-            if record.message == "Telegram rejected message reaction; skipping lifecycle reaction update"
+            if record.message
+            == "Telegram rejected message reaction; skipping lifecycle reaction update"
         ]
         assert len(warning_records) == 1
         assert warning_records[0].telegram_error == "Bad Request: chosen reaction is not available"
         assert not any(
-            record.message == "Failed to set Telegram message reaction"
-            for record in caplog.records
+            record.message == "Failed to set Telegram message reaction" for record in caplog.records
         )
 
     async def test_terminal_reaction_does_not_regress_to_in_progress(
