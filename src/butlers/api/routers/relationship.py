@@ -231,6 +231,7 @@ async def get_contact(
         SELECT month, day, year
         FROM important_dates
         WHERE contact_id = $1 AND label = 'birthday'
+        ORDER BY created_at DESC
         LIMIT 1
         """,
         contact_id,

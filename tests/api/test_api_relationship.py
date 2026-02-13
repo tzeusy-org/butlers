@@ -166,6 +166,7 @@ class TestGetContact:
         )
         birthday_sql = important_dates_sql[0]
         assert "label = 'birthday'" in birthday_sql
+        assert "ORDER BY created_at DESC" in birthday_sql
         assert "date_type" not in birthday_sql
 
 
