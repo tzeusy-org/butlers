@@ -25,7 +25,9 @@ _LEGACY_UNPREFIXED_TOOL_NAMES = frozenset(
     }
 )
 _LEGACY_NAME_PATTERN = re.compile(
-    r"(?<![a-z0-9_])(" + "|".join(sorted(map(re.escape, _LEGACY_UNPREFIXED_TOOL_NAMES))) + r")(?![a-z0-9_])"
+    r"(?<![a-z0-9_])("
+    + "|".join(sorted(map(re.escape, _LEGACY_UNPREFIXED_TOOL_NAMES)))
+    + r")(?![a-z0-9_])"
 )
 
 _SCAN_ROOTS = (
