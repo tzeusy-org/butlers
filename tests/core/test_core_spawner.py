@@ -856,12 +856,23 @@ class TestFullFlow:
             runtime=adapter,
         )
 
-        with patch.dict(
-            os.environ,
-            {"ANTHROPIC_API_KEY": "sk-flow", "CUSTOM_VAR": "cv"},
-            clear=False,
-        ):
-            result = await spawner.trigger("do the thing", "schedule")
+        with patch(
+            "butlers.core.spawner.fetch_memory_context",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as mock_fetch:
+            with patch.dict(
+                os.environ,
+                {"ANTHROPIC_API_KEY": "sk-flow", "CUSTOM_VAR": "cv"},
+                clear=False,
+            ):
+                result = await spawner.trigger("do the thing", "schedule")
+
+        mock_fetch.assert_called_once_with(
+            "flow-butler",
+            "do the thing",
+            memory_butler_port=config.memory.port,
+        )
 
         assert result.output == "All done!"
         assert result.error is None
@@ -872,10 +883,39 @@ class TestFullFlow:
         # Verify adapter received correct args
         assert len(adapter.calls) == 1
         call = adapter.calls[0]
-        assert call["system_prompt"].startswith("You are the test butler.")
+        assert call["system_prompt"] == "You are the test butler."
         assert "flow-butler" in call["mcp_servers"]
         assert call["env"]["ANTHROPIC_API_KEY"] == "sk-flow"
         assert call["env"]["CUSTOM_VAR"] == "cv"
+
+    async def test_full_trigger_flow_appends_memory_context_suffix(self, tmp_path: Path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "CLAUDE.md").write_text("You are the test butler.")
+
+        config = _make_config(
+            name="flow-butler",
+            port=9200,
+        )
+
+        adapter = MockAdapter(result_text="All done!", capture=True)
+        spawner = Spawner(
+            config=config,
+            config_dir=config_dir,
+            runtime=adapter,
+        )
+
+        memory_ctx = "# Memory Context\n- user prefers concise updates"
+        with patch(
+            "butlers.core.spawner.fetch_memory_context",
+            new_callable=AsyncMock,
+            return_value=memory_ctx,
+        ):
+            await spawner.trigger("do the thing", "schedule")
+
+        assert len(adapter.calls) == 1
+        call = adapter.calls[0]
+        assert call["system_prompt"] == f"You are the test butler.\n\n{memory_ctx}"
 
 
 # ---------------------------------------------------------------------------

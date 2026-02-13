@@ -51,6 +51,20 @@ class SpawnerResult:
     output_tokens: int | None = None
 
 
+def _compose_system_prompt(base_system_prompt: str, memory_context: str | None) -> str:
+    """Compose the runtime system prompt from base instructions and memory context.
+
+    Contract:
+    - Runtime always receives the raw CLAUDE.md-derived system prompt when no
+      memory context is available.
+    - When memory context is available, it is appended as a suffix separated
+      from the base prompt by exactly one blank line.
+    """
+    if not memory_context:
+        return base_system_prompt
+    return f"{base_system_prompt}\n\n{memory_context}"
+
+
 def _build_env(
     config: ButlerConfig,
     module_credentials_env: dict[str, list[str]] | None = None,
@@ -525,6 +539,7 @@ class Spawner:
             # Read system prompt
             system_prompt = read_system_prompt(self._config_dir, self._config.name)
 
+            memory_ctx: str | None = None
             # Inject memory context (graceful fallback on failure)
             if self._config.memory.enabled:
                 memory_ctx = await fetch_memory_context(
@@ -532,8 +547,7 @@ class Spawner:
                     final_prompt,
                     memory_butler_port=self._config.memory.port,
                 )
-                if memory_ctx:
-                    system_prompt = f"{system_prompt}\n\n{memory_ctx}"
+            system_prompt = _compose_system_prompt(system_prompt, memory_ctx)
 
             # Build credential env
             env = _build_env(self._config, self._module_credentials_env)
