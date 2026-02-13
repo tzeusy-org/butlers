@@ -12,8 +12,10 @@ import abc
 import asyncio
 import json
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any, Literal
+from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
@@ -234,6 +236,147 @@ def _safe_google_error_message(response: httpx.Response) -> str:
     if raw_text:
         return " ".join(raw_text.split())[:200]
     return "Request failed without an error payload"
+
+
+def _google_rfc3339(value: datetime) -> str:
+    normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return normalized.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _parse_google_datetime(value: str) -> datetime:
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"Google Calendar returned an invalid dateTime: {value}") from exc
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _coerce_zoneinfo(timezone: str) -> ZoneInfo | tzinfo:
+    try:
+        return ZoneInfo(timezone)
+    except ZoneInfoNotFoundError:
+        return UTC
+
+
+def _extract_google_attendees(payload: Any) -> list[str]:
+    if not isinstance(payload, list):
+        return []
+
+    attendees: list[str] = []
+    for entry in payload:
+        if isinstance(entry, dict):
+            email = entry.get("email")
+            if isinstance(email, str):
+                normalized = email.strip()
+                if normalized:
+                    attendees.append(normalized)
+        elif isinstance(entry, str):
+            normalized = entry.strip()
+            if normalized:
+                attendees.append(normalized)
+    return attendees
+
+
+def _extract_google_recurrence_rule(payload: Any) -> str | None:
+    if not isinstance(payload, list):
+        return None
+    for entry in payload:
+        if isinstance(entry, str):
+            normalized = entry.strip()
+            if normalized:
+                return normalized
+    return None
+
+
+def _normalize_optional_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _parse_google_event_boundary(
+    payload: dict[str, Any],
+    *,
+    fallback_timezone: str,
+) -> tuple[datetime, str]:
+    date_time = payload.get("dateTime")
+    timezone_raw = payload.get("timeZone")
+    timezone = (
+        timezone_raw.strip()
+        if isinstance(timezone_raw, str) and timezone_raw.strip()
+        else fallback_timezone
+    )
+
+    if isinstance(date_time, str) and date_time.strip():
+        return _parse_google_datetime(date_time), timezone
+
+    date_value = payload.get("date")
+    if isinstance(date_value, str) and date_value.strip():
+        try:
+            parsed_date = date.fromisoformat(date_value)
+        except ValueError as exc:
+            raise ValueError(
+                f"Google Calendar returned an invalid date value: {date_value}"
+            ) from exc
+
+        tzinfo = _coerce_zoneinfo(timezone)
+        parsed_datetime = datetime(
+            parsed_date.year,
+            parsed_date.month,
+            parsed_date.day,
+            tzinfo=tzinfo,
+        )
+        return parsed_datetime, timezone
+
+    raise ValueError("Google Calendar event is missing start/end dateTime or date values")
+
+
+def _google_event_to_calendar_event(
+    payload: dict[str, Any],
+    *,
+    fallback_timezone: str,
+) -> CalendarEvent | None:
+    status = payload.get("status")
+    if isinstance(status, str) and status.lower() == "cancelled":
+        return None
+
+    event_id_raw = payload.get("id")
+    if not isinstance(event_id_raw, str) or not event_id_raw.strip():
+        raise ValueError("Google Calendar event payload is missing a non-empty id")
+    event_id = event_id_raw.strip()
+
+    start_payload = payload.get("start")
+    end_payload = payload.get("end")
+    if not isinstance(start_payload, dict) or not isinstance(end_payload, dict):
+        raise ValueError(f"Google Calendar event '{event_id}' is missing start/end payloads")
+
+    start_at, start_timezone = _parse_google_event_boundary(
+        start_payload,
+        fallback_timezone=fallback_timezone,
+    )
+    end_at, end_timezone = _parse_google_event_boundary(
+        end_payload,
+        fallback_timezone=fallback_timezone,
+    )
+    timezone = start_timezone or end_timezone or fallback_timezone
+
+    title = _normalize_optional_text(payload.get("summary")) or "(untitled)"
+    return CalendarEvent(
+        event_id=event_id,
+        title=title,
+        start_at=start_at,
+        end_at=end_at,
+        timezone=timezone,
+        description=_normalize_optional_text(payload.get("description")),
+        location=_normalize_optional_text(payload.get("location")),
+        attendees=_extract_google_attendees(payload.get("attendees")),
+        recurrence_rule=_extract_google_recurrence_rule(payload.get("recurrence")),
+        color_id=_normalize_optional_text(payload.get("colorId")),
+    )
 
 
 class CalendarConflictDefaults(BaseModel):
@@ -506,10 +649,69 @@ class _GoogleProvider(CalendarProvider):
         end_at: datetime | None = None,
         limit: int = 50,
     ) -> list[CalendarEvent]:
-        raise NotImplementedError("Google calendar provider is not implemented yet")
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+
+        normalized_calendar_id = quote(calendar_id, safe="")
+        params: dict[str, Any] = {
+            "singleEvents": True,
+            "showDeleted": False,
+            "orderBy": "startTime",
+            "maxResults": min(limit, 250),
+        }
+        if start_at is not None:
+            params["timeMin"] = _google_rfc3339(start_at)
+        if end_at is not None:
+            params["timeMax"] = _google_rfc3339(end_at)
+
+        payload = await self._request_google_json(
+            "GET",
+            f"/calendars/{normalized_calendar_id}/events",
+            params=params,
+        )
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise CalendarAuthError("Google Calendar list_events response missing items array")
+
+        events: list[CalendarEvent] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            event = _google_event_to_calendar_event(item, fallback_timezone=self._config.timezone)
+            if event is not None:
+                events.append(event)
+        return events
 
     async def get_event(self, *, calendar_id: str, event_id: str) -> CalendarEvent | None:
-        raise NotImplementedError("Google calendar provider is not implemented yet")
+        normalized_event_id = event_id.strip()
+        if not normalized_event_id:
+            raise ValueError("event_id must be a non-empty string")
+
+        normalized_calendar_id = quote(calendar_id, safe="")
+        encoded_event_id = quote(normalized_event_id, safe="")
+        response = await self._request_with_bearer(
+            method="GET",
+            path=f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
+        )
+
+        if response.status_code == 404:
+            return None
+        if response.status_code < 200 or response.status_code >= 300:
+            raise CalendarRequestError(
+                status_code=response.status_code,
+                message=_safe_google_error_message(response),
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise CalendarAuthError(
+                "Google Calendar API returned invalid JSON for get_event"
+            ) from exc
+
+        if not isinstance(payload, dict):
+            raise CalendarAuthError("Google Calendar API returned an unexpected get_event payload")
+        return _google_event_to_calendar_event(payload, fallback_timezone=self._config.timezone)
 
     async def create_event(
         self,
@@ -579,9 +781,52 @@ class CalendarModule(Module):
         return config if isinstance(config, CalendarConfig) else CalendarConfig(**(config or {}))
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        # Calendar tools are introduced in later tasks; we still keep the
-        # validated config available for parity with other modules.
         self._config = self._coerce_config(config)
+        module = self
+
+        @mcp.tool()
+        async def calendar_list_events(
+            calendar_id: str | None = None,
+            start_at: datetime | None = None,
+            end_at: datetime | None = None,
+            limit: int = 50,
+        ) -> dict[str, Any]:
+            """List calendar events using the configured provider."""
+            provider = module._require_provider()
+            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            events = await provider.list_events(
+                calendar_id=resolved_calendar_id,
+                start_at=start_at,
+                end_at=end_at,
+                limit=limit,
+            )
+            return {
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "events": [module._event_to_payload(event) for event in events],
+            }
+
+        @mcp.tool()
+        async def calendar_get_event(
+            event_id: str,
+            calendar_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Get a single calendar event by id using the configured provider."""
+            normalized_event_id = event_id.strip()
+            if not normalized_event_id:
+                raise ValueError("event_id must be a non-empty string")
+
+            provider = module._require_provider()
+            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            event = await provider.get_event(
+                calendar_id=resolved_calendar_id,
+                event_id=normalized_event_id,
+            )
+            return {
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "event": None if event is None else module._event_to_payload(event),
+            }
 
     async def on_startup(self, config: Any, db: Any) -> None:
         self._config = self._coerce_config(config)
@@ -600,3 +845,37 @@ class CalendarModule(Module):
         if self._provider is not None:
             await self._provider.shutdown()
         self._provider = None
+
+    def _require_provider(self) -> CalendarProvider:
+        if self._provider is None:
+            raise RuntimeError("Calendar provider is not initialized; call on_startup first")
+        return self._provider
+
+    def _require_config(self) -> CalendarConfig:
+        if self._config is None:
+            raise RuntimeError("Calendar config is not initialized")
+        return self._config
+
+    def _resolve_calendar_id(self, override_calendar_id: str | None) -> str:
+        if override_calendar_id is None:
+            return self._require_config().calendar_id
+
+        normalized = override_calendar_id.strip()
+        if not normalized:
+            raise ValueError("calendar_id must be a non-empty string when provided")
+        return normalized
+
+    @staticmethod
+    def _event_to_payload(event: CalendarEvent) -> dict[str, Any]:
+        return {
+            "event_id": event.event_id,
+            "title": event.title,
+            "start_at": event.start_at.isoformat(),
+            "end_at": event.end_at.isoformat(),
+            "timezone": event.timezone,
+            "description": event.description,
+            "location": event.location,
+            "attendees": list(event.attendees),
+            "recurrence_rule": event.recurrence_rule,
+            "color_id": event.color_id,
+        }
