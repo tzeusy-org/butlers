@@ -158,39 +158,38 @@ class TelegramModule(Module):
         )
         module = self  # capture for closures
 
-        @mcp.tool()
-        async def user_telegram_send_message(chat_id: str, text: str) -> dict[str, Any]:
-            """Send a message as the user Telegram identity."""
-            return await module._send_message(chat_id, text)
+        def _register_send_tool(identity: str) -> None:
+            async def send_message_tool(chat_id: str, text: str) -> dict[str, Any]:
+                return await module._send_message(chat_id, text)
 
-        @mcp.tool()
-        async def user_telegram_reply_to_message(
-            chat_id: str, message_id: int, text: str
-        ) -> dict[str, Any]:
-            """Reply as the user Telegram identity."""
-            return await module._reply_to_message(chat_id, message_id, text)
+            send_message_tool.__name__ = f"{identity}_telegram_send_message"
+            send_message_tool.__doc__ = f"Send a message as the {identity} Telegram identity."
+            mcp.tool()(send_message_tool)
 
-        @mcp.tool()
-        async def user_telegram_get_updates() -> list[dict[str, Any]]:
-            """Get recent updates for the user Telegram identity."""
-            return await module._get_updates()
+        def _register_reply_tool(identity: str) -> None:
+            async def reply_to_message_tool(
+                chat_id: str, message_id: int, text: str
+            ) -> dict[str, Any]:
+                return await module._reply_to_message(chat_id, message_id, text)
 
-        @mcp.tool()
-        async def bot_telegram_send_message(chat_id: str, text: str) -> dict[str, Any]:
-            """Send a message as the bot Telegram identity."""
-            return await module._send_message(chat_id, text)
+            reply_to_message_tool.__name__ = f"{identity}_telegram_reply_to_message"
+            reply_to_message_tool.__doc__ = f"Reply as the {identity} Telegram identity."
+            mcp.tool()(reply_to_message_tool)
 
-        @mcp.tool()
-        async def bot_telegram_reply_to_message(
-            chat_id: str, message_id: int, text: str
-        ) -> dict[str, Any]:
-            """Reply as the bot Telegram identity."""
-            return await module._reply_to_message(chat_id, message_id, text)
+        def _register_get_updates_tool(identity: str) -> None:
+            async def get_updates_tool() -> list[dict[str, Any]]:
+                return await module._get_updates()
 
-        @mcp.tool()
-        async def bot_telegram_get_updates() -> list[dict[str, Any]]:
-            """Get recent updates for the bot Telegram identity."""
-            return await module._get_updates()
+            get_updates_tool.__name__ = f"{identity}_telegram_get_updates"
+            get_updates_tool.__doc__ = (
+                f"Get recent updates for the {identity} Telegram identity."
+            )
+            mcp.tool()(get_updates_tool)
+
+        for identity in ("user", "bot"):
+            _register_send_tool(identity)
+            _register_reply_tool(identity)
+            _register_get_updates_tool(identity)
 
     async def on_startup(self, config: Any, db: Any) -> None:
         """Start polling or set webhook based on config."""
