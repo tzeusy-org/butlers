@@ -86,4 +86,52 @@ describe("RegistryTable", () => {
     expect(extractBadgeTexts(html)).toEqual(["telegram"]);
     expect(html).toContain("\u2014");
   });
+
+  it("strips brackets when module strings are not valid JSON arrays", () => {
+    setQueryState({
+      data: {
+        data: [
+          {
+            name: "legacy",
+            endpoint_url: "http://localhost:8103/sse",
+            description: null,
+            modules: "[telegram, email]",
+            last_seen_at: null,
+            registered_at: "2026-02-13T00:00:00Z",
+          },
+        ],
+        meta: {},
+      },
+    });
+
+    const html = renderTable();
+    expect(extractBadgeTexts(html)).toEqual(["telegram", "email"]);
+  });
+
+  it("renders dash when modules payload is nested beyond max depth", () => {
+    let deeplyNestedModules: unknown = "telegram";
+    for (let i = 0; i < 12; i += 1) {
+      deeplyNestedModules = [deeplyNestedModules];
+    }
+
+    setQueryState({
+      data: {
+        data: [
+          {
+            name: "nested",
+            endpoint_url: "http://localhost:8104/sse",
+            description: null,
+            modules: deeplyNestedModules,
+            last_seen_at: null,
+            registered_at: "2026-02-13T00:00:00Z",
+          },
+        ],
+        meta: {},
+      },
+    });
+
+    const html = renderTable();
+    expect(extractBadgeTexts(html)).toEqual([]);
+    expect(html).toContain("\u2014");
+  });
 });

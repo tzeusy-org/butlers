@@ -48,11 +48,23 @@ function EmptyState() {
   );
 }
 
-function normalizeModules(rawModules: unknown): string[] {
+const MAX_MODULE_PARSE_DEPTH = 10;
+
+function splitModuleString(rawModules: string): string[] {
+  return rawModules
+    .split(",")
+    .map((moduleName) => moduleName.trim())
+    .filter((moduleName) => moduleName.length > 0);
+}
+
+function normalizeModules(rawModules: unknown, depth = 0): string[] {
+  if (depth > MAX_MODULE_PARSE_DEPTH) {
+    return [];
+  }
+
   if (Array.isArray(rawModules)) {
     return rawModules
-      .map((moduleName) => String(moduleName).trim())
-      .filter((moduleName) => moduleName.length > 0);
+      .flatMap((moduleName) => normalizeModules(moduleName, depth + 1));
   }
 
   if (typeof rawModules !== "string") {
@@ -66,16 +78,14 @@ function normalizeModules(rawModules: unknown): string[] {
 
   if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
     try {
-      return normalizeModules(JSON.parse(trimmed));
+      return normalizeModules(JSON.parse(trimmed), depth + 1);
     } catch {
-      // Fall through to delimiter-based parsing below.
+      const stripped = trimmed.slice(1, -1).trim();
+      return stripped ? splitModuleString(stripped) : [];
     }
   }
 
-  return trimmed
-    .split(",")
-    .map((moduleName) => moduleName.trim())
-    .filter((moduleName) => moduleName.length > 0);
+  return splitModuleString(trimmed);
 }
 
 // ---------------------------------------------------------------------------
