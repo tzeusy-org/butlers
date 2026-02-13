@@ -113,8 +113,15 @@ class TestModuleABCCompliance:
         self, telegram_module: TelegramModule
     ) -> None:
         """User send/reply descriptors are marked as approval-required defaults."""
-        descriptions = [d.description.lower() for d in telegram_module.user_outputs()]
-        assert all("approval required" in description for description in descriptions)
+        defaults = {d.approval_default for d in telegram_module.user_outputs()}
+        assert defaults == {"always"}
+
+    def test_bot_output_descriptors_mark_conditional_default(
+        self, telegram_module: TelegramModule
+    ) -> None:
+        """Bot send/reply descriptors default to conditional approvals."""
+        defaults = {d.approval_default for d in telegram_module.bot_outputs()}
+        assert defaults == {"conditional"}
 
 
 # ---------------------------------------------------------------------------

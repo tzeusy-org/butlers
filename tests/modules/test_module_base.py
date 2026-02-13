@@ -257,3 +257,9 @@ def test_module_can_declare_structured_io_descriptors():
     )
     assert mod.bot_inputs() == (ToolIODescriptor(name="bot_email_receive"),)
     assert mod.bot_outputs() == (ToolIODescriptor(name="bot_email_send"),)
+
+
+def test_tool_io_descriptor_approval_default_field():
+    """ToolIODescriptor supports explicit approval-default policy declarations."""
+    descriptor = ToolIODescriptor(name="user_email_send", approval_default="always")
+    assert descriptor.approval_default == "always"
