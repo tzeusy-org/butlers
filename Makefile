@@ -1,5 +1,6 @@
 .PHONY: lint format test test-unit test-integration test-core test-modules test-qg test-qg-serial test-qg-parallel check
 
+# Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py
 
 lint:
@@ -28,11 +29,11 @@ test-core:
 test-modules:
 	uv run pytest tests/modules/ -v
 
-# Quality-gate scope default (parallel xdist)
+# Quality-gate default: parallel xdist (see docs/PYTEST_QG_ALTERNATIVES_QKX5.md benchmark).
 test-qg:
 	uv run pytest $(QG_PYTEST_ARGS) -n auto
 
-# Quality-gate serial fallback for order-dependent debugging
+# Same quality-gate scope as test-qg, serial fallback for order-dependent debugging.
 test-qg-serial:
 	uv run pytest $(QG_PYTEST_ARGS)
 
