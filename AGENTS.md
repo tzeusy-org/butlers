@@ -321,5 +321,8 @@ make test-qg
 - Bot outputs are **not** auto-gated by defaults; they remain configurable via `[modules.approvals.gated_tools]` entries.
 - `tests/daemon/test_approval_defaults.py::test_user_send_and_reply_outputs_are_gated_by_name_safety_net` verifies the name-based safety fallback still gates user send/reply tools even when descriptor `approval_default` is not `always`.
 
+### Tool-name compliance scan contract
+- `tests/test_tool_name_compliance.py::test_legacy_unprefixed_tool_names_absent_from_repo_text_surfaces` scans docs/spec text in addition to code; avoid bare legacy tool tokens in prose/examples and use identity-prefixed names instead (for example `bot_switchboard_handle_message`).
+
 ### Core tool registration contract
 - `src/butlers/daemon.py` exports `CORE_TOOL_NAMES` as the canonical core-tool set (including `notify`); registration tests should assert against this set to prevent drift between `_register_core_tools()` behavior and expected tool coverage.

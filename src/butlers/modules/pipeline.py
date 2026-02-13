@@ -215,8 +215,9 @@ class MessagePipeline:
             classification = await classify(self._pool, message_text, self._dispatch_fn)
             classification_latency_ms = (time.perf_counter() - classify_start) * 1000
 
-            # Handle decomposition (list of sub-tasks)
-            if isinstance(classification, list) and classification:
+            # Handle decomposition (list of sub-tasks) only for default routing.
+            # Custom route_fn call sites expect single-target routing semantics.
+            if isinstance(classification, list) and classification and self._route_fn is None:
                 logger.info(
                     "Pipeline classified message as decomposition",
                     extra=self._log_fields(

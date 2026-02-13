@@ -296,6 +296,39 @@ class TestMessagePipelineProcess:
         assert result.failed_targets == ["general"]
         assert "ConnectionError" in (result.routing_error or "")
 
+    async def test_classification_list_uses_first_entry_and_sub_prompt(self):
+        """Custom route_fn uses first decomposition entry for single-target routing."""
+        captured: dict[str, Any] = {}
+
+        async def mock_classify(pool, message, dispatch_fn):
+            return [
+                {"butler": "health", "prompt": "Log my headache"},
+                {"butler": "relationship", "prompt": "Remind me to call Mom"},
+            ]
+
+        async def mock_route(pool, target, tool_name, args, source):
+            captured["target"] = target
+            captured["args"] = dict(args)
+            return {"result": "handled"}
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            classify_fn=mock_classify,
+            route_fn=mock_route,
+        )
+
+        result = await pipeline.process("I have a headache and call Mom tomorrow")
+
+        assert result.target_butler == "health"
+        assert result.route_result == {"result": "handled"}
+        assert result.routed_targets == ["health"]
+        assert result.acked_targets == ["health"]
+        assert result.failed_targets == []
+        assert captured["target"] == "health"
+        assert captured["args"]["prompt"] == "Log my headache"
+        assert captured["args"]["message"] == "Log my headache"
+
     async def test_passes_tool_name_to_route(self):
         """Pipeline passes the specified tool_name to route()."""
         captured_tool_name: list[str] = []
