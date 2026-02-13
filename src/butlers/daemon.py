@@ -88,7 +88,7 @@ class _McpSseDisconnectGuard:
         if str(scope.get("method", "")).upper() != "POST":
             return False
         path = str(scope.get("path", "")).rstrip("/")
-        return path.endswith("/messages")
+        return path == "/messages"
 
     @staticmethod
     def _session_id(scope: dict[str, Any]) -> str | None:
@@ -96,7 +96,7 @@ class _McpSseDisconnectGuard:
         if not isinstance(query_string, (bytes, bytearray)):
             return None
 
-        parsed = parse_qs(query_string.decode("utf-8", errors="ignore"))
+        parsed = parse_qs(query_string.decode("utf-8", errors="replace"))
         values = parsed.get("session_id")
         if not values:
             return None
