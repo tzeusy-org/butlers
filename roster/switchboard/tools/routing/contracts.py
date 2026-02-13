@@ -23,6 +23,8 @@ NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 
 SourceChannel = Literal["telegram", "slack", "email", "api", "mcp"]
 SourceProvider = Literal["telegram", "slack", "imap", "internal"]
+NotifyChannel = Literal["telegram", "email", "sms", "chat"]
+NotifyIntent = Literal["send", "reply"]
 PolicyTier = Literal["default", "interactive", "high_priority"]
 FanoutMode = Literal["parallel", "ordered", "conditional"]
 _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = {
@@ -264,7 +266,7 @@ class RouteInputV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     prompt: NonEmptyStr
-    context: NonEmptyStr | None = None
+    context: NonEmptyStr | dict[str, Any] | None = None
 
 
 class RouteSubrequestV1(BaseModel):
@@ -336,6 +338,93 @@ class RouteEnvelopeV1(BaseModel):
         return self
 
 
+class NotifyRequestContextV1(BaseModel):
+    """Optional request-context lineage for `notify.v1` requests."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    request_id: UUID
+    source_channel: SourceChannel
+    source_endpoint_identity: NonEmptyStr
+    source_sender_identity: NonEmptyStr
+    source_thread_identity: NonEmptyStr | None = None
+    received_at: datetime | None = None
+
+    @field_validator("request_id")
+    @classmethod
+    def _request_id_must_be_uuid7(cls, value: UUID) -> UUID:
+        if value.version != 7:
+            raise PydanticCustomError(
+                "uuid7_required",
+                "request_context.request_id must be a valid UUID7.",
+                {},
+            )
+        return value
+
+    @field_validator("received_at")
+    @classmethod
+    def _received_at_must_be_tz_aware(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return _validate_tz_aware(value, field_name="request_context.received_at")
+
+    @field_validator("received_at", mode="before")
+    @classmethod
+    def _received_at_must_be_rfc3339_string(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return _validate_rfc3339_timestamp_input(value, field_name="request_context.received_at")
+
+
+class NotifyDeliveryV1(BaseModel):
+    """Delivery payload for `notify.v1` requests."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    intent: NotifyIntent
+    channel: NotifyChannel
+    message: NonEmptyStr
+    recipient: NonEmptyStr | None = None
+    subject: NonEmptyStr | None = None
+
+
+class NotifyRequestV1(BaseModel):
+    """Canonical versioned notify envelope (`notify.v1`)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: str
+    origin_butler: NonEmptyStr
+    delivery: NotifyDeliveryV1
+    request_context: NotifyRequestContextV1 | None = None
+
+    @field_validator("schema_version")
+    @classmethod
+    def _validate_notify_schema_version(cls, value: str) -> str:
+        return _validate_schema_version(value, expected="notify.v1")
+
+    @model_validator(mode="after")
+    def _validate_reply_context(self) -> NotifyRequestV1:
+        if self.delivery.intent != "reply":
+            return self
+
+        if self.request_context is None:
+            raise PydanticCustomError(
+                "reply_context_required",
+                "notify.v1 reply intent requires request_context.",
+                {},
+            )
+
+        if self.delivery.channel == "telegram" and not self.request_context.source_thread_identity:
+            raise PydanticCustomError(
+                "reply_thread_required",
+                "notify.v1 telegram reply intent requires request_context.source_thread_identity.",
+                {},
+            )
+
+        return self
+
+
 def parse_ingest_envelope(payload: Mapping[str, Any]) -> IngestEnvelopeV1:
     """Parse and validate an `ingest.v1` envelope."""
 
@@ -348,6 +437,12 @@ def parse_route_envelope(payload: Mapping[str, Any]) -> RouteEnvelopeV1:
     return RouteEnvelopeV1.model_validate(payload)
 
 
+def parse_notify_request(payload: Mapping[str, Any]) -> NotifyRequestV1:
+    """Parse and validate a `notify.v1` request envelope."""
+
+    return NotifyRequestV1.model_validate(payload)
+
+
 __all__ = [
     "IngestControlV1",
     "IngestEnvelopeV1",
@@ -355,6 +450,9 @@ __all__ = [
     "IngestPayloadV1",
     "IngestSenderV1",
     "IngestSourceV1",
+    "NotifyDeliveryV1",
+    "NotifyRequestContextV1",
+    "NotifyRequestV1",
     "RouteEnvelopeV1",
     "RouteInputV1",
     "RouteRequestContextV1",
@@ -362,5 +460,6 @@ __all__ = [
     "RouteSubrequestV1",
     "RouteTargetV1",
     "parse_ingest_envelope",
+    "parse_notify_request",
     "parse_route_envelope",
 ]

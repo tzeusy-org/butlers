@@ -500,11 +500,15 @@ class TestPipelineIntegration:
                 "source": "telegram",
                 "source_channel": "telegram",
                 "source_identity": "bot",
+                "source_endpoint_identity": "telegram:bot",
+                "sender_identity": "12345",
+                "external_event_id": None,
+                "external_thread_id": "12345",
                 "source_tool": "bot_telegram_get_updates",
                 "chat_id": "12345",
                 "source_id": None,
+                "raw_metadata": update,
             },
-            message_inbox_id=None,
         )
         assert telegram_module._routed_messages == [mock_result]
 

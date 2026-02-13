@@ -304,7 +304,7 @@ class EmailModule(Module):
 
     async def process_incoming(
         self,
-        email_data: dict[str, str],
+        email_data: dict[str, Any],
     ) -> RoutingResult | None:
         """Process a single email through the classification pipeline.
 
@@ -321,6 +321,9 @@ class EmailModule(Module):
         body = email_data.get("body", "")
         sender = email_data.get("from", "")
         message_id = email_data.get("message_id", "")
+        rfc_message_id = email_data.get("rfc_message_id") or message_id
+        source_id = rfc_message_id
+        endpoint_identity = self._ingress_mailbox_identity(scope="bot")
 
         # Build a text representation for classification
         text = _build_classification_text(subject, body)
@@ -335,10 +338,17 @@ class EmailModule(Module):
                 "source_channel": "email",
                 "source_identity": "bot",
                 "source_tool": "bot_email_check_and_route_inbox",
+                "source_endpoint_identity": endpoint_identity,
+                "sender_identity": sender or "unknown",
+                "external_event_id": rfc_message_id,
+                "external_thread_id": email_data.get("thread_id"),
+                "idempotency_key": email_data.get("idempotency_key"),
                 "from": sender,
                 "subject": subject,
                 "message_id": message_id,
-                "source_id": message_id,
+                "rfc_message_id": rfc_message_id,
+                "source_id": source_id,
+                "raw_metadata": email_data,
             },
         )
 
@@ -419,6 +429,14 @@ class EmailModule(Module):
     # ------------------------------------------------------------------
     # Implementation helpers using stdlib imaplib/smtplib
     # ------------------------------------------------------------------
+
+    def _ingress_mailbox_identity(self, *, scope: str = "bot") -> str:
+        """Return a stable receiving-mailbox identity for ingress dedupe keys."""
+        scope_cfg = self._config.bot if scope == "bot" else self._config.user
+        address = os.environ.get(scope_cfg.address_env, "").strip().lower()
+        if address:
+            return f"{scope}:{address}"
+        return f"{scope}:unknown-mailbox"
 
     def _get_credentials(self, *, scope: str = "bot") -> tuple[str, str]:
         """Read email credentials from environment variables.
@@ -542,6 +560,7 @@ class EmailModule(Module):
                 "to": parsed.get("To", ""),
                 "subject": parsed.get("Subject", ""),
                 "date": parsed.get("Date", ""),
+                "rfc_message_id": parsed.get("Message-ID", ""),
                 "body": body,
             }
         finally:

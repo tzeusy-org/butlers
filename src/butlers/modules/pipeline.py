@@ -249,6 +249,9 @@ class MessagePipeline:
     ) -> tuple[str, str, str | None]:
         source_channel = source_metadata.get("channel", "unknown").strip().lower() or "unknown"
         endpoint_identity = cls._source_endpoint_identity(args, source_metadata)
+        scoped_endpoint_identity = endpoint_identity
+        if not scoped_endpoint_identity.startswith(f"{source_channel}:"):
+            scoped_endpoint_identity = f"{source_channel}:{endpoint_identity}"
         external_event_id = cls._external_event_id(args, source_metadata)
         caller_idempotency_key = cls._string_or_none(
             args.get("idempotency_key") or args.get("ingress_idempotency_key")
@@ -256,21 +259,21 @@ class MessagePipeline:
 
         if source_channel == "telegram" and external_event_id is not None:
             return (
-                f"telegram:{endpoint_identity}:update:{external_event_id}",
+                f"{scoped_endpoint_identity}:update:{external_event_id}",
                 "telegram_update_id_endpoint",
                 None,
             )
 
         if source_channel == "email" and external_event_id is not None:
             return (
-                f"email:{endpoint_identity}:message_id:{external_event_id}",
+                f"{scoped_endpoint_identity}:message_id:{external_event_id}",
                 "email_message_id_endpoint",
                 None,
             )
 
         if source_channel in {"api", "mcp"} and caller_idempotency_key is not None:
             return (
-                f"{source_channel}:{endpoint_identity}:idempotency:{caller_idempotency_key}",
+                f"{scoped_endpoint_identity}:idempotency:{caller_idempotency_key}",
                 f"{source_channel}_idempotency_key_endpoint",
                 caller_idempotency_key,
             )
@@ -278,7 +281,7 @@ class MessagePipeline:
         payload_for_hash = {
             "schema_version": "ingest.v1",
             "source_channel": source_channel,
-            "source_endpoint_identity": endpoint_identity,
+            "source_endpoint_identity": scoped_endpoint_identity,
             "source_sender_identity": cls._source_sender_identity(args, source_metadata),
             "source_thread_identity": cls._source_thread_identity(args),
             "external_event_id": external_event_id,
@@ -288,7 +291,7 @@ class MessagePipeline:
         payload_hash = cls._payload_hash(payload_for_hash)
         bounded_window = cls._window_bucket(received_at)
         return (
-            f"{source_channel}:{endpoint_identity}:payload_hash:{payload_hash}:window:{bounded_window}",
+            f"{scoped_endpoint_identity}:payload_hash:{payload_hash}:window:{bounded_window}",
             f"{source_channel}_payload_hash_endpoint_window",
             caller_idempotency_key,
         )
@@ -343,14 +346,14 @@ class MessagePipeline:
                 ) VALUES (
                     $1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $5
                 )
-                ON CONFLICT (dedupe_key) DO UPDATE
+                ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO UPDATE
                 SET dedupe_last_seen_at = EXCLUDED.dedupe_last_seen_at
                 RETURNING id AS request_id, (xmax = 0) AS inserted
                 """,
                 source,
                 source_sender_identity,
                 message_text,
-                json.dumps(raw_metadata_payload),
+                json.dumps(raw_metadata_payload, default=str),
                 received_at,
                 source_endpoint_identity,
                 source_sender_identity,

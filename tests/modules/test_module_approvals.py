@@ -787,9 +787,7 @@ class TestApproveAction:
         result = await module._approve_action(str(action_id))
         assert result["error_code"] == "human_actor_required"
 
-    async def test_approve_rejects_non_human_actor(
-        self, module: ApprovalsModule, mock_db: MockDB
-    ):
+    async def test_approve_rejects_non_human_actor(self, module: ApprovalsModule, mock_db: MockDB):
         await module.on_startup(config=None, db=mock_db)
         action_id = uuid.uuid4()
         mock_db._insert_action(id=action_id, tool_name="test_tool", status="pending")

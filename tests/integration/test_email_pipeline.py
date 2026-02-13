@@ -149,9 +149,10 @@ class TestProcessIncoming:
         result = await mod.process_incoming({"subject": "", "body": ""})
         assert result is None
 
-    async def test_includes_email_metadata_in_tool_args(self):
-        """process_incoming includes source, from, subject, message_id in route args."""
+    async def test_includes_email_metadata_in_tool_args(self, monkeypatch: pytest.MonkeyPatch):
+        """process_incoming includes source and ingress dedupe metadata in route args."""
         captured_args: dict = {}
+        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "bot-inbox@example.com")
 
         async def capture_route(pool, target, tool_name, args, source):
             captured_args.update(args)
@@ -182,6 +183,11 @@ class TestProcessIncoming:
         assert captured_args["from"] == "sender@example.com"
         assert captured_args["subject"] == "Important"
         assert captured_args["message_id"] == "42"
+        assert captured_args["rfc_message_id"] == "42"
+        assert captured_args["source_endpoint_identity"] == "bot:bot-inbox@example.com"
+        assert captured_args["external_event_id"] == "42"
+        assert captured_args["source_id"] == "42"
+        assert captured_args["raw_metadata"] == email_data
         assert "message" in captured_args
 
     async def test_records_routed_messages(self):

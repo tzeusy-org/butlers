@@ -12,13 +12,11 @@ switchboard.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -753,6 +751,30 @@ def _extract_message_id(update: dict[str, Any]) -> int | None:
             except (TypeError, ValueError):
                 return None
     return None
+
+
+def _extract_update_id(update: dict[str, Any]) -> str | None:
+    """Extract update_id as a normalized string when present."""
+    update_id = update.get("update_id")
+    if update_id in (None, ""):
+        return None
+    return str(update_id)
+
+
+def _extract_sender_identity(update: dict[str, Any], *, fallback: str | None = None) -> str:
+    """Extract sender identity from Telegram update payload."""
+    for key in ("message", "edited_message", "channel_post"):
+        msg = update.get(key)
+        if not isinstance(msg, dict):
+            continue
+
+        sender = msg.get("from")
+        if isinstance(sender, dict) and sender.get("id") not in (None, ""):
+            return str(sender["id"])
+
+    if fallback not in (None, ""):
+        return str(fallback)
+    return "unknown"
 
 
 def _message_tracking_key(

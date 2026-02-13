@@ -16,42 +16,12 @@ def upgrade() -> None:
     op.execute(
         """
         ALTER TABLE message_inbox
-        ADD COLUMN IF NOT EXISTS source_endpoint_identity TEXT
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE message_inbox
-        ADD COLUMN IF NOT EXISTS source_sender_identity TEXT
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE message_inbox
-        ADD COLUMN IF NOT EXISTS source_thread_identity TEXT
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE message_inbox
-        ADD COLUMN IF NOT EXISTS idempotency_key TEXT
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE message_inbox
-        ADD COLUMN IF NOT EXISTS dedupe_key TEXT
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE message_inbox
-        ADD COLUMN IF NOT EXISTS dedupe_strategy TEXT
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE message_inbox
+        ADD COLUMN IF NOT EXISTS source_endpoint_identity TEXT,
+        ADD COLUMN IF NOT EXISTS source_sender_identity TEXT,
+        ADD COLUMN IF NOT EXISTS source_thread_identity TEXT,
+        ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
+        ADD COLUMN IF NOT EXISTS dedupe_key TEXT,
+        ADD COLUMN IF NOT EXISTS dedupe_strategy TEXT,
         ADD COLUMN IF NOT EXISTS dedupe_last_seen_at TIMESTAMPTZ
         """
     )
@@ -88,24 +58,9 @@ def upgrade() -> None:
     op.execute(
         """
         ALTER TABLE message_inbox
-        ALTER COLUMN source_endpoint_identity SET NOT NULL
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE message_inbox
-        ALTER COLUMN source_sender_identity SET NOT NULL
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE message_inbox
-        ALTER COLUMN dedupe_strategy SET NOT NULL
-        """
-    )
-    op.execute(
-        """
-        ALTER TABLE message_inbox
+        ALTER COLUMN source_endpoint_identity SET NOT NULL,
+        ALTER COLUMN source_sender_identity SET NOT NULL,
+        ALTER COLUMN dedupe_strategy SET NOT NULL,
         ALTER COLUMN dedupe_last_seen_at SET NOT NULL
         """
     )
@@ -129,10 +84,15 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS ix_message_inbox_idempotency_key")
     op.execute("DROP INDEX IF EXISTS uq_message_inbox_dedupe_key")
-    op.execute("ALTER TABLE message_inbox DROP COLUMN IF EXISTS dedupe_last_seen_at")
-    op.execute("ALTER TABLE message_inbox DROP COLUMN IF EXISTS dedupe_strategy")
-    op.execute("ALTER TABLE message_inbox DROP COLUMN IF EXISTS dedupe_key")
-    op.execute("ALTER TABLE message_inbox DROP COLUMN IF EXISTS idempotency_key")
-    op.execute("ALTER TABLE message_inbox DROP COLUMN IF EXISTS source_thread_identity")
-    op.execute("ALTER TABLE message_inbox DROP COLUMN IF EXISTS source_sender_identity")
-    op.execute("ALTER TABLE message_inbox DROP COLUMN IF EXISTS source_endpoint_identity")
+    op.execute(
+        """
+        ALTER TABLE message_inbox
+        DROP COLUMN IF EXISTS dedupe_last_seen_at,
+        DROP COLUMN IF EXISTS dedupe_strategy,
+        DROP COLUMN IF EXISTS dedupe_key,
+        DROP COLUMN IF EXISTS idempotency_key,
+        DROP COLUMN IF EXISTS source_thread_identity,
+        DROP COLUMN IF EXISTS source_sender_identity,
+        DROP COLUMN IF EXISTS source_endpoint_identity
+        """
+    )

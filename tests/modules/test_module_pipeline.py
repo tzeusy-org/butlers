@@ -9,6 +9,8 @@ Tests cover:
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -559,3 +561,183 @@ class TestMessagePipelineProcess:
         await pipeline.process("test")
 
         assert captured == ["switchboard"]
+
+
+class _FakeAcquire:
+    def __init__(self, conn: _FakeIngressConn) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> _FakeIngressConn:
+        return self._conn
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+
+class _FakeIngressConn:
+    def __init__(self) -> None:
+        self.request_by_key: dict[str, uuid.UUID] = {}
+        self.dedupe_keys_seen: list[str] = []
+
+    async def fetchrow(self, _query: str, *params: Any) -> dict[str, Any]:
+        dedupe_key = str(params[9])
+        self.dedupe_keys_seen.append(dedupe_key)
+        if dedupe_key in self.request_by_key:
+            return {
+                "request_id": self.request_by_key[dedupe_key],
+                "inserted": False,
+            }
+
+        request_id = uuid.uuid4()
+        self.request_by_key[dedupe_key] = request_id
+        return {"request_id": request_id, "inserted": True}
+
+    async def execute(self, _query: str, *args: Any) -> str:
+        return "UPDATE 1"
+
+
+class _FakeIngressPool:
+    def __init__(self) -> None:
+        self.conn = _FakeIngressConn()
+
+    def acquire(self) -> _FakeAcquire:
+        return _FakeAcquire(self.conn)
+
+
+class TestIngressDeduplication:
+    def test_telegram_key_uses_update_id_and_endpoint_identity(self):
+        dedupe_key, strategy, idempotency_key = MessagePipeline._build_dedupe_record(
+            args={
+                "source_endpoint_identity": "telegram:bot-main",
+                "external_event_id": "4321",
+            },
+            source_metadata={"channel": "telegram", "identity": "bot", "tool_name": "tool"},
+            message_text="hello",
+            received_at=datetime(2026, 2, 13, 12, 0, tzinfo=UTC),
+        )
+
+        assert dedupe_key == "telegram:bot-main:update:4321"
+        assert strategy == "telegram_update_id_endpoint"
+        assert idempotency_key is None
+
+    def test_email_key_uses_message_id_and_mailbox_identity(self):
+        dedupe_key, strategy, idempotency_key = MessagePipeline._build_dedupe_record(
+            args={
+                "source_endpoint_identity": "bot:inbox@example.com",
+                "external_event_id": "<abc123@example.com>",
+            },
+            source_metadata={"channel": "email", "identity": "bot", "tool_name": "tool"},
+            message_text="hello",
+            received_at=datetime(2026, 2, 13, 12, 0, tzinfo=UTC),
+        )
+
+        assert dedupe_key == "email:bot:inbox@example.com:message_id:<abc123@example.com>"
+        assert strategy == "email_message_id_endpoint"
+        assert idempotency_key is None
+
+    def test_api_key_prefers_caller_idempotency_key(self):
+        dedupe_key, strategy, idempotency_key = MessagePipeline._build_dedupe_record(
+            args={
+                "source_endpoint_identity": "api:client-a",
+                "idempotency_key": "idem-123",
+            },
+            source_metadata={"channel": "api", "identity": "client", "tool_name": "tool"},
+            message_text="hello",
+            received_at=datetime(2026, 2, 13, 12, 0, tzinfo=UTC),
+        )
+
+        assert dedupe_key == "api:client-a:idempotency:idem-123"
+        assert strategy == "api_idempotency_key_endpoint"
+        assert idempotency_key == "idem-123"
+
+    def test_mcp_key_falls_back_to_payload_hash_plus_bounded_window(self):
+        dedupe_key, strategy, idempotency_key = MessagePipeline._build_dedupe_record(
+            args={
+                "source_endpoint_identity": "mcp:caller-a",
+                "sender_identity": "caller-user",
+            },
+            source_metadata={"channel": "mcp", "identity": "caller", "tool_name": "tool"},
+            message_text="hello",
+            received_at=datetime(2026, 2, 13, 12, 7, tzinfo=UTC),
+        )
+
+        assert dedupe_key.startswith("mcp:caller-a:payload_hash:")
+        assert dedupe_key.endswith(":window:2026-02-13T12:05:00+00:00")
+        assert strategy == "mcp_payload_hash_endpoint_window"
+        assert idempotency_key is None
+
+    async def test_duplicate_telegram_replay_maps_to_existing_request(self, caplog):
+        pool = _FakeIngressPool()
+
+        async def mock_classify(_pool, _message, _dispatch_fn):
+            return "general"
+
+        async def mock_route(_pool, _target, _tool_name, _args, _source):
+            return {"result": "ok"}
+
+        pipeline = MessagePipeline(
+            switchboard_pool=pool,
+            dispatch_fn=AsyncMock(),
+            classify_fn=mock_classify,
+            route_fn=mock_route,
+            enable_ingress_dedupe=True,
+        )
+
+        tool_args = {
+            "source": "telegram",
+            "source_channel": "telegram",
+            "source_endpoint_identity": "telegram:bot-main",
+            "external_event_id": "99",
+            "chat_id": "7",
+            "source_id": "update:99",
+        }
+
+        with caplog.at_level(logging.INFO, logger="butlers.modules.pipeline"):
+            first = await pipeline.process("hello", tool_args=tool_args)
+            second = await pipeline.process("hello", tool_args=tool_args)
+
+        assert first.target_butler == "general"
+        assert second.target_butler == "deduped"
+        assert second.route_result["ingress_decision"] == "deduped"
+
+        dedupe_key = "telegram:bot-main:update:99"
+        request_id = pool.conn.request_by_key[dedupe_key]
+        assert second.route_result["request_id"] == str(request_id)
+
+        decisions = [
+            getattr(record, "ingress_decision", None)
+            for record in _pipeline_records(caplog)
+            if record.getMessage() == "Ingress dedupe decision"
+        ]
+        assert decisions == ["accepted", "deduped"]
+
+    async def test_duplicate_email_replay_maps_to_existing_request(self):
+        pool = _FakeIngressPool()
+        classify = AsyncMock(return_value="general")
+        route = AsyncMock(return_value={"result": "ok"})
+
+        pipeline = MessagePipeline(
+            switchboard_pool=pool,
+            dispatch_fn=AsyncMock(),
+            classify_fn=classify,
+            route_fn=route,
+            enable_ingress_dedupe=True,
+        )
+
+        tool_args = {
+            "source": "email",
+            "source_channel": "email",
+            "source_endpoint_identity": "bot:inbox@example.com",
+            "external_event_id": "<msg-42@example.com>",
+            "from": "sender@example.com",
+            "source_id": "<msg-42@example.com>",
+        }
+
+        first = await pipeline.process("Subject: hello", tool_args=tool_args)
+        second = await pipeline.process("Subject: hello", tool_args=tool_args)
+
+        assert first.target_butler == "general"
+        assert second.target_butler == "deduped"
+        assert second.route_result["ingress_decision"] == "deduped"
+        assert classify.await_count == 1
+        assert route.await_count == 1

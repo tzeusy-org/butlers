@@ -948,7 +948,9 @@ class ButlerDaemon:
                             raise ValueError(
                                 "notify_request.delivery.recipient is required for send intent."
                             )
-                        adapter_result = await telegram_module._send_message(recipient, rendered_text)
+                        adapter_result = await telegram_module._send_message(
+                            recipient, rendered_text
+                        )
                     else:
                         thread_identity = (
                             notify_context.source_thread_identity if notify_context else None
