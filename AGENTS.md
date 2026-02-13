@@ -287,6 +287,10 @@ make test-qg
 - Beads enforces global uniqueness for `issues.external_ref`; a dedicated `pr-review-task` bead cannot reuse the same `gh-pr:<number>` already attached to the original implementation bead.
 - For split original/review-bead workflows, keep `external_ref` on the original bead and store PR metadata (`PR URL`, `PR NUMBER`, original bead id) in review-bead notes/labels, then dispatch reviewer workers with explicit PR context.
 
+### Beads PR-review dependency-direction guardrail
+- If the original implementation bead must be blocked by a dedicated PR-review bead, do not create the review bead with `--deps discovered-from:<original>` because that pre-wires the reverse dependency and causes a cycle when adding `<original> depends-on <review>`.
+- Preferred flow: create the review bead without `discovered-from`, then add `bd dep add <original> <review>` so review completion unblocks the original bead.
+
 ### Beads merge-blocker dedupe guardrail
 - Before creating a new `Resolve merge blockers for PR #<n>` bead from a blocked `pr-review-task`, check for an existing open blocker bead tied to the same PR/original issue and reuse it by wiring dependencies instead of creating duplicates.
 

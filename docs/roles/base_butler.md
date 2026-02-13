@@ -219,6 +219,8 @@ Gate interception rules:
 - Intercepted invocations must be serialized as pending actions with tool name, args, status, requested/expiry timestamps, and auditable summary metadata.
 - If no standing rule matches, the invocation must return a structured `pending_approval` response with a stable `action_id` and must not execute the original tool.
 - Standing rules (tool name + arg constraints + active/expiry/use-limit checks) may auto-approve matching invocations.
+- Standing-rule auto-approval MUST be treated as pre-approval delegated by the authenticated human rule owner; it is not an autonomous non-human decision.
+- Decision-bearing approval operations (`approve`, `reject`, rule create/revoke) MUST require authenticated human actor context and MUST reject non-human actor paths with explicit machine-readable error semantics.
 - Auto-approved and manually approved actions must execute through a shared executor path so status transitions and audit logging are consistent.
 
 Approval data/state rules:

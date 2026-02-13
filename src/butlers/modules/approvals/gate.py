@@ -3,7 +3,8 @@
 Wraps gated tools at MCP registration time so that:
 1. When a gated tool is called, the call is serialized into a PendingAction.
 2. Standing approval rules are checked — if a rule matches, the tool
-   is auto-approved and executed immediately.
+   is auto-approved and executed immediately as pre-approval delegated
+   by the rule's authenticated human owner.
 3. If no rule matches, the PendingAction is persisted with status='pending'
    and a structured ``pending_approval`` response is returned to CC.
 
