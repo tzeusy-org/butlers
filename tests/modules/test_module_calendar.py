@@ -22,13 +22,13 @@ from butlers.modules.calendar import (
     CalendarModule,
     CalendarProvider,
     CalendarRequestError,
-    _google_event_to_calendar_event,
-    normalize_event_payload,
     _GoogleOAuthClient,
     _GoogleOAuthCredentials,
     _GoogleProvider,
+    _google_event_to_calendar_event,
     _parse_google_datetime,
     _parse_google_event_boundary,
+    normalize_event_payload,
 )
 
 pytestmark = pytest.mark.unit
