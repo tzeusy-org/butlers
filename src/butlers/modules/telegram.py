@@ -16,6 +16,8 @@ import json
 import logging
 import os
 import re
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -72,6 +74,27 @@ class TelegramBotCredentialsConfig(BaseModel):
         return _validate_env_var_name(value, scope="bot", field_name="token_env")
 
 
+REACTION_IN_PROGRESS = ":eye"
+REACTION_SUCCESS = ":done"
+REACTION_FAILURE = ":space invader"
+REACTION_TO_EMOJI = {
+    REACTION_IN_PROGRESS: "\U0001f440",
+    REACTION_SUCCESS: "\u2705",
+    REACTION_FAILURE: "\U0001f47e",
+}
+TERMINAL_REACTION_CACHE_SIZE = 2048
+
+
+@dataclass
+class ProcessingLifecycle:
+    """Tracks per-message routing progress and terminal reaction state."""
+
+    routed_targets: set[str] = field(default_factory=set)
+    acked_targets: set[str] = field(default_factory=set)
+    failed_targets: set[str] = field(default_factory=set)
+    terminal_reaction: str | None = None
+
+
 class TelegramConfig(BaseModel):
     """Configuration for the Telegram module."""
 
@@ -100,6 +123,9 @@ class TelegramModule(Module):
         self._pipeline: MessagePipeline | None = None
         self._routed_messages: list[RoutingResult] = []
         self._db: Any = None
+        self._processing_lifecycle: dict[str, ProcessingLifecycle] = {}
+        self._reaction_locks: dict[str, asyncio.Lock] = {}
+        self._terminal_reactions: OrderedDict[str, str] = OrderedDict()
 
     @property
     def name(self) -> str:
@@ -215,6 +241,125 @@ class TelegramModule(Module):
             return self._db
         return None
 
+    @staticmethod
+    def _result_has_failure(result: RoutingResult) -> bool:
+        if result.classification_error or result.routing_error:
+            return True
+        if result.failed_targets:
+            return True
+        route_error = result.route_result.get("error")
+        return route_error not in (None, "")
+
+    def _message_lock(self, message_key: str) -> asyncio.Lock:
+        lock = self._reaction_locks.get(message_key)
+        if lock is not None:
+            return lock
+        lock = asyncio.Lock()
+        return self._reaction_locks.setdefault(message_key, lock)
+
+    def _lifecycle(self, message_key: str) -> ProcessingLifecycle:
+        lifecycle = self._processing_lifecycle.get(message_key)
+        if lifecycle is not None:
+            return lifecycle
+        lifecycle = ProcessingLifecycle()
+        return self._processing_lifecycle.setdefault(message_key, lifecycle)
+
+    def _record_terminal_reaction(self, message_key: str, reaction: str) -> None:
+        self._terminal_reactions[message_key] = reaction
+        self._terminal_reactions.move_to_end(message_key)
+        while len(self._terminal_reactions) > TERMINAL_REACTION_CACHE_SIZE:
+            self._terminal_reactions.popitem(last=False)
+
+    def _cached_terminal_reaction(self, message_key: str) -> str | None:
+        reaction = self._terminal_reactions.get(message_key)
+        if reaction is not None:
+            self._terminal_reactions.move_to_end(message_key)
+        return reaction
+
+    def _cleanup_message_state(self, message_key: str) -> None:
+        lifecycle = self._processing_lifecycle.get(message_key)
+        if lifecycle is None or lifecycle.terminal_reaction is None:
+            return
+        self._processing_lifecycle.pop(message_key, None)
+        lock = self._reaction_locks.get(message_key)
+        if lock is not None and not lock.locked():
+            self._reaction_locks.pop(message_key, None)
+
+    def _track_routing_progress(
+        self, lifecycle: ProcessingLifecycle, result: RoutingResult
+    ) -> None:
+        if result.routed_targets:
+            lifecycle.routed_targets.update(result.routed_targets)
+        elif result.target_butler and result.target_butler != "multi":
+            lifecycle.routed_targets.add(result.target_butler)
+
+        if result.acked_targets:
+            lifecycle.acked_targets.update(result.acked_targets)
+        if result.failed_targets:
+            lifecycle.failed_targets.update(result.failed_targets)
+
+        if (
+            not result.failed_targets
+            and not result.routing_error
+            and not result.classification_error
+            and result.target_butler
+            and result.target_butler != "multi"
+            and not result.acked_targets
+        ):
+            lifecycle.acked_targets.add(result.target_butler)
+
+    async def _update_reaction(
+        self,
+        *,
+        chat_id: str | None,
+        message_id: int | None,
+        message_key: str | None,
+        reaction: str,
+    ) -> None:
+        if chat_id in (None, "") or message_id is None or message_key is None:
+            return
+        if os.environ.get("BUTLER_TELEGRAM_TOKEN", "") == "":
+            return
+        if reaction not in REACTION_TO_EMOJI:
+            return
+
+        terminal_reaction = self._cached_terminal_reaction(message_key)
+        if terminal_reaction is not None:
+            if reaction == REACTION_IN_PROGRESS:
+                return
+            if reaction == terminal_reaction:
+                return
+            return
+
+        lifecycle = self._lifecycle(message_key)
+        if lifecycle.terminal_reaction is not None:
+            if lifecycle.terminal_reaction == reaction:
+                return
+            if reaction == REACTION_IN_PROGRESS:
+                return
+            return
+
+        if reaction in (REACTION_SUCCESS, REACTION_FAILURE):
+            lifecycle.terminal_reaction = reaction
+            self._record_terminal_reaction(message_key, reaction)
+
+        try:
+            await self._set_message_reaction(
+                chat_id=chat_id,
+                message_id=message_id,
+                reaction=reaction,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to set Telegram message reaction",
+                extra={
+                    "source": "telegram",
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reaction": reaction,
+                },
+            )
+
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         """Register identity-prefixed Telegram MCP tools."""
         self._config = (
@@ -279,6 +424,9 @@ class TelegramModule(Module):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        self._processing_lifecycle.clear()
+        self._reaction_locks.clear()
+        self._terminal_reactions.clear()
 
     # ------------------------------------------------------------------
     # Classification pipeline integration
@@ -295,6 +443,8 @@ class TelegramModule(Module):
         no extractable text.
         """
         chat_id = _extract_chat_id(update)
+        message_id = _extract_message_id(update)
+        message_key = _message_tracking_key(update, chat_id=chat_id, message_id=message_id)
         if self._pipeline is None:
             logger.warning(
                 "Skipping Telegram update because no classification pipeline is configured",
@@ -312,35 +462,81 @@ class TelegramModule(Module):
         if not text:
             return None
 
-        # Phase 1: Log receipt
-        message_inbox_id = None
-        db_pool = self._get_db_pool()
-        if db_pool is not None:
-            async with db_pool.acquire() as conn:
-                message_inbox_id = await conn.fetchval(
-                    """
-                    INSERT INTO message_inbox
-                        (source_channel, sender_id, raw_content, raw_metadata, received_at)
-                    VALUES
-                        ($1, $2, $3, $4, $5)
-                    RETURNING id
-                    """,
-                    "telegram",
-                    chat_id,
-                    text,
-                    json.dumps(update),
-                    datetime.now(UTC),
-                )
+        lock = self._message_lock(message_key) if message_key is not None else None
+        if lock is not None:
+            await lock.acquire()
+        try:
+            await self._update_reaction(
+                chat_id=chat_id,
+                message_id=message_id,
+                message_key=message_key,
+                reaction=REACTION_IN_PROGRESS,
+            )
 
-        result = await self._pipeline.process(
-            message_text=text,
-            tool_name="handle_message",
-            tool_args={
-                "source": "telegram",
-                "chat_id": chat_id,
-            },
-            message_inbox_id=message_inbox_id,
-        )
+            # Phase 1: Log receipt
+            message_inbox_id = None
+            db_pool = self._get_db_pool()
+            if db_pool is not None:
+                async with db_pool.acquire() as conn:
+                    message_inbox_id = await conn.fetchval(
+                        """
+                        INSERT INTO message_inbox
+                            (source_channel, sender_id, raw_content, raw_metadata, received_at)
+                        VALUES
+                            ($1, $2, $3, $4, $5)
+                        RETURNING id
+                        """,
+                        "telegram",
+                        chat_id,
+                        text,
+                        json.dumps(update),
+                        datetime.now(UTC),
+                    )
+
+            result = await self._pipeline.process(
+                message_text=text,
+                tool_name="handle_message",
+                tool_args={
+                    "source": "telegram",
+                    "chat_id": chat_id,
+                    "source_id": message_key,
+                },
+                message_inbox_id=message_inbox_id,
+            )
+
+            if message_key is not None:
+                lifecycle = self._lifecycle(message_key)
+                self._track_routing_progress(lifecycle, result)
+                pending_targets = (
+                    lifecycle.routed_targets - lifecycle.acked_targets - lifecycle.failed_targets
+                )
+                if self._result_has_failure(result) or lifecycle.failed_targets:
+                    await self._update_reaction(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        message_key=message_key,
+                        reaction=REACTION_FAILURE,
+                    )
+                elif lifecycle.routed_targets and not pending_targets:
+                    await self._update_reaction(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        message_key=message_key,
+                        reaction=REACTION_SUCCESS,
+                    )
+        except Exception:
+            await self._update_reaction(
+                chat_id=chat_id,
+                message_id=message_id,
+                message_key=message_key,
+                reaction=REACTION_FAILURE,
+            )
+            raise
+        finally:
+            if lock is not None and lock.locked():
+                lock.release()
+            if message_key is not None:
+                self._cleanup_message_state(message_key)
 
         self._routed_messages.append(result)
         logger.info(
@@ -412,6 +608,25 @@ class TelegramModule(Module):
         data: dict[str, Any] = resp.json()
         return data
 
+    async def _set_message_reaction(
+        self, *, chat_id: str, message_id: int, reaction: str
+    ) -> dict[str, Any]:
+        """Call Telegram setMessageReaction API with a mapped lifecycle reaction."""
+        emoji = REACTION_TO_EMOJI[reaction]
+        url = f"{self._base_url()}/setMessageReaction"
+        client = self._get_client()
+        resp = await client.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "reaction": [{"type": "emoji", "emoji": emoji}],
+            },
+        )
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+        return data
+
     async def _poll_loop(self) -> None:
         """Long-polling loop for dev mode.
 
@@ -466,3 +681,30 @@ def _extract_chat_id(update: dict[str, Any]) -> str | None:
             if chat and isinstance(chat, dict):
                 return str(chat.get("id", ""))
     return None
+
+
+def _extract_message_id(update: dict[str, Any]) -> int | None:
+    """Extract Telegram message ID from an update payload."""
+    for key in ("message", "edited_message", "channel_post"):
+        msg = update.get(key)
+        if msg and isinstance(msg, dict):
+            message_id = msg.get("message_id")
+            if message_id is None:
+                continue
+            try:
+                return int(message_id)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _message_tracking_key(
+    update: dict[str, Any], *, chat_id: str | None, message_id: int | None
+) -> str | None:
+    """Build a stable per-message key for lifecycle serialization and tracking."""
+    if chat_id not in (None, "") and message_id is not None:
+        return f"{chat_id}:{message_id}"
+    update_id = update.get("update_id")
+    if update_id is None:
+        return None
+    return f"update:{update_id}"

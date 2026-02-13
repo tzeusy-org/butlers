@@ -38,6 +38,9 @@ class TestRoutingResult:
         assert result.route_result == {}
         assert result.classification_error is None
         assert result.routing_error is None
+        assert result.routed_targets == []
+        assert result.acked_targets == []
+        assert result.failed_targets == []
 
     def test_with_all_fields(self):
         """RoutingResult can be constructed with all fields."""
@@ -46,9 +49,15 @@ class TestRoutingResult:
             route_result={"result": "ok"},
             classification_error=None,
             routing_error=None,
+            routed_targets=["health"],
+            acked_targets=["health"],
+            failed_targets=[],
         )
         assert result.target_butler == "health"
         assert result.route_result == {"result": "ok"}
+        assert result.routed_targets == ["health"]
+        assert result.acked_targets == ["health"]
+        assert result.failed_targets == []
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +95,9 @@ class TestMessagePipelineProcess:
         assert result.route_result == {"result": "handled"}
         assert result.classification_error is None
         assert result.routing_error is None
+        assert result.routed_targets == ["health"]
+        assert result.acked_targets == ["health"]
+        assert result.failed_targets == []
 
     async def test_passes_message_as_tool_arg(self):
         """Pipeline includes message text in the tool_args sent to route."""
@@ -172,6 +184,9 @@ class TestMessagePipelineProcess:
 
         assert result.target_butler == "multi"
         assert result.route_result == {"result": "combined response"}
+        assert result.routed_targets == ["health", "relationship"]
+        assert result.acked_targets == ["health", "relationship"]
+        assert result.failed_targets == []
         assert captured["targets"][0] == {"butler": "health", "prompt": "Log my headache"}
         assert captured["targets"][1] == {
             "butler": "relationship",
@@ -179,6 +194,54 @@ class TestMessagePipelineProcess:
         }
         assert captured["source_channel"] == "telegram"
         assert captured["source_id"] == "msg-1"
+
+    async def test_classification_list_tracks_failed_targets(self, monkeypatch):
+        """Multi-route failures are surfaced in failed target metadata."""
+        import importlib
+
+        async def mock_classify(pool, message, dispatch_fn):
+            return [
+                {"butler": "health", "prompt": "Log this"},
+                {"butler": "general", "prompt": "Fallback"},
+            ]
+
+        async def mock_dispatch_decomposed(
+            pool: Any,
+            targets: list[dict[str, str]],
+            source_channel: str = "switchboard",
+            source_id: str | None = None,
+            *,
+            call_fn: Any | None = None,
+        ) -> list[dict[str, Any]]:
+            return [
+                {"butler": "health", "result": "ok", "error": None},
+                {"butler": "general", "result": None, "error": "ConnectionError: timeout"},
+            ]
+
+        def mock_aggregate_responses(
+            results: list[dict[str, Any]],
+            *,
+            dispatch_fn: Any | None = None,
+        ) -> str:
+            return "partial response"
+
+        switchboard = importlib.import_module("butlers.tools.switchboard")
+        monkeypatch.setattr(switchboard, "dispatch_decomposed", mock_dispatch_decomposed)
+        monkeypatch.setattr(switchboard, "aggregate_responses", mock_aggregate_responses)
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            classify_fn=mock_classify,
+        )
+
+        result = await pipeline.process("test fanout")
+
+        assert result.target_butler == "multi"
+        assert result.routed_targets == ["health", "general"]
+        assert result.acked_targets == ["health"]
+        assert result.failed_targets == ["general"]
+        assert "ConnectionError" in (result.routing_error or "")
 
     async def test_passes_tool_name_to_route(self):
         """Pipeline passes the specified tool_name to route()."""
@@ -339,6 +402,33 @@ class TestMessagePipelineProcess:
         assert result.target_butler == "health"
         assert result.routing_error is not None
         assert "ConnectionError" in result.routing_error
+        assert result.routed_targets == ["health"]
+        assert result.acked_targets == []
+        assert result.failed_targets == ["health"]
+
+    async def test_routing_returned_error_records_failure(self):
+        """route() error payloads are treated as failures."""
+
+        async def mock_classify(pool, message, dispatch_fn):
+            return "health"
+
+        async def route_with_error(pool, target, tool_name, args, source):
+            return {"error": "ConnectionError: target unavailable"}
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            classify_fn=mock_classify,
+            route_fn=route_with_error,
+        )
+
+        result = await pipeline.process("help me")
+
+        assert result.target_butler == "health"
+        assert result.routing_error == "ConnectionError: target unavailable"
+        assert result.routed_targets == ["health"]
+        assert result.acked_targets == []
+        assert result.failed_targets == ["health"]
 
     async def test_default_tool_name(self):
         """Default tool_name is 'handle_message'."""
