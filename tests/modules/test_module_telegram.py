@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -606,6 +607,66 @@ class TestPipelineIntegration:
         calls = telegram_module._set_message_reaction.await_args_list
         reactions = [call.kwargs["reaction"] for call in calls]
         assert reactions == [":eye", ":space invader"]
+
+    async def test_reaction_lifecycle_failure_400_logs_warning_without_exception_trace(
+        self, telegram_module: TelegramModule, monkeypatch, caplog
+    ):
+        """Expected Telegram 400 reaction errors log warning context, not stack traces."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        response = httpx.Response(
+            status_code=400,
+            json={
+                "ok": False,
+                "error_code": 400,
+                "description": "Bad Request: chosen reaction is not available",
+            },
+            request=httpx.Request("POST", "https://api.telegram.org/test/setMessageReaction"),
+        )
+        set_reaction_error = httpx.HTTPStatusError(
+            "Client error '400 Bad Request'",
+            request=response.request,
+            response=response,
+        )
+        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[{"ok": True}, set_reaction_error]
+        )
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.process = AsyncMock(
+            return_value=RoutingResult(
+                target_butler="multi",
+                route_result={"result": "partial"},
+                routing_error="general: ConnectionError: timeout",
+                routed_targets=["health", "general"],
+                acked_targets=["health"],
+                failed_targets=["general"],
+            )
+        )
+        telegram_module.set_pipeline(mock_pipeline)
+
+        update = {
+            "update_id": 306,
+            "message": {
+                "message_id": 100,
+                "text": "Fanout with error",
+                "chat": {"id": 333},
+            },
+        }
+
+        with caplog.at_level(logging.WARNING, logger=telegram_module_impl.__name__):
+            await telegram_module.process_update(update)
+
+        warning_records = [
+            record
+            for record in caplog.records
+            if record.message == "Telegram rejected message reaction; skipping lifecycle reaction update"
+        ]
+        assert len(warning_records) == 1
+        assert warning_records[0].telegram_error == "Bad Request: chosen reaction is not available"
+        assert not any(
+            record.message == "Failed to set Telegram message reaction"
+            for record in caplog.records
+        )
 
     async def test_terminal_reaction_does_not_regress_to_in_progress(
         self, telegram_module: TelegramModule, monkeypatch

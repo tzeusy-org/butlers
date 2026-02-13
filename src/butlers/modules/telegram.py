@@ -76,6 +76,7 @@ class TelegramBotCredentialsConfig(BaseModel):
 
 REACTION_IN_PROGRESS = ":eye"
 REACTION_SUCCESS = ":done"
+# Lifecycle labels are internal keys; Telegram receives the mapped Unicode emoji.
 REACTION_FAILURE = ":space invader"
 REACTION_TO_EMOJI = {
     REACTION_IN_PROGRESS: "\U0001f440",
@@ -83,6 +84,34 @@ REACTION_TO_EMOJI = {
     REACTION_FAILURE: "\U0001f47e",
 }
 TERMINAL_REACTION_CACHE_SIZE = 2048
+_REACTION_ERROR_HINTS = ("reaction", "react", "emoji")
+
+
+def _telegram_error_description(response: httpx.Response | None) -> str | None:
+    """Extract Telegram API error description from a response payload."""
+    if response is None:
+        return None
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    description = payload.get("description")
+    if not isinstance(description, str):
+        return None
+    normalized = description.strip()
+    return normalized or None
+
+
+def _is_expected_reaction_rejection(exc: httpx.HTTPStatusError) -> bool:
+    """Return True for expected Telegram reaction-availability 400 responses."""
+    response = exc.response
+    if response is None or response.status_code != 400:
+        return False
+    description = _telegram_error_description(response)
+    if description is None:
+        return False
+    lowered = description.lower()
+    return any(hint in lowered for hint in _REACTION_ERROR_HINTS)
 
 
 @dataclass
@@ -348,6 +377,32 @@ class TelegramModule(Module):
                 chat_id=chat_id,
                 message_id=message_id,
                 reaction=reaction,
+            )
+        except httpx.HTTPStatusError as exc:
+            telegram_error = _telegram_error_description(exc.response)
+            if _is_expected_reaction_rejection(exc):
+                logger.warning(
+                    "Telegram rejected message reaction; skipping lifecycle reaction update",
+                    extra={
+                        "source": "telegram",
+                        "chat_id": chat_id,
+                        "message_id": message_id,
+                        "reaction": reaction,
+                        "status_code": exc.response.status_code if exc.response is not None else None,
+                        "telegram_error": telegram_error,
+                    },
+                )
+                return
+            logger.exception(
+                "Failed to set Telegram message reaction",
+                extra={
+                    "source": "telegram",
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "reaction": reaction,
+                    "status_code": exc.response.status_code if exc.response is not None else None,
+                    "telegram_error": telegram_error,
+                },
             )
         except Exception:
             logger.exception(
