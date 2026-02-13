@@ -543,26 +543,6 @@ class TelegramModule(Module):
                 reaction=REACTION_IN_PROGRESS,
             )
 
-            # Phase 1: Log receipt
-            message_inbox_id = None
-            db_pool = self._get_db_pool()
-            if db_pool is not None:
-                async with db_pool.acquire() as conn:
-                    message_inbox_id = await conn.fetchval(
-                        """
-                        INSERT INTO message_inbox
-                            (source_channel, sender_id, raw_content, raw_metadata, received_at)
-                        VALUES
-                            ($1, $2, $3, $4, $5)
-                        RETURNING id
-                        """,
-                        "telegram",
-                        chat_id,
-                        text,
-                        json.dumps(update),
-                        datetime.now(UTC),
-                    )
-
             result = await self._pipeline.process(
                 message_text=text,
                 tool_name="bot_telegram_handle_message",
@@ -570,11 +550,15 @@ class TelegramModule(Module):
                     "source": "telegram",
                     "source_channel": "telegram",
                     "source_identity": "bot",
+                    "source_endpoint_identity": "telegram:bot",
+                    "sender_identity": _extract_sender_identity(update, fallback=chat_id),
+                    "external_event_id": _extract_update_id(update),
+                    "external_thread_id": chat_id,
                     "source_tool": "bot_telegram_get_updates",
                     "chat_id": chat_id,
                     "source_id": message_key,
+                    "raw_metadata": update,
                 },
-                message_inbox_id=message_inbox_id,
             )
 
             if message_key is not None:

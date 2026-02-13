@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import json
 import logging
 import re
 import shutil
@@ -80,6 +81,7 @@ from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.base import Module, ToolIODescriptor
 from butlers.modules.pipeline import MessagePipeline
 from butlers.modules.registry import ModuleRegistry, default_registry
+from butlers.tools.switchboard.routing.contracts import parse_notify_request, parse_route_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "status",
         "trigger",
+        "route.execute",
         "tick",
         "state_get",
         "state_set",
@@ -175,6 +178,13 @@ class ModuleToolValidationError(ValueError):
 
 
 _TOOL_NAME_RE = re.compile(r"^(user|bot)_[a-z0-9_]+_[a-z0-9_]+$")
+_ROUTE_ERROR_RETRYABLE: dict[str, bool] = {
+    "validation_error": False,
+    "target_unavailable": True,
+    "timeout": True,
+    "overload_rejected": True,
+    "internal_error": False,
+}
 
 
 def _validate_tool_name(name: str, module_name: str, *, context: str = "registered tool") -> None:
@@ -185,6 +195,45 @@ def _validate_tool_name(name: str, module_name: str, *, context: str = "register
         f"Module '{module_name}' has invalid {context} name '{name}'. "
         "Expected 'user_<channel>_<action>' or 'bot_<channel>_<action>'."
     )
+
+
+def _format_validation_error(prefix: str, exc: ValidationError) -> str:
+    """Build a deterministic single-line validation error summary."""
+    errors = exc.errors()
+    if not errors:
+        return prefix
+
+    first = errors[0]
+    location = ".".join(str(part) for part in first.get("loc", ()))
+    message = str(first.get("msg") or "invalid value")
+    if location:
+        return f"{prefix} ({location}): {message}"
+    return f"{prefix}: {message}"
+
+
+def _extract_delivery_id(
+    *,
+    channel: str,
+    adapter_result: Any,
+    fallback_request_id: str | None,
+) -> str:
+    """Derive a stable delivery identifier from adapter output."""
+    if isinstance(adapter_result, dict):
+        for key in ("delivery_id", "message_id", "id", "thread_id"):
+            value = adapter_result.get(key)
+            if value not in (None, ""):
+                return str(value)
+
+        nested = adapter_result.get("result")
+        if isinstance(nested, dict):
+            for key in ("delivery_id", "message_id", "id"):
+                value = nested.get(key)
+                if value not in (None, ""):
+                    return str(value)
+
+    if fallback_request_id:
+        return f"{channel}:{fallback_request_id}"
+    return f"{channel}:{uuid.uuid4()}"
 
 
 def _flatten_config_for_secret_scan(config: ButlerConfig) -> dict[str, Any]:
@@ -486,6 +535,7 @@ class ButlerDaemon:
             switchboard_pool=pool,
             dispatch_fn=self.spawner.trigger,
             source_butler="switchboard",
+            enable_ingress_dedupe=True,
         )
 
         wired_modules: list[str] = []
@@ -681,6 +731,376 @@ class ButlerDaemon:
                 "error": result.error,
                 "duration_ms": result.duration_ms,
             }
+
+        @mcp.tool(name="route.execute")
+        @tool_span("route.execute", butler_name=butler_name)
+        async def route_execute(
+            schema_version: str,
+            request_context: dict[str, Any],
+            input: dict[str, Any],
+            subrequest: dict[str, Any] | None = None,
+            target: dict[str, Any] | None = None,
+            source_metadata: dict[str, Any] | None = None,
+            trace_context: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            """Execute routed requests and terminate messenger notify deliveries."""
+            started_at = time.monotonic()
+
+            def _elapsed_ms() -> int:
+                return int((time.monotonic() - started_at) * 1000)
+
+            def _route_error_response(
+                *,
+                context_payload: dict[str, Any] | None,
+                error_class: str,
+                message: str,
+                notify_response: dict[str, Any] | None = None,
+            ) -> dict[str, Any]:
+                retryable = _ROUTE_ERROR_RETRYABLE.get(error_class, False)
+                response: dict[str, Any] = {
+                    "schema_version": "route_response.v1",
+                    "status": "error",
+                    "error": {
+                        "class": error_class,
+                        "message": message,
+                        "retryable": retryable,
+                    },
+                    "timing": {"duration_ms": _elapsed_ms()},
+                }
+                if context_payload is not None:
+                    response["request_context"] = context_payload
+                if notify_response is not None:
+                    response["result"] = {"notify_response": notify_response}
+                return response
+
+            def _route_success_response(
+                *,
+                context_payload: dict[str, Any],
+                result_payload: dict[str, Any],
+            ) -> dict[str, Any]:
+                return {
+                    "schema_version": "route_response.v1",
+                    "request_context": context_payload,
+                    "status": "ok",
+                    "result": result_payload,
+                    "timing": {"duration_ms": _elapsed_ms()},
+                }
+
+            def _notify_error_response(
+                *,
+                request_id: str | None,
+                channel: str | None,
+                error_class: str,
+                message: str,
+            ) -> dict[str, Any]:
+                notify_payload: dict[str, Any] = {
+                    "schema_version": "notify_response.v1",
+                    "status": "error",
+                    "error": {
+                        "class": error_class,
+                        "message": message,
+                        "retryable": _ROUTE_ERROR_RETRYABLE.get(error_class, False),
+                    },
+                }
+                if request_id is not None:
+                    notify_payload["request_context"] = {"request_id": request_id}
+                if channel is not None:
+                    notify_payload["delivery"] = {"channel": channel}
+                return notify_payload
+
+            route_payload: dict[str, Any] = {
+                "schema_version": schema_version,
+                "request_context": request_context,
+                "input": input,
+            }
+            if subrequest is not None:
+                route_payload["subrequest"] = subrequest
+            if target is not None:
+                route_payload["target"] = target
+            if source_metadata is not None:
+                route_payload["source_metadata"] = source_metadata
+            if trace_context is not None:
+                route_payload["trace_context"] = trace_context
+
+            try:
+                parsed_route = parse_route_envelope(route_payload)
+            except ValidationError as exc:
+                return _route_error_response(
+                    context_payload=request_context if isinstance(request_context, dict) else None,
+                    error_class="validation_error",
+                    message=_format_validation_error("Invalid route.v1 envelope", exc),
+                )
+
+            route_context = parsed_route.request_context.model_dump(mode="json")
+            route_request_id = str(parsed_route.request_context.request_id)
+
+            if daemon.config.name != "messenger":
+                context_text: str | None = None
+                if isinstance(parsed_route.input.context, dict):
+                    context_text = json.dumps(parsed_route.input.context, ensure_ascii=False)
+                elif isinstance(parsed_route.input.context, str):
+                    context_text = parsed_route.input.context
+                try:
+                    trigger_result = await spawner.trigger(
+                        prompt=parsed_route.input.prompt,
+                        context=context_text,
+                        trigger_source="trigger",
+                    )
+                except TimeoutError as exc:
+                    return _route_error_response(
+                        context_payload=route_context,
+                        error_class="timeout",
+                        message=f"Routed execution timed out: {exc}",
+                    )
+                except Exception as exc:
+                    return _route_error_response(
+                        context_payload=route_context,
+                        error_class="internal_error",
+                        message=f"Routed execution failed: {exc}",
+                    )
+
+                return _route_success_response(
+                    context_payload=route_context,
+                    result_payload={
+                        "output": trigger_result.output,
+                        "success": trigger_result.success,
+                        "error": trigger_result.error,
+                        "duration_ms": trigger_result.duration_ms,
+                    },
+                )
+
+            input_context = parsed_route.input.context
+            if not isinstance(input_context, dict):
+                message = "Missing input.context.notify_request in messenger route.execute request."
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class="validation_error",
+                    message=message,
+                    notify_response=_notify_error_response(
+                        request_id=route_request_id,
+                        channel=None,
+                        error_class="validation_error",
+                        message=message,
+                    ),
+                )
+
+            raw_notify_request = input_context.get("notify_request")
+            if not isinstance(raw_notify_request, dict):
+                message = "Missing input.context.notify_request in messenger route.execute request."
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class="validation_error",
+                    message=message,
+                    notify_response=_notify_error_response(
+                        request_id=route_request_id,
+                        channel=None,
+                        error_class="validation_error",
+                        message=message,
+                    ),
+                )
+
+            try:
+                notify_request = parse_notify_request(raw_notify_request)
+            except ValidationError as exc:
+                message = _format_validation_error("Invalid notify.v1 request", exc)
+                channel = None
+                if isinstance(raw_notify_request.get("delivery"), dict):
+                    raw_channel = raw_notify_request["delivery"].get("channel")
+                    if isinstance(raw_channel, str) and raw_channel.strip():
+                        channel = raw_channel.strip()
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class="validation_error",
+                    message=message,
+                    notify_response=_notify_error_response(
+                        request_id=route_request_id,
+                        channel=channel,
+                        error_class="validation_error",
+                        message=message,
+                    ),
+                )
+
+            channel = notify_request.delivery.channel
+            intent = notify_request.delivery.intent
+            message_text = notify_request.delivery.message
+            origin = notify_request.origin_butler
+            notify_context = notify_request.request_context
+            notify_request_id = (
+                str(notify_context.request_id) if notify_context is not None else route_request_id
+            )
+            notify_prefix = f"[{origin}]"
+            modules_by_name = {module.name: module for module in daemon._modules}
+
+            try:
+                if channel == "telegram":
+                    telegram_module = modules_by_name.get("telegram")
+                    if telegram_module is None:
+                        raise RuntimeError("Messenger telegram adapter is unavailable.")
+
+                    rendered_text = (
+                        message_text
+                        if message_text.lstrip().startswith(notify_prefix)
+                        else f"{notify_prefix} {message_text}"
+                    )
+                    if intent == "send":
+                        recipient = notify_request.delivery.recipient
+                        if not recipient:
+                            raise ValueError(
+                                "notify_request.delivery.recipient is required for send intent."
+                            )
+                        adapter_result = await telegram_module._send_message(recipient, rendered_text)
+                    else:
+                        thread_identity = (
+                            notify_context.source_thread_identity if notify_context else None
+                        )
+                        if not thread_identity:
+                            raise ValueError(
+                                "notify_request.request_context.source_thread_identity is required "
+                                "for telegram reply intent."
+                            )
+                        chat_id, separator, message_id_raw = thread_identity.partition(":")
+                        if not chat_id or not separator or not message_id_raw:
+                            raise ValueError(
+                                "Telegram reply requires source_thread_identity formatted as "
+                                "'<chat_id>:<message_id>'."
+                            )
+                        try:
+                            reply_message_id = int(message_id_raw)
+                        except ValueError as exc:
+                            raise ValueError(
+                                "Telegram reply source_thread_identity must include an integer "
+                                "message_id."
+                            ) from exc
+                        adapter_result = await telegram_module._reply_to_message(
+                            chat_id, reply_message_id, rendered_text
+                        )
+
+                elif channel == "email":
+                    email_module = modules_by_name.get("email")
+                    if email_module is None:
+                        raise RuntimeError("Messenger email adapter is unavailable.")
+
+                    raw_subject = notify_request.delivery.subject or "Notification"
+                    normalized_subject = (
+                        raw_subject
+                        if notify_prefix.lower() in raw_subject.lower()
+                        else f"{notify_prefix} {raw_subject}"
+                    )
+                    if intent == "send":
+                        recipient = notify_request.delivery.recipient
+                        if not recipient:
+                            raise ValueError(
+                                "notify_request.delivery.recipient is required for send intent."
+                            )
+                        adapter_result = await email_module._send_email(
+                            recipient,
+                            normalized_subject,
+                            message_text,
+                        )
+                    else:
+                        if notify_context is None:
+                            raise ValueError(
+                                "notify_request.request_context is required for reply intent."
+                            )
+                        thread_id = notify_context.source_thread_identity or notify_request_id
+                        adapter_result = await email_module._reply_to_thread(
+                            notify_context.source_sender_identity,
+                            thread_id,
+                            message_text,
+                            normalized_subject,
+                        )
+
+                else:
+                    raise ValueError(f"Unsupported notify channel: {channel}")
+
+            except ValueError as exc:
+                error_message = str(exc)
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class="validation_error",
+                    message=error_message,
+                    notify_response=_notify_error_response(
+                        request_id=notify_request_id,
+                        channel=channel,
+                        error_class="validation_error",
+                        message=error_message,
+                    ),
+                )
+            except TimeoutError as exc:
+                error_message = f"Delivery timed out: {exc}"
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class="timeout",
+                    message=error_message,
+                    notify_response=_notify_error_response(
+                        request_id=notify_request_id,
+                        channel=channel,
+                        error_class="timeout",
+                        message=error_message,
+                    ),
+                )
+            except (ConnectionError, OSError) as exc:
+                error_message = f"Delivery target unavailable: {exc}"
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class="target_unavailable",
+                    message=error_message,
+                    notify_response=_notify_error_response(
+                        request_id=notify_request_id,
+                        channel=channel,
+                        error_class="target_unavailable",
+                        message=error_message,
+                    ),
+                )
+            except RuntimeError as exc:
+                lowered = str(exc).lower()
+                if "overload" in lowered or "queue full" in lowered:
+                    error_class = "overload_rejected"
+                else:
+                    error_class = "target_unavailable"
+                error_message = str(exc)
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class=error_class,
+                    message=error_message,
+                    notify_response=_notify_error_response(
+                        request_id=notify_request_id,
+                        channel=channel,
+                        error_class=error_class,
+                        message=error_message,
+                    ),
+                )
+            except Exception as exc:
+                error_message = f"Messenger delivery failed: {exc}"
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class="internal_error",
+                    message=error_message,
+                    notify_response=_notify_error_response(
+                        request_id=notify_request_id,
+                        channel=channel,
+                        error_class="internal_error",
+                        message=error_message,
+                    ),
+                )
+
+            notify_response = {
+                "schema_version": "notify_response.v1",
+                "request_context": {"request_id": notify_request_id},
+                "status": "ok",
+                "delivery": {
+                    "channel": channel,
+                    "delivery_id": _extract_delivery_id(
+                        channel=channel,
+                        adapter_result=adapter_result,
+                        fallback_request_id=notify_request_id,
+                    ),
+                },
+            }
+            return _route_success_response(
+                context_payload=route_context,
+                result_payload={"notify_response": notify_response},
+            )
 
         @mcp.tool()
         async def tick() -> dict:

@@ -374,9 +374,11 @@ class TestCoreToolRegistration:
         # Create a mock FastMCP that captures tool registrations
         mock_mcp = MagicMock()
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
             def decorator(fn):
-                registered_tools.append(fn.__name__)
+                registered_tools.append(declared_name or fn.__name__)
                 return fn
 
             return decorator
@@ -416,7 +418,7 @@ class TestTriggerToolDispatch:
 
         mock_mcp = MagicMock()
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **_decorator_kwargs):
             def decorator(fn):
                 nonlocal trigger_fn
                 if fn.__name__ == "trigger":
@@ -903,7 +905,7 @@ class TestStatusTool:
 
         mock_mcp = MagicMock()
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **_decorator_kwargs):
             def decorator(fn):
                 nonlocal status_fn
                 if fn.__name__ == "status":
@@ -949,7 +951,7 @@ class TestStatusTool:
 
         mock_mcp = MagicMock()
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **_decorator_kwargs):
             def decorator(fn):
                 nonlocal status_fn
                 if fn.__name__ == "status":
@@ -989,7 +991,7 @@ class TestHealthCheck:
         status_fn = None
         mock_mcp = MagicMock()
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **_decorator_kwargs):
             def decorator(fn):
                 nonlocal status_fn
                 if fn.__name__ == "status":
@@ -2260,7 +2262,7 @@ class TestNotifyTool:
         notify_fn = None
         mock_mcp = MagicMock()
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **_decorator_kwargs):
             def decorator(fn):
                 nonlocal notify_fn
                 if fn.__name__ == "notify":
@@ -2560,3 +2562,383 @@ class TestNotifyTool:
         assert result["status"] == "error"
         assert "unreachable" in result["error"].lower()
         assert "Network is down" in result["error"]
+
+
+class TestRouteExecuteTool:
+    """Verify route.execute core MCP behavior, including messenger notify termination."""
+
+    @staticmethod
+    def _route_request_context() -> dict[str, Any]:
+        return {
+            "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+            "received_at": "2026-02-14T00:00:00Z",
+            "source_channel": "mcp",
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": "health",
+        }
+
+    @staticmethod
+    def _messenger_butler_dir(tmp_path: Path) -> Path:
+        return _make_butler_toml(
+            tmp_path,
+            butler_name="messenger",
+            modules={"telegram": {}, "email": {}},
+        )
+
+    async def _start_daemon_with_route_execute(self, butler_dir: Path, patches: dict):
+        route_execute_fn = None
+        mock_mcp = MagicMock()
+
+        def tool_decorator(*_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
+            def decorator(fn):
+                nonlocal route_execute_fn
+                resolved_name = declared_name or fn.__name__
+                if resolved_name == "route.execute":
+                    route_execute_fn = fn
+                return fn
+
+            return decorator
+
+        mock_mcp.tool = tool_decorator
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patch("butlers.daemon.FastMCP", return_value=mock_mcp),
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir)
+            await daemon.start()
+
+        return daemon, route_execute_fn
+
+    async def test_rejects_missing_notify_request(self, tmp_path: Path) -> None:
+        patches = _patch_infra()
+        butler_dir = self._messenger_butler_dir(tmp_path)
+        _, route_execute_fn = await self._start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=self._route_request_context(),
+            input={"prompt": "Deliver.", "context": {}},
+        )
+
+        assert result["schema_version"] == "route_response.v1"
+        assert result["status"] == "error"
+        assert result["error"]["class"] == "validation_error"
+        assert result["error"]["retryable"] is False
+        assert result["result"]["notify_response"]["status"] == "error"
+        assert result["result"]["notify_response"]["error"]["class"] == "validation_error"
+
+    async def test_notify_send_success_returns_normalized_notify_response(
+        self, tmp_path: Path
+    ) -> None:
+        patches = _patch_infra()
+        butler_dir = self._messenger_butler_dir(tmp_path)
+        daemon, route_execute_fn = await self._start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        telegram_module = next(module for module in daemon._modules if module.name == "telegram")
+        telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=self._route_request_context(),
+            input={
+                "prompt": "Deliver.",
+                "context": {
+                    "notify_request": {
+                        "schema_version": "notify.v1",
+                        "origin_butler": "health",
+                        "delivery": {
+                            "intent": "send",
+                            "channel": "telegram",
+                            "message": "Take your medication.",
+                            "recipient": "12345",
+                        },
+                    }
+                },
+            },
+        )
+
+        telegram_module._send_message.assert_awaited_once_with(
+            "12345",
+            "[health] Take your medication.",
+        )
+        assert result["schema_version"] == "route_response.v1"
+        assert result["status"] == "ok"
+        notify_response = result["result"]["notify_response"]
+        assert notify_response["schema_version"] == "notify_response.v1"
+        assert notify_response["status"] == "ok"
+        assert notify_response["delivery"]["channel"] == "telegram"
+        assert notify_response["delivery"]["delivery_id"] == "321"
+
+    async def test_notify_target_resolution_failure_returns_validation_error(
+        self, tmp_path: Path
+    ) -> None:
+        patches = _patch_infra()
+        butler_dir = self._messenger_butler_dir(tmp_path)
+        _, route_execute_fn = await self._start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=self._route_request_context(),
+            input={
+                "prompt": "Deliver.",
+                "context": {
+                    "notify_request": {
+                        "schema_version": "notify.v1",
+                        "origin_butler": "health",
+                        "delivery": {
+                            "intent": "send",
+                            "channel": "email",
+                            "message": "Your report is ready.",
+                        },
+                    }
+                },
+            },
+        )
+
+        assert result["status"] == "error"
+        assert result["error"]["class"] == "validation_error"
+        assert result["error"]["retryable"] is False
+        assert result["result"]["notify_response"]["error"]["class"] == "validation_error"
+        assert result["result"]["notify_response"]["error"]["retryable"] is False
+
+    async def test_retryable_provider_failure_maps_to_target_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        patches = _patch_infra()
+        butler_dir = self._messenger_butler_dir(tmp_path)
+        daemon, route_execute_fn = await self._start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        telegram_module = next(module for module in daemon._modules if module.name == "telegram")
+        telegram_module._send_message = AsyncMock(side_effect=ConnectionError("provider down"))
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=self._route_request_context(),
+            input={
+                "prompt": "Deliver.",
+                "context": {
+                    "notify_request": {
+                        "schema_version": "notify.v1",
+                        "origin_butler": "health",
+                        "delivery": {
+                            "intent": "send",
+                            "channel": "telegram",
+                            "message": "Hello",
+                            "recipient": "12345",
+                        },
+                    }
+                },
+            },
+        )
+
+        assert result["status"] == "error"
+        assert result["error"]["class"] == "target_unavailable"
+        assert result["error"]["retryable"] is True
+        assert result["result"]["notify_response"]["error"]["class"] == "target_unavailable"
+        assert result["result"]["notify_response"]["error"]["retryable"] is True
+
+
+class TestRouteExecuteTool:
+    """Verify route.execute core MCP behavior, including messenger notify termination."""
+
+    @staticmethod
+    def _route_request_context() -> dict[str, Any]:
+        return {
+            "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+            "received_at": "2026-02-14T00:00:00Z",
+            "source_channel": "mcp",
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": "health",
+        }
+
+    @staticmethod
+    def _messenger_butler_dir(tmp_path: Path) -> Path:
+        return _make_butler_toml(
+            tmp_path,
+            butler_name="messenger",
+            modules={"telegram": {}, "email": {}},
+        )
+
+    async def _start_daemon_with_route_execute(self, butler_dir: Path, patches: dict):
+        route_execute_fn = None
+        mock_mcp = MagicMock()
+
+        def tool_decorator(*_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
+            def decorator(fn):
+                nonlocal route_execute_fn
+                resolved_name = declared_name or fn.__name__
+                if resolved_name == "route.execute":
+                    route_execute_fn = fn
+                return fn
+
+            return decorator
+
+        mock_mcp.tool = tool_decorator
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patch("butlers.daemon.FastMCP", return_value=mock_mcp),
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir)
+            await daemon.start()
+
+        return daemon, route_execute_fn
+
+    async def test_rejects_missing_notify_request(self, tmp_path: Path) -> None:
+        patches = _patch_infra()
+        butler_dir = self._messenger_butler_dir(tmp_path)
+        _, route_execute_fn = await self._start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=self._route_request_context(),
+            input={"prompt": "Deliver.", "context": {}},
+        )
+
+        assert result["schema_version"] == "route_response.v1"
+        assert result["status"] == "error"
+        assert result["error"]["class"] == "validation_error"
+        assert result["error"]["retryable"] is False
+        assert result["result"]["notify_response"]["status"] == "error"
+        assert result["result"]["notify_response"]["error"]["class"] == "validation_error"
+
+    async def test_notify_send_success_returns_normalized_notify_response(
+        self, tmp_path: Path
+    ) -> None:
+        patches = _patch_infra()
+        butler_dir = self._messenger_butler_dir(tmp_path)
+        daemon, route_execute_fn = await self._start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        telegram_module = next(module for module in daemon._modules if module.name == "telegram")
+        telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=self._route_request_context(),
+            input={
+                "prompt": "Deliver.",
+                "context": {
+                    "notify_request": {
+                        "schema_version": "notify.v1",
+                        "origin_butler": "health",
+                        "delivery": {
+                            "intent": "send",
+                            "channel": "telegram",
+                            "message": "Take your medication.",
+                            "recipient": "12345",
+                        },
+                    }
+                },
+            },
+        )
+
+        telegram_module._send_message.assert_awaited_once_with(
+            "12345",
+            "[health] Take your medication.",
+        )
+        assert result["schema_version"] == "route_response.v1"
+        assert result["status"] == "ok"
+        notify_response = result["result"]["notify_response"]
+        assert notify_response["schema_version"] == "notify_response.v1"
+        assert notify_response["status"] == "ok"
+        assert notify_response["delivery"]["channel"] == "telegram"
+        assert notify_response["delivery"]["delivery_id"] == "321"
+
+    async def test_notify_target_resolution_failure_returns_validation_error(
+        self, tmp_path: Path
+    ) -> None:
+        patches = _patch_infra()
+        butler_dir = self._messenger_butler_dir(tmp_path)
+        _, route_execute_fn = await self._start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=self._route_request_context(),
+            input={
+                "prompt": "Deliver.",
+                "context": {
+                    "notify_request": {
+                        "schema_version": "notify.v1",
+                        "origin_butler": "health",
+                        "delivery": {
+                            "intent": "send",
+                            "channel": "email",
+                            "message": "Your report is ready.",
+                        },
+                    }
+                },
+            },
+        )
+
+        assert result["status"] == "error"
+        assert result["error"]["class"] == "validation_error"
+        assert result["error"]["retryable"] is False
+        assert result["result"]["notify_response"]["error"]["class"] == "validation_error"
+        assert result["result"]["notify_response"]["error"]["retryable"] is False
+
+    async def test_retryable_provider_failure_maps_to_target_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        patches = _patch_infra()
+        butler_dir = self._messenger_butler_dir(tmp_path)
+        daemon, route_execute_fn = await self._start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        telegram_module = next(module for module in daemon._modules if module.name == "telegram")
+        telegram_module._send_message = AsyncMock(side_effect=ConnectionError("provider down"))
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=self._route_request_context(),
+            input={
+                "prompt": "Deliver.",
+                "context": {
+                    "notify_request": {
+                        "schema_version": "notify.v1",
+                        "origin_butler": "health",
+                        "delivery": {
+                            "intent": "send",
+                            "channel": "telegram",
+                            "message": "Hello",
+                            "recipient": "12345",
+                        },
+                    }
+                },
+            },
+        )
+
+        assert result["status"] == "error"
+        assert result["error"]["class"] == "target_unavailable"
+        assert result["error"]["retryable"] is True
+        assert result["result"]["notify_response"]["error"]["class"] == "target_unavailable"
+        assert result["result"]["notify_response"]["error"]["retryable"] is True

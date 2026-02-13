@@ -207,9 +207,11 @@ class TestCoreToolSpans:
 
         mock_mcp = MagicMock()
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
             def decorator(fn):
-                tool_fns[fn.__name__] = fn
+                tool_fns[declared_name or fn.__name__] = fn
                 return fn
 
             return decorator
@@ -381,9 +383,11 @@ class TestSpanWrappingMCP:
         mock_mcp = MagicMock()
         registered_fns = {}
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
             def decorator(fn):
-                registered_fns[fn.__name__] = fn
+                registered_fns[declared_name or fn.__name__] = fn
                 return fn
 
             return decorator
@@ -411,9 +415,11 @@ class TestSpanWrappingMCP:
         mock_mcp = MagicMock()
         registered_fns = {}
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
             def decorator(fn):
-                registered_fns[fn.__name__] = fn
+                registered_fns[declared_name or fn.__name__] = fn
                 return fn
 
             return decorator
@@ -434,9 +440,11 @@ class TestSpanWrappingMCP:
         mock_mcp = MagicMock()
         registered_fns = {}
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
             def decorator(fn):
-                registered_fns[fn.__name__] = fn
+                registered_fns[declared_name or fn.__name__] = fn
                 return fn
 
             return decorator
@@ -475,9 +483,11 @@ class TestModuleToolSpans:
 
         mock_mcp = MagicMock()
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
             def decorator(fn):
-                tool_fns[fn.__name__] = fn
+                tool_fns[declared_name or fn.__name__] = fn
                 return fn
 
             return decorator

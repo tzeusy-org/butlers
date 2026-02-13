@@ -153,10 +153,13 @@ def _make_mock_mcp(tools: dict[str, Any] | None = None) -> MagicMock:
 
     mock_mcp._tool_manager.get_tools.return_value = _tools_dict
 
-    def tool_decorator():
+    def tool_decorator(*_decorator_args, **decorator_kwargs):
+        declared_name = decorator_kwargs.get("name")
+
         def decorator(fn):
-            _tools_dict[fn.__name__] = FakeTool(fn.__name__, fn)
-            tools[fn.__name__] = fn
+            tool_name = declared_name or fn.__name__
+            _tools_dict[tool_name] = FakeTool(tool_name, fn)
+            tools[tool_name] = fn
             return fn
 
         return decorator

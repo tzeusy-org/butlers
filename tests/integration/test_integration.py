@@ -321,9 +321,11 @@ class TestButlerStartupIntegration:
         registered_tools: list[str] = []
         mock_mcp = MagicMock()
 
-        def tool_decorator():
+        def tool_decorator(*_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
             def decorator(fn):
-                registered_tools.append(fn.__name__)
+                registered_tools.append(declared_name or fn.__name__)
                 return fn
 
             return decorator
