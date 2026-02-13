@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from opentelemetry import trace
@@ -977,6 +978,7 @@ async def test_dispatch_decomposed_single_target(pool):
     rows = await pool.fetch("SELECT * FROM routing_log")
     assert len(rows) == 1
     assert rows[0]["target_butler"] == "health"
+    assert rows[0]["tool_name"] == "bot_switchboard_handle_message"
     assert rows[0]["success"] is True
 
 
@@ -1178,6 +1180,52 @@ async def test_dispatch_decomposed_passes_source_id(pool):
     assert len(captured_args) == 1
     assert captured_args[0]["prompt"] == "hello"
     assert captured_args[0]["source_id"] == "msg-12345"
+    assert captured_args[0]["source_channel"] == "telegram"
+    assert captured_args[0]["source_metadata"] == {
+        "channel": "telegram",
+        "tool_name": "bot_switchboard_handle_message",
+    }
+
+
+async def test_dispatch_decomposed_propagates_identity_source_metadata(pool):
+    """dispatch_decomposed carries source metadata and prefixed tool name."""
+    from butlers.tools.switchboard import dispatch_decomposed, register_butler
+
+    await pool.execute("DELETE FROM butler_registry")
+    await pool.execute("DELETE FROM routing_log")
+    await register_butler(pool, "target", "http://localhost:8501/sse")
+
+    captured: list[dict[str, Any]] = []
+
+    async def mock_call(endpoint_url, tool_name, args):
+        captured.append({"tool_name": tool_name, "args": args})
+        return {"ok": True}
+
+    await dispatch_decomposed(
+        pool,
+        targets=[{"butler": "target", "prompt": "hello"}],
+        source_channel="telegram",
+        source_id="msg-200",
+        tool_name="bot_telegram_handle_message",
+        source_metadata={
+            "channel": "telegram",
+            "identity": "bot",
+            "tool_name": "bot_telegram_get_updates",
+        },
+        call_fn=mock_call,
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["tool_name"] == "bot_telegram_handle_message"
+    routed_args = captured[0]["args"]
+    assert routed_args["prompt"] == "hello"
+    assert routed_args["source_channel"] == "telegram"
+    assert routed_args["source_id"] == "msg-200"
+    assert routed_args["source_metadata"] == {
+        "channel": "telegram",
+        "identity": "bot",
+        "tool_name": "bot_telegram_get_updates",
+    }
 
 
 # ------------------------------------------------------------------

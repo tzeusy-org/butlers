@@ -65,6 +65,34 @@ class MessagePipeline:
         self._route_fn = route_fn
 
     @staticmethod
+    def _default_identity_for_tool(tool_name: str) -> str:
+        if tool_name.startswith("user_"):
+            return "user"
+        if tool_name.startswith("bot_"):
+            return "bot"
+        return "unknown"
+
+    @classmethod
+    def _build_source_metadata(
+        cls,
+        args: dict[str, Any],
+        *,
+        tool_name: str,
+    ) -> dict[str, str]:
+        channel = str(args.get("source_channel") or args.get("source") or "unknown")
+        identity = str(args.get("source_identity") or cls._default_identity_for_tool(tool_name))
+        source_tool = str(args.get("source_tool") or tool_name)
+
+        metadata: dict[str, str] = {
+            "channel": channel,
+            "identity": identity,
+            "tool_name": source_tool,
+        }
+        if args.get("source_id") not in (None, ""):
+            metadata["source_id"] = str(args["source_id"])
+        return metadata
+
+    @staticmethod
     def _message_preview(text: str, max_chars: int = 80) -> str:
         compact = " ".join(text.split())
         if len(compact) <= max_chars:
@@ -118,7 +146,7 @@ class MessagePipeline:
     async def process(
         self,
         message_text: str,
-        tool_name: str = "handle_message",
+        tool_name: str = "bot_switchboard_handle_message",
         tool_args: dict[str, Any] | None = None,
         message_inbox_id: Any | None = None,
     ) -> RoutingResult:
@@ -159,8 +187,9 @@ class MessagePipeline:
         route_to = self._route_fn or route
 
         args = dict(tool_args or {})
-
-        source = str(args.get("source") or "unknown")
+        source_metadata = self._build_source_metadata(args, tool_name=tool_name)
+        source = source_metadata["channel"]
+        source_id = source_metadata.get("source_id")
         raw_chat_id = args.get("chat_id")
         chat_id = str(raw_chat_id) if raw_chat_id not in (None, "") else None
         message_length = len(message_text)
@@ -188,9 +217,6 @@ class MessagePipeline:
 
             # Handle decomposition (list of sub-tasks)
             if isinstance(classification, list) and classification:
-                # We need source_id from args if available for tracing
-                source_id = str(args.get("source_id")) if args.get("source_id") else None
-
                 logger.info(
                     "Pipeline classified message as decomposition",
                     extra=self._log_fields(
@@ -208,6 +234,8 @@ class MessagePipeline:
                     targets=classification,
                     source_channel=source,
                     source_id=source_id,
+                    tool_name=tool_name,
+                    source_metadata=source_metadata,
                 )
                 routed_targets = [
                     str(entry.get("butler", "")).strip()
@@ -322,7 +350,14 @@ class MessagePipeline:
                 classification_error=error_msg,
             )
         classification_latency_ms = (time.perf_counter() - classify_start) * 1000
+        args["prompt"] = routed_message
         args["message"] = routed_message
+        args["source_metadata"] = source_metadata
+        args["source_channel"] = source
+        args["source_identity"] = source_metadata["identity"]
+        args["source_tool"] = source_metadata["tool_name"]
+        if source_id is not None:
+            args["source_id"] = source_id
         logger.info(
             "Pipeline classified message",
             extra=self._log_fields(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -17,6 +18,7 @@ from butlers.core.telemetry import inject_trace_context
 logger = logging.getLogger(__name__)
 _ROUTER_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
 _ROUTER_CLIENT_LOCKS: dict[str, asyncio.Lock] = {}
+_IDENTITY_TOOL_RE = re.compile(r"^(user|bot)_[a-z0-9_]+_[a-z0-9_]+$")
 
 
 def _router_lock(endpoint_url: str) -> asyncio.Lock:
@@ -130,12 +132,60 @@ def _extract_mcp_error_text(result: Any) -> str:
     return ""
 
 
+def _is_identity_prefixed_tool_name(tool_name: str) -> bool:
+    return bool(_IDENTITY_TOOL_RE.fullmatch(tool_name))
+
+
+def _extract_source_metadata(args: dict[str, Any]) -> dict[str, Any]:
+    """Extract a compact source-metadata payload from route args."""
+    raw = args.get("source_metadata")
+    metadata: dict[str, Any] = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if value in (None, ""):
+                continue
+            metadata[str(key)] = str(value)
+
+    if args.get("source_channel") not in (None, ""):
+        metadata.setdefault("channel", str(args["source_channel"]))
+    if args.get("source") not in (None, ""):
+        metadata.setdefault("channel", str(args["source"]))
+    if args.get("source_identity") not in (None, ""):
+        metadata.setdefault("identity", str(args["source_identity"]))
+    if args.get("source_tool") not in (None, ""):
+        metadata.setdefault("tool_name", str(args["source_tool"]))
+    if args.get("source_id") not in (None, ""):
+        metadata.setdefault("source_id", str(args["source_id"]))
+    return metadata
+
+
+def _build_trigger_context(
+    base_context: str | None,
+    source_metadata: dict[str, Any],
+) -> str | None:
+    metadata_blob = (
+        json.dumps(source_metadata, ensure_ascii=False, sort_keys=True) if source_metadata else None
+    )
+    metadata_context = (
+        f"Source metadata (channel/identity/tool): {metadata_blob}" if metadata_blob else None
+    )
+    if base_context not in (None, "") and metadata_context:
+        return f"{base_context}\n\n{metadata_context}"
+    if base_context not in (None, ""):
+        return base_context
+    return metadata_context
+
+
 def _build_trigger_args(args: dict[str, Any]) -> dict[str, Any]:
-    """Map legacy handle_message args to trigger args."""
+    """Map routed args to daemon ``trigger`` args."""
     prompt = str(args.get("prompt") or args.get("message") or "")
     trigger_args: dict[str, Any] = {"prompt": prompt}
-    if args.get("context") is not None:
-        trigger_args["context"] = str(args["context"])
+    context = _build_trigger_context(
+        str(args["context"]) if args.get("context") is not None else None,
+        _extract_source_metadata(args),
+    )
+    if context not in (None, ""):
+        trigger_args["context"] = context
     return trigger_args
 
 
@@ -335,9 +385,13 @@ async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, A
     result = await _call_tool_with_router_client(endpoint_url, tool_name, args)
     if getattr(result, "is_error", False):
         error_text = _extract_mcp_error_text(result)
-        # Backward compatibility: many callers still route "handle_message"
-        # while daemon core exposes "trigger". Retry automatically.
-        if tool_name == "handle_message" and "Unknown tool" in error_text:
+        # Route-level compatibility:
+        # - legacy unprefixed ``handle_message``
+        # - identity-prefixed routing names (for channel-scoped pipeline calls)
+        # map to core daemon ``trigger`` when unavailable on the target.
+        if (
+            tool_name == "handle_message" or _is_identity_prefixed_tool_name(tool_name)
+        ) and "Unknown tool" in error_text:
             trigger_args = _build_trigger_args(args)
             result = await _call_tool_with_router_client(endpoint_url, "trigger", trigger_args)
 

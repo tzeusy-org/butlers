@@ -129,22 +129,22 @@ class TestGetContact:
         now = datetime.now(UTC)
         app, mock_pool = _app_with_mock_db(
             fetchrow_side_effect=[
-            {
-                "id": contact_id,
-                "full_name": "Alice Example",
-                "nickname": None,
-                "notes": None,
-                "company": None,
-                "job_title": None,
-                "metadata": {},
-                "created_at": now,
-                "updated_at": now,
-                "email": None,
-                "phone": None,
-                "last_interaction_at": None,
-            },
-            {"month": 3, "day": 15, "year": 1990},
-            None,
+                {
+                    "id": contact_id,
+                    "full_name": "Alice Example",
+                    "nickname": None,
+                    "notes": None,
+                    "company": None,
+                    "job_title": None,
+                    "metadata": {},
+                    "created_at": now,
+                    "updated_at": now,
+                    "email": None,
+                    "phone": None,
+                    "last_interaction_at": None,
+                },
+                {"month": 3, "day": 15, "year": 1990},
+                None,
             ],
             include_mock_pool=True,
         )

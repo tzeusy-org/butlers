@@ -484,8 +484,15 @@ class TestPipelineIntegration:
         assert result is mock_result
         mock_pipeline.process.assert_awaited_once_with(
             message_text="Need help",
-            tool_name="handle_message",
-            tool_args={"source": "telegram", "chat_id": "12345", "source_id": None},
+            tool_name="bot_telegram_handle_message",
+            tool_args={
+                "source": "telegram",
+                "source_channel": "telegram",
+                "source_identity": "bot",
+                "source_tool": "bot_telegram_get_updates",
+                "chat_id": "12345",
+                "source_id": None,
+            },
             message_inbox_id=None,
         )
         assert telegram_module._routed_messages == [mock_result]

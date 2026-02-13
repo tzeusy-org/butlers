@@ -47,6 +47,8 @@ async def dispatch_decomposed(
     targets: list[dict[str, str]],
     source_channel: str = "switchboard",
     source_id: str | None = None,
+    tool_name: str = "bot_switchboard_handle_message",
+    source_metadata: dict[str, Any] | None = None,
     *,
     call_fn: Any | None = None,
 ) -> list[dict[str, Any]]:
@@ -70,6 +72,13 @@ async def dispatch_decomposed(
         in routing log).
     source_id:
         Optional identifier for the originating message/request.
+    tool_name:
+        Identity-prefixed logical tool name used for routing. If the target
+        butler does not expose this tool, route-level compatibility logic
+        may translate the call to ``trigger``.
+    source_metadata:
+        Optional source-context payload (for example ``channel``,
+        ``identity``, and ``tool_name``) propagated through route args.
     call_fn:
         Optional callable for testing; forwarded to :func:`route`.
 
@@ -85,12 +94,22 @@ async def dispatch_decomposed(
     for target in targets:
         butler_name = target["butler"]
         prompt = target.get("prompt", "")
+        metadata = dict(source_metadata or {})
+        metadata.setdefault("channel", source_channel)
+        metadata.setdefault("tool_name", tool_name)
+        route_args: dict[str, Any] = {
+            "prompt": prompt,
+            "source_metadata": metadata,
+            "source_channel": str(metadata.get("channel", source_channel)),
+        }
+        if source_id is not None:
+            route_args["source_id"] = source_id
 
         route_result = await route(
             pool,
             target_butler=butler_name,
-            tool_name="handle_message",
-            args={"prompt": prompt, "source_id": source_id},
+            tool_name=tool_name,
+            args=route_args,
             source_butler=source_channel,
             call_fn=call_fn,
         )
