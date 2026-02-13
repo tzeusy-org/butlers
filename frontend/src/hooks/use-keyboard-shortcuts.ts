@@ -60,8 +60,26 @@ export function useKeyboardShortcuts() {
           case "t":
             navigate("/timeline");
             break;
+          case "r":
+            navigate("/traces");
+            break;
           case "n":
             navigate("/notifications");
+            break;
+          case "i":
+            navigate("/issues");
+            break;
+          case "a":
+            navigate("/audit-log");
+            break;
+          case "m":
+            navigate("/memory");
+            break;
+          case "c":
+            navigate("/contacts");
+            break;
+          case "h":
+            navigate("/health/measurements");
             break;
         }
       }

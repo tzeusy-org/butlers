@@ -1,3 +1,4 @@
+import { Link } from "react-router";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { formatDistanceToNow } from "date-fns";
 
@@ -64,6 +65,10 @@ function truncate(text: string, max = 60): string {
   return text.slice(0, max) + "\u2026";
 }
 
+function shortId(id: string): string {
+  return id.length > 8 ? `${id.slice(0, 8)}...` : id;
+}
+
 /** Format an ISO timestamp as a relative human-readable string. */
 function relativeTime(iso: string): string {
   return formatDistanceToNow(new Date(iso), { addSuffix: true });
@@ -119,10 +124,30 @@ export function NotificationFeed({
             <TableCell className="font-medium">{n.source_butler}</TableCell>
             <TableCell>{channelBadge(n.channel)}</TableCell>
             <TableCell
-              className="text-muted-foreground max-w-xs truncate"
+              className="max-w-xs"
               title={n.message}
             >
-              {truncate(n.message)}
+              <p className="truncate text-muted-foreground">{truncate(n.message)}</p>
+              {(n.session_id || n.trace_id) && (
+                <div className="mt-1 flex items-center gap-3 text-xs">
+                  {n.session_id && (
+                    <Link
+                      className="text-primary underline underline-offset-2 hover:text-primary/80"
+                      to={`/sessions/${encodeURIComponent(n.session_id)}?butler=${encodeURIComponent(n.source_butler)}`}
+                    >
+                      Session {shortId(n.session_id)}
+                    </Link>
+                  )}
+                  {n.trace_id && (
+                    <Link
+                      className="text-primary underline underline-offset-2 hover:text-primary/80"
+                      to={`/traces/${encodeURIComponent(n.trace_id)}`}
+                    >
+                      Trace {shortId(n.trace_id)}
+                    </Link>
+                  )}
+                </div>
+              )}
             </TableCell>
             <TableCell className="text-muted-foreground text-right text-xs">
               {relativeTime(n.created_at)}

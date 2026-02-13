@@ -74,16 +74,21 @@ const BASE_TABS = [
   "memory",
 ] as const;
 
+const HEALTH_TABS = ["health"] as const;
 const GENERAL_TABS = ["collections", "entities"] as const;
 const SWITCHBOARD_TABS = ["routing-log", "registry"] as const;
 
 type TabValue =
   | (typeof BASE_TABS)[number]
+  | (typeof HEALTH_TABS)[number]
   | (typeof GENERAL_TABS)[number]
   | (typeof SWITCHBOARD_TABS)[number];
 
 function getAllTabs(butlerName: string): readonly string[] {
   const tabs: string[] = [...BASE_TABS];
+  if (butlerName === "health") {
+    tabs.push(...HEALTH_TABS);
+  }
   if (butlerName === "general") {
     tabs.push(...GENERAL_TABS);
   }

@@ -7,6 +7,7 @@ const navItems = [
   { path: '/traces', label: 'Traces' },
   { path: '/timeline', label: 'Timeline' },
   { path: '/notifications', label: 'Notifications' },
+  { path: '/issues', label: 'Issues' },
   { path: '/audit-log', label: 'Audit Log' },
   { path: '/contacts', label: 'Contacts' },
   { path: '/groups', label: 'Groups' },

@@ -163,6 +163,11 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
   const butler = butlerResponse?.data;
   const costSummary = costResponse?.data;
   const notifications = notificationsResponse?.data ?? [];
+  const butlerCostToday = costSummary?.by_butler?.[butlerName] ?? 0;
+  const butlerCostShare =
+    costSummary && costSummary.total_cost_usd > 0
+      ? Math.round((butlerCostToday / costSummary.total_cost_usd) * 100)
+      : 0;
 
   // Extract modules from butler data if available
   const modules =
@@ -224,16 +229,15 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
           ) : costSummary ? (
             <div>
               <div className="text-2xl font-bold">
-                {formatCurrency(costSummary.total_cost_usd)}
+                {formatCurrency(butlerCostToday)}
               </div>
               <div className="mt-2 grid grid-cols-2 gap-4 text-sm text-muted-foreground">
                 <div>
-                  <span className="font-medium">Sessions:</span>{" "}
-                  {costSummary.total_sessions}
+                  <span className="font-medium">Share:</span> {butlerCostShare}%
                 </div>
                 <div>
-                  <span className="font-medium">Tokens:</span>{" "}
-                  {(costSummary.total_input_tokens + costSummary.total_output_tokens).toLocaleString()}
+                  <span className="font-medium">Global total:</span>{" "}
+                  {formatCurrency(costSummary.total_cost_usd)}
                 </div>
               </div>
             </div>

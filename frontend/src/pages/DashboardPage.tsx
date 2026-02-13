@@ -2,6 +2,7 @@ import { Link } from "react-router";
 
 import { NotificationFeed } from "@/components/notifications/notification-feed";
 import { NotificationTableSkeleton } from "@/components/skeletons";
+import IssuesPanel from "@/components/issues/IssuesPanel";
 import TopologyGraph from "@/components/topology/TopologyGraph";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,10 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { useButlers } from "@/hooks/use-butlers";
+import { useCostSummary } from "@/hooks/use-costs";
+import { useIssues } from "@/hooks/use-issues";
 import { useNotifications } from "@/hooks/use-notifications";
+import { useSessions } from "@/hooks/use-sessions";
 
 function StatsCard({
   title,
@@ -57,6 +61,13 @@ function StatsBarSkeleton() {
 
 export default function DashboardPage() {
   const { data: butlersResponse, isLoading: butlersLoading } = useButlers();
+  const { data: costSummaryResponse, isLoading: costSummaryLoading } = useCostSummary("today");
+  const { data: sessionsTodayResponse, isLoading: sessionsTodayLoading } = useSessions({
+    limit: 1,
+    offset: 0,
+    since: new Date(new Date().setHours(0, 0, 0, 0)).toISOString(),
+  }, { refetchInterval: 60_000 });
+  const { data: issuesResponse, isLoading: issuesLoading } = useIssues();
   const { data: failedResponse, isLoading: failedLoading } = useNotifications({
     status: "failed",
     limit: 5,
@@ -68,6 +79,9 @@ export default function DashboardPage() {
 
   const failedNotifications = failedResponse?.data ?? [];
   const failedTotal = failedResponse?.meta.total ?? 0;
+  const sessionsToday = sessionsTodayResponse?.meta.total ?? 0;
+  const costToday = costSummaryResponse?.data.total_cost_usd ?? 0;
+  const issues = issuesResponse?.data ?? [];
 
   return (
     <div className="space-y-6">
@@ -88,8 +102,14 @@ export default function DashboardPage() {
                 : undefined
             }
           />
-          <StatsCard title="Sessions Today" value="--" description="Coming soon" />
-          <StatsCard title="Est. Cost Today" value="--" description="Coming soon" />
+          <StatsCard
+            title="Sessions Today"
+            value={sessionsTodayLoading ? "--" : sessionsToday}
+          />
+          <StatsCard
+            title="Est. Cost Today"
+            value={costSummaryLoading ? "--" : `$${costToday.toFixed(2)}`}
+          />
         </div>
       )}
 
@@ -100,36 +120,39 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Failed Notifications / Issues Panel */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            Failed Notifications
-            {!failedLoading && failedTotal > 0 && (
-              <Badge variant="destructive">{failedTotal}</Badge>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              Failed Notifications
+              {!failedLoading && failedTotal > 0 && (
+                <Badge variant="destructive">{failedTotal}</Badge>
+              )}
+            </CardTitle>
+            <CardDescription>
+              Recent notification delivery failures across all butlers
+            </CardDescription>
+            <CardAction>
+              <Button variant="link" size="sm" asChild>
+                <Link to="/notifications">View all notifications</Link>
+              </Button>
+            </CardAction>
+          </CardHeader>
+          <CardContent>
+            {failedLoading ? (
+              <NotificationTableSkeleton rows={5} />
+            ) : failedNotifications.length === 0 ? (
+              <div className="text-muted-foreground flex flex-col items-center justify-center py-8 text-sm">
+                <p>No failed notifications. All systems healthy.</p>
+              </div>
+            ) : (
+              <NotificationFeed notifications={failedNotifications} isLoading={false} />
             )}
-          </CardTitle>
-          <CardDescription>
-            Recent notification delivery failures across all butlers
-          </CardDescription>
-          <CardAction>
-            <Button variant="link" size="sm" asChild>
-              <Link to="/notifications">View all notifications</Link>
-            </Button>
-          </CardAction>
-        </CardHeader>
-        <CardContent>
-          {failedLoading ? (
-            <NotificationTableSkeleton rows={5} />
-          ) : failedNotifications.length === 0 ? (
-            <div className="text-muted-foreground flex flex-col items-center justify-center py-8 text-sm">
-              <p>No failed notifications. All systems healthy.</p>
-            </div>
-          ) : (
-            <NotificationFeed notifications={failedNotifications} isLoading={false} />
-          )}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+
+        <IssuesPanel issues={issues} isLoading={issuesLoading} />
+      </div>
     </div>
   );
 }

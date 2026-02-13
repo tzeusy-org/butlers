@@ -3,18 +3,13 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
+import type { SessionParams } from "@/api/types.ts";
 
 import {
   getButlerSession,
   getButlerSessions,
   getSessions,
 } from "@/api/index.ts";
-
-/** Query parameters for paginated session lists. */
-export interface SessionParams {
-  offset?: number;
-  limit?: number;
-}
 
 interface SessionQueryOptions {
   refetchInterval?: number | false;

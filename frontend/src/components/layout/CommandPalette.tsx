@@ -19,8 +19,8 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSearch } from "@/hooks/use-search";
 import type { SearchResult } from "@/api/index.ts";
+import { RECENT_SEARCHES_KEY } from "@/lib/local-settings";
 
-const RECENT_SEARCHES_KEY = "butlers:recent-searches";
 const MAX_RECENT = 5;
 
 // ---------------------------------------------------------------------------
@@ -309,4 +309,3 @@ export default function CommandPalette() {
     </Dialog>
   );
 }
-

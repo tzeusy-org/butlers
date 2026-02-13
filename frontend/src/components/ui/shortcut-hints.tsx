@@ -16,7 +16,13 @@ const SHORTCUTS = [
   { keys: ["g", "b"], description: "Go to Butlers" },
   { keys: ["g", "s"], description: "Go to Sessions" },
   { keys: ["g", "t"], description: "Go to Timeline" },
+  { keys: ["g", "r"], description: "Go to Traces" },
   { keys: ["g", "n"], description: "Go to Notifications" },
+  { keys: ["g", "i"], description: "Go to Issues" },
+  { keys: ["g", "a"], description: "Go to Audit Log" },
+  { keys: ["g", "m"], description: "Go to Memory" },
+  { keys: ["g", "c"], description: "Go to Contacts" },
+  { keys: ["g", "h"], description: "Go to Health" },
 ] as const;
 
 function Kbd({ children }: { children: React.ReactNode }) {
