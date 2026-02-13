@@ -227,6 +227,11 @@ make test-qg
 - `make test-qg` is the default full-scope pytest gate and runs with xdist parallelization (`-n auto`).
 - `make test-qg-serial` is the documented serial fallback for debugging order-dependent behavior.
 
+### Pytest benchmark snapshot (butlers-vrs, 2026-02-13)
+- Unit-scope serial benchmark (`.venv/bin/pytest tests/ -m unit ...`) measured `114.87s` wall (`1854 passed, 358 deselected`).
+- Unit-scope parallel benchmark (`.venv/bin/pytest tests/ -m unit ... -n 4`) measured `56.12s` wall (`1854 passed`), ~51% faster than the unit serial run.
+- Full required gate `make test-qg` completed in this worktree at `129.15s` wall (`2211 passed, 1 skipped`), but intermittent Docker teardown flakes remain possible on DB-backed scopes (see `butlers-kle`).
+
 ### Calendar OAuth init contract
 - In `src/butlers/modules/calendar.py`, `_GoogleProvider.__init__` should validate `_GoogleOAuthCredentials.from_env()` before creating an owned `httpx.AsyncClient` so credential errors cannot leak unclosed clients.
 - `_GoogleOAuthClient.get_access_token()` should enforce token non-null invariants with explicit asserts rather than returning a fallback empty string.
