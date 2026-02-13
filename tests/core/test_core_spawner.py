@@ -492,6 +492,30 @@ class TestSerialDispatch:
         assert result2.error is None
         assert result2.output == "second call works"
 
+    async def test_trigger_source_rejected_while_lock_held(self, tmp_path: Path):
+        """trigger-source calls fail fast when a session is already in flight."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+
+        adapter = MockAdapter(result_text="should not run", capture=True)
+        spawner = Spawner(
+            config=config,
+            config_dir=config_dir,
+            runtime=adapter,
+        )
+
+        await spawner._lock.acquire()
+        try:
+            result = await spawner.trigger("nested", "trigger")
+        finally:
+            spawner._lock.release()
+
+        assert result.success is False
+        assert result.error is not None
+        assert "cannot be called while another session is in flight" in result.error
+        assert adapter.calls == []
+
 
 # ---------------------------------------------------------------------------
 # 8.6: Session logging

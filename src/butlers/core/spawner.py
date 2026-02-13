@@ -306,6 +306,21 @@ class Spawner:
         if not self._accepting:
             raise RuntimeError("Spawner is shutting down; not accepting new triggers")
 
+        # Prevent self-trigger deadlocks: an in-flight trigger-sourced session can
+        # invoke the trigger tool again via MCP. Waiting on the same lock here
+        # would deadlock the runtime call graph.
+        if trigger_source == "trigger" and self._lock.locked():
+            error_msg = (
+                "Runtime invocation rejected: trigger tool cannot be called while "
+                "another session is in flight"
+            )
+            logger.warning(error_msg)
+            return SpawnerResult(
+                success=False,
+                error=error_msg,
+                model=self._config.runtime.model,
+            )
+
         self._in_flight_event.clear()
         task = asyncio.current_task()
         if task is not None:
