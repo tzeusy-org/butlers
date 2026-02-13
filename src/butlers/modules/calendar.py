@@ -250,7 +250,7 @@ def _parse_google_datetime(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(normalized)
     except ValueError as exc:
-        raise CalendarAuthError(f"Google Calendar returned an invalid dateTime: {value}") from exc
+        raise ValueError(f"Google Calendar returned an invalid dateTime: {value}") from exc
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
@@ -319,7 +319,7 @@ def _parse_google_event_boundary(
         try:
             parsed_date = date.fromisoformat(date_value)
         except ValueError as exc:
-            raise CalendarAuthError(
+            raise ValueError(
                 f"Google Calendar returned an invalid date value: {date_value}"
             ) from exc
 
@@ -332,7 +332,7 @@ def _parse_google_event_boundary(
         )
         return parsed_datetime, timezone
 
-    raise CalendarAuthError("Google Calendar event is missing start/end dateTime or date values")
+    raise ValueError("Google Calendar event is missing start/end dateTime or date values")
 
 
 def _google_event_to_calendar_event(
@@ -346,13 +346,13 @@ def _google_event_to_calendar_event(
 
     event_id_raw = payload.get("id")
     if not isinstance(event_id_raw, str) or not event_id_raw.strip():
-        raise CalendarAuthError("Google Calendar event payload is missing a non-empty id")
+        raise ValueError("Google Calendar event payload is missing a non-empty id")
     event_id = event_id_raw.strip()
 
     start_payload = payload.get("start")
     end_payload = payload.get("end")
     if not isinstance(start_payload, dict) or not isinstance(end_payload, dict):
-        raise CalendarAuthError(f"Google Calendar event '{event_id}' is missing start/end payloads")
+        raise ValueError(f"Google Calendar event '{event_id}' is missing start/end payloads")
 
     start_at, start_timezone = _parse_google_event_boundary(
         start_payload,

@@ -21,9 +21,12 @@ from butlers.modules.calendar import (
     CalendarModule,
     CalendarProvider,
     CalendarRequestError,
+    _google_event_to_calendar_event,
     _GoogleOAuthClient,
     _GoogleOAuthCredentials,
     _GoogleProvider,
+    _parse_google_datetime,
+    _parse_google_event_boundary,
 )
 
 pytestmark = pytest.mark.unit
@@ -667,3 +670,25 @@ class TestGoogleReadOperations:
 
         result = await provider.get_event(calendar_id="primary", event_id="missing")
         assert result is None
+
+
+class TestGooglePayloadValidationErrors:
+    """Verify payload/data validation raises ValueError, not auth errors."""
+
+    def test_parse_google_datetime_raises_value_error_for_invalid_datetime(self):
+        with pytest.raises(ValueError, match="invalid dateTime"):
+            _parse_google_datetime("not-a-datetime")
+
+    def test_parse_google_event_boundary_raises_value_error_for_invalid_date(self):
+        with pytest.raises(ValueError, match="invalid date value"):
+            _parse_google_event_boundary({"date": "2026-99-99"}, fallback_timezone="UTC")
+
+    def test_google_event_to_calendar_event_raises_value_error_for_missing_id(self):
+        with pytest.raises(ValueError, match="missing a non-empty id"):
+            _google_event_to_calendar_event(
+                {
+                    "start": {"dateTime": "2026-02-21T09:00:00Z"},
+                    "end": {"dateTime": "2026-02-21T09:30:00Z"},
+                },
+                fallback_timezone="UTC",
+            )
