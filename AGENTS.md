@@ -219,6 +219,10 @@ make test-qg
 ### Telegram DB contract
 - Module lifecycle receives the `Database` wrapper (not a raw pool). Telegram message-inbox logging should acquire connections via `db.pool.acquire()`, with optional backward compatibility for pool-like objects.
 
+### Telegram ingress dedupe contract
+- `src/butlers/modules/telegram.py::_store_message_inbox_entry` must persist inbound rows with deterministic Telegram dedupe keys and `ON CONFLICT (dedupe_key)` upsert semantics.
+- `TelegramModule.process_update()` should treat non-insert (`decision=deduped`) ingress persistence results as replayed updates and short-circuit before pipeline routing.
+
 ### HTTP client logging contract
 - CLI logging config (`src/butlers/cli.py::_configure_logging`) sets `httpx` and `httpcore` logger levels to `WARNING` to prevent request-URL token leakage (notably Telegram bot tokens in `/bot<token>/...` paths).
 
@@ -365,6 +369,10 @@ make test-qg
 - `src/butlers/modules/telegram.py` registers only identity-prefixed tools: `user_telegram_get_updates`, `user_telegram_send_message`, `user_telegram_reply_to_message`, `bot_telegram_get_updates`, `bot_telegram_send_message`, and `bot_telegram_reply_to_message`.
 - Legacy unprefixed Telegram tool names must not be registered.
 - User-output descriptors (`user_telegram_send_message`, `user_telegram_reply_to_message`) are marked as approval-required defaults in descriptor descriptions (`approval_default=always`).
+
+### Telegram inbox logging contract
+- `TelegramModule.process_update()` should log inbound payloads via `db.pool.acquire()` when DB is available and pass the returned `message_inbox_id` into `pipeline.process(...)`.
+- Keep Telegram `pipeline.process` tool args aligned with tests (`source`, `source_channel`, `source_identity`, `source_tool`, `chat_id`, `source_id`); additional metadata should not be forced into this call path without updating tests/contracts.
 
 ### Email tool scope/approval contract
 - In `src/butlers/modules/email.py`, `user_*` and `bot_*` prefixes currently represent scoped tool surfaces; both still use the same configured SMTP/IMAP credentials (`SOURCE_EMAIL` / `SOURCE_EMAIL_PASSWORD`).
