@@ -29,9 +29,11 @@ from butlers.tools.switchboard.routing.classify import (
 )
 from butlers.tools.switchboard.routing.contracts import (
     IngestEnvelopeV1,
+    NotifyRequestV1,
     RouteEnvelopeV1,
     RouteRequestContextV1,
     parse_ingest_envelope,
+    parse_notify_request,
     parse_route_envelope,
 )
 from butlers.tools.switchboard.routing.dispatch import (
@@ -51,6 +53,7 @@ from butlers.tools.switchboard.routing.route import (
 __all__ = [
     "ButlerResult",
     "IngestEnvelopeV1",
+    "NotifyRequestV1",
     "RouteEnvelopeV1",
     "RouteRequestContextV1",
     "SUPPORTED_CHANNELS",
@@ -72,6 +75,7 @@ __all__ = [
     "log_extraction",
     "log_notification",
     "parse_ingest_envelope",
+    "parse_notify_request",
     "parse_route_envelope",
     "post_mail",
     "register_butler",
