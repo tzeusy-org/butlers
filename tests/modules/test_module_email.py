@@ -78,6 +78,16 @@ class TestIODDescriptors:
         names = {descriptor.name for descriptor in mod.bot_outputs()}
         assert names == {"bot_email_send_message", "bot_email_reply_to_thread"}
 
+    def test_user_outputs_marked_approval_required(self):
+        mod = EmailModule()
+        descriptions = {descriptor.description for descriptor in mod.user_outputs()}
+        assert all("approval-required default" in description for description in descriptions)
+
+    def test_bot_outputs_marked_approval_required(self):
+        mod = EmailModule()
+        descriptions = {descriptor.description for descriptor in mod.bot_outputs()}
+        assert all("approval-required default" in description for description in descriptions)
+
 
 # ---------------------------------------------------------------------------
 # Credentials declaration
@@ -218,6 +228,12 @@ class TestRegisterTools:
             "bot_email_check_and_route_inbox",
         }
         assert set(registered_tools) == expected_tools
+        assert "user-scoped tool surface" in (
+            registered_tools["user_email_send_message"].__doc__ or ""
+        )
+        assert "bot-scoped tool surface" in (
+            registered_tools["bot_email_send_message"].__doc__ or ""
+        )
 
     async def test_legacy_tool_names_not_registered(self):
         mod = EmailModule()
