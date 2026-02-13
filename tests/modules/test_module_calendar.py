@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -12,6 +13,8 @@ from pydantic import BaseModel, ValidationError
 
 from butlers.modules.base import Module
 from butlers.modules.calendar import (
+    BUTLER_GENERATED_PRIVATE_KEY,
+    BUTLER_NAME_PRIVATE_KEY,
     GOOGLE_CALENDAR_API_BASE_URL,
     GOOGLE_CALENDAR_CREDENTIALS_ENV,
     GOOGLE_OAUTH_TOKEN_URL,
@@ -211,11 +214,21 @@ class _ProviderDouble(CalendarProvider):
         *,
         events: list[CalendarEvent] | None = None,
         event: CalendarEvent | None = None,
+        create_event_result: CalendarEvent | None = None,
+        update_event_result: CalendarEvent | None = None,
     ) -> None:
         self._events = events or []
         self._event = event
+        self._create_event_result = (
+            create_event_result if create_event_result is not None else event
+        )
+        self._update_event_result = (
+            update_event_result if update_event_result is not None else event
+        )
         self.list_calls: list[dict[str, object]] = []
         self.get_calls: list[dict[str, object]] = []
+        self.create_calls: list[dict[str, object]] = []
+        self.update_calls: list[dict[str, object]] = []
 
     @property
     def name(self) -> str:
@@ -243,10 +256,16 @@ class _ProviderDouble(CalendarProvider):
         self.get_calls.append({"calendar_id": calendar_id, "event_id": event_id})
         return self._event
 
-    async def create_event(self, *, calendar_id: str, payload):  # pragma: no cover
+    async def create_event(self, *, calendar_id: str, payload):
+        self.create_calls.append({"calendar_id": calendar_id, "payload": payload})
+        if self._create_event_result is not None:
+            return self._create_event_result
         raise NotImplementedError
 
-    async def update_event(self, *, calendar_id: str, event_id: str, patch):  # pragma: no cover
+    async def update_event(self, *, calendar_id: str, event_id: str, patch):
+        self.update_calls.append({"calendar_id": calendar_id, "event_id": event_id, "patch": patch})
+        if self._update_event_result is not None:
+            return self._update_event_result
         raise NotImplementedError
 
     async def delete_event(self, *, calendar_id: str, event_id: str) -> None:  # pragma: no cover
@@ -308,6 +327,8 @@ class TestCalendarReadTools:
                     "attendees": ["alex@example.com"],
                     "recurrence_rule": "RRULE:FREQ=WEEKLY",
                     "color_id": "7",
+                    "butler_generated": False,
+                    "butler_name": None,
                 }
             ],
         }
@@ -325,6 +346,8 @@ class TestCalendarReadTools:
                 "attendees": ["alex@example.com"],
                 "recurrence_rule": "RRULE:FREQ=WEEKLY",
                 "color_id": "7",
+                "butler_generated": False,
+                "butler_name": None,
             },
         }
 
@@ -364,6 +387,119 @@ class TestCalendarReadTools:
 
         with pytest.raises(ValueError, match="calendar_id must be a non-empty string"):
             await mcp.tools["calendar_list_events"](calendar_id="   ")
+
+
+class TestCalendarWriteTools:
+    """Verify create/update tools enforce Butler labeling and metadata tags."""
+
+    async def test_create_event_adds_prefix_and_private_metadata(self):
+        created = CalendarEvent(
+            event_id="evt-created",
+            title="BUTLER: Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="general",
+        )
+        provider = _ProviderDouble(event=created)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+        )
+
+        payload = provider.create_calls[0]["payload"]
+        assert payload.title == "BUTLER: Team Sync"
+        assert payload.private_metadata == {
+            BUTLER_GENERATED_PRIVATE_KEY: "true",
+            BUTLER_NAME_PRIVATE_KEY: "general",
+        }
+        assert result["event"]["title"] == "BUTLER: Team Sync"
+        assert result["event"]["butler_generated"] is True
+        assert result["event"]["butler_name"] == "general"
+
+    async def test_update_repairs_prefix_for_butler_generated_events(self):
+        existing = CalendarEvent(
+            event_id="evt-legacy",
+            title="Legacy title without prefix",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="health",
+        )
+        updated = CalendarEvent(
+            event_id="evt-legacy",
+            title="BUTLER: Legacy title without prefix",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="health",
+        )
+        provider = _ProviderDouble(event=existing, update_event_result=updated)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        await mcp.tools["calendar_update_event"](
+            event_id="evt-legacy",
+            location="Updated room",
+        )
+
+        patch = provider.update_calls[0]["patch"]
+        assert patch.title == "BUTLER: Legacy title without prefix"
+        assert patch.private_metadata == {
+            BUTLER_GENERATED_PRIVATE_KEY: "true",
+            BUTLER_NAME_PRIVATE_KEY: "health",
+        }
+
+    async def test_update_leaves_non_butler_event_title_unchanged(self):
+        existing = CalendarEvent(
+            event_id="evt-human",
+            title="Discuss roadmap",
+            start_at=datetime(2026, 2, 21, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=False,
+            butler_name=None,
+        )
+        provider = _ProviderDouble(event=existing)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=None,
+        )
+
+        await mcp.tools["calendar_update_event"](
+            event_id="evt-human",
+            title="Discuss roadmap today",
+        )
+
+        patch = provider.update_calls[0]["patch"]
+        assert patch.title == "Discuss roadmap today"
+        assert patch.private_metadata is None
 
 
 class TestGoogleCredentialParsing:
@@ -610,6 +746,12 @@ class TestGoogleReadOperations:
                         "attendees": [{"email": "alice@example.com"}],
                         "recurrence": ["RRULE:FREQ=DAILY"],
                         "colorId": "5",
+                        "extendedProperties": {
+                            "private": {
+                                "butler_generated": "true",
+                                "butler_name": "general",
+                            }
+                        },
                     },
                     {
                         "id": "evt-2",
@@ -632,6 +774,8 @@ class TestGoogleReadOperations:
         assert events[0].attendees == ["alice@example.com"]
         assert events[0].recurrence_rule == "RRULE:FREQ=DAILY"
         assert events[0].color_id == "5"
+        assert events[0].butler_generated is True
+        assert events[0].butler_name == "general"
         assert events[1].start_at.isoformat() == "2026-02-22T00:00:00+00:00"
         assert events[1].end_at.isoformat() == "2026-02-23T00:00:00+00:00"
 
