@@ -272,3 +272,9 @@ make test-qg
 - Telegram and Email module config now supports identity-scoped credential tables: `[modules.telegram.user]` / `[modules.telegram.bot]` and `[modules.email.user]` / `[modules.email.bot]`.
 - Env var name fields in those scopes (`*_env`) must be valid environment variable identifiers and are schema-validated in module config models.
 - Butler startup credential validation collects enabled identity-scope env vars and reports missing values with scope-qualified sources (for example `module:telegram.bot`, `module:email.bot`).
+
+### Identity-aware approval defaults contract
+- `ToolIODescriptor` includes `approval_default` (`none`, `conditional`, `always`) and module output descriptors should set it explicitly.
+- `ButlerDaemon._apply_approval_gates()` merges default-gated user output tools before wrapping gates: user send/reply outputs (`approval_default="always"` and `user_*_*send*` / `user_*_*reply*` safety fallback) are auto-gated whenever approvals are enabled.
+- Bot outputs are **not** auto-gated by defaults; they remain configurable via `[modules.approvals.gated_tools]` entries.
+- `tests/daemon/test_approval_defaults.py::test_user_send_and_reply_outputs_are_gated_by_name_safety_net` verifies the name-based safety fallback still gates user send/reply tools even when descriptor `approval_default` is not `always`.

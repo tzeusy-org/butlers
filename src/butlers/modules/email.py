@@ -152,6 +152,7 @@ class EmailModule(Module):
                 description=(
                     "Send outbound email from user-scoped tool surface (approval-required default)."
                 ),
+                approval_default="always",
             ),
             ToolIODescriptor(
                 name="user_email_reply_to_thread",
@@ -159,6 +160,7 @@ class EmailModule(Module):
                     "Reply to email thread from user-scoped tool surface "
                     "(approval-required default)."
                 ),
+                approval_default="always",
             ),
         )
 
@@ -182,21 +184,24 @@ class EmailModule(Module):
     def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
         """Declare bot-identity email output tools.
 
-        Bot send/reply actions are approval-required defaults.
+        Bot send/reply actions are conditionally approval-gated by policy.
         """
         return (
             ToolIODescriptor(
                 name="bot_email_send_message",
                 description=(
-                    "Send outbound email from bot-scoped tool surface (approval-required default)."
+                    "Send outbound email from bot-scoped tool surface "
+                    "(approval_default=conditional)."
                 ),
+                approval_default="conditional",
             ),
             ToolIODescriptor(
                 name="bot_email_reply_to_thread",
                 description=(
                     "Reply to email thread from bot-scoped tool surface "
-                    "(approval-required default)."
+                    "(approval_default=conditional)."
                 ),
+                approval_default="conditional",
             ),
         )
 

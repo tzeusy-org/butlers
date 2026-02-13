@@ -80,13 +80,13 @@ class TestIODDescriptors:
 
     def test_user_outputs_marked_approval_required(self):
         mod = EmailModule()
-        descriptions = {descriptor.description for descriptor in mod.user_outputs()}
-        assert all("approval-required default" in description for description in descriptions)
+        defaults = {descriptor.approval_default for descriptor in mod.user_outputs()}
+        assert defaults == {"always"}
 
-    def test_bot_outputs_marked_approval_required(self):
+    def test_bot_outputs_marked_conditional_by_default(self):
         mod = EmailModule()
-        descriptions = {descriptor.description for descriptor in mod.bot_outputs()}
-        assert all("approval-required default" in description for description in descriptions)
+        defaults = {descriptor.approval_default for descriptor in mod.bot_outputs()}
+        assert defaults == {"conditional"}
 
 
 # ---------------------------------------------------------------------------

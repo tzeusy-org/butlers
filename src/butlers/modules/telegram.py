@@ -186,10 +186,12 @@ class TelegramModule(Module):
             ToolIODescriptor(
                 name="user_telegram_send_message",
                 description="Send as user. approval_default=always (approval required).",
+                approval_default="always",
             ),
             ToolIODescriptor(
                 name="user_telegram_reply_to_message",
                 description="Reply as user. approval_default=always (approval required).",
+                approval_default="always",
             ),
         )
 
@@ -208,10 +210,12 @@ class TelegramModule(Module):
             ToolIODescriptor(
                 name="bot_telegram_send_message",
                 description="Send as bot. approval_default=conditional.",
+                approval_default="conditional",
             ),
             ToolIODescriptor(
                 name="bot_telegram_reply_to_message",
                 description="Reply as bot. approval_default=conditional.",
+                approval_default="conditional",
             ),
         )
 

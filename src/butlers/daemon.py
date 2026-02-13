@@ -47,7 +47,13 @@ from opentelemetry import trace
 from pydantic import ConfigDict, ValidationError
 from starlette.requests import ClientDisconnect
 
-from butlers.config import ButlerConfig, load_config, parse_approval_config
+from butlers.config import (
+    ApprovalConfig,
+    ButlerConfig,
+    GatedToolConfig,
+    load_config,
+    parse_approval_config,
+)
 from butlers.core.runtimes import get_adapter
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.scheduler import schedule_delete as _schedule_delete
@@ -1008,6 +1014,12 @@ class ButlerDaemon:
         then calls ``apply_approval_gates`` to wrap tools whose names appear
         in the ``gated_tools`` configuration.
 
+        Identity-aware defaults are merged in before wrapping:
+        - ``user_*`` output tools marked ``approval_default="always"``
+          are gated by default.
+        - ``bot_*`` outputs remain configurable and are only gated when
+          explicitly listed in config.
+
         Returns the mapping of tool_name -> original handler for gated tools.
         """
         approvals_raw = self.config.modules.get("approvals")
@@ -1016,6 +1028,7 @@ class ButlerDaemon:
         if approval_config is None or not approval_config.enabled:
             return {}
 
+        approval_config = self._with_default_gated_user_outputs(approval_config)
         pool = self.db.pool
         originals = apply_approval_gates(self.mcp, approval_config, pool)
 
@@ -1045,6 +1058,38 @@ class ButlerDaemon:
             )
 
         return originals
+
+    def _with_default_gated_user_outputs(self, config: ApprovalConfig) -> ApprovalConfig:
+        """Return config with ``approval_default=always`` user outputs added.
+
+        Existing explicit gating config wins; defaults fill missing entries.
+        User-scoped send/reply tools are always default-gated as a safety
+        baseline even if metadata was omitted.
+        """
+        merged = dict(config.gated_tools)
+        for mod in self._modules:
+            for descriptor in mod.user_outputs():
+                if descriptor.approval_default != "always" and not self._is_user_send_or_reply_tool(
+                    descriptor.name
+                ):
+                    continue
+                merged.setdefault(descriptor.name, GatedToolConfig())
+
+        if len(merged) == len(config.gated_tools):
+            return config
+
+        return ApprovalConfig(
+            enabled=config.enabled,
+            default_expiry_hours=config.default_expiry_hours,
+            gated_tools=merged,
+        )
+
+    @staticmethod
+    def _is_user_send_or_reply_tool(tool_name: str) -> bool:
+        """Return whether a tool name is a user-scoped send/reply action."""
+        if not tool_name.startswith("user_"):
+            return False
+        return "_send" in tool_name or "_reply" in tool_name
 
     async def shutdown(self) -> None:
         """Graceful shutdown.
