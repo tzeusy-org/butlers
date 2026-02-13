@@ -139,6 +139,18 @@ class TestMemoryStoreEpisode:
             result = await memory_store_episode(mock_pool, "test", "butler")
             assert set(result.keys()) == {"id", "expires_at"}
 
+    async def test_does_not_write_to_stdout(
+        self, mock_pool: AsyncMock, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Wrapper should not emit debug output to stdout."""
+        storage_result = {"id": uuid.uuid4(), "expires_at": datetime.now(UTC)}
+
+        with patch.object(_helpers._storage, "store_episode", new_callable=AsyncMock) as mock_store:
+            mock_store.return_value = storage_result
+            await memory_store_episode(mock_pool, "test", "butler")
+            captured = capsys.readouterr()
+            assert captured.out == ""
+
 
 # ---------------------------------------------------------------------------
 # Tests — memory_store_fact
