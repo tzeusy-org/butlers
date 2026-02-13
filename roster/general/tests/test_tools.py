@@ -16,67 +16,40 @@ pytestmark = [
 ]
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for the test module."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16") as pg:
-        yield pg
-
-
 @pytest.fixture
-async def pool(postgres_container):
+async def pool(provisioned_postgres_pool):
     """Provision a fresh database with general tables and return a pool."""
-    from butlers.db import Database
+    async with provisioned_postgres_pool() as p:
+        # Create the general tables (mirrors Alembic general migrations)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS collections (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS entities (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+                data JSONB NOT NULL DEFAULT '{}',
+                tags JSONB NOT NULL DEFAULT '[]',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_entities_data_gin ON entities USING GIN (data)
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_entities_collection_id ON entities (collection_id)
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_entities_tags_gin ON entities USING GIN (tags)
+        """)
 
-    db = Database(
-        db_name=_unique_db_name(),
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        min_pool_size=1,
-        max_pool_size=3,
-    )
-    await db.provision()
-    p = await db.connect()
-
-    # Create the general tables (mirrors Alembic general migrations)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS collections (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL UNIQUE,
-            description TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS entities (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-            data JSONB NOT NULL DEFAULT '{}',
-            tags JSONB NOT NULL DEFAULT '[]',
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_entities_data_gin ON entities USING GIN (data)
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_entities_collection_id ON entities (collection_id)
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_entities_tags_gin ON entities USING GIN (tags)
-    """)
-
-    yield p
-    await db.close()
+        yield p
 
 
 # ------------------------------------------------------------------

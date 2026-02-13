@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import uuid
 from dataclasses import dataclass
 
 import pytest
@@ -21,68 +20,41 @@ pytestmark = [
 ]
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
 def _reset_otel_global_state():
     """Fully reset the OpenTelemetry global tracer provider state."""
     trace._TRACER_PROVIDER_SET_ONCE = trace.Once()
     trace._TRACER_PROVIDER = None
 
 
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for the test module."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16") as pg:
-        yield pg
-
-
 @pytest.fixture
-async def pool(postgres_container):
+async def pool(provisioned_postgres_pool):
     """Provision a fresh database with switchboard tables and return a pool."""
-    from butlers.db import Database
+    async with provisioned_postgres_pool() as p:
+        # Create switchboard tables (mirrors Alembic switchboard migration)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS butler_registry (
+                name TEXT PRIMARY KEY,
+                endpoint_url TEXT NOT NULL,
+                description TEXT,
+                modules JSONB NOT NULL DEFAULT '[]',
+                last_seen_at TIMESTAMPTZ,
+                registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS routing_log (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_butler TEXT NOT NULL,
+                target_butler TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                success BOOLEAN NOT NULL,
+                duration_ms INTEGER,
+                error TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
 
-    db = Database(
-        db_name=_unique_db_name(),
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        min_pool_size=1,
-        max_pool_size=3,
-    )
-    await db.provision()
-    p = await db.connect()
-
-    # Create switchboard tables (mirrors Alembic switchboard migration)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS butler_registry (
-            name TEXT PRIMARY KEY,
-            endpoint_url TEXT NOT NULL,
-            description TEXT,
-            modules JSONB NOT NULL DEFAULT '[]',
-            last_seen_at TIMESTAMPTZ,
-            registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS routing_log (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            source_butler TEXT NOT NULL,
-            target_butler TEXT NOT NULL,
-            tool_name TEXT NOT NULL,
-            success BOOLEAN NOT NULL,
-            duration_ms INTEGER,
-            error TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-
-    yield p
-    await db.close()
+        yield p
 
 
 # ------------------------------------------------------------------

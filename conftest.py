@@ -7,9 +7,20 @@ re-exports them so they are equally visible from ``roster/*/tests/``.
 
 from __future__ import annotations
 
+import shutil
+import uuid
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from asyncpg.pool import Pool
+    from testcontainers.postgres import PostgresContainer
+
+docker_available = shutil.which("docker") is not None
 
 
 @dataclass
@@ -47,3 +58,59 @@ class MockSpawner:
 def mock_spawner() -> MockSpawner:
     """Provide a MockSpawner instance for tests."""
     return MockSpawner()
+
+
+def _unique_test_db_name() -> str:
+    return f"test_{uuid.uuid4().hex[:12]}"
+
+
+@pytest.fixture(scope="session")
+def postgres_container() -> Iterator[PostgresContainer]:
+    """Shared Postgres testcontainer for all DB-backed tests in this pytest session.
+
+    Isolation contract:
+    - Shared: Docker container process and server instance (session scope).
+    - Reset per test fixture usage: each helper call provisions a new database with
+      a random name, so table rows/schemas never leak between tests.
+    """
+    from testcontainers.postgres import PostgresContainer
+
+    with PostgresContainer("postgres:16") as pg:
+        yield pg
+
+
+@pytest.fixture
+def provisioned_postgres_pool(
+    postgres_container: PostgresContainer,
+) -> Callable[..., AbstractAsyncContextManager[Pool]]:
+    """Create a fresh database and asyncpg pool for a single test usage.
+
+    Tests should use this as:
+        async with provisioned_postgres_pool() as pool:
+            ...
+    """
+    from butlers.db import Database
+
+    @asynccontextmanager
+    async def _provision(
+        *,
+        min_pool_size: int = 1,
+        max_pool_size: int = 3,
+    ) -> AsyncIterator[Pool]:
+        db = Database(
+            db_name=_unique_test_db_name(),
+            host=postgres_container.get_container_host_ip(),
+            port=int(postgres_container.get_exposed_port(5432)),
+            user=postgres_container.username,
+            password=postgres_container.password,
+            min_pool_size=min_pool_size,
+            max_pool_size=max_pool_size,
+        )
+        await db.provision()
+        pool = await db.connect()
+        try:
+            yield pool
+        finally:
+            await db.close()
+
+    return _provision

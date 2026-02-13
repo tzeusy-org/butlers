@@ -16,139 +16,112 @@ pytestmark = [
 ]
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for the test module."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16") as pg:
-        yield pg
-
-
 @pytest.fixture
-async def pool(postgres_container):
+async def pool(provisioned_postgres_pool):
     """Provision a fresh database with health tables and return a pool."""
-    from butlers.db import Database
+    async with provisioned_postgres_pool() as p:
+        # Create health tables matching spec schema
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS measurements (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                type TEXT NOT NULL,
+                value JSONB NOT NULL,
+                measured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                notes TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS medications (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL,
+                dosage TEXT NOT NULL,
+                frequency TEXT NOT NULL,
+                schedule JSONB NOT NULL DEFAULT '[]',
+                active BOOLEAN NOT NULL DEFAULT true,
+                notes TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS medication_doses (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                medication_id UUID NOT NULL REFERENCES medications(id),
+                taken_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                skipped BOOLEAN NOT NULL DEFAULT false,
+                notes TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS conditions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                diagnosed_at TIMESTAMPTZ,
+                notes TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS meals (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                type TEXT NOT NULL,
+                description TEXT NOT NULL,
+                nutrition JSONB,
+                eaten_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                notes TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS symptoms (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL,
+                severity INTEGER NOT NULL CHECK (severity BETWEEN 1 AND 10),
+                condition_id UUID REFERENCES conditions(id),
+                occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                notes TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS research (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tags JSONB NOT NULL DEFAULT '[]',
+                source_url TEXT,
+                condition_id UUID REFERENCES conditions(id),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        # Indexes
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_measurements_type_measured_at
+                ON measurements (type, measured_at)
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_medication_doses_med_taken
+                ON medication_doses (medication_id, taken_at)
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_symptoms_name_occurred
+                ON symptoms (name, occurred_at)
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_meals_eaten_at
+                ON meals (eaten_at)
+        """)
 
-    db = Database(
-        db_name=_unique_db_name(),
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        min_pool_size=1,
-        max_pool_size=3,
-    )
-    await db.provision()
-    p = await db.connect()
-
-    # Create health tables matching spec schema
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS measurements (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            type TEXT NOT NULL,
-            value JSONB NOT NULL,
-            measured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            notes TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS medications (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
-            dosage TEXT NOT NULL,
-            frequency TEXT NOT NULL,
-            schedule JSONB NOT NULL DEFAULT '[]',
-            active BOOLEAN NOT NULL DEFAULT true,
-            notes TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS medication_doses (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            medication_id UUID NOT NULL REFERENCES medications(id),
-            taken_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            skipped BOOLEAN NOT NULL DEFAULT false,
-            notes TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS conditions (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'active',
-            diagnosed_at TIMESTAMPTZ,
-            notes TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS meals (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            type TEXT NOT NULL,
-            description TEXT NOT NULL,
-            nutrition JSONB,
-            eaten_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            notes TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS symptoms (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
-            severity INTEGER NOT NULL CHECK (severity BETWEEN 1 AND 10),
-            condition_id UUID REFERENCES conditions(id),
-            occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            notes TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS research (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            title TEXT NOT NULL,
-            content TEXT NOT NULL,
-            tags JSONB NOT NULL DEFAULT '[]',
-            source_url TEXT,
-            condition_id UUID REFERENCES conditions(id),
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    # Indexes
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_measurements_type_measured_at
-            ON measurements (type, measured_at)
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_medication_doses_med_taken
-            ON medication_doses (medication_id, taken_at)
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_symptoms_name_occurred
-            ON symptoms (name, occurred_at)
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_meals_eaten_at
-            ON meals (eaten_at)
-    """)
-
-    yield p
-    await db.close()
+        yield p
 
 
 # ------------------------------------------------------------------

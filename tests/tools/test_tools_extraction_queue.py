@@ -16,62 +16,35 @@ pytestmark = [
 ]
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for the test module."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16") as pg:
-        yield pg
-
-
 @pytest.fixture
-async def pool(postgres_container):
+async def pool(provisioned_postgres_pool):
     """Provision a fresh database with extraction_queue table and return a pool."""
-    from butlers.db import Database
+    async with provisioned_postgres_pool() as p:
+        # Create extraction_queue table (mirrors Alembic switchboard/002 migration)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS extraction_queue (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_message TEXT NOT NULL,
+                extraction_type VARCHAR(100) NOT NULL,
+                extraction_data JSONB NOT NULL DEFAULT '{}',
+                confidence VARCHAR(20) NOT NULL,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                ttl_days INTEGER NOT NULL DEFAULT 7,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                resolved_at TIMESTAMPTZ,
+                resolved_by VARCHAR(100)
+            )
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_extraction_queue_status
+                ON extraction_queue (status)
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_extraction_queue_created_at
+                ON extraction_queue (created_at)
+        """)
 
-    db = Database(
-        db_name=_unique_db_name(),
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        min_pool_size=1,
-        max_pool_size=3,
-    )
-    await db.provision()
-    p = await db.connect()
-
-    # Create extraction_queue table (mirrors Alembic switchboard/002 migration)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS extraction_queue (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            source_message TEXT NOT NULL,
-            extraction_type VARCHAR(100) NOT NULL,
-            extraction_data JSONB NOT NULL DEFAULT '{}',
-            confidence VARCHAR(20) NOT NULL,
-            status VARCHAR(20) NOT NULL DEFAULT 'pending',
-            ttl_days INTEGER NOT NULL DEFAULT 7,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            resolved_at TIMESTAMPTZ,
-            resolved_by VARCHAR(100)
-        )
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_extraction_queue_status
-            ON extraction_queue (status)
-    """)
-    await p.execute("""
-        CREATE INDEX IF NOT EXISTS idx_extraction_queue_created_at
-            ON extraction_queue (created_at)
-    """)
-
-    yield p
-    await db.close()
+        yield p
 
 
 # ------------------------------------------------------------------
