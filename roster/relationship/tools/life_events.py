@@ -93,11 +93,15 @@ async def life_event_log(
             effective_occurred_at,
         )
         result = dict(row)
+        details = description or summary
+        activity_summary = f"Life event: {type_name}"
+        if details:
+            activity_summary = f"{activity_summary} - {details}"
         await _log_activity(
             pool,
             contact_id,
             "life_event_logged",
-            f"Life event: {type_name} - {description or summary or ''}".strip(),
+            activity_summary,
         )
         return result
 
@@ -116,6 +120,8 @@ async def life_event_log(
     happened_at_date = None
     if happened_at is not None:
         happened_at_date = date.fromisoformat(happened_at)
+    elif occurred_at is not None:
+        happened_at_date = occurred_at.date()
     effective_summary = summary or description or type_name
 
     row = await pool.fetchrow(

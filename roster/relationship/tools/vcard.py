@@ -281,9 +281,16 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
                     "CAN": "CA",
                     "GBR": "GB",
                 }
-                normalized_country = country_map.get(raw_country.upper(), raw_country)
-                if len(normalized_country) > 2:
-                    normalized_country = normalized_country[:2]
+                normalized_country: str | None = None
+                if raw_country:
+                    country_candidate = country_map.get(raw_country.upper(), raw_country.upper())
+                    if len(country_candidate) == 2:
+                        normalized_country = country_candidate
+                    else:
+                        logger.warning(
+                            "Could not normalize country '%s' to a 2-letter code; ignoring",
+                            raw_country,
+                        )
                 await address_add(
                     pool,
                     contact["id"],

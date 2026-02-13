@@ -31,8 +31,8 @@ async def interaction_log(
     cols = await table_columns(pool, "interactions")
     effective_occurred_at = occurred_at if occurred_at is not None else datetime.now()
 
-    # Idempotency guard: same contact + type + date skips duplicate insert.
-    if "occurred_at" in cols:
+    # Idempotency guard: only explicit timestamps are treated as deterministic backfills.
+    if "occurred_at" in cols and occurred_at is not None:
         existing = await pool.fetchrow(
             """
             SELECT id
@@ -44,7 +44,7 @@ async def interaction_log(
             """,
             contact_id,
             type,
-            effective_occurred_at,
+            occurred_at,
         )
         if existing is not None:
             return {

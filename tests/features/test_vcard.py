@@ -344,6 +344,25 @@ END:VCARD"""
     assert addr["country"] == "US"
 
 
+async def test_import_vcard_with_unrecognized_country_ignores_country(pool):
+    """Unrecognized country names should not be truncated into invalid pseudo-codes."""
+    from butlers.tools.relationship import contact_import_vcard
+
+    vcf = """BEGIN:VCARD
+VERSION:3.0
+FN:Casey Lane
+N:Lane;Casey;;;
+ADR;TYPE=HOME:;;123 Market St;San Francisco;CA;94105;United States
+END:VCARD"""
+
+    contacts = await contact_import_vcard(pool, vcf)
+
+    assert len(contacts) == 1
+    details = contacts[0]["details"]
+    assert len(details["addresses"]) == 1
+    assert details["addresses"][0]["country"] is None
+
+
 async def test_import_vcard_with_birthday(pool):
     """Test importing a vCard with birthday."""
     from butlers.tools.relationship import contact_import_vcard, date_list

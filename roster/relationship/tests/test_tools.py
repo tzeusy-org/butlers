@@ -688,6 +688,19 @@ async def test_interaction_log_backward_compat(pool):
     assert i["metadata"] is None
 
 
+async def test_interaction_log_same_day_without_occurred_at_is_not_deduplicated(pool):
+    """Ad-hoc logs without occurred_at should not trigger date-based deduplication."""
+    from butlers.tools.relationship import contact_create, interaction_log
+
+    c = await contact_create(pool, "Inter-Adhoc")
+    first = await interaction_log(pool, c["id"], "call")
+    second = await interaction_log(pool, c["id"], "call")
+
+    assert "skipped" not in first
+    assert "skipped" not in second
+    assert second["id"] != first["id"]
+
+
 async def test_interaction_list_filter_by_direction(pool):
     """interaction_list filters by direction."""
     from butlers.tools.relationship import contact_create, interaction_list, interaction_log
@@ -1632,6 +1645,23 @@ async def test_life_event_log_without_date(pool):
     assert event["contact_id"] == contact["id"]
     assert event["summary"] == "Started at TechCorp"
     assert event["happened_at"] is None
+
+
+async def test_life_event_log_uses_occurred_at_when_happened_at_omitted(pool):
+    """occurred_at should backfill happened_at for taxonomy-backed life events."""
+    from butlers.tools.relationship import contact_create, life_event_log
+
+    contact = await contact_create(pool, "Dana")
+    occurred_at = datetime(2026, 2, 1, 15, 30, 0, tzinfo=UTC)
+    event = await life_event_log(
+        pool,
+        contact["id"],
+        "promotion",
+        "Promoted to lead",
+        occurred_at=occurred_at,
+    )
+
+    assert str(event["happened_at"]) == "2026-02-01"
 
 
 async def test_life_event_list_all(pool):
