@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -18,6 +18,7 @@ from butlers.modules.calendar import (
     CalendarConfig,
     CalendarCredentialError,
     CalendarEvent,
+    CalendarEventPayloadInput,
     CalendarModule,
     CalendarProvider,
     CalendarRequestError,
@@ -27,6 +28,7 @@ from butlers.modules.calendar import (
     _GoogleProvider,
     _parse_google_datetime,
     _parse_google_event_boundary,
+    normalize_event_payload,
 )
 
 pytestmark = pytest.mark.unit
@@ -692,3 +694,235 @@ class TestGooglePayloadValidationErrors:
                 },
                 fallback_timezone="UTC",
             )
+
+
+class TestEventPayloadNormalization:
+    """Verify canonical payload normalization and validation rules."""
+
+    def _config(self) -> CalendarConfig:
+        return CalendarConfig(
+            provider="google",
+            calendar_id="primary",
+            timezone="America/Los_Angeles",
+            event_defaults={"enabled": True, "minutes_before": 30, "color_id": "7"},
+        )
+
+    def test_timed_event_uses_defaults_and_trims_text_fields(self):
+        payload = CalendarEventPayloadInput(
+            title="  Team Sync  ",
+            start_at=datetime(2026, 2, 14, 9, 0),
+            end_at=datetime(2026, 2, 14, 10, 0),
+            description="  Agenda review  ",
+            location="  Room 5  ",
+            attendees=["  alice@example.com ", " ", "bob@example.com  "],
+        )
+
+        normalized = normalize_event_payload(payload, config=self._config())
+
+        assert normalized.title == "Team Sync"
+        assert normalized.all_day is False
+        assert normalized.timezone == "America/Los_Angeles"
+        assert normalized.start.date_time_value is not None
+        assert normalized.end.date_time_value is not None
+        assert normalized.start.date_time_value.tzinfo is not None
+        assert normalized.end.date_time_value.tzinfo is not None
+        assert normalized.start.timezone == "America/Los_Angeles"
+        assert normalized.description == "Agenda review"
+        assert normalized.location == "Room 5"
+        assert normalized.attendees == ["alice@example.com", "bob@example.com"]
+        assert normalized.notification.enabled is True
+        assert normalized.notification.minutes_before == 30
+        assert normalized.color_id == "7"
+
+    def test_all_day_inferred_from_date_inputs(self):
+        payload = CalendarEventPayloadInput(
+            title="Offsite",
+            start_at=date(2026, 3, 1),
+            end_at=date(2026, 3, 2),
+        )
+
+        normalized = normalize_event_payload(payload, config=self._config())
+
+        assert normalized.all_day is True
+        assert normalized.start.date_value == date(2026, 3, 1)
+        assert normalized.end.date_value == date(2026, 3, 2)
+        assert normalized.start.date_time_value is None
+        assert normalized.end.date_time_value is None
+        assert normalized.timezone == "America/Los_Angeles"
+
+    def test_notification_shorthands_map_deterministically(self):
+        disabled = normalize_event_payload(
+            {
+                "title": "Quiet block",
+                "start_at": datetime(2026, 5, 1, 12, 0),
+                "end_at": datetime(2026, 5, 1, 13, 0),
+                "notification": False,
+            },
+            config=self._config(),
+        )
+        custom = normalize_event_payload(
+            {
+                "title": "Ping me",
+                "start_at": datetime(2026, 5, 2, 12, 0),
+                "end_at": datetime(2026, 5, 2, 13, 0),
+                "notification": 5,
+            },
+            config=self._config(),
+        )
+        explicit = normalize_event_payload(
+            {
+                "title": "Default reminder",
+                "start_at": datetime(2026, 5, 3, 12, 0),
+                "end_at": datetime(2026, 5, 3, 13, 0),
+                "notification": {"enabled": True},
+            },
+            config=self._config(),
+        )
+
+        assert disabled.notification.enabled is False
+        assert disabled.notification.minutes_before is None
+        assert custom.notification.enabled is True
+        assert custom.notification.minutes_before == 5
+        assert explicit.notification.enabled is True
+        assert explicit.notification.minutes_before == 30
+
+    def test_color_prefers_payload_value_over_defaults(self):
+        normalized = normalize_event_payload(
+            {
+                "title": "Colored",
+                "start_at": datetime(2026, 6, 1, 9, 0),
+                "end_at": datetime(2026, 6, 1, 10, 0),
+                "color_id": " 11 ",
+            },
+            config=self._config(),
+        )
+
+        assert normalized.color_id == "11"
+
+    @pytest.mark.parametrize(
+        ("payload", "message"),
+        [
+            (
+                {
+                    "title": "Mismatch",
+                    "start_at": date(2026, 4, 1),
+                    "end_at": datetime(2026, 4, 1, 10, 0),
+                },
+                "both be date values or both datetime values",
+            ),
+            (
+                {
+                    "title": "Bad all_day",
+                    "start_at": datetime(2026, 4, 1, 9, 0),
+                    "end_at": datetime(2026, 4, 1, 10, 0),
+                    "all_day": True,
+                },
+                "all_day events require date-only",
+            ),
+            (
+                {
+                    "title": "Bad timed",
+                    "start_at": date(2026, 4, 1),
+                    "end_at": date(2026, 4, 2),
+                    "all_day": False,
+                },
+                "timed events require datetime",
+            ),
+            (
+                {
+                    "title": "Backwards timed",
+                    "start_at": datetime(2026, 4, 1, 10, 0),
+                    "end_at": datetime(2026, 4, 1, 9, 0),
+                },
+                "end_at must be after start_at for timed events",
+            ),
+            (
+                {
+                    "title": "Backwards all-day",
+                    "start_at": date(2026, 4, 2),
+                    "end_at": date(2026, 4, 1),
+                    "all_day": True,
+                },
+                "end_at must be after start_at for all_day events",
+            ),
+            (
+                {
+                    "title": "Invalid notification",
+                    "start_at": datetime(2026, 4, 1, 9, 0),
+                    "end_at": datetime(2026, 4, 1, 10, 0),
+                    "notification": {"enabled": False, "minutes_before": 5},
+                },
+                "notification.minutes_before cannot be set",
+            ),
+            (
+                {
+                    "title": "Invalid recurrence prefix",
+                    "start_at": datetime(2026, 4, 1, 9, 0),
+                    "end_at": datetime(2026, 4, 1, 10, 0),
+                    "recurrence": "FREQ=DAILY",
+                },
+                "must start with 'RRULE:'",
+            ),
+            (
+                {
+                    "title": "Invalid recurrence freq",
+                    "start_at": datetime(2026, 4, 1, 9, 0),
+                    "end_at": datetime(2026, 4, 1, 10, 0),
+                    "recurrence": "RRULE:INTERVAL=1",
+                },
+                "must include a FREQ component",
+            ),
+            (
+                {
+                    "title": "Invalid recurrence dtstart",
+                    "start_at": datetime(2026, 4, 1, 9, 0),
+                    "end_at": datetime(2026, 4, 1, 10, 0),
+                    "recurrence": "RRULE:FREQ=DAILY;DTSTART=20260401T090000Z",
+                },
+                "must not include DTSTART/DTEND",
+            ),
+            (
+                {
+                    "title": "Invalid recurrence lowercase dtstart",
+                    "start_at": datetime(2026, 4, 1, 9, 0),
+                    "end_at": datetime(2026, 4, 1, 10, 0),
+                    "recurrence": "RRULE:FREQ=DAILY;dtstart=20260401T090000Z",
+                },
+                "must not include DTSTART/DTEND",
+            ),
+            (
+                {
+                    "title": "Invalid recurrence newline injection",
+                    "start_at": datetime(2026, 4, 1, 9, 0),
+                    "end_at": datetime(2026, 4, 1, 10, 0),
+                    "recurrence": "RRULE:FREQ=DAILY\nDTSTART:20260401T090000Z",
+                },
+                "must not contain newline characters",
+            ),
+        ],
+    )
+    def test_invalid_payloads_raise_clear_errors(self, payload, message):
+        with pytest.raises(ValueError, match=message):
+            normalize_event_payload(payload, config=self._config())
+
+    def test_invalid_timezone_is_rejected(self):
+        with pytest.raises(ValidationError, match="timezone must be a valid IANA timezone"):
+            CalendarEventPayloadInput(
+                title="Bad timezone",
+                start_at=datetime(2026, 4, 1, 9, 0),
+                end_at=datetime(2026, 4, 1, 10, 0),
+                timezone="Mars/Olympus",
+            )
+
+    def test_recurrence_strings_are_trimmed_and_normalized(self):
+        normalized = normalize_event_payload(
+            {
+                "title": "Recurring",
+                "start_at": datetime(2026, 7, 1, 9, 0, tzinfo=UTC),
+                "end_at": datetime(2026, 7, 1, 10, 0, tzinfo=UTC),
+                "recurrence": ["  RRULE:FREQ=WEEKLY;INTERVAL=1  "],
+            },
+            config=self._config(),
+        )
+
+        assert normalized.recurrence == ["RRULE:FREQ=WEEKLY;INTERVAL=1"]

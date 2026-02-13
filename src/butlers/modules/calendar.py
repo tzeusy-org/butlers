@@ -18,7 +18,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from butlers.modules.base import Module
 
@@ -424,6 +424,283 @@ class CalendarConfig(BaseModel):
         if not normalized:
             raise ValueError(f"{info.field_name} must be a non-empty string")
         return normalized
+
+
+class CalendarNotificationInput(BaseModel):
+    """Tool input for notification configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    minutes_before: int | None = Field(default=None, ge=0)
+
+
+class CalendarNormalizedNotification(BaseModel):
+    """Provider-neutral notification settings after defaults are applied."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    minutes_before: int | None = Field(default=None, ge=0)
+
+
+class CalendarEventPayloadInput(BaseModel):
+    """Tool input used to construct a normalized event payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1)
+    start_at: date | datetime
+    end_at: date | datetime
+    all_day: bool | None = None
+    timezone: str | None = None
+    description: str | None = None
+    location: str | None = None
+    attendees: list[str] = Field(default_factory=list)
+    recurrence: str | list[str] | None = None
+    notification: CalendarNotificationInput | bool | int | None = None
+    color_id: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _normalize_title(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("title must be a non-empty string")
+        return normalized
+
+    @field_validator("timezone")
+    @classmethod
+    def _normalize_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        _ensure_valid_timezone(normalized)
+        return normalized
+
+    @field_validator("description", "location", "color_id")
+    @classmethod
+    def _normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("attendees")
+    @classmethod
+    def _normalize_attendees(cls, value: list[str]) -> list[str]:
+        return [attendee.strip() for attendee in value if attendee.strip()]
+
+
+class CalendarNormalizedEventTime(BaseModel):
+    """Normalized representation of either a date or date-time event boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    date_value: date | None = None
+    date_time_value: datetime | None = None
+    timezone: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_shape(self) -> CalendarNormalizedEventTime:
+        has_date = self.date_value is not None
+        has_date_time = self.date_time_value is not None
+        if has_date == has_date_time:
+            raise ValueError("exactly one of date_value or date_time_value must be provided")
+        if has_date and self.timezone is not None:
+            raise ValueError("timezone cannot be set for date-only event boundaries")
+        if has_date_time and self.timezone is None:
+            raise ValueError("timezone is required for date-time event boundaries")
+        return self
+
+
+class CalendarNormalizedEventPayload(BaseModel):
+    """Provider-neutral canonical event payload before adapter-specific mapping."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    all_day: bool
+    start: CalendarNormalizedEventTime
+    end: CalendarNormalizedEventTime
+    timezone: str
+    description: str | None = None
+    location: str | None = None
+    attendees: list[str] = Field(default_factory=list)
+    recurrence: list[str] = Field(default_factory=list)
+    notification: CalendarNormalizedNotification
+    color_id: str | None = None
+
+
+def normalize_event_payload(
+    payload: CalendarEventPayloadInput | dict[str, Any],
+    *,
+    config: CalendarConfig,
+) -> CalendarNormalizedEventPayload:
+    """Normalize tool input into a provider-neutral canonical event payload."""
+
+    tool_payload = (
+        payload
+        if isinstance(payload, CalendarEventPayloadInput)
+        else CalendarEventPayloadInput(**payload)
+    )
+    timezone = tool_payload.timezone or config.timezone
+    _ensure_valid_timezone(timezone)
+    all_day = _resolve_all_day_flag(
+        start_at=tool_payload.start_at,
+        end_at=tool_payload.end_at,
+        requested_all_day=tool_payload.all_day,
+    )
+
+    if all_day:
+        if not _is_date_only(tool_payload.start_at) or not _is_date_only(tool_payload.end_at):
+            raise ValueError("all_day events require date-only start_at and end_at values")
+        start_date = tool_payload.start_at
+        end_date = tool_payload.end_at
+        if end_date <= start_date:
+            raise ValueError("end_at must be after start_at for all_day events")
+        start_time = CalendarNormalizedEventTime(date_value=start_date)
+        end_time = CalendarNormalizedEventTime(date_value=end_date)
+    else:
+        if not isinstance(tool_payload.start_at, datetime) or not isinstance(
+            tool_payload.end_at, datetime
+        ):
+            raise ValueError("timed events require datetime start_at and end_at values")
+        start_dt = _normalize_datetime(tool_payload.start_at, timezone)
+        end_dt = _normalize_datetime(tool_payload.end_at, timezone)
+        if end_dt <= start_dt:
+            raise ValueError("end_at must be after start_at for timed events")
+        start_time = CalendarNormalizedEventTime(date_time_value=start_dt, timezone=timezone)
+        end_time = CalendarNormalizedEventTime(date_time_value=end_dt, timezone=timezone)
+
+    recurrence = _normalize_recurrence(tool_payload.recurrence)
+    notification = _normalize_notification(
+        tool_payload.notification,
+        defaults=config.event_defaults,
+    )
+    color_id = tool_payload.color_id or _normalize_optional_string(config.event_defaults.color_id)
+
+    return CalendarNormalizedEventPayload(
+        title=tool_payload.title,
+        all_day=all_day,
+        start=start_time,
+        end=end_time,
+        timezone=timezone,
+        description=tool_payload.description,
+        location=tool_payload.location,
+        attendees=tool_payload.attendees,
+        recurrence=recurrence,
+        notification=notification,
+        color_id=color_id,
+    )
+
+
+def _normalize_notification(
+    notification: CalendarNotificationInput | bool | int | None,
+    *,
+    defaults: CalendarNotificationDefaults,
+) -> CalendarNormalizedNotification:
+    if notification is None:
+        enabled = defaults.enabled
+        return CalendarNormalizedNotification(
+            enabled=enabled,
+            minutes_before=(defaults.minutes_before if enabled else None),
+        )
+    if isinstance(notification, bool):
+        return CalendarNormalizedNotification(
+            enabled=notification,
+            minutes_before=(defaults.minutes_before if notification else None),
+        )
+    if isinstance(notification, int):
+        if notification < 0:
+            raise ValueError("notification minutes must be greater than or equal to 0")
+        return CalendarNormalizedNotification(enabled=True, minutes_before=notification)
+
+    normalized = notification
+    if normalized.enabled is False and normalized.minutes_before is not None:
+        raise ValueError(
+            "notification.minutes_before cannot be set when notification.enabled is false"
+        )
+
+    enabled = normalized.enabled if normalized.enabled is not None else defaults.enabled
+    if enabled:
+        minutes_before = (
+            normalized.minutes_before
+            if normalized.minutes_before is not None
+            else defaults.minutes_before
+        )
+    else:
+        minutes_before = None
+    return CalendarNormalizedNotification(enabled=enabled, minutes_before=minutes_before)
+
+
+def _normalize_recurrence(recurrence: str | list[str] | None) -> list[str]:
+    if recurrence is None:
+        return []
+    rules = [recurrence] if isinstance(recurrence, str) else recurrence
+    normalized_rules: list[str] = []
+    for raw_rule in rules:
+        rule = raw_rule.strip()
+        if not rule:
+            raise ValueError("recurrence rules must be non-empty strings")
+        if "\n" in rule or "\r" in rule:
+            raise ValueError("recurrence rules must not contain newline characters")
+        if not rule.startswith("RRULE:"):
+            raise ValueError("recurrence rules must start with 'RRULE:'")
+        upper_rule = rule.upper()
+        if "FREQ=" not in upper_rule:
+            raise ValueError("recurrence rules must include a FREQ component")
+        if "DTSTART" in upper_rule or "DTEND" in upper_rule:
+            raise ValueError("recurrence rules must not include DTSTART/DTEND components")
+        normalized_rules.append(rule)
+    return normalized_rules
+
+
+def _resolve_all_day_flag(
+    *,
+    start_at: date | datetime,
+    end_at: date | datetime,
+    requested_all_day: bool | None,
+) -> bool:
+    if requested_all_day is not None:
+        return requested_all_day
+    start_is_date = _is_date_only(start_at)
+    end_is_date = _is_date_only(end_at)
+    if start_is_date and end_is_date:
+        return True
+    if isinstance(start_at, datetime) and isinstance(end_at, datetime):
+        return False
+    raise ValueError(
+        "start_at and end_at must both be date values or both datetime values "
+        "when all_day is omitted"
+    )
+
+
+def _normalize_datetime(value: datetime, timezone: str) -> datetime:
+    tz = ZoneInfo(timezone)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=tz)
+    return value.astimezone(tz)
+
+
+def _is_date_only(value: date | datetime) -> bool:
+    return isinstance(value, date) and not isinstance(value, datetime)
+
+
+def _normalize_optional_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _ensure_valid_timezone(value: str) -> None:
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"timezone must be a valid IANA timezone: {value}") from exc
 
 
 class CalendarEvent(BaseModel):
