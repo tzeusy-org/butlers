@@ -145,6 +145,7 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - `tests/conftest.py` re-exports from root for backward compat (`from tests.conftest import ...`)
 - CLI tests use Click's `CliRunner`
 - Telemetry tests use `InMemorySpanExporter`
+- Root `conftest.py` patches `testcontainers` teardown (`DockerContainer.stop`) with bounded retries for known transient Docker API teardown races (notably "did not receive an exit event") under `pytest-xdist`; non-transient errors must still raise.
 
 ### Memory System Architecture
 The memory system is a **shared Memory Butler** (port 8150, DB `butler_memory`) — not per-butler isolated. Three tables: `episodes` (session observations, 7d TTL), `facts` (subject-predicate knowledge with per-fact subjective decay), `rules` (procedural playbook, maturity: candidate→established→proven). Uses pgvector + local MiniLM-L6 embeddings (384d). Scoped (`global` or butler-name) but in one shared DB. See `MEMORY_PROJECT_PLAN.md` for full design. Dashboard integration at `/memory` (cross-butler) and `/butlers/:name/memory` (scoped).
