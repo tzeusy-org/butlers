@@ -12,6 +12,14 @@ CONFIDENCE_MEDIUM = "medium"
 CONFIDENCE_NONE = "none"
 
 
+def _display_name_from_row(row: asyncpg.Record | dict[str, Any]) -> str:
+    first = (row.get("first_name") if isinstance(row, dict) else row["first_name"]) or ""
+    last = (row.get("last_name") if isinstance(row, dict) else row["last_name"]) or ""
+    nickname = (row.get("nickname") if isinstance(row, dict) else row["nickname"]) or ""
+    full = " ".join(part for part in [first, last] if part).strip()
+    return full or nickname or first or "Unknown"
+
+
 async def contact_resolve(
     pool: asyncpg.Pool,
     name: str,
@@ -37,11 +45,19 @@ async def contact_resolve(
     if not name:
         return {"contact_id": None, "confidence": CONFIDENCE_NONE, "candidates": []}
 
-    # Step 1: Exact match (case-insensitive, non-archived contacts only)
+    # Step 1: Exact match (case-insensitive, listed contacts only)
     exact_rows = await pool.fetch(
         """
-        SELECT id, name, details FROM contacts
-        WHERE archived_at IS NULL AND LOWER(name) = LOWER($1)
+        SELECT id, first_name, last_name, nickname, company, job_title, metadata
+        FROM contacts
+        WHERE listed = true
+          AND (
+            LOWER(COALESCE(first_name, '')) = LOWER($1)
+            OR LOWER(COALESCE(nickname, '')) = LOWER($1)
+            OR LOWER(
+                TRIM(CONCAT_WS(' ', COALESCE(first_name, ''), COALESCE(last_name, '')))
+            ) = LOWER($1)
+          )
         ORDER BY updated_at DESC
         """,
         name,
@@ -55,7 +71,7 @@ async def contact_resolve(
             "candidates": [
                 {
                     "contact_id": row["id"],
-                    "name": row["name"],
+                    "name": _display_name_from_row(row),
                     "confidence": CONFIDENCE_HIGH,
                     "score": 100,
                 }
@@ -85,16 +101,25 @@ async def contact_resolve(
     name_parts = name.split()
     partial_rows = await pool.fetch(
         """
-        SELECT id, name, details FROM contacts
-        WHERE archived_at IS NULL
+        SELECT id, first_name, last_name, nickname, company, job_title, metadata
+        FROM contacts
+        WHERE listed = true
           AND (
-            name ILIKE '%' || $1 || '%'
+            first_name ILIKE '%' || $1 || '%'
+            OR last_name ILIKE '%' || $1 || '%'
+            OR nickname ILIKE '%' || $1 || '%'
+            OR company ILIKE '%' || $1 || '%'
             OR EXISTS (
-                SELECT 1 FROM unnest(string_to_array(name, ' ')) AS word
+                SELECT 1 FROM unnest(
+                    string_to_array(
+                        TRIM(CONCAT_WS(' ', COALESCE(first_name, ''), COALESCE(last_name, ''))),
+                        ' '
+                    )
+                ) AS word
                 WHERE LOWER(word) = LOWER($1)
             )
           )
-        ORDER BY name
+        ORDER BY first_name, last_name, nickname
         """,
         name,
     )
@@ -105,12 +130,15 @@ async def contact_resolve(
         conditions = []
         params: list[Any] = []
         for i, part in enumerate(name_parts, start=1):
-            conditions.append(f"name ILIKE '%' || ${i} || '%'")
+            conditions.append(f"first_name ILIKE '%' || ${i} || '%'")
+            conditions.append(f"last_name ILIKE '%' || ${i} || '%'")
+            conditions.append(f"nickname ILIKE '%' || ${i} || '%'")
             params.append(part)
         query = f"""
-            SELECT id, name, details FROM contacts
-            WHERE archived_at IS NULL AND ({" OR ".join(conditions)})
-            ORDER BY name
+            SELECT id, first_name, last_name, nickname, company, job_title, metadata
+            FROM contacts
+            WHERE listed = true AND ({" OR ".join(conditions)})
+            ORDER BY first_name, last_name, nickname
         """
         partial_rows = await pool.fetch(query, *params)
 
@@ -146,7 +174,7 @@ def _build_candidates(rows: list[asyncpg.Record], base_score: int = 50) -> list[
     return [
         {
             "contact_id": row["id"],
-            "name": row["name"],
+            "name": _display_name_from_row(row),
             "confidence": CONFIDENCE_MEDIUM,
             "score": base_score,
         }
@@ -164,7 +192,7 @@ def _score_partial_matches(
     query_lower = query_name.lower()
 
     for row in rows:
-        contact_name = row["name"]
+        contact_name = _display_name_from_row(row)
         contact_lower = contact_name.lower()
         contact_parts = [p.lower() for p in contact_name.split()]
         score = 0
@@ -202,31 +230,46 @@ async def _boost_by_context(
     candidates: list[dict[str, Any]],
     context: str,
 ) -> list[dict[str, Any]]:
-    """Boost candidate scores based on context matching against details and notes."""
+    """Boost candidate scores based on context matching against metadata and notes."""
     context_words = [w.lower() for w in context.split() if len(w) > 2]
 
     for candidate in candidates:
         cid = candidate["contact_id"]
 
-        # Check contact details
-        detail_row = await pool.fetchrow("SELECT details FROM contacts WHERE id = $1", cid)
-        if detail_row and detail_row["details"]:
-            details_text = (
-                json.dumps(detail_row["details"]).lower()
-                if isinstance(detail_row["details"], dict)
-                else str(detail_row["details"]).lower()
+        # Check metadata and explicit profile fields
+        detail_row = await pool.fetchrow(
+            """
+            SELECT metadata, company, job_title, first_name, last_name, nickname
+            FROM contacts
+            WHERE id = $1
+            """,
+            cid,
+        )
+        if detail_row:
+            metadata = detail_row["metadata"]
+            metadata_text = (
+                json.dumps(metadata).lower()
+                if isinstance(metadata, dict)
+                else str(metadata or "").lower()
             )
+            profile_text = " ".join(
+                [
+                    str(detail_row["company"] or ""),
+                    str(detail_row["job_title"] or ""),
+                    str(detail_row["first_name"] or ""),
+                    str(detail_row["last_name"] or ""),
+                    str(detail_row["nickname"] or ""),
+                ]
+            ).lower()
             for word in context_words:
-                if word in details_text:
+                if word in metadata_text or word in profile_text:
                     candidate["score"] += 10
                     break
 
         # Check notes
-        note_rows = await pool.fetch(
-            "SELECT content FROM notes WHERE contact_id = $1 LIMIT 10", cid
-        )
+        note_rows = await pool.fetch("SELECT body FROM notes WHERE contact_id = $1 LIMIT 10", cid)
         for note in note_rows:
-            note_text = note["content"].lower()
+            note_text = str(note["body"] or "").lower()
             for word in context_words:
                 if word in note_text:
                     candidate["score"] += 5

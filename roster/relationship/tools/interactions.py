@@ -25,55 +25,55 @@ async def interaction_log(
     duration_minutes: int | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Log an interaction with a contact. Skips duplicate contact+type+date."""
-    cols = await table_columns(pool, "interactions")
-    has_direction = "direction" in cols
-
-    if has_direction and direction is not None and direction not in _VALID_DIRECTIONS:
+    """Log an interaction with a contact."""
+    if direction is not None and direction not in _VALID_DIRECTIONS:
         raise ValueError(f"Invalid direction '{direction}'. Must be one of {_VALID_DIRECTIONS}")
+    cols = await table_columns(pool, "interactions")
+    effective_occurred_at = occurred_at if occurred_at is not None else datetime.now()
 
-    # Idempotency guard is only applied when caller supplies an explicit occurred_at.
-    # This preserves ingestion idempotency while allowing day-to-day ad-hoc logs.
-    if occurred_at is not None:
+    # Idempotency guard: only explicit timestamps are treated as deterministic backfills.
+    if "occurred_at" in cols and occurred_at is not None:
         existing = await pool.fetchrow(
             """
-            SELECT id FROM interactions
-            WHERE contact_id = $1 AND type = $2 AND DATE(occurred_at) = DATE($3)
+            SELECT id
+            FROM interactions
+            WHERE contact_id = $1
+              AND type = $2
+              AND occurred_at::date = $3::date
+            LIMIT 1
             """,
             contact_id,
             type,
             occurred_at,
         )
         if existing is not None:
-            return {"skipped": "duplicate", "existing_id": str(existing["id"])}
-    insert_cols: list[str] = ["contact_id", "type"]
-    values: list[Any] = [contact_id, type]
-    placeholders: list[str] = ["$1", "$2"]
+            return {
+                "skipped": "duplicate",
+                "existing_id": str(existing["id"]),
+            }
 
-    if "summary" in cols:
-        insert_cols.append("summary")
-        values.append(summary)
-        placeholders.append(f"${len(values)}")
+    insert_cols: list[str] = []
+    values: list[Any] = []
 
-    if "occurred_at" in cols and occurred_at is not None:
-        insert_cols.append("occurred_at")
-        values.append(occurred_at)
-        placeholders.append(f"${len(values)}")
+    def add(col: str, val: Any) -> None:
+        if col in cols:
+            insert_cols.append(col)
+            values.append(val)
 
-    if has_direction and direction is not None:
-        insert_cols.append("direction")
-        values.append(direction)
-        placeholders.append(f"${len(values)}")
+    add("contact_id", contact_id)
+    add("type", type)
+    add("summary", summary)
+    add("occurred_at", effective_occurred_at)
+    add("direction", direction)
+    add("duration_minutes", duration_minutes)
+    add("metadata", json.dumps(metadata) if metadata is not None else None)
 
-    if "duration_minutes" in cols and duration_minutes is not None:
-        insert_cols.append("duration_minutes")
-        values.append(duration_minutes)
-        placeholders.append(f"${len(values)}")
-
-    if "metadata" in cols and metadata is not None:
-        insert_cols.append("metadata")
-        values.append(json.dumps(metadata))
-        placeholders.append(f"${len(values)}::jsonb")
+    placeholders: list[str] = []
+    for idx, col in enumerate(insert_cols, start=1):
+        if col == "metadata":
+            placeholders.append(f"${idx}::jsonb")
+        else:
+            placeholders.append(f"${idx}")
 
     row = await pool.fetchrow(
         f"""
@@ -120,11 +120,10 @@ async def interaction_list(
         idx += 1
 
     where = " AND ".join(conditions)
-    order_col = "occurred_at" if "occurred_at" in cols else "created_at"
     query = f"""
         SELECT * FROM interactions
         WHERE {where}
-        ORDER BY {order_col} DESC
+        ORDER BY occurred_at DESC
         LIMIT ${idx}
     """
     params.append(limit)

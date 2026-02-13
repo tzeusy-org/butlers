@@ -7,7 +7,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship._schema import contact_name_expr, table_columns
 from butlers.tools.relationship.contacts import _parse_contact
 from butlers.tools.relationship.feed import _log_activity
 
@@ -124,39 +123,29 @@ async def contact_search_by_info(
     Optionally filter by info type (email, phone, etc.).
     Uses ILIKE for case-insensitive partial matching.
     """
-    contact_cols = await table_columns(pool, "contacts")
-    name_sql = contact_name_expr(contact_cols, alias="c")
     if type is not None:
         rows = await pool.fetch(
-            f"""
-            SELECT DISTINCT
-                c.*,
-                ci.type AS matched_type,
-                ci.value AS matched_value,
-                {name_sql} AS name
+            """
+            SELECT DISTINCT c.*, ci.type AS matched_type, ci.value AS matched_value
             FROM contacts c
             JOIN contact_info ci ON c.id = ci.contact_id
             WHERE ci.type = $1
               AND ci.value ILIKE '%' || $2 || '%'
-              AND c.archived_at IS NULL
-            ORDER BY {name_sql}
+              AND c.listed = true
+            ORDER BY c.first_name, c.last_name, c.nickname
             """,
             type,
             value,
         )
     else:
         rows = await pool.fetch(
-            f"""
-            SELECT DISTINCT
-                c.*,
-                ci.type AS matched_type,
-                ci.value AS matched_value,
-                {name_sql} AS name
+            """
+            SELECT DISTINCT c.*, ci.type AS matched_type, ci.value AS matched_value
             FROM contacts c
             JOIN contact_info ci ON c.id = ci.contact_id
             WHERE ci.value ILIKE '%' || $1 || '%'
-              AND c.archived_at IS NULL
-            ORDER BY {name_sql}
+              AND c.listed = true
+            ORDER BY c.first_name, c.last_name, c.nickname
             """,
             value,
         )

@@ -243,7 +243,7 @@ async def relationship_list(pool: asyncpg.Pool, contact_id: uuid.UUID) -> list[d
     name_sql = contact_name_expr(contact_cols, alias="c")
     rows = await pool.fetch(
         f"""
-        SELECT r.*, {name_sql} as related_name
+        SELECT r.*, {name_sql} AS related_name
         FROM relationships r
         JOIN contacts c ON r.contact_b = c.id
         WHERE r.contact_a = $1

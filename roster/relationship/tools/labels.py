@@ -7,7 +7,6 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship._schema import contact_name_expr, table_columns
 from butlers.tools.relationship.contacts import _parse_contact
 from butlers.tools.relationship.feed import _log_activity
 
@@ -37,16 +36,14 @@ async def label_assign(
 
 async def contact_search_by_label(pool: asyncpg.Pool, label_name: str) -> list[dict[str, Any]]:
     """Search contacts by label name."""
-    contact_cols = await table_columns(pool, "contacts")
-    name_sql = contact_name_expr(contact_cols, alias="c")
     rows = await pool.fetch(
-        f"""
-        SELECT c.*, {name_sql} AS name
+        """
+        SELECT c.*
         FROM contacts c
         JOIN contact_labels cl ON c.id = cl.contact_id
         JOIN labels l ON cl.label_id = l.id
-        WHERE l.name = $1 AND c.archived_at IS NULL
-        ORDER BY {name_sql}
+        WHERE l.name = $1 AND c.listed = true
+        ORDER BY c.first_name, c.last_name, c.nickname
         """,
         label_name,
     )

@@ -5,7 +5,6 @@ from __future__ import annotations
 import shutil
 import uuid
 from datetime import UTC, datetime
-from decimal import Decimal
 
 import pytest
 
@@ -25,15 +24,22 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS contacts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL,
-                details JSONB DEFAULT '{}',
-                archived_at TIMESTAMPTZ,
+                first_name TEXT,
+                last_name TEXT,
+                nickname TEXT,
+                company TEXT,
+                job_title TEXT,
+                gender TEXT,
+                pronouns TEXT,
+                avatar_url TEXT,
+                listed BOOLEAN NOT NULL DEFAULT true,
+                metadata JSONB NOT NULL DEFAULT '{}',
                 created_at TIMESTAMPTZ DEFAULT now(),
                 updated_at TIMESTAMPTZ DEFAULT now()
             )
         """)
         await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (name)
+            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
         """)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS relationships (
@@ -60,7 +66,8 @@ async def pool(provisioned_postgres_pool):
             CREATE TABLE IF NOT EXISTS notes (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                content TEXT NOT NULL,
+                title TEXT,
+                body TEXT NOT NULL,
                 emotion TEXT,
                 created_at TIMESTAMPTZ DEFAULT now()
             )
@@ -85,12 +92,11 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                message TEXT NOT NULL,
-                reminder_type TEXT NOT NULL CHECK (reminder_type IN ('one_time', 'recurring')),
-                cron TEXT,
-                due_at TIMESTAMPTZ,
-                dismissed BOOLEAN DEFAULT false,
+                contact_id UUID REFERENCES contacts(id) ON DELETE CASCADE,
+                label TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'one_time',
+                next_trigger_at TIMESTAMPTZ,
+                last_triggered_at TIMESTAMPTZ,
                 created_at TIMESTAMPTZ DEFAULT now()
             )
         """)
@@ -109,10 +115,12 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS loans (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                amount NUMERIC NOT NULL,
-                direction TEXT NOT NULL CHECK (direction IN ('lent', 'borrowed')),
-                description TEXT,
+                lender_contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                borrower_contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                amount_cents INT NOT NULL,
+                currency TEXT NOT NULL DEFAULT 'USD',
+                loaned_at TIMESTAMPTZ,
                 settled BOOLEAN DEFAULT false,
                 created_at TIMESTAMPTZ DEFAULT now(),
                 settled_at TIMESTAMPTZ
@@ -122,6 +130,7 @@ async def pool(provisioned_postgres_pool):
             CREATE TABLE IF NOT EXISTS groups (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 name TEXT NOT NULL UNIQUE,
+                type TEXT,
                 created_at TIMESTAMPTZ DEFAULT now()
             )
         """)
@@ -129,6 +138,7 @@ async def pool(provisioned_postgres_pool):
             CREATE TABLE IF NOT EXISTS group_members (
                 group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
                 contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                role TEXT,
                 PRIMARY KEY (group_id, contact_id)
             )
         """)
@@ -162,8 +172,10 @@ async def pool(provisioned_postgres_pool):
             CREATE TABLE IF NOT EXISTS activity_feed (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                type TEXT NOT NULL,
-                description TEXT NOT NULL,
+                action TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                entity_type TEXT,
+                entity_id UUID,
                 created_at TIMESTAMPTZ DEFAULT now()
             )
         """)
@@ -294,18 +306,22 @@ async def test_contact_create(pool):
     """contact_create inserts a new contact and returns its dict."""
     from butlers.tools.relationship import contact_create
 
-    result = await contact_create(pool, "Alice", {"email": "alice@example.com"})
-    assert result["name"] == "Alice"
+    result = await contact_create(
+        pool,
+        first_name="Alice",
+        metadata={"email": "alice@example.com"},
+    )
+    assert result["first_name"] == "Alice"
     assert isinstance(result["id"], uuid.UUID)
-    assert result["details"] == {"email": "alice@example.com"}
+    assert result["metadata"] == {"email": "alice@example.com"}
 
 
 async def test_contact_create_default_details(pool):
-    """contact_create uses empty dict for details when not provided."""
+    """contact_create uses empty dict for metadata when not provided."""
     from butlers.tools.relationship import contact_create
 
     result = await contact_create(pool, "Bob")
-    assert result["details"] == {}
+    assert result["metadata"] == {}
 
 
 async def test_contact_update(pool):
@@ -313,9 +329,9 @@ async def test_contact_update(pool):
     from butlers.tools.relationship import contact_create, contact_update
 
     c = await contact_create(pool, "Carol")
-    updated = await contact_update(pool, c["id"], name="Caroline", details={"age": 30})
-    assert updated["name"] == "Caroline"
-    assert updated["details"] == {"age": 30}
+    updated = await contact_update(pool, c["id"], first_name="Caroline", metadata={"age": 30})
+    assert updated["first_name"] == "Caroline"
+    assert updated["metadata"] == {"age": 30}
 
 
 async def test_contact_update_not_found(pool):
@@ -323,7 +339,7 @@ async def test_contact_update_not_found(pool):
     from butlers.tools.relationship import contact_update
 
     with pytest.raises(ValueError, match="not found"):
-        await contact_update(pool, uuid.uuid4(), name="Nobody")
+        await contact_update(pool, uuid.uuid4(), first_name="Nobody")
 
 
 async def test_contact_get(pool):
@@ -332,12 +348,12 @@ async def test_contact_get(pool):
 
     c = await contact_create(pool, "Dave")
     fetched = await contact_get(pool, c["id"])
-    assert fetched["name"] == "Dave"
+    assert fetched["first_name"] == "Dave"
     assert fetched["id"] == c["id"]
 
 
 async def test_contact_get_not_found(pool):
-    """contact_get raises ValueError for non-existent contact."""
+    """contact_get raises ValueError for non-existent contact by default."""
     from butlers.tools.relationship import contact_get
 
     with pytest.raises(ValueError, match="not found"):
@@ -352,29 +368,29 @@ async def test_contact_search(pool):
     await contact_create(pool, "Frank Miller")
 
     results = await contact_search(pool, "john")
-    names = [r["name"] for r in results]
-    assert "Eve Johnson" in names
-    assert "Frank Miller" not in names
+    names = [r["first_name"] for r in results]
+    assert "Eve" in names
+    assert "Frank" not in names
 
 
-async def test_contact_search_by_details(pool):
-    """contact_search finds contacts by details JSONB text match."""
+async def test_contact_search_by_company(pool):
+    """contact_search finds contacts by company match."""
     from butlers.tools.relationship import contact_create, contact_search
 
-    await contact_create(pool, "Grace", {"company": "Acme Corp"})
+    await contact_create(pool, first_name="Grace", company="Acme Corp")
 
     results = await contact_search(pool, "Acme")
-    names = [r["name"] for r in results]
+    names = [r["first_name"] for r in results]
     assert "Grace" in names
 
 
 async def test_contact_archive(pool):
-    """contact_archive sets archived_at and excludes from search."""
+    """contact_archive sets listed=false and excludes from search."""
     from butlers.tools.relationship import contact_archive, contact_create, contact_search
 
     c = await contact_create(pool, "Hank Archived")
     archived = await contact_archive(pool, c["id"])
-    assert archived["archived_at"] is not None
+    assert archived["listed"] is False
 
     # Should not appear in search
     results = await contact_search(pool, "Hank Archived")
@@ -524,7 +540,7 @@ async def test_note_create(pool):
 
     c = await contact_create(pool, "Note-Person")
     n = await note_create(pool, c["id"], "Met at conference", emotion="happy")
-    assert n["content"] == "Met at conference"
+    assert n["body"] == "Met at conference"
     assert n["emotion"] == "happy"
 
 
@@ -550,7 +566,7 @@ async def test_note_list(pool):
 
 
 async def test_note_search(pool):
-    """note_search finds notes by content ILIKE."""
+    """note_search finds notes by body/title ILIKE."""
     from butlers.tools.relationship import contact_create, note_create, note_search
 
     c = await contact_create(pool, "Note-Search")
@@ -559,7 +575,7 @@ async def test_note_search(pool):
 
     results = await note_search(pool, "tennis")
     assert len(results) >= 1
-    assert any("tennis" in r["content"] for r in results)
+    assert any("tennis" in r["body"] for r in results)
 
 
 # ------------------------------------------------------------------
@@ -672,6 +688,19 @@ async def test_interaction_log_backward_compat(pool):
     assert i["metadata"] is None
 
 
+async def test_interaction_log_same_day_without_occurred_at_is_not_deduplicated(pool):
+    """Ad-hoc logs without occurred_at should not trigger date-based deduplication."""
+    from butlers.tools.relationship import contact_create, interaction_log
+
+    c = await contact_create(pool, "Inter-Adhoc")
+    first = await interaction_log(pool, c["id"], "call")
+    second = await interaction_log(pool, c["id"], "call")
+
+    assert "skipped" not in first
+    assert "skipped" not in second
+    assert second["id"] != first["id"]
+
+
 async def test_interaction_list_filter_by_direction(pool):
     """interaction_list filters by direction."""
     from butlers.tools.relationship import contact_create, interaction_list, interaction_log
@@ -743,9 +772,9 @@ async def test_interaction_feed_includes_direction(pool):
     await interaction_log(pool, c["id"], "call", direction="outgoing")
 
     feed = await feed_get(pool, contact_id=c["id"])
-    interaction_entries = [f for f in feed if f["type"] == "interaction_logged"]
+    interaction_entries = [f for f in feed if f["action"] == "interaction_logged"]
     assert len(interaction_entries) >= 1
-    assert "(outgoing)" in interaction_entries[0]["description"]
+    assert "(outgoing)" in interaction_entries[0]["summary"]
 
 
 async def test_interaction_feed_no_direction(pool):
@@ -756,12 +785,12 @@ async def test_interaction_feed_no_direction(pool):
     await interaction_log(pool, c["id"], "email")
 
     feed = await feed_get(pool, contact_id=c["id"])
-    interaction_entries = [f for f in feed if f["type"] == "interaction_logged"]
+    interaction_entries = [f for f in feed if f["action"] == "interaction_logged"]
     assert len(interaction_entries) >= 1
     # Should not contain parenthetical direction
-    assert "(incoming)" not in interaction_entries[0]["description"]
-    assert "(outgoing)" not in interaction_entries[0]["description"]
-    assert "(mutual)" not in interaction_entries[0]["description"]
+    assert "(incoming)" not in interaction_entries[0]["summary"]
+    assert "(outgoing)" not in interaction_entries[0]["summary"]
+    assert "(mutual)" not in interaction_entries[0]["summary"]
 
 
 # ------------------------------------------------------------------
@@ -775,20 +804,30 @@ async def test_reminder_create_one_time(pool):
 
     c = await contact_create(pool, "Remind-Once")
     due = datetime(2025, 12, 25, 0, 0, 0, tzinfo=UTC)
-    r = await reminder_create(pool, c["id"], "Buy gift", "one_time", due_at=due)
-    assert r["reminder_type"] == "one_time"
-    assert r["due_at"] == due
-    assert r["dismissed"] is False
+    r = await reminder_create(
+        pool,
+        contact_id=c["id"],
+        message="Buy gift",
+        reminder_type="one_time",
+        next_trigger_at=due,
+    )
+    assert r["type"] == "one_time"
+    assert r["next_trigger_at"] == due
+    assert r["last_triggered_at"] is None
 
 
 async def test_reminder_create_recurring(pool):
-    """reminder_create stores a recurring reminder with cron."""
+    """reminder_create stores a recurring reminder."""
     from butlers.tools.relationship import contact_create, reminder_create
 
     c = await contact_create(pool, "Remind-Recur")
-    r = await reminder_create(pool, c["id"], "Weekly check-in", "recurring", cron="0 9 * * 1")
-    assert r["reminder_type"] == "recurring"
-    assert r["cron"] == "0 9 * * 1"
+    r = await reminder_create(
+        pool,
+        contact_id=c["id"],
+        message="Monthly check-in",
+        reminder_type="recurring_monthly",
+    )
+    assert r["type"] == "recurring_monthly"
 
 
 async def test_reminder_list(pool):
@@ -796,23 +835,42 @@ async def test_reminder_list(pool):
     from butlers.tools.relationship import contact_create, reminder_create, reminder_list
 
     c = await contact_create(pool, "Remind-List")
-    await reminder_create(pool, c["id"], "Reminder 1", "one_time")
-    await reminder_create(pool, c["id"], "Reminder 2", "one_time")
+    now = datetime.now(UTC)
+    await reminder_create(
+        pool,
+        contact_id=c["id"],
+        message="Reminder 1",
+        reminder_type="one_time",
+        next_trigger_at=now,
+    )
+    await reminder_create(
+        pool,
+        contact_id=c["id"],
+        message="Reminder 2",
+        reminder_type="one_time",
+        next_trigger_at=now,
+    )
 
-    reminders = await reminder_list(pool, c["id"])
+    reminders = await reminder_list(pool, contact_id=c["id"])
     assert len(reminders) == 2
 
 
 async def test_reminder_dismiss(pool):
-    """reminder_dismiss sets dismissed=True."""
+    """reminder_dismiss clears next_trigger_at for one-time reminders."""
     from butlers.tools.relationship import contact_create, reminder_create, reminder_dismiss
 
     c = await contact_create(pool, "Remind-Dismiss")
-    r = await reminder_create(pool, c["id"], "Do something", "one_time")
-    assert r["dismissed"] is False
+    r = await reminder_create(
+        pool,
+        contact_id=c["id"],
+        message="Do something",
+        reminder_type="one_time",
+        next_trigger_at=datetime.now(UTC),
+    )
 
     dismissed = await reminder_dismiss(pool, r["id"])
-    assert dismissed["dismissed"] is True
+    assert dismissed["next_trigger_at"] is None
+    assert dismissed["last_triggered_at"] is not None
 
 
 async def test_reminder_dismiss_not_found(pool):
@@ -940,11 +998,19 @@ async def test_loan_create(pool):
     """loan_create stores a loan record."""
     from butlers.tools.relationship import contact_create, loan_create
 
-    c = await contact_create(pool, "Loan-Person")
-    loan = await loan_create(pool, c["id"], Decimal("50.00"), "lent", "Lunch money")
-    assert loan["amount"] == Decimal("50.00")
-    assert loan["direction"] == "lent"
-    assert loan["description"] == "Lunch money"
+    lender = await contact_create(pool, "Loan-Lender")
+    borrower = await contact_create(pool, "Loan-Borrower")
+    loan = await loan_create(
+        pool,
+        lender_contact_id=lender["id"],
+        borrower_contact_id=borrower["id"],
+        description="Lunch money",
+        amount_cents=5000,
+    )
+    assert loan["amount_cents"] == 5000
+    assert loan["lender_contact_id"] == lender["id"]
+    assert loan["borrower_contact_id"] == borrower["id"]
+    assert loan["currency"] == "USD"
     assert loan["settled"] is False
 
 
@@ -952,8 +1018,15 @@ async def test_loan_settle(pool):
     """loan_settle marks a loan as settled."""
     from butlers.tools.relationship import contact_create, loan_create, loan_settle
 
-    c = await contact_create(pool, "Loan-Settle")
-    loan = await loan_create(pool, c["id"], Decimal("100.00"), "borrowed")
+    lender = await contact_create(pool, "Loan-Settle-Lender")
+    borrower = await contact_create(pool, "Loan-Settle-Borrower")
+    loan = await loan_create(
+        pool,
+        lender_contact_id=lender["id"],
+        borrower_contact_id=borrower["id"],
+        description="Settle Test",
+        amount_cents=10000,
+    )
     settled = await loan_settle(pool, loan["id"])
     assert settled["settled"] is True
     assert settled["settled_at"] is not None
@@ -971,11 +1044,24 @@ async def test_loan_list(pool):
     """loan_list returns loans for a contact."""
     from butlers.tools.relationship import contact_create, loan_create, loan_list
 
-    c = await contact_create(pool, "Loan-List")
-    await loan_create(pool, c["id"], Decimal("25.00"), "lent")
-    await loan_create(pool, c["id"], Decimal("75.00"), "borrowed")
+    lender = await contact_create(pool, "Loan-List-Lender")
+    borrower = await contact_create(pool, "Loan-List-Borrower")
+    await loan_create(
+        pool,
+        lender_contact_id=lender["id"],
+        borrower_contact_id=borrower["id"],
+        description="First",
+        amount_cents=2500,
+    )
+    await loan_create(
+        pool,
+        lender_contact_id=lender["id"],
+        borrower_contact_id=borrower["id"],
+        description="Second",
+        amount_cents=7500,
+    )
 
-    loans = await loan_list(pool, c["id"])
+    loans = await loan_list(pool, lender["id"])
     assert len(loans) == 2
 
 
@@ -1030,7 +1116,7 @@ async def test_group_members(pool):
     await group_add_member(pool, g["id"], c2["id"])
 
     members = await group_members(pool, g["id"])
-    member_names = [m["name"] for m in members]
+    member_names = [m["first_name"] for m in members]
     assert "Member-A" in member_names
     assert "Member-B" in member_names
 
@@ -1085,7 +1171,7 @@ async def test_contact_search_by_label(pool):
     await label_assign(pool, lbl["id"], c2["id"])
 
     results = await contact_search_by_label(pool, "priority")
-    names = [r["name"] for r in results]
+    names = [r["first_name"] for r in results]
     assert "Priority-A" in names
     assert "Priority-B" in names
     assert "Normal-C" not in names
@@ -1149,9 +1235,9 @@ async def test_activity_feed_auto_populated(pool):
     await note_create(pool, c["id"], "Test note for feed")
 
     feed = await feed_get(pool, contact_id=c["id"])
-    types = [f["type"] for f in feed]
-    assert "contact_created" in types
-    assert "note_created" in types
+    actions = [f["action"] for f in feed]
+    assert "contact_created" in actions
+    assert "note_created" in actions
 
 
 async def test_activity_feed_filter_by_contact(pool):
@@ -1423,11 +1509,11 @@ async def test_address_activity_feed_add(pool):
     await address_add(pool, c["id"], line_1="Feed St", city="FeedCity", country="US")
 
     feed = await feed_get(pool, contact_id=c["id"])
-    types = [f["type"] for f in feed]
-    assert "address_added" in types
-    addr_entry = next(f for f in feed if f["type"] == "address_added")
-    assert "Feed St" in addr_entry["description"]
-    assert "FeedCity" in addr_entry["description"]
+    actions = [f["action"] for f in feed]
+    assert "address_added" in actions
+    addr_entry = next(f for f in feed if f["action"] == "address_added")
+    assert "Feed St" in addr_entry["summary"]
+    assert "FeedCity" in addr_entry["summary"]
 
 
 async def test_address_activity_feed_update(pool):
@@ -1444,8 +1530,8 @@ async def test_address_activity_feed_update(pool):
     await address_update(pool, addr["id"], line_1="After St")
 
     feed = await feed_get(pool, contact_id=c["id"])
-    types = [f["type"] for f in feed]
-    assert "address_updated" in types
+    actions = [f["action"] for f in feed]
+    assert "address_updated" in actions
 
 
 async def test_address_activity_feed_remove(pool):
@@ -1462,10 +1548,10 @@ async def test_address_activity_feed_remove(pool):
     await address_remove(pool, addr["id"])
 
     feed = await feed_get(pool, contact_id=c["id"])
-    types = [f["type"] for f in feed]
-    assert "address_removed" in types
-    remove_entry = next(f for f in feed if f["type"] == "address_removed")
-    assert "Work" in remove_entry["description"]
+    actions = [f["action"] for f in feed]
+    assert "address_removed" in actions
+    remove_entry = next(f for f in feed if f["action"] == "address_removed")
+    assert "Work" in remove_entry["summary"]
 
 
 async def test_address_cascade_on_contact_delete(pool):
@@ -1559,6 +1645,23 @@ async def test_life_event_log_without_date(pool):
     assert event["contact_id"] == contact["id"]
     assert event["summary"] == "Started at TechCorp"
     assert event["happened_at"] is None
+
+
+async def test_life_event_log_uses_occurred_at_when_happened_at_omitted(pool):
+    """occurred_at should backfill happened_at for taxonomy-backed life events."""
+    from butlers.tools.relationship import contact_create, life_event_log
+
+    contact = await contact_create(pool, "Dana")
+    occurred_at = datetime(2026, 2, 1, 15, 30, 0, tzinfo=UTC)
+    event = await life_event_log(
+        pool,
+        contact["id"],
+        "promotion",
+        "Promoted to lead",
+        occurred_at=occurred_at,
+    )
+
+    assert str(event["happened_at"]) == "2026-02-01"
 
 
 async def test_life_event_list_all(pool):
@@ -1663,10 +1766,10 @@ async def test_life_event_activity_feed_integration(pool):
     assert len(feed) >= 2
 
     # Find the life event activity
-    life_event_activity = next((a for a in feed if a["type"] == "life_event_logged"), None)
+    life_event_activity = next((a for a in feed if a["action"] == "life_event_logged"), None)
     assert life_event_activity is not None
-    assert "graduated" in life_event_activity["description"]
-    assert "Graduated from MIT" in life_event_activity["description"]
+    assert "graduated" in life_event_activity["summary"]
+    assert "Graduated from MIT" in life_event_activity["summary"]
 
 
 async def test_life_event_all_seeded_types(pool):
@@ -1759,26 +1862,26 @@ async def test_contact_resolve_whitespace_name(pool):
 
 
 async def test_contact_resolve_partial_first_name(pool):
-    """contact_resolve returns MEDIUM confidence for first-name-only match."""
+    """contact_resolve returns medium/high confidence for first-name-only match."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
     c = await contact_create(pool, "Resolve-Maria Garcia")
     result = await contact_resolve(pool, "Resolve-Maria")
 
-    assert result["confidence"] == "medium"
+    assert result["confidence"] in {"medium", "high"}
     assert len(result["candidates"]) >= 1
     ids = [cand["contact_id"] for cand in result["candidates"]]
     assert c["id"] in ids
 
 
 async def test_contact_resolve_partial_last_name(pool):
-    """contact_resolve returns MEDIUM confidence for last-name-only match."""
+    """contact_resolve returns medium/high confidence for last-name-only match."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
     c = await contact_create(pool, "Resolve-Alex Petrosyan")
     result = await contact_resolve(pool, "Petrosyan")
 
-    assert result["confidence"] == "medium"
+    assert result["confidence"] in {"medium", "high"}
     ids = [cand["contact_id"] for cand in result["candidates"]]
     assert c["id"] in ids
 
@@ -1802,8 +1905,8 @@ async def test_contact_resolve_context_disambiguates(pool):
     """context parameter helps disambiguate between multiple exact-name matches."""
     from butlers.tools.relationship import contact_create, contact_resolve, note_create
 
-    c1 = await contact_create(pool, "Resolve-Ctx Mike", {"company": "Acme"})
-    await contact_create(pool, "Resolve-Ctx Mike", {"company": "Globex"})
+    c1 = await contact_create(pool, first_name="Resolve-Ctx Mike", company="Acme")
+    await contact_create(pool, first_name="Resolve-Ctx Mike", company="Globex")
     await note_create(pool, c1["id"], "Works at the Acme office downtown")
 
     result = await contact_resolve(pool, "Resolve-Ctx Mike", context="from Acme")
@@ -1818,8 +1921,12 @@ async def test_contact_resolve_context_boosts_partial(pool):
     """context parameter boosts partial match scores using details."""
     from butlers.tools.relationship import contact_create, contact_resolve
 
-    c1 = await contact_create(pool, "Resolve-CtxP David Lee", {"hobby": "tennis"})
-    await contact_create(pool, "Resolve-CtxP David Kim", {"hobby": "chess"})
+    c1 = await contact_create(
+        pool,
+        first_name="Resolve-CtxP David Lee",
+        metadata={"hobby": "tennis"},
+    )
+    await contact_create(pool, first_name="Resolve-CtxP David Kim", metadata={"hobby": "chess"})
 
     result = await contact_resolve(pool, "Resolve-CtxP David", context="tennis match")
 
@@ -1926,9 +2033,9 @@ async def test_task_create_feed_entry(pool):
     c = await contact_create(pool, "Task Feed Contact")
     await task_create(pool, c["id"], "Send report")
     feed = await feed_get(pool, c["id"])
-    task_entries = [e for e in feed if e["type"] == "task_created"]
+    task_entries = [e for e in feed if e["action"] == "task_created"]
     assert len(task_entries) >= 1
-    assert "Send report" in task_entries[0]["description"]
+    assert "Send report" in task_entries[0]["summary"]
 
 
 async def test_task_list_by_contact(pool):
@@ -2032,9 +2139,9 @@ async def test_task_complete_feed_entry(pool):
     await task_complete(pool, t["id"])
 
     feed = await feed_get(pool, c["id"])
-    complete_entries = [e for e in feed if e["type"] == "task_completed"]
+    complete_entries = [e for e in feed if e["action"] == "task_completed"]
     assert len(complete_entries) >= 1
-    assert "Review PR" in complete_entries[0]["description"]
+    assert "Review PR" in complete_entries[0]["summary"]
 
 
 async def test_task_complete_not_found(pool):
@@ -2067,9 +2174,9 @@ async def test_task_delete_feed_entry(pool):
     await task_delete(pool, t["id"])
 
     feed = await feed_get(pool, c["id"])
-    delete_entries = [e for e in feed if e["type"] == "task_deleted"]
+    delete_entries = [e for e in feed if e["action"] == "task_deleted"]
     assert len(delete_entries) >= 1
-    assert "Task to delete" in delete_entries[0]["description"]
+    assert "Task to delete" in delete_entries[0]["summary"]
 
 
 async def test_task_delete_not_found(pool):

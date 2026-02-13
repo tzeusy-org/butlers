@@ -2,23 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
 import asyncpg
 
-from butlers.tools.relationship._schema import contact_name_expr, has_table, table_columns
+from butlers.tools.relationship._schema import contact_name_expr, table_columns
 from butlers.tools.relationship.feed import _log_activity
+
+logger = logging.getLogger(__name__)
 
 
 async def life_event_types_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     """List all available life event types with their categories."""
-    if not (await has_table(pool, "life_event_types")):
-        return []
-    if not (await has_table(pool, "life_event_categories")):
-        return []
-
     rows = await pool.fetch(
         """
         SELECT t.id, t.name, c.name as category
@@ -30,28 +28,6 @@ async def life_event_types_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _coerce_happened_date(
-    happened_at: str | None,
-    occurred_at: datetime | None,
-) -> date | None:
-    if occurred_at is not None:
-        return occurred_at.date()
-    if happened_at is None:
-        return None
-    return date.fromisoformat(happened_at)
-
-
-def _coerce_occurred_at(
-    happened_at: str | None,
-    occurred_at: datetime | None,
-) -> datetime | None:
-    if occurred_at is not None:
-        return occurred_at
-    if happened_at is None:
-        return None
-    return datetime.fromisoformat(happened_at).replace(tzinfo=UTC)
-
-
 async def life_event_log(
     pool: asyncpg.Pool,
     contact_id: uuid.UUID,
@@ -61,99 +37,114 @@ async def life_event_log(
     happened_at: str | None = None,
     occurred_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """Log a life event, supporting both new and legacy schemas."""
+    """
+    Log a life event for a contact.
+
+    Args:
+        contact_id: UUID of the contact
+        type_name: Name of the life event type (e.g., 'promotion', 'married')
+        summary: Short summary of the event
+        description: Optional longer description
+        happened_at: Optional date string (YYYY-MM-DD format)
+    """
     cols = await table_columns(pool, "life_events")
-    uses_type_table = "life_event_type_id" in cols and await has_table(pool, "life_event_types")
 
-    if uses_type_table:
-        type_row = await pool.fetchrow(
-            "SELECT id FROM life_event_types WHERE name = $1",
+    # Legacy schema path: life_events has `type` + `occurred_at` and no taxonomy tables.
+    if "life_event_type_id" not in cols and "type" in cols:
+        effective_occurred_at = occurred_at
+        if effective_occurred_at is None:
+            if happened_at is not None:
+                effective_occurred_at = datetime.combine(
+                    date.fromisoformat(happened_at),
+                    datetime.min.time(),
+                    tzinfo=UTC,
+                )
+            else:
+                effective_occurred_at = datetime.now(UTC)
+
+        existing = await pool.fetchrow(
+            """
+            SELECT id
+            FROM life_events
+            WHERE contact_id = $1
+              AND type = $2
+              AND occurred_at::date = $3::date
+            LIMIT 1
+            """,
+            contact_id,
             type_name,
+            effective_occurred_at,
         )
-        if type_row is None:
-            raise ValueError(f"Unknown life event type '{type_name}'.")
+        if existing is not None:
+            return {
+                "skipped": "duplicate",
+                "existing_id": str(existing["id"]),
+            }
 
-        happened_at_date = _coerce_happened_date(happened_at, occurred_at)
-        if happened_at_date is not None:
-            existing = await pool.fetchrow(
-                """
-                SELECT id FROM life_events
-                WHERE contact_id = $1
-                  AND life_event_type_id = $2
-                  AND happened_at = $3
-                """,
-                contact_id,
-                type_row["id"],
-                happened_at_date,
-            )
-            if existing is not None:
-                return {"skipped": "duplicate", "existing_id": str(existing["id"])}
-
-        event_summary = summary or description or type_name
         row = await pool.fetchrow(
             """
-            INSERT INTO life_events (
-                contact_id, life_event_type_id, summary, description, happened_at
-            )
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO life_events (contact_id, type, description, occurred_at)
+            VALUES ($1, $2, $3, $4)
             RETURNING *
             """,
             contact_id,
-            type_row["id"],
-            event_summary,
+            type_name,
             description,
-            happened_at_date,
+            effective_occurred_at,
         )
         result = dict(row)
-        activity_text = event_summary
-    else:
-        event_occurred_at = _coerce_occurred_at(happened_at, occurred_at)
-        if event_occurred_at is not None and "occurred_at" in cols:
-            existing = await pool.fetchrow(
-                """
-                SELECT id FROM life_events
-                WHERE contact_id = $1 AND type = $2 AND DATE(occurred_at) = DATE($3)
-                """,
-                contact_id,
-                type_name,
-                event_occurred_at,
-            )
-            if existing is not None:
-                return {"skipped": "duplicate", "existing_id": str(existing["id"])}
-
-        event_description = description if description is not None else summary
-        insert_cols: list[str] = ["contact_id"]
-        values: list[Any] = [contact_id]
-
-        def add(col: str, value: Any) -> None:
-            if col in cols:
-                insert_cols.append(col)
-                values.append(value)
-
-        add("type", type_name)
-        add("summary", summary or description or type_name)
-        add("description", event_description)
-        if event_occurred_at is not None:
-            add("occurred_at", event_occurred_at)
-
-        placeholders = [f"${idx}" for idx in range(1, len(values) + 1)]
-        row = await pool.fetchrow(
-            f"""
-            INSERT INTO life_events ({", ".join(insert_cols)})
-            VALUES ({", ".join(placeholders)})
-            RETURNING *
-            """,
-            *values,
+        details = description or summary
+        activity_summary = f"Life event: {type_name}"
+        if details:
+            activity_summary = f"{activity_summary} - {details}"
+        await _log_activity(
+            pool,
+            contact_id,
+            "life_event_logged",
+            activity_summary,
         )
-        result = dict(row)
-        activity_text = summary or event_description or type_name
+        return result
+
+    # Current schema path: taxonomy-backed life event types.
+    type_row = await pool.fetchrow(
+        """
+        SELECT id FROM life_event_types WHERE name = $1
+        """,
+        type_name,
+    )
+    if type_row is None:
+        raise ValueError(
+            f"Unknown life event type '{type_name}'. Use life_event_types_list() to see options."
+        )
+
+    happened_at_date = None
+    if happened_at is not None:
+        happened_at_date = date.fromisoformat(happened_at)
+    elif occurred_at is not None:
+        happened_at_date = occurred_at.date()
+    effective_summary = summary or description or type_name
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO life_events (contact_id, life_event_type_id, summary, description, happened_at)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *
+        """,
+        contact_id,
+        type_row["id"],
+        effective_summary,
+        description,
+        happened_at_date,
+    )
+    result = dict(row)
 
     await _log_activity(
         pool,
         contact_id,
         "life_event_logged",
-        f"Life event: {type_name} - {activity_text}",
+        f"Life event: {type_name} - {effective_summary}",
     )
+
     return result
 
 
@@ -163,97 +154,133 @@ async def life_event_list(
     type_name: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """List life events, optionally filtered by contact and/or type."""
-    event_cols = await table_columns(pool, "life_events")
-    contact_cols = await table_columns(pool, "contacts")
-    name_sql = contact_name_expr(contact_cols, alias="con")
+    """
+    List life events, optionally filtered by contact and/or type.
 
-    uses_type_table = "life_event_type_id" in event_cols and await has_table(
-        pool, "life_event_types"
-    )
-    if uses_type_table:
-        if contact_id is not None and type_name is not None:
-            rows = await pool.fetch(
-                f"""
-                SELECT e.*, t.name as type_name, c.name as category, {name_sql} as contact_name
-                FROM life_events e
-                JOIN life_event_types t ON e.life_event_type_id = t.id
-                JOIN life_event_categories c ON t.category_id = c.id
-                JOIN contacts con ON e.contact_id = con.id
-                WHERE e.contact_id = $1 AND t.name = $2
-                ORDER BY e.happened_at DESC NULLS LAST, e.created_at DESC
-                LIMIT $3
-                """,
-                contact_id,
-                type_name,
-                limit,
-            )
-        elif contact_id is not None:
-            rows = await pool.fetch(
-                f"""
-                SELECT e.*, t.name as type_name, c.name as category, {name_sql} as contact_name
-                FROM life_events e
-                JOIN life_event_types t ON e.life_event_type_id = t.id
-                JOIN life_event_categories c ON t.category_id = c.id
-                JOIN contacts con ON e.contact_id = con.id
-                WHERE e.contact_id = $1
-                ORDER BY e.happened_at DESC NULLS LAST, e.created_at DESC
-                LIMIT $2
-                """,
-                contact_id,
-                limit,
-            )
-        elif type_name is not None:
-            rows = await pool.fetch(
-                f"""
-                SELECT e.*, t.name as type_name, c.name as category, {name_sql} as contact_name
-                FROM life_events e
-                JOIN life_event_types t ON e.life_event_type_id = t.id
-                JOIN life_event_categories c ON t.category_id = c.id
-                JOIN contacts con ON e.contact_id = con.id
-                WHERE t.name = $1
-                ORDER BY e.happened_at DESC NULLS LAST, e.created_at DESC
-                LIMIT $2
-                """,
-                type_name,
-                limit,
-            )
-        else:
-            rows = await pool.fetch(
-                f"""
-                SELECT e.*, t.name as type_name, c.name as category, {name_sql} as contact_name
-                FROM life_events e
-                JOIN life_event_types t ON e.life_event_type_id = t.id
-                JOIN life_event_categories c ON t.category_id = c.id
-                JOIN contacts con ON e.contact_id = con.id
-                ORDER BY e.happened_at DESC NULLS LAST, e.created_at DESC
-                LIMIT $1
-                """,
-                limit,
-            )
-    else:
-        where: list[str] = []
-        params: list[Any] = []
+    Args:
+        contact_id: Optional filter by contact UUID
+        type_name: Optional filter by life event type name
+        limit: Maximum number of events to return
+    """
+    cols = await table_columns(pool, "life_events")
+
+    # Legacy schema path.
+    if "life_event_type_id" not in cols and "type" in cols:
+        contact_cols = await table_columns(pool, "contacts")
+        name_sql = contact_name_expr(contact_cols, alias="con")
+        conditions: list[str] = []
+        args: list[Any] = []
         if contact_id is not None:
-            where.append(f"e.contact_id = ${len(params) + 1}")
-            params.append(contact_id)
+            conditions.append(f"e.contact_id = ${len(args) + 1}")
+            args.append(contact_id)
         if type_name is not None:
-            where.append(f"e.type = ${len(params) + 1}")
-            params.append(type_name)
-
-        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-        order_col = "occurred_at" if "occurred_at" in event_cols else "created_at"
-        params.append(limit)
+            conditions.append(f"e.type = ${len(args) + 1}")
+            args.append(type_name)
+        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        args.append(limit)
         rows = await pool.fetch(
             f"""
-            SELECT e.*, e.type as type_name, NULL::text as category, {name_sql} as contact_name
+            SELECT e.*, {name_sql} AS contact_name
             FROM life_events e
             JOIN contacts con ON e.contact_id = con.id
             {where_sql}
-            ORDER BY e.{order_col} DESC
-            LIMIT ${len(params)}
+            ORDER BY e.occurred_at DESC, e.created_at DESC
+            LIMIT ${len(args)}
             """,
-            *params,
+            *args,
+        )
+        return [dict(row) for row in rows]
+
+    if contact_id is not None and type_name is not None:
+        # Filter by both contact and type
+        rows = await pool.fetch(
+            """
+            SELECT e.*,
+                   t.name AS type_name,
+                   c.name AS category,
+                   COALESCE(
+                       NULLIF(TRIM(CONCAT_WS(' ', con.first_name, con.last_name)), ''),
+                       con.nickname,
+                       'Unknown'
+                   ) AS contact_name
+            FROM life_events e
+            JOIN life_event_types t ON e.life_event_type_id = t.id
+            JOIN life_event_categories c ON t.category_id = c.id
+            JOIN contacts con ON e.contact_id = con.id
+            WHERE e.contact_id = $1 AND t.name = $2
+            ORDER BY e.happened_at DESC NULLS LAST, e.created_at DESC
+            LIMIT $3
+            """,
+            contact_id,
+            type_name,
+            limit,
+        )
+    elif contact_id is not None:
+        # Filter by contact only
+        rows = await pool.fetch(
+            """
+            SELECT e.*,
+                   t.name AS type_name,
+                   c.name AS category,
+                   COALESCE(
+                       NULLIF(TRIM(CONCAT_WS(' ', con.first_name, con.last_name)), ''),
+                       con.nickname,
+                       'Unknown'
+                   ) AS contact_name
+            FROM life_events e
+            JOIN life_event_types t ON e.life_event_type_id = t.id
+            JOIN life_event_categories c ON t.category_id = c.id
+            JOIN contacts con ON e.contact_id = con.id
+            WHERE e.contact_id = $1
+            ORDER BY e.happened_at DESC NULLS LAST, e.created_at DESC
+            LIMIT $2
+            """,
+            contact_id,
+            limit,
+        )
+    elif type_name is not None:
+        # Filter by type only
+        rows = await pool.fetch(
+            """
+            SELECT e.*,
+                   t.name AS type_name,
+                   c.name AS category,
+                   COALESCE(
+                       NULLIF(TRIM(CONCAT_WS(' ', con.first_name, con.last_name)), ''),
+                       con.nickname,
+                       'Unknown'
+                   ) AS contact_name
+            FROM life_events e
+            JOIN life_event_types t ON e.life_event_type_id = t.id
+            JOIN life_event_categories c ON t.category_id = c.id
+            JOIN contacts con ON e.contact_id = con.id
+            WHERE t.name = $1
+            ORDER BY e.happened_at DESC NULLS LAST, e.created_at DESC
+            LIMIT $2
+            """,
+            type_name,
+            limit,
+        )
+    else:
+        # No filters
+        rows = await pool.fetch(
+            """
+            SELECT e.*,
+                   t.name AS type_name,
+                   c.name AS category,
+                   COALESCE(
+                       NULLIF(TRIM(CONCAT_WS(' ', con.first_name, con.last_name)), ''),
+                       con.nickname,
+                       'Unknown'
+                   ) AS contact_name
+            FROM life_events e
+            JOIN life_event_types t ON e.life_event_type_id = t.id
+            JOIN life_event_categories c ON t.category_id = c.id
+            JOIN contacts con ON e.contact_id = con.id
+            ORDER BY e.happened_at DESC NULLS LAST, e.created_at DESC
+            LIMIT $1
+            """,
+            limit,
         )
 
     return [dict(row) for row in rows]

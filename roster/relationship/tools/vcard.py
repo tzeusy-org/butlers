@@ -8,6 +8,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.relationship.addresses import address_add, address_list
+from butlers.tools.relationship.contact_info import contact_info_add, contact_info_list
 from butlers.tools.relationship.contacts import _parse_contact, contact_create, contact_get
 from butlers.tools.relationship.dates import date_add, date_list
 from butlers.tools.relationship.facts import fact_list, fact_set
@@ -16,12 +18,20 @@ from butlers.tools.relationship.notes import note_create, note_list
 logger = logging.getLogger(__name__)
 
 
+def _contact_full_name(contact: dict[str, Any]) -> str:
+    first = str(contact.get("first_name") or "").strip()
+    last = str(contact.get("last_name") or "").strip()
+    nickname = str(contact.get("nickname") or "").strip()
+    full = " ".join(part for part in [first, last] if part).strip()
+    return full or nickname or first or "Unknown"
+
+
 async def contact_export_vcard(pool: asyncpg.Pool, contact_id: uuid.UUID | None = None) -> str:
     """Export one or all contacts as vCard 3.0.
 
     Args:
         pool: Database connection pool
-        contact_id: Optional contact ID. If None, exports all non-archived contacts.
+        contact_id: Optional contact ID. If None, exports all listed contacts.
 
     Returns:
         vCard 3.0 formatted string (multiple vCards if exporting all)
@@ -31,56 +41,99 @@ async def contact_export_vcard(pool: asyncpg.Pool, contact_id: uuid.UUID | None 
     if contact_id is not None:
         # Export single contact
         contact = await contact_get(pool, contact_id)
-        contacts = [contact]
+        contacts = [contact] if contact is not None else []
     else:
-        # Export all non-archived contacts
-        rows = await pool.fetch("SELECT * FROM contacts WHERE archived_at IS NULL ORDER BY name")
+        # Export all listed contacts
+        rows = await pool.fetch(
+            "SELECT * FROM contacts WHERE listed = true ORDER BY first_name, last_name, nickname"
+        )
         contacts = [_parse_contact(row) for row in rows]
 
     vcards = []
     for contact in contacts:
+        if contact is None:
+            continue
+
         vcard = vobject.vCard()
 
         # FN (Formatted Name) - required field
+        full_name = _contact_full_name(contact)
         vcard.add("fn")
-        vcard.fn.value = contact["name"]
+        vcard.fn.value = full_name
 
-        # N (Name) - required field, split name into components
+        # N (Name) - required field
         vcard.add("n")
-        name_parts = contact["name"].split(" ", 1)
-        if len(name_parts) == 2:
-            vcard.n.value = vobject.vcard.Name(family=name_parts[1], given=name_parts[0])
-        else:
-            vcard.n.value = vobject.vcard.Name(family=name_parts[0])
+        vcard.n.value = vobject.vcard.Name(
+            family=str(contact.get("last_name") or ""),
+            given=str(contact.get("first_name") or ""),
+        )
 
-        details = contact.get("details", {})
+        # TEL/EMAIL - from contact_info table
+        try:
+            infos = await contact_info_list(pool, contact["id"])
+        except asyncpg.UndefinedTableError:
+            infos = []
+        if not infos:
+            legacy = contact.get("details") or {}
+            for phone in legacy.get("phones", []):
+                infos.append(
+                    {
+                        "type": "phone",
+                        "value": phone.get("number", ""),
+                        "label": phone.get("type", "VOICE"),
+                    }
+                )
+            for email in legacy.get("emails", []):
+                infos.append(
+                    {
+                        "type": "email",
+                        "value": email.get("address", ""),
+                        "label": email.get("type", "INTERNET"),
+                    }
+                )
 
-        # TEL (Phone) - from details.contact_info
-        phones = details.get("phones", [])
+        phones = [info for info in infos if info["type"] == "phone"]
         for phone in phones:
             tel = vcard.add("tel")
-            tel.value = phone.get("number", "")
-            tel.type_param = phone.get("type", "VOICE")
+            tel.value = phone["value"]
+            tel.type_param = phone.get("label", "VOICE")
 
-        # EMAIL - from details.emails
-        emails = details.get("emails", [])
+        emails = [info for info in infos if info["type"] == "email"]
         for email in emails:
             email_field = vcard.add("email")
-            email_field.value = email.get("address", "")
-            email_field.type_param = email.get("type", "INTERNET")
+            email_field.value = email["value"]
+            email_field.type_param = email.get("label", "INTERNET")
 
-        # ADR (Address) - from details.addresses
-        addresses = details.get("addresses", [])
+        # ADR (Address) - from addresses table
+        try:
+            addresses = await address_list(pool, contact["id"])
+        except asyncpg.UndefinedTableError:
+            addresses = []
+        if not addresses:
+            legacy = contact.get("details") or {}
+            addresses = [
+                {
+                    "line_1": addr.get("street", ""),
+                    "city": addr.get("city", ""),
+                    "province": addr.get("state", ""),
+                    "postal_code": addr.get("postal_code", ""),
+                    "country": addr.get("country", ""),
+                    "label": addr.get("type", "HOME"),
+                }
+                for addr in legacy.get("addresses", [])
+            ]
         for addr in addresses:
             adr = vcard.add("adr")
             adr.value = vobject.vcard.Address(
-                street=addr.get("street", ""),
+                street=" ".join(
+                    part for part in [addr.get("line_1", ""), addr.get("line_2", "")] if part
+                ),
                 city=addr.get("city", ""),
-                region=addr.get("state", ""),
+                region=addr.get("province", ""),
                 code=addr.get("postal_code", ""),
                 country=addr.get("country", ""),
             )
-            adr.type_param = addr.get("type", "HOME")
+            adr.type_param = addr.get("label", "HOME")
 
         # BDAY (Birthday) - from important_dates
         dates = await date_list(pool, contact["id"])
@@ -109,7 +162,7 @@ async def contact_export_vcard(pool: asyncpg.Pool, contact_id: uuid.UUID | None 
         # NOTE - combine emotion notes if any
         notes = await note_list(pool, contact["id"])
         if notes:
-            note_texts = [n["content"] for n in notes[:3]]  # Limit to 3 most recent
+            note_texts = [n["body"] for n in notes[:3]]  # Limit to 3 most recent
             vcard.add("note")
             vcard.note.value = "\n---\n".join(note_texts)
 
@@ -122,10 +175,10 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
     """Import vCard data and create contacts.
 
     Parses vCard 3.0/4.0 content and creates contacts with:
-    - FN -> name
-    - TEL -> details.phones
-    - EMAIL -> details.emails
-    - ADR -> details.addresses
+    - FN/N -> first_name / last_name
+    - TEL -> contact_info(type=phone)
+    - EMAIL -> contact_info(type=email)
+    - ADR -> addresses
     - BDAY -> important_dates (birthday)
     - ORG -> quick_facts (company)
     - TITLE -> quick_facts (job_title)
@@ -154,52 +207,114 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
             logger.warning("Skipping vCard without FN field")
             continue
 
-        name = vcard.fn.value
+        first_name: str | None = None
+        last_name: str | None = None
+        if hasattr(vcard, "n") and getattr(vcard.n, "value", None):
+            first_name = str(getattr(vcard.n.value, "given", "") or "").strip() or None
+            last_name = str(getattr(vcard.n.value, "family", "") or "").strip() or None
+        if first_name is None and last_name is None:
+            first_name = str(vcard.fn.value).strip() or None
 
-        # Build details dict
-        details = {"phones": [], "emails": [], "addresses": []}
+        # Create the contact
+        contact = await contact_create(pool, first_name=first_name, last_name=last_name)
+        details: dict[str, list[dict[str, Any]]] = {
+            "phones": [],
+            "emails": [],
+            "addresses": [],
+        }
+        created_contacts.append(contact)
 
-        # TEL (Phone numbers)
+        # TEL (Phone numbers) -> contact_info
         if hasattr(vcard, "tel_list"):
             for tel in vcard.tel_list:
-                phone_type = "VOICE"
-                if hasattr(tel, "type_param"):
-                    phone_type = tel.type_param if isinstance(tel.type_param, str) else "VOICE"
-                details["phones"].append({"number": tel.value, "type": phone_type})
-
-        # EMAIL
-        if hasattr(vcard, "email_list"):
-            for email in vcard.email_list:
-                email_type = "INTERNET"
-                if hasattr(email, "type_param"):
-                    if isinstance(email.type_param, str):
-                        email_type = email.type_param
-                    else:
-                        email_type = "INTERNET"
-                details["emails"].append({"address": email.value, "type": email_type})
-
-        # ADR (Addresses)
-        if hasattr(vcard, "adr_list"):
-            for adr in vcard.adr_list:
-                addr_type = "HOME"
-                if hasattr(adr, "type_param"):
-                    addr_type = adr.type_param if isinstance(adr.type_param, str) else "HOME"
-
-                addr_value = adr.value
-                details["addresses"].append(
+                phone_label = "VOICE"
+                if hasattr(tel, "type_param") and isinstance(tel.type_param, str):
+                    phone_label = tel.type_param
+                await contact_info_add(
+                    pool,
+                    contact["id"],
+                    "phone",
+                    str(tel.value),
+                    label=phone_label,
+                )
+                details["phones"].append(
                     {
-                        "street": addr_value.street if hasattr(addr_value, "street") else "",
-                        "city": addr_value.city if hasattr(addr_value, "city") else "",
-                        "state": addr_value.region if hasattr(addr_value, "region") else "",
-                        "postal_code": addr_value.code if hasattr(addr_value, "code") else "",
-                        "country": addr_value.country if hasattr(addr_value, "country") else "",
-                        "type": addr_type,
+                        "number": str(tel.value),
+                        "type": phone_label,
                     }
                 )
 
-        # Create the contact
-        contact = await contact_create(pool, name, details)
-        created_contacts.append(contact)
+        # EMAIL -> contact_info
+        if hasattr(vcard, "email_list"):
+            for email in vcard.email_list:
+                email_label = "INTERNET"
+                if hasattr(email, "type_param") and isinstance(email.type_param, str):
+                    email_label = email.type_param
+                await contact_info_add(
+                    pool,
+                    contact["id"],
+                    "email",
+                    str(email.value),
+                    label=email_label,
+                )
+                details["emails"].append(
+                    {
+                        "address": str(email.value),
+                        "type": email_label,
+                    }
+                )
+
+        # ADR (Addresses) -> addresses table
+        if hasattr(vcard, "adr_list"):
+            for adr in vcard.adr_list:
+                addr_label = "Home"
+                if hasattr(adr, "type_param") and isinstance(adr.type_param, str):
+                    addr_label = adr.type_param
+
+                addr_value = adr.value
+                street = addr_value.street if hasattr(addr_value, "street") else ""
+                raw_country = str(
+                    addr_value.country if hasattr(addr_value, "country") else "" or ""
+                ).strip()
+                country_map = {
+                    "USA": "US",
+                    "CAN": "CA",
+                    "GBR": "GB",
+                }
+                normalized_country: str | None = None
+                if raw_country:
+                    country_candidate = country_map.get(raw_country.upper(), raw_country.upper())
+                    if len(country_candidate) == 2:
+                        normalized_country = country_candidate
+                    else:
+                        logger.warning(
+                            "Could not normalize country '%s' to a 2-letter code; ignoring",
+                            raw_country,
+                        )
+                await address_add(
+                    pool,
+                    contact["id"],
+                    line_1=str(street or ""),
+                    label=addr_label,
+                    city=str(addr_value.city if hasattr(addr_value, "city") else "" or ""),
+                    province=str(addr_value.region if hasattr(addr_value, "region") else "" or ""),
+                    postal_code=str(addr_value.code if hasattr(addr_value, "code") else "" or ""),
+                    country=normalized_country or None,
+                )
+                details["addresses"].append(
+                    {
+                        "street": str(street or ""),
+                        "city": str(addr_value.city if hasattr(addr_value, "city") else "" or ""),
+                        "state": str(
+                            addr_value.region if hasattr(addr_value, "region") else "" or ""
+                        ),
+                        "postal_code": str(
+                            addr_value.code if hasattr(addr_value, "code") else "" or ""
+                        ),
+                        "country": normalized_country,
+                        "type": addr_label,
+                    }
+                )
 
         # BDAY (Birthday) -> important_dates
         if hasattr(vcard, "bday"):
@@ -259,5 +374,8 @@ async def contact_import_vcard(pool: asyncpg.Pool, vcf_content: str) -> list[dic
                 for note_text in note_parts:
                     if note_text.strip():
                         await note_create(pool, contact["id"], note_text.strip())
+
+        # Maintain backward-compatible shape expected by legacy callers/tests.
+        contact["details"] = details
 
     return created_contacts

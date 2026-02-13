@@ -23,22 +23,31 @@ async def pool(provisioned_postgres_pool):
         await p.execute("""
             CREATE TABLE IF NOT EXISTS contacts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL,
-                details JSONB DEFAULT '{}',
-                archived_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
+                first_name TEXT,
+                last_name TEXT,
+                nickname TEXT,
+                company TEXT,
+                job_title TEXT,
+                gender TEXT,
+                pronouns TEXT,
+                avatar_url TEXT,
+                listed BOOLEAN NOT NULL DEFAULT true,
+                metadata JSONB NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
         await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (name)
+            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
         """)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS activity_feed (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                type TEXT NOT NULL,
-                description TEXT NOT NULL,
+                action TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                entity_type TEXT,
+                entity_id UUID,
                 created_at TIMESTAMPTZ DEFAULT now()
             )
         """)
@@ -452,14 +461,14 @@ async def test_contact_info_add_logs_activity(pool):
     await contact_info_add(pool, c["id"], "email", "feed@example.com", label="Work")
 
     feed = await feed_get(pool, contact_id=c["id"])
-    types = [f["type"] for f in feed]
-    assert "contact_info_added" in types
+    actions = [f["action"] for f in feed]
+    assert "contact_info_added" in actions
 
-    info_entries = [f for f in feed if f["type"] == "contact_info_added"]
+    info_entries = [f for f in feed if f["action"] == "contact_info_added"]
     assert len(info_entries) == 1
-    assert "email" in info_entries[0]["description"]
-    assert "feed@example.com" in info_entries[0]["description"]
-    assert "Work" in info_entries[0]["description"]
+    assert "email" in info_entries[0]["summary"]
+    assert "feed@example.com" in info_entries[0]["summary"]
+    assert "Work" in info_entries[0]["summary"]
 
 
 async def test_contact_info_remove_logs_activity(pool):
@@ -476,13 +485,13 @@ async def test_contact_info_remove_logs_activity(pool):
     await contact_info_remove(pool, info["id"])
 
     feed = await feed_get(pool, contact_id=c["id"])
-    types = [f["type"] for f in feed]
-    assert "contact_info_removed" in types
+    actions = [f["action"] for f in feed]
+    assert "contact_info_removed" in actions
 
-    remove_entries = [f for f in feed if f["type"] == "contact_info_removed"]
+    remove_entries = [f for f in feed if f["action"] == "contact_info_removed"]
     assert len(remove_entries) == 1
-    assert "phone" in remove_entries[0]["description"]
-    assert "+1-555-0500" in remove_entries[0]["description"]
+    assert "phone" in remove_entries[0]["summary"]
+    assert "+1-555-0500" in remove_entries[0]["summary"]
 
 
 # ------------------------------------------------------------------
