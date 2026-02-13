@@ -1,4 +1,4 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-qg test-qg-parallel check
+.PHONY: lint format test test-unit test-integration test-core test-modules test-qg test-qg-serial test-qg-parallel check
 
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py
 
@@ -28,12 +28,16 @@ test-core:
 test-modules:
 	uv run pytest tests/modules/ -v
 
-# Quality-gate scope in serial mode
+# Quality-gate scope default (parallel xdist)
 test-qg:
+	uv run pytest $(QG_PYTEST_ARGS) -n auto
+
+# Quality-gate serial fallback for order-dependent debugging
+test-qg-serial:
 	uv run pytest $(QG_PYTEST_ARGS)
 
-# Quality-gate scope in parallel mode (opt-in local speed-up)
+# Explicit parallel alias (backward compatibility)
 test-qg-parallel:
-	uv run pytest $(QG_PYTEST_ARGS) -n auto
+	$(MAKE) test-qg
 
 check: lint test

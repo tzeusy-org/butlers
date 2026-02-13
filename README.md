@@ -356,8 +356,9 @@ Module credentials are only required when the module is enabled in `butler.toml`
 uv sync --dev       # Install dependencies
 make check           # Lint + test
 make test            # Run tests
-make test-qg         # Quality-gate pytest scope (serial)
-make test-qg-parallel # Quality-gate pytest scope (parallel, -n auto)
+make test-qg         # Quality-gate pytest scope (default parallel, -n auto)
+make test-qg-serial  # Quality-gate pytest scope (serial fallback/debug)
+make test-qg-parallel # Alias for explicit parallel quality-gate runs
 make lint            # Lint
 make format          # Format
 ```
@@ -381,6 +382,8 @@ make test-integration
 Recommended quality gates:
 
 - Local dev loop: run `-m unit` for fast feedback.
+- Default full quality-gate run: `make test-qg` (parallel, fastest full-scope path).
+- Serial fallback/debug path: `make test-qg-serial` (use for order-dependent triage).
 - CI or pre-merge (Docker available): run both `-m unit` and `-m integration`.
 
 ## Tech Stack

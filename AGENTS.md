@@ -164,8 +164,9 @@ make test-qg
 ```
 
 ### Parallel Test Command
-- Opt-in local parallel run for the quality-gate scope: `make test-qg-parallel`
-- `test-qg-parallel` uses `pytest-xdist` (`-n auto`) and should produce the same pass/fail set as `make test-qg`.
+- Default quality-gate pytest scope uses `pytest-xdist` (`-n auto`) via `make test-qg`.
+- Serial fallback/debug path remains available via `make test-qg-serial`.
+- `make test-qg-parallel` is an explicit alias to the same parallel default.
 
 ### Testing cadence policy
 - For bugfixes/features under active development or investigation, default to targeted `pytest` runs to keep loops fast and context lean.
@@ -198,6 +199,10 @@ make test-qg
 ### Frontend test harness
 - Frontend route/component tests run with Vitest (`frontend/package.json` has `npm test` -> `vitest run`).
 - Colocate tests as `frontend/src/**/*.test.tsx` (example: `frontend/src/pages/ButlersPage.test.tsx`).
+
+### Quality-gate command contract
+- `make test-qg` is the default full-scope pytest gate and runs with xdist parallelization (`-n auto`).
+- `make test-qg-serial` is the documented serial fallback for debugging order-dependent behavior.
 
 ### Calendar OAuth init contract
 - In `src/butlers/modules/calendar.py`, `_GoogleProvider.__init__` should validate `_GoogleOAuthCredentials.from_env()` before creating an owned `httpx.AsyncClient` so credential errors cannot leak unclosed clients.
