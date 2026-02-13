@@ -169,11 +169,12 @@ def _build_trigger_context(
     metadata_context = (
         f"Source metadata (channel/identity/tool): {metadata_blob}" if metadata_blob else None
     )
-    if base_context not in (None, "") and metadata_context:
-        return f"{base_context}\n\n{metadata_context}"
+    parts: list[str] = []
     if base_context not in (None, ""):
-        return base_context
-    return metadata_context
+        parts.append(base_context)
+    if metadata_context:
+        parts.append(metadata_context)
+    return "\n\n".join(parts) if parts else None
 
 
 def _build_trigger_args(args: dict[str, Any]) -> dict[str, Any]:
