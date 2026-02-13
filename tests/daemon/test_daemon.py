@@ -2683,6 +2683,44 @@ class TestRouteExecuteTool:
         assert notify_response["delivery"]["channel"] == "telegram"
         assert notify_response["delivery"]["delivery_id"] == "321"
 
+    async def test_rejects_origin_butler_mismatch(self, tmp_path: Path) -> None:
+        patches = _patch_infra()
+        butler_dir = self._messenger_butler_dir(tmp_path)
+        daemon, route_execute_fn = await self._start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        telegram_module = next(module for module in daemon._modules if module.name == "telegram")
+        telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=self._route_request_context(),
+            input={
+                "prompt": "Deliver.",
+                "context": {
+                    "notify_request": {
+                        "schema_version": "notify.v1",
+                        "origin_butler": "general",
+                        "delivery": {
+                            "intent": "send",
+                            "channel": "telegram",
+                            "message": "Take your medication.",
+                            "recipient": "12345",
+                        },
+                    }
+                },
+            },
+        )
+
+        telegram_module._send_message.assert_not_awaited()
+        assert result["status"] == "error"
+        assert result["error"]["class"] == "validation_error"
+        assert (
+            result["error"]["message"]
+            == "notify_request.origin_butler must match request_context.source_sender_identity."
+        )
+        assert result["result"]["notify_response"]["error"]["class"] == "validation_error"
+
     async def test_notify_target_resolution_failure_returns_validation_error(
         self, tmp_path: Path
     ) -> None:
