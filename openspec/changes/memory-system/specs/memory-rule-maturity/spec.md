@@ -2,7 +2,7 @@
 
 ### Requirement: Rule maturity levels
 
-Rules SHALL have a `maturity` field with three levels: `candidate` (new rules, lower retrieval weight), `established` (reliable, full retrieval weight), `proven` (highest weight, core system knowledge).
+Rules SHALL have a `maturity` field with four levels: `candidate` (new rules, lower retrieval weight), `established` (reliable, full retrieval weight), `proven` (highest weight, core system knowledge), and `anti_pattern` (warning state for repeatedly harmful guidance).
 
 #### Scenario: New rule starts as candidate
 - **WHEN** a rule is created via memory_store_rule
@@ -67,7 +67,7 @@ When a rule has `harmful_count >= 3` AND `effectiveness_score < 0.3`, the rule S
 - **WHEN** memory_mark_harmful is called with reason "caused incorrect dietary advice"
 - **AND** the rule now has harmful_count=3 and effectiveness_score=0.2
 - **THEN** the rule's content SHALL be rewritten as an anti-pattern warning
-- **AND** the rule's maturity SHALL be set to a distinct anti-pattern state
+- **AND** the rule's maturity SHALL be set to `anti_pattern`
 
 #### Scenario: Anti-pattern included in retrieval
 - **WHEN** memory_recall is called

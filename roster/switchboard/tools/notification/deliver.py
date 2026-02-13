@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 # Maps channel names to (module_name, tool_name) tuples.
 _CHANNEL_DISPATCH: dict[str, tuple[str, str]] = {
-    "telegram": ("telegram", "send_message"),
-    "email": ("email", "send_email"),
+    "telegram": ("telegram", "bot_telegram_send_message"),
+    "email": ("email", "bot_email_send_message"),
 }
 
 # Supported channels for validation

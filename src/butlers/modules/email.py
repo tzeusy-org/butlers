@@ -5,7 +5,7 @@ Configured via [modules.email] with optional
 [modules.email.user] and [modules.email.bot] credential scopes in butler.toml.
 
 When a ``MessagePipeline`` is attached, incoming emails can be classified
-and routed to the appropriate butler via ``check_and_route_inbox``.
+and routed to the appropriate butler via ``bot_email_check_and_route_inbox``.
 
 The ``user_*`` and ``bot_*`` tool prefixes model caller scope for routing
 and approvals. Today both scopes use the same configured email account

@@ -2,11 +2,12 @@
 
 ### Requirement: Memory context injection before CC spawn
 
-The CC spawner SHALL call `memory_context(trigger_prompt, butler_name)` on the Memory MCP server before spawning any CC instance. The returned memory block SHALL be injected into the CC system prompt after the butler's `CLAUDE.md` content.
+The CC spawner SHALL call `memory_context(trigger_prompt, butler_name)` on the Memory MCP server before spawning any CC instance. Calls SHALL propagate authenticated request context so Memory Butler can resolve tenant and lineage. The returned memory block SHALL be injected into the CC system prompt after the butler's `CLAUDE.md` content.
 
 #### Scenario: CC instance receives memory context
 - **WHEN** the health butler spawns a CC instance with prompt "Help user log weight"
 - **THEN** the spawner SHALL call memory_context with trigger_prompt="Help user log weight" and butler="health"
+- **AND** request context SHALL include tenant identity for retrieval boundary enforcement
 - **AND** the CC instance's system prompt SHALL contain the returned memory block
 
 #### Scenario: Memory Butler unavailable graceful fallback
@@ -17,7 +18,7 @@ The CC spawner SHALL call `memory_context(trigger_prompt, butler_name)` on the M
 
 ### Requirement: Episode storage after CC session completion
 
-After every CC session completes, the butler daemon SHALL call `memory_store_episode` on the Memory MCP server with: `content` (key observations extracted from the session), `butler` (butler name), `session_id` (session UUID), and `importance` (LLM-rated importance 1-10 or default 5.0).
+After every CC session completes, the butler daemon SHALL call `memory_store_episode` on the Memory MCP server with: `content` (key observations extracted from the session), `butler` (butler name), `session_id` (session UUID), and `importance` (LLM-rated importance 1-10 or default 5.0). Tenant identity SHALL be derived from authenticated request context (not caller-provided free-text args for non-admin paths).
 
 #### Scenario: Session completion triggers episode storage
 - **WHEN** a CC session for the general butler completes
@@ -36,7 +37,7 @@ Every butler's ephemeral MCP config SHALL include the Memory MCP server alongsid
 #### Scenario: CC instance calls memory_recall mid-session
 - **WHEN** a CC instance spawned by the health butler calls memory_recall(topic="user medications")
 - **THEN** the call SHALL be routed to the Memory MCP server
-- **AND** results SHALL be scoped to 'global' and 'health'
+- **AND** results SHALL be scoped to caller tenant + ('global' and 'health')
 
 ### Requirement: Memory Butler configuration in butler.toml
 

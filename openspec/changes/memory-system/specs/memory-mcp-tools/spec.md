@@ -1,5 +1,17 @@
 ## ADDED Requirements
 
+### Requirement: Tenant boundary and caller identity for memory tools
+
+All Memory MCP tools SHALL resolve `tenant_id` from authenticated request context. Non-admin callers SHALL NOT select arbitrary tenant IDs via tool arguments.
+
+#### Scenario: Non-admin tenant override rejected
+- **WHEN** a non-admin caller attempts to pass a tenant selector in tool args
+- **THEN** the request SHALL be rejected with a validation or authorization error
+
+#### Scenario: Admin cross-tenant access requires explicit elevation
+- **WHEN** an admin caller invokes a tool with explicit cross-tenant intent
+- **THEN** the operation SHALL be allowed only with elevated authorization context
+
 ### Requirement: memory_store_episode tool
 
 The Memory MCP server SHALL expose a `memory_store_episode(content, butler, session_id?, importance?)` tool that stores a raw episode. The tool SHALL generate an embedding, populate the search vector, set `expires_at` to now + configured TTL (default 7 days), and return the episode ID.
@@ -42,7 +54,7 @@ The Memory MCP server SHALL expose a `memory_search(query, types?, scope?, mode?
 
 #### Scenario: Search across all types
 - **WHEN** `memory_search(query="diet preferences")` is called
-- **THEN** results SHALL include matching episodes, facts, and rules
+- **THEN** results SHALL include matching episodes, facts, and rules within the caller tenant boundary
 
 #### Scenario: Search filtered to facts only
 - **WHEN** `memory_search(query="diet", types=["fact"])` is called
@@ -55,7 +67,7 @@ The Memory MCP server SHALL expose a `memory_recall(topic, scope?, limit?)` tool
 #### Scenario: Recall returns composite-scored results
 - **WHEN** `memory_recall(topic="user dietary needs", scope="health")` is called
 - **THEN** results SHALL be facts and rules scored by the composite formula (relevance, importance, recency, confidence)
-- **AND** results SHALL be scoped to 'global' and 'health'
+- **AND** results SHALL be scoped to caller tenant + (`global`, `health`)
 
 ### Requirement: memory_get tool
 
@@ -102,12 +114,16 @@ The Memory MCP server SHALL expose a `memory_mark_harmful(rule_id, reason?)` too
 
 ### Requirement: memory_forget tool
 
-The Memory MCP server SHALL expose a `memory_forget(type, id)` tool that soft-deletes a memory by setting its `validity` to 'forgotten'. The memory SHALL remain in the database for dashboard visibility but SHALL be excluded from all retrieval operations.
+The Memory MCP server SHALL expose a `memory_forget(type, id)` tool that soft-deletes a memory while preserving auditability and dashboard visibility. Facts SHALL use canonical validity `retracted` (legacy `forgotten` is accepted only as alias). Rules and episodes SHALL use retrieval-excluded tombstone semantics per schema.
 
 #### Scenario: Forget a fact
 - **WHEN** `memory_forget(type="fact", id="<uuid>")` is called
-- **THEN** the fact's validity SHALL be 'forgotten'
+- **THEN** the fact's validity SHALL be `retracted`
 - **AND** subsequent memory_recall calls SHALL NOT return this fact
+
+#### Scenario: Forget operation emits audit event
+- **WHEN** `memory_forget(type="fact", id="<uuid>")` is called
+- **THEN** a `memory_events` row SHALL be appended for the forget transition
 
 ### Requirement: memory_stats tool
 
@@ -119,7 +135,7 @@ The Memory MCP server SHALL expose a `memory_stats(scope?)` tool that returns co
 
 ### Requirement: memory_context tool
 
-The Memory MCP server SHALL expose a `memory_context(trigger_prompt, butler, token_budget?)` tool that builds a formatted memory block for CC system prompt injection. The tool SHALL embed the trigger prompt, query top-scored facts and rules scoped to the butler, and format them within the token budget (default 3000 tokens). Output SHALL be ordered by score (highest first) with facts, rules, and recent episodes in separate sections.
+The Memory MCP server SHALL expose a `memory_context(trigger_prompt, butler, token_budget?)` tool that builds a formatted memory block for CC system prompt injection. The tool SHALL embed the trigger prompt, query top-scored facts and rules scoped to the butler, and format them within the token budget (default 3000 tokens). Output SHALL be ordered by score (highest first) with facts, rules, and recent episodes in separate sections. Token budgeting SHALL use a deterministic tokenizer (not character-count approximation), with deterministic tie-breakers (`score DESC`, `created_at DESC`, `id ASC`) and configurable section quotas.
 
 #### Scenario: Context within token budget
 - **WHEN** `memory_context(trigger_prompt="Help user with diet", butler="health", token_budget=3000)` is called
@@ -129,3 +145,7 @@ The Memory MCP server SHALL expose a `memory_context(trigger_prompt, butler, tok
 #### Scenario: Context prioritizes highest-scored memories
 - **WHEN** the token budget cannot fit all relevant memories
 - **THEN** the lowest-scored memories SHALL be omitted first
+
+#### Scenario: Context output remains deterministic under score ties
+- **WHEN** two memories have equal score for the same request
+- **THEN** ordering SHALL follow the deterministic tie-breakers (`created_at DESC`, then `id ASC`)

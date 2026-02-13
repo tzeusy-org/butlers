@@ -16,8 +16,8 @@ This plan adds first-class `user_inputs` and `user_outputs` concepts to modules,
 
 Current module tools flatten materially different behaviors into one surface.
 
-- `telegram` currently exposes `send_message` and `get_updates` only, without identity separation.
-- `email` currently exposes `send_email` / `search_inbox` / `read_email`, but does not distinguish:
+- `telegram` historically exposed unprefixed send/update tools without identity separation.
+- `email` historically exposed unprefixed send/search/read tools, but did not distinguish:
   - butler mailbox flow (dedicated butler address)
   - user mailbox flow (acting on user-owned inbox/sent identity)
 - approval policy is harder to reason about when tool names do not encode identity and risk.
@@ -82,7 +82,7 @@ Examples:
 - `user_email_search_inbox`
 - `bot_email_send_message`
 
-Non-prefixed names (for example `send_message`, `send_email`) are signature/name violations and must be removed, not deprecated.
+Non-prefixed names are signature/name violations and must be removed, not deprecated.
 
 ## Signature/Name Compliance Requirements
 
@@ -95,8 +95,8 @@ This is a hard requirement for this refactor:
 
 Known violations to fix as part of this refactor:
 
-- Telegram: `send_message`, `get_updates`
-- Email: `send_email`, `search_inbox`, `read_email`, `check_and_route_inbox`
+- Telegram: unprefixed send/update tool names
+- Email: unprefixed send/search/read/check-and-route tool names
 
 ---
 

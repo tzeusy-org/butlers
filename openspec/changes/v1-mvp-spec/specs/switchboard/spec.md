@@ -247,12 +247,12 @@ After a routed butler returns a result, the Switchboard SHALL send the response 
 #### Scenario: Telegram message gets Telegram response
 
 WHEN a message arrives via Telegram, is routed to a specialist butler, and the butler returns a result
-THEN the Switchboard MUST send the result back to the originating Telegram chat using the Telegram module's `send_message` tool
+THEN the Switchboard MUST send the result back to the originating Telegram chat using the Telegram module's `bot_telegram_send_message` tool
 
 #### Scenario: Email message gets email response
 
 WHEN a message arrives via Email, is routed to a specialist butler, and the butler returns a result
-THEN the Switchboard MUST send the result back to the originating email address using the Email module's `send_email` tool
+THEN the Switchboard MUST send the result back to the originating email address using the Email module's `bot_email_send_message` tool
 
 ---
 

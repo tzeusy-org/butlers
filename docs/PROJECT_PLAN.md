@@ -135,10 +135,10 @@ Modules are pluggable units that add domain-specific MCP tools on top of the cor
 
 ```
 Module Tools (examples)
-├── email:    send_email, search_inbox, read_email
-├── telegram: send_message, get_updates, set_webhook
-├── calendar: list_events, create_event, update_event
-├── slack:    send_message, list_channels, react
+├── email:    bot_email_send_message, bot_email_search_inbox, bot_email_read_message
+├── telegram: bot_telegram_send_message, bot_telegram_get_updates, user_telegram_send_message
+├── calendar: calendar_list_events, calendar_create_event, calendar_update_event
+├── slack:    bot_slack_send_message, bot_slack_list_channels, bot_slack_react
 └── github:   create_issue, list_prs, review_pr
 ```
 

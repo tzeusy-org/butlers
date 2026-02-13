@@ -1,5 +1,14 @@
 ## ADDED Requirements
 
+### Requirement: Tenant-bounded retrieval by default
+
+All retrieval operations SHALL be tenant-bounded by default using authenticated request context. Unscoped retrieval may include all scopes within the same tenant. Cross-tenant retrieval SHALL require explicit elevated authorization.
+
+#### Scenario: Unscoped retrieval remains tenant-bounded
+- **WHEN** memory_recall is called without a scope parameter
+- **THEN** results SHALL include all scopes only within the caller tenant
+- **AND** results from other tenants SHALL NOT be returned
+
 ### Requirement: Semantic search via pgvector cosine similarity
 
 The system SHALL support semantic search by embedding the query text using MiniLM-L6 and performing cosine similarity search against the `embedding` column using pgvector's `<=>` operator.
@@ -58,7 +67,7 @@ The `memory_recall` tool SHALL score results using a composite of four signals: 
 
 ### Requirement: Scope filtering on retrieval
 
-All retrieval operations SHALL support scope filtering. When a scope is specified, facts and rules SHALL be filtered to `scope IN ('global', <specified_scope>)`. Episodes SHALL be filtered by `butler = <specified_scope>`. When no scope is specified, all scopes SHALL be searched.
+All retrieval operations SHALL support scope filtering. When a scope is specified, facts and rules SHALL be filtered to `scope IN ('global', <specified_scope>)` within the active tenant. Episodes SHALL be filtered by `butler = <specified_scope>` within the active tenant. When no scope is specified, all scopes in the active tenant SHALL be searched.
 
 #### Scenario: Butler-scoped recall returns global and butler-specific memories
 - **WHEN** memory_recall is called with `scope='health'`
@@ -67,7 +76,7 @@ All retrieval operations SHALL support scope filtering. When a scope is specifie
 
 #### Scenario: Unscoped recall returns all memories
 - **WHEN** memory_recall is called without a scope parameter
-- **THEN** results SHALL include facts from all scopes
+- **THEN** results SHALL include facts from all scopes in the active tenant
 
 ### Requirement: Effective confidence filtering
 
@@ -91,3 +100,11 @@ When a memory is returned by `memory_search`, `memory_recall`, or `memory_get`, 
 - **WHEN** a fact with `reference_count=3` is returned by memory_recall
 - **THEN** its `reference_count` SHALL be 4
 - **AND** its `last_referenced_at` SHALL be updated to the current time
+
+### Requirement: Deterministic ordering under equal score
+
+When multiple candidate memories have equal final score, retrieval order SHALL be deterministic using tie-breakers `created_at DESC`, then `id ASC`.
+
+#### Scenario: Equal-score ties are stable
+- **WHEN** two facts have equal composite score for the same query
+- **THEN** their output order SHALL follow `created_at DESC`, then `id ASC`

@@ -1922,7 +1922,7 @@ async def test_deliver_email_success(deliver_pool):
 
     # Verify correct tool was called with right args
     assert len(captured_args) == 1
-    assert captured_args[0]["tool_name"] == "send_email"
+    assert captured_args[0]["tool_name"] == "bot_email_send_message"
     # Args include trace context, so check the relevant keys
     call_args = captured_args[0]["args"]
     assert call_args["to"] == "user@example.com"
@@ -2069,7 +2069,7 @@ async def test_deliver_logs_to_routing_log(deliver_pool):
     assert len(rows) == 1
     assert rows[0]["source_butler"] == "health"
     assert rows[0]["target_butler"] == "switchboard"
-    assert rows[0]["tool_name"] == "send_message"
+    assert rows[0]["tool_name"] == "bot_telegram_send_message"
     assert rows[0]["success"] is True
 
 

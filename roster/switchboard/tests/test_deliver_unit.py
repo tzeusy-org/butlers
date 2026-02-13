@@ -245,7 +245,7 @@ class TestDeliverTelegramSuccess:
         assert "notification_id" in result
 
     async def test_telegram_routes_to_correct_tool(self) -> None:
-        """deliver() should call the 'send_message' tool for telegram."""
+        """deliver() should call the prefixed bot telegram send tool."""
         from butlers.tools.switchboard import deliver
 
         pool = _make_mock_pool(
@@ -271,7 +271,7 @@ class TestDeliverTelegramSuccess:
         )
 
         assert len(captured) == 1
-        assert captured[0]["tool"] == "send_message"
+        assert captured[0]["tool"] == "bot_telegram_send_message"
         assert captured[0]["args"]["chat_id"] == "99999"
         assert captured[0]["args"]["text"] == "Hi there"
 
@@ -334,7 +334,7 @@ class TestDeliverEmailSuccess:
         assert "notification_id" in result
 
     async def test_email_routes_to_send_email_tool(self) -> None:
-        """deliver() should call the 'send_email' tool for email."""
+        """deliver() should call the prefixed bot email send tool."""
         from butlers.tools.switchboard import deliver
 
         pool = _make_mock_pool(
@@ -361,7 +361,7 @@ class TestDeliverEmailSuccess:
         )
 
         assert len(captured) == 1
-        assert captured[0]["tool"] == "send_email"
+        assert captured[0]["tool"] == "bot_email_send_message"
         assert captured[0]["args"]["to"] == "user@example.com"
         assert captured[0]["args"]["subject"] == "Health Report"
         assert captured[0]["args"]["body"] == "Body text"
@@ -896,11 +896,19 @@ class TestCallButlerTool:
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch("butlers.tools.switchboard.routing.route.MCPClient", mock_ctor):
-            result = await _call_butler_tool("http://localhost:8101/sse", "handle_message", {})
+            result = await _call_butler_tool(
+                "http://localhost:8101/sse",
+                "bot_switchboard_handle_message",
+                {},
+            )
 
         assert result == {"ok": True}
         mock_ctor.assert_called_once_with("http://localhost:8101/sse", name="switchboard-router")
-        mock_client.call_tool.assert_awaited_once_with("handle_message", {}, raise_on_error=False)
+        mock_client.call_tool.assert_awaited_once_with(
+            "bot_switchboard_handle_message",
+            {},
+            raise_on_error=False,
+        )
 
     async def test_reuses_cached_client_for_same_endpoint(self) -> None:
         """Consecutive calls should reuse a healthy cached router client."""
@@ -919,8 +927,16 @@ class TestCallButlerTool:
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch("butlers.tools.switchboard.routing.route.MCPClient", mock_ctor):
-            first = await _call_butler_tool("http://localhost:8101/sse", "handle_message", {})
-            second = await _call_butler_tool("http://localhost:8101/sse", "handle_message", {})
+            first = await _call_butler_tool(
+                "http://localhost:8101/sse",
+                "bot_switchboard_handle_message",
+                {},
+            )
+            second = await _call_butler_tool(
+                "http://localhost:8101/sse",
+                "bot_switchboard_handle_message",
+                {},
+            )
 
         assert first == {"n": 1}
         assert second == {"n": 2}
@@ -953,9 +969,17 @@ class TestCallButlerTool:
             "butlers.tools.switchboard.routing.route.MCPClient",
             MagicMock(side_effect=[first_ctx, second_ctx]),
         ) as mock_ctor:
-            first = await _call_butler_tool("http://localhost:8101/sse", "handle_message", {})
+            first = await _call_butler_tool(
+                "http://localhost:8101/sse",
+                "bot_switchboard_handle_message",
+                {},
+            )
             first_ctx.is_connected.return_value = False
-            second = await _call_butler_tool("http://localhost:8101/sse", "handle_message", {})
+            second = await _call_butler_tool(
+                "http://localhost:8101/sse",
+                "bot_switchboard_handle_message",
+                {},
+            )
 
         assert first == {"step": 1}
         assert second == {"step": 2}
@@ -974,21 +998,24 @@ class TestCallButlerTool:
         mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
         with patch("butlers.tools.switchboard.routing.route.MCPClient", mock_ctor):
-            with pytest.raises(ConnectionError, match="Failed to call tool handle_message"):
+            with pytest.raises(
+                ConnectionError,
+                match="Failed to call tool bot_switchboard_handle_message",
+            ):
                 await _call_butler_tool(
                     "http://localhost:8101/sse",
-                    "handle_message",
+                    "bot_switchboard_handle_message",
                     {"prompt": "Hello"},
                 )
 
-    async def test_handle_message_falls_back_to_trigger(self) -> None:
-        """Unknown handle_message should retry using trigger with mapped args."""
+    async def test_switchboard_prefixed_tool_falls_back_to_trigger(self) -> None:
+        """Unknown identity-prefixed switchboard tools should retry via trigger."""
         from butlers.tools.switchboard import _call_butler_tool
 
         first_result = SimpleNamespace(
             is_error=True,
             data=None,
-            content=[SimpleNamespace(text="Unknown tool: handle_message")],
+            content=[SimpleNamespace(text="Unknown tool: bot_switchboard_handle_message")],
         )
         second_result = SimpleNamespace(is_error=False, data={"output": "ok"}, content=[])
 
@@ -1003,14 +1030,14 @@ class TestCallButlerTool:
         with patch("butlers.tools.switchboard.routing.route.MCPClient", mock_ctor):
             result = await _call_butler_tool(
                 "http://localhost:8101/sse",
-                "handle_message",
+                "bot_switchboard_handle_message",
                 {"message": "hello from telegram", "source": "telegram"},
             )
 
         assert result == {"output": "ok"}
         assert mock_client.call_tool.await_count == 2
         assert mock_client.call_tool.await_args_list[0].args == (
-            "handle_message",
+            "bot_switchboard_handle_message",
             {"message": "hello from telegram", "source": "telegram"},
         )
         fallback_tool, fallback_args = mock_client.call_tool.await_args_list[1].args

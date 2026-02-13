@@ -150,6 +150,9 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 ### Memory System Architecture
 The memory system is a **shared Memory Butler** (port 8150, DB `butler_memory`) — not per-butler isolated. Three tables: `episodes` (session observations, 7d TTL), `facts` (subject-predicate knowledge with per-fact subjective decay), `rules` (procedural playbook, maturity: candidate→established→proven). Uses pgvector + local MiniLM-L6 embeddings (384d). Scoped (`global` or butler-name) but in one shared DB. See `MEMORY_PROJECT_PLAN.md` for full design. Dashboard integration at `/memory` (cross-butler) and `/butlers/:name/memory` (scoped).
 
+### Memory OpenSpec alignment contract
+- `openspec/changes/memory-system/specs/*` now aligns to target-state role semantics: tenant-bounded memory operations by default, canonical fact soft-delete state `retracted` (legacy `forgotten` alias only), required `memory_events` audit stream, deterministic tokenizer-based `memory_context` budgeting/tie-breakers, consolidation terminal states (`consolidated|failed|dead_letter`) with retry metadata, and explicit `anti_pattern` rule maturity.
+
 ### Migration naming/path convention
 Alembic revisions are chain-prefixed (`core_*`, `mem_*`, `sw_*`) rather than bare numeric IDs. Butler-specific migrations resolve from `roster/<butler>/migrations/` via `butlers.migrations._resolve_chain_dir()` (not legacy `butlers/<name>/migrations/` paths).
 - Within a chain, set `branch_labels` only on the branch root revision (e.g. `rel_001`); repeating the same label on later revisions causes Alembic duplicate-branch errors.
@@ -249,12 +252,20 @@ make test-qg
 
 ### Switchboard MCP routing contract
 - `roster/switchboard/tools/routing/route.py::_call_butler_tool` calls butler endpoints via `fastmcp.Client` and should return `CallToolResult.data` when present.
-- For backward compatibility, if a target returns `Unknown tool: handle_message`, routing retries `trigger` with mapped args (`prompt` from `prompt`/`message`, optional `context`).
+- If a target returns `Unknown tool` for an identity-prefixed routing tool name, routing retries `trigger` with mapped args (`prompt` from `prompt`/`message`, optional `context`).
+
+### Base notify and module-tool naming contract
+- `docs/roles/base_butler.md` defines `notify` as a versioned envelope surface (`notify.v1` request, `notify_response.v1` response) with required `origin_butler`; reply intents require request-context targeting fields.
+- Messenger delivery transport is route-wrapped: Switchboard dispatches `route.v1` to Messenger `route.execute` with `notify.v1` in `input.context.notify_request`; Messenger returns `route_response.v1` and should place normalized delivery output in `result.notify_response`.
+- `notify_response.v1` uses the same canonical execution error classes as route executors (`validation_error`, `target_unavailable`, `timeout`, `overload_rejected`, `internal_error`); local admission overflow maps to `overload_rejected`.
+- `docs/roles/base_butler.md` does not define channel-facing tool naming/ownership as a base requirement; that policy is role-specific.
+- `docs/roles/switchboard_butler.md` owns the channel-facing tool surface policy: outbound delivery send/reply tools are messenger-only, ingress connectors remain Switchboard-owned, and non-messenger butlers must use `notify.v1`.
+- `docs/roles/switchboard_butler.md` explicitly overrides base `notify` semantics so Switchboard is the notify control-plane termination point (not a self-routed notify caller).
 
 ### Pipeline identity-routing contract
 - `src/butlers/modules/pipeline.py` should route inbound channel messages with identity-prefixed tool names (default `bot_switchboard_handle_message`) and include `source_metadata` (`channel`, `identity`, `tool_name`, optional `source_id`) in routed args.
 - `roster/switchboard/tools/routing/dispatch.py::dispatch_decomposed` should pass through identity-aware source metadata and the prefixed logical `tool_name` for each sub-route.
-- `roster/switchboard/tools/routing/route.py::_call_butler_tool` should retry `trigger` not only for legacy `handle_message` but also for unknown identity-prefixed tool names, preserving source metadata via trigger context.
+- `roster/switchboard/tools/routing/route.py::_call_butler_tool` should retry `trigger` for unknown identity-prefixed tool names, preserving source metadata via trigger context.
 
 ### Spawner trigger-source/failure contract
 - Core daemon `trigger` MCP tool should dispatch with `trigger_source="trigger"` (not `trigger_tool`) to stay aligned with `core.sessions` validation.
@@ -273,8 +284,8 @@ make test-qg
 - `src/butlers/daemon.py::_McpSseDisconnectGuard` wraps the FastMCP SSE ASGI app and suppresses expected `starlette.requests.ClientDisconnect` only for `POST .../messages` requests.
 - The guard logs a concise DEBUG line with butler/path/session context and attempts a lightweight empty `202` response when possible; non-`/messages` disconnects and non-disconnect exceptions must still bubble.
 ### Telegram identity tool contract
-- `src/butlers/modules/telegram.py` registers only identity-prefixed tools: `user_telegram_{get_updates,send_message,reply_to_message}` and `bot_telegram_{get_updates,send_message,reply_to_message}`.
-- `send_message`/`get_updates` legacy tool names must not be registered.
+- `src/butlers/modules/telegram.py` registers only identity-prefixed tools: `user_telegram_get_updates`, `user_telegram_send_message`, `user_telegram_reply_to_message`, `bot_telegram_get_updates`, `bot_telegram_send_message`, and `bot_telegram_reply_to_message`.
+- Legacy unprefixed Telegram tool names must not be registered.
 - User-output descriptors (`user_telegram_send_message`, `user_telegram_reply_to_message`) are marked as approval-required defaults in descriptor descriptions (`approval_default=always`).
 
 ### Email tool scope/approval contract

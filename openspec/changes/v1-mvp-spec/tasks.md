@@ -84,13 +84,13 @@
 
 ## 13. Telegram Module
 
-- [ ] 13.1 Create `src/butlers/modules/telegram.py` — Module implementation with send_message, get_updates tools
+- [ ] 13.1 Create `src/butlers/modules/telegram.py` — Module implementation with identity-prefixed send/update tools
 - [ ] 13.2 Implement polling mode for dev and webhook mode for production (configurable via butler.toml)
 - [ ] 13.3 Write `tests/test_module_telegram.py` — tool registration, mocked API calls
 
 ## 14. Email Module
 
-- [ ] 14.1 Create `src/butlers/modules/email.py` — Module implementation with send_email, search_inbox, read_email tools
+- [ ] 14.1 Create `src/butlers/modules/email.py` — Module implementation with identity-prefixed send/search/read tools
 - [ ] 14.2 Write `tests/test_module_email.py` — tool registration, mocked API calls
 
 ## 15. Switchboard Butler

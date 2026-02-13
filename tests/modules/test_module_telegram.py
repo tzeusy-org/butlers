@@ -25,7 +25,6 @@ EXPECTED_TELEGRAM_TOOLS = {
     "bot_telegram_send_message",
     "bot_telegram_reply_to_message",
 }
-LEGACY_TELEGRAM_TOOLS = {"send_message", "get_updates"}
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -189,12 +188,15 @@ class TestToolRegistration:
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
         assert set(mock_mcp._registered_tools.keys()) == EXPECTED_TELEGRAM_TOOLS
 
-    async def test_does_not_register_legacy_tool_names(
+    async def test_registered_tool_names_stay_identity_prefixed(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock
     ):
-        """Legacy unprefixed tool names are no longer registered."""
+        """Registered Telegram tools stay within user_/bot_ namespaces."""
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        assert LEGACY_TELEGRAM_TOOLS.isdisjoint(mock_mcp._registered_tools.keys())
+        assert all(
+            name.startswith(("user_telegram_", "bot_telegram_"))
+            for name in mock_mcp._registered_tools.keys()
+        )
 
     async def test_all_registered_tools_are_callable(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock
@@ -220,10 +222,10 @@ def _mock_response(json_data: dict[str, Any], status_code: int = 200) -> httpx.R
 
 
 class TestSendMessage:
-    """Test send_message API interaction."""
+    """Test _send_message API interaction."""
 
     async def test_calls_correct_endpoint(self, telegram_module: TelegramModule, monkeypatch):
-        """send_message POSTs to the sendMessage endpoint."""
+        """_send_message POSTs to the sendMessage endpoint."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token-123")
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -258,7 +260,7 @@ class TestSendMessage:
 
 
 class TestReplyToMessage:
-    """Test reply_to_message API interaction."""
+    """Test _reply_to_message API interaction."""
 
     async def test_reply_to_message_sets_reply_to_message_id(
         self, telegram_module: TelegramModule, monkeypatch
@@ -300,10 +302,10 @@ class TestReplyToMessage:
 
 
 class TestGetUpdates:
-    """Test get_updates API interaction."""
+    """Test _get_updates API interaction."""
 
     async def test_calls_correct_endpoint(self, telegram_module: TelegramModule, monkeypatch):
-        """get_updates GETs the getUpdates endpoint."""
+        """_get_updates GETs the getUpdates endpoint."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token-123")
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -327,7 +329,7 @@ class TestGetUpdates:
         assert updates[0]["message"]["text"] == "hi"
 
     async def test_updates_last_update_id(self, telegram_module: TelegramModule, monkeypatch):
-        """get_updates advances _last_update_id to the latest."""
+        """_get_updates advances _last_update_id to the latest."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -361,7 +363,7 @@ class TestGetUpdates:
         assert second_call[1]["params"]["offset"] == 51
 
     async def test_empty_updates(self, telegram_module: TelegramModule, monkeypatch):
-        """get_updates returns empty list when no new messages."""
+        """_get_updates returns empty list when no new messages."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)

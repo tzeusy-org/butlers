@@ -132,8 +132,8 @@ def test_wrapping_mcp_rejects_non_prefixed_registered_tool_names():
 
     with pytest.raises(ModuleToolValidationError, match="Expected 'user_<channel>_<action>'"):
 
-        @wrapped.tool(name="send_email")
-        async def _send_email() -> dict[str, str]:
+        @wrapped.tool(name="email_send")
+        async def _email_send() -> dict[str, str]:
             return {"status": "ok"}
 
 
@@ -164,10 +164,10 @@ def test_wrapping_mcp_keeps_legacy_modules_compatible_without_descriptors():
     )
 
     @wrapped.tool()
-    async def send_email() -> dict[str, str]:
+    async def email_send() -> dict[str, str]:
         return {"status": "ok"}
 
-    assert fake.registered == ["send_email"]
+    assert fake.registered == ["email_send"]
 
 
 @pytest.mark.asyncio
