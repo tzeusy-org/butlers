@@ -8,7 +8,9 @@ re-exports them so they are equally visible from ``roster/*/tests/``.
 from __future__ import annotations
 
 import shutil
+import time
 import uuid
+import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
@@ -21,6 +23,12 @@ if TYPE_CHECKING:
     from testcontainers.postgres import PostgresContainer
 
 docker_available = shutil.which("docker") is not None
+_TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS = (
+    "did not receive an exit event",
+    "no such container",
+    "removal of container",
+    "is already in progress",
+)
 
 
 @dataclass
@@ -58,6 +66,62 @@ class MockSpawner:
 def mock_spawner() -> MockSpawner:
     """Provide a MockSpawner instance for tests."""
     return MockSpawner()
+
+
+def _is_transient_docker_teardown_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in _TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS)
+
+
+def _remove_container_with_retry(
+    container: object,
+    *,
+    force: bool,
+    delete_volume: bool,
+    max_attempts: int = 4,
+) -> None:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            container.remove(force=force, v=delete_volume)
+            return
+        except Exception as exc:
+            if not _is_transient_docker_teardown_error(exc):
+                raise
+            if attempt < max_attempts:
+                time.sleep(0.1 * attempt)
+                continue
+            warnings.warn(
+                "Ignoring transient Docker teardown error after retries: "
+                f"{exc}. This can happen under pytest-xdist container shutdown races.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+
+
+def _install_resilient_testcontainers_stop() -> None:
+    from testcontainers.core.container import DockerContainer
+
+    if getattr(DockerContainer.stop, "__butlers_resilient__", False):
+        return
+
+    original_stop = DockerContainer.stop
+
+    def _resilient_stop(self: object, force: bool = True, delete_volume: bool = True) -> None:
+        if self._container:
+            _remove_container_with_retry(
+                self._container,
+                force=force,
+                delete_volume=delete_volume,
+            )
+        self.get_docker_client().client.close()
+
+    _resilient_stop.__butlers_resilient__ = True
+    _resilient_stop.__wrapped__ = original_stop
+    DockerContainer.stop = _resilient_stop
+
+
+_install_resilient_testcontainers_stop()
 
 
 def _unique_test_db_name() -> str:
