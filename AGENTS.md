@@ -254,6 +254,10 @@ make test-qg
 ### MCP client lifecycle hotspot
 - `roster/switchboard/tools/routing/route.py::_call_butler_tool` currently opens a new `fastmcp.Client` (`async with`) per routed tool call, which can generate high `/sse` + `ListToolsRequest` log volume under heartbeat fanout.
 - `src/butlers/core/spawner.py` memory hooks (`fetch_memory_context`, `store_session_episode`) also create one-off Memory MCP clients per call; this is another source of SSE session churn.
+
+### MCP SSE disconnect guard contract
+- `src/butlers/daemon.py::_McpSseDisconnectGuard` wraps the FastMCP SSE ASGI app and suppresses expected `starlette.requests.ClientDisconnect` only for `POST .../messages` requests.
+- The guard logs a concise DEBUG line with butler/path/session context and attempts a lightweight empty `202` response when possible; non-`/messages` disconnects and non-disconnect exceptions must still bubble.
 ### Telegram identity tool contract
 - `src/butlers/modules/telegram.py` registers only identity-prefixed tools: `user_telegram_{get_updates,send_message,reply_to_message}` and `bot_telegram_{get_updates,send_message,reply_to_message}`.
 - `send_message`/`get_updates` legacy tool names must not be registered.
