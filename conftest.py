@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import shutil
 import uuid
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from asyncpg.pool import Pool
+    from testcontainers.postgres import PostgresContainer
 
 docker_available = shutil.which("docker") is not None
 
@@ -60,7 +65,7 @@ def _unique_test_db_name() -> str:
 
 
 @pytest.fixture(scope="session")
-def postgres_container():
+def postgres_container() -> Iterator[PostgresContainer]:
     """Shared Postgres testcontainer for all DB-backed tests in this pytest session.
 
     Isolation contract:
@@ -76,8 +81,8 @@ def postgres_container():
 
 @pytest.fixture
 def provisioned_postgres_pool(
-    postgres_container,
-) -> Callable[..., AsyncIterator]:
+    postgres_container: PostgresContainer,
+) -> Callable[..., AbstractAsyncContextManager[Pool]]:
     """Create a fresh database and asyncpg pool for a single test usage.
 
     Tests should use this as:
@@ -91,7 +96,7 @@ def provisioned_postgres_pool(
         *,
         min_pool_size: int = 1,
         max_pool_size: int = 3,
-    ) -> AsyncIterator:
+    ) -> AsyncIterator[Pool]:
         db = Database(
             db_name=_unique_test_db_name(),
             host=postgres_container.get_container_host_ip(),
