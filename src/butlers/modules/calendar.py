@@ -29,6 +29,14 @@ BUTLER_EVENT_TITLE_PREFIX = "BUTLER:"
 BUTLER_GENERATED_PRIVATE_KEY = "butler_generated"
 BUTLER_NAME_PRIVATE_KEY = "butler_name"
 DEFAULT_BUTLER_NAME = "butler"
+LEGACY_CONFLICT_POLICY_ALIASES = {
+    "allow": "allow_overlap",
+    "reject": "fail",
+}
+VALID_CONFLICT_POLICIES = {"suggest", "fail", "allow_overlap"}
+DEFAULT_CONFLICT_SUGGESTION_COUNT = 3
+
+CalendarConflictPolicy = Literal["suggest", "fail", "allow_overlap"]
 
 
 class CalendarAuthError(RuntimeError):
@@ -418,8 +426,18 @@ class CalendarConflictDefaults(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    policy: Literal["suggest", "allow", "reject"] = "suggest"
+    policy: CalendarConflictPolicy = "suggest"
     require_approval_for_overlap: bool = True
+
+    @field_validator("policy", mode="before")
+    @classmethod
+    def _normalize_policy(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower()
+        if not normalized:
+            return value
+        return LEGACY_CONFLICT_POLICY_ALIASES.get(normalized, normalized)
 
 
 class CalendarNotificationDefaults(BaseModel):
@@ -1119,7 +1137,66 @@ class _GoogleProvider(CalendarProvider):
         calendar_id: str,
         candidate: CalendarEventCreate,
     ) -> list[CalendarEvent]:
-        raise NotImplementedError("Google calendar provider is not implemented yet")
+        if candidate.end_at <= candidate.start_at:
+            raise ValueError("candidate.end_at must be after candidate.start_at")
+
+        payload = await self._request_google_json(
+            "POST",
+            "/freeBusy",
+            json_body={
+                "timeMin": _google_rfc3339(candidate.start_at),
+                "timeMax": _google_rfc3339(candidate.end_at),
+                "timeZone": candidate.timezone or self._config.timezone,
+                "items": [{"id": calendar_id}],
+            },
+        )
+        calendars_payload = payload.get("calendars")
+        if not isinstance(calendars_payload, dict):
+            raise CalendarAuthError("Google Calendar freeBusy response missing calendars object")
+
+        calendar_payload = calendars_payload.get(calendar_id)
+        if not isinstance(calendar_payload, dict):
+            if len(calendars_payload) == 1:
+                calendar_payload = next(iter(calendars_payload.values()))
+            else:
+                raise CalendarAuthError(
+                    "Google Calendar freeBusy response missing calendar entry for requested id"
+                )
+        if not isinstance(calendar_payload, dict):
+            raise CalendarAuthError("Google Calendar freeBusy response calendar entry is invalid")
+
+        busy_payload = calendar_payload.get("busy")
+        if not isinstance(busy_payload, list):
+            raise CalendarAuthError("Google Calendar freeBusy response missing busy array")
+
+        timezone = candidate.timezone or self._config.timezone
+        conflicts: list[CalendarEvent] = []
+        for index, window in enumerate(busy_payload):
+            if not isinstance(window, dict):
+                continue
+
+            start_raw = window.get("start")
+            end_raw = window.get("end")
+            if not isinstance(start_raw, str) or not isinstance(end_raw, str):
+                raise CalendarAuthError(
+                    "Google Calendar freeBusy busy windows must include start/end"
+                )
+
+            start_at = _parse_google_datetime(start_raw)
+            end_at = _parse_google_datetime(end_raw)
+            if end_at <= start_at:
+                continue
+
+            conflicts.append(
+                CalendarEvent(
+                    event_id=f"busy-{index + 1}",
+                    title="(busy)",
+                    start_at=start_at,
+                    end_at=end_at,
+                    timezone=timezone,
+                )
+            )
+        return conflicts
 
     async def shutdown(self) -> None:
         if self._owns_http_client:
@@ -1222,10 +1299,12 @@ class CalendarModule(Module):
             recurrence_rule: str | None = None,
             color_id: str | None = None,
             calendar_id: str | None = None,
+            conflict_policy: CalendarConflictPolicy | None = None,
         ) -> dict[str, Any]:
             """Create an event and mark it as Butler-generated."""
             provider = module._require_provider()
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
 
             create_payload = CalendarEventCreate(
                 title=module._ensure_butler_title(title),
@@ -1241,15 +1320,37 @@ class CalendarModule(Module):
                     butler_name=module._butler_name
                 ),
             )
+            conflict_result = await module._check_conflicts(
+                provider=provider,
+                calendar_id=resolved_calendar_id,
+                candidate=create_payload,
+                conflict_policy=resolved_conflict_policy,
+            )
+            if conflict_result["status"] == "conflict":
+                return {
+                    "status": "conflict",
+                    "policy": resolved_conflict_policy,
+                    "provider": provider.name,
+                    "calendar_id": resolved_calendar_id,
+                    "conflicts": conflict_result["conflicts"],
+                    "suggested_slots": conflict_result["suggested_slots"],
+                }
+
             event = await provider.create_event(
                 calendar_id=resolved_calendar_id,
                 payload=create_payload,
             )
-            return {
+            result: dict[str, Any] = {
+                "status": "created",
                 "provider": provider.name,
                 "calendar_id": resolved_calendar_id,
                 "event": module._event_to_payload(event),
             }
+            if conflict_result["conflicts"]:
+                result["policy"] = resolved_conflict_policy
+                result["conflicts"] = conflict_result["conflicts"]
+                result["suggested_slots"] = []
+            return result
 
         @mcp.tool()
         async def calendar_update_event(
@@ -1265,6 +1366,7 @@ class CalendarModule(Module):
             recurrence_scope: Literal["series"] = "series",
             color_id: str | None = None,
             calendar_id: str | None = None,
+            conflict_policy: CalendarConflictPolicy | None = None,
         ) -> dict[str, Any]:
             """Update an event and preserve Butler tags for Butler-generated entries.
 
@@ -1276,6 +1378,7 @@ class CalendarModule(Module):
 
             provider = module._require_provider()
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
             existing_event = await provider.get_event(
                 calendar_id=resolved_calendar_id,
                 event_id=normalized_event_id,
@@ -1293,6 +1396,53 @@ class CalendarModule(Module):
                 private_metadata = module._build_butler_private_metadata(
                     butler_name=existing_event.butler_name or module._butler_name
                 )
+
+            conflict_result: dict[str, Any] = {
+                "status": "clear",
+                "conflicts": [],
+                "suggested_slots": [],
+            }
+            if module._time_window_changed(
+                existing_event=existing_event,
+                start_at=start_at,
+                end_at=end_at,
+            ):
+                candidate = CalendarEventCreate(
+                    title=update_title or existing_event.title,
+                    start_at=start_at if start_at is not None else existing_event.start_at,
+                    end_at=end_at if end_at is not None else existing_event.end_at,
+                    timezone=timezone or existing_event.timezone,
+                    description=(
+                        description if description is not None else existing_event.description
+                    ),
+                    location=location if location is not None else existing_event.location,
+                    attendees=(
+                        attendees if attendees is not None else list(existing_event.attendees)
+                    ),
+                    recurrence_rule=(
+                        recurrence_rule
+                        if recurrence_rule is not None
+                        else existing_event.recurrence_rule
+                    ),
+                    color_id=color_id if color_id is not None else existing_event.color_id,
+                )
+                conflict_result = await module._check_conflicts(
+                    provider=provider,
+                    calendar_id=resolved_calendar_id,
+                    candidate=candidate,
+                    conflict_policy=resolved_conflict_policy,
+                    ignore_start_at=existing_event.start_at,
+                    ignore_end_at=existing_event.end_at,
+                )
+                if conflict_result["status"] == "conflict":
+                    return {
+                        "status": "conflict",
+                        "policy": resolved_conflict_policy,
+                        "provider": provider.name,
+                        "calendar_id": resolved_calendar_id,
+                        "conflicts": conflict_result["conflicts"],
+                        "suggested_slots": conflict_result["suggested_slots"],
+                    }
 
             update_patch = CalendarEventUpdate(
                 title=update_title,
@@ -1312,11 +1462,17 @@ class CalendarModule(Module):
                 event_id=normalized_event_id,
                 patch=update_patch,
             )
-            return {
+            result = {
+                "status": "updated",
                 "provider": provider.name,
                 "calendar_id": resolved_calendar_id,
                 "event": module._event_to_payload(event),
             }
+            if conflict_result["conflicts"]:
+                result["policy"] = resolved_conflict_policy
+                result["conflicts"] = conflict_result["conflicts"]
+                result["suggested_slots"] = []
+            return result
 
     async def on_startup(self, config: Any, db: Any) -> None:
         self._config = self._coerce_config(config)
@@ -1384,6 +1540,117 @@ class CalendarModule(Module):
             BUTLER_GENERATED_PRIVATE_KEY: "true",
             BUTLER_NAME_PRIVATE_KEY: normalized_name,
         }
+
+    def _resolve_conflict_policy(
+        self, policy_override: CalendarConflictPolicy | str | None
+    ) -> CalendarConflictPolicy:
+        if policy_override is None:
+            return self._require_config().conflicts.policy
+
+        normalized = policy_override.strip().lower()
+        normalized = LEGACY_CONFLICT_POLICY_ALIASES.get(normalized, normalized)
+        if normalized not in VALID_CONFLICT_POLICIES:
+            supported = ", ".join(sorted(VALID_CONFLICT_POLICIES))
+            raise ValueError(f"conflict_policy must be one of: {supported}")
+        return normalized  # type: ignore[return-value]
+
+    async def _check_conflicts(
+        self,
+        *,
+        provider: CalendarProvider,
+        calendar_id: str,
+        candidate: CalendarEventCreate,
+        conflict_policy: CalendarConflictPolicy,
+        ignore_start_at: datetime | None = None,
+        ignore_end_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        if candidate.end_at <= candidate.start_at:
+            raise ValueError("end_at must be after start_at")
+
+        conflicts = await provider.find_conflicts(calendar_id=calendar_id, candidate=candidate)
+        if ignore_start_at is not None and ignore_end_at is not None:
+            conflicts = [
+                conflict
+                for conflict in conflicts
+                if not (conflict.start_at == ignore_start_at and conflict.end_at == ignore_end_at)
+            ]
+
+        conflict_payload = [self._conflict_to_payload(conflict) for conflict in conflicts]
+        if not conflict_payload:
+            return {"status": "clear", "conflicts": [], "suggested_slots": []}
+
+        if conflict_policy == "allow_overlap":
+            return {
+                "status": "allow_overlap",
+                "conflicts": conflict_payload,
+                "suggested_slots": [],
+            }
+
+        suggested_slots: list[dict[str, str]] = []
+        if conflict_policy == "suggest":
+            suggested_slots = self._build_suggested_slots(
+                candidate,
+                conflicts,
+                count=DEFAULT_CONFLICT_SUGGESTION_COUNT,
+            )
+        return {
+            "status": "conflict",
+            "conflicts": conflict_payload,
+            "suggested_slots": suggested_slots,
+        }
+
+    @staticmethod
+    def _time_window_changed(
+        *,
+        existing_event: CalendarEvent,
+        start_at: datetime | None,
+        end_at: datetime | None,
+    ) -> bool:
+        if start_at is not None and start_at != existing_event.start_at:
+            return True
+        if end_at is not None and end_at != existing_event.end_at:
+            return True
+        return False
+
+    @staticmethod
+    def _conflict_to_payload(conflict: CalendarEvent) -> dict[str, str]:
+        return {
+            "event_id": conflict.event_id,
+            "title": conflict.title,
+            "start_at": conflict.start_at.isoformat(),
+            "end_at": conflict.end_at.isoformat(),
+            "timezone": conflict.timezone,
+        }
+
+    @staticmethod
+    def _build_suggested_slots(
+        candidate: CalendarEventCreate,
+        conflicts: list[CalendarEvent],
+        *,
+        count: int,
+    ) -> list[dict[str, str]]:
+        if count < 1:
+            return []
+        duration = candidate.end_at - candidate.start_at
+        if duration <= timedelta(0):
+            return []
+
+        last_conflict_end = max(conflict.end_at for conflict in conflicts)
+        cursor = max(candidate.start_at, last_conflict_end)
+
+        suggestions: list[dict[str, str]] = []
+        for _ in range(count):
+            suggestion_start = cursor
+            suggestion_end = suggestion_start + duration
+            suggestions.append(
+                {
+                    "start_at": suggestion_start.isoformat(),
+                    "end_at": suggestion_end.isoformat(),
+                    "timezone": candidate.timezone or "UTC",
+                }
+            )
+            cursor = suggestion_end + timedelta(minutes=15)
+        return suggestions
 
     @staticmethod
     def _event_to_payload(event: CalendarEvent) -> dict[str, Any]:

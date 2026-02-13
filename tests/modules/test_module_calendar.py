@@ -216,6 +216,7 @@ class _ProviderDouble(CalendarProvider):
         event: CalendarEvent | None = None,
         create_event_result: CalendarEvent | None = None,
         update_event_result: CalendarEvent | None = None,
+        conflicts: list[CalendarEvent] | None = None,
     ) -> None:
         self._events = events or []
         self._event = event
@@ -225,10 +226,12 @@ class _ProviderDouble(CalendarProvider):
         self._update_event_result = (
             update_event_result if update_event_result is not None else event
         )
+        self._conflicts = conflicts or []
         self.list_calls: list[dict[str, object]] = []
         self.get_calls: list[dict[str, object]] = []
         self.create_calls: list[dict[str, object]] = []
         self.update_calls: list[dict[str, object]] = []
+        self.find_conflict_calls: list[dict[str, object]] = []
 
     @property
     def name(self) -> str:
@@ -271,8 +274,9 @@ class _ProviderDouble(CalendarProvider):
     async def delete_event(self, *, calendar_id: str, event_id: str) -> None:  # pragma: no cover
         raise NotImplementedError
 
-    async def find_conflicts(self, *, calendar_id: str, candidate):  # pragma: no cover
-        raise NotImplementedError
+    async def find_conflicts(self, *, calendar_id: str, candidate):
+        self.find_conflict_calls.append({"calendar_id": calendar_id, "candidate": candidate})
+        return list(self._conflicts)
 
     async def shutdown(self) -> None:
         return None
@@ -655,6 +659,228 @@ class TestCalendarWriteTools:
                 recurrence_rule="RRULE:FREQ=MONTHLY",
                 recurrence_scope="instance",
             )
+
+    async def test_create_conflict_default_suggest_returns_conflicts_and_suggested_slots(self):
+        created = CalendarEvent(
+            event_id="evt-created",
+            title="BUTLER: Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="general",
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 20, 14, 30, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 30, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=created, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+        )
+
+        assert provider.find_conflict_calls
+        assert provider.create_calls == []
+        assert result["status"] == "conflict"
+        assert result["policy"] == "suggest"
+        assert result["conflicts"] == [
+            {
+                "event_id": "busy-1",
+                "title": "(busy)",
+                "start_at": "2026-02-20T14:30:00+00:00",
+                "end_at": "2026-02-20T15:30:00+00:00",
+                "timezone": "UTC",
+            }
+        ]
+        assert len(result["suggested_slots"]) == 3
+
+    async def test_create_conflict_fail_policy_returns_conflict_without_suggestions(self):
+        created = CalendarEvent(
+            event_id="evt-created",
+            title="BUTLER: Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="general",
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=created, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            conflict_policy="fail",
+        )
+
+        assert provider.create_calls == []
+        assert result["status"] == "conflict"
+        assert result["policy"] == "fail"
+        assert result["suggested_slots"] == []
+
+    async def test_create_conflict_allow_overlap_policy_writes_event(self):
+        created = CalendarEvent(
+            event_id="evt-created",
+            title="BUTLER: Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="general",
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=created, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            conflict_policy="allow_overlap",
+        )
+
+        assert len(provider.create_calls) == 1
+        assert result["status"] == "created"
+        assert result["policy"] == "allow_overlap"
+        assert result["conflicts"][0]["event_id"] == "busy-1"
+        assert result["suggested_slots"] == []
+
+    async def test_update_time_window_change_checks_conflicts(self):
+        existing = CalendarEvent(
+            event_id="evt-human",
+            title="Discuss roadmap",
+            start_at=datetime(2026, 2, 21, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=False,
+            butler_name=None,
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 21, 10, 30, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 30, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=existing, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=None,
+        )
+
+        result = await mcp.tools["calendar_update_event"](
+            event_id="evt-human",
+            start_at=datetime(2026, 2, 21, 10, 30, tzinfo=UTC),
+            conflict_policy="fail",
+        )
+
+        assert len(provider.find_conflict_calls) == 1
+        assert provider.update_calls == []
+        assert result["status"] == "conflict"
+        assert result["policy"] == "fail"
+        assert result["suggested_slots"] == []
+
+    async def test_update_without_time_change_skips_conflict_check(self):
+        existing = CalendarEvent(
+            event_id="evt-human",
+            title="Discuss roadmap",
+            start_at=datetime(2026, 2, 21, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=False,
+            butler_name=None,
+        )
+        updated = CalendarEvent(
+            event_id="evt-human",
+            title="Discuss roadmap",
+            start_at=datetime(2026, 2, 21, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=False,
+            butler_name=None,
+            location="Updated room",
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 21, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(
+            event=existing,
+            update_event_result=updated,
+            conflicts=[conflict],
+        )
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=None,
+        )
+
+        result = await mcp.tools["calendar_update_event"](
+            event_id="evt-human",
+            location="Updated room",
+            conflict_policy="fail",
+        )
+
+        assert provider.find_conflict_calls == []
+        assert len(provider.update_calls) == 1
+        assert result["status"] == "updated"
 
 
 class TestGoogleCredentialParsing:
