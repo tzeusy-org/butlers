@@ -290,6 +290,7 @@ class TestCoreToolSpans:
             "schedule_delete": {"task_id": "00000000-0000-0000-0000-000000000001"},
             "sessions_list": {},
             "sessions_get": {"session_id": "00000000-0000-0000-0000-000000000001"},
+            "sessions_summary": {"period": "today"},
         }
 
         with (
@@ -308,6 +309,17 @@ class TestCoreToolSpans:
             patch("butlers.daemon._tick", new_callable=AsyncMock, return_value=0),
             patch("butlers.daemon._sessions_list", new_callable=AsyncMock, return_value=[]),
             patch("butlers.daemon._sessions_get", new_callable=AsyncMock, return_value=None),
+            patch(
+                "butlers.daemon._sessions_summary",
+                new_callable=AsyncMock,
+                return_value={
+                    "period": "today",
+                    "total_sessions": 0,
+                    "total_input_tokens": 0,
+                    "total_output_tokens": 0,
+                    "by_model": {},
+                },
+            ),
         ):
             for tool_name, kwargs in tool_kwargs.items():
                 await tools[tool_name](**kwargs)

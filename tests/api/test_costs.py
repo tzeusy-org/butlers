@@ -8,6 +8,7 @@ placeholder endpoints return correct empty/zero responses.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -240,6 +241,33 @@ class TestCostSummary:
         assert "claude-sonnet-4-20250514" in data["by_model"]
         assert "claude-haiku-35-20241022" in data["by_model"]
 
+    async def test_summary_calls_registered_sessions_summary_tool(self):
+        """Summary fan-out should call the daemon-registered sessions_summary tool."""
+        configs = [ButlerConnectionInfo(name="switchboard", port=8100)]
+        pricing = _make_pricing()
+        session_stats = {
+            "total_sessions": 1,
+            "total_input_tokens": 1000,
+            "total_output_tokens": 500,
+            "by_model": {
+                "claude-sonnet-4-20250514": {"input_tokens": 1000, "output_tokens": 500},
+            },
+        }
+
+        mock_client = MagicMock()
+        mock_client.call_tool = AsyncMock(return_value=_make_tool_result(session_stats))
+        mgr = MagicMock(spec=MCPClientManager)
+        mgr.get_client = AsyncMock(return_value=mock_client)
+        app = _app_with_overrides(mgr, configs, pricing)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/costs/summary?period=7d")
+
+        assert response.status_code == 200
+        mock_client.call_tool.assert_awaited_once_with("sessions_summary", {"period": "7d"})
+
     async def test_summary_handles_unreachable_butler(self):
         """Unreachable butlers contribute zero to the aggregate."""
         configs = _make_configs()
@@ -349,6 +377,33 @@ class TestCostSummary:
         assert resp_data["total_sessions"] == 1
         assert resp_data["total_input_tokens"] == 5000
         assert "test" not in resp_data["by_butler"]
+
+    async def test_summary_logs_tool_contract_failures(self, caplog):
+        """Unexpected fan-out failures should emit a warning with butler/tool context."""
+        configs = [ButlerConnectionInfo(name="switchboard", port=8100)]
+        pricing = _make_pricing()
+
+        mock_client = MagicMock()
+        mock_client.call_tool = AsyncMock(
+            side_effect=RuntimeError("Unknown tool: sessions_summary")
+        )
+        mgr = MagicMock(spec=MCPClientManager)
+        mgr.get_client = AsyncMock(return_value=mock_client)
+        app = _app_with_overrides(mgr, configs, pricing)
+
+        with caplog.at_level(logging.WARNING, logger="butlers.api.routers.costs"):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/api/costs/summary")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["total_cost_usd"] == 0.0
+        assert data["total_sessions"] == 0
+        assert "Cost summary tool call failed for butler switchboard via sessions_summary" in (
+            caplog.text
+        )
 
 
 # ---------------------------------------------------------------------------
