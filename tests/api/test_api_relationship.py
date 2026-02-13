@@ -152,11 +152,15 @@ class TestGetContact:
             resp = await client.get(f"/api/relationship/contacts/{contact_id}")
 
         assert resp.status_code == 200
-        birthday_sql = next(
+        important_dates_queries = [
             call.args[0]
             for call in mock_pool.fetchrow.await_args_list
             if "FROM important_dates" in call.args[0]
+        ]
+        assert len(important_dates_queries) == 1, (
+            "Expected exactly one fetchrow call to important_dates"
         )
+        birthday_sql = important_dates_queries[0]
         assert "label = 'birthday'" in birthday_sql
         assert "date_type = 'birthday'" not in birthday_sql
 
