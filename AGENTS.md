@@ -222,3 +222,7 @@ make test-qg
 ### Switchboard MCP routing contract
 - `roster/switchboard/tools/routing/route.py::_call_butler_tool` calls butler endpoints via `fastmcp.Client` and should return `CallToolResult.data` when present.
 - For backward compatibility, if a target returns `Unknown tool: handle_message`, routing retries `trigger` with mapped args (`prompt` from `prompt`/`message`, optional `context`).
+
+### Email tool scope/approval contract
+- In `src/butlers/modules/email.py`, `user_*` and `bot_*` prefixes currently represent scoped tool surfaces; both still use the same configured SMTP/IMAP credentials (`SOURCE_EMAIL` / `SOURCE_EMAIL_PASSWORD`).
+- Both `user_*` and `bot_*` email send/reply output descriptors are documented as `approval-required default`; tests in `tests/modules/test_module_email.py` assert this marker.
