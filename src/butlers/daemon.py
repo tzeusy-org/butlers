@@ -38,12 +38,14 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 import uvicorn
 from fastmcp import Client as MCPClient
 from fastmcp import FastMCP
 from opentelemetry import trace
 from pydantic import ConfigDict, ValidationError
+from starlette.requests import ClientDisconnect
 
 from butlers.config import ButlerConfig, load_config, parse_approval_config
 from butlers.core.runtimes import get_adapter
@@ -74,6 +76,65 @@ from butlers.modules.pipeline import MessagePipeline
 from butlers.modules.registry import ModuleRegistry, default_registry
 
 logger = logging.getLogger(__name__)
+
+
+class _McpSseDisconnectGuard:
+    """Catch expected SSE POST disconnects before they become error traces."""
+
+    def __init__(self, app: Any, *, butler_name: str) -> None:
+        self._app = app
+        self._butler_name = butler_name
+
+    @staticmethod
+    def _is_messages_post(scope: dict[str, Any]) -> bool:
+        if scope.get("type") != "http":
+            return False
+        if str(scope.get("method", "")).upper() != "POST":
+            return False
+        path = str(scope.get("path", "")).rstrip("/")
+        return path == "/messages"
+
+    @staticmethod
+    def _session_id(scope: dict[str, Any]) -> str | None:
+        query_string = scope.get("query_string")
+        if not isinstance(query_string, (bytes, bytearray)):
+            return None
+
+        parsed = parse_qs(query_string.decode("utf-8", errors="replace"))
+        values = parsed.get("session_id")
+        if not values:
+            return None
+
+        session_id = values[0].strip()
+        return session_id or None
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        try:
+            await self._app(scope, receive, send)
+        except ClientDisconnect:
+            if not self._is_messages_post(scope):
+                raise
+
+            path = str(scope.get("path", ""))
+            session_id = self._session_id(scope) or "unknown"
+            logger.debug(
+                "Suppressed expected MCP SSE POST disconnect (butler=%s path=%s session_id=%s)",
+                self._butler_name,
+                path,
+                session_id,
+            )
+
+            try:
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 202,
+                        "headers": [(b"content-length", b"0")],
+                    }
+                )
+                await send({"type": "http.response.body", "body": b""})
+            except Exception:
+                logger.debug("MCP SSE disconnect response not sent; client already disconnected")
 
 
 class ModuleConfigError(Exception):
@@ -418,6 +479,7 @@ class ButlerDaemon:
         in a background task so that ``start()`` returns immediately.
         """
         app = self.mcp.http_app(transport="sse")
+        app = _McpSseDisconnectGuard(app, butler_name=self.config.name)
         config = uvicorn.Config(
             app,
             host="0.0.0.0",

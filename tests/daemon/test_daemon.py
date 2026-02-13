@@ -14,9 +14,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
+from starlette.requests import ClientDisconnect
 
 from butlers.credentials import CredentialError
-from butlers.daemon import ButlerDaemon, RuntimeBinaryNotFoundError
+from butlers.daemon import ButlerDaemon, RuntimeBinaryNotFoundError, _McpSseDisconnectGuard
 from butlers.modules.base import Module
 from butlers.modules.email import EmailModule
 from butlers.modules.pipeline import MessagePipeline
@@ -758,14 +759,20 @@ class TestMCPServerStartup:
             # Verify http_app was called with SSE transport
             mock_mcp.http_app.assert_called_once_with(transport="sse")
 
-            # Verify uvicorn.Config was created with correct parameters
-            mock_config_cls.assert_called_once_with(
-                mock_app,
-                host="0.0.0.0",
-                port=9100,
-                log_level="info",
-                timeout_graceful_shutdown=0,
-            )
+            # Verify uvicorn.Config was created with wrapped app and expected parameters
+            mock_config_cls.assert_called_once()
+            args, kwargs = mock_config_cls.call_args
+            assert len(args) == 1
+            wrapped_app = args[0]
+            assert isinstance(wrapped_app, _McpSseDisconnectGuard)
+            assert wrapped_app._app is mock_app
+            assert wrapped_app._butler_name == "test-butler"
+            assert kwargs == {
+                "host": "0.0.0.0",
+                "port": 9100,
+                "log_level": "info",
+                "timeout_graceful_shutdown": 0,
+            }
 
         # Verify server instance was stored
         assert daemon._server is mock_uvicorn_server
@@ -827,6 +834,77 @@ class TestMCPServerStartup:
             await daemon._server_task
         except asyncio.CancelledError:
             pass
+
+
+class TestSseDisconnectGuard:
+    async def test_messages_post_client_disconnect_is_suppressed(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        sent_messages: list[dict[str, Any]] = []
+
+        async def inner_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+            raise ClientDisconnect()
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict[str, Any]) -> None:
+            sent_messages.append(message)
+
+        guard = _McpSseDisconnectGuard(inner_app, butler_name="test-butler")
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/messages/",
+            "query_string": b"session_id=abc123",
+        }
+
+        with caplog.at_level(logging.DEBUG, logger="butlers.daemon"):
+            await guard(scope, receive, send)
+
+        assert any(
+            "Suppressed expected MCP SSE POST disconnect" in rec.message for rec in caplog.records
+        )
+        assert sent_messages == [
+            {
+                "type": "http.response.start",
+                "status": 202,
+                "headers": [(b"content-length", b"0")],
+            },
+            {"type": "http.response.body", "body": b""},
+        ]
+
+    async def test_non_disconnect_exception_bubbles(self) -> None:
+        async def inner_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+            raise RuntimeError("boom")
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, Any]) -> None:
+            return None
+
+        guard = _McpSseDisconnectGuard(inner_app, butler_name="test-butler")
+        scope = {"type": "http", "method": "POST", "path": "/messages/", "query_string": b""}
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await guard(scope, receive, send)
+
+    async def test_non_messages_path_client_disconnect_bubbles(self) -> None:
+        async def inner_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+            raise ClientDisconnect()
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.disconnect"}
+
+        async def send(message: dict[str, Any]) -> None:
+            return None
+
+        guard = _McpSseDisconnectGuard(inner_app, butler_name="test-butler")
+        scope = {"type": "http", "method": "POST", "path": "/health", "query_string": b""}
+
+        with pytest.raises(ClientDisconnect):
+            await guard(scope, receive, send)
 
 
 class TestStatusTool:
