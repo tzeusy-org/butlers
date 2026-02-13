@@ -692,6 +692,13 @@ def _normalize_recurrence(recurrence: str | list[str] | None) -> list[str]:
     return normalized_rules
 
 
+def _normalize_recurrence_rule(recurrence_rule: str | None) -> str | None:
+    if recurrence_rule is None:
+        return None
+    normalized_rules = _normalize_recurrence(recurrence_rule)
+    return normalized_rules[0]
+
+
 def _resolve_all_day_flag(
     *,
     start_at: date | datetime,
@@ -717,6 +724,10 @@ def _normalize_datetime(value: datetime, timezone: str) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=tz)
     return value.astimezone(tz)
+
+
+def _is_naive_datetime(value: datetime) -> bool:
+    return value.tzinfo is None or value.utcoffset() is None
 
 
 def _is_date_only(value: date | datetime) -> bool:
@@ -768,6 +779,31 @@ class CalendarEventCreate(BaseModel):
     color_id: str | None = None
     private_metadata: dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("timezone")
+    @classmethod
+    def _normalize_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        _ensure_valid_timezone(normalized)
+        return normalized
+
+    @field_validator("recurrence_rule")
+    @classmethod
+    def _normalize_recurrence_rule_field(cls, value: str | None) -> str | None:
+        return _normalize_recurrence_rule(value)
+
+    @model_validator(mode="after")
+    def _validate_recurrence_timezone(self) -> CalendarEventCreate:
+        if self.recurrence_rule is not None and self.timezone is None:
+            if _is_naive_datetime(self.start_at) or _is_naive_datetime(self.end_at):
+                raise ValueError(
+                    "timezone is required when recurrence_rule is set for naive datetime boundaries"
+                )
+        return self
+
 
 class CalendarEventUpdate(BaseModel):
     """Patch payload for updating a calendar event."""
@@ -780,8 +816,37 @@ class CalendarEventUpdate(BaseModel):
     location: str | None = None
     attendees: list[str] | None = None
     recurrence_rule: str | None = None
+    recurrence_scope: Literal["series"] = "series"
     color_id: str | None = None
     private_metadata: dict[str, str] | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _normalize_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        _ensure_valid_timezone(normalized)
+        return normalized
+
+    @field_validator("recurrence_rule")
+    @classmethod
+    def _normalize_recurrence_rule_field(cls, value: str | None) -> str | None:
+        return _normalize_recurrence_rule(value)
+
+    @model_validator(mode="after")
+    def _validate_recurrence_timezone(self) -> CalendarEventUpdate:
+        if self.recurrence_rule is None or self.timezone is not None:
+            return self
+        if (self.start_at is not None and _is_naive_datetime(self.start_at)) or (
+            self.end_at is not None and _is_naive_datetime(self.end_at)
+        ):
+            raise ValueError(
+                "timezone is required when recurrence_rule is set for naive datetime boundaries"
+            )
+        return self
 
 
 class CalendarProvider(abc.ABC):
@@ -1197,10 +1262,14 @@ class CalendarModule(Module):
             location: str | None = None,
             attendees: list[str] | None = None,
             recurrence_rule: str | None = None,
+            recurrence_scope: Literal["series"] = "series",
             color_id: str | None = None,
             calendar_id: str | None = None,
         ) -> dict[str, Any]:
-            """Update an event and preserve Butler tags for Butler-generated entries."""
+            """Update an event and preserve Butler tags for Butler-generated entries.
+
+            Recurrence updates are series-scoped in v1.
+            """
             normalized_event_id = event_id.strip()
             if not normalized_event_id:
                 raise ValueError("event_id must be a non-empty string")
@@ -1234,6 +1303,7 @@ class CalendarModule(Module):
                 location=location,
                 attendees=attendees,
                 recurrence_rule=recurrence_rule,
+                recurrence_scope=recurrence_scope,
                 color_id=color_id,
                 private_metadata=private_metadata,
             )

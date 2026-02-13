@@ -501,6 +501,161 @@ class TestCalendarWriteTools:
         assert patch.title == "Discuss roadmap today"
         assert patch.private_metadata is None
 
+    async def test_create_validates_recurring_rrule_payload(self):
+        created = CalendarEvent(
+            event_id="evt-recurring",
+            title="BUTLER: Weekly Planning",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            recurrence_rule="RRULE:FREQ=WEEKLY;INTERVAL=1",
+            butler_generated=True,
+            butler_name="general",
+        )
+        provider = _ProviderDouble(event=created)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        await mcp.tools["calendar_create_event"](
+            title="Weekly Planning",
+            start_at=datetime(2026, 2, 20, 14, 0),
+            end_at=datetime(2026, 2, 20, 15, 0),
+            timezone="UTC",
+            recurrence_rule="  RRULE:FREQ=WEEKLY;INTERVAL=1  ",
+        )
+
+        payload = provider.create_calls[0]["payload"]
+        assert payload.recurrence_rule == "RRULE:FREQ=WEEKLY;INTERVAL=1"
+        assert payload.timezone == "UTC"
+
+    async def test_create_rejects_invalid_recurrence_rule(self):
+        provider = _ProviderDouble()
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        with pytest.raises(ValueError, match="must start with 'RRULE:'"):
+            await mcp.tools["calendar_create_event"](
+                title="Daily sync",
+                start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+                end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+                recurrence_rule="FREQ=DAILY",
+            )
+
+    async def test_create_rejects_recurrence_with_invalid_timezone(self):
+        provider = _ProviderDouble()
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        with pytest.raises(ValueError, match="timezone must be a valid IANA timezone"):
+            await mcp.tools["calendar_create_event"](
+                title="Daily sync",
+                start_at=datetime(2026, 2, 20, 14, 0),
+                end_at=datetime(2026, 2, 20, 15, 0),
+                timezone="Mars/Olympus",
+                recurrence_rule="RRULE:FREQ=DAILY",
+            )
+
+    async def test_create_requires_timezone_for_recurrence_on_naive_datetimes(self):
+        provider = _ProviderDouble()
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        with pytest.raises(ValueError, match="timezone is required when recurrence_rule is set"):
+            await mcp.tools["calendar_create_event"](
+                title="Daily sync",
+                start_at=datetime(2026, 2, 20, 14, 0),
+                end_at=datetime(2026, 2, 20, 15, 0),
+                recurrence_rule="RRULE:FREQ=DAILY",
+            )
+
+    async def test_update_recurrence_defaults_to_series_scope(self):
+        existing = CalendarEvent(
+            event_id="evt-recurring",
+            title="BUTLER: Weekly sync",
+            start_at=datetime(2026, 2, 21, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            recurrence_rule="RRULE:FREQ=WEEKLY",
+            butler_generated=True,
+            butler_name="general",
+        )
+        provider = _ProviderDouble(event=existing, update_event_result=existing)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        await mcp.tools["calendar_update_event"](
+            event_id="evt-recurring",
+            recurrence_rule="  RRULE:FREQ=MONTHLY;INTERVAL=1 ",
+        )
+
+        patch = provider.update_calls[0]["patch"]
+        assert patch.recurrence_rule == "RRULE:FREQ=MONTHLY;INTERVAL=1"
+        assert patch.recurrence_scope == "series"
+
+    async def test_update_recurrence_rejects_non_series_scope(self):
+        existing = CalendarEvent(
+            event_id="evt-recurring",
+            title="BUTLER: Weekly sync",
+            start_at=datetime(2026, 2, 21, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            recurrence_rule="RRULE:FREQ=WEEKLY",
+            butler_generated=True,
+            butler_name="general",
+        )
+        provider = _ProviderDouble(event=existing, update_event_result=existing)
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        with pytest.raises(ValidationError, match="Input should be 'series'"):
+            await mcp.tools["calendar_update_event"](
+                event_id="evt-recurring",
+                recurrence_rule="RRULE:FREQ=MONTHLY",
+                recurrence_scope="instance",
+            )
+
 
 class TestGoogleCredentialParsing:
     """Verify credential JSON parsing and validation errors."""
