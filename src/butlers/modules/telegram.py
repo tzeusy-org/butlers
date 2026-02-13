@@ -554,9 +554,12 @@ class TelegramModule(Module):
 
             result = await self._pipeline.process(
                 message_text=text,
-                tool_name="handle_message",
+                tool_name="bot_telegram_handle_message",
                 tool_args={
                     "source": "telegram",
+                    "source_channel": "telegram",
+                    "source_identity": "bot",
+                    "source_tool": "bot_telegram_get_updates",
                     "chat_id": chat_id,
                     "source_id": message_key,
                 },

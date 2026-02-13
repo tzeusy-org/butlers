@@ -1013,9 +1013,54 @@ class TestCallButlerTool:
             "handle_message",
             {"message": "hello from telegram", "source": "telegram"},
         )
-        assert mock_client.call_tool.await_args_list[1].args == (
-            "trigger",
-            {"prompt": "hello from telegram"},
-        )
+        fallback_tool, fallback_args = mock_client.call_tool.await_args_list[1].args
+        assert fallback_tool == "trigger"
+        assert fallback_args["prompt"] == "hello from telegram"
+        assert "Source metadata" in fallback_args["context"]
+        assert "telegram" in fallback_args["context"]
         assert mock_client.call_tool.await_args_list[0].kwargs == {"raise_on_error": False}
         assert mock_client.call_tool.await_args_list[1].kwargs == {"raise_on_error": False}
+
+    async def test_prefixed_tool_falls_back_to_trigger(self) -> None:
+        """Unknown identity-prefixed tools should retry via trigger."""
+        from butlers.tools.switchboard import _call_butler_tool
+
+        first_result = SimpleNamespace(
+            is_error=True,
+            data=None,
+            content=[SimpleNamespace(text="Unknown tool: bot_telegram_handle_message")],
+        )
+        second_result = SimpleNamespace(is_error=False, data={"output": "ok"}, content=[])
+
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(side_effect=[first_result, second_result])
+
+        mock_ctor = MagicMock()
+        mock_ctx = mock_ctor.return_value
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("butlers.tools.switchboard.routing.route.MCPClient", mock_ctor):
+            result = await _call_butler_tool(
+                "http://localhost:8101/sse",
+                "bot_telegram_handle_message",
+                {
+                    "prompt": "hello from telegram",
+                    "source_channel": "telegram",
+                    "source_identity": "bot",
+                    "source_tool": "bot_telegram_get_updates",
+                    "source_id": "msg-12",
+                },
+            )
+
+        assert result == {"output": "ok"}
+        first_tool, first_args = mock_client.call_tool.await_args_list[0].args
+        assert first_tool == "bot_telegram_handle_message"
+        assert first_args["prompt"] == "hello from telegram"
+
+        fallback_tool, fallback_args = mock_client.call_tool.await_args_list[1].args
+        assert fallback_tool == "trigger"
+        assert fallback_args["prompt"] == "hello from telegram"
+        assert "Source metadata" in fallback_args["context"]
+        assert "bot_telegram_get_updates" in fallback_args["context"]
+        assert "msg-12" in fallback_args["context"]

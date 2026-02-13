@@ -329,12 +329,16 @@ class EmailModule(Module):
 
         result = await self._pipeline.process(
             message_text=text,
-            tool_name="handle_message",
+            tool_name="bot_email_handle_message",
             tool_args={
                 "source": "email",
+                "source_channel": "email",
+                "source_identity": "bot",
+                "source_tool": "bot_email_check_and_route_inbox",
                 "from": sender,
                 "subject": subject,
                 "message_id": message_id,
+                "source_id": message_id,
             },
         )
 
