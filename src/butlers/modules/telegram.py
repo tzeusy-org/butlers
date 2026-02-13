@@ -1,7 +1,8 @@
 """Telegram module — send_message and get_updates MCP tools.
 
 Supports polling mode (dev, no public URL needed) and webhook mode (production).
-Configured via [modules.telegram] in butler.toml.
+Configured via [modules.telegram] with optional
+[modules.telegram.user] and [modules.telegram.bot] credential scopes in butler.toml.
 
 When a ``MessagePipeline`` is attached, incoming messages from polling are
 automatically classified and routed to the appropriate butler via the
@@ -14,11 +15,12 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.modules.base import Module
 from butlers.modules.pipeline import MessagePipeline, RoutingResult
@@ -26,6 +28,48 @@ from butlers.modules.pipeline import MessagePipeline, RoutingResult
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_env_var_name(value: str, *, scope: str, field_name: str) -> str:
+    """Validate a configured env var name for an identity credential field."""
+    if not value or not value.strip():
+        raise ValueError(
+            f"modules.telegram.{scope}.{field_name} must be a non-empty environment variable name"
+        )
+    name = value.strip()
+    if not _ENV_VAR_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"modules.telegram.{scope}.{field_name} must be a valid environment variable name "
+            "(letters, numbers, underscores; cannot start with a number)"
+        )
+    return name
+
+
+class TelegramUserCredentialsConfig(BaseModel):
+    """Identity-scoped credentials for user Telegram operations."""
+
+    enabled: bool = False
+    token_env: str = "USER_TELEGRAM_TOKEN"
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("token_env")
+    @classmethod
+    def _validate_token_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="user", field_name="token_env")
+
+
+class TelegramBotCredentialsConfig(BaseModel):
+    """Identity-scoped credentials for bot Telegram operations."""
+
+    enabled: bool = True
+    token_env: str = "BUTLER_TELEGRAM_TOKEN"
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("token_env")
+    @classmethod
+    def _validate_token_env(cls, value: str) -> str:
+        return _validate_env_var_name(value, scope="bot", field_name="token_env")
 
 
 class TelegramConfig(BaseModel):
@@ -34,6 +78,9 @@ class TelegramConfig(BaseModel):
     mode: str = "polling"  # "polling" or "webhook"
     webhook_url: str | None = None
     poll_interval: float = 1.0
+    user: TelegramUserCredentialsConfig = Field(default_factory=TelegramUserCredentialsConfig)
+    bot: TelegramBotCredentialsConfig = Field(default_factory=TelegramBotCredentialsConfig)
+    model_config = ConfigDict(extra="forbid")
 
 
 class TelegramModule(Module):
@@ -69,7 +116,12 @@ class TelegramModule(Module):
     @property
     def credentials_env(self) -> list[str]:
         """Environment variables required by this module."""
-        return ["BUTLER_TELEGRAM_TOKEN"]
+        envs: list[str] = []
+        if self._config.bot.enabled:
+            envs.append(self._config.bot.token_env)
+        if self._config.user.enabled:
+            envs.append(self._config.user.token_env)
+        return envs
 
     def migration_revisions(self) -> str | None:
         return None  # No custom tables needed
@@ -82,9 +134,21 @@ class TelegramModule(Module):
         """
         self._pipeline = pipeline
 
+    def _get_bot_token(self) -> str:
+        """Resolve Telegram bot token from configured bot credential scope."""
+        if not self._config.bot.enabled:
+            raise RuntimeError("Telegram bot scope modules.telegram.bot is disabled")
+        token_env = self._config.bot.token_env
+        token = os.environ.get(token_env)
+        if not token:
+            raise RuntimeError(
+                f"Missing Telegram bot token for modules.telegram.bot: set {token_env}"
+            )
+        return token
+
     def _base_url(self) -> str:
         """Build the Telegram API base URL using the bot token."""
-        token = os.environ.get("BUTLER_TELEGRAM_TOKEN", "")
+        token = self._get_bot_token()
         return TELEGRAM_API_BASE.format(token=token)
 
     def _get_client(self) -> httpx.AsyncClient:

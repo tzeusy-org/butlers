@@ -220,7 +220,12 @@ class TestGetButlerConfig:
             "[runtime]\n"
             'type = "claude-code"\n'
             '[modules.telegram]\nmode = "polling"\n'
+            "[modules.telegram.user]\nenabled = false\n"
+            '[modules.telegram.bot]\ntoken_env = "BUTLER_TELEGRAM_TOKEN"\n'
             "[modules.email]\n"
+            "[modules.email.user]\nenabled = false\n"
+            '[modules.email.bot]\naddress_env = "BUTLER_EMAIL_ADDRESS"\n'
+            'password_env = "BUTLER_EMAIL_PASSWORD"\n'
         )
         configs = [ButlerConnectionInfo("switchboard", 8100)]
         app = _create_test_app(tmp_path, configs)

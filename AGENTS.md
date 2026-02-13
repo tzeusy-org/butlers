@@ -222,3 +222,8 @@ make test-qg
 ### Switchboard MCP routing contract
 - `roster/switchboard/tools/routing/route.py::_call_butler_tool` calls butler endpoints via `fastmcp.Client` and should return `CallToolResult.data` when present.
 - For backward compatibility, if a target returns `Unknown tool: handle_message`, routing retries `trigger` with mapped args (`prompt` from `prompt`/`message`, optional `context`).
+
+### Telegram/Email identity-credential config contract
+- Telegram and Email module config now supports identity-scoped credential tables: `[modules.telegram.user]` / `[modules.telegram.bot]` and `[modules.email.user]` / `[modules.email.bot]`.
+- Env var name fields in those scopes (`*_env`) must be valid environment variable identifiers and are schema-validated in module config models.
+- Butler startup credential validation collects enabled identity-scope env vars and reports missing values with scope-qualified sources (for example `module:telegram.bot`, `module:email.bot`).
