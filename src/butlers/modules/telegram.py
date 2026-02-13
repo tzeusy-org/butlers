@@ -392,7 +392,9 @@ class TelegramModule(Module):
                         "chat_id": chat_id,
                         "message_id": message_id,
                         "reaction": reaction,
-                        "status_code": exc.response.status_code if exc.response is not None else None,
+                        "status_code": exc.response.status_code
+                        if exc.response is not None
+                        else None,
                         "telegram_error": telegram_error,
                     },
                 )
