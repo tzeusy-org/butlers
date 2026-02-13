@@ -17,7 +17,12 @@ from pydantic import BaseModel
 from starlette.requests import ClientDisconnect
 
 from butlers.credentials import CredentialError
-from butlers.daemon import ButlerDaemon, RuntimeBinaryNotFoundError, _McpSseDisconnectGuard
+from butlers.daemon import (
+    CORE_TOOL_NAMES,
+    ButlerDaemon,
+    RuntimeBinaryNotFoundError,
+    _McpSseDisconnectGuard,
+)
 from butlers.modules.base import Module
 from butlers.modules.email import EmailModule
 from butlers.modules.pipeline import MessagePipeline
@@ -359,26 +364,7 @@ class TestStartupSequence:
 class TestCoreToolRegistration:
     """Verify all expected core MCP tools are registered."""
 
-    EXPECTED_TOOLS = {
-        "status",
-        "trigger",
-        "tick",
-        "state_get",
-        "state_set",
-        "state_delete",
-        "state_list",
-        "schedule_list",
-        "schedule_create",
-        "schedule_update",
-        "schedule_delete",
-        "sessions_list",
-        "sessions_get",
-        "sessions_summary",
-        "sessions_daily",
-        "top_sessions",
-        "schedule_costs",
-        "notify",
-    }
+    EXPECTED_TOOLS = CORE_TOOL_NAMES
 
     async def test_all_core_tools_registered(self, butler_dir: Path) -> None:
         """All core tools should be registered on FastMCP via @mcp.tool()."""
