@@ -12,6 +12,7 @@ Unit tests verify:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -75,6 +76,42 @@ class MockDB:
         }
         self.pending_actions[action_id] = row
 
+    def _update_pending_action(self, query: str, *args: Any) -> dict[str, Any] | None:
+        """Apply UPDATE pending_actions statements used in module/executor tests."""
+        if "AND status = $5" in query:
+            action_id = args[3]
+            expected_status = args[4]
+        else:
+            action_id = args[-1]
+            expected_status = None
+
+        if isinstance(action_id, str):
+            action_id = uuid.UUID(action_id)
+
+        row = self.pending_actions.get(action_id)
+        if row is None:
+            return None
+        if expected_status is not None and row["status"] != expected_status:
+            return None
+
+        if "status = $1" in query and "decided_by = $2" in query:
+            row["status"] = args[0]
+            row["decided_by"] = args[1]
+            row["decided_at"] = args[2]
+        elif (
+            "status = $1" in query
+            and "execution_result = $2" in query
+            and "decided_at = $3" in query
+        ):
+            row["status"] = args[0]
+            row["execution_result"] = args[1]
+            row["decided_at"] = args[2]
+        elif "status = $1" in query and "execution_result = $2" in query:
+            row["status"] = args[0]
+            row["execution_result"] = args[1]
+
+        return dict(row)
+
     async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
         """Simulate asyncpg fetch()."""
         if "GROUP BY status" in query:
@@ -115,6 +152,14 @@ class MockDB:
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
         """Simulate asyncpg fetchrow()."""
+        if "UPDATE pending_actions" in query:
+            updated = self._update_pending_action(query, *args)
+            if updated is None:
+                return None
+            if "RETURNING id" in query:
+                return {"id": updated["id"]}
+            return updated
+
         if "pending_actions" in query and args:
             action_id = args[0]
             if isinstance(action_id, str):
@@ -126,27 +171,7 @@ class MockDB:
     async def execute(self, query: str, *args: Any) -> None:
         """Simulate asyncpg execute()."""
         if "UPDATE pending_actions" in query:
-            # Find the action by id (last positional arg typically)
-            action_id = args[-1]
-            if isinstance(action_id, str):
-                action_id = uuid.UUID(action_id)
-            if action_id in self.pending_actions:
-                row = self.pending_actions[action_id]
-                if "status = $1" in query and "decided_by = $2" in query:
-                    row["status"] = args[0]
-                    row["decided_by"] = args[1]
-                    row["decided_at"] = args[2]
-                elif (
-                    "status = $1" in query
-                    and "execution_result = $2" in query
-                    and "decided_at = $3" in query
-                ):
-                    row["status"] = args[0]
-                    row["execution_result"] = args[1]
-                    row["decided_at"] = args[2]
-                elif "status = $1" in query and "execution_result = $2" in query:
-                    row["status"] = args[0]
-                    row["execution_result"] = args[1]
+            self._update_pending_action(query, *args)
 
         elif "UPDATE approval_rules" in query and "use_count" in query:
             # Executor uses: use_count = use_count + 1 WHERE id = $1
@@ -635,6 +660,47 @@ class TestApproveAction:
         assert parsed_result["success"] is False
         assert "Tool crashed" in parsed_result["error"]
 
+    async def test_concurrent_decisions_converge_to_single_terminal_outcome(
+        self,
+        module: ApprovalsModule,
+        mock_db: MockDB,
+    ):
+        """Concurrent approve/reject attempts should settle on exactly one terminal state."""
+        await module.on_startup(config=None, db=mock_db)
+
+        action_id = uuid.uuid4()
+        mock_db._insert_action(id=action_id, tool_name="test_tool", status="pending")
+
+        executed_calls: list[str] = []
+
+        async def slow_executor(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+            executed_calls.append(tool_name)
+            await asyncio.sleep(0.01)
+            return {"ok": True}
+
+        module.set_tool_executor(slow_executor)
+
+        approve_result, reject_result = await asyncio.gather(
+            module._approve_action(str(action_id)),
+            module._reject_action(str(action_id), reason="race"),
+        )
+
+        final = await module._show_pending_action(str(action_id))
+        assert final["status"] in {"executed", "rejected"}
+
+        successful_results = [r for r in (approve_result, reject_result) if "status" in r]
+        assert len(successful_results) == 1
+        assert successful_results[0]["status"] == final["status"]
+
+        errored_results = [r for r in (approve_result, reject_result) if "error" in r]
+        assert len(errored_results) == 1
+        assert "Cannot transition" in errored_results[0]["error"]
+
+        if final["status"] == "executed":
+            assert len(executed_calls) == 1
+        else:
+            assert len(executed_calls) == 0
+
 
 # ---------------------------------------------------------------------------
 # reject_action
@@ -663,6 +729,21 @@ class TestRejectAction:
         result = await module._reject_action(str(action_id), reason="Not appropriate")
         assert result["status"] == "rejected"
         assert "Not appropriate" in result["decided_by"]
+
+    async def test_reject_with_reason_escapes_html(self, module: ApprovalsModule, mock_db: MockDB):
+        await module.on_startup(config=None, db=mock_db)
+
+        action_id = uuid.uuid4()
+        mock_db._insert_action(id=action_id, tool_name="email_send", status="pending")
+
+        result = await module._reject_action(
+            str(action_id), reason="<script>alert('xss')</script>"
+        )
+        assert result["status"] == "rejected"
+        assert "<script>" not in result["decided_by"]
+        assert "</script>" not in result["decided_by"]
+        assert "&lt;script&gt;" in result["decided_by"]
+        assert "&lt;/script&gt;" in result["decided_by"]
 
     async def test_reject_records_timestamp(self, module: ApprovalsModule, mock_db: MockDB):
         await module.on_startup(config=None, db=mock_db)

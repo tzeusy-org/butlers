@@ -12,6 +12,7 @@ Unit tests verify:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -95,10 +96,18 @@ class MockPool:
         self.execute_calls.append((query, args))
 
         if "UPDATE pending_actions" in query and "status" in query:
-            # Find the action by the last UUID arg
-            action_id = args[-1]
+            # Executor updates use CAS on approved status.
+            if "AND status = $5" in query:
+                action_id = args[3]
+                expected_status = args[4]
+            else:
+                action_id = args[-1]
+                expected_status = None
+
             if action_id in self.pending_actions:
                 row = self.pending_actions[action_id]
+                if expected_status is not None and row["status"] != expected_status:
+                    return
                 row["status"] = args[0]
                 if "execution_result" in query:
                     row["execution_result"] = args[1]
@@ -282,6 +291,73 @@ class TestExecuteSuccess:
         assert result.success is True
         assert result.result == {"sync": True}
 
+    async def test_retry_returns_stored_result_without_reinvoking_tool(self, pool: MockPool):
+        action_id = uuid.uuid4()
+        stored_result = {
+            "success": True,
+            "result": {"ok": True, "from": "first-run"},
+            "executed_at": datetime.now(UTC).isoformat(),
+        }
+        pool.seed_action(
+            action_id,
+            status="executed",
+            decided_at=datetime.now(UTC),
+        )
+        pool.pending_actions[action_id]["execution_result"] = json.dumps(stored_result)
+
+        calls = 0
+
+        async def tool_fn(**kwargs: Any) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            return {"unexpected": True}
+
+        result = await execute_approved_action(
+            pool=pool,
+            action_id=action_id,
+            tool_name="test_tool",
+            tool_args={},
+            tool_fn=tool_fn,
+        )
+
+        assert calls == 0
+        assert result.success is True
+        assert result.result == {"ok": True, "from": "first-run"}
+
+    async def test_concurrent_invocation_executes_tool_once(self, pool: MockPool):
+        action_id = uuid.uuid4()
+        pool.seed_action(action_id)
+
+        calls = 0
+
+        async def slow_tool(**kwargs: Any) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.01)
+            return {"ok": True}
+
+        first, second = await asyncio.gather(
+            execute_approved_action(
+                pool=pool,
+                action_id=action_id,
+                tool_name="test_tool",
+                tool_args={},
+                tool_fn=slow_tool,
+            ),
+            execute_approved_action(
+                pool=pool,
+                action_id=action_id,
+                tool_name="test_tool",
+                tool_args={},
+                tool_fn=slow_tool,
+            ),
+        )
+
+        assert calls == 1
+        assert first.success is True
+        assert second.success is True
+        assert pool.pending_actions[action_id]["status"] == ActionStatus.EXECUTED.value
+
 
 # ---------------------------------------------------------------------------
 # execute_approved_action — failure
@@ -416,6 +492,37 @@ class TestExecuteRuleIncrement:
             tool_args={},
             tool_fn=failing_tool,
             approval_rule_id=rule_id,
+        )
+
+        assert pool.approval_rules[rule_id]["use_count"] == 1
+
+    async def test_concurrent_retry_increments_rule_once(self, pool: MockPool):
+        action_id = uuid.uuid4()
+        rule_id = uuid.uuid4()
+        pool.seed_action(action_id, approval_rule_id=rule_id)
+        pool.seed_rule(rule_id, use_count=0)
+
+        async def slow_tool(**kwargs: Any) -> dict[str, Any]:
+            await asyncio.sleep(0.01)
+            return {"ok": True}
+
+        await asyncio.gather(
+            execute_approved_action(
+                pool=pool,
+                action_id=action_id,
+                tool_name="test_tool",
+                tool_args={},
+                tool_fn=slow_tool,
+                approval_rule_id=rule_id,
+            ),
+            execute_approved_action(
+                pool=pool,
+                action_id=action_id,
+                tool_name="test_tool",
+                tool_args={},
+                tool_fn=slow_tool,
+                approval_rule_id=rule_id,
+            ),
         )
 
         assert pool.approval_rules[rule_id]["use_count"] == 1

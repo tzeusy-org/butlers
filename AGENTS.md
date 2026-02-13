@@ -185,6 +185,10 @@ make test-qg
 - For bugfixes/features under active development or investigation, default to targeted `pytest` runs to keep loops fast and context lean.
 - Run full-suite tests when branch changes are finalized and you need a pre-merge readiness signal.
 
+### Approvals CAS/idempotency contract
+- `src/butlers/modules/approvals/module.py` decision paths (`_approve_action`, `_reject_action`, `_expire_stale_actions`) must use compare-and-set SQL writes (`... WHERE status='pending'`) so concurrent decision attempts cannot overwrite each other.
+- `src/butlers/modules/approvals/executor.py::execute_approved_action` is idempotent per `action_id`: it serializes execution with a process-local per-action lock, replays stored `execution_result` when status is already `executed`, and only performs the terminal write when status is still `approved`.
+
 ### Calendar recurrence normalization contract
 - `_normalize_recurrence()` in `src/butlers/modules/calendar.py` must reject any rule containing `\\n` or `\\r` to prevent iCalendar CRLF/newline injection.
 - `FREQ` presence and `DTSTART`/`DTEND` exclusion checks should be case-insensitive (`rule.upper()`), so lowercase property names cannot bypass validation.

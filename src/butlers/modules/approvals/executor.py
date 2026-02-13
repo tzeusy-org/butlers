@@ -13,10 +13,12 @@ should use this executor for consistent audit logging.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
 import uuid
+import weakref
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -24,6 +26,10 @@ from typing import Any
 from butlers.modules.approvals.models import ActionStatus
 
 logger = logging.getLogger(__name__)
+_EXECUTION_LOCKS: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
+_EXECUTION_LOCKS_GUARD = asyncio.Lock()
 
 
 @dataclass
@@ -46,6 +52,61 @@ class ExecutionResult:
         if self.error is not None:
             d["error"] = self.error
         return d
+
+
+async def _get_execution_lock(action_id: uuid.UUID) -> asyncio.Lock:
+    """Return a process-local lock for the given action ID."""
+    async with _EXECUTION_LOCKS_GUARD:
+        lock = _EXECUTION_LOCKS.get(action_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _EXECUTION_LOCKS[action_id] = lock
+        return lock
+
+
+def _parse_execution_result(raw_payload: Any) -> ExecutionResult | None:
+    """Deserialize a stored execution_result payload into ExecutionResult."""
+    if raw_payload is None:
+        return None
+
+    payload: Any = raw_payload
+    if isinstance(raw_payload, str):
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return None
+
+    if not isinstance(payload, dict) or "success" not in payload:
+        return None
+
+    executed_at = datetime.now(UTC)
+    raw_executed_at = payload.get("executed_at")
+    if isinstance(raw_executed_at, str):
+        try:
+            executed_at = datetime.fromisoformat(raw_executed_at)
+            if executed_at.tzinfo is None:
+                executed_at = executed_at.replace(tzinfo=UTC)
+        except ValueError:
+            executed_at = datetime.now(UTC)
+
+    raw_result = payload.get("result")
+    result: dict[str, Any] | None
+    if isinstance(raw_result, dict):
+        result = raw_result
+    elif raw_result is None:
+        result = None
+    else:
+        result = {"value": raw_result}
+
+    raw_error = payload.get("error")
+    error = raw_error if isinstance(raw_error, str) else None
+
+    return ExecutionResult(
+        success=bool(payload["success"]),
+        result=result,
+        error=error,
+        executed_at=executed_at,
+    )
 
 
 async def execute_approved_action(
@@ -83,59 +144,87 @@ async def execute_approved_action(
     ExecutionResult
         Outcome containing success flag and result or error.
     """
-    now = datetime.now(UTC)
+    lock = await _get_execution_lock(action_id)
 
-    # 1. Call the tool function
-    try:
-        raw_result = tool_fn(**tool_args)
-        # Support both sync and async tool functions
-        if inspect.isawaitable(raw_result):
-            raw_result = await raw_result
-
-        # Normalise the result to a dict
-        if isinstance(raw_result, dict):
-            result_dict = raw_result
-        else:
-            result_dict = {"value": raw_result}
-
-        execution_result = ExecutionResult(
-            success=True,
-            result=result_dict,
-            executed_at=now,
-        )
-    except Exception as exc:
-        logger.error(
-            "Tool execution failed for action %s (%s): %s",
+    async with lock:
+        existing_row = await pool.fetchrow(
+            "SELECT status, execution_result FROM pending_actions WHERE id = $1",
             action_id,
-            tool_name,
-            exc,
         )
-        execution_result = ExecutionResult(
-            success=False,
-            error=str(exc),
-            executed_at=now,
-        )
+        if existing_row is None:
+            return ExecutionResult(success=False, error=f"Action not found: {action_id}")
 
-    # 2. Build the execution_result JSONB payload
-    er_json = json.dumps(execution_result.to_dict())
+        existing_status = existing_row["status"]
+        if existing_status == ActionStatus.EXECUTED.value:
+            replay = _parse_execution_result(existing_row.get("execution_result"))
+            if replay is not None:
+                logger.debug("Replay executed result for action %s (%s)", action_id, tool_name)
+                return replay
+            return ExecutionResult(
+                success=False,
+                error=f"Action {action_id} already executed without a replayable result",
+            )
 
-    # 3. Update the pending_action row to 'executed'
-    await pool.execute(
-        "UPDATE pending_actions "
-        "SET status = $1, execution_result = $2, decided_at = $3 "
-        "WHERE id = $4",
-        ActionStatus.EXECUTED.value,
-        er_json,
-        now,
-        action_id,
-    )
+        if existing_status != ActionStatus.APPROVED.value:
+            return ExecutionResult(
+                success=False,
+                error=f"Action {action_id} is not executable from status '{existing_status}'",
+            )
 
-    # 4. If auto-approved, increment rule use_count
-    if approval_rule_id is not None:
+        now = datetime.now(UTC)
+
+        # 1. Call the tool function
+        try:
+            raw_result = tool_fn(**tool_args)
+            # Support both sync and async tool functions
+            if inspect.isawaitable(raw_result):
+                raw_result = await raw_result
+
+            # Normalise the result to a dict
+            if isinstance(raw_result, dict):
+                result_dict = raw_result
+            else:
+                result_dict = {"value": raw_result}
+
+            execution_result = ExecutionResult(
+                success=True,
+                result=result_dict,
+                executed_at=now,
+            )
+        except Exception as exc:
+            logger.error(
+                "Tool execution failed for action %s (%s): %s",
+                action_id,
+                tool_name,
+                exc,
+            )
+            execution_result = ExecutionResult(
+                success=False,
+                error=str(exc),
+                executed_at=now,
+            )
+
+        # 2. Build the execution_result JSONB payload
+        er_json = json.dumps(execution_result.to_dict())
+
+        # 3. Update the pending_action row to 'executed' (CAS on approved)
         await pool.execute(
-            "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
-            approval_rule_id,
+            "UPDATE pending_actions "
+            "SET status = $1, execution_result = $2, decided_at = $3 "
+            "WHERE id = $4 AND status = $5",
+            ActionStatus.EXECUTED.value,
+            er_json,
+            now,
+            action_id,
+            ActionStatus.APPROVED.value,
         )
+
+        # 4. If auto-approved, increment rule use_count
+        if approval_rule_id is not None:
+            await pool.execute(
+                "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
+                approval_rule_id,
+            )
 
     logger.info(
         "Executed action %s (%s) success=%s rule=%s",

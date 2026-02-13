@@ -18,6 +18,7 @@ Provides thirteen tools:
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import uuid
@@ -293,15 +294,31 @@ class ApprovalsModule(Module):
 
         now = datetime.now(UTC)
 
-        # Transition to approved
-        await self._db.execute(
+        # Transition to approved with compare-and-set on pending state.
+        approved_row = await self._db.fetchrow(
             "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-            "WHERE id = $4",
+            "WHERE id = $4 AND status = $5 "
+            "RETURNING *",
             ActionStatus.APPROVED.value,
             "user:manual",
             now,
             parsed_id,
+            ActionStatus.PENDING.value,
         )
+        if approved_row is None:
+            latest_row = await self._db.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
+            )
+            if latest_row is None:
+                return {"error": f"Action not found: {action_id}"}
+            latest_action = PendingAction.from_row(latest_row)
+            return {
+                "error": (
+                    f"Cannot transition from '{latest_action.status.value}' "
+                    f"to '{ActionStatus.APPROVED.value}'"
+                )
+            }
+        action = PendingAction.from_row(approved_row)
 
         # Execute the original tool via the executor
         if self._tool_executor is not None:
@@ -321,14 +338,28 @@ class ApprovalsModule(Module):
             )
         else:
             # No executor — still mark as executed (with no execution result)
-            await self._db.execute(
+            executed_row = await self._db.fetchrow(
                 "UPDATE pending_actions SET status = $1, execution_result = $2, "
-                "decided_at = $3 WHERE id = $4",
+                "decided_at = $3 WHERE id = $4 AND status = $5 RETURNING *",
                 ActionStatus.EXECUTED.value,
                 None,
                 now,
                 parsed_id,
+                ActionStatus.APPROVED.value,
             )
+            if executed_row is None:
+                latest_row = await self._db.fetchrow(
+                    "SELECT * FROM pending_actions WHERE id = $1", parsed_id
+                )
+                if latest_row is None:
+                    return {"error": f"Action not found: {action_id}"}
+                latest_action = PendingAction.from_row(latest_row)
+                return {
+                    "error": (
+                        f"Cannot transition from '{latest_action.status.value}' "
+                        f"to '{ActionStatus.EXECUTED.value}'"
+                    )
+                }
 
         # Optionally create an approval rule from this action
         rule_dict: dict[str, Any] | None = None
@@ -391,16 +422,31 @@ class ApprovalsModule(Module):
         # Build decided_by with optional reason
         decided_by = "user:manual"
         if reason:
-            decided_by = f"user:manual (reason: {reason})"
+            decided_by = f"user:manual (reason: {html.escape(reason, quote=True)})"
 
-        await self._db.execute(
+        rejected_row = await self._db.fetchrow(
             "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-            "WHERE id = $4",
+            "WHERE id = $4 AND status = $5 "
+            "RETURNING *",
             ActionStatus.REJECTED.value,
             decided_by,
             now,
             parsed_id,
+            ActionStatus.PENDING.value,
         )
+        if rejected_row is None:
+            latest_row = await self._db.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
+            )
+            if latest_row is None:
+                return {"error": f"Action not found: {action_id}"}
+            latest_action = PendingAction.from_row(latest_row)
+            return {
+                "error": (
+                    f"Cannot transition from '{latest_action.status.value}' "
+                    f"to '{ActionStatus.REJECTED.value}'"
+                )
+            }
 
         final_row = await self._db.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1", parsed_id
@@ -434,20 +480,19 @@ class ApprovalsModule(Module):
         expired_ids: list[str] = []
         for row in rows:
             action = PendingAction.from_row(row)
-            try:
-                validate_transition(action.status, ActionStatus.EXPIRED)
-            except InvalidTransitionError:
-                continue
 
-            await self._db.execute(
+            expired_row = await self._db.fetchrow(
                 "UPDATE pending_actions SET status = $1, decided_by = $2, decided_at = $3 "
-                "WHERE id = $4",
+                "WHERE id = $4 AND status = $5 "
+                "RETURNING id",
                 ActionStatus.EXPIRED.value,
                 "system:expiry",
                 now,
                 action.id,
+                ActionStatus.PENDING.value,
             )
-            expired_ids.append(str(action.id))
+            if expired_row is not None:
+                expired_ids.append(str(action.id))
 
         return {
             "expired_count": len(expired_ids),

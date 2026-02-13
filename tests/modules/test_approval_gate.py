@@ -94,8 +94,18 @@ class MockPool:
             }
         elif "UPDATE pending_actions" in query and "status" in query:
             # Update from executor or gate
-            action_id = args[-1]
+            if "AND status = $5" in query:
+                action_id = args[3]
+                expected_status = args[4]
+            else:
+                action_id = args[-1]
+                expected_status = None
             if action_id in self.pending_actions:
+                if (
+                    expected_status is not None
+                    and self.pending_actions[action_id]["status"] != expected_status
+                ):
+                    return
                 self.pending_actions[action_id]["status"] = args[0]
                 if "execution_result" in query:
                     self.pending_actions[action_id]["execution_result"] = args[1]
@@ -121,6 +131,14 @@ class MockPool:
                 results.append(dict(rule))
             return results
         return []
+
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+        """Simulate asyncpg fetchrow() for pending_actions lookups."""
+        if "pending_actions" in query and args:
+            action_id = args[0]
+            row = self.pending_actions.get(action_id)
+            return dict(row) if row else None
+        return None
 
 
 # ---------------------------------------------------------------------------
