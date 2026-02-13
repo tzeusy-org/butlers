@@ -490,9 +490,19 @@ class ButlerDaemon:
             toml_creds = mod_cfg.get("credentials_env")
             if toml_creds is not None:
                 if isinstance(toml_creds, str):
-                    creds[mod_name] = [toml_creds]
+                    creds[mod_name] = [toml_creds] if toml_creds else []
+                elif isinstance(toml_creds, list):
+                    creds[mod_name] = [
+                        item for item in toml_creds if isinstance(item, str) and item
+                    ]
                 else:
-                    creds[mod_name] = list(toml_creds)
+                    logger.warning(
+                        "Ignoring invalid type for credentials_env in module '%s' config. "
+                        "Expected a string or list of strings, but got %s.",
+                        mod_name,
+                        type(toml_creds).__name__,
+                    )
+                    creds[mod_name] = []
                 continue
 
             # 2. Extract identity-scoped env vars from validated config.

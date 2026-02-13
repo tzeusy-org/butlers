@@ -1346,6 +1346,71 @@ class TestModuleCredentialsTomlSource:
         assert "stub_a" in module_creds
         assert module_creds["stub_a"] == []
 
+    async def test_toml_invalid_credentials_type_no_crash(self, tmp_path: Path) -> None:
+        """Invalid TOML credentials_env types are ignored without crashing startup."""
+        butler_dir = _make_butler_toml(
+            tmp_path,
+            modules={"stub_a": {"credentials_env": 123}},
+        )
+        registry = _make_registry(StubModuleA)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"] as mock_validate,
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        mock_validate.assert_called_once()
+        call_kwargs = mock_validate.call_args
+        module_creds = call_kwargs.kwargs.get(
+            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
+        )
+        assert module_creds is not None
+        # Invalid TOML type should be treated as explicitly empty (no class fallback).
+        assert module_creds["stub_a"] == []
+
+    async def test_toml_credentials_filter_empty_and_non_strings(self, tmp_path: Path) -> None:
+        """Only non-empty string entries are kept from TOML credentials_env lists."""
+        butler_dir = _make_butler_toml(
+            tmp_path,
+            modules={"stub_a": {"credentials_env": ["TOKEN_A", "", 123, "TOKEN_B"]}},
+        )
+        registry = _make_registry(StubModuleA)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"] as mock_validate,
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        mock_validate.assert_called_once()
+        call_kwargs = mock_validate.call_args
+        module_creds = call_kwargs.kwargs.get(
+            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
+        )
+        assert module_creds is not None
+        assert module_creds["stub_a"] == ["TOKEN_A", "TOKEN_B"]
+
     async def test_mixed_toml_and_class_credentials(self, tmp_path: Path) -> None:
         """One module uses TOML creds, another falls back to class property."""
         # stub_a: TOML overrides, stub_b: no class credentials_env, no TOML
