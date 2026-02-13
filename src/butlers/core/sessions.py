@@ -11,9 +11,11 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import asyncpg
+from croniter import croniter
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,7 @@ TRIGGER_SOURCES = frozenset({"tick", "external", "trigger"})
 
 # JSONB columns that need deserialization from string → Python object
 _JSONB_FIELDS = ("tool_calls", "cost")
+_SUMMARY_PERIODS = frozenset({"today", "7d", "30d"})
 
 
 def _is_valid_trigger_source(trigger_source: str) -> bool:
@@ -247,3 +250,244 @@ async def sessions_get(
     if row is None:
         return None
     return _decode_row(row)
+
+
+def _period_start(period: str) -> datetime:
+    """Return the UTC lower-bound datetime for a summary period."""
+    now = datetime.now(UTC)
+    if period == "today":
+        return datetime.combine(now.date(), datetime.min.time(), tzinfo=UTC)
+    if period == "7d":
+        return now - timedelta(days=7)
+    if period == "30d":
+        return now - timedelta(days=30)
+    raise ValueError(f"Unsupported period: {period!r}")
+
+
+def _parse_iso_date(value: str | date) -> date:
+    """Parse an ISO date string or pass through a date object."""
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(value)
+
+
+def _estimate_runs_per_day(cron: str) -> float:
+    """Estimate average daily run frequency from a cron expression."""
+    if not croniter.is_valid(cron):
+        return 0.0
+
+    start = datetime.now(UTC)
+    end = start + timedelta(days=1)
+    itr = croniter(cron, start)
+    count = 0
+
+    # Hard cap protects against pathological cron expressions.
+    while count < 5000:
+        nxt = itr.get_next(datetime)
+        if nxt.tzinfo is None:
+            nxt = nxt.replace(tzinfo=UTC)
+        if nxt > end:
+            break
+        count += 1
+    return float(count)
+
+
+async def sessions_summary(pool: asyncpg.Pool, period: str = "today") -> dict[str, Any]:
+    """Return aggregate session/token stats grouped by model for a period."""
+    if period not in _SUMMARY_PERIODS:
+        raise ValueError(f"Invalid period {period!r}; must be one of {sorted(_SUMMARY_PERIODS)}")
+
+    since = _period_start(period)
+    totals = await pool.fetchrow(
+        """
+        SELECT
+            COUNT(*)::bigint AS total_sessions,
+            COALESCE(SUM(input_tokens), 0)::bigint AS total_input_tokens,
+            COALESCE(SUM(output_tokens), 0)::bigint AS total_output_tokens
+        FROM sessions
+        WHERE started_at >= $1
+        """,
+        since,
+    )
+
+    by_model_rows = await pool.fetch(
+        """
+        SELECT
+            model,
+            COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+            COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
+        FROM sessions
+        WHERE started_at >= $1 AND model IS NOT NULL AND model <> ''
+        GROUP BY model
+        ORDER BY model
+        """,
+        since,
+    )
+
+    by_model: dict[str, dict[str, int]] = {}
+    for row in by_model_rows:
+        by_model[str(row["model"])] = {
+            "input_tokens": int(row["input_tokens"]),
+            "output_tokens": int(row["output_tokens"]),
+        }
+
+    if totals is None:
+        return {
+            "period": period,
+            "total_sessions": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "by_model": by_model,
+        }
+
+    return {
+        "period": period,
+        "total_sessions": int(totals["total_sessions"]),
+        "total_input_tokens": int(totals["total_input_tokens"]),
+        "total_output_tokens": int(totals["total_output_tokens"]),
+        "by_model": by_model,
+    }
+
+
+async def sessions_daily(
+    pool: asyncpg.Pool,
+    from_date: str | date,
+    to_date: str | date,
+) -> dict[str, list[dict[str, Any]]]:
+    """Return daily session/token aggregates and per-model token breakdowns."""
+    from_day = _parse_iso_date(from_date)
+    to_day = _parse_iso_date(to_date)
+    if from_day > to_day:
+        raise ValueError("from_date must be <= to_date")
+
+    start_at = datetime.combine(from_day, datetime.min.time(), tzinfo=UTC)
+    end_exclusive = datetime.combine(to_day + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+
+    daily_rows = await pool.fetch(
+        """
+        SELECT
+            (started_at AT TIME ZONE 'UTC')::date AS day,
+            COUNT(*)::bigint AS sessions,
+            COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+            COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
+        FROM sessions
+        WHERE started_at >= $1 AND started_at < $2
+        GROUP BY day
+        ORDER BY day
+        """,
+        start_at,
+        end_exclusive,
+    )
+
+    by_model_rows = await pool.fetch(
+        """
+        SELECT
+            (started_at AT TIME ZONE 'UTC')::date AS day,
+            model,
+            COALESCE(SUM(input_tokens), 0)::bigint AS input_tokens,
+            COALESCE(SUM(output_tokens), 0)::bigint AS output_tokens
+        FROM sessions
+        WHERE started_at >= $1
+          AND started_at < $2
+          AND model IS NOT NULL
+          AND model <> ''
+        GROUP BY day, model
+        ORDER BY day, model
+        """,
+        start_at,
+        end_exclusive,
+    )
+
+    by_day_model: dict[str, dict[str, dict[str, int]]] = {}
+    for row in by_model_rows:
+        day_key = row["day"].isoformat()
+        by_day_model.setdefault(day_key, {})[str(row["model"])] = {
+            "input_tokens": int(row["input_tokens"]),
+            "output_tokens": int(row["output_tokens"]),
+        }
+
+    days: list[dict[str, Any]] = []
+    for row in daily_rows:
+        day_key = row["day"].isoformat()
+        days.append(
+            {
+                "date": day_key,
+                "sessions": int(row["sessions"]),
+                "input_tokens": int(row["input_tokens"]),
+                "output_tokens": int(row["output_tokens"]),
+                "by_model": by_day_model.get(day_key, {}),
+            }
+        )
+
+    return {"days": days}
+
+
+async def top_sessions(pool: asyncpg.Pool, limit: int = 10) -> dict[str, list[dict[str, Any]]]:
+    """Return the highest-token completed sessions."""
+    safe_limit = max(1, int(limit))
+    rows = await pool.fetch(
+        """
+        SELECT
+            id,
+            COALESCE(model, '') AS model,
+            COALESCE(input_tokens, 0)::bigint AS input_tokens,
+            COALESCE(output_tokens, 0)::bigint AS output_tokens,
+            started_at
+        FROM sessions
+        WHERE completed_at IS NOT NULL
+        ORDER BY (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) DESC, started_at DESC
+        LIMIT $1
+        """,
+        safe_limit,
+    )
+
+    sessions: list[dict[str, Any]] = []
+    for row in rows:
+        started_at = row["started_at"]
+        sessions.append(
+            {
+                "session_id": str(row["id"]),
+                "model": str(row["model"]),
+                "input_tokens": int(row["input_tokens"]),
+                "output_tokens": int(row["output_tokens"]),
+                "started_at": started_at.isoformat() if started_at else "",
+            }
+        )
+    return {"sessions": sessions}
+
+
+async def schedule_costs(pool: asyncpg.Pool) -> dict[str, list[dict[str, Any]]]:
+    """Return per-schedule token usage aggregates for cost analysis."""
+    rows = await pool.fetch(
+        """
+        SELECT
+            st.name,
+            st.cron,
+            s.model,
+            COUNT(s.id)::bigint AS total_runs,
+            COALESCE(SUM(s.input_tokens), 0)::bigint AS total_input_tokens,
+            COALESCE(SUM(s.output_tokens), 0)::bigint AS total_output_tokens
+        FROM scheduled_tasks AS st
+        LEFT JOIN sessions AS s
+            ON s.trigger_source = ('schedule:' || st.name)
+        GROUP BY st.name, st.cron, s.model
+        ORDER BY st.name, s.model
+        """
+    )
+
+    schedules: list[dict[str, Any]] = []
+    for row in rows:
+        cron = str(row["cron"])
+        schedules.append(
+            {
+                "name": str(row["name"]),
+                "cron": cron,
+                "model": "" if row["model"] is None else str(row["model"]),
+                "total_runs": int(row["total_runs"]),
+                "total_input_tokens": int(row["total_input_tokens"]),
+                "total_output_tokens": int(row["total_output_tokens"]),
+                "runs_per_day": _estimate_runs_per_day(cron),
+            }
+        )
+
+    return {"schedules": schedules}

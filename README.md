@@ -386,6 +386,11 @@ Recommended quality gates:
 - Serial fallback/debug path: `make test-qg-serial` (use for order-dependent triage).
 - CI or pre-merge (Docker available): run both `-m unit` and `-m integration`.
 
+Quality-gate default rationale and scope contract:
+
+- Benchmark outcome: `make test-qg` (`-n auto`) measured `126.42s` wall time vs `216.58s` serial baseline (~41.6% faster). See `docs/PYTEST_QG_ALTERNATIVES_QKX5.md`.
+- Coverage expectation is unchanged: `make test-qg`, `make test-qg-serial`, and `make test-qg-parallel` all run the same `QG_PYTEST_ARGS` test selection (`tests/` excluding `tests/test_db.py` and `tests/test_migrations.py`). Only execution mode changes.
+
 ## Tech Stack
 
 Python 3.12+ · FastMCP · Claude Code SDK · PostgreSQL · asyncpg · Docker · asyncio · OpenTelemetry · Alembic · Click · Pydantic

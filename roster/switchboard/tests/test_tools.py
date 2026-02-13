@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from opentelemetry import trace
@@ -566,6 +567,70 @@ async def test_classify_message_preserves_specialist_domain_ownership(calendar_r
     assert result == [{"butler": "health", "prompt": "Schedule my blood test for next week"}]
 
 
+async def test_classify_message_prefers_calendar_in_multi_domain(calendar_routing_pool):
+    """Scheduling entries in decomposition prefer a calendar-capable butler."""
+    from butlers.tools.switchboard import classify_message, register_butler
+
+    await register_butler(
+        calendar_routing_pool,
+        "relationship",
+        "http://localhost:8105/sse",
+        "Relationship butler",
+    )
+
+    @dataclass
+    class FakeResult:
+        result: str = (
+            '[{"butler": "general", "prompt": "Schedule lunch with Alex next Tuesday at 1pm"}, '
+            '{"butler": "relationship", '
+            '"prompt": "Remind me to congratulate Alex on the promotion"}]'
+        )
+
+    async def decomposed_dispatch(**kwargs):
+        return FakeResult()
+
+    result = await classify_message(
+        calendar_routing_pool,
+        (
+            "Schedule lunch with Alex next Tuesday at 1pm and remind me to "
+            "congratulate Alex on the promotion"
+        ),
+        decomposed_dispatch,
+    )
+    assert result == [
+        {"butler": "scheduler", "prompt": "Schedule lunch with Alex next Tuesday at 1pm"},
+        {"butler": "relationship", "prompt": "Remind me to congratulate Alex on the promotion"},
+    ]
+
+
+async def test_classify_message_rewrites_only_scheduling_entries_in_decomposition(
+    calendar_routing_pool,
+):
+    """Only scheduling general entries are rewritten in mixed decompositions."""
+    from butlers.tools.switchboard import classify_message
+
+    @dataclass
+    class FakeResult:
+        result: str = (
+            '[{"butler": "general", '
+            '"prompt": "Schedule a dentist appointment for Friday morning"}, '
+            '{"butler": "general", "prompt": "What should I pack for the trip?"}]'
+        )
+
+    async def mixed_dispatch(**kwargs):
+        return FakeResult()
+
+    result = await classify_message(
+        calendar_routing_pool,
+        ("Schedule a dentist appointment for Friday morning and what should I pack for the trip?"),
+        mixed_dispatch,
+    )
+    assert result == [
+        {"butler": "scheduler", "prompt": "Schedule a dentist appointment for Friday morning"},
+        {"butler": "general", "prompt": "What should I pack for the trip?"},
+    ]
+
+
 async def test_classify_message_auto_discovers_when_registry_empty(pool, tmp_path, monkeypatch):
     """classify_message auto-discovers butlers from roster when registry is empty."""
     from butlers.tools.switchboard import classify_message, list_butlers
@@ -977,6 +1042,7 @@ async def test_dispatch_decomposed_single_target(pool):
     rows = await pool.fetch("SELECT * FROM routing_log")
     assert len(rows) == 1
     assert rows[0]["target_butler"] == "health"
+    assert rows[0]["tool_name"] == "bot_switchboard_handle_message"
     assert rows[0]["success"] is True
 
 
@@ -1178,6 +1244,52 @@ async def test_dispatch_decomposed_passes_source_id(pool):
     assert len(captured_args) == 1
     assert captured_args[0]["prompt"] == "hello"
     assert captured_args[0]["source_id"] == "msg-12345"
+    assert captured_args[0]["source_channel"] == "telegram"
+    assert captured_args[0]["source_metadata"] == {
+        "channel": "telegram",
+        "tool_name": "bot_switchboard_handle_message",
+    }
+
+
+async def test_dispatch_decomposed_propagates_identity_source_metadata(pool):
+    """dispatch_decomposed carries source metadata and prefixed tool name."""
+    from butlers.tools.switchboard import dispatch_decomposed, register_butler
+
+    await pool.execute("DELETE FROM butler_registry")
+    await pool.execute("DELETE FROM routing_log")
+    await register_butler(pool, "target", "http://localhost:8501/sse")
+
+    captured: list[dict[str, Any]] = []
+
+    async def mock_call(endpoint_url, tool_name, args):
+        captured.append({"tool_name": tool_name, "args": args})
+        return {"ok": True}
+
+    await dispatch_decomposed(
+        pool,
+        targets=[{"butler": "target", "prompt": "hello"}],
+        source_channel="telegram",
+        source_id="msg-200",
+        tool_name="bot_telegram_handle_message",
+        source_metadata={
+            "channel": "telegram",
+            "identity": "bot",
+            "tool_name": "bot_telegram_get_updates",
+        },
+        call_fn=mock_call,
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["tool_name"] == "bot_telegram_handle_message"
+    routed_args = captured[0]["args"]
+    assert routed_args["prompt"] == "hello"
+    assert routed_args["source_channel"] == "telegram"
+    assert routed_args["source_id"] == "msg-200"
+    assert routed_args["source_metadata"] == {
+        "channel": "telegram",
+        "identity": "bot",
+        "tool_name": "bot_telegram_get_updates",
+    }
 
 
 # ------------------------------------------------------------------
@@ -1810,7 +1922,7 @@ async def test_deliver_email_success(deliver_pool):
 
     # Verify correct tool was called with right args
     assert len(captured_args) == 1
-    assert captured_args[0]["tool_name"] == "send_email"
+    assert captured_args[0]["tool_name"] == "bot_email_send_message"
     # Args include trace context, so check the relevant keys
     call_args = captured_args[0]["args"]
     assert call_args["to"] == "user@example.com"
@@ -1957,7 +2069,7 @@ async def test_deliver_logs_to_routing_log(deliver_pool):
     assert len(rows) == 1
     assert rows[0]["source_butler"] == "health"
     assert rows[0]["target_butler"] == "switchboard"
-    assert rows[0]["tool_name"] == "send_message"
+    assert rows[0]["tool_name"] == "bot_telegram_send_message"
     assert rows[0]["success"] is True
 
 

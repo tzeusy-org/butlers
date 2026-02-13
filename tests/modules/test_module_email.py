@@ -80,13 +80,13 @@ class TestIODDescriptors:
 
     def test_user_outputs_marked_approval_required(self):
         mod = EmailModule()
-        descriptions = {descriptor.description for descriptor in mod.user_outputs()}
-        assert all("approval-required default" in description for description in descriptions)
+        defaults = {descriptor.approval_default for descriptor in mod.user_outputs()}
+        assert defaults == {"always"}
 
-    def test_bot_outputs_marked_approval_required(self):
+    def test_bot_outputs_marked_conditional_by_default(self):
         mod = EmailModule()
-        descriptions = {descriptor.description for descriptor in mod.bot_outputs()}
-        assert all("approval-required default" in description for description in descriptions)
+        defaults = {descriptor.approval_default for descriptor in mod.bot_outputs()}
+        assert defaults == {"conditional"}
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +249,7 @@ class TestRegisterTools:
             registered_tools["bot_email_send_message"].__doc__ or ""
         )
 
-    async def test_legacy_tool_names_not_registered(self):
+    async def test_registered_tools_stay_identity_prefixed(self):
         mod = EmailModule()
         mcp = MagicMock()
         registered_tools: dict[str, Any] = {}
@@ -265,8 +265,9 @@ class TestRegisterTools:
 
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
-        legacy_names = {"send_email", "search_inbox", "read_email", "check_and_route_inbox"}
-        assert legacy_names.isdisjoint(registered_tools)
+        assert all(
+            name.startswith(("user_email_", "bot_email_")) for name in registered_tools.keys()
+        )
 
     async def test_registered_tools_are_async(self):
         mod = EmailModule()
@@ -291,12 +292,12 @@ class TestRegisterTools:
 
 
 # ---------------------------------------------------------------------------
-# Mocked SMTP — send_email
+# Mocked SMTP — _send_email
 # ---------------------------------------------------------------------------
 
 
 class TestSendEmail:
-    """Verify send_email with mocked SMTP connections."""
+    """Verify _send_email with mocked SMTP connections."""
 
     async def test_send_email_success(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "test@example.com")
@@ -435,12 +436,12 @@ class TestReplyToThread:
 
 
 # ---------------------------------------------------------------------------
-# Mocked IMAP — search_inbox
+# Mocked IMAP — _search_inbox
 # ---------------------------------------------------------------------------
 
 
 class TestSearchInbox:
-    """Verify search_inbox with mocked IMAP connections."""
+    """Verify _search_inbox with mocked IMAP connections."""
 
     async def test_search_inbox_success(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "test@example.com")
@@ -512,12 +513,12 @@ class TestSearchInbox:
 
 
 # ---------------------------------------------------------------------------
-# Mocked IMAP — read_email
+# Mocked IMAP — _read_email
 # ---------------------------------------------------------------------------
 
 
 class TestReadEmail:
-    """Verify read_email with mocked IMAP connections."""
+    """Verify _read_email with mocked IMAP connections."""
 
     async def test_read_email_success(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "test@example.com")

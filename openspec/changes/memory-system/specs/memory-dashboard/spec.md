@@ -2,7 +2,7 @@
 
 ### Requirement: Memory dashboard API endpoints
 
-The dashboard SHALL expose REST API endpoints for memory data: `GET /api/memory/stats`, `GET /api/memory/facts` (with query params: scope, subject, q, min_confidence), `GET /api/memory/facts/:id`, `PUT /api/memory/facts/:id`, `DELETE /api/memory/facts/:id`, `GET /api/memory/rules` (with query params: scope, maturity, q), `GET /api/memory/rules/:id`, `PUT /api/memory/rules/:id`, `DELETE /api/memory/rules/:id`, `GET /api/memory/episodes` (with query params: butler, from, to), `GET /api/memory/episodes/:id`, `GET /api/memory/activity`. Butler-scoped endpoints SHALL exist at `/api/butlers/:name/memory/{stats,facts,rules,episodes}`.
+The dashboard SHALL expose REST API endpoints for memory data: `GET /api/memory/stats`, `GET /api/memory/facts` (with query params: scope, subject, q, min_confidence), `GET /api/memory/facts/:id`, `PUT /api/memory/facts/:id`, `DELETE /api/memory/facts/:id`, `GET /api/memory/rules` (with query params: scope, maturity, q), `GET /api/memory/rules/:id`, `PUT /api/memory/rules/:id`, `DELETE /api/memory/rules/:id`, `GET /api/memory/episodes` (with query params: butler, from, to), `GET /api/memory/episodes/:id`, `GET /api/memory/activity`. Butler-scoped endpoints SHALL exist at `/api/butlers/:name/memory/{stats,facts,rules,episodes}`. All default API reads SHALL be tenant-bounded; cross-tenant views SHALL require elevated authorization.
 
 #### Scenario: List facts with filters
 - **WHEN** `GET /api/memory/facts?scope=health&min_confidence=0.5` is called
@@ -24,11 +24,11 @@ When a fact is edited via `PUT /api/memory/facts/:id`, the system SHALL create a
 
 ### Requirement: Fact and rule deletion via dashboard is soft-delete
 
-When a fact or rule is deleted via `DELETE /api/memory/facts/:id` or `DELETE /api/memory/rules/:id`, the system SHALL set validity to 'forgotten' via the Memory MCP server. The record SHALL remain in the database.
+When a fact or rule is deleted via `DELETE /api/memory/facts/:id` or `DELETE /api/memory/rules/:id`, the system SHALL apply canonical soft-delete semantics via the Memory MCP server. Facts SHALL transition to validity `retracted` (legacy `forgotten` accepted only as compatibility alias). Rules SHALL be marked retrieval-excluded tombstones per schema. Records SHALL remain in the database.
 
 #### Scenario: Delete fact via dashboard
 - **WHEN** `DELETE /api/memory/facts/<id>` is called
-- **THEN** the fact's validity SHALL be 'forgotten'
+- **THEN** the fact's validity SHALL be `retracted`
 - **AND** the fact SHALL no longer appear in retrieval results
 - **AND** the fact SHALL remain visible in the dashboard archive
 
@@ -47,7 +47,7 @@ The butler detail page SHALL include a memory tab at `/butlers/:name/memory` wit
 
 ### Requirement: Cross-butler memory page
 
-A top-level `/memory` page SHALL display: overview cards (total facts by permanence, total rules by maturity, active episodes, fading count), a knowledge browser (unified search across all types with type/scope/permanence filters), a consolidation activity feed (recent fact creations, rule promotions, supersessions, expirations, anti-pattern inversions), and health indicators (confidence distribution chart, episode backlog, rule effectiveness distribution).
+A top-level `/memory` page SHALL display: overview cards (total facts by permanence, total rules by maturity, active episodes, fading count), a knowledge browser (unified search across all types with type/scope/permanence filters), a consolidation activity feed (recent fact creations, rule promotions, supersessions, expirations, anti-pattern inversions), and health indicators (confidence distribution chart, episode backlog, rule effectiveness distribution). By default this page aggregates all butlers within the caller tenant.
 
 #### Scenario: Overview cards show system-wide counts
 - **WHEN** the user navigates to `/memory`
@@ -56,11 +56,11 @@ A top-level `/memory` page SHALL display: overview cards (total facts by permane
 
 #### Scenario: Knowledge browser search
 - **WHEN** the user searches "diet" in the knowledge browser
-- **THEN** results SHALL include matching facts, rules, and episodes from all butlers
+- **THEN** results SHALL include matching facts, rules, and episodes from all butlers in the caller tenant
 
 ### Requirement: Memory events in unified timeline
 
-Memory events (fact created, rule promoted, fact expired, anti-pattern inverted) SHALL appear as event types in the unified dashboard timeline alongside session events and other butler activity.
+Memory events (fact created, rule promoted, fact expired, anti-pattern inverted) SHALL appear as event types in the unified dashboard timeline alongside session events and other butler activity, sourced from the append-only `memory_events` stream.
 
 #### Scenario: Fact creation appears in timeline
 - **WHEN** consolidation creates a new fact

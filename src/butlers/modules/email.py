@@ -5,7 +5,7 @@ Configured via [modules.email] with optional
 [modules.email.user] and [modules.email.bot] credential scopes in butler.toml.
 
 When a ``MessagePipeline`` is attached, incoming emails can be classified
-and routed to the appropriate butler via ``check_and_route_inbox``.
+and routed to the appropriate butler via ``bot_email_check_and_route_inbox``.
 
 The ``user_*`` and ``bot_*`` tool prefixes model caller scope for routing
 and approvals. Today both scopes use the same configured email account
@@ -152,6 +152,7 @@ class EmailModule(Module):
                 description=(
                     "Send outbound email from user-scoped tool surface (approval-required default)."
                 ),
+                approval_default="always",
             ),
             ToolIODescriptor(
                 name="user_email_reply_to_thread",
@@ -159,6 +160,7 @@ class EmailModule(Module):
                     "Reply to email thread from user-scoped tool surface "
                     "(approval-required default)."
                 ),
+                approval_default="always",
             ),
         )
 
@@ -182,21 +184,24 @@ class EmailModule(Module):
     def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
         """Declare bot-identity email output tools.
 
-        Bot send/reply actions are approval-required defaults.
+        Bot send/reply actions are conditionally approval-gated by policy.
         """
         return (
             ToolIODescriptor(
                 name="bot_email_send_message",
                 description=(
-                    "Send outbound email from bot-scoped tool surface (approval-required default)."
+                    "Send outbound email from bot-scoped tool surface "
+                    "(approval_default=conditional)."
                 ),
+                approval_default="conditional",
             ),
             ToolIODescriptor(
                 name="bot_email_reply_to_thread",
                 description=(
                     "Reply to email thread from bot-scoped tool surface "
-                    "(approval-required default)."
+                    "(approval_default=conditional)."
                 ),
+                approval_default="conditional",
             ),
         )
 
@@ -324,12 +329,16 @@ class EmailModule(Module):
 
         result = await self._pipeline.process(
             message_text=text,
-            tool_name="handle_message",
+            tool_name="bot_email_handle_message",
             tool_args={
                 "source": "email",
+                "source_channel": "email",
+                "source_identity": "bot",
+                "source_tool": "bot_email_check_and_route_inbox",
                 "from": sender,
                 "subject": subject,
                 "message_id": message_id,
+                "source_id": message_id,
             },
         )
 

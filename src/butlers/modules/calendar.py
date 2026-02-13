@@ -25,6 +25,10 @@ from butlers.modules.base import Module
 GOOGLE_CALENDAR_CREDENTIALS_ENV = "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_CALENDAR_API_BASE_URL = "https://www.googleapis.com/calendar/v3"
+BUTLER_EVENT_TITLE_PREFIX = "BUTLER:"
+BUTLER_GENERATED_PRIVATE_KEY = "butler_generated"
+BUTLER_NAME_PRIVATE_KEY = "butler_name"
+DEFAULT_BUTLER_NAME = "butler"
 
 
 class CalendarAuthError(RuntimeError):
@@ -291,6 +295,31 @@ def _extract_google_recurrence_rule(payload: Any) -> str | None:
     return None
 
 
+def _extract_google_private_metadata(payload: Any) -> tuple[bool, str | None]:
+    if not isinstance(payload, dict):
+        return False, None
+
+    private_payload = payload.get("private")
+    if not isinstance(private_payload, dict):
+        return False, None
+
+    generated_raw = private_payload.get(BUTLER_GENERATED_PRIVATE_KEY)
+    if isinstance(generated_raw, bool):
+        butler_generated = generated_raw
+    elif isinstance(generated_raw, str):
+        butler_generated = generated_raw.strip().lower() == "true"
+    else:
+        butler_generated = False
+
+    butler_name_raw = private_payload.get(BUTLER_NAME_PRIVATE_KEY)
+    butler_name = (
+        butler_name_raw.strip()
+        if isinstance(butler_name_raw, str) and butler_name_raw.strip()
+        else None
+    )
+    return butler_generated, butler_name
+
+
 def _normalize_optional_text(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -365,6 +394,9 @@ def _google_event_to_calendar_event(
     timezone = start_timezone or end_timezone or fallback_timezone
 
     title = _normalize_optional_text(payload.get("summary")) or "(untitled)"
+    butler_generated, butler_name = _extract_google_private_metadata(
+        payload.get("extendedProperties")
+    )
     return CalendarEvent(
         event_id=event_id,
         title=title,
@@ -376,6 +408,8 @@ def _google_event_to_calendar_event(
         attendees=_extract_google_attendees(payload.get("attendees")),
         recurrence_rule=_extract_google_recurrence_rule(payload.get("recurrence")),
         color_id=_normalize_optional_text(payload.get("colorId")),
+        butler_generated=butler_generated,
+        butler_name=butler_name,
     )
 
 
@@ -658,6 +692,13 @@ def _normalize_recurrence(recurrence: str | list[str] | None) -> list[str]:
     return normalized_rules
 
 
+def _normalize_recurrence_rule(recurrence_rule: str | None) -> str | None:
+    if recurrence_rule is None:
+        return None
+    normalized_rules = _normalize_recurrence(recurrence_rule)
+    return normalized_rules[0]
+
+
 def _resolve_all_day_flag(
     *,
     start_at: date | datetime,
@@ -683,6 +724,10 @@ def _normalize_datetime(value: datetime, timezone: str) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=tz)
     return value.astimezone(tz)
+
+
+def _is_naive_datetime(value: datetime) -> bool:
+    return value.tzinfo is None or value.utcoffset() is None
 
 
 def _is_date_only(value: date | datetime) -> bool:
@@ -716,6 +761,8 @@ class CalendarEvent(BaseModel):
     attendees: list[str] = Field(default_factory=list)
     recurrence_rule: str | None = None
     color_id: str | None = None
+    butler_generated: bool = False
+    butler_name: str | None = None
 
 
 class CalendarEventCreate(BaseModel):
@@ -730,6 +777,32 @@ class CalendarEventCreate(BaseModel):
     attendees: list[str] = Field(default_factory=list)
     recurrence_rule: str | None = None
     color_id: str | None = None
+    private_metadata: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("timezone")
+    @classmethod
+    def _normalize_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        _ensure_valid_timezone(normalized)
+        return normalized
+
+    @field_validator("recurrence_rule")
+    @classmethod
+    def _normalize_recurrence_rule_field(cls, value: str | None) -> str | None:
+        return _normalize_recurrence_rule(value)
+
+    @model_validator(mode="after")
+    def _validate_recurrence_timezone(self) -> CalendarEventCreate:
+        if self.recurrence_rule is not None and self.timezone is None:
+            if _is_naive_datetime(self.start_at) or _is_naive_datetime(self.end_at):
+                raise ValueError(
+                    "timezone is required when recurrence_rule is set for naive datetime boundaries"
+                )
+        return self
 
 
 class CalendarEventUpdate(BaseModel):
@@ -743,7 +816,37 @@ class CalendarEventUpdate(BaseModel):
     location: str | None = None
     attendees: list[str] | None = None
     recurrence_rule: str | None = None
+    recurrence_scope: Literal["series"] = "series"
     color_id: str | None = None
+    private_metadata: dict[str, str] | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _normalize_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        _ensure_valid_timezone(normalized)
+        return normalized
+
+    @field_validator("recurrence_rule")
+    @classmethod
+    def _normalize_recurrence_rule_field(cls, value: str | None) -> str | None:
+        return _normalize_recurrence_rule(value)
+
+    @model_validator(mode="after")
+    def _validate_recurrence_timezone(self) -> CalendarEventUpdate:
+        if self.recurrence_rule is None or self.timezone is not None:
+            return self
+        if (self.start_at is not None and _is_naive_datetime(self.start_at)) or (
+            self.end_at is not None and _is_naive_datetime(self.end_at)
+        ):
+            raise ValueError(
+                "timezone is required when recurrence_rule is set for naive datetime boundaries"
+            )
+        return self
 
 
 class CalendarProvider(abc.ABC):
@@ -1033,6 +1136,7 @@ class CalendarModule(Module):
     def __init__(self) -> None:
         self._config: CalendarConfig | None = None
         self._provider: CalendarProvider | None = None
+        self._butler_name: str = DEFAULT_BUTLER_NAME
 
     @property
     def name(self) -> str:
@@ -1059,6 +1163,7 @@ class CalendarModule(Module):
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         self._config = self._coerce_config(config)
+        self._butler_name = self._resolve_butler_name(db)
         module = self
 
         @mcp.tool()
@@ -1105,6 +1210,114 @@ class CalendarModule(Module):
                 "event": None if event is None else module._event_to_payload(event),
             }
 
+        @mcp.tool()
+        async def calendar_create_event(
+            title: str,
+            start_at: datetime,
+            end_at: datetime,
+            timezone: str | None = None,
+            description: str | None = None,
+            location: str | None = None,
+            attendees: list[str] | None = None,
+            recurrence_rule: str | None = None,
+            color_id: str | None = None,
+            calendar_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Create an event and mark it as Butler-generated."""
+            provider = module._require_provider()
+            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+
+            create_payload = CalendarEventCreate(
+                title=module._ensure_butler_title(title),
+                start_at=start_at,
+                end_at=end_at,
+                timezone=timezone,
+                description=description,
+                location=location,
+                attendees=attendees or [],
+                recurrence_rule=recurrence_rule,
+                color_id=color_id,
+                private_metadata=module._build_butler_private_metadata(
+                    butler_name=module._butler_name
+                ),
+            )
+            event = await provider.create_event(
+                calendar_id=resolved_calendar_id,
+                payload=create_payload,
+            )
+            return {
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "event": module._event_to_payload(event),
+            }
+
+        @mcp.tool()
+        async def calendar_update_event(
+            event_id: str,
+            title: str | None = None,
+            start_at: datetime | None = None,
+            end_at: datetime | None = None,
+            timezone: str | None = None,
+            description: str | None = None,
+            location: str | None = None,
+            attendees: list[str] | None = None,
+            recurrence_rule: str | None = None,
+            recurrence_scope: Literal["series"] = "series",
+            color_id: str | None = None,
+            calendar_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Update an event and preserve Butler tags for Butler-generated entries.
+
+            Recurrence updates are series-scoped in v1.
+            """
+            normalized_event_id = event_id.strip()
+            if not normalized_event_id:
+                raise ValueError("event_id must be a non-empty string")
+
+            provider = module._require_provider()
+            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            existing_event = await provider.get_event(
+                calendar_id=resolved_calendar_id,
+                event_id=normalized_event_id,
+            )
+            if existing_event is None:
+                raise ValueError(f"event_id '{normalized_event_id}' was not found")
+
+            normalized_title = title.strip() if isinstance(title, str) else None
+            update_title = normalized_title
+            private_metadata: dict[str, str] | None = None
+            if existing_event.butler_generated:
+                update_title = module._ensure_butler_title(
+                    existing_event.title if update_title is None else update_title
+                )
+                private_metadata = module._build_butler_private_metadata(
+                    butler_name=existing_event.butler_name or module._butler_name
+                )
+
+            update_patch = CalendarEventUpdate(
+                title=update_title,
+                start_at=start_at,
+                end_at=end_at,
+                timezone=timezone,
+                description=description,
+                location=location,
+                attendees=attendees,
+                recurrence_rule=recurrence_rule,
+                recurrence_scope=recurrence_scope,
+                color_id=color_id,
+                private_metadata=private_metadata,
+            )
+            event = await provider.update_event(
+                calendar_id=resolved_calendar_id,
+                event_id=normalized_event_id,
+                patch=update_patch,
+            )
+            return {
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "event": module._event_to_payload(event),
+            }
+
     async def on_startup(self, config: Any, db: Any) -> None:
         self._config = self._coerce_config(config)
 
@@ -1143,6 +1356,36 @@ class CalendarModule(Module):
         return normalized
 
     @staticmethod
+    def _resolve_butler_name(db: Any) -> str:
+        db_name = getattr(db, "db_name", None)
+        if isinstance(db_name, str):
+            normalized = db_name.strip()
+            if normalized:
+                return normalized.removeprefix("butler_") or DEFAULT_BUTLER_NAME
+        return DEFAULT_BUTLER_NAME
+
+    @staticmethod
+    def _ensure_butler_title(title: str) -> str:
+        normalized = title.strip()
+        if not normalized:
+            raise ValueError("title must be a non-empty string")
+
+        prefix_len = len(BUTLER_EVENT_TITLE_PREFIX)
+        if normalized[:prefix_len].upper() == BUTLER_EVENT_TITLE_PREFIX:
+            suffix = normalized[prefix_len:].lstrip()
+        else:
+            suffix = normalized
+        return BUTLER_EVENT_TITLE_PREFIX if not suffix else f"{BUTLER_EVENT_TITLE_PREFIX} {suffix}"
+
+    @staticmethod
+    def _build_butler_private_metadata(*, butler_name: str = DEFAULT_BUTLER_NAME) -> dict[str, str]:
+        normalized_name = butler_name.strip() or DEFAULT_BUTLER_NAME
+        return {
+            BUTLER_GENERATED_PRIVATE_KEY: "true",
+            BUTLER_NAME_PRIVATE_KEY: normalized_name,
+        }
+
+    @staticmethod
     def _event_to_payload(event: CalendarEvent) -> dict[str, Any]:
         return {
             "event_id": event.event_id,
@@ -1155,4 +1398,6 @@ class CalendarModule(Module):
             "attendees": list(event.attendees),
             "recurrence_rule": event.recurrence_rule,
             "color_id": event.color_id,
+            "butler_generated": event.butler_generated,
+            "butler_name": event.butler_name,
         }

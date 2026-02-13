@@ -2,7 +2,7 @@
 
 Verifies that:
 - EmailModule.process_incoming() classifies and routes emails
-- check_and_route_inbox fetches unseen emails and routes them
+- bot_email_check_and_route_inbox fetches unseen emails and routes them
 - _build_classification_text builds sensible text for classification
 - Pipeline errors are handled gracefully
 """
@@ -233,12 +233,12 @@ class TestProcessIncoming:
 
 
 # ---------------------------------------------------------------------------
-# check_and_route_inbox
+# bot_email_check_and_route_inbox
 # ---------------------------------------------------------------------------
 
 
 class TestCheckAndRouteInbox:
-    """Test the check_and_route_inbox tool."""
+    """Test the bot_email_check_and_route_inbox tool."""
 
     async def test_no_pipeline_returns_no_pipeline_status(self):
         """Without a pipeline, returns status 'no_pipeline'."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -29,10 +29,12 @@ class ToolIODescriptor:
     Attributes:
         name: Registered MCP tool name.
         description: Optional short description of the tool intent.
+        approval_default: Default approval behavior for output tools.
     """
 
     name: str
     description: str = ""
+    approval_default: Literal["none", "conditional", "always"] = "none"
 
 
 class Module(abc.ABC):

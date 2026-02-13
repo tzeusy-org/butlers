@@ -94,7 +94,7 @@ AND each span MUST follow the naming convention `butler.tool.<name>`
 
 #### Scenario: Module tools are also wrapped
 
-WHEN a butler has module-provided tools registered (e.g., `send_message` from the Telegram module)
+WHEN a butler has module-provided tools registered (e.g., `bot_telegram_send_message` from the Telegram module)
 THEN the module tools MUST also be wrapped with spans following the same `butler.tool.<name>` convention
 AND the span MUST include the `butler.name` attribute
 

@@ -1,0 +1,188 @@
+# Connector Interface Contract
+
+Status: Normative (Target State)
+Last updated: 2026-02-13
+Primary owner: Platform/Core
+
+## 1. Purpose
+This document defines the base contract for source connectors now that ingestion is API-first:
+- Switchboard owns canonical ingestion and request-context assignment.
+- Connectors are transport adapters only.
+- Connectors submit events to Switchboard's ingestion API instead of running routing logic inside module daemons.
+
+Source of truth:
+- `docs/roles/switchboard_butler.md` (especially section 17)
+- `docs/roles/base_butler.md` (`route.execute` / request-context lineage rules)
+
+Scope note:
+- This document defines connector expectations; Switchboard remains the authoritative owner of ingress semantics.
+
+## 2. Connector Responsibilities
+Connectors MUST:
+- Read source events/messages from an external system (Telegram, email, webhook, etc.).
+- Normalize source payloads into `ingest.v1`.
+- Submit to the canonical Switchboard ingest API.
+- Persist connector-local resume state (cursor/offset/high-water mark).
+- Enforce source-side and ingest-side rate limiting.
+
+Connectors MUST NOT:
+- Classify messages.
+- Route directly to specialist butlers.
+- Mint canonical `request_id` values.
+- Bypass Switchboard ingestion with direct target-butler calls.
+
+## 3. Canonical Ingest Envelope
+Connectors submit `ingest.v1` payloads.
+
+```json
+{
+  "schema_version": "ingest.v1",
+  "source": {
+    "channel": "telegram|slack|email|api|mcp",
+    "provider": "telegram|slack|imap|internal",
+    "endpoint_identity": "bot-or-mailbox-or-client-id"
+  },
+  "event": {
+    "external_event_id": "provider-event-id",
+    "external_thread_id": "thread-or-conversation-id-or-null",
+    "observed_at": "RFC3339 timestamp"
+  },
+  "sender": {
+    "identity": "provider-sender-identity"
+  },
+  "payload": {
+    "raw": {},
+    "normalized_text": "text used for routing"
+  },
+  "control": {
+    "idempotency_key": "optional caller key",
+    "trace_context": {},
+    "policy_tier": "default|interactive|high_priority"
+  }
+}
+```
+
+Request-context rule:
+- Connector sends source/event/sender facts.
+- Switchboard assigns canonical request context (`request_id`, `received_at`, etc.) at ingest acceptance.
+
+Canonical request-context fields assigned by Switchboard:
+- Required: `request_id`, `received_at`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`
+- Optional: `source_thread_identity`, `trace_context`
+
+## 4. Talking to Switchboard
+Target boundary:
+- Connectors call Switchboard ingestion API (not in-daemon routing tools).
+
+API semantics:
+- Canonical endpoint path is an implementation detail of the Switchboard API surface; semantics are the contract.
+- `202 Accepted` means ingest accepted for async processing.
+- Response includes canonical request reference (request id).
+- Duplicate submissions for the same dedupe identity return the same canonical request reference.
+
+Example request:
+
+```bash
+curl -sS -X POST "$SWITCHBOARD_API_BASE_URL/api/switchboard/ingest" \
+  -H "Authorization: Bearer $SWITCHBOARD_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d @event.json
+```
+
+The path above is an example for this repo's target API shape.
+
+Auth and exposure:
+- Ingestion API is private by default.
+- Public exposure requires explicit authn/authz and rate limits.
+
+## 5. Data Source Modes
+Supported source models:
+- Push/webhook connectors: source pushes events to connector, connector forwards to Switchboard.
+- Pull/poll connectors: connector periodically fetches new events, then forwards each to Switchboard.
+
+Policy:
+- Polling is allowed.
+- Preferred deployment is external connector processes.
+- In-process/co-located connectors are allowed, but they must call the same canonical ingest handler/API path as external connectors.
+- Each newly observed source message/event is ingested as one canonical ingress record.
+
+## 6. Idempotency and Deduplication
+Connector requirements:
+- Always send stable source identity fields (`channel`, `endpoint_identity`, `external_event_id` when available).
+- Provide `control.idempotency_key` when source has no stable event id.
+- Retries must be safe and reuse the same dedupe identity.
+
+Switchboard dedupe authority:
+- Deduplication decision is made at ingest boundary.
+- Connector must treat duplicate acceptance as success, not as an error.
+
+Canonical dedupe key guidance:
+- Telegram: `update_id` + receiving bot identity.
+- Email: RFC `Message-ID` + receiving mailbox identity.
+- API/MCP: caller idempotency key when available; otherwise deterministic normalized-payload hash + source identity + bounded time window.
+
+## 7. Safe Resuming
+Connectors MUST be crash-safe and restart-safe.
+
+Minimum behavior:
+- Persist a resume cursor/checkpoint outside process memory.
+- On restart, replay from last safe checkpoint.
+- Replays must be harmless because ingest is idempotent.
+- Use at-least-once delivery from connector to Switchboard; rely on ingest dedupe for exactly-once effect at canonical request layer.
+
+Recommended checkpoint pattern:
+1. Fetch batch from source.
+2. Submit each event to ingest API.
+3. Only advance checkpoint after successful ingest acceptance (or accepted duplicate).
+
+## 8. Rate Limiting and Backpressure
+Connectors MUST implement two independent controls:
+- Source API limit handling (provider quotas, 429 handling, jittered backoff).
+- Switchboard ingest protection (bounded in-flight requests, retry policy, overload handling).
+
+Required behavior:
+- Honor `Retry-After` when present.
+- Use exponential backoff with jitter.
+- Cap concurrent ingest submissions.
+- Surface overload outcomes explicitly in logs/metrics (no silent drops).
+
+## 9. Environment Variables (Base)
+Reference connector runtime config (recommended naming):
+- `SWITCHBOARD_API_BASE_URL` (required): base URL for Switchboard API.
+- `SWITCHBOARD_API_TOKEN` (required when auth enabled): bearer token or equivalent secret.
+- `CONNECTOR_PROVIDER` (required): provider name (`telegram`, `imap`, etc.).
+- `CONNECTOR_CHANNEL` (required): canonical channel value (`telegram`, `email`, etc.).
+- `CONNECTOR_ENDPOINT_IDENTITY` (required): receiving identity (bot id, mailbox, client id).
+- `CONNECTOR_CURSOR_PATH` (required for polling sources): durable checkpoint file/path.
+- `CONNECTOR_POLL_INTERVAL_S` (required for polling sources): poll interval seconds.
+- `CONNECTOR_MAX_INFLIGHT` (optional, default recommended: `8`): ingest concurrency cap.
+
+Provider-specific credentials (examples):
+- Telegram bot token env var(s).
+- IMAP/SMTP or webhook secret env var(s).
+
+Rule:
+- Connector secrets must come from environment or secret manager, never committed config.
+
+## 10. How to Run
+Preferred model: connector processes run independently from the Switchboard daemon lifecycle.
+Allowed model: in-process connectors, if they still use the same canonical ingest handler/API path.
+
+Base run order:
+1. Start Switchboard API service.
+2. Start connector process(es) per source/provider.
+3. Verify ingestion health using connector logs/metrics and Switchboard request lifecycle views.
+
+Operational model:
+- One process per connector type is preferred for isolation.
+- Horizontal scale is allowed when dedupe identity is stable and checkpointing is coordination-safe.
+
+## 11. Migration Notes (From In-Daemon Ingestion)
+Legacy behavior exists today in some modules (for example internal polling loops). Target state is:
+- Connector process owns source polling/webhook handling.
+- Switchboard API owns canonical ingest/normalization/dedupe/context.
+- Routing/fanout remains inside Switchboard pipeline after ingest acceptance.
+
+During migration:
+- Preserve existing dedupe identities so request lineage stays stable.
+- Keep fallback paths fail-safe (no dropped accepted events).

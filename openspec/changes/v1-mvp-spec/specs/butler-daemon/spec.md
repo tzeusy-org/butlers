@@ -221,8 +221,8 @@ Module tools SHALL be registered on the same MCP server as core tools. Clients c
 
 #### Scenario: Module tools appear alongside core tools
 
-WHEN the daemon starts with the email module, and the email module registers `send_email`, `search_inbox`, and `read_email` tools,
-THEN the MCP server SHALL expose all core tools plus `send_email`, `search_inbox`, and `read_email`,
+WHEN the daemon starts with the email module, and the email module registers `bot_email_send_message`, `bot_email_search_inbox`, and `bot_email_read_message` tools,
+THEN the MCP server SHALL expose all core tools plus `bot_email_send_message`, `bot_email_search_inbox`, and `bot_email_read_message`,
 AND a client connecting to this butler SHALL be able to call any of these tools.
 
 #### Scenario: Multiple modules register tools without conflict

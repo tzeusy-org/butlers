@@ -38,14 +38,22 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 import uvicorn
 from fastmcp import Client as MCPClient
 from fastmcp import FastMCP
 from opentelemetry import trace
 from pydantic import ConfigDict, ValidationError
+from starlette.requests import ClientDisconnect
 
-from butlers.config import ButlerConfig, load_config, parse_approval_config
+from butlers.config import (
+    ApprovalConfig,
+    ButlerConfig,
+    GatedToolConfig,
+    load_config,
+    parse_approval_config,
+)
 from butlers.core.runtimes import get_adapter
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.scheduler import schedule_delete as _schedule_delete
@@ -53,8 +61,12 @@ from butlers.core.scheduler import schedule_list as _schedule_list
 from butlers.core.scheduler import schedule_update as _schedule_update
 from butlers.core.scheduler import sync_schedules
 from butlers.core.scheduler import tick as _tick
+from butlers.core.sessions import schedule_costs as _schedule_costs
+from butlers.core.sessions import sessions_daily as _sessions_daily
 from butlers.core.sessions import sessions_get as _sessions_get
 from butlers.core.sessions import sessions_list as _sessions_list
+from butlers.core.sessions import sessions_summary as _sessions_summary
+from butlers.core.sessions import top_sessions as _top_sessions
 from butlers.core.spawner import Spawner
 from butlers.core.state import state_delete as _state_delete
 from butlers.core.state import state_get as _state_get
@@ -70,6 +82,88 @@ from butlers.modules.pipeline import MessagePipeline
 from butlers.modules.registry import ModuleRegistry, default_registry
 
 logger = logging.getLogger(__name__)
+
+CORE_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "status",
+        "trigger",
+        "tick",
+        "state_get",
+        "state_set",
+        "state_delete",
+        "state_list",
+        "schedule_list",
+        "schedule_create",
+        "schedule_update",
+        "schedule_delete",
+        "sessions_list",
+        "sessions_get",
+        "sessions_summary",
+        "sessions_daily",
+        "top_sessions",
+        "schedule_costs",
+        "notify",
+    }
+)
+
+
+class _McpSseDisconnectGuard:
+    """Catch expected SSE POST disconnects before they become error traces."""
+
+    def __init__(self, app: Any, *, butler_name: str) -> None:
+        self._app = app
+        self._butler_name = butler_name
+
+    @staticmethod
+    def _is_messages_post(scope: dict[str, Any]) -> bool:
+        if scope.get("type") != "http":
+            return False
+        if str(scope.get("method", "")).upper() != "POST":
+            return False
+        path = str(scope.get("path", "")).rstrip("/")
+        return path == "/messages"
+
+    @staticmethod
+    def _session_id(scope: dict[str, Any]) -> str | None:
+        query_string = scope.get("query_string")
+        if not isinstance(query_string, (bytes, bytearray)):
+            return None
+
+        parsed = parse_qs(query_string.decode("utf-8", errors="replace"))
+        values = parsed.get("session_id")
+        if not values:
+            return None
+
+        session_id = values[0].strip()
+        return session_id or None
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        try:
+            await self._app(scope, receive, send)
+        except ClientDisconnect:
+            if not self._is_messages_post(scope):
+                raise
+
+            path = str(scope.get("path", ""))
+            session_id = self._session_id(scope) or "unknown"
+            logger.debug(
+                "Suppressed expected MCP SSE POST disconnect (butler=%s path=%s session_id=%s)",
+                self._butler_name,
+                path,
+                session_id,
+            )
+
+            try:
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 202,
+                        "headers": [(b"content-length", b"0")],
+                    }
+                )
+                await send({"type": "http.response.body", "body": b""})
+            except Exception:
+                logger.debug("MCP SSE disconnect response not sent; client already disconnected")
 
 
 class ModuleConfigError(Exception):
@@ -414,6 +508,7 @@ class ButlerDaemon:
         in a background task so that ``start()`` returns immediately.
         """
         app = self.mcp.http_app(transport="sse")
+        app = _McpSseDisconnectGuard(app, butler_name=self.config.name)
         config = uvicorn.Config(
             app,
             host="0.0.0.0",
@@ -700,6 +795,26 @@ class ButlerDaemon:
                 session["id"] = str(session["id"])
             return session
 
+        @mcp.tool()
+        async def sessions_summary(period: str = "today") -> dict:
+            """Return aggregate session/token stats for a period."""
+            return await _sessions_summary(pool, period)
+
+        @mcp.tool()
+        async def sessions_daily(from_date: str, to_date: str) -> dict:
+            """Return daily session/token aggregates for a date range."""
+            return await _sessions_daily(pool, from_date, to_date)
+
+        @mcp.tool()
+        async def top_sessions(limit: int = 10) -> dict:
+            """Return the highest-token completed sessions."""
+            return await _top_sessions(pool, limit)
+
+        @mcp.tool()
+        async def schedule_costs() -> dict:
+            """Return per-schedule token usage aggregates."""
+            return await _schedule_costs(pool)
+
         # Notification tool
         @mcp.tool()
         @tool_span("notify", butler_name=butler_name)
@@ -922,6 +1037,12 @@ class ButlerDaemon:
         then calls ``apply_approval_gates`` to wrap tools whose names appear
         in the ``gated_tools`` configuration.
 
+        Identity-aware defaults are merged in before wrapping:
+        - ``user_*`` output tools marked ``approval_default="always"``
+          are gated by default.
+        - ``bot_*`` outputs remain configurable and are only gated when
+          explicitly listed in config.
+
         Returns the mapping of tool_name -> original handler for gated tools.
         """
         approvals_raw = self.config.modules.get("approvals")
@@ -930,6 +1051,7 @@ class ButlerDaemon:
         if approval_config is None or not approval_config.enabled:
             return {}
 
+        approval_config = self._with_default_gated_user_outputs(approval_config)
         pool = self.db.pool
         originals = apply_approval_gates(self.mcp, approval_config, pool)
 
@@ -959,6 +1081,38 @@ class ButlerDaemon:
             )
 
         return originals
+
+    def _with_default_gated_user_outputs(self, config: ApprovalConfig) -> ApprovalConfig:
+        """Return config with ``approval_default=always`` user outputs added.
+
+        Existing explicit gating config wins; defaults fill missing entries.
+        User-scoped send/reply tools are always default-gated as a safety
+        baseline even if metadata was omitted.
+        """
+        merged = dict(config.gated_tools)
+        for mod in self._modules:
+            for descriptor in mod.user_outputs():
+                if descriptor.approval_default != "always" and not self._is_user_send_or_reply_tool(
+                    descriptor.name
+                ):
+                    continue
+                merged.setdefault(descriptor.name, GatedToolConfig())
+
+        if len(merged) == len(config.gated_tools):
+            return config
+
+        return ApprovalConfig(
+            enabled=config.enabled,
+            default_expiry_hours=config.default_expiry_hours,
+            gated_tools=merged,
+        )
+
+    @staticmethod
+    def _is_user_send_or_reply_tool(tool_name: str) -> bool:
+        """Return whether a tool name is a user-scoped send/reply action."""
+        if not tool_name.startswith("user_"):
+            return False
+        return "_send" in tool_name or "_reply" in tool_name
 
     async def shutdown(self) -> None:
         """Graceful shutdown.
