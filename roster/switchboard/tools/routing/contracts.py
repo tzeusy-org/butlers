@@ -27,6 +27,8 @@ NotifyChannel = Literal["telegram", "email", "sms", "chat"]
 NotifyIntent = Literal["send", "reply"]
 PolicyTier = Literal["default", "interactive", "high_priority"]
 FanoutMode = Literal["parallel", "ordered", "conditional"]
+NotifyIntent = Literal["send", "reply"]
+NotifyChannel = Literal["telegram", "email", "sms", "chat"]
 _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = {
     "telegram": frozenset({"telegram"}),
     "slack": frozenset({"slack"}),
@@ -34,6 +36,7 @@ _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = 
     "api": frozenset({"internal"}),
     "mcp": frozenset({"internal"}),
 }
+_THREAD_TARGET_REQUIRED_NOTIFY_CHANNELS: frozenset[NotifyChannel] = frozenset({"telegram", "chat"})
 _RFC3339_WITH_TZ_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$"
 )

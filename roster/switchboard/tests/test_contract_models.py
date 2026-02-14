@@ -206,13 +206,19 @@ def test_ingest_v1_rejects_inconsistent_source_channel_provider_pair() -> None:
     [
         (IngestEnvelopeV1, "ingest.v99"),
         (RouteEnvelopeV1, "route.v2"),
+        (NotifyRequestV1, "notify.v2"),
     ],
 )
 def test_unknown_or_newer_schema_version_fails_deterministically(
-    model_cls: type[IngestEnvelopeV1 | RouteEnvelopeV1],
+    model_cls: type[IngestEnvelopeV1 | RouteEnvelopeV1 | NotifyRequestV1],
     schema_version: str,
 ) -> None:
-    payload = _valid_ingest_payload() if model_cls is IngestEnvelopeV1 else _valid_route_payload()
+    if model_cls is IngestEnvelopeV1:
+        payload = _valid_ingest_payload()
+    elif model_cls is RouteEnvelopeV1:
+        payload = _valid_route_payload()
+    else:
+        payload = _valid_notify_payload()
     payload["schema_version"] = schema_version
 
     with pytest.raises(ValidationError) as exc_info:

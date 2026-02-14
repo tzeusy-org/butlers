@@ -882,6 +882,87 @@ port = 8101
 
         assert cfg.switchboard_url == "http://localhost:8100/sse"
 
+
+class TestMessengerConfigValidation:
+    """Tests for messenger-specific config guardrails."""
+
+    def test_messenger_requires_at_least_one_delivery_module(self, tmp_path: Path):
+        """Messenger without telegram/email modules should fail config validation."""
+        toml = """\
+[butler]
+name = "messenger"
+port = 8104
+"""
+        config_dir = _write_toml(tmp_path, toml)
+
+        with pytest.raises(ConfigError, match="requires at least one delivery module"):
+            load_config(config_dir)
+
+    def test_messenger_accepts_telegram_only(self, tmp_path: Path):
+        """Messenger with only telegram module should load."""
+        toml = """\
+[butler]
+name = "messenger"
+port = 8104
+
+[modules.telegram]
+mode = "polling"
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+
+        assert cfg.name == "messenger"
+        assert "telegram" in cfg.modules
+
+    def test_messenger_accepts_email_only(self, tmp_path: Path):
+        """Messenger with only email module should load."""
+        toml = """\
+[butler]
+name = "messenger"
+port = 8104
+
+[modules.email]
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+
+        assert cfg.name == "messenger"
+        assert "email" in cfg.modules
+
+    def test_messenger_requires_enabled_bot_scope(self, tmp_path: Path):
+        """Messenger with both bot scopes disabled should fail config validation."""
+        toml = """\
+[butler]
+name = "messenger"
+port = 8104
+
+[modules.telegram]
+
+[modules.telegram.bot]
+enabled = false
+
+[modules.email]
+
+[modules.email.bot]
+enabled = false
+"""
+        config_dir = _write_toml(tmp_path, toml)
+
+        with pytest.raises(ConfigError, match="requires at least one enabled bot credential scope"):
+            load_config(config_dir)
+
+    def test_non_messenger_is_not_subject_to_messenger_delivery_requirements(self, tmp_path: Path):
+        """Other butlers can load without delivery modules."""
+        toml = """\
+[butler]
+name = "general"
+port = 8101
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+
+        assert cfg.name == "general"
+
     def test_switchboard_butler_has_no_url(self, tmp_path: Path):
         """The switchboard butler itself should have switchboard_url=None."""
         toml = """\

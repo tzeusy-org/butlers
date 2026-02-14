@@ -318,6 +318,34 @@ def validate_approval_config(
         )
 
 
+def _messenger_bot_scope_enabled(module_cfg: dict[str, Any]) -> bool:
+    """Return whether a messenger channel module's bot scope is enabled."""
+    bot_cfg = module_cfg.get("bot")
+    if not isinstance(bot_cfg, dict):
+        # If absent or malformed, defer detailed validation to module schemas.
+        return True
+    return bool(bot_cfg.get("enabled", True))
+
+
+def _validate_messenger_requirements(name: str, modules: dict[str, dict[str, Any]]) -> None:
+    """Enforce minimum messenger delivery-module requirements."""
+    if name != "messenger":
+        return
+
+    delivery_modules = [mod for mod in ("telegram", "email") if mod in modules]
+    if not delivery_modules:
+        raise ConfigError(
+            "Messenger butler requires at least one delivery module: "
+            "[modules.telegram] and/or [modules.email]."
+        )
+
+    if not any(_messenger_bot_scope_enabled(modules[mod]) for mod in delivery_modules):
+        raise ConfigError(
+            "Messenger butler requires at least one enabled bot credential scope "
+            "(modules.telegram.bot.enabled or modules.email.bot.enabled)."
+        )
+
+
 def load_config(config_dir: Path) -> ButlerConfig:
     """Load and validate a butler.toml from *config_dir*.
 
@@ -403,6 +431,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
     raw_modules = data.get("modules", {})
     for mod_name, mod_cfg in raw_modules.items():
         modules[mod_name] = dict(mod_cfg) if isinstance(mod_cfg, dict) else {}
+    _validate_messenger_requirements(name, modules)
 
     # --- [runtime] section ---
     runtime_section = data.get("runtime", {})

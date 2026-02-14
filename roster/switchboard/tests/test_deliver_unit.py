@@ -177,7 +177,6 @@ class TestDeliverModuleNotAvailable:
             channel="telegram",
             message="Hello",
             recipient="123456",
-            source_butler="health",
         )
 
         assert result["status"] == "failed"
@@ -237,7 +236,6 @@ class TestDeliverTelegramSuccess:
             channel="telegram",
             message="Hello from health butler!",
             recipient="123456",
-            source_butler="health",
             call_fn=mock_call,
         )
 
@@ -326,7 +324,6 @@ class TestDeliverEmailSuccess:
             channel="email",
             message="Your report is ready.",
             recipient="user@example.com",
-            source_butler="health",
             call_fn=mock_call,
         )
 
@@ -453,7 +450,6 @@ class TestDeliverModuleFailure:
             channel="telegram",
             message="Hello",
             recipient="123456",
-            source_butler="health",
             call_fn=failing_call,
         )
 
@@ -864,6 +860,112 @@ class TestDeliverResultData:
         assert result["status"] == "failed"
         assert "error" in result
         assert "result" not in result
+
+
+class TestDeliverNotifyRouting:
+    """notify.v1 requests should terminate at Switchboard and route to messenger."""
+
+    async def test_notify_request_routes_to_messenger_with_metadata(self) -> None:
+        from butlers.tools.switchboard import deliver
+
+        pool = _make_mock_pool(
+            fetchrow_side_effect=[
+                _registry_row("messenger", "http://localhost:9200/sse"),
+                _notif_id_row(),
+            ],
+        )
+        captured: list[dict[str, Any]] = []
+
+        async def mock_call(endpoint_url, tool_name, args):
+            captured.append({"endpoint_url": endpoint_url, "tool_name": tool_name, "args": args})
+            return {"status": "ok", "result": {"notify_response": {"status": "ok"}}}
+
+        notify_request = {
+            "schema_version": "notify.v1",
+            "origin_butler": "health",
+            "delivery": {
+                "intent": "reply",
+                "channel": "telegram",
+                "message": "Got it.",
+                "recipient": "chat-123",
+            },
+            "request_context": {
+                "request_id": "018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa",
+                "received_at": "2026-02-13T12:00:00+00:00",
+                "source_channel": "telegram",
+                "source_endpoint_identity": "switchboard-bot",
+                "source_sender_identity": "user-123",
+                "source_thread_identity": "chat-123",
+            },
+        }
+        result = await deliver(
+            pool,
+            source_butler="health",
+            notify_request=notify_request,
+            call_fn=mock_call,
+        )
+
+        assert result["status"] == "sent"
+        assert len(captured) == 1
+        assert captured[0]["tool_name"] == "route.execute"
+        routed_payload = captured[0]["args"]
+        assert routed_payload["target"]["butler"] == "messenger"
+        assert routed_payload["input"]["context"]["notify_request"]["origin_butler"] == "health"
+        assert (
+            routed_payload["input"]["context"]["notify_request"]["request_context"]["request_id"]
+            == "018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa"
+        )
+        assert routed_payload["request_context"]["source_endpoint_identity"] == "switchboard-bot"
+
+    async def test_invalid_notify_request_fails_validation(self) -> None:
+        from butlers.tools.switchboard import deliver
+
+        pool = _make_mock_pool()
+        result = await deliver(
+            pool,
+            source_butler="health",
+            notify_request={
+                "schema_version": "notify.v1",
+                "origin_butler": "health",
+                "delivery": {"intent": "send", "channel": "telegram"},
+            },
+        )
+
+        assert result["status"] == "failed"
+        assert "Invalid notify.v1 envelope" in result["error"]
+
+    async def test_legacy_specialist_delivery_is_normalized_to_notify_v1(self) -> None:
+        from butlers.tools.switchboard import deliver
+
+        pool = _make_mock_pool(
+            fetchrow_side_effect=[
+                _registry_row("messenger", "http://localhost:9200/sse"),
+                _notif_id_row(),
+            ],
+        )
+        captured: list[dict[str, Any]] = []
+
+        async def mock_call(endpoint_url, tool_name, args):
+            captured.append({"endpoint_url": endpoint_url, "tool_name": tool_name, "args": args})
+            return {"status": "ok"}
+
+        result = await deliver(
+            pool,
+            channel="email",
+            message="Daily summary",
+            recipient="user@example.com",
+            metadata={"subject": "Summary"},
+            source_butler="health",
+            call_fn=mock_call,
+        )
+
+        assert result["status"] == "sent"
+        assert len(captured) == 1
+        notify_payload = captured[0]["args"]["input"]["context"]["notify_request"]
+        assert notify_payload["origin_butler"] == "health"
+        assert notify_payload["delivery"]["channel"] == "email"
+        assert notify_payload["delivery"]["subject"] == "Summary"
+        assert notify_payload["delivery"]["recipient"] == "user@example.com"
 
 
 # ---------------------------------------------------------------------------

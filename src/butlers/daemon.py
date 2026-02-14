@@ -938,7 +938,6 @@ class ButlerDaemon:
                         message=message,
                     ),
                 )
-
             channel = notify_request.delivery.channel
             intent = notify_request.delivery.intent
             message_text = notify_request.delivery.message
@@ -1260,23 +1259,37 @@ class ButlerDaemon:
         # Notification tool
         @mcp.tool()
         @tool_span("notify", butler_name=butler_name)
-        async def notify(channel: str, message: str, recipient: str | None = None) -> dict:
+        async def notify(
+            channel: str,
+            message: str,
+            recipient: str | None = None,
+            subject: str | None = None,
+            intent: str = "send",
+            request_context: dict[str, Any] | None = None,
+        ) -> dict:
             """Send an outbound notification via the Switchboard.
 
-            Forwards to the Switchboard's deliver() tool over the MCP client
-            connection. Blocks until delivered or fails. Returns an error result
-            (not an exception) if the Switchboard is unreachable or the channel
-            is invalid.
+            Forwards a versioned ``notify.v1`` envelope to the Switchboard's
+            ``deliver()`` tool over the MCP client connection. Blocks until
+            delivered or fails. Returns an error result (not an exception) if
+            the Switchboard is unreachable or the payload is invalid.
 
             Parameters
             ----------
             channel:
-                Notification channel — must be 'telegram' or 'email'.
+                Notification channel — currently 'telegram' or 'email'.
             message:
                 The message text to deliver.
             recipient:
-                Optional recipient identifier. If omitted, the Switchboard
-                delivers to the system owner's default for the channel.
+                Optional explicit recipient identifier.
+            subject:
+                Optional channel-specific subject (for example email).
+            intent:
+                Delivery intent. Supported values: ``"send"`` (default) and
+                ``"reply"``.
+            request_context:
+                Optional routed request-context metadata for reply targeting and
+                lineage propagation.
             """
             # Validate message is not empty/whitespace
             if not message or not message.strip():
@@ -1295,6 +1308,12 @@ class ButlerDaemon:
                     ),
                 }
 
+            if intent not in {"send", "reply"}:
+                return {
+                    "status": "error",
+                    "error": "Unsupported notify intent. Supported intents: send, reply",
+                }
+
             client = daemon.switchboard_client
             if client is None:
                 return {
@@ -1302,14 +1321,26 @@ class ButlerDaemon:
                     "error": ("Switchboard is not connected. Cannot deliver notification."),
                 }
 
-            # Build args for Switchboard's deliver() tool
-            deliver_args: dict[str, Any] = {
-                "channel": channel,
-                "message": message,
-                "source_butler": butler_name,
+            notify_request: dict[str, Any] = {
+                "schema_version": "notify.v1",
+                "origin_butler": butler_name,
+                "delivery": {
+                    "intent": intent,
+                    "channel": channel,
+                    "message": message,
+                },
             }
             if recipient is not None:
-                deliver_args["recipient"] = recipient
+                notify_request["delivery"]["recipient"] = recipient
+            if subject is not None:
+                notify_request["delivery"]["subject"] = subject
+            if request_context is not None:
+                notify_request["request_context"] = request_context
+
+            deliver_args: dict[str, Any] = {
+                "source_butler": butler_name,
+                "notify_request": notify_request,
+            }
 
             _NOTIFY_TIMEOUT_S = 30
             try:

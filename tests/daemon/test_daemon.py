@@ -2364,14 +2364,18 @@ class TestNotifyTool:
         assert result["result"] == {"notification_id": "abc-123", "status": "sent"}
 
         # Verify call_tool was called with correct args
-        mock_client.call_tool.assert_awaited_once_with(
-            "deliver",
-            {
-                "channel": "telegram",
-                "message": "Hello world",
-                "source_butler": "test-butler",
-            },
-        )
+        mock_client.call_tool.assert_awaited_once()
+        call_args = mock_client.call_tool.await_args
+        assert call_args.args[0] == "deliver"
+        payload = call_args.args[1]
+        assert payload["source_butler"] == "test-butler"
+        assert payload["notify_request"]["schema_version"] == "notify.v1"
+        assert payload["notify_request"]["origin_butler"] == "test-butler"
+        assert payload["notify_request"]["delivery"] == {
+            "intent": "send",
+            "channel": "telegram",
+            "message": "Hello world",
+        }
 
     async def test_notify_with_recipient(self, butler_dir: Path) -> None:
         """notify with explicit recipient should forward it to Switchboard."""
@@ -2394,15 +2398,15 @@ class TestNotifyTool:
         assert result["status"] == "ok"
 
         # Verify recipient was included in the call
-        mock_client.call_tool.assert_awaited_once_with(
-            "deliver",
-            {
-                "channel": "email",
-                "message": "Weekly report",
-                "recipient": "user@example.com",
-                "source_butler": "test-butler",
-            },
-        )
+        mock_client.call_tool.assert_awaited_once()
+        call_args = mock_client.call_tool.await_args
+        assert call_args.args[0] == "deliver"
+        payload = call_args.args[1]
+        delivery = payload["notify_request"]["delivery"]
+        assert payload["source_butler"] == "test-butler"
+        assert delivery["channel"] == "email"
+        assert delivery["message"] == "Weekly report"
+        assert delivery["recipient"] == "user@example.com"
 
     async def test_notify_without_recipient(self, butler_dir: Path) -> None:
         """notify without recipient should omit it from the Switchboard call."""
@@ -2720,6 +2724,7 @@ class TestRouteExecuteTool:
             == "notify_request.origin_butler must match request_context.source_sender_identity."
         )
         assert result["result"]["notify_response"]["error"]["class"] == "validation_error"
+
     async def test_notify_target_resolution_failure_returns_validation_error(
         self, tmp_path: Path
     ) -> None:
