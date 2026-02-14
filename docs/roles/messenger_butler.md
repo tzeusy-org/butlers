@@ -411,7 +411,68 @@ Operational rule:
 5. Operations hardening:
    - Enforce telemetry/SLI coverage and alerting tied to error-budget burn and delivery stability.
 
-## 20. Non-Goals
+## 20. Channel Egress Ownership Enforcement (Migration Guidance)
+
+### 20.1 Current Enforcement Mechanism
+
+The daemon module loader (`ButlerDaemon._register_module_tools`) enforces
+Messenger-only channel egress ownership at startup. For any butler whose
+`config.name` is not `"messenger"`, the loader:
+
+1. Inspects each module's declared I/O tools (`user_inputs()`,
+   `user_outputs()`, `bot_inputs()`, and `bot_outputs()`) defensively.
+2. Identifies tools matching the channel egress pattern:
+   `^(?:user|bot)_<channel>_<action>$` where `<action>` is a channel
+   send or reply verb (for example `user_telegram_send_message`,
+   `bot_email_reply_to_thread`).
+3. Strips matching tools from the declared set and suppresses their
+   registration via the `_SpanWrappingMCP` filtered-tool mechanism.
+4. Logs the stripped tools at INFO level with a reminder to use `notify.v1`.
+
+Modules loaded by non-messenger butlers (including Switchboard) retain full
+ingress capability; only outbound egress tools are filtered.
+
+### 20.2 Compatibility Shims
+
+| Shim | Behavior | Removal Target |
+|---|---|---|
+| Silent egress stripping | Egress tools on non-messenger modules are silently filtered instead of raising a hard startup error. Modules can still declare egress descriptors without causing crashes. | Phase 2 (hard error) |
+| Ingress-only module loading | Switchboard and other butlers can load channel modules (telegram, email) for ingress connectors without triggering egress enforcement. | Permanent (by design) |
+
+### 20.3 Migration Path
+
+**Phase 1 (current):** Silent filter/strip with INFO-level logging.
+- Non-messenger butlers that previously relied on direct channel send/reply
+  tools will find those tools absent at runtime.
+- Migrate outbound delivery to the `notify.v1` envelope contract
+  (see `docs/roles/base_butler.md` section 11.1).
+
+**Phase 2 (target):** Hard startup error.
+- Once all non-messenger modules have removed egress output descriptors,
+  upgrade enforcement from silent stripping to `ChannelEgressOwnershipError`
+  at startup.
+- Timeline: After all roster butlers pass clean startup with zero stripped
+  tools logged.
+
+**Phase 3 (cleanup):** Remove compatibility shims.
+- Remove the silent-strip code path from `_register_module_tools`.
+- Remove `ChannelEgressOwnershipError` (no longer reachable).
+- Egress output descriptors on non-messenger modules become a schema
+  validation error in module registration.
+
+### 20.4 Developer Checklist for Module Migration
+
+1. Remove channel egress tool descriptors from `user_outputs()` and
+   `bot_outputs()` in non-messenger module classes.
+2. Replace direct `user_telegram_send_message` / `bot_email_send_email`
+   calls with `notify.v1` envelope submissions through the butler's
+   `notify` core tool.
+3. Verify the module loads cleanly with zero "Stripping channel egress
+   tools" log lines on non-messenger butlers.
+4. Update module tests to assert egress tools are absent from the
+   non-messenger tool surface.
+
+## 21. Non-Goals
 - Replacing Switchboard as ingress orchestration owner.
 - Embedding specialist domain decision logic in Messenger.
 - Exposing unrestricted direct provider send tools to non-messenger roles.

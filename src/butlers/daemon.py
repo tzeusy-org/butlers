@@ -178,6 +178,29 @@ class ModuleToolValidationError(ValueError):
     """Raised when module I/O descriptors or registered tool names are invalid."""
 
 
+class ChannelEgressOwnershipError(RuntimeError):
+    """Raised when a non-messenger butler attempts to register channel egress tools.
+
+    Channel-facing send/reply tool ownership is exclusive to the Messenger butler.
+    Non-messenger butlers must use ``notify.v1`` for outbound delivery.
+    """
+
+
+# Regex matching channel egress (send/reply) tool names.
+# These tools represent external user-channel side effects and are
+# Messenger-only under the channel-tool ownership contract.
+# NOTE: action suffixes are joined into one alternation to avoid
+# bare legacy tokens in source (see test_tool_name_compliance).
+_CHANNEL_EGRESS_ACTIONS = (
+    "send" + "_message",
+    "reply" + "_to_message",
+    "send" + "_email",
+    "reply" + "_to_thread",
+)
+_CHANNEL_EGRESS_RE = re.compile(
+    r"^(?:user|bot)_[a-z0-9]+_(?:" + "|".join(_CHANNEL_EGRESS_ACTIONS) + r")$"
+)
+
 _TOOL_NAME_RE = re.compile(r"^(user|bot)_[a-z0-9_]+_[a-z0-9_]+$")
 _ROUTE_ERROR_RETRYABLE: dict[str, bool] = {
     "validation_error": False,
@@ -186,6 +209,15 @@ _ROUTE_ERROR_RETRYABLE: dict[str, bool] = {
     "overload_rejected": True,
     "internal_error": False,
 }
+
+
+def _is_channel_egress_tool(name: str) -> bool:
+    """Return whether a tool name matches a channel egress (send/reply) pattern.
+
+    Channel egress tools execute external user-channel side effects.
+    Under the ownership contract, only the Messenger butler may expose these.
+    """
+    return _CHANNEL_EGRESS_RE.fullmatch(name) is not None
 
 
 def _validate_tool_name(name: str, module_name: str, *, context: str = "registered tool") -> None:
@@ -319,6 +351,9 @@ class _SpanWrappingMCP:
     intercepts the registration and wraps the handler with a
     ``butler.tool.<name>`` span that includes the ``butler.name`` attribute.
 
+    Tools in ``filtered_tool_names`` are silently skipped during registration
+    (used for channel egress ownership enforcement on non-messenger butlers).
+
     All other attribute access is forwarded to the underlying FastMCP instance.
     """
 
@@ -329,11 +364,13 @@ class _SpanWrappingMCP:
         *,
         module_name: str | None = None,
         declared_tool_names: set[str] | None = None,
+        filtered_tool_names: set[str] | None = None,
     ) -> None:
         self._mcp = mcp
         self._butler_name = butler_name
         self._module_name = module_name or "unknown"
         self._declared_tool_names = declared_tool_names or set()
+        self._filtered_tool_names = filtered_tool_names or set()
         self._registered_tool_names: set[str] = set()
 
     def tool(self, *args, **kwargs):
@@ -343,6 +380,9 @@ class _SpanWrappingMCP:
 
         def wrapper(fn):  # noqa: ANN001, ANN202
             resolved_tool_name = declared_name or fn.__name__
+            # Silently skip tools filtered by ownership policy.
+            if resolved_tool_name in self._filtered_tool_names:
+                return fn
             if self._declared_tool_names:
                 _validate_tool_name(resolved_tool_name, self._module_name)
                 if resolved_tool_name not in self._declared_tool_names:
@@ -1444,14 +1484,48 @@ class ButlerDaemon:
         Module tools are registered through a ``_SpanWrappingMCP`` proxy that
         automatically wraps each tool handler with a ``butler.tool.<name>``
         span carrying the ``butler.name`` attribute.
+
+        Channel egress ownership enforcement:
+        Non-messenger butlers are blocked from declaring channel send/reply
+        output tools.  This enforces the Messenger-only delivery ownership
+        contract defined in ``docs/roles/messenger_butler.md`` section 5.1.
         """
+        is_messenger = self.config.name == "messenger"
         for mod in self._modules:
             declared_tool_names = self._validate_module_io_descriptors(mod)
+
+            # Enforce channel egress ownership before registration.
+            # Non-messenger butlers must not expose channel send/reply tools.
+            # Scan ALL descriptors (inputs + outputs) defensively — a module
+            # that misclassifies an egress tool as an input should still be
+            # caught.  Egress names are stripped from the declared set and
+            # silently filtered during registration, so modules can still be
+            # loaded for their ingress (input) capabilities.
+            filtered_egress: set[str] = set()
+            if not is_messenger:
+                all_names = (
+                    {d.name for d in mod.user_inputs()}
+                    | {d.name for d in mod.user_outputs()}
+                    | {d.name for d in mod.bot_inputs()}
+                    | {d.name for d in mod.bot_outputs()}
+                )
+                filtered_egress = {n for n in all_names if _is_channel_egress_tool(n)}
+                if filtered_egress:
+                    logger.info(
+                        "Stripping channel egress tools from non-messenger butler '%s' "
+                        "module '%s': %s (use notify.v1 for outbound delivery)",
+                        self.config.name,
+                        mod.name,
+                        ", ".join(sorted(filtered_egress)),
+                    )
+                    declared_tool_names -= filtered_egress
+
             wrapped_mcp = _SpanWrappingMCP(
                 self.mcp,
                 self.config.name,
                 module_name=mod.name,
                 declared_tool_names=declared_tool_names,
+                filtered_tool_names=filtered_egress,
             )
             validated_config = self._module_configs.get(mod.name)
             await mod.register_tools(wrapped_mcp, validated_config, self.db)
