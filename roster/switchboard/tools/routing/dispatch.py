@@ -566,17 +566,13 @@ async def dispatch_decomposed(
     if plan.mode == "parallel":
         runnable: list[tuple[FanoutSubrequestPlan, dict[str, Any]]] = []
         for subrequest in plan.subrequests:
-            should_run, dependency = _evaluate_dependency_gate(subrequest, outcomes=outcomes)
-            if not should_run:
-                skip_result = _dependency_skip_result(
-                    subrequest,
-                    plan=plan,
-                    dependency=dependency,
-                    reason="parallel mode cannot satisfy declared dependencies at launch time",
-                )
-                results.append(skip_result)
-                outcomes[subrequest.subrequest_id] = "skipped_dependency"
-                continue
+            dependency = {
+                "depends_on": [],
+                "run_if": "always",
+                "required": subrequest.required,
+                "outcome": "not_applicable",
+                "details": [],
+            }
             runnable.append((subrequest, dependency))
 
         dispatched = await asyncio.gather(
