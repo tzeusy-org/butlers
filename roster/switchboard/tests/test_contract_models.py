@@ -15,6 +15,7 @@ from butlers.tools.switchboard.routing.contracts import (
     RouteEnvelopeV1,
     RouteRequestContextV1,
     parse_notify_request,
+    parse_route_envelope,
 )
 
 pytestmark = pytest.mark.unit
@@ -104,7 +105,7 @@ def test_ingest_v1_accepts_email_channel_with_gmail_provider() -> None:
 def test_route_v1_valid_envelope() -> None:
     envelope = RouteEnvelopeV1.model_validate(_valid_route_payload())
     assert envelope.schema_version == "route.v1"
-    assert envelope.request_context.request_id.version == 7
+    assert envelope.input.prompt == "summarize this message"
     assert envelope.subrequest.fanout_mode == "parallel"
 
 
@@ -121,6 +122,13 @@ def test_notify_v1_valid_request() -> None:
     assert request.schema_version == "notify.v1"
     assert request.delivery.intent == "send"
     assert request.delivery.channel == "telegram"
+
+
+def test_route_v1_valid_request_via_contract_parser() -> None:
+    envelope = parse_route_envelope(_valid_route_payload())
+    assert envelope.schema_version == "route.v1"
+    assert envelope.input.prompt == "summarize this message"
+    assert envelope.target.butler == "health"
 
 
 def test_notify_reply_requires_request_context() -> None:
