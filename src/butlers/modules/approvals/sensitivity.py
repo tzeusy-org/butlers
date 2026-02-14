@@ -36,6 +36,14 @@ SENSITIVE_ARG_NAMES: frozenset[str] = frozenset(
         "price",
         "cost",
         "account",
+        "password",
+        "token",
+        "secret",
+        "key",
+        "api_key",
+        "auth",
+        "credential",
+        "credentials",
     }
 )
 

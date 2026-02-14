@@ -13,6 +13,19 @@ from butlers.modules.approvals.module import (
     InvalidTransitionError,
     validate_transition,
 )
+from butlers.modules.approvals.redaction import (
+    REDACTION_MARKER,
+    redact_execution_result,
+    redact_tool_args,
+    should_redact_for_presentation,
+)
+from butlers.modules.approvals.retention import (
+    RetentionPolicy,
+    cleanup_old_actions,
+    cleanup_old_events,
+    cleanup_old_rules,
+    run_retention_cleanup,
+)
 from butlers.modules.approvals.rules import match_rules, match_rules_from_list
 from butlers.modules.approvals.sensitivity import suggest_constraints
 
@@ -22,13 +35,22 @@ __all__ = [
     "ApprovalEventType",
     "ExecutionResult",
     "InvalidTransitionError",
+    "REDACTION_MARKER",
+    "RetentionPolicy",
     "apply_approval_gates",
+    "cleanup_old_actions",
+    "cleanup_old_events",
+    "cleanup_old_rules",
     "execute_approved_action",
     "list_executed_actions",
-    "record_approval_event",
     "match_rules",
     "match_rules_from_list",
     "match_standing_rule",
+    "record_approval_event",
+    "redact_execution_result",
+    "redact_tool_args",
+    "run_retention_cleanup",
+    "should_redact_for_presentation",
     "suggest_constraints",
     "validate_transition",
 ]
