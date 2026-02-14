@@ -192,3 +192,4 @@ Legacy behavior exists today in some modules (for example internal polling loops
 During migration:
 - Preserve existing dedupe identities so request lineage stays stable.
 - Keep fallback paths fail-safe (no dropped accepted events).
+- Use `docs/connectors/connector_ingestion_migration_delta_matrix.md` as the implementation cutover map (current-path mapping, ownership boundaries, and rollback checkpoints).
