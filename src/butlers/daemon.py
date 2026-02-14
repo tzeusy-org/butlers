@@ -1496,6 +1496,11 @@ class ButlerDaemon:
         pool = self.db.pool
         originals = apply_approval_gates(self.mcp, approval_config, pool)
 
+        for mod in self._modules:
+            if mod.name == "approvals" and hasattr(mod, "set_approval_policy"):
+                mod.set_approval_policy(approval_config)
+                break
+
         # Wire the originals into the ApprovalsModule if it's loaded,
         # so the post-approval executor can invoke them directly
         if originals:
@@ -1545,6 +1550,8 @@ class ButlerDaemon:
         return ApprovalConfig(
             enabled=config.enabled,
             default_expiry_hours=config.default_expiry_hours,
+            default_risk_tier=config.default_risk_tier,
+            rule_precedence=config.rule_precedence,
             gated_tools=merged,
         )
 

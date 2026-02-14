@@ -62,7 +62,11 @@ This document is the authoritative module contract for approval-gated actions (f
 ### 4.3 Determinism and isolation
 - Approvals data is local to each butler DB; no cross-butler DB access.
 - Status transitions are explicit and validated.
-- Rule checks use deterministic ordering within the fetched rule set (first match in gate path).
+- Rule checks use deterministic precedence:
+  1. higher constraint specificity
+  2. bounded scope before unbounded
+  3. newer rule before older
+  4. lexical rule id tie-breaker
 
 ### 4.4 Reliability
 - Unknown configured gated tools are skipped during wrapping with warning logs.
@@ -116,10 +120,13 @@ Rule must satisfy all:
 - `use_count < max_uses` when bounded
 - argument constraints match
 
-Current gate matcher behavior:
+Constraint formats:
+- typed constraints (`exact`, `pattern`, `any`) are supported
+- legacy formats remain supported (`"*"` wildcard and plain exact values)
 - empty constraints `{}` match any invocation of the tool
-- exact key/value matching
-- legacy wildcard `"*"` supported per key
+
+Matching precedence is deterministic (`constraint_specificity_desc`, `bounded_scope_desc`,
+`created_at_desc`, `rule_id_asc`) and is surfaced in gate responses.
 
 ### 6.3 Constraint suggestions
 - `suggest_rule_constraints` and `create_rule_from_action` use sensitivity classification.
@@ -158,9 +165,10 @@ Module config is declared under `[modules.approvals]` in `butler.toml`.
 Supported settings:
 - `enabled` (bool)
 - `default_expiry_hours` (int, default `48`)
+- `default_risk_tier` (`low|medium|high|critical`, default `medium`)
 - `[modules.approvals.gated_tools]` mapping:
   - `<tool_name> = {}`
-  - or `<tool_name> = { expiry_hours = <int> }`
+  - or `<tool_name> = { expiry_hours = <int>, risk_tier = <tier> }`
 
 Validation:
 - Unknown gated tool names fail validation against registered tools.
@@ -243,7 +251,7 @@ Approval policy must remain predictable as rule count and tool surface grow.
 Risk model:
 - Tools/actions should be classified into explicit risk tiers (for example `low`, `medium`, `high`, `critical`) by policy metadata.
 - Single-approver semantics apply to all tiers in this product.
-- Standing rules are allowed for all tiers, but higher tiers should require narrower constraints (exact/pattern) and bounded scope (`expires_at`/`max_uses`).
+- Standing rules are allowed for all tiers, but higher tiers (`high`, `critical`) require narrower constraints (at least one `exact` or `pattern`) and bounded scope (`expires_at` or `max_uses`).
 
 Policy precedence:
 - Deny/force-gate policy beats permissive defaults.

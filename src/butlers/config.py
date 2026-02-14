@@ -6,6 +6,7 @@ a validated ButlerConfig dataclass.
 
 from __future__ import annotations
 
+import enum
 import os
 import re
 import tomllib
@@ -58,6 +59,24 @@ class GatedToolConfig:
     """
 
     expiry_hours: int | None = None
+    risk_tier: ApprovalRiskTier | None = None
+
+
+class ApprovalRiskTier(enum.StrEnum):
+    """Risk tier for approval-gated actions."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+DEFAULT_APPROVAL_RULE_PRECEDENCE: tuple[str, ...] = (
+    "constraint_specificity_desc",
+    "bounded_scope_desc",
+    "created_at_desc",
+    "rule_id_asc",
+)
 
 
 @dataclass
@@ -70,6 +89,8 @@ class ApprovalConfig:
 
     enabled: bool
     default_expiry_hours: int = 48
+    default_risk_tier: ApprovalRiskTier = ApprovalRiskTier.MEDIUM
+    rule_precedence: tuple[str, ...] = DEFAULT_APPROVAL_RULE_PRECEDENCE
     gated_tools: dict[str, GatedToolConfig] = field(default_factory=dict)
 
     def get_effective_expiry(self, tool_name: str) -> int:
@@ -92,6 +113,15 @@ class ApprovalConfig:
         if tool_config and tool_config.expiry_hours is not None:
             return tool_config.expiry_hours
         return self.default_expiry_hours
+
+    def get_effective_risk_tier(self, tool_name: str) -> ApprovalRiskTier:
+        """Get the effective risk tier for a tool."""
+        tool_config = self.gated_tools.get(tool_name)
+        if tool_config and tool_config.risk_tier is not None:
+            if isinstance(tool_config.risk_tier, ApprovalRiskTier):
+                return tool_config.risk_tier
+            return ApprovalRiskTier(str(tool_config.risk_tier).lower())
+        return self.default_risk_tier
 
 
 @dataclass
@@ -210,6 +240,16 @@ def parse_approval_config(raw: dict[str, Any] | None) -> ApprovalConfig | None:
 
     enabled = raw.get("enabled", False)
     default_expiry_hours = raw.get("default_expiry_hours", 48)
+    default_risk_tier_raw = raw.get("default_risk_tier", ApprovalRiskTier.MEDIUM.value)
+
+    try:
+        default_risk_tier = ApprovalRiskTier(str(default_risk_tier_raw).lower())
+    except ValueError as exc:
+        tiers = ", ".join(t.value for t in ApprovalRiskTier)
+        raise ConfigError(
+            f"Invalid approvals default_risk_tier: {default_risk_tier_raw!r}. "
+            f"Expected one of: {tiers}"
+        ) from exc
 
     # Parse gated tools
     gated_tools_raw = raw.get("gated_tools", {})
@@ -219,11 +259,27 @@ def parse_approval_config(raw: dict[str, Any] | None) -> ApprovalConfig | None:
         if not isinstance(tool_cfg, dict):
             tool_cfg = {}
         expiry_hours = tool_cfg.get("expiry_hours")
-        gated_tools[tool_name] = GatedToolConfig(expiry_hours=expiry_hours)
+        risk_tier_raw = tool_cfg.get("risk_tier")
+        risk_tier: ApprovalRiskTier | None = None
+        if risk_tier_raw is not None:
+            try:
+                risk_tier = ApprovalRiskTier(str(risk_tier_raw).lower())
+            except ValueError as exc:
+                tiers = ", ".join(t.value for t in ApprovalRiskTier)
+                raise ConfigError(
+                    f"Invalid approvals risk_tier for gated tool {tool_name!r}: "
+                    f"{risk_tier_raw!r}. Expected one of: {tiers}"
+                ) from exc
+
+        gated_tools[tool_name] = GatedToolConfig(
+            expiry_hours=expiry_hours,
+            risk_tier=risk_tier,
+        )
 
     return ApprovalConfig(
         enabled=enabled,
         default_expiry_hours=default_expiry_hours,
+        default_risk_tier=default_risk_tier,
         gated_tools=gated_tools,
     )
 

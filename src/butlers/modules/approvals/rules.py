@@ -26,6 +26,13 @@ from butlers.modules.approvals.models import ApprovalRule
 
 logger = logging.getLogger(__name__)
 
+RULE_MATCH_PRECEDENCE: tuple[str, ...] = (
+    "constraint_specificity_desc",
+    "bounded_scope_desc",
+    "created_at_desc",
+    "rule_id_asc",
+)
+
 
 # ---------------------------------------------------------------------------
 # Constraint evaluation
@@ -98,6 +105,11 @@ def _rule_specificity(arg_constraints: dict[str, Any]) -> int:
     return sum(_constraint_specificity(c) for c in arg_constraints.values())
 
 
+def _is_bounded_rule(rule: ApprovalRule) -> bool:
+    """Return whether the rule has bounded scope via expiry or max uses."""
+    return rule.expires_at is not None or rule.max_uses is not None
+
+
 # ---------------------------------------------------------------------------
 # Rule matching
 # ---------------------------------------------------------------------------
@@ -162,7 +174,8 @@ async def match_rules(
         The most specific matching rule, or None if no rule matches.
     """
     rows = await pool.fetch(
-        "SELECT * FROM approval_rules WHERE tool_name = $1 AND active = true",
+        "SELECT * FROM approval_rules WHERE tool_name = $1 AND active = true "
+        "ORDER BY created_at DESC, id ASC",
         tool_name,
     )
 
@@ -195,7 +208,7 @@ def match_rules_from_list(
         The most specific matching rule, or None if no rule matches.
     """
     now = datetime.now(UTC)
-    candidates: list[tuple[int, ApprovalRule]] = []
+    candidates: list[tuple[int, int, datetime, str, ApprovalRule]] = []
 
     for rule_data in rules:
         # Normalize to dict if needed (asyncpg Record or dict)
@@ -233,11 +246,34 @@ def match_rules_from_list(
             continue
 
         specificity = _rule_specificity(constraints)
-        candidates.append((specificity, approval_rule))
+        bounded_scope = int(_is_bounded_rule(approval_rule))
+        created_at = approval_rule.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        candidates.append(
+            (
+                specificity,
+                bounded_scope,
+                created_at,
+                str(approval_rule.id),
+                approval_rule,
+            )
+        )
 
     if not candidates:
         return None
 
-    # Sort by specificity descending, return the most specific
-    candidates.sort(key=lambda pair: pair[0], reverse=True)
-    return candidates[0][1]
+    # Sort by explicit precedence policy:
+    # 1) higher specificity first
+    # 2) bounded scope before unbounded
+    # 3) newer rules before older
+    # 4) lexical rule ID for deterministic tie-breaking
+    candidates.sort(
+        key=lambda item: (
+            -item[0],
+            -item[1],
+            -item[2].timestamp(),
+            item[3],
+        )
+    )
+    return candidates[0][4]

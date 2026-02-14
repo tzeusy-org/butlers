@@ -407,3 +407,8 @@ make test-qg
 ### Approvals immutable event-log contract
 - Approvals migrations include `approvals_002` with append-only `approval_events` and a trigger (`trg_approval_events_immutable`) that rejects `UPDATE`/`DELETE`; event rows must be written via inserts only.
 - Canonical approval event types are `action_queued`, `action_auto_approved`, `action_approved`, `action_rejected`, `action_expired`, `action_execution_succeeded`, `action_execution_failed`, `rule_created`, and `rule_revoked`.
+
+### Approvals risk-tier + precedence runtime contract
+- `src/butlers/config.py::ApprovalConfig` now includes `default_risk_tier` plus per-tool `GatedToolConfig.risk_tier`; `parse_approval_config` validates both against `ApprovalRiskTier` (`low|medium|high|critical`).
+- Standing rule matching precedence is deterministic in `src/butlers/modules/approvals/rules.py` (`constraint_specificity_desc`, `bounded_scope_desc`, `created_at_desc`, `rule_id_asc`); gate responses include `risk_tier` and `rule_precedence`.
+- High-risk tiers (`high`, `critical`) enforce constrained standing rules in `src/butlers/modules/approvals/module.py`: at least one exact/pattern arg constraint and bounded scope (`expires_at` or `max_uses`); `create_rule_from_action` and approve+create-rule paths auto-bound high-risk rules with `max_uses=1`.

@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import BaseModel, ValidationError
 
+from butlers.config import ApprovalConfig, ApprovalRiskTier, GatedToolConfig
 from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.module import (
     _VALID_TRANSITIONS,
@@ -184,15 +185,33 @@ class MockDB:
 
         elif "INSERT INTO approval_rules" in query:
             rule_id = args[0]
-            self.approval_rules[rule_id] = {
+            row = {
                 "id": args[0],
                 "tool_name": args[1],
                 "arg_constraints": args[2],
                 "description": args[3],
-                "created_from": args[4],
-                "created_at": args[5],
-                "active": args[6],
+                "created_from": None,
+                "created_at": None,
+                "expires_at": None,
+                "max_uses": None,
+                "active": True,
             }
+            if "expires_at" in query:
+                row["created_from"] = None
+                row["created_at"] = args[4]
+                row["expires_at"] = args[5]
+                row["max_uses"] = args[6]
+                row["active"] = args[7]
+            elif len(args) == 8:
+                row["created_from"] = args[4]
+                row["created_at"] = args[5]
+                row["max_uses"] = args[6]
+                row["active"] = args[7]
+            elif len(args) == 7:
+                row["created_from"] = args[4]
+                row["created_at"] = args[5]
+                row["active"] = args[6]
+            self.approval_rules[rule_id] = row
         elif "INSERT INTO approval_events" in query:
             self.approval_events.append(
                 {
@@ -675,6 +694,29 @@ class TestApproveAction:
 
         # Verify rule was stored in DB
         assert len(mock_db.approval_rules) == 1
+
+    async def test_approve_with_create_rule_high_risk_is_bounded(
+        self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        module.set_approval_policy(
+            ApprovalConfig(
+                enabled=True,
+                gated_tools={"wire_transfer": GatedToolConfig(risk_tier=ApprovalRiskTier.HIGH)},
+            )
+        )
+
+        action_id = uuid.uuid4()
+        mock_db._insert_action(
+            id=action_id,
+            tool_name="wire_transfer",
+            tool_args={"to_account": "acct_123", "amount": 10.0},
+            status="pending",
+        )
+
+        result = await module._approve_action(str(action_id), create_rule=True, actor=human_actor)
+        rule = result["created_rule"]
+        assert rule["max_uses"] == 1
 
     async def test_approve_nonexistent_action(
         self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]

@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 
 from butlers.config import (
+    DEFAULT_APPROVAL_RULE_PRECEDENCE,
     ApprovalConfig,
+    ApprovalRiskTier,
     ButlerConfig,
     ConfigError,
     GatedToolConfig,
@@ -666,6 +668,7 @@ class TestApprovalConfigDataclass:
         """GatedToolConfig with no override uses None."""
         gtc = GatedToolConfig()
         assert gtc.expiry_hours is None
+        assert gtc.risk_tier is None
 
     def test_gated_tool_config_with_override(self):
         """GatedToolConfig with expiry override."""
@@ -677,6 +680,8 @@ class TestApprovalConfigDataclass:
         ac = ApprovalConfig(enabled=True)
         assert ac.enabled is True
         assert ac.default_expiry_hours == 48
+        assert ac.default_risk_tier == ApprovalRiskTier.MEDIUM
+        assert ac.rule_precedence == DEFAULT_APPROVAL_RULE_PRECEDENCE
         assert ac.gated_tools == {}
 
     def test_approval_config_custom_default_expiry(self):
@@ -701,6 +706,7 @@ class TestApprovalConfigDataclass:
         ac = parse_approval_config(raw)
         assert ac.enabled is True
         assert ac.default_expiry_hours == 48
+        assert ac.default_risk_tier == ApprovalRiskTier.MEDIUM
         assert ac.gated_tools == {}
 
     def test_parse_approval_config_full(self):
@@ -708,23 +714,37 @@ class TestApprovalConfigDataclass:
         raw = {
             "enabled": True,
             "default_expiry_hours": 72,
+            "default_risk_tier": "low",
             "gated_tools": {
-                "email_send": {},
-                "purchase_create": {"expiry_hours": 24},
+                "email_send": {"risk_tier": "high"},
+                "purchase_create": {"expiry_hours": 24, "risk_tier": "critical"},
             },
         }
         ac = parse_approval_config(raw)
         assert ac.enabled is True
         assert ac.default_expiry_hours == 72
+        assert ac.default_risk_tier == ApprovalRiskTier.LOW
         assert len(ac.gated_tools) == 2
         assert ac.gated_tools["email_send"].expiry_hours is None
+        assert ac.gated_tools["email_send"].risk_tier == ApprovalRiskTier.HIGH
         assert ac.gated_tools["purchase_create"].expiry_hours == 24
+        assert ac.gated_tools["purchase_create"].risk_tier == ApprovalRiskTier.CRITICAL
 
     def test_parse_approval_config_disabled(self):
         """Parse disabled approval config."""
         raw = {"enabled": False}
         ac = parse_approval_config(raw)
         assert ac.enabled is False
+
+    def test_parse_approval_config_invalid_default_risk_tier(self):
+        raw = {"enabled": True, "default_risk_tier": "veryhigh"}
+        with pytest.raises(ConfigError, match="default_risk_tier"):
+            parse_approval_config(raw)
+
+    def test_parse_approval_config_invalid_tool_risk_tier(self):
+        raw = {"enabled": True, "gated_tools": {"email_send": {"risk_tier": "veryhigh"}}}
+        with pytest.raises(ConfigError, match="risk_tier"):
+            parse_approval_config(raw)
 
     def test_parse_approval_config_none_returns_none(self):
         """parse_approval_config with None returns None."""
@@ -752,6 +772,18 @@ class TestApprovalConfigDataclass:
         """Get effective expiry for an unknown tool returns default."""
         ac = ApprovalConfig(enabled=True, default_expiry_hours=48)
         assert ac.get_effective_expiry("unknown_tool") == 48
+
+    def test_approval_config_get_effective_risk_tier_default(self):
+        ac = ApprovalConfig(enabled=True, default_risk_tier=ApprovalRiskTier.LOW)
+        assert ac.get_effective_risk_tier("unknown_tool") == ApprovalRiskTier.LOW
+
+    def test_approval_config_get_effective_risk_tier_tool_override(self):
+        ac = ApprovalConfig(
+            enabled=True,
+            default_risk_tier=ApprovalRiskTier.MEDIUM,
+            gated_tools={"purchase_create": GatedToolConfig(risk_tier=ApprovalRiskTier.CRITICAL)},
+        )
+        assert ac.get_effective_risk_tier("purchase_create") == ApprovalRiskTier.CRITICAL
 
 
 # ---------------------------------------------------------------------------

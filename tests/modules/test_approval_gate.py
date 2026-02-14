@@ -19,7 +19,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from butlers.config import ApprovalConfig, GatedToolConfig
+from butlers.config import (
+    DEFAULT_APPROVAL_RULE_PRECEDENCE,
+    ApprovalConfig,
+    ApprovalRiskTier,
+    GatedToolConfig,
+)
 from butlers.modules.approvals.gate import (
     apply_approval_gates,
     match_standing_rule,
@@ -380,6 +385,67 @@ class TestMatchStandingRule:
         result = match_standing_rule("email_send", {}, rules)
         assert result is None
 
+    def test_precedence_prefers_more_specific_rule(self):
+        broad_rule = {
+            "id": uuid.uuid4(),
+            "tool_name": "email_send",
+            "arg_constraints": json.dumps({"to": "*"}),
+            "active": True,
+            "created_at": datetime.now(UTC),
+            "expires_at": None,
+            "max_uses": None,
+            "use_count": 0,
+        }
+        exact_rule = {
+            "id": uuid.uuid4(),
+            "tool_name": "email_send",
+            "arg_constraints": json.dumps({"to": "alice@example.com"}),
+            "active": True,
+            "created_at": datetime.now(UTC),
+            "expires_at": None,
+            "max_uses": None,
+            "use_count": 0,
+        }
+
+        result = match_standing_rule(
+            "email_send",
+            {"to": "alice@example.com"},
+            [broad_rule, exact_rule],
+        )
+        assert result is not None
+        assert result["id"] == exact_rule["id"]
+
+    def test_precedence_prefers_bounded_rule_when_specificity_ties(self):
+        now = datetime.now(UTC)
+        unbounded = {
+            "id": uuid.uuid4(),
+            "tool_name": "email_send",
+            "arg_constraints": json.dumps({"to": "alice@example.com"}),
+            "active": True,
+            "created_at": now,
+            "expires_at": None,
+            "max_uses": None,
+            "use_count": 0,
+        }
+        bounded = {
+            "id": uuid.uuid4(),
+            "tool_name": "email_send",
+            "arg_constraints": json.dumps({"to": "alice@example.com"}),
+            "active": True,
+            "created_at": now,
+            "expires_at": now + timedelta(hours=1),
+            "max_uses": None,
+            "use_count": 0,
+        }
+
+        result = match_standing_rule(
+            "email_send",
+            {"to": "alice@example.com"},
+            [unbounded, bounded],
+        )
+        assert result is not None
+        assert result["id"] == bounded["id"]
+
 
 # ---------------------------------------------------------------------------
 # Tests: apply_approval_gates
@@ -455,8 +521,30 @@ class TestApplyApprovalGates:
         assert result["status"] == "pending_approval"
         assert "action_id" in result
         assert "message" in result
+        assert result["risk_tier"] == "medium"
+        assert tuple(result["rule_precedence"]) == DEFAULT_APPROVAL_RULE_PRECEDENCE
         # Verify UUID format
         uuid.UUID(result["action_id"])
+
+    async def test_wrapped_tool_uses_tool_risk_tier_override(self):
+        tools: dict[str, Any] = {}
+        mock_mcp = _make_mock_mcp(tools)
+        pool = MockPool()
+
+        @mock_mcp.tool()
+        async def wire_transfer(to_account: str, amount: float) -> dict:
+            return {"status": "submitted"}
+
+        config = _make_approval_config(
+            gated_tools={"wire_transfer": GatedToolConfig(risk_tier=ApprovalRiskTier.HIGH)},
+        )
+
+        apply_approval_gates(mock_mcp, config, pool)
+        wrapper = mock_mcp._tool_manager.get_tools()["wire_transfer"].fn
+        result = await wrapper(to_account="acct_123", amount=10.0)
+
+        assert result["status"] == "pending_approval"
+        assert result["risk_tier"] == "high"
 
     async def test_wrapped_tool_persists_pending_action(self):
         """Calling a wrapped gated tool should persist a PendingAction to DB."""

@@ -29,6 +29,7 @@ from typing import Any
 from fastmcp.server.dependencies import AccessToken, get_access_token
 from pydantic import BaseModel
 
+from butlers.config import ApprovalConfig, ApprovalRiskTier
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.executor import (
@@ -39,6 +40,9 @@ from butlers.modules.approvals.sensitivity import suggest_constraints
 from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
+_HIGH_RISK_TIERS: frozenset[ApprovalRiskTier] = frozenset(
+    {ApprovalRiskTier.HIGH, ApprovalRiskTier.CRITICAL}
+)
 
 # Valid status transitions: source -> set of valid targets
 _VALID_TRANSITIONS: dict[ActionStatus, set[ActionStatus]] = {
@@ -193,6 +197,7 @@ class ApprovalsModule(Module):
         self._config: ApprovalsConfig = ApprovalsConfig()
         self._db: Any = None
         self._tool_executor: ToolExecutor | None = None
+        self._approval_policy: ApprovalConfig | None = None
 
     @property
     def name(self) -> str:
@@ -218,6 +223,58 @@ class ApprovalsModule(Module):
         skip execution if no executor is set.
         """
         self._tool_executor = executor
+
+    def set_approval_policy(self, policy: ApprovalConfig | None) -> None:
+        """Set parsed approval policy metadata used for rule safety enforcement."""
+        self._approval_policy = policy
+
+    def _risk_tier_for_tool(self, tool_name: str) -> ApprovalRiskTier:
+        """Resolve effective risk tier for a tool."""
+        if self._approval_policy is None:
+            return ApprovalRiskTier.MEDIUM
+        return self._approval_policy.get_effective_risk_tier(tool_name)
+
+    @staticmethod
+    def _has_narrow_constraints(arg_constraints: dict[str, Any]) -> bool:
+        """Return whether any constraint is exact/pattern (or legacy exact)."""
+        if not arg_constraints:
+            return False
+
+        for constraint in arg_constraints.values():
+            if isinstance(constraint, dict):
+                ctype = str(constraint.get("type", "")).lower()
+                if ctype in {"exact", "pattern"}:
+                    return True
+                continue
+            if constraint != "*":
+                return True
+        return False
+
+    def _validate_rule_constraints(
+        self,
+        *,
+        tool_name: str,
+        arg_constraints: dict[str, Any],
+        expires_at: datetime | None,
+        max_uses: int | None,
+    ) -> str | None:
+        """Validate rule safety constraints against configured risk tier."""
+        if max_uses is not None and max_uses <= 0:
+            return "max_uses must be greater than 0"
+
+        risk_tier = self._risk_tier_for_tool(tool_name)
+        if risk_tier in _HIGH_RISK_TIERS:
+            if not self._has_narrow_constraints(arg_constraints):
+                return (
+                    f"High-risk tool '{tool_name}' requires at least one exact or pattern "
+                    "arg constraint"
+                )
+            if expires_at is None and max_uses is None:
+                return (
+                    f"High-risk tool '{tool_name}' requires bounded scope via "
+                    "'expires_at' or 'max_uses'"
+                )
+        return None
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         """Register all 13 approval MCP tools (7 queue + 6 rules CRUD)."""
@@ -510,6 +567,21 @@ class ApprovalsModule(Module):
         # Optionally create an approval rule from this action
         rule_dict: dict[str, Any] | None = None
         if create_rule:
+            max_uses = 1 if self._risk_tier_for_tool(action.tool_name) in _HIGH_RISK_TIERS else None
+            constraint_error = self._validate_rule_constraints(
+                tool_name=action.tool_name,
+                arg_constraints=action.tool_args,
+                expires_at=None,
+                max_uses=max_uses,
+            )
+            if constraint_error is not None:
+                final_row = await self._db.fetchrow(
+                    "SELECT * FROM pending_actions WHERE id = $1", parsed_id
+                )
+                result = PendingAction.from_row(final_row).to_dict()
+                result["created_rule_error"] = constraint_error
+                return result
+
             rule_id = uuid.uuid4()
             rule = ApprovalRule(
                 id=rule_id,
@@ -518,18 +590,20 @@ class ApprovalsModule(Module):
                 description=f"Auto-created from approved action {action_id}",
                 created_from=parsed_id,
                 created_at=now,
+                max_uses=max_uses,
             )
             await self._db.execute(
                 "INSERT INTO approval_rules "
                 "(id, tool_name, arg_constraints, description, created_from, created_at, "
-                "active) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                "max_uses, active) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 rule.id,
                 rule.tool_name,
                 json.dumps(rule.arg_constraints),
                 rule.description,
                 rule.created_from,
                 rule.created_at,
+                rule.max_uses,
                 rule.active,
             )
             await record_approval_event(
@@ -711,6 +785,15 @@ class ApprovalsModule(Module):
             except ValueError:
                 return {"error": f"Invalid expires_at format: {expires_at}"}
 
+        constraint_error = self._validate_rule_constraints(
+            tool_name=tool_name,
+            arg_constraints=arg_constraints,
+            expires_at=parsed_expires,
+            max_uses=max_uses,
+        )
+        if constraint_error is not None:
+            return {"error": constraint_error}
+
         rule = ApprovalRule(
             id=rule_id,
             tool_name=tool_name,
@@ -781,6 +864,17 @@ class ApprovalsModule(Module):
             for key, override in constraint_overrides.items():
                 suggested[key] = override
 
+        risk_tier = self._risk_tier_for_tool(action.tool_name)
+        max_uses = 1 if risk_tier in _HIGH_RISK_TIERS else None
+        constraint_error = self._validate_rule_constraints(
+            tool_name=action.tool_name,
+            arg_constraints=suggested,
+            expires_at=None,
+            max_uses=max_uses,
+        )
+        if constraint_error is not None:
+            return {"error": constraint_error}
+
         rule_id = uuid.uuid4()
         now = datetime.now(UTC)
 
@@ -791,18 +885,21 @@ class ApprovalsModule(Module):
             description=f"Rule created from action {action_id}",
             created_from=parsed_id,
             created_at=now,
+            max_uses=max_uses,
         )
 
         await self._db.execute(
             "INSERT INTO approval_rules "
-            "(id, tool_name, arg_constraints, description, created_from, created_at, active) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "(id, tool_name, arg_constraints, description, created_from, created_at, "
+            "max_uses, active) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             rule.id,
             rule.tool_name,
             json.dumps(rule.arg_constraints),
             rule.description,
             rule.created_from,
             rule.created_at,
+            rule.max_uses,
             rule.active,
         )
         await record_approval_event(

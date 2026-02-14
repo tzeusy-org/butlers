@@ -21,10 +21,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from butlers.config import ApprovalConfig
+from butlers.config import ApprovalConfig, ApprovalRiskTier
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import ActionStatus
+from butlers.modules.approvals.rules import match_rules_from_list
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +33,15 @@ logger = logging.getLogger(__name__)
 def match_standing_rule(
     tool_name: str,
     tool_args: dict[str, Any],
-    rules: list[dict[str, Any]],
+    rules: list[Any],
 ) -> dict[str, Any] | None:
     """Check whether any standing approval rule matches this invocation.
 
-    Rules match when:
-    - ``tool_name`` matches the rule's tool_name
-    - The rule is active and not expired (``expires_at`` is None or in the future)
-    - The rule's use_count < max_uses (or max_uses is None for unlimited)
-    - Every key/value in ``arg_constraints`` matches the corresponding tool arg.
-      The special value ``"*"`` matches any value for that key.
-      Empty ``arg_constraints`` ({}) matches all invocations of that tool.
+    Uses the shared standing-rule matcher so precedence is deterministic:
+    1) higher constraint specificity
+    2) bounded scope before unbounded
+    3) newer rules before older
+    4) lexical rule id tie-breaker
 
     Parameters
     ----------
@@ -57,63 +56,30 @@ def match_standing_rule(
     Returns
     -------
     dict | None
-        The first matching rule dict, or None if no rule matches.
+        The selected matching rule dict, or None if no rule matches.
     """
     now = datetime.now(UTC)
-
+    normalized_rules: list[dict[str, Any]] = []
     for rule in rules:
-        # Tool name must match (should already be filtered, but be safe)
-        if rule["tool_name"] != tool_name:
-            continue
+        normalized = dict(rule) if not isinstance(rule, dict) else dict(rule)
+        normalized.setdefault("description", "")
+        normalized.setdefault("created_from", None)
+        normalized.setdefault("created_at", now)
+        normalized.setdefault("arg_constraints", "{}")
+        normalized.setdefault("active", True)
+        normalized.setdefault("use_count", 0)
+        normalized_rules.append(normalized)
+    selected = match_rules_from_list(tool_name, tool_args, normalized_rules)
+    if selected is None:
+        return None
 
-        # Check active flag
-        if not rule.get("active", True):
-            continue
-
-        # Check expiry
-        expires_at = rule.get("expires_at")
-        if expires_at is not None and expires_at < now:
-            continue
-
-        # Check max_uses
-        max_uses = rule.get("max_uses")
-        use_count = rule.get("use_count", 0)
-        if max_uses is not None and use_count >= max_uses:
-            continue
-
-        # Check arg constraints
-        constraints_raw = rule.get("arg_constraints", "{}")
-        if isinstance(constraints_raw, str):
-            constraints = json.loads(constraints_raw)
-        else:
-            constraints = constraints_raw
-
-        if _args_match_constraints(tool_args, constraints):
+    selected_id = str(selected.id)
+    for rule in normalized_rules:
+        if str(rule.get("id")) == selected_id:
             return rule
 
+    logger.warning("Standing rule selected but not found in source rows: %s", selected_id)
     return None
-
-
-def _args_match_constraints(
-    tool_args: dict[str, Any],
-    constraints: dict[str, Any],
-) -> bool:
-    """Check whether tool_args satisfy all constraint entries.
-
-    Empty constraints ({}) match any args. The wildcard value ``"*"``
-    matches any value for that key.
-    """
-    for key, expected in constraints.items():
-        actual = tool_args.get(key)
-        # Wildcard: any value is fine as long as the key exists
-        if expected == "*":
-            if key not in tool_args:
-                return False
-            continue
-        # Exact match
-        if actual != expected:
-            return False
-    return True
 
 
 def apply_approval_gates(
@@ -169,6 +135,7 @@ def apply_approval_gates(
 
         # Compute effective expiry for this tool
         effective_expiry_hours = approval_config.get_effective_expiry(tool_name)
+        effective_risk_tier = approval_config.get_effective_risk_tier(tool_name)
 
         # Create the wrapper
         wrapper = _make_gate_wrapper(
@@ -176,6 +143,8 @@ def apply_approval_gates(
             original_fn=original_fn,
             pool=pool,
             expiry_hours=effective_expiry_hours,
+            risk_tier=effective_risk_tier,
+            rule_precedence=approval_config.rule_precedence,
         )
 
         # Replace the tool's handler on the MCP server
@@ -189,6 +158,8 @@ def _make_gate_wrapper(
     original_fn: Any,
     pool: Any,
     expiry_hours: int,
+    risk_tier: ApprovalRiskTier,
+    rule_precedence: tuple[str, ...],
 ) -> Any:
     """Create an async wrapper function that intercepts gated tool calls.
 
@@ -211,7 +182,8 @@ def _make_gate_wrapper(
 
         # Check standing rules
         rules = await pool.fetch(
-            "SELECT * FROM approval_rules WHERE tool_name = $1 AND active = true",
+            "SELECT * FROM approval_rules WHERE tool_name = $1 AND active = true "
+            "ORDER BY created_at DESC, id ASC",
             tool_name,
         )
 
@@ -269,10 +241,11 @@ def _make_gate_wrapper(
             )
 
             logger.info(
-                "Auto-approved gated tool %r (action=%s, rule=%s)",
+                "Auto-approved gated tool %r (action=%s, rule=%s, risk_tier=%s)",
                 tool_name,
                 action_id,
                 rule_id,
+                risk_tier.value,
             )
 
             if exec_result.success:
@@ -305,15 +278,18 @@ def _make_gate_wrapper(
         )
 
         logger.info(
-            "Parked gated tool %r for approval (action=%s)",
+            "Parked gated tool %r for approval (action=%s, risk_tier=%s)",
             tool_name,
             action_id,
+            risk_tier.value,
         )
 
         return {
             "status": "pending_approval",
             "action_id": str(action_id),
             "message": f"Action queued for approval: {agent_summary}",
+            "risk_tier": risk_tier.value,
+            "rule_precedence": list(rule_precedence),
         }
 
     # Preserve the original function's name for introspection
