@@ -11,7 +11,9 @@ from __future__ import annotations
 import abc
 import asyncio
 import json
+import logging
 import os
+from collections.abc import Callable, Coroutine
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any, Literal
 from urllib.parse import quote
@@ -21,6 +23,15 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from butlers.modules.base import Module
+
+logger = logging.getLogger(__name__)
+
+# Type alias for the approval enqueue callback.
+# Receives (tool_name, tool_args, agent_summary) and returns the action_id string.
+ApprovalEnqueuer = Callable[
+    [str, dict[str, Any], str],
+    Coroutine[Any, Any, str],
+]
 
 GOOGLE_CALENDAR_CREDENTIALS_ENV = "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -1214,6 +1225,7 @@ class CalendarModule(Module):
         self._config: CalendarConfig | None = None
         self._provider: CalendarProvider | None = None
         self._butler_name: str = DEFAULT_BUTLER_NAME
+        self._approval_enqueuer: ApprovalEnqueuer | None = None
 
     @property
     def name(self) -> str:
@@ -1233,6 +1245,20 @@ class CalendarModule(Module):
 
     def migration_revisions(self) -> str | None:
         return None
+
+    def set_approval_enqueuer(self, enqueuer: ApprovalEnqueuer) -> None:
+        """Set the callback used to enqueue overlap override requests for approval.
+
+        The enqueuer receives (tool_name, tool_args, agent_summary) and returns
+        an action_id string.  When set, overlap overrides produce
+        ``status=approval_required`` instead of writing through immediately.
+        """
+        self._approval_enqueuer = enqueuer
+
+    @property
+    def approvals_enabled(self) -> bool:
+        """Whether the approvals integration is active for this module."""
+        return self._approval_enqueuer is not None
 
     @staticmethod
     def _coerce_config(config: Any) -> CalendarConfig:
@@ -1335,6 +1361,30 @@ class CalendarModule(Module):
                     "conflicts": conflict_result["conflicts"],
                     "suggested_slots": conflict_result["suggested_slots"],
                 }
+
+            # Gate overlap override with conditional approval when configured.
+            if conflict_result["status"] == "allow_overlap":
+                approval_result = await module._gate_overlap_approval(
+                    tool_name="calendar_create_event",
+                    tool_args={
+                        "title": title,
+                        "start_at": start_at.isoformat(),
+                        "end_at": end_at.isoformat(),
+                        "timezone": timezone,
+                        "description": description,
+                        "location": location,
+                        "attendees": attendees or [],
+                        "recurrence_rule": recurrence_rule,
+                        "color_id": color_id,
+                        "calendar_id": calendar_id,
+                        "conflict_policy": resolved_conflict_policy,
+                    },
+                    conflicts=conflict_result["conflicts"],
+                    provider_name=provider.name,
+                    resolved_calendar_id=resolved_calendar_id,
+                )
+                if approval_result is not None:
+                    return approval_result
 
             event = await provider.create_event(
                 calendar_id=resolved_calendar_id,
@@ -1443,6 +1493,32 @@ class CalendarModule(Module):
                         "conflicts": conflict_result["conflicts"],
                         "suggested_slots": conflict_result["suggested_slots"],
                     }
+
+                # Gate overlap override with conditional approval when configured.
+                if conflict_result["status"] == "allow_overlap":
+                    approval_result = await module._gate_overlap_approval(
+                        tool_name="calendar_update_event",
+                        tool_args={
+                            "event_id": event_id,
+                            "title": title,
+                            "start_at": start_at.isoformat() if start_at else None,
+                            "end_at": end_at.isoformat() if end_at else None,
+                            "timezone": timezone,
+                            "description": description,
+                            "location": location,
+                            "attendees": attendees,
+                            "recurrence_rule": recurrence_rule,
+                            "recurrence_scope": recurrence_scope,
+                            "color_id": color_id,
+                            "calendar_id": calendar_id,
+                            "conflict_policy": resolved_conflict_policy,
+                        },
+                        conflicts=conflict_result["conflicts"],
+                        provider_name=provider.name,
+                        resolved_calendar_id=resolved_calendar_id,
+                    )
+                    if approval_result is not None:
+                        return approval_result
 
             update_patch = CalendarEventUpdate(
                 title=update_title,
@@ -1553,6 +1629,69 @@ class CalendarModule(Module):
             supported = ", ".join(sorted(VALID_CONFLICT_POLICIES))
             raise ValueError(f"conflict_policy must be one of: {supported}")
         return normalized  # type: ignore[return-value]
+
+    async def _gate_overlap_approval(
+        self,
+        *,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        conflicts: list[dict[str, str]],
+        provider_name: str,
+        resolved_calendar_id: str,
+    ) -> dict[str, Any] | None:
+        """Gate an overlap override through the approval queue when configured.
+
+        Returns a structured ``approval_required`` response when approval is
+        needed, or ``None`` to let the caller proceed with the write.
+
+        When ``require_approval_for_overlap`` is False the method always returns
+        ``None`` (write-through).  When it is True and the approval enqueuer is
+        not wired (approvals module disabled), returns explicit fallback
+        guidance instead.
+        """
+        config = self._require_config()
+        if not config.conflicts.require_approval_for_overlap:
+            return None
+
+        if self._approval_enqueuer is None:
+            # Approvals module is not enabled -- return fallback guidance.
+            return {
+                "status": "approval_unavailable",
+                "policy": "allow_overlap",
+                "provider": provider_name,
+                "calendar_id": resolved_calendar_id,
+                "conflicts": conflicts,
+                "message": (
+                    "Overlap override requires approval but the approvals module "
+                    "is not enabled on this butler. Enable the approvals module or "
+                    "set require_approval_for_overlap=false in calendar config to "
+                    "allow direct overlap writes."
+                ),
+            }
+
+        agent_summary = (
+            f"Calendar overlap override: {tool_name} with {len(conflicts)} "
+            f"conflicting event(s) on calendar '{resolved_calendar_id}'"
+        )
+        action_id = await self._approval_enqueuer(tool_name, tool_args, agent_summary)
+        logger.info(
+            "Overlap override queued for approval (action=%s, tool=%s, conflicts=%d)",
+            action_id,
+            tool_name,
+            len(conflicts),
+        )
+        return {
+            "status": "approval_required",
+            "action_id": action_id,
+            "policy": "allow_overlap",
+            "provider": provider_name,
+            "calendar_id": resolved_calendar_id,
+            "conflicts": conflicts,
+            "message": (
+                f"Overlap detected with {len(conflicts)} existing event(s). "
+                "The write has been queued for approval before execution."
+            ),
+        }
 
     async def _check_conflicts(
         self,

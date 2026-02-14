@@ -773,7 +773,11 @@ class TestCalendarWriteTools:
 
         await mod.register_tools(
             mcp=mcp,
-            config={"provider": "google", "calendar_id": "primary"},
+            config={
+                "provider": "google",
+                "calendar_id": "primary",
+                "conflicts": {"policy": "suggest", "require_approval_for_overlap": False},
+            },
             db=SimpleNamespace(db_name="butler_general"),
         )
 
@@ -789,6 +793,149 @@ class TestCalendarWriteTools:
         assert result["policy"] == "allow_overlap"
         assert result["conflicts"][0]["event_id"] == "busy-1"
         assert result["suggested_slots"] == []
+
+    async def test_create_conflict_allow_overlap_requires_approval_when_enqueuer_set(self):
+        """allow_overlap + require_approval_for_overlap=True + enqueuer wired
+        returns approval_required and does NOT write."""
+        created = CalendarEvent(
+            event_id="evt-created",
+            title="BUTLER: Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="general",
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=created, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        enqueue_calls: list[tuple[str, dict, str]] = []
+
+        async def _mock_enqueuer(tool_name: str, tool_args: dict, agent_summary: str) -> str:
+            enqueue_calls.append((tool_name, tool_args, agent_summary))
+            return "action-abc"
+
+        mod.set_approval_enqueuer(_mock_enqueuer)
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            conflict_policy="allow_overlap",
+        )
+
+        assert provider.create_calls == []
+        assert result["status"] == "approval_required"
+        assert result["action_id"] == "action-abc"
+        assert result["policy"] == "allow_overlap"
+        assert len(enqueue_calls) == 1
+        assert enqueue_calls[0][0] == "calendar_create_event"
+
+    async def test_create_conflict_allow_overlap_returns_fallback_when_approvals_disabled(self):
+        """allow_overlap + require_approval_for_overlap=True + no enqueuer
+        returns approval_unavailable guidance."""
+        created = CalendarEvent(
+            event_id="evt-created",
+            title="BUTLER: Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="general",
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=created, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            conflict_policy="allow_overlap",
+        )
+
+        assert provider.create_calls == []
+        assert result["status"] == "approval_unavailable"
+        assert "approvals module is not enabled" in result["message"]
+
+    async def test_update_conflict_allow_overlap_requires_approval_when_enqueuer_set(self):
+        """Update with time change + allow_overlap + enqueuer wired returns
+        approval_required and does NOT update."""
+        existing = CalendarEvent(
+            event_id="evt-human",
+            title="Discuss roadmap",
+            start_at=datetime(2026, 2, 21, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=False,
+            butler_name=None,
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 21, 10, 30, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 30, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=existing, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=None,
+        )
+
+        enqueue_calls: list[tuple[str, dict, str]] = []
+
+        async def _mock_enqueuer(tool_name: str, tool_args: dict, agent_summary: str) -> str:
+            enqueue_calls.append((tool_name, tool_args, agent_summary))
+            return "action-def"
+
+        mod.set_approval_enqueuer(_mock_enqueuer)
+
+        result = await mcp.tools["calendar_update_event"](
+            event_id="evt-human",
+            start_at=datetime(2026, 2, 21, 10, 30, tzinfo=UTC),
+            conflict_policy="allow_overlap",
+        )
+
+        assert provider.update_calls == []
+        assert result["status"] == "approval_required"
+        assert result["action_id"] == "action-def"
+        assert len(enqueue_calls) == 1
+        assert enqueue_calls[0][0] == "calendar_update_event"
 
     async def test_update_time_window_change_checks_conflicts(self):
         existing = CalendarEvent(
@@ -1451,3 +1598,409 @@ class TestEventPayloadNormalization:
         )
 
         assert normalized.recurrence == ["RRULE:FREQ=WEEKLY;INTERVAL=1"]
+
+
+class TestCalendarOverlapApprovalGate:
+    """Verify overlap override gating with conditional approvals."""
+
+    async def test_create_allow_overlap_returns_approval_required_when_enqueuer_set(self):
+        """allow_overlap + require_approval_for_overlap=True + enqueuer set
+        should return approval_required and NOT write the event."""
+        created = CalendarEvent(
+            event_id="evt-created",
+            title="BUTLER: Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="general",
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=created, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "provider": "google",
+                "calendar_id": "primary",
+                "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
+            },
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        enqueue_calls: list[tuple[str, dict, str]] = []
+
+        async def _mock_enqueuer(tool_name: str, tool_args: dict, agent_summary: str) -> str:
+            enqueue_calls.append((tool_name, tool_args, agent_summary))
+            return "action-123"
+
+        mod.set_approval_enqueuer(_mock_enqueuer)
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            conflict_policy="allow_overlap",
+        )
+
+        # Should NOT have written the event.
+        assert provider.create_calls == []
+
+        # Should return approval_required with action_id.
+        assert result["status"] == "approval_required"
+        assert result["action_id"] == "action-123"
+        assert result["policy"] == "allow_overlap"
+        assert result["conflicts"][0]["event_id"] == "busy-1"
+        assert "queued for approval" in result["message"]
+
+        # Should have enqueued exactly one action with correct tool name.
+        assert len(enqueue_calls) == 1
+        assert enqueue_calls[0][0] == "calendar_create_event"
+        # tool_args should contain sufficient context to replay the call.
+        tool_args = enqueue_calls[0][1]
+        assert tool_args["title"] == "Team Sync"
+        assert "conflict_policy" in tool_args
+
+    async def test_create_allow_overlap_returns_fallback_when_approvals_disabled(self):
+        """allow_overlap + require_approval_for_overlap=True + no enqueuer
+        should return approval_unavailable guidance."""
+        created = CalendarEvent(
+            event_id="evt-created",
+            title="BUTLER: Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="general",
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=created, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "provider": "google",
+                "calendar_id": "primary",
+                "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
+            },
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        # No enqueuer set -- approvals module is disabled.
+        assert not mod.approvals_enabled
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            conflict_policy="allow_overlap",
+        )
+
+        assert provider.create_calls == []
+        assert result["status"] == "approval_unavailable"
+        assert result["policy"] == "allow_overlap"
+        assert "approvals module is not enabled" in result["message"]
+        assert result["conflicts"][0]["event_id"] == "busy-1"
+
+    async def test_create_allow_overlap_writes_through_when_approval_not_required(self):
+        """allow_overlap + require_approval_for_overlap=False should write through
+        regardless of enqueuer state."""
+        created = CalendarEvent(
+            event_id="evt-created",
+            title="BUTLER: Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="general",
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=created, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "provider": "google",
+                "calendar_id": "primary",
+                "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": False},
+            },
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        # Even with an enqueuer set, require_approval_for_overlap=False skips gating.
+        async def _mock_enqueuer(tool_name: str, tool_args: dict, summary: str) -> str:
+            raise AssertionError("enqueuer should not be called")
+
+        mod.set_approval_enqueuer(_mock_enqueuer)
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            conflict_policy="allow_overlap",
+        )
+
+        assert len(provider.create_calls) == 1
+        assert result["status"] == "created"
+        assert result["policy"] == "allow_overlap"
+
+    async def test_create_no_conflicts_writes_through_even_with_approval(self):
+        """When there are no conflicts, the event should be created normally
+        even with require_approval_for_overlap=True."""
+        created = CalendarEvent(
+            event_id="evt-created",
+            title="BUTLER: Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=True,
+            butler_name="general",
+        )
+        # No conflicts.
+        provider = _ProviderDouble(event=created, conflicts=[])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "provider": "google",
+                "calendar_id": "primary",
+                "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
+            },
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        async def _mock_enqueuer(tool_name: str, tool_args: dict, summary: str) -> str:
+            raise AssertionError("enqueuer should not be called when no conflicts")
+
+        mod.set_approval_enqueuer(_mock_enqueuer)
+
+        result = await mcp.tools["calendar_create_event"](
+            title="Team Sync",
+            start_at=datetime(2026, 2, 20, 14, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 20, 15, 0, tzinfo=UTC),
+            conflict_policy="allow_overlap",
+        )
+
+        assert len(provider.create_calls) == 1
+        assert result["status"] == "created"
+
+    async def test_update_allow_overlap_returns_approval_required_when_enqueuer_set(self):
+        """Update with time change + allow_overlap + approval required should
+        return approval_required and NOT update the event."""
+        existing = CalendarEvent(
+            event_id="evt-existing",
+            title="Standup",
+            start_at=datetime(2026, 2, 21, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=False,
+            butler_name=None,
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 21, 10, 30, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 30, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=existing, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "provider": "google",
+                "calendar_id": "primary",
+                "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
+            },
+            db=None,
+        )
+
+        enqueue_calls: list[tuple[str, dict, str]] = []
+
+        async def _mock_enqueuer(tool_name: str, tool_args: dict, agent_summary: str) -> str:
+            enqueue_calls.append((tool_name, tool_args, agent_summary))
+            return "action-456"
+
+        mod.set_approval_enqueuer(_mock_enqueuer)
+
+        result = await mcp.tools["calendar_update_event"](
+            event_id="evt-existing",
+            start_at=datetime(2026, 2, 21, 10, 30, tzinfo=UTC),
+            conflict_policy="allow_overlap",
+        )
+
+        # Should NOT have updated the event.
+        assert provider.update_calls == []
+
+        # Should return approval_required.
+        assert result["status"] == "approval_required"
+        assert result["action_id"] == "action-456"
+        assert result["policy"] == "allow_overlap"
+        assert result["conflicts"][0]["event_id"] == "busy-1"
+
+        # Enqueued action should reference the update tool.
+        assert len(enqueue_calls) == 1
+        assert enqueue_calls[0][0] == "calendar_update_event"
+        tool_args = enqueue_calls[0][1]
+        assert tool_args["event_id"] == "evt-existing"
+
+    async def test_update_allow_overlap_returns_fallback_when_approvals_disabled(self):
+        """Update with time change + allow_overlap + no enqueuer should
+        return approval_unavailable."""
+        existing = CalendarEvent(
+            event_id="evt-existing",
+            title="Standup",
+            start_at=datetime(2026, 2, 21, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            butler_generated=False,
+            butler_name=None,
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 2, 21, 10, 30, tzinfo=UTC),
+            end_at=datetime(2026, 2, 21, 11, 30, tzinfo=UTC),
+            timezone="UTC",
+        )
+        provider = _ProviderDouble(event=existing, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "provider": "google",
+                "calendar_id": "primary",
+                "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
+            },
+            db=None,
+        )
+
+        result = await mcp.tools["calendar_update_event"](
+            event_id="evt-existing",
+            start_at=datetime(2026, 2, 21, 10, 30, tzinfo=UTC),
+            conflict_policy="allow_overlap",
+        )
+
+        assert provider.update_calls == []
+        assert result["status"] == "approval_unavailable"
+        assert "approvals module is not enabled" in result["message"]
+
+    async def test_pending_action_context_contains_sufficient_replay_data(self):
+        """The tool_args passed to the enqueuer must contain all parameters
+        needed to replay the original create_event call."""
+        created = CalendarEvent(
+            event_id="evt-created",
+            title="BUTLER: Planning",
+            start_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            timezone="America/New_York",
+            butler_generated=True,
+            butler_name="general",
+        )
+        conflict = CalendarEvent(
+            event_id="busy-1",
+            title="(busy)",
+            start_at=datetime(2026, 3, 1, 9, 30, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 10, 30, tzinfo=UTC),
+            timezone="America/New_York",
+        )
+        provider = _ProviderDouble(event=created, conflicts=[conflict])
+        mcp = _StubMCP()
+        mod = CalendarModule()
+        mod._provider = provider
+
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "provider": "google",
+                "calendar_id": "primary",
+                "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
+            },
+            db=SimpleNamespace(db_name="butler_general"),
+        )
+
+        enqueue_calls: list[tuple[str, dict, str]] = []
+
+        async def _mock_enqueuer(tool_name: str, tool_args: dict, agent_summary: str) -> str:
+            enqueue_calls.append((tool_name, tool_args, agent_summary))
+            return "action-789"
+
+        mod.set_approval_enqueuer(_mock_enqueuer)
+
+        await mcp.tools["calendar_create_event"](
+            title="Planning",
+            start_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            timezone="America/New_York",
+            description="Q1 review",
+            location="Room 5",
+            attendees=["alice@example.com"],
+            color_id="3",
+            conflict_policy="allow_overlap",
+        )
+
+        assert len(enqueue_calls) == 1
+        tool_args = enqueue_calls[0][1]
+
+        # All create_event parameters must be present in tool_args.
+        assert tool_args["title"] == "Planning"
+        assert "start_at" in tool_args  # ISO string
+        assert "end_at" in tool_args
+        assert tool_args["timezone"] == "America/New_York"
+        assert tool_args["description"] == "Q1 review"
+        assert tool_args["location"] == "Room 5"
+        assert tool_args["attendees"] == ["alice@example.com"]
+        assert tool_args["color_id"] == "3"
+        assert tool_args["conflict_policy"] == "allow_overlap"
+
+        # Agent summary should be informative.
+        summary = enqueue_calls[0][2]
+        assert "calendar_create_event" in summary
+        assert "1" in summary  # conflict count
+
+    async def test_approvals_enabled_property(self):
+        """approvals_enabled should reflect enqueuer state."""
+        mod = CalendarModule()
+        assert mod.approvals_enabled is False
+
+        async def _noop(t: str, a: dict, s: str) -> str:
+            return "x"
+
+        mod.set_approval_enqueuer(_noop)
+        assert mod.approvals_enabled is True

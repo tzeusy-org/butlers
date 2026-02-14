@@ -294,6 +294,14 @@ make test-qg
 - `calendar_create_event` always runs conflict preflight; `calendar_update_event` runs conflict preflight only when the start/end window changes.
 - Conflict outcomes return machine-readable `conflicts` and `suggested_slots` (`suggest` policy), while `allow_overlap` currently writes through and includes conflicts in the success payload.
 
+### Calendar overlap approval contract
+- For overlap conflicts with `conflict_policy="allow_overlap"` and `conflicts.require_approval_for_overlap=true`, `calendar_create_event` / `calendar_update_event` must return `status="approval_required"` before provider writes and queue a `pending_actions` row with executable `tool_name` + serialized `tool_args`.
+- Queued calendar overlap actions include `approval_action_id`; replay calls with that id should only bypass re-queue when the corresponding pending action is in `approved` state for the same tool.
+- If approvals storage is unavailable (for example approvals module disabled or `pending_actions` table missing), overlap overrides must return `status="approval_unavailable"` plus explicit fallback guidance instead of writing.
+
+### Approvals executor fallback contract
+- `ButlerDaemon._apply_approval_gates()` should wire approvals execution with a fallback to registered MCP tool handlers when a `tool_name` is not present in gated originals, so module-queued pending actions for non-gated tools can execute after approval.
+
 ### Beads coordinator handoff guardrail
 - Some worker runs can finish with branch pushed but bead still `in_progress` (no PR/bead transition). Coordinator should detect `agent/<id>` ahead of `main` with no PR and normalize by creating a PR and marking the bead `blocked` with `pr-review` + `external_ref`.
 

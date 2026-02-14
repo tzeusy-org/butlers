@@ -553,6 +553,9 @@ class ButlerDaemon:
         # 13b. Apply approval gates to configured gated tools
         self._gated_tool_originals = self._apply_approval_gates()
 
+        # 13c. Wire calendar overlap-approval enqueuer when both modules are loaded
+        self._wire_calendar_approval_enqueuer()
+
         # 14. Start FastMCP SSE server on configured port
         await self._start_mcp_server()
 
@@ -1641,7 +1644,10 @@ class ButlerDaemon:
                     ) -> dict[str, Any]:
                         original_fn = _originals.get(tool_name)
                         if original_fn is None:
-                            return {"error": f"No original handler for tool: {tool_name}"}
+                            tool_obj = self.mcp._tool_manager.get_tools().get(tool_name)
+                            if tool_obj is None:
+                                return {"error": f"No handler for tool: {tool_name}"}
+                            original_fn = tool_obj.fn
                         return await original_fn(**tool_args)
 
                     mod.set_tool_executor(_execute_original)
@@ -1654,6 +1660,90 @@ class ButlerDaemon:
             )
 
         return originals
+
+    def _wire_calendar_approval_enqueuer(self) -> None:
+        """Wire calendar overlap-approval enqueuer when both modules are loaded.
+
+        When both the ``calendar`` and ``approvals`` modules are active on this
+        butler, connects the calendar module's overlap-override gate to the
+        approvals pending-action queue via a lightweight enqueue callback.
+        """
+        approvals_raw = self.config.modules.get("approvals")
+        approval_config = parse_approval_config(approvals_raw)
+        if approval_config is None or not approval_config.enabled:
+            return
+
+        calendar_mod = None
+        for mod in self._modules:
+            if mod.name == "calendar":
+                calendar_mod = mod
+                break
+
+        if calendar_mod is None:
+            return
+
+        # Only wire if the calendar module exposes the setter.
+        set_enqueuer = getattr(calendar_mod, "set_approval_enqueuer", None)
+        if not callable(set_enqueuer):
+            return
+
+        pool = self.db.pool
+        expiry_hours = approval_config.default_expiry_hours
+
+        async def _enqueue_overlap_action(
+            tool_name: str,
+            tool_args: dict[str, Any],
+            agent_summary: str,
+        ) -> str:
+            """Insert a pending_actions row for a calendar overlap override."""
+            import uuid as _uuid
+            from datetime import UTC as _UTC
+            from datetime import datetime as _dt
+            from datetime import timedelta as _td
+
+            from butlers.modules.approvals.events import (
+                ApprovalEventType,
+                record_approval_event,
+            )
+            from butlers.modules.approvals.models import ActionStatus
+
+            action_id = _uuid.uuid4()
+            now = _dt.now(_UTC)
+            expires_at = now + _td(hours=expiry_hours)
+
+            await pool.execute(
+                "INSERT INTO pending_actions "
+                "(id, tool_name, tool_args, agent_summary, session_id, status, "
+                "requested_at, expires_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                action_id,
+                tool_name,
+                json.dumps(tool_args),
+                agent_summary,
+                None,  # session_id
+                ActionStatus.PENDING.value,
+                now,
+                expires_at,
+            )
+            await record_approval_event(
+                pool,
+                ApprovalEventType.ACTION_QUEUED,
+                actor="system:calendar_overlap_gate",
+                action_id=action_id,
+                reason="calendar overlap override requires approval",
+                metadata={"tool_name": tool_name},
+                occurred_at=now,
+            )
+
+            logger.info(
+                "Calendar overlap override enqueued for approval (action=%s, tool=%s)",
+                action_id,
+                tool_name,
+            )
+            return str(action_id)
+
+        set_enqueuer(_enqueue_overlap_action)
+        logger.info("Wired calendar overlap-approval enqueuer via approvals module")
 
     def _with_default_gated_user_outputs(self, config: ApprovalConfig) -> ApprovalConfig:
         """Return config with ``approval_default=always`` user outputs added.
