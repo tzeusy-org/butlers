@@ -325,6 +325,8 @@ class TestProcessUpdate:
 
     async def test_uses_database_pool_for_message_inbox_logging(self):
         """process_update logs to message_inbox via db.pool.acquire()."""
+        import uuid
+
         mod = TelegramModule()
 
         pipeline = MagicMock()
@@ -337,8 +339,9 @@ class TestProcessUpdate:
         )
         mod.set_pipeline(pipeline)
 
+        inbox_id = uuid.uuid4()
         conn = AsyncMock()
-        conn.fetchrow = AsyncMock(return_value={"request_id": 123, "inserted": True})
+        conn.fetchval = AsyncMock(return_value=inbox_id)
         acquire_cm = AsyncMock()
         acquire_cm.__aenter__.return_value = conn
         acquire_cm.__aexit__.return_value = False
@@ -354,12 +357,17 @@ class TestProcessUpdate:
 
         assert result is not None
         pool.acquire.assert_called_once()
-        conn.fetchrow.assert_awaited_once()
+        conn.fetchval.assert_awaited_once()
         pipeline.process.assert_awaited_once()
-        assert pipeline.process.await_args.kwargs["message_inbox_id"] == 123
+        assert pipeline.process.await_args.kwargs["message_inbox_id"] == inbox_id
 
-    async def test_deduped_update_skips_pipeline_processing(self):
-        """Duplicate updates are deduped before pipeline processing."""
+    async def test_duplicate_updates_both_processed_after_partition_migration(self):
+        """After partition migration, telegram-level dedup is removed.
+
+        Both updates go through the pipeline (dedup handled upstream).
+        """
+        import uuid
+
         mod = TelegramModule()
 
         pipeline = MagicMock()
@@ -372,12 +380,7 @@ class TestProcessUpdate:
         mod.set_pipeline(pipeline)
 
         conn = AsyncMock()
-        conn.fetchrow = AsyncMock(
-            side_effect=[
-                {"request_id": 321, "inserted": True},
-                {"request_id": 321, "inserted": False},
-            ]
-        )
+        conn.fetchval = AsyncMock(side_effect=[uuid.uuid4(), uuid.uuid4()])
         acquire_cm = AsyncMock()
         acquire_cm.__aenter__.return_value = conn
         acquire_cm.__aexit__.return_value = False
@@ -394,9 +397,8 @@ class TestProcessUpdate:
 
         assert first is not None
         assert second is not None
-        assert second.target_butler == "deduped"
-        assert second.route_result["ingress_decision"] == "deduped"
-        assert pipeline.process.await_count == 1
+        # Both updates are processed through the pipeline (dedup handled upstream by pipeline)
+        assert pipeline.process.await_count == 2
 
 
 # ---------------------------------------------------------------------------

@@ -2236,9 +2236,7 @@ async def test_deliver_telegram_success(deliver_pool):
     await deliver_pool.execute("DELETE FROM notifications")
 
     # Register the messenger butler endpoint.
-    await register_butler(
-        deliver_pool, "messenger", "http://localhost:8100/sse", "Messenger", []
-    )
+    await register_butler(deliver_pool, "messenger", "http://localhost:8100/sse", "Messenger", [])
 
     async def mock_call(endpoint_url, tool_name, args):
         return {"ok": True, "message_id": 42}
@@ -2275,9 +2273,7 @@ async def test_deliver_email_success(deliver_pool):
     await deliver_pool.execute("DELETE FROM butler_registry")
     await deliver_pool.execute("DELETE FROM notifications")
 
-    await register_butler(
-        deliver_pool, "messenger", "http://localhost:8100/sse", "Messenger", []
-    )
+    await register_butler(deliver_pool, "messenger", "http://localhost:8100/sse", "Messenger", [])
 
     captured_args: list[dict] = []
 

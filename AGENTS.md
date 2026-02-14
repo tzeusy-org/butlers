@@ -171,6 +171,7 @@ Alembic revisions are chain-prefixed (`core_*`, `mem_*`, `sw_*`) rather than bar
 - Within a chain, set `branch_labels` only on the branch root revision (e.g. `rel_001`); repeating the same label on later revisions causes Alembic duplicate-branch errors.
 - Do not leave stray migration files in chain directories: even if chain tests only assert expected filenames, Alembic will still load every `*.py` in the versions path and fail on duplicate `revision` IDs.
 - Switchboard migrations already include `sw_005` as the latest linear revision; new switchboard revisions must continue from `sw_005` (for example `sw_006`) to avoid multi-head failures during `switchboard@head` upgrades.
+- Table renames preserve existing index names; when rewriting a table in-place (rename old + create new), new index names must not collide with indexes still attached to the renamed backup table.
 
 ### Known Warnings (not bugs)
 - 2 RuntimeWarnings in CLI tests from monkeypatched `asyncio.run` — unawaited coroutines in test mocking

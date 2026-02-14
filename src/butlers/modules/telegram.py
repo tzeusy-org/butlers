@@ -18,6 +18,7 @@ import os
 import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -333,6 +334,7 @@ class TelegramModule(Module):
             decision=decision,
             dedupe_key=dedupe_key,
         )
+
     @staticmethod
     def _result_has_failure(result: RoutingResult) -> bool:
         if result.classification_error or result.routing_error:
@@ -608,28 +610,6 @@ class TelegramModule(Module):
         text = _extract_text(update)
         if not text:
             return None
-        sender_identity = chat_id if chat_id not in (None, "") else "unknown"
-        ingress = await self._store_message_inbox_entry(
-            sender_id=sender_identity,
-            message_text=text,
-            update=update,
-            chat_id=chat_id,
-            message_key=message_key,
-        )
-        if ingress is not None and ingress.decision == "deduped":
-            deduped = RoutingResult(
-                target_butler="deduped",
-                route_result={
-                    "request_id": str(ingress.request_id),
-                    "ingress_decision": "deduped",
-                    "dedupe_key": ingress.dedupe_key,
-                    "dedupe_strategy": "telegram_update_id_endpoint",
-                },
-            )
-            self._routed_messages.append(deduped)
-            return deduped
-        message_inbox_id = ingress.request_id if ingress is not None else None
-
         lock = self._message_lock(message_key) if message_key is not None else None
         if lock is not None:
             await lock.acquire()
@@ -640,12 +620,68 @@ class TelegramModule(Module):
                 message_key=message_key,
                 reaction=REACTION_IN_PROGRESS,
             )
-            message_inbox_id = await self._log_message_inbox(
-                message_text=text,
-                chat_id=chat_id,
-                message_key=message_key,
-                update=update,
-            )
+
+            # Phase 1: Log receipt
+            message_inbox_id = None
+            db_pool = self._get_db_pool()
+            if db_pool is not None:
+                received_at = datetime.now(UTC)
+                sender_identity = _extract_sender_identity(update, fallback=chat_id)
+                request_context = {
+                    "request_id": message_key,
+                    "received_at": received_at.isoformat(),
+                    "source_channel": "telegram",
+                    "source_endpoint_identity": "telegram:bot",
+                    "source_sender_identity": sender_identity,
+                    "source_thread_identity": chat_id,
+                    "trace_context": {},
+                }
+                processing_metadata = {
+                    "ingest_tool": "bot_telegram_get_updates",
+                    "source_metadata": {
+                        "channel": "telegram",
+                        "identity": "bot",
+                        "tool_name": "bot_telegram_get_updates",
+                        "source_id": message_key,
+                    },
+                }
+                async with db_pool.acquire() as conn:
+                    await conn.execute(
+                        "SELECT switchboard_message_inbox_ensure_partition($1)",
+                        received_at,
+                    )
+                    await conn.execute(
+                        "SELECT switchboard_message_inbox_ensure_partition("
+                        "date_trunc('month', $1::timestamptz) + INTERVAL '1 month'"
+                        ")",
+                        received_at,
+                    )
+                    # NOTE: expired partition cleanup is deferred to periodic background
+                    # jobs (e.g. scheduler tick) to avoid catalog queries on the hot path.
+                    message_inbox_id = await conn.fetchval(
+                        """
+                        INSERT INTO message_inbox
+                            (
+                                request_context,
+                                raw_payload,
+                                normalized_text,
+                                received_at,
+                                lifecycle_state,
+                                schema_version,
+                                processing_metadata
+                            )
+                        VALUES
+                            ($1::jsonb, $2::jsonb, $3, $4, $5, $6, $7::jsonb)
+                        RETURNING id
+                        """,
+                        json.dumps(request_context),
+                        json.dumps(update),
+                        text,
+                        received_at,
+                        "accepted",
+                        "message_inbox.v2",
+                        json.dumps(processing_metadata),
+                    )
 
             result = await self._pipeline.process(
                 message_text=text,
@@ -858,6 +894,29 @@ def _extract_message_id(update: dict[str, Any]) -> int | None:
             except (TypeError, ValueError):
                 return None
     return None
+
+
+def _extract_sender_identity(update: dict[str, Any], *, fallback: str | None) -> str:
+    """Extract a stable sender identity from a Telegram update."""
+    for key in ("message", "edited_message", "channel_post"):
+        msg = update.get(key)
+        if msg and isinstance(msg, dict):
+            sender = msg.get("from")
+            if sender and isinstance(sender, dict):
+                sender_id = sender.get("id")
+                if sender_id not in (None, ""):
+                    return str(sender_id)
+                username = sender.get("username")
+                if username:
+                    return str(username)
+            sender_chat = msg.get("sender_chat")
+            if sender_chat and isinstance(sender_chat, dict):
+                sender_chat_id = sender_chat.get("id")
+                if sender_chat_id not in (None, ""):
+                    return str(sender_chat_id)
+    if fallback not in (None, ""):
+        return str(fallback)
+    return "telegram:unknown"
 
 
 def _message_tracking_key(
