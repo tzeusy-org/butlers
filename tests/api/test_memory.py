@@ -142,6 +142,26 @@ def _make_rule_row(
     }
 
 
+def _make_pool(
+    *,
+    fetch_rows: list | None = None,
+    fetchval_result: int = 0,
+    fetchrow_result: dict | None = None,
+    fetchval_side_effect: list | None = None,
+    fetch_side_effect: list | None = None,
+) -> AsyncMock:
+    """Create a mocked asyncpg pool."""
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=fetch_rows or [])
+    pool.fetchval = AsyncMock(return_value=fetchval_result)
+    pool.fetchrow = AsyncMock(return_value=fetchrow_result)
+    if fetchval_side_effect is not None:
+        pool.fetchval = AsyncMock(side_effect=fetchval_side_effect)
+    if fetch_side_effect is not None:
+        pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+    return pool
+
+
 def _app_with_mock_db(
     *,
     fetch_rows: list | None = None,
@@ -150,24 +170,29 @@ def _app_with_mock_db(
     pool_available: bool = True,
     fetchval_side_effect: list | None = None,
     fetch_side_effect: list | None = None,
+    pools_by_name: dict[str, AsyncMock] | None = None,
 ):
     """Create a FastAPI app with a mocked DatabaseManager."""
-    mock_pool = AsyncMock()
-    mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
-    mock_pool.fetchval = AsyncMock(return_value=fetchval_result)
-    mock_pool.fetchrow = AsyncMock(return_value=fetchrow_result)
+    mock_pool = _make_pool(
+        fetch_rows=fetch_rows,
+        fetchval_result=fetchval_result,
+        fetchrow_result=fetchrow_result,
+        fetchval_side_effect=fetchval_side_effect,
+        fetch_side_effect=fetch_side_effect,
+    )
 
-    if fetchval_side_effect is not None:
-        mock_pool.fetchval = AsyncMock(side_effect=fetchval_side_effect)
-
-    if fetch_side_effect is not None:
-        mock_pool.fetch = AsyncMock(side_effect=fetch_side_effect)
+    if pools_by_name is None:
+        pools_by_name = {"memory": mock_pool} if pool_available else {}
 
     mock_db = MagicMock(spec=DatabaseManager)
-    if pool_available:
-        mock_db.pool.return_value = mock_pool
-    else:
-        mock_db.pool.side_effect = KeyError("No pool for butler: memory")
+    mock_db.butler_names = list(pools_by_name.keys())
+
+    def _pool_lookup(name: str):
+        if name not in pools_by_name:
+            raise KeyError(f"No pool for butler: {name}")
+        return pools_by_name[name]
+
+    mock_db.pool.side_effect = _pool_lookup
 
     app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -228,15 +253,47 @@ class TestMemoryStats:
         assert data["proven_rules"] == 2
         assert data["anti_pattern_rules"] == 1
 
-    async def test_pool_unavailable_returns_503(self):
-        """When the memory DB pool is unavailable, return 503."""
+    async def test_pool_unavailable_returns_zero_stats(self):
+        """When no memory pools are available, return zeroed stats."""
         app = _app_with_mock_db(pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/memory/stats")
 
-        assert resp.status_code == 503
+        assert resp.status_code == 200
+        assert resp.json()["data"] == {
+            "total_episodes": 0,
+            "unconsolidated_episodes": 0,
+            "total_facts": 0,
+            "active_facts": 0,
+            "fading_facts": 0,
+            "total_rules": 0,
+            "candidate_rules": 0,
+            "established_rules": 0,
+            "proven_rules": 0,
+            "anti_pattern_rules": 0,
+        }
+
+    async def test_aggregates_across_non_dedicated_memory_pools(self):
+        """Stats fan out across any butler pool exposing memory tables."""
+        general_pool = _make_pool(fetchval_side_effect=[10, 2, 5, 4, 1, 3, 2, 1, 0, 0])
+        relationship_pool = _make_pool(fetchval_side_effect=[7, 1, 6, 5, 0, 4, 1, 2, 1, 0])
+        app = _app_with_mock_db(
+            pools_by_name={"general": general_pool, "relationship": relationship_pool}
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/stats")
+
+        data = resp.json()["data"]
+        assert data["total_episodes"] == 17
+        assert data["unconsolidated_episodes"] == 3
+        assert data["total_facts"] == 11
+        assert data["active_facts"] == 9
+        assert data["total_rules"] == 7
 
 
 # ---------------------------------------------------------------------------
@@ -310,15 +367,41 @@ class TestListEpisodes:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_pool_unavailable_returns_503(self):
-        """When the memory DB pool is unavailable, return 503."""
+    async def test_pool_unavailable_returns_empty_page(self):
+        """When no memory pools are available, return an empty page."""
         app = _app_with_mock_db(pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/memory/episodes")
 
-        assert resp.status_code == 503
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"] == []
+        assert body["meta"]["total"] == 0
+
+    async def test_aggregates_across_multiple_butlers(self):
+        """Episodes should merge/sort records from multiple butler pools."""
+        general_pool = _make_pool(
+            fetch_rows=[_make_episode_row(id="ep-old", created_at="2025-06-01T10:00:00")],
+            fetchval_result=1,
+        )
+        relationship_pool = _make_pool(
+            fetch_rows=[_make_episode_row(id="ep-new", created_at="2025-06-01T11:00:00")],
+            fetchval_result=1,
+        )
+        app = _app_with_mock_db(
+            pools_by_name={"general": general_pool, "relationship": relationship_pool}
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/episodes")
+
+        body = resp.json()
+        assert body["meta"]["total"] == 2
+        assert [row["id"] for row in body["data"]] == ["ep-new", "ep-old"]
 
 
 # ---------------------------------------------------------------------------
@@ -389,15 +472,18 @@ class TestListFacts:
 
         assert resp.status_code == 200
 
-    async def test_pool_unavailable_returns_503(self):
-        """When the memory DB pool is unavailable, return 503."""
+    async def test_pool_unavailable_returns_empty_page(self):
+        """When no memory pools are available, return an empty page."""
         app = _app_with_mock_db(pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/memory/facts")
 
-        assert resp.status_code == 503
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"] == []
+        assert body["meta"]["total"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +507,20 @@ class TestGetFact:
         assert body["data"]["id"] == "fact-001"
         assert body["data"]["subject"] == "user"
 
+    async def test_returns_fact_detail_from_non_dedicated_pool(self):
+        """Fact lookup should fan out across non-memory butler pools."""
+        row = _make_fact_row(id="fact-general")
+        app = _app_with_mock_db(
+            pools_by_name={"general": _make_pool(fetchrow_result=row)},
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/facts/fact-general")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"]["id"] == "fact-general"
+
     async def test_missing_fact_returns_404(self):
         """A non-existent fact should return 404."""
         app = _app_with_mock_db(fetchrow_result=None)
@@ -431,15 +531,15 @@ class TestGetFact:
 
         assert resp.status_code == 404
 
-    async def test_pool_unavailable_returns_503(self):
-        """When the memory DB pool is unavailable, return 503."""
+    async def test_pool_unavailable_returns_404(self):
+        """When no memory pools are available, fact lookup returns 404."""
         app = _app_with_mock_db(pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/memory/facts/fact-001")
 
-        assert resp.status_code == 503
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -500,15 +600,18 @@ class TestListRules:
 
         assert resp.status_code == 200
 
-    async def test_pool_unavailable_returns_503(self):
-        """When the memory DB pool is unavailable, return 503."""
+    async def test_pool_unavailable_returns_empty_page(self):
+        """When no memory pools are available, return an empty page."""
         app = _app_with_mock_db(pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/memory/rules")
 
-        assert resp.status_code == 503
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"] == []
+        assert body["meta"]["total"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -542,15 +645,15 @@ class TestGetRule:
 
         assert resp.status_code == 404
 
-    async def test_pool_unavailable_returns_503(self):
-        """When the memory DB pool is unavailable, return 503."""
+    async def test_pool_unavailable_returns_404(self):
+        """When no memory pools are available, rule lookup returns 404."""
         app = _app_with_mock_db(pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/memory/rules/rule-001")
 
-        assert resp.status_code == 503
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +701,48 @@ class TestMemoryActivity:
         assert data[0]["type"] == "episode"
         assert data[1]["type"] == "fact"
         assert data[2]["type"] == "rule"
+
+    async def test_aggregates_activity_across_multiple_pools(self):
+        """Activity should fan out across non-dedicated memory pools."""
+        general_pool = _make_pool(
+            fetch_side_effect=[
+                [
+                    {
+                        "id": "ep-a",
+                        "butler": "general",
+                        "content": "A",
+                        "created_at": "2025-06-02T10:00:00",
+                    }
+                ],
+                [],
+                [],
+            ]
+        )
+        relationship_pool = _make_pool(
+            fetch_side_effect=[
+                [
+                    {
+                        "id": "ep-b",
+                        "butler": "relationship",
+                        "content": "B",
+                        "created_at": "2025-06-02T11:00:00",
+                    }
+                ],
+                [],
+                [],
+            ]
+        )
+        app = _app_with_mock_db(
+            pools_by_name={"general": general_pool, "relationship": relationship_pool}
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/memory/activity")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert [item["id"] for item in data] == ["ep-b", "ep-a"]
 
     async def test_activity_item_fields(self):
         """Each activity item should have id, type, summary, butler, created_at."""
@@ -649,12 +794,13 @@ class TestMemoryActivity:
         body = resp.json()
         assert body["data"] == []
 
-    async def test_pool_unavailable_returns_503(self):
-        """When the memory DB pool is unavailable, return 503."""
+    async def test_pool_unavailable_returns_empty_activity(self):
+        """When no memory pools are available, return empty activity."""
         app = _app_with_mock_db(pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get("/api/memory/activity")
 
-        assert resp.status_code == 503
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []

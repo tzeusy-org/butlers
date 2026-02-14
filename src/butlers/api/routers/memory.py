@@ -1,13 +1,16 @@
 """Memory system endpoints — episodes, facts, rules, stats, activity.
 
-Provides read-only endpoints for browsing memory data through the dashboard API.
-Data is read from the configured ``memory`` pool as the current projection source.
+Provides read-only endpoints for browsing memory data across all butler
+databases that expose memory tables. The router gracefully skips pools where
+memory tables are unavailable, so dedicated-memory deployments are optional.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -19,26 +22,65 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
-BUTLER_DB = "memory"
-
 
 def _get_db_manager() -> DatabaseManager:
     """Dependency stub — overridden at app startup or in tests."""
     raise RuntimeError("DatabaseManager not initialized")
 
 
-def _pool(db: DatabaseManager):
-    """Retrieve the dashboard memory projection pool.
+def _memory_pool_names(db: DatabaseManager) -> list[str]:
+    """Return butler names to probe for memory tables.
 
-    Raises HTTPException 503 if the pool is not available.
+    Falls back to legacy ``memory`` for compatibility when no list is exposed.
     """
     try:
-        return db.pool(BUTLER_DB)
-    except KeyError:
-        raise HTTPException(
-            status_code=503,
-            detail="Memory butler database is not available",
-        )
+        names = list(db.butler_names)
+    except TypeError:
+        names = []
+
+    if not names:
+        names = ["memory"]
+
+    return sorted(set(names))
+
+
+def _memory_pools(db: DatabaseManager) -> list[tuple[str, object]]:
+    """Return available pools to probe for memory queries."""
+    pools: list[tuple[str, object]] = []
+    for name in _memory_pool_names(db):
+        try:
+            pools.append((name, db.pool(name)))
+        except KeyError:
+            continue
+    return pools
+
+
+async def _fan_out_memory_queries(
+    db: DatabaseManager,
+    *,
+    query_name: str,
+    query_fn: Callable[[str, object], Awaitable[object | None]],
+) -> list[object]:
+    """Run a query across candidate pools and skip pools without memory schema."""
+    pools = _memory_pools(db)
+    if not pools:
+        logger.info("No database pools available for memory query: %s", query_name)
+        return []
+
+    async def _run(name: str, pool: object) -> object | None:
+        try:
+            return await query_fn(name, pool)
+        except Exception:
+            logger.debug(
+                "Skipping pool %s for memory query %s (pool lacks memory tables or query failed)",
+                name,
+                query_name,
+                exc_info=True,
+            )
+            return None
+
+    results = await asyncio.gather(*(_run(name, pool) for name, pool in pools))
+    return [result for result in results if result is not None]
 
 
 def _parse_jsonb(value):
@@ -59,6 +101,11 @@ def _parse_tags(value):
     return list(value)
 
 
+def _sort_rows_by_created_at(rows: list[object]) -> list[object]:
+    """Sort rows by created_at DESC."""
+    return sorted(rows, key=lambda row: row["created_at"], reverse=True)
+
+
 # ---------------------------------------------------------------------------
 # GET /api/memory/stats
 # ---------------------------------------------------------------------------
@@ -69,46 +116,62 @@ async def get_memory_stats(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[MemoryStats]:
     """Return aggregated counts across all memory tiers."""
-    pool = _pool(db)
 
-    # Episode counts
-    total_episodes = await pool.fetchval("SELECT count(*) FROM episodes") or 0
-    unconsolidated = (
-        await pool.fetchval("SELECT count(*) FROM episodes WHERE consolidated = false") or 0
+    async def _stats_for_pool(_: str, pool: object) -> dict[str, int]:
+        return {
+            "total_episodes": await pool.fetchval("SELECT count(*) FROM episodes") or 0,
+            "unconsolidated_episodes": await pool.fetchval(
+                "SELECT count(*) FROM episodes WHERE consolidated = false"
+            )
+            or 0,
+            "total_facts": await pool.fetchval("SELECT count(*) FROM facts") or 0,
+            "active_facts": await pool.fetchval(
+                "SELECT count(*) FROM facts WHERE validity = 'active'"
+            )
+            or 0,
+            "fading_facts": await pool.fetchval(
+                "SELECT count(*) FROM facts WHERE validity = 'fading'"
+            )
+            or 0,
+            "total_rules": await pool.fetchval("SELECT count(*) FROM rules") or 0,
+            "candidate_rules": await pool.fetchval(
+                "SELECT count(*) FROM rules WHERE maturity = 'candidate'"
+            )
+            or 0,
+            "established_rules": await pool.fetchval(
+                "SELECT count(*) FROM rules WHERE maturity = 'established'"
+            )
+            or 0,
+            "proven_rules": await pool.fetchval(
+                "SELECT count(*) FROM rules WHERE maturity = 'proven'"
+            )
+            or 0,
+            "anti_pattern_rules": await pool.fetchval(
+                "SELECT count(*) FROM rules WHERE maturity = 'anti_pattern'"
+            )
+            or 0,
+        }
+
+    per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="stats",
+        query_fn=_stats_for_pool,
     )
 
-    # Fact counts
-    total_facts = await pool.fetchval("SELECT count(*) FROM facts") or 0
-    active_facts = await pool.fetchval("SELECT count(*) FROM facts WHERE validity = 'active'") or 0
-    fading_facts = await pool.fetchval("SELECT count(*) FROM facts WHERE validity = 'fading'") or 0
+    totals = MemoryStats()
+    for row in per_pool:
+        totals.total_episodes += row["total_episodes"]
+        totals.unconsolidated_episodes += row["unconsolidated_episodes"]
+        totals.total_facts += row["total_facts"]
+        totals.active_facts += row["active_facts"]
+        totals.fading_facts += row["fading_facts"]
+        totals.total_rules += row["total_rules"]
+        totals.candidate_rules += row["candidate_rules"]
+        totals.established_rules += row["established_rules"]
+        totals.proven_rules += row["proven_rules"]
+        totals.anti_pattern_rules += row["anti_pattern_rules"]
 
-    # Rule counts
-    total_rules = await pool.fetchval("SELECT count(*) FROM rules") or 0
-    candidate_rules = (
-        await pool.fetchval("SELECT count(*) FROM rules WHERE maturity = 'candidate'") or 0
-    )
-    established_rules = (
-        await pool.fetchval("SELECT count(*) FROM rules WHERE maturity = 'established'") or 0
-    )
-    proven_rules = await pool.fetchval("SELECT count(*) FROM rules WHERE maturity = 'proven'") or 0
-    anti_pattern_rules = (
-        await pool.fetchval("SELECT count(*) FROM rules WHERE maturity = 'anti_pattern'") or 0
-    )
-
-    stats = MemoryStats(
-        total_episodes=total_episodes,
-        unconsolidated_episodes=unconsolidated,
-        total_facts=total_facts,
-        active_facts=active_facts,
-        fading_facts=fading_facts,
-        total_rules=total_rules,
-        candidate_rules=candidate_rules,
-        established_rules=established_rules,
-        proven_rules=proven_rules,
-        anti_pattern_rules=anti_pattern_rules,
-    )
-
-    return ApiResponse[MemoryStats](data=stats)
+    return ApiResponse[MemoryStats](data=totals)
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +190,6 @@ async def list_episodes(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Episode]:
     """List episodes with optional filters, paginated."""
-    pool = _pool(db)
-
     conditions: list[str] = []
     args: list[object] = []
     idx = 1
@@ -155,18 +216,33 @@ async def list_episodes(
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    total = await pool.fetchval(f"SELECT count(*) FROM episodes{where}", *args) or 0
+    row_limit = offset + limit
 
-    rows = await pool.fetch(
-        f"SELECT id, butler, session_id, content, importance, reference_count,"
-        f" consolidated, created_at, last_referenced_at, expires_at, metadata"
-        f" FROM episodes{where}"
-        f" ORDER BY created_at DESC"
-        f" OFFSET ${idx} LIMIT ${idx + 1}",
-        *args,
-        offset,
-        limit,
+    async def _query_pool(_: str, pool: object) -> tuple[int, list[object]]:
+        total = await pool.fetchval(f"SELECT count(*) FROM episodes{where}", *args) or 0
+        rows = await pool.fetch(
+            f"SELECT id, butler, session_id, content, importance, reference_count,"
+            f" consolidated, created_at, last_referenced_at, expires_at, metadata"
+            f" FROM episodes{where}"
+            f" ORDER BY created_at DESC"
+            f" OFFSET ${idx} LIMIT ${idx + 1}",
+            *args,
+            0,
+            row_limit,
+        )
+        return total, list(rows)
+
+    per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="episodes",
+        query_fn=_query_pool,
     )
+    total = sum(pool_total for pool_total, _ in per_pool)
+    merged_rows: list[object] = []
+    for _, rows in per_pool:
+        merged_rows.extend(rows)
+    merged_rows = _sort_rows_by_created_at(merged_rows)
+    rows = merged_rows[offset : offset + limit]
 
     data = [
         Episode(
@@ -208,8 +284,6 @@ async def list_facts(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Fact]:
     """List/search facts with optional filters, paginated."""
-    pool = _pool(db)
-
     conditions: list[str] = []
     args: list[object] = []
     idx = 1
@@ -241,20 +315,35 @@ async def list_facts(
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    total = await pool.fetchval(f"SELECT count(*) FROM facts{where}", *args) or 0
+    row_limit = offset + limit
 
-    rows = await pool.fetch(
-        f"SELECT id, subject, predicate, content, importance, confidence,"
-        f" decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-        f" validity, scope, reference_count, created_at, last_referenced_at,"
-        f" last_confirmed_at, tags, metadata"
-        f" FROM facts{where}"
-        f" ORDER BY created_at DESC"
-        f" OFFSET ${idx} LIMIT ${idx + 1}",
-        *args,
-        offset,
-        limit,
+    async def _query_pool(_: str, pool: object) -> tuple[int, list[object]]:
+        total = await pool.fetchval(f"SELECT count(*) FROM facts{where}", *args) or 0
+        rows = await pool.fetch(
+            f"SELECT id, subject, predicate, content, importance, confidence,"
+            f" decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
+            f" validity, scope, reference_count, created_at, last_referenced_at,"
+            f" last_confirmed_at, tags, metadata"
+            f" FROM facts{where}"
+            f" ORDER BY created_at DESC"
+            f" OFFSET ${idx} LIMIT ${idx + 1}",
+            *args,
+            0,
+            row_limit,
+        )
+        return total, list(rows)
+
+    per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="facts",
+        query_fn=_query_pool,
     )
+    total = sum(pool_total for pool_total, _ in per_pool)
+    merged_rows: list[object] = []
+    for _, rows in per_pool:
+        merged_rows.extend(rows)
+    merged_rows = _sort_rows_by_created_at(merged_rows)
+    rows = merged_rows[offset : offset + limit]
 
     data = [_row_to_fact(r) for r in rows]
 
@@ -275,21 +364,26 @@ async def get_fact(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[Fact]:
     """Return a single fact by ID."""
-    pool = _pool(db)
 
-    row = await pool.fetchrow(
-        "SELECT id, subject, predicate, content, importance, confidence,"
-        " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
-        " validity, scope, reference_count, created_at, last_referenced_at,"
-        " last_confirmed_at, tags, metadata"
-        " FROM facts WHERE id = $1",
-        fact_id,
+    async def _query_pool(_: str, pool: object):
+        return await pool.fetchrow(
+            "SELECT id, subject, predicate, content, importance, confidence,"
+            " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
+            " validity, scope, reference_count, created_at, last_referenced_at,"
+            " last_confirmed_at, tags, metadata"
+            " FROM facts WHERE id = $1",
+            fact_id,
+        )
+
+    rows = await _fan_out_memory_queries(
+        db,
+        query_name="fact_by_id",
+        query_fn=_query_pool,
     )
-
-    if row is None:
+    if not rows:
         raise HTTPException(status_code=404, detail="Fact not found")
 
-    return ApiResponse[Fact](data=_row_to_fact(row))
+    return ApiResponse[Fact](data=_row_to_fact(rows[0]))
 
 
 # ---------------------------------------------------------------------------
@@ -307,8 +401,6 @@ async def list_rules(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Rule]:
     """List/search rules with optional filters, paginated."""
-    pool = _pool(db)
-
     conditions: list[str] = []
     args: list[object] = []
     idx = 1
@@ -330,20 +422,35 @@ async def list_rules(
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    total = await pool.fetchval(f"SELECT count(*) FROM rules{where}", *args) or 0
+    row_limit = offset + limit
 
-    rows = await pool.fetch(
-        f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
-        f" effectiveness_score, applied_count, success_count, harmful_count,"
-        f" source_episode_id, source_butler, created_at, last_applied_at,"
-        f" last_evaluated_at, tags, metadata"
-        f" FROM rules{where}"
-        f" ORDER BY created_at DESC"
-        f" OFFSET ${idx} LIMIT ${idx + 1}",
-        *args,
-        offset,
-        limit,
+    async def _query_pool(_: str, pool: object) -> tuple[int, list[object]]:
+        total = await pool.fetchval(f"SELECT count(*) FROM rules{where}", *args) or 0
+        rows = await pool.fetch(
+            f"SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
+            f" effectiveness_score, applied_count, success_count, harmful_count,"
+            f" source_episode_id, source_butler, created_at, last_applied_at,"
+            f" last_evaluated_at, tags, metadata"
+            f" FROM rules{where}"
+            f" ORDER BY created_at DESC"
+            f" OFFSET ${idx} LIMIT ${idx + 1}",
+            *args,
+            0,
+            row_limit,
+        )
+        return total, list(rows)
+
+    per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="rules",
+        query_fn=_query_pool,
     )
+    total = sum(pool_total for pool_total, _ in per_pool)
+    merged_rows: list[object] = []
+    for _, rows in per_pool:
+        merged_rows.extend(rows)
+    merged_rows = _sort_rows_by_created_at(merged_rows)
+    rows = merged_rows[offset : offset + limit]
 
     data = [_row_to_rule(r) for r in rows]
 
@@ -364,21 +471,26 @@ async def get_rule(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[Rule]:
     """Return a single rule by ID."""
-    pool = _pool(db)
 
-    row = await pool.fetchrow(
-        "SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
-        " effectiveness_score, applied_count, success_count, harmful_count,"
-        " source_episode_id, source_butler, created_at, last_applied_at,"
-        " last_evaluated_at, tags, metadata"
-        " FROM rules WHERE id = $1",
-        rule_id,
+    async def _query_pool(_: str, pool: object):
+        return await pool.fetchrow(
+            "SELECT id, content, scope, maturity, confidence, decay_rate, permanence,"
+            " effectiveness_score, applied_count, success_count, harmful_count,"
+            " source_episode_id, source_butler, created_at, last_applied_at,"
+            " last_evaluated_at, tags, metadata"
+            " FROM rules WHERE id = $1",
+            rule_id,
+        )
+
+    rows = await _fan_out_memory_queries(
+        db,
+        query_name="rule_by_id",
+        query_fn=_query_pool,
     )
-
-    if row is None:
+    if not rows:
         raise HTTPException(status_code=404, detail="Rule not found")
 
-    return ApiResponse[Rule](data=_row_to_rule(row))
+    return ApiResponse[Rule](data=_row_to_rule(rows[0]))
 
 
 # ---------------------------------------------------------------------------
@@ -392,62 +504,67 @@ async def list_activity(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[MemoryActivity]]:
     """Return recent memory activity interleaved from all three tables."""
-    pool = _pool(db)
 
-    # Fetch recent items from each table
-    episode_rows = await pool.fetch(
-        "SELECT id, butler, content, created_at FROM episodes ORDER BY created_at DESC LIMIT $1",
-        limit,
-    )
+    async def _query_pool(_: str, pool: object) -> tuple[list[object], list[object], list[object]]:
+        episode_rows = await pool.fetch(
+            "SELECT id, butler, content, created_at"
+            " FROM episodes ORDER BY created_at DESC LIMIT $1",
+            limit,
+        )
+        fact_rows = await pool.fetch(
+            "SELECT id, subject, predicate, source_butler, created_at"
+            " FROM facts ORDER BY created_at DESC LIMIT $1",
+            limit,
+        )
+        rule_rows = await pool.fetch(
+            "SELECT id, content, source_butler, created_at"
+            " FROM rules ORDER BY created_at DESC LIMIT $1",
+            limit,
+        )
+        return list(episode_rows), list(fact_rows), list(rule_rows)
 
-    fact_rows = await pool.fetch(
-        "SELECT id, subject, predicate, source_butler, created_at"
-        " FROM facts ORDER BY created_at DESC LIMIT $1",
-        limit,
-    )
-
-    rule_rows = await pool.fetch(
-        "SELECT id, content, source_butler, created_at"
-        " FROM rules ORDER BY created_at DESC LIMIT $1",
-        limit,
+    per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="activity",
+        query_fn=_query_pool,
     )
 
     items: list[MemoryActivity] = []
-
-    for r in episode_rows:
-        content = r["content"] or ""
-        items.append(
-            MemoryActivity(
-                id=str(r["id"]),
-                type="episode",
-                summary=content[:100] + ("..." if len(content) > 100 else ""),
-                butler=r["butler"],
-                created_at=str(r["created_at"]),
+    for episode_rows, fact_rows, rule_rows in per_pool:
+        for r in episode_rows:
+            content = r["content"] or ""
+            items.append(
+                MemoryActivity(
+                    id=str(r["id"]),
+                    type="episode",
+                    summary=content[:100] + ("..." if len(content) > 100 else ""),
+                    butler=r["butler"],
+                    created_at=str(r["created_at"]),
+                )
             )
-        )
 
-    for r in fact_rows:
-        items.append(
-            MemoryActivity(
-                id=str(r["id"]),
-                type="fact",
-                summary=f"{r['subject']}: {r['predicate']}",
-                butler=r["source_butler"],
-                created_at=str(r["created_at"]),
+        for r in fact_rows:
+            items.append(
+                MemoryActivity(
+                    id=str(r["id"]),
+                    type="fact",
+                    summary=f"{r['subject']}: {r['predicate']}",
+                    butler=r["source_butler"],
+                    created_at=str(r["created_at"]),
+                )
             )
-        )
 
-    for r in rule_rows:
-        content = r["content"] or ""
-        items.append(
-            MemoryActivity(
-                id=str(r["id"]),
-                type="rule",
-                summary=content[:100] + ("..." if len(content) > 100 else ""),
-                butler=r["source_butler"],
-                created_at=str(r["created_at"]),
+        for r in rule_rows:
+            content = r["content"] or ""
+            items.append(
+                MemoryActivity(
+                    id=str(r["id"]),
+                    type="rule",
+                    summary=content[:100] + ("..." if len(content) > 100 else ""),
+                    butler=r["source_butler"],
+                    created_at=str(r["created_at"]),
+                )
             )
-        )
 
     # Sort by created_at descending and trim to limit
     items.sort(key=lambda a: a.created_at, reverse=True)

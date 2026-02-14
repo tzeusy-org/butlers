@@ -150,6 +150,10 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 ### Memory System Architecture
 Memory is a **common module** (`[modules.memory]`) enabled per butler, not a dedicated shared role/service. Memory tables (`episodes`, `facts`, `rules`, plus provenance/audit tables) live in each hosting butler's DB and memory tools are registered on that butler's MCP server. Uses pgvector + local MiniLM-L6 embeddings (384d). Dashboard remains available at `/memory` (aggregated via API fanout) and `/butlers/:name/memory` (scoped).
 
+### Memory API fanout contract
+- `src/butlers/api/routers/memory.py` must not require `db.pool("memory")`; `/api/memory/*` reads fan out across available butler DB pools and aggregate results.
+- Pools without memory tables should be skipped gracefully so no-dedicated-memory deployments return zero/empty payloads (or 404 for ID lookups) instead of 503.
+
 ### Memory OpenSpec alignment contract
 - `openspec/changes/memory-system/specs/*` now aligns to target-state module semantics: per-butler memory module integration, tenant-bounded operations by default, canonical fact soft-delete state `retracted` (legacy `forgotten` alias only), required `memory_events` audit stream, deterministic tokenizer-based `memory_context` budgeting/tie-breakers, consolidation terminal states (`consolidated|failed|dead_letter`) with retry metadata, and explicit `anti_pattern` rule maturity.
 
