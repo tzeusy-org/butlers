@@ -85,6 +85,7 @@ from butlers.tools.switchboard.routing.contracts import parse_notify_request, pa
 
 logger = logging.getLogger(__name__)
 
+
 CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "status",

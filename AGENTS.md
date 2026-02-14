@@ -78,6 +78,15 @@ bd sync               # Commit and push changes
 4. **Complete**: Use `bd close <id>`
 5. **Sync**: Always run `bd sync` at session end
 
+### Worktree Hydration (no-db mode)
+
+- In long-lived worktrees using `no-db: true`, hydrate before looking up freshly created issue IDs:
+  ```bash
+  export BEADS_NO_DAEMON=1
+  bd sync --import
+  ```
+- This imports newer `.beads/issues.jsonl` state into the active worktree so `bd show <new-id>` resolves deterministically.
+
 ### Key Concepts
 
 - **Dependencies**: Issues can block other issues. `bd ready` shows only unblocked work.
@@ -294,6 +303,10 @@ make test-qg
 ### Beads worktree JSONL contract
 - `.beads/config.yaml` is pinned to `no-db: true` so `bd` reads/writes the active worktree's `.beads/issues.jsonl` instead of mutating the main-repo `.beads` database from worker worktrees.
 - Regression coverage lives in `tests/tools/test_beads_worktree_sync.py` and must keep worktree `bd close`/`bd show`/`bd export`/`bd import` aligned with branch-local `.beads/issues.jsonl`.
+
+### Beads no-db worktree hydration contract
+- When a worker worktree may be stale relative to newly-created issues, run `bd sync --import` in that worktree before `bd show <id>` lookups.
+- Regression coverage lives in `tests/tools/test_beads_worktree_hydration.py` and verifies stale lookup failure followed by successful hydration.
 
 ### Beads PR-review `external_ref` uniqueness contract
 - Beads enforces global uniqueness for `issues.external_ref`; a dedicated `pr-review-task` bead cannot reuse the same `gh-pr:<number>` already attached to the original implementation bead.

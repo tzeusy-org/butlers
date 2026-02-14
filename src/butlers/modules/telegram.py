@@ -333,7 +333,6 @@ class TelegramModule(Module):
             decision=decision,
             dedupe_key=dedupe_key,
         )
-
     @staticmethod
     def _result_has_failure(result: RoutingResult) -> bool:
         if result.classification_error or result.routing_error:
@@ -641,6 +640,12 @@ class TelegramModule(Module):
                 message_key=message_key,
                 reaction=REACTION_IN_PROGRESS,
             )
+            message_inbox_id = await self._log_message_inbox(
+                message_text=text,
+                chat_id=chat_id,
+                message_key=message_key,
+                update=update,
+            )
 
             result = await self._pipeline.process(
                 message_text=text,
@@ -650,8 +655,8 @@ class TelegramModule(Module):
                     "source_channel": "telegram",
                     "source_identity": "bot",
                     "source_endpoint_identity": "telegram:bot",
-                    "sender_identity": _extract_sender_identity(update, fallback=chat_id),
-                    "external_event_id": _extract_update_id(update),
+                    "sender_identity": chat_id,
+                    "external_event_id": message_key or chat_id,
                     "external_thread_id": chat_id,
                     "source_tool": "bot_telegram_get_updates",
                     "chat_id": chat_id,

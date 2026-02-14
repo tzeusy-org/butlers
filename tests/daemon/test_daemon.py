@@ -2720,7 +2720,6 @@ class TestRouteExecuteTool:
             == "notify_request.origin_butler must match request_context.source_sender_identity."
         )
         assert result["result"]["notify_response"]["error"]["class"] == "validation_error"
-
     async def test_notify_target_resolution_failure_returns_validation_error(
         self, tmp_path: Path
     ) -> None:
