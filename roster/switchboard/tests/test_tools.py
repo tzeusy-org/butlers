@@ -1200,6 +1200,43 @@ async def test_route_creates_span_with_attributes(pool, otel_provider):
     assert span.attributes["tool_name"] == "get_data"
 
 
+async def test_route_dispatch_span_contains_request_context(pool, otel_provider):
+    """route() emits dispatch span with request lineage attributes."""
+    from butlers.tools.switchboard import register_butler, route
+
+    await register_butler(pool, "dispatchattrs", "http://localhost:8609/sse")
+
+    async def ok_call(endpoint_url, tool_name, args):
+        return "ok"
+
+    await route(
+        pool,
+        "dispatchattrs",
+        "get_data",
+        {
+            "request_id": "req-42",
+            "__switchboard_route_context": {
+                "request_id": "req-42",
+                "segment_id": "segment-9",
+                "fanout_mode": "ordered",
+                "attempt": 2,
+            },
+        },
+        call_fn=ok_call,
+    )
+
+    spans = otel_provider.get_finished_spans()
+    dispatch_spans = [s for s in spans if s.name == "butlers.switchboard.route.dispatch"]
+    assert len(dispatch_spans) == 1
+    span = dispatch_spans[0]
+    assert span.attributes["request.id"] == "req-42"
+    assert span.attributes["routing.destination_butler"] == "dispatchattrs"
+    assert span.attributes["routing.segment_id"] == "segment-9"
+    assert span.attributes["routing.fanout_mode"] == "ordered"
+    assert span.attributes["routing.attempt"] == 2
+    assert span.attributes["routing.outcome"] == "success"
+
+
 async def test_route_span_error_on_failure(pool, otel_provider):
     """route() sets span status to ERROR when the call fails."""
     from butlers.tools.switchboard import register_butler, route

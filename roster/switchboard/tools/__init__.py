@@ -56,6 +56,10 @@ from butlers.tools.switchboard.routing.route import (
     post_mail,
     route,
 )
+from butlers.tools.switchboard.routing.telemetry import (
+    get_switchboard_telemetry,
+    reset_switchboard_telemetry_for_tests,
+)
 
 __all__ = [
     "ButlerResult",
@@ -82,6 +86,7 @@ __all__ = [
     "dispatch_to_targets",
     "extraction_log_list",
     "extraction_log_undo",
+    "get_switchboard_telemetry",
     "list_butlers",
     "log_extraction",
     "log_notification",
@@ -91,6 +96,7 @@ __all__ = [
     "plan_fanout",
     "post_mail",
     "register_butler",
+    "reset_switchboard_telemetry_for_tests",
     "resolve_routing_target",
     "route",
     "validate_route_target",

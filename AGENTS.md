@@ -223,6 +223,10 @@ make test-qg
 - `resolve_routing_target()` in `roster/switchboard/tools/registry/registry.py` is the canonical gate for route eligibility: it reconciles TTL staleness, enforces stale/quarantine policy overrides, and validates route contract/capability requirements.
 - Eligibility transitions are audited in `butler_registry_eligibility_log`; stale transitions (`ttl_expired`) and recovery transitions (`health_restored`/`re_registered`) should remain traceable in tests.
 
+### Switchboard telemetry/correlation contract
+- `roster/switchboard/tools/routing/telemetry.py` is the canonical `butlers.switchboard.*` metrics surface with low-cardinality attribute normalization (`source`, `destination_butler`, `outcome`, `lifecycle_state`, `error_class`, `policy_tier`, `fanout_mode`, `model_family`, `prompt_version`, `schema_version` only).
+- `MessagePipeline.process()` emits the root trace span `butlers.switchboard.message` and persists `request_id` alongside lifecycle payloads in `message_inbox.classification` / `message_inbox.routing_results` (`{"request_id": ..., "payload"/"results"/"error": ...}`) for log-trace-persistence reconstruction.
+
 ### Notifications DB fallback contract
 - `src/butlers/api/routers/notifications.py` should degrade gracefully when the switchboard DB pool is unavailable: `GET /api/notifications` and `GET /api/butlers/{name}/notifications` return empty paginated payloads, and `GET /api/notifications/stats` returns zeroed stats instead of propagating a `KeyError`/404.
 

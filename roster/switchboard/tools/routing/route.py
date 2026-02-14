@@ -18,6 +18,10 @@ from butlers.tools.switchboard.registry.registry import (
     DEFAULT_ROUTE_CONTRACT_VERSION,
     resolve_routing_target,
 )
+from butlers.tools.switchboard.routing.telemetry import (
+    get_switchboard_telemetry,
+    normalize_error_class,
+)
 
 logger = logging.getLogger(__name__)
 _ROUTER_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
@@ -95,6 +99,7 @@ async def _call_tool_with_router_client(
     args: dict[str, Any],
 ) -> Any:
     first_exc: Exception | None = None
+    telemetry = get_switchboard_telemetry()
 
     for reconnect in (False, True):
         try:
@@ -112,6 +117,15 @@ async def _call_tool_with_router_client(
                 raise ConnectionError(message) from exc
 
             first_exc = exc
+            telemetry.retry_attempt.add(
+                1,
+                telemetry.attrs(
+                    source="switchboard",
+                    destination_butler="unknown",
+                    outcome="reconnect_attempt",
+                    error_class=normalize_error_class(exc),
+                ),
+            )
             logger.info(
                 "Switchboard router call failed for %s (%s); reconnecting once",
                 endpoint_url,
@@ -194,6 +208,21 @@ def _build_trigger_args(args: dict[str, Any]) -> dict[str, Any]:
     return trigger_args
 
 
+def _extract_route_context(args: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split route args into transport args and reserved switchboard context."""
+    copied_args = dict(args)
+    raw_context = copied_args.pop("__switchboard_route_context", None)
+    context: dict[str, Any] = {}
+    if isinstance(raw_context, dict):
+        context = {str(key): value for key, value in raw_context.items()}
+    if "request_id" not in context and copied_args.get("request_id") not in (None, ""):
+        context["request_id"] = str(copied_args["request_id"])
+    context.setdefault("fanout_mode", "ordered")
+    context.setdefault("segment_id", "segment-unknown")
+    context.setdefault("attempt", 1)
+    return copied_args, context
+
+
 async def route(
     pool: asyncpg.Pool,
     target_butler: str,
@@ -238,65 +267,151 @@ async def route(
         When *None*, the default MCP client is used.
     """
     tracer = trace.get_tracer("butlers")
-    with tracer.start_as_current_span("switchboard.route") as span:
-        span.set_attribute("target", target_butler)
-        span.set_attribute("tool_name", tool_name)
+    telemetry = get_switchboard_telemetry()
+    route_args, route_context = _extract_route_context(args)
+    request_id = str(route_context.get("request_id") or "unknown")
+    fanout_mode = str(route_context.get("fanout_mode") or "ordered")
+    segment_id = str(route_context.get("segment_id") or "segment-unknown")
+    attempt_raw = route_context.get("attempt", 1)
+    try:
+        attempt = int(attempt_raw)
+    except (TypeError, ValueError):
+        attempt = 1
 
-        t0 = time.monotonic()
+    source = str(
+        route_args.get("source_channel") or route_args.get("source") or source_butler or "unknown"
+    )
+    metric_base_attrs = telemetry.attrs(
+        source=source,
+        destination_butler=target_butler,
+        fanout_mode=fanout_mode,
+        schema_version="route.v1",
+    )
 
-        target_row, resolve_error = await resolve_routing_target(
-            pool,
-            target_butler,
-            required_capability=required_capability,
-            route_contract_version=route_contract_version,
-            allow_stale=allow_stale,
-            allow_quarantined=allow_quarantined,
-        )
-        if target_row is None:
-            error_msg = resolve_error or f"Butler '{target_butler}' not found in registry"
-            span.set_status(trace.StatusCode.ERROR, error_msg)
-            await _log_routing(pool, source_butler, target_butler, tool_name, False, 0, error_msg)
-            return {"error": error_msg}
+    with tracer.start_as_current_span("switchboard.route") as legacy_span:
+        legacy_span.set_attribute("target", target_butler)
+        legacy_span.set_attribute("tool_name", tool_name)
+        with tracer.start_as_current_span("butlers.switchboard.route.dispatch") as span:
+            span.set_attribute("target", target_butler)
+            span.set_attribute("tool_name", tool_name)
+            span.set_attribute("request.id", request_id)
+            span.set_attribute("routing.destination_butler", target_butler)
+            span.set_attribute("routing.segment_id", segment_id)
+            span.set_attribute("routing.fanout_mode", fanout_mode)
+            span.set_attribute("routing.attempt", attempt)
 
-        endpoint_url = target_row["endpoint_url"]
-
-        # Inject trace context into args
-        trace_context = inject_trace_context()
-        if trace_context:
-            args = {**args, "_trace_context": trace_context}
-
-        try:
-            if call_fn is not None:
-                result = await call_fn(endpoint_url, tool_name, args)
-            else:
-                result = await _call_butler_tool(endpoint_url, tool_name, args)
-            duration_ms = int((time.monotonic() - t0) * 1000)
-            await _log_routing(
-                pool, source_butler, target_butler, tool_name, True, duration_ms, None
+            telemetry.subroute_dispatched.add(
+                1,
+                {
+                    **metric_base_attrs,
+                    "outcome": "attempted",
+                },
             )
-            # Update last_seen_at on successful route
-            await pool.execute(
-                """
-                UPDATE butler_registry
-                SET last_seen_at = now(),
-                    eligibility_state = CASE
-                        WHEN eligibility_state = 'quarantined' THEN eligibility_state
-                        ELSE 'active'
-                    END,
-                    eligibility_updated_at = now()
-                WHERE name = $1
-                """,
+
+            t0 = time.monotonic()
+
+            # Resolve target with registry validation
+            target_row, resolve_error = await resolve_routing_target(
+                pool,
                 target_butler,
+                required_capability=required_capability,
+                route_contract_version=route_contract_version,
+                allow_stale=allow_stale,
+                allow_quarantined=allow_quarantined,
             )
-            return {"result": result}
-        except Exception as exc:
-            span.set_status(trace.StatusCode.ERROR, str(exc))
-            duration_ms = int((time.monotonic() - t0) * 1000)
-            error_msg = f"{type(exc).__name__}: {exc}"
-            await _log_routing(
-                pool, source_butler, target_butler, tool_name, False, duration_ms, error_msg
-            )
-            return {"error": error_msg}
+            if target_row is None:
+                error_msg = resolve_error or f"Butler '{target_butler}' not found in registry"
+                span.set_status(trace.StatusCode.ERROR, error_msg)
+                legacy_span.set_status(trace.StatusCode.ERROR, error_msg)
+                span.set_attribute("routing.outcome", "target_unavailable")
+                span.set_attribute("error.class", "LookupError")
+                telemetry.subroute_result.add(
+                    1,
+                    {
+                        **metric_base_attrs,
+                        "outcome": "target_unavailable",
+                        "error_class": "LookupError",
+                    },
+                )
+                await _log_routing(
+                    pool, source_butler, target_butler, tool_name, False, 0, error_msg
+                )
+                return {"error": error_msg}
+
+            endpoint_url = target_row["endpoint_url"]
+
+            # Inject trace context into args
+            trace_context = inject_trace_context()
+            if trace_context:
+                route_args = {**route_args, "_trace_context": trace_context}
+
+            try:
+                if call_fn is not None:
+                    result = await call_fn(endpoint_url, tool_name, route_args)
+                else:
+                    result = await _call_butler_tool(endpoint_url, tool_name, route_args)
+                duration_ms = int((time.monotonic() - t0) * 1000)
+                span.set_attribute("routing.outcome", "success")
+                telemetry.subroute_latency_ms.record(
+                    duration_ms,
+                    {
+                        **metric_base_attrs,
+                        "outcome": "success",
+                    },
+                )
+                telemetry.subroute_result.add(
+                    1,
+                    {
+                        **metric_base_attrs,
+                        "outcome": "success",
+                    },
+                )
+                await _log_routing(
+                    pool, source_butler, target_butler, tool_name, True, duration_ms, None
+                )
+                # Update last_seen_at on successful route
+                await pool.execute(
+                    """
+                    UPDATE butler_registry
+                    SET last_seen_at = now(),
+                        eligibility_state = CASE
+                            WHEN eligibility_state = 'quarantined' THEN eligibility_state
+                            ELSE 'active'
+                        END,
+                        eligibility_updated_at = now()
+                    WHERE name = $1
+                    """,
+                    target_butler,
+                )
+                return {"result": result}
+            except Exception as exc:
+                error_class = normalize_error_class(exc)
+                span.set_status(trace.StatusCode.ERROR, str(exc))
+                span.set_attribute("routing.outcome", "failure")
+                span.set_attribute("error.class", error_class)
+                legacy_span.set_status(trace.StatusCode.ERROR, str(exc))
+                duration_ms = int((time.monotonic() - t0) * 1000)
+                error_msg = f"{type(exc).__name__}: {exc}"
+                telemetry.subroute_latency_ms.record(
+                    duration_ms,
+                    {
+                        **metric_base_attrs,
+                        "outcome": "failure",
+                        "error_class": error_class,
+                    },
+                )
+                telemetry.subroute_result.add(
+                    1,
+                    {
+                        **metric_base_attrs,
+                        "outcome": "failure",
+                        "error_class": error_class,
+                    },
+                )
+                await _log_routing(
+                    pool, source_butler, target_butler, tool_name, False, duration_ms, error_msg
+                )
+                return {"error": error_msg}
 
 
 async def post_mail(

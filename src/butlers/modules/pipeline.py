@@ -14,6 +14,14 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID, uuid4
+
+from opentelemetry import trace
+
+from butlers.tools.switchboard.routing.telemetry import (
+    get_switchboard_telemetry,
+    normalize_error_class,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +133,7 @@ class MessagePipeline:
             "source": source,
             "chat_id": chat_id,
             "target_butler": target_butler,
+            "destination_butler": target_butler,
             "latency_ms": latency_ms,
         }
         fields.update(extra)
@@ -155,6 +164,18 @@ class MessagePipeline:
                 return target, routed_message
 
         return "general", fallback_message
+
+    @staticmethod
+    def _coerce_request_id(raw_request_id: Any) -> str:
+        if raw_request_id in (None, ""):
+            return str(uuid4())
+        text = str(raw_request_id).strip()
+        if not text:
+            return str(uuid4())
+        try:
+            return str(UUID(text))
+        except ValueError:
+            return text[:128]
 
     @staticmethod
     def _string_or_none(value: Any) -> str | None:
@@ -471,8 +492,6 @@ class MessagePipeline:
         RoutingResult
             Contains the target butler name, route result, and any errors.
         """
-        from datetime import UTC, datetime
-
         # Lazy import to avoid circular dependencies
         from butlers.tools.switchboard import (
             aggregate_responses,
@@ -485,6 +504,9 @@ class MessagePipeline:
         route_to = self._route_fn or route
 
         args = dict(tool_args or {})
+        request_id = self._coerce_request_id(args.get("request_id") or message_inbox_id)
+        args["request_id"] = request_id
+
         source_metadata = self._build_source_metadata(args, tool_name=tool_name)
         source = source_metadata["channel"]
         source_id = source_metadata.get("source_id")
@@ -492,302 +514,563 @@ class MessagePipeline:
         chat_id = str(raw_chat_id) if raw_chat_id not in (None, "") else None
         message_length = len(message_text)
         message_preview = self._message_preview(message_text)
+        policy_tier = str(args.get("policy_tier") or "default")
+        prompt_version = str(args.get("prompt_version") or "switchboard.v1")
+        model_family = str(args.get("model_family") or "claude")
+        schema_version = str(args.get("schema_version") or "route.v1")
+        received_at = datetime.now(UTC)
+        request_attrs = {
+            "source": source,
+            "policy_tier": policy_tier,
+            "prompt_version": prompt_version,
+            "model_family": model_family,
+            "schema_version": schema_version,
+        }
+        tracer = trace.get_tracer("butlers")
+        telemetry = get_switchboard_telemetry()
+        telemetry.set_queue_depth(0)
+        ingress_started_at = time.perf_counter()
 
-        start = time.perf_counter()
-        logger.info(
-            "Pipeline processing message",
-            extra=self._log_fields(
-                source=source,
-                chat_id=chat_id,
-                target_butler=None,
-                latency_ms=0.0,
-                message_length=message_length,
-                message_preview=message_preview,
-            ),
-        )
-
-        if message_inbox_id is None and self._enable_ingress_dedupe:
-            try:
-                ingress_record = await self._accept_ingress(
-                    message_text=message_text,
-                    args=args,
-                    source_metadata=source_metadata,
-                    source=source,
-                    chat_id=chat_id,
+        with telemetry.track_inflight_requests():
+            with tracer.start_as_current_span("butlers.switchboard.message") as root_span:
+                root_span.set_attribute("request.id", request_id)
+                root_span.set_attribute("request.received_at", received_at.isoformat())
+                root_span.set_attribute("request.source_channel", source)
+                root_span.set_attribute(
+                    "request.source_endpoint_identity",
+                    str(source_metadata.get("identity") or "unknown"),
                 )
-            except Exception:
-                logger.exception(
-                    "Ingress dedupe persistence failed; proceeding without dedupe",
+                root_span.set_attribute(
+                    "request.source_thread_identity",
+                    str(source_id or chat_id or "none"),
+                )
+                root_span.set_attribute("request.schema_version", schema_version)
+                root_span.set_attribute("switchboard.policy_tier", policy_tier)
+                root_span.set_attribute("switchboard.prompt_version", prompt_version)
+                root_span.set_attribute("switchboard.model_family", model_family)
+
+                with tracer.start_as_current_span("butlers.switchboard.ingress.normalize"):
+                    telemetry.message_received.add(1, request_attrs)
+
+                with tracer.start_as_current_span(
+                    "butlers.switchboard.ingress.dedupe"
+                ) as dedupe_span:
+                    if message_inbox_id is None and self._enable_ingress_dedupe:
+                        try:
+                            ingress_record = await self._accept_ingress(
+                                message_text=message_text,
+                                args=args,
+                                source_metadata=source_metadata,
+                                source=source,
+                                chat_id=chat_id,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Ingress dedupe persistence failed; proceeding without dedupe",
+                                extra=self._log_fields(
+                                    source=source,
+                                    chat_id=chat_id,
+                                    target_butler=None,
+                                    latency_ms=None,
+                                ),
+                            )
+                            ingress_record = None
+
+                        if ingress_record is not None:
+                            message_inbox_id = ingress_record.request_id
+                            if ingress_record.decision == "deduped":
+                                dedupe_span.set_attribute("switchboard.deduplicated", True)
+                                telemetry.message_deduplicated.add(1, request_attrs)
+                                return RoutingResult(
+                                    target_butler="deduped",
+                                    route_result={
+                                        "request_id": str(ingress_record.request_id),
+                                        "ingress_decision": "deduped",
+                                        "dedupe_key": ingress_record.dedupe_key,
+                                        "dedupe_strategy": ingress_record.dedupe_strategy,
+                                    },
+                                )
+                    dedupe_span.set_attribute("switchboard.deduplicated", False)
+
+                ingress_accept_latency_ms = (time.perf_counter() - ingress_started_at) * 1000
+                telemetry.ingress_accept_latency_ms.record(ingress_accept_latency_ms, request_attrs)
+                telemetry.lifecycle_transition.add(
+                    1,
+                    {
+                        **request_attrs,
+                        "lifecycle_state": "accepted",
+                        "outcome": "accepted",
+                    },
+                )
+                logger.info(
+                    "Pipeline processing message",
                     extra=self._log_fields(
                         source=source,
                         chat_id=chat_id,
                         target_butler=None,
-                        latency_ms=None,
+                        latency_ms=0.0,
+                        request_id=request_id,
+                        lifecycle_state="accepted",
+                        message_length=message_length,
+                        message_preview=message_preview,
                     ),
                 )
-                ingress_record = None
 
-            if ingress_record is not None:
-                message_inbox_id = ingress_record.request_id
-                if ingress_record.decision == "deduped":
-                    return RoutingResult(
-                        target_butler="deduped",
-                        route_result={
-                            "request_id": str(ingress_record.request_id),
-                            "ingress_decision": "deduped",
-                            "dedupe_key": ingress_record.dedupe_key,
-                            "dedupe_strategy": ingress_record.dedupe_strategy,
-                        },
+                # Step 1: Classify
+                start = time.perf_counter()
+                classify_start = time.perf_counter()
+                classification = None
+                try:
+                    with tracer.start_as_current_span("butlers.switchboard.routing.llm_decision"):
+                        classification = await classify(self._pool, message_text, self._dispatch_fn)
+                    classification_latency_ms = (time.perf_counter() - classify_start) * 1000
+                    telemetry.routing_decision_latency_ms.record(
+                        classification_latency_ms, request_attrs
                     )
 
-        # Step 1: Classify
-        classify_start = time.perf_counter()
-        classification = None
-        try:
-            classification = await classify(self._pool, message_text, self._dispatch_fn)
-            classification_latency_ms = (time.perf_counter() - classify_start) * 1000
+                    if (
+                        isinstance(classification, list)
+                        and classification
+                        and self._route_fn is None
+                    ):
+                        with tracer.start_as_current_span(
+                            "butlers.switchboard.routing.plan_fanout"
+                        ):
+                            logger.info(
+                                "Pipeline classified message as decomposition",
+                                extra=self._log_fields(
+                                    source=source,
+                                    chat_id=chat_id,
+                                    target_butler="multi",
+                                    latency_ms=classification_latency_ms,
+                                    request_id=request_id,
+                                    lifecycle_state="planned",
+                                    fanout_mode="ordered",
+                                    subtask_count=len(classification),
+                                ),
+                            )
 
-            # Handle decomposition (list of sub-tasks) only for default routing.
-            # Custom route_fn call sites expect single-target routing semantics.
-            if isinstance(classification, list) and classification and self._route_fn is None:
+                        route_start = time.perf_counter()
+                        with tracer.start_as_current_span("butlers.switchboard.route.dispatch"):
+                            sub_results = await dispatch_decomposed(
+                                self._pool,
+                                targets=classification,
+                                source_channel=source,
+                                source_id=source_id,
+                                tool_name=tool_name,
+                                source_metadata=source_metadata,
+                                request_id=request_id,
+                                fanout_mode="ordered",
+                            )
+                        routed_targets = [
+                            str(entry.get("butler", "")).strip()
+                            for entry in classification
+                            if isinstance(entry, dict) and str(entry.get("butler", "")).strip()
+                        ]
+                        acked_targets: list[str] = []
+                        failed_targets: list[str] = []
+                        failed_details: list[str] = []
+                        for sub_result in sub_results:
+                            butler = str(sub_result.get("butler", "")).strip()
+                            if not butler:
+                                continue
+                            if sub_result.get("error"):
+                                failed_targets.append(butler)
+                                failed_details.append(f"{butler}: {sub_result['error']}")
+                            else:
+                                acked_targets.append(butler)
+
+                        with tracer.start_as_current_span("butlers.switchboard.route.aggregate"):
+                            aggregated = aggregate_responses(
+                                sub_results, dispatch_fn=self._dispatch_fn
+                            )
+                            if hasattr(aggregated, "__await__"):
+                                aggregated = await aggregated
+
+                        routing_latency_ms = (time.perf_counter() - route_start) * 1000
+                        total_latency_ms = (time.perf_counter() - start) * 1000
+                        telemetry.fanout_completion_latency_ms.record(
+                            routing_latency_ms,
+                            {
+                                **request_attrs,
+                                "fanout_mode": "ordered",
+                                "outcome": "failure" if failed_details else "success",
+                            },
+                        )
+                        telemetry.end_to_end_latency_ms.record(
+                            total_latency_ms,
+                            {
+                                **request_attrs,
+                                "outcome": "failure" if failed_details else "success",
+                            },
+                        )
+                        lifecycle_state = "errored" if failed_details else "parsed"
+                        telemetry.lifecycle_transition.add(
+                            1,
+                            {
+                                **request_attrs,
+                                "lifecycle_state": lifecycle_state,
+                                "outcome": "partial_failure" if failed_details else "success",
+                            },
+                        )
+
+                        logger.info(
+                            "Pipeline routed decomposed message",
+                            extra=self._log_fields(
+                                source=source,
+                                chat_id=chat_id,
+                                target_butler="multi",
+                                latency_ms=total_latency_ms,
+                                classification_latency_ms=classification_latency_ms,
+                                routing_latency_ms=routing_latency_ms,
+                                request_id=request_id,
+                                lifecycle_state=lifecycle_state,
+                                fanout_mode="ordered",
+                                error_class=(
+                                    normalize_error_class(failed_details[0])
+                                    if failed_details
+                                    else "none"
+                                ),
+                            ),
+                        )
+
+                        if message_inbox_id:
+                            with tracer.start_as_current_span(
+                                "butlers.switchboard.persistence.write"
+                            ):
+                                async with self._pool.acquire() as conn:
+                                    await conn.execute(
+                                        """
+                                        UPDATE message_inbox
+                                        SET
+                                            classification = $1,
+                                            classified_at = $2,
+                                            classification_duration_ms = $3,
+                                            routing_results = $4,
+                                            response_summary = $5,
+                                            completed_at = $6
+                                        WHERE id = $7
+                                        """,
+                                        json.dumps(
+                                            {"request_id": request_id, "payload": classification}
+                                        ),
+                                        datetime.now(UTC),
+                                        int(classification_latency_ms),
+                                        json.dumps(
+                                            {"request_id": request_id, "results": sub_results}
+                                        ),
+                                        aggregated,
+                                        datetime.now(UTC),
+                                        message_inbox_id,
+                                    )
+
+                        return RoutingResult(
+                            target_butler="multi",
+                            route_result={"result": aggregated},
+                            routing_error="; ".join(failed_details) if failed_details else None,
+                            routed_targets=routed_targets,
+                            acked_targets=acked_targets,
+                            failed_targets=failed_targets,
+                        )
+
+                    target, routed_message = self._normalize_classification(
+                        classification,
+                        fallback_message=message_text,
+                    )
+                except Exception as exc:
+                    error_msg = f"{type(exc).__name__}: {exc}"
+                    error_class = normalize_error_class(exc)
+                    classification_latency_ms = (time.perf_counter() - classify_start) * 1000
+                    telemetry.fallback_to_general.add(
+                        1,
+                        {
+                            **request_attrs,
+                            "destination_butler": "general",
+                            "outcome": "classification_error",
+                            "error_class": error_class,
+                        },
+                    )
+                    telemetry.lifecycle_transition.add(
+                        1,
+                        {
+                            **request_attrs,
+                            "lifecycle_state": "errored",
+                            "outcome": "classification_error",
+                            "error_class": error_class,
+                        },
+                    )
+                    logger.warning(
+                        "Classification failed; falling back to general",
+                        extra=self._log_fields(
+                            source=source,
+                            chat_id=chat_id,
+                            target_butler="general",
+                            latency_ms=classification_latency_ms,
+                            request_id=request_id,
+                            lifecycle_state="errored",
+                            error_class=error_class,
+                            classification_error=error_msg,
+                        ),
+                    )
+
+                    if message_inbox_id:
+                        with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
+                            async with self._pool.acquire() as conn:
+                                await conn.execute(
+                                    """
+                                    UPDATE message_inbox
+                                    SET
+                                        classification = $1,
+                                        classified_at = $2,
+                                        classification_duration_ms = $3,
+                                        response_summary = $4,
+                                        completed_at = $5
+                                    WHERE id = $6
+                                    """,
+                                    json.dumps({"request_id": request_id, "error": error_msg}),
+                                    datetime.now(UTC),
+                                    int(classification_latency_ms),
+                                    "Classification failed",
+                                    datetime.now(UTC),
+                                    message_inbox_id,
+                                )
+
+                    return RoutingResult(
+                        target_butler="general",
+                        classification_error=error_msg,
+                    )
+
+                args["prompt"] = routed_message
+                args["message"] = routed_message
+                args["source_metadata"] = source_metadata
+                args["source_channel"] = source
+                args["source_identity"] = source_metadata["identity"]
+                args["source_tool"] = source_metadata["tool_name"]
+                args["request_id"] = request_id
+                args["__switchboard_route_context"] = {
+                    "request_id": request_id,
+                    "fanout_mode": "ordered",
+                    "segment_id": "segment-0",
+                    "attempt": 1,
+                }
+                if source_id is not None:
+                    args["source_id"] = source_id
                 logger.info(
-                    "Pipeline classified message as decomposition",
+                    "Pipeline classified message",
                     extra=self._log_fields(
                         source=source,
                         chat_id=chat_id,
-                        target_butler="multi",
+                        target_butler=target,
                         latency_ms=classification_latency_ms,
-                        subtask_count=len(classification),
+                        request_id=request_id,
+                        lifecycle_state="planned",
                     ),
                 )
 
+                # Step 2: Route
                 route_start = time.perf_counter()
-                sub_results = await dispatch_decomposed(
-                    self._pool,
-                    targets=classification,
-                    source_channel=source,
-                    source_id=source_id,
-                    tool_name=tool_name,
-                    source_metadata=source_metadata,
-                )
-                routed_targets = [
-                    str(entry.get("butler", "")).strip()
-                    for entry in classification
-                    if isinstance(entry, dict) and str(entry.get("butler", "")).strip()
-                ]
-                acked_targets: list[str] = []
-                failed_targets: list[str] = []
-                failed_details: list[str] = []
-                for sub_result in sub_results:
-                    butler = str(sub_result.get("butler", "")).strip()
-                    if not butler:
-                        continue
-                    if sub_result.get("error"):
-                        failed_targets.append(butler)
-                        failed_details.append(f"{butler}: {sub_result['error']}")
-                    else:
-                        acked_targets.append(butler)
+                result = None
+                try:
+                    with tracer.start_as_current_span("butlers.switchboard.route.dispatch"):
+                        result = await route_to(
+                            self._pool,
+                            target,
+                            tool_name,
+                            args,
+                            self._source_butler,
+                        )
+                except Exception as exc:
+                    error_msg = f"{type(exc).__name__}: {exc}"
+                    error_class = normalize_error_class(exc)
+                    routing_latency_ms = (time.perf_counter() - route_start) * 1000
+                    total_latency_ms = (time.perf_counter() - start) * 1000
+                    telemetry.end_to_end_latency_ms.record(
+                        total_latency_ms,
+                        {
+                            **request_attrs,
+                            "destination_butler": target,
+                            "outcome": "failure",
+                            "error_class": error_class,
+                        },
+                    )
+                    telemetry.lifecycle_transition.add(
+                        1,
+                        {
+                            **request_attrs,
+                            "destination_butler": target,
+                            "lifecycle_state": "errored",
+                            "outcome": "routing_exception",
+                            "error_class": error_class,
+                        },
+                    )
+                    logger.exception(
+                        "Routing failed for message to butler %s",
+                        target,
+                        extra=self._log_fields(
+                            source=source,
+                            chat_id=chat_id,
+                            target_butler=target,
+                            latency_ms=routing_latency_ms,
+                            request_id=request_id,
+                            lifecycle_state="errored",
+                            error_class=error_class,
+                            routing_error=error_msg,
+                        ),
+                    )
 
-                aggregated = aggregate_responses(sub_results, dispatch_fn=self._dispatch_fn)
-                if hasattr(aggregated, "__await__"):
-                    aggregated = await aggregated
+                    if message_inbox_id:
+                        with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
+                            async with self._pool.acquire() as conn:
+                                await conn.execute(
+                                    """
+                                    UPDATE message_inbox
+                                    SET
+                                        classification = $1,
+                                        classified_at = $2,
+                                        classification_duration_ms = $3,
+                                        routing_results = $4,
+                                        response_summary = $5,
+                                        completed_at = $6
+                                    WHERE id = $7
+                                    """,
+                                    json.dumps(
+                                        {"request_id": request_id, "payload": classification}
+                                    ),
+                                    datetime.now(UTC),
+                                    int(classification_latency_ms),
+                                    json.dumps({"request_id": request_id, "error": error_msg}),
+                                    "Routing failed",
+                                    datetime.now(UTC),
+                                    message_inbox_id,
+                                )
 
+                    return RoutingResult(
+                        target_butler=target,
+                        routing_error=error_msg,
+                        routed_targets=[target],
+                        failed_targets=[target],
+                    )
+                if isinstance(result, dict) and result.get("error"):
+                    error_msg = str(result["error"])
+                    error_class = normalize_error_class(error_msg)
+                    routing_latency_ms = (time.perf_counter() - route_start) * 1000
+                    total_latency_ms = (time.perf_counter() - start) * 1000
+                    telemetry.end_to_end_latency_ms.record(
+                        total_latency_ms,
+                        {
+                            **request_attrs,
+                            "destination_butler": target,
+                            "outcome": "failure",
+                            "error_class": error_class,
+                        },
+                    )
+                    telemetry.lifecycle_transition.add(
+                        1,
+                        {
+                            **request_attrs,
+                            "destination_butler": target,
+                            "lifecycle_state": "errored",
+                            "outcome": "routing_error",
+                            "error_class": error_class,
+                        },
+                    )
+                    logger.warning(
+                        "Routing returned error for message to butler %s",
+                        target,
+                        extra=self._log_fields(
+                            source=source,
+                            chat_id=chat_id,
+                            target_butler=target,
+                            latency_ms=routing_latency_ms,
+                            request_id=request_id,
+                            lifecycle_state="errored",
+                            error_class=error_class,
+                            routing_error=error_msg,
+                        ),
+                    )
+
+                    if message_inbox_id:
+                        with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
+                            async with self._pool.acquire() as conn:
+                                await conn.execute(
+                                    """
+                                    UPDATE message_inbox
+                                    SET
+                                        classification = $1,
+                                        classified_at = $2,
+                                        classification_duration_ms = $3,
+                                        routing_results = $4,
+                                        response_summary = $5,
+                                        completed_at = $6
+                                    WHERE id = $7
+                                    """,
+                                    json.dumps(
+                                        {"request_id": request_id, "payload": classification}
+                                    ),
+                                    datetime.now(UTC),
+                                    int(classification_latency_ms),
+                                    json.dumps({"request_id": request_id, "payload": result}),
+                                    "Routing failed",
+                                    datetime.now(UTC),
+                                    message_inbox_id,
+                                )
+
+                    return RoutingResult(
+                        target_butler=target,
+                        route_result=result,
+                        routing_error=error_msg,
+                        routed_targets=[target],
+                        failed_targets=[target],
+                    )
                 routing_latency_ms = (time.perf_counter() - route_start) * 1000
                 total_latency_ms = (time.perf_counter() - start) * 1000
-
+                telemetry.end_to_end_latency_ms.record(
+                    total_latency_ms,
+                    {
+                        **request_attrs,
+                        "destination_butler": target,
+                        "outcome": "success",
+                    },
+                )
+                telemetry.lifecycle_transition.add(
+                    1,
+                    {
+                        **request_attrs,
+                        "destination_butler": target,
+                        "lifecycle_state": "parsed",
+                        "outcome": "success",
+                    },
+                )
                 logger.info(
-                    "Pipeline routed decomposed message",
+                    "Pipeline routed message",
                     extra=self._log_fields(
                         source=source,
                         chat_id=chat_id,
-                        target_butler="multi",
+                        target_butler=target,
                         latency_ms=total_latency_ms,
                         classification_latency_ms=classification_latency_ms,
                         routing_latency_ms=routing_latency_ms,
+                        request_id=request_id,
+                        lifecycle_state="parsed",
                     ),
                 )
 
-                completed_at = datetime.now(UTC)
-                await self._update_message_inbox_lifecycle(
-                    message_inbox_id=message_inbox_id,
-                    decomposition_output=classification,
-                    dispatch_outcomes=sub_results,
-                    response_summary=str(aggregated),
-                    lifecycle_state=("completed_with_failures" if failed_targets else "completed"),
-                    classified_at=completed_at,
-                    classification_duration_ms=classification_latency_ms,
-                    final_state_at=completed_at,
-                )
+                if message_inbox_id:
+                    completed_at = datetime.now(UTC)
+                    await self._update_message_inbox_lifecycle(
+                        message_inbox_id=message_inbox_id,
+                        decomposition_output=classification,
+                        dispatch_outcomes=result,
+                        response_summary="Success",
+                        lifecycle_state="completed",
+                        classified_at=completed_at,
+                        classification_duration_ms=classification_latency_ms,
+                        final_state_at=completed_at,
+                    )
 
                 return RoutingResult(
-                    target_butler="multi",
-                    route_result={"result": aggregated},
-                    routing_error="; ".join(failed_details) if failed_details else None,
-                    routed_targets=routed_targets,
-                    acked_targets=acked_targets,
-                    failed_targets=failed_targets,
+                    target_butler=target,
+                    route_result=result,
+                    routed_targets=[target],
+                    acked_targets=[target],
                 )
-
-            target, routed_message = self._normalize_classification(
-                classification,
-                fallback_message=message_text,
-            )
-        except Exception as exc:
-            error_msg = f"{type(exc).__name__}: {exc}"
-            classification_latency_ms = (time.perf_counter() - classify_start) * 1000
-            logger.warning(
-                "Classification failed; falling back to general",
-                extra=self._log_fields(
-                    source=source,
-                    chat_id=chat_id,
-                    target_butler="general",
-                    latency_ms=classification_latency_ms,
-                    classification_error=error_msg,
-                ),
-            )
-
-            completed_at = datetime.now(UTC)
-            await self._update_message_inbox_lifecycle(
-                message_inbox_id=message_inbox_id,
-                decomposition_output={"error": error_msg},
-                dispatch_outcomes=None,
-                response_summary="Classification failed",
-                lifecycle_state="classification_failed",
-                classified_at=completed_at,
-                classification_duration_ms=classification_latency_ms,
-                final_state_at=completed_at,
-            )
-
-            return RoutingResult(
-                target_butler="general",
-                classification_error=error_msg,
-            )
-        classification_latency_ms = (time.perf_counter() - classify_start) * 1000
-        args["prompt"] = routed_message
-        args["message"] = routed_message
-        args["source_metadata"] = source_metadata
-        args["source_channel"] = source
-        args["source_identity"] = source_metadata["identity"]
-        args["source_tool"] = source_metadata["tool_name"]
-        if source_id is not None:
-            args["source_id"] = source_id
-        logger.info(
-            "Pipeline classified message",
-            extra=self._log_fields(
-                source=source,
-                chat_id=chat_id,
-                target_butler=target,
-                latency_ms=classification_latency_ms,
-            ),
-        )
-
-        # Step 2: Route
-        route_start = time.perf_counter()
-        result = None
-        try:
-            result = await route_to(
-                self._pool,
-                target,
-                tool_name,
-                args,
-                self._source_butler,
-            )
-        except Exception as exc:
-            error_msg = f"{type(exc).__name__}: {exc}"
-            routing_latency_ms = (time.perf_counter() - route_start) * 1000
-            logger.exception(
-                "Routing failed for message to butler %s",
-                target,
-                extra=self._log_fields(
-                    source=source,
-                    chat_id=chat_id,
-                    target_butler=target,
-                    latency_ms=routing_latency_ms,
-                    routing_error=error_msg,
-                ),
-            )
-
-            completed_at = datetime.now(UTC)
-            await self._update_message_inbox_lifecycle(
-                message_inbox_id=message_inbox_id,
-                decomposition_output=classification,
-                dispatch_outcomes={"error": error_msg},
-                response_summary="Routing failed",
-                lifecycle_state="routing_failed",
-                classified_at=completed_at,
-                classification_duration_ms=classification_latency_ms,
-                final_state_at=completed_at,
-            )
-
-            return RoutingResult(
-                target_butler=target,
-                routing_error=error_msg,
-                routed_targets=[target],
-                failed_targets=[target],
-            )
-        if isinstance(result, dict) and result.get("error"):
-            error_msg = str(result["error"])
-            routing_latency_ms = (time.perf_counter() - route_start) * 1000
-            logger.warning(
-                "Routing returned error for message to butler %s",
-                target,
-                extra=self._log_fields(
-                    source=source,
-                    chat_id=chat_id,
-                    target_butler=target,
-                    latency_ms=routing_latency_ms,
-                    routing_error=error_msg,
-                ),
-            )
-
-            completed_at = datetime.now(UTC)
-            await self._update_message_inbox_lifecycle(
-                message_inbox_id=message_inbox_id,
-                decomposition_output=classification,
-                dispatch_outcomes=result,
-                response_summary="Routing failed",
-                lifecycle_state="routing_failed",
-                classified_at=completed_at,
-                classification_duration_ms=classification_latency_ms,
-                final_state_at=completed_at,
-            )
-
-            return RoutingResult(
-                target_butler=target,
-                route_result=result,
-                routing_error=error_msg,
-                routed_targets=[target],
-                failed_targets=[target],
-            )
-        routing_latency_ms = (time.perf_counter() - route_start) * 1000
-        total_latency_ms = (time.perf_counter() - start) * 1000
-        logger.info(
-            "Pipeline routed message",
-            extra=self._log_fields(
-                source=source,
-                chat_id=chat_id,
-                target_butler=target,
-                latency_ms=total_latency_ms,
-                classification_latency_ms=classification_latency_ms,
-                routing_latency_ms=routing_latency_ms,
-            ),
-        )
-
-        completed_at = datetime.now(UTC)
-        await self._update_message_inbox_lifecycle(
-            message_inbox_id=message_inbox_id,
-            decomposition_output=classification,
-            dispatch_outcomes=result,
-            response_summary="Success",
-            lifecycle_state="completed",
-            classified_at=completed_at,
-            classification_duration_ms=classification_latency_ms,
-            final_state_at=completed_at,
-        )
-
-        return RoutingResult(
-            target_butler=target,
-            route_result=result,
-            routed_targets=[target],
-            acked_targets=[target],
-        )

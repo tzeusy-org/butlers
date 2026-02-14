@@ -304,6 +304,9 @@ Rules:
 ### 10.8 SLO/SLI and Error Budget Contract
 Switchboard must define and track operational SLOs with explicit error budgets.
 
+Baseline runtime targets and alert policy are defined in
+`docs/switchboard_observability_slo.md`.
+
 Minimum SLI set:
 - Ingress acceptance latency.
 - End-to-end fanout completion latency.

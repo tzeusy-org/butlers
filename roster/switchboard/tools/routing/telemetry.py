@@ -13,6 +13,7 @@ from opentelemetry.metrics import CallbackOptions, Observation
 
 _METER_NAME = "butlers.switchboard"
 _SCHEMA_VERSION_DEFAULT = "route.v1"
+_ERROR_CLASS_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?::|$)")
 
 _ALLOWED_ATTRIBUTE_KEYS = frozenset(
     {
@@ -28,8 +29,6 @@ _ALLOWED_ATTRIBUTE_KEYS = frozenset(
         "schema_version",
     }
 )
-
-_ERROR_CLASS_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(?::|$)")
 
 
 def normalize_error_class(value: Exception | str | None) -> str:
@@ -179,6 +178,9 @@ class SwitchboardTelemetry:
             unit="1",
             description="Current number of circuit-open downstream targets.",
         )
+
+    def attrs(self, **attributes: Any) -> dict[str, str]:
+        return _metric_attrs(**attributes)
 
     def _observe_queue_depth(self, _options: CallbackOptions) -> Iterable[Observation]:
         with self._lock:

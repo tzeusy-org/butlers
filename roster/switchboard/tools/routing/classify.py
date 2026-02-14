@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from butlers.tools.switchboard.registry import discover_butlers, list_butlers
+from butlers.tools.switchboard.routing.telemetry import (
+    get_switchboard_telemetry,
+    normalize_error_class,
+)
 
 logger = logging.getLogger(__name__)
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3]
@@ -227,6 +231,7 @@ async def classify_message(
     Falls back to ``[{'butler': 'general', 'prompt': message, 'segment': {...}}]`` when
     classification fails.
     """
+    telemetry = get_switchboard_telemetry()
     fallback = _fallback_entries(message, rationale="fallback_to_general")
 
     butlers = await _load_available_butlers(pool)
@@ -276,10 +281,39 @@ async def classify_message(
         result = await dispatch_fn(prompt=prompt, trigger_source="tick")
         if result and hasattr(result, "result") and result.result:
             parsed = _parse_classification(result.result, butlers, message)
-            return _apply_capability_preferences(parsed, butlers)
-    except Exception:
+            adjusted = _apply_capability_preferences(parsed, butlers)
+            if adjusted and all(
+                str(entry.get("butler", "")).strip().lower() == "general" for entry in adjusted
+            ):
+                telemetry.ambiguity_to_general.add(
+                    1,
+                    telemetry.attrs(
+                        source="switchboard",
+                        destination_butler="general",
+                        outcome="ambiguous",
+                    ),
+                )
+            return adjusted
+    except Exception as exc:
+        telemetry.fallback_to_general.add(
+            1,
+            telemetry.attrs(
+                source="switchboard",
+                destination_butler="general",
+                outcome="classification_exception",
+                error_class=normalize_error_class(exc),
+            ),
+        )
         logger.exception("Classification failed")
 
+    telemetry.fallback_to_general.add(
+        1,
+        telemetry.attrs(
+            source="switchboard",
+            destination_butler="general",
+            outcome="classification_fallback",
+        ),
+    )
     return _apply_capability_preferences(fallback, butlers)
 
 
@@ -343,38 +377,51 @@ def _parse_classification(
     required keys.  Returns the fallback on any parse or validation
     error.
     """
+    telemetry = get_switchboard_telemetry()
     fallback = _fallback_entries(original_message, rationale="fallback_to_general")
+
+    def _record_parse_failure(reason: str) -> list[dict[str, Any]]:
+        attrs = telemetry.attrs(
+            source="switchboard",
+            destination_butler="general",
+            outcome=reason,
+            error_class="parse_error",
+        )
+        telemetry.router_parse_failure.add(1, attrs)
+        telemetry.fallback_to_general.add(1, attrs)
+        return fallback
+
     known = {str(b["name"]).strip().lower() for b in butlers}
 
     try:
         parsed = json.loads(str(raw).strip())
     except (json.JSONDecodeError, ValueError):
         logger.warning("classify_message: failed to parse JSON: %s", raw)
-        return fallback
+        return _record_parse_failure("invalid_json")
 
     if not isinstance(parsed, list) or len(parsed) == 0:
-        return fallback
+        return _record_parse_failure("invalid_payload")
 
     entries: list[dict[str, Any]] = []
     for item in parsed:
         if not isinstance(item, dict):
-            return fallback
+            return _record_parse_failure("invalid_item")
         if set(item) != _CLASSIFICATION_ENTRY_KEYS:
-            return fallback
+            return _record_parse_failure("invalid_keys")
         raw_butler = item.get("butler")
         raw_prompt = item.get("prompt")
         if not isinstance(raw_butler, str) or not isinstance(raw_prompt, str):
-            return fallback
+            return _record_parse_failure("invalid_types")
 
         butler_name = raw_butler.strip().lower()
         sub_prompt = raw_prompt.strip()
         segment = _normalize_segment_metadata(item.get("segment"))
         if not butler_name or not sub_prompt:
-            return fallback
+            return _record_parse_failure("empty_fields")
         if segment is None:
-            return fallback
+            return _record_parse_failure("invalid_segment")
         if butler_name not in known:
-            return fallback
+            return _record_parse_failure("unknown_butler")
         entries.append({"butler": butler_name, "prompt": sub_prompt, "segment": segment})
 
-    return entries if entries else fallback
+    return entries if entries else _record_parse_failure("empty_entries")

@@ -20,6 +20,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -622,6 +623,7 @@ class TelegramModule(Module):
             )
 
             # Phase 1: Log receipt
+            request_id = str(uuid4())
             message_inbox_id = None
             db_pool = self._get_db_pool()
             if db_pool is not None:
@@ -698,6 +700,7 @@ class TelegramModule(Module):
                     "chat_id": chat_id,
                     "source_id": message_key,
                     "raw_metadata": update,
+                    "request_id": request_id,
                 },
                 message_inbox_id=message_inbox_id,
             )
