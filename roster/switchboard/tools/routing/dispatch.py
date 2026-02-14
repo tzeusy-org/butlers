@@ -5,12 +5,27 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from butlers.tools.switchboard.registry import (
+    DEFAULT_ROUTE_CONTRACT_VERSION,
+    validate_route_target,
+)
 from butlers.tools.switchboard.routing.route import route
 
 logger = logging.getLogger(__name__)
+
+_IDENTITY_TOOL_RE = re.compile(r"^(user|bot)_[a-z0-9_]+_[a-z0-9_]+$")
+
+
+def _required_capability_for_tool(tool_name: str) -> str:
+    """Derive the required capability from a tool name."""
+    if tool_name == "trigger" or _IDENTITY_TOOL_RE.fullmatch(tool_name):
+        return "trigger"
+    return tool_name
+
 
 FanoutMode = Literal["parallel", "ordered", "conditional"]
 JoinPolicy = Literal["wait_for_all", "first_success"]
@@ -245,6 +260,9 @@ async def _route_subrequest(
     tool_name: str,
     source_metadata: dict[str, Any] | None,
     dependency: dict[str, Any],
+    allow_stale: bool = False,
+    allow_quarantined: bool = False,
+    route_contract_version: int = DEFAULT_ROUTE_CONTRACT_VERSION,
     call_fn: Any | None,
 ) -> dict[str, Any]:
     metadata = dict(source_metadata or {})
@@ -269,12 +287,44 @@ async def _route_subrequest(
     if source_id is not None:
         route_args["source_id"] = source_id
 
+    required_capability = _required_capability_for_tool(tool_name)
+    validation_error = await validate_route_target(
+        pool,
+        subrequest.butler,
+        required_capability=required_capability,
+        route_contract_version=route_contract_version,
+        allow_stale=allow_stale,
+        allow_quarantined=allow_quarantined,
+    )
+    if validation_error is not None:
+        return {
+            "butler": subrequest.butler,
+            "subrequest_id": subrequest.subrequest_id,
+            "segment_id": subrequest.segment_id,
+            "fanout_mode": plan.mode,
+            "join_policy": plan.join_policy,
+            "abort_policy": plan.abort_policy,
+            "dependency": dependency,
+            "arbitration": {
+                "group": subrequest.arbitration_group,
+                "priority": subrequest.arbitration_priority,
+            },
+            "success": False,
+            "result": None,
+            "error": validation_error,
+            "error_class": "validation_error",
+        }
+
     route_result = await route(
         pool,
         target_butler=subrequest.butler,
         tool_name=tool_name,
         args=route_args,
         source_butler=source_channel,
+        allow_stale=allow_stale,
+        allow_quarantined=allow_quarantined,
+        route_contract_version=route_contract_version,
+        required_capability=required_capability,
         call_fn=call_fn,
     )
 
@@ -446,6 +496,9 @@ async def dispatch_decomposed(
     fanout_mode: FanoutMode = "ordered",
     join_policy: JoinPolicy | None = None,
     abort_policy: AbortPolicy | None = None,
+    allow_stale: bool = False,
+    allow_quarantined: bool = False,
+    route_contract_version: int = DEFAULT_ROUTE_CONTRACT_VERSION,
     *,
     call_fn: Any | None = None,
 ) -> list[dict[str, Any]]:
@@ -487,6 +540,12 @@ async def dispatch_decomposed(
         Explicit join policy metadata for the plan. Defaults by mode.
     abort_policy:
         Explicit abort policy metadata for the plan. Defaults by mode.
+    allow_stale:
+        Allow stale targets during route planning (explicit policy override).
+    allow_quarantined:
+        Allow quarantined targets during route planning (explicit policy override).
+    route_contract_version:
+        Route contract version required for planner compatibility checks.
     call_fn:
         Optional callable for testing; forwarded to :func:`route`.
 
@@ -531,6 +590,9 @@ async def dispatch_decomposed(
                     tool_name=tool_name,
                     source_metadata=source_metadata,
                     dependency=dependency,
+                    allow_stale=allow_stale,
+                    allow_quarantined=allow_quarantined,
+                    route_contract_version=route_contract_version,
                     call_fn=call_fn,
                 )
                 for subrequest, dependency in runnable
@@ -582,6 +644,9 @@ async def dispatch_decomposed(
                 tool_name=tool_name,
                 source_metadata=source_metadata,
                 dependency=dependency,
+                allow_stale=allow_stale,
+                allow_quarantined=allow_quarantined,
+                route_contract_version=route_contract_version,
                 call_fn=call_fn,
             )
             results.append(dispatch_result)

@@ -194,13 +194,13 @@ def _normalize_segment_metadata(segment: Any) -> dict[str, Any] | None:
 
 async def _load_available_butlers(pool: Any) -> list[dict[str, Any]]:
     """Load butlers from registry; auto-discover from roster when empty."""
-    butlers = await list_butlers(pool)
+    butlers = await list_butlers(pool, routable_only=True)
     if butlers:
         return butlers
 
     try:
         await discover_butlers(pool, _DEFAULT_ROSTER_DIR)
-        butlers = await list_butlers(pool)
+        butlers = await list_butlers(pool, routable_only=True)
     except Exception:
         logger.exception(
             "classify_message: failed to auto-discover butlers from %s",

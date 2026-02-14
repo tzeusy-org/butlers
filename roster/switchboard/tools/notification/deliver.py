@@ -340,17 +340,17 @@ async def deliver(
 
         span.set_attribute("channel", channel)
         module_name, tool_name = _CHANNEL_DISPATCH[channel]
-        row = await pool.fetchrow(
+
+        rows = await pool.fetch(
             """
             SELECT name FROM butler_registry
             WHERE modules::jsonb @> $1::jsonb
             ORDER BY name
-            LIMIT 1
             """,
             json.dumps([module_name]),
         )
 
-        if row is None:
+        if not rows:
             error_msg = f"No butler with '{module_name}' module found in registry"
             span.set_status(trace.StatusCode.ERROR, error_msg)
             notification_id = await log_notification(
@@ -365,9 +365,7 @@ async def deliver(
             )
             return {"notification_id": notification_id, "status": "failed", "error": error_msg}
 
-        target_butler = row["name"]
-        span.set_attribute("target_butler", target_butler)
-
+        # 4. Build channel-specific args and route
         try:
             tool_args = _build_channel_args(channel, message or "", recipient, metadata)
         except ValueError as exc:
@@ -385,16 +383,32 @@ async def deliver(
             )
             return {"notification_id": notification_id, "status": "failed", "error": error_msg}
 
-        route_result = await route(
-            pool,
-            target_butler=target_butler,
-            tool_name=tool_name,
-            args=tool_args,
-            source_butler=source_butler,
-            call_fn=call_fn,
-        )
-        if "error" in route_result:
-            error_msg = str(route_result["error"])
+        route_result: dict[str, Any] | None = None
+        route_errors: list[str] = []
+        target_butler: str | None = None
+        for row in rows:
+            candidate = str(row["name"])
+            candidate_result = await route(
+                pool,
+                target_butler=candidate,
+                tool_name=tool_name,
+                args=tool_args,
+                source_butler=source_butler,
+                call_fn=call_fn,
+            )
+            if "error" in candidate_result:
+                route_errors.append(str(candidate_result["error"]))
+                continue
+            target_butler = candidate
+            route_result = candidate_result
+            break
+
+        if route_result is None:
+            error_msg = (
+                route_errors[0]
+                if route_errors
+                else (f"No eligible butler with '{module_name}' module found for routing")
+            )
             span.set_status(trace.StatusCode.ERROR, error_msg)
             notification_id = await log_notification(
                 pool,
@@ -408,6 +422,10 @@ async def deliver(
             )
             return {"notification_id": notification_id, "status": "failed", "error": error_msg}
 
+        span.set_attribute("target_butler", target_butler)
+
+        # 5. Determine success and log
+        # Extract trace_id from current span context if available
         current_trace_id = None
         current_span = trace.get_current_span()
         if current_span and current_span.get_span_context().trace_id:

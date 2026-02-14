@@ -51,5 +51,13 @@ class RegistryEntry(BaseModel):
     endpoint_url: str
     description: str | None = None
     modules: list = []
+    capabilities: list = []
     last_seen_at: str | None = None
+    eligibility_state: str = "active"
+    liveness_ttl_seconds: int = 300
+    quarantined_at: str | None = None
+    quarantine_reason: str | None = None
+    route_contract_min: int = 1
+    route_contract_max: int = 1
+    eligibility_updated_at: str | None = None
     registered_at: str

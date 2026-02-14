@@ -131,21 +131,37 @@ async def list_registry(
     pool = _pool(db)
 
     rows = await pool.fetch(
-        "SELECT name, endpoint_url, description, modules, last_seen_at, registered_at"
+        "SELECT name, endpoint_url, description, modules, capabilities, last_seen_at,"
+        " eligibility_state, liveness_ttl_seconds, quarantined_at, quarantine_reason,"
+        " route_contract_min, route_contract_max, eligibility_updated_at, registered_at"
         " FROM butler_registry"
         " ORDER BY name",
     )
 
-    data = [
-        RegistryEntry(
-            name=r["name"],
-            endpoint_url=r["endpoint_url"],
-            description=r["description"],
-            modules=list(r["modules"]) if r["modules"] else [],
-            last_seen_at=str(r["last_seen_at"]) if r["last_seen_at"] else None,
-            registered_at=str(r["registered_at"]),
+    data: list[RegistryEntry] = []
+    for row in rows:
+        r = dict(row)
+        data.append(
+            RegistryEntry(
+                name=r["name"],
+                endpoint_url=r["endpoint_url"],
+                description=r.get("description"),
+                modules=list(r["modules"]) if r.get("modules") else [],
+                capabilities=list(r["capabilities"]) if r.get("capabilities") else [],
+                last_seen_at=str(r["last_seen_at"]) if r.get("last_seen_at") else None,
+                eligibility_state=str(r.get("eligibility_state") or "active"),
+                liveness_ttl_seconds=int(r.get("liveness_ttl_seconds") or 300),
+                quarantined_at=str(r["quarantined_at"]) if r.get("quarantined_at") else None,
+                quarantine_reason=str(r["quarantine_reason"])
+                if r.get("quarantine_reason")
+                else None,
+                route_contract_min=int(r.get("route_contract_min") or 1),
+                route_contract_max=int(r.get("route_contract_max") or 1),
+                eligibility_updated_at=str(r["eligibility_updated_at"])
+                if r.get("eligibility_updated_at")
+                else None,
+                registered_at=str(r["registered_at"]),
+            )
         )
-        for r in rows
-    ]
 
     return ApiResponse[list[RegistryEntry]](data=data)

@@ -525,6 +525,14 @@ async def test_tick_all_with_real_switchboard_list_butlers(pool):
             description TEXT,
             modules JSONB NOT NULL DEFAULT '[]',
             last_seen_at TIMESTAMPTZ,
+            eligibility_state TEXT NOT NULL DEFAULT 'active',
+            liveness_ttl_seconds INTEGER NOT NULL DEFAULT 300,
+            quarantined_at TIMESTAMPTZ,
+            quarantine_reason TEXT,
+            route_contract_min INTEGER NOT NULL DEFAULT 1,
+            route_contract_max INTEGER NOT NULL DEFAULT 1,
+            capabilities JSONB NOT NULL DEFAULT '[]',
+            eligibility_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
@@ -565,6 +573,14 @@ async def test_tick_all_with_switchboard_route_simulation(pool):
             description TEXT,
             modules JSONB NOT NULL DEFAULT '[]',
             last_seen_at TIMESTAMPTZ,
+            eligibility_state TEXT NOT NULL DEFAULT 'active',
+            liveness_ttl_seconds INTEGER NOT NULL DEFAULT 300,
+            quarantined_at TIMESTAMPTZ,
+            quarantine_reason TEXT,
+            route_contract_min INTEGER NOT NULL DEFAULT 1,
+            route_contract_max INTEGER NOT NULL DEFAULT 1,
+            capabilities JSONB NOT NULL DEFAULT '[]',
+            eligibility_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
@@ -756,6 +772,14 @@ async def test_tick_all_with_route_and_session_logging(pool_with_sessions):
             description TEXT,
             modules JSONB NOT NULL DEFAULT '[]',
             last_seen_at TIMESTAMPTZ,
+            eligibility_state TEXT NOT NULL DEFAULT 'active',
+            liveness_ttl_seconds INTEGER NOT NULL DEFAULT 300,
+            quarantined_at TIMESTAMPTZ,
+            quarantine_reason TEXT,
+            route_contract_min INTEGER NOT NULL DEFAULT 1,
+            route_contract_max INTEGER NOT NULL DEFAULT 1,
+            capabilities JSONB NOT NULL DEFAULT '[]',
+            eligibility_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)

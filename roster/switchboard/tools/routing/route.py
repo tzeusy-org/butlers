@@ -14,6 +14,10 @@ from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
 from butlers.core.telemetry import inject_trace_context
+from butlers.tools.switchboard.registry.registry import (
+    DEFAULT_ROUTE_CONTRACT_VERSION,
+    resolve_routing_target,
+)
 
 logger = logging.getLogger(__name__)
 _ROUTER_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
@@ -196,6 +200,10 @@ async def route(
     tool_name: str,
     args: dict[str, Any],
     source_butler: str = "switchboard",
+    allow_stale: bool = False,
+    allow_quarantined: bool = False,
+    route_contract_version: int = DEFAULT_ROUTE_CONTRACT_VERSION,
+    required_capability: str | None = None,
     *,
     call_fn: Any | None = None,
 ) -> dict[str, Any]:
@@ -216,6 +224,14 @@ async def route(
         Arguments to pass to the tool.
     source_butler:
         Name of the calling butler (for logging).
+    allow_stale:
+        Allow routing to stale targets for explicit override policies.
+    allow_quarantined:
+        Allow routing to quarantined targets for explicit override policies.
+    route_contract_version:
+        Required route contract version for compatibility checks.
+    required_capability:
+        Optional override for required target capability. Defaults to a tool-derived value.
     call_fn:
         Optional callable for testing; signature
         ``async (endpoint_url, tool_name, args) -> Any``.
@@ -228,18 +244,21 @@ async def route(
 
         t0 = time.monotonic()
 
-        # Look up target
-        row = await pool.fetchrow(
-            "SELECT endpoint_url FROM butler_registry WHERE name = $1", target_butler
+        target_row, resolve_error = await resolve_routing_target(
+            pool,
+            target_butler,
+            required_capability=required_capability,
+            route_contract_version=route_contract_version,
+            allow_stale=allow_stale,
+            allow_quarantined=allow_quarantined,
         )
-        if row is None:
-            span.set_status(trace.StatusCode.ERROR, "Butler not found")
-            await _log_routing(
-                pool, source_butler, target_butler, tool_name, False, 0, "Butler not found"
-            )
-            return {"error": f"Butler '{target_butler}' not found in registry"}
+        if target_row is None:
+            error_msg = resolve_error or f"Butler '{target_butler}' not found in registry"
+            span.set_status(trace.StatusCode.ERROR, error_msg)
+            await _log_routing(pool, source_butler, target_butler, tool_name, False, 0, error_msg)
+            return {"error": error_msg}
 
-        endpoint_url = row["endpoint_url"]
+        endpoint_url = target_row["endpoint_url"]
 
         # Inject trace context into args
         trace_context = inject_trace_context()
@@ -257,7 +276,16 @@ async def route(
             )
             # Update last_seen_at on successful route
             await pool.execute(
-                "UPDATE butler_registry SET last_seen_at = now() WHERE name = $1",
+                """
+                UPDATE butler_registry
+                SET last_seen_at = now(),
+                    eligibility_state = CASE
+                        WHEN eligibility_state = 'quarantined' THEN eligibility_state
+                        ELSE 'active'
+                    END,
+                    eligibility_updated_at = now()
+                WHERE name = $1
+                """,
                 target_butler,
             )
             return {"result": result}

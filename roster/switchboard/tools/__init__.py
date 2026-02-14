@@ -18,9 +18,15 @@ from butlers.tools.switchboard.notification.log import (
     log_notification,
 )
 from butlers.tools.switchboard.registry.registry import (
+    DEFAULT_ROUTE_CONTRACT_VERSION,
+    ELIGIBILITY_ACTIVE,
+    ELIGIBILITY_QUARANTINED,
+    ELIGIBILITY_STALE,
     discover_butlers,
     list_butlers,
     register_butler,
+    resolve_routing_target,
+    validate_route_target,
 )
 from butlers.tools.switchboard.routing.classify import (
     _parse_classification,
@@ -53,6 +59,10 @@ from butlers.tools.switchboard.routing.route import (
 
 __all__ = [
     "ButlerResult",
+    "DEFAULT_ROUTE_CONTRACT_VERSION",
+    "ELIGIBILITY_ACTIVE",
+    "ELIGIBILITY_QUARANTINED",
+    "ELIGIBILITY_STALE",
     "IngestEnvelopeV1",
     "NotifyRequestV1",
     "RouteEnvelopeV1",
@@ -81,5 +91,7 @@ __all__ = [
     "plan_fanout",
     "post_mail",
     "register_butler",
+    "resolve_routing_target",
     "route",
+    "validate_route_target",
 ]

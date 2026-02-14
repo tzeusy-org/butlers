@@ -41,7 +41,27 @@ async def pool(provisioned_postgres_pool):
                 description TEXT,
                 modules JSONB NOT NULL DEFAULT '[]',
                 last_seen_at TIMESTAMPTZ,
+                eligibility_state TEXT NOT NULL DEFAULT 'active',
+                liveness_ttl_seconds INTEGER NOT NULL DEFAULT 300,
+                quarantined_at TIMESTAMPTZ,
+                quarantine_reason TEXT,
+                route_contract_min INTEGER NOT NULL DEFAULT 1,
+                route_contract_max INTEGER NOT NULL DEFAULT 1,
+                capabilities JSONB NOT NULL DEFAULT '[]',
+                eligibility_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS butler_registry_eligibility_log (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                butler_name TEXT NOT NULL,
+                previous_state TEXT NOT NULL,
+                new_state TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                previous_last_seen_at TIMESTAMPTZ,
+                new_last_seen_at TIMESTAMPTZ,
+                observed_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
         await p.execute("""
@@ -106,6 +126,31 @@ async def test_register_butler_upserts(pool):
     assert entry["description"] == "v2"
 
 
+async def test_register_butler_tracks_liveness_and_contract_metadata(pool):
+    """register_butler persists liveness/contract metadata for planner validation."""
+    from butlers.tools.switchboard import list_butlers, register_butler
+
+    await register_butler(
+        pool,
+        "meta",
+        "http://localhost:9002/sse",
+        "metadata test",
+        ["email"],
+        capabilities=["email", "notify"],
+        route_contract_min=1,
+        route_contract_max=3,
+        liveness_ttl_seconds=90,
+    )
+
+    butlers = await list_butlers(pool)
+    entry = next(b for b in butlers if b["name"] == "meta")
+    assert entry["eligibility_state"] == "active"
+    assert entry["liveness_ttl_seconds"] == 90
+    assert entry["route_contract_min"] == 1
+    assert entry["route_contract_max"] == 3
+    assert set(entry["capabilities"]) >= {"email", "notify", "trigger"}
+
+
 # ------------------------------------------------------------------
 # list_butlers
 # ------------------------------------------------------------------
@@ -133,6 +178,36 @@ async def test_list_butlers_ordered(pool):
     butlers = await list_butlers(pool)
     names = [b["name"] for b in butlers]
     assert names == ["alpha", "middle", "zebra"]
+
+
+async def test_list_butlers_routable_only_filters_non_active_targets(pool):
+    """routable_only excludes stale and quarantined targets from planner visibility."""
+    from butlers.tools.switchboard import list_butlers, register_butler
+
+    await pool.execute("DELETE FROM butler_registry")
+    await register_butler(pool, "active", "http://localhost:9201/sse")
+    await register_butler(pool, "stale", "http://localhost:9202/sse", liveness_ttl_seconds=5)
+    await register_butler(pool, "quarantined", "http://localhost:9203/sse")
+
+    await pool.execute(
+        """
+        UPDATE butler_registry
+        SET last_seen_at = now() - interval '30 seconds'
+        WHERE name = 'stale'
+        """
+    )
+    await pool.execute(
+        """
+        UPDATE butler_registry
+        SET eligibility_state = 'quarantined',
+            quarantined_at = now(),
+            quarantine_reason = 'policy_violation'
+        WHERE name = 'quarantined'
+        """
+    )
+
+    visible = await list_butlers(pool, routable_only=True)
+    assert [b["name"] for b in visible] == ["active"]
 
 
 # ------------------------------------------------------------------
@@ -234,6 +309,83 @@ async def test_route_to_known_butler_failure(pool):
     result = await route(pool, "failing", "broken_tool", {}, call_fn=failing_call)
     assert "error" in result
     assert "ConnectionError" in result["error"]
+
+
+async def test_route_blocks_stale_target_by_default_and_allows_override(pool):
+    """Stale targets are suppressed by default but can be routed via explicit override."""
+    from butlers.tools.switchboard import register_butler, route
+
+    await register_butler(pool, "stale-target", "http://localhost:9300/sse", liveness_ttl_seconds=5)
+    await pool.execute(
+        """
+        UPDATE butler_registry
+        SET last_seen_at = now() - interval '45 seconds'
+        WHERE name = 'stale-target'
+        """
+    )
+
+    async def mock_call(endpoint_url, tool_name, args):
+        return {"ok": True}
+
+    blocked = await route(pool, "stale-target", "ping", {}, call_fn=mock_call)
+    assert "error" in blocked
+    assert "stale" in blocked["error"].lower()
+
+    allowed = await route(pool, "stale-target", "ping", {}, allow_stale=True, call_fn=mock_call)
+    assert allowed == {"result": {"ok": True}}
+
+
+async def test_route_blocks_quarantined_target_by_default(pool):
+    """Quarantined targets are non-routable unless explicitly overridden."""
+    from butlers.tools.switchboard import register_butler, route
+
+    await register_butler(pool, "quarantine-target", "http://localhost:9301/sse")
+    await pool.execute(
+        """
+        UPDATE butler_registry
+        SET eligibility_state = 'quarantined',
+            quarantined_at = now(),
+            quarantine_reason = 'tool_ownership_violation'
+        WHERE name = 'quarantine-target'
+        """
+    )
+
+    async def mock_call(endpoint_url, tool_name, args):
+        return {"ok": True}
+
+    blocked = await route(pool, "quarantine-target", "ping", {}, call_fn=mock_call)
+    assert "error" in blocked
+    assert "quarantined" in blocked["error"].lower()
+    assert "tool_ownership_violation" in blocked["error"]
+
+
+async def test_route_allows_quarantined_target_with_explicit_override(pool):
+    """Policy override can explicitly allow routing to quarantined targets."""
+    from butlers.tools.switchboard import register_butler, route
+
+    await register_butler(pool, "quarantine-override", "http://localhost:9302/sse")
+    await pool.execute(
+        """
+        UPDATE butler_registry
+        SET eligibility_state = 'quarantined',
+            quarantined_at = now(),
+            quarantine_reason = 'manual_hold'
+        WHERE name = 'quarantine-override'
+        """
+    )
+
+    async def mock_call(endpoint_url, tool_name, args):
+        return {"ok": True}
+
+    allowed = await route(
+        pool,
+        "quarantine-override",
+        "ping",
+        {},
+        allow_quarantined=True,
+        call_fn=mock_call,
+    )
+    assert allowed == {"result": {"ok": True}}
 
 
 # ------------------------------------------------------------------
@@ -1128,6 +1280,56 @@ async def test_route_does_not_update_last_seen_at_on_failure(pool):
     assert row_after["last_seen_at"] == initial_last_seen
 
 
+async def test_eligibility_transitions_are_audited_for_stale_and_recovery(pool):
+    """TTL staleness and re-registration recovery transitions are recorded."""
+    from butlers.tools.switchboard import register_butler, route
+
+    await register_butler(pool, "recovering", "http://localhost:9350/sse", liveness_ttl_seconds=5)
+    await pool.execute(
+        """
+        UPDATE butler_registry
+        SET last_seen_at = now() - interval '90 seconds'
+        WHERE name = 'recovering'
+        """
+    )
+
+    async def mock_call(endpoint_url, tool_name, args):
+        return {"ok": True}
+
+    blocked = await route(pool, "recovering", "ping", {}, call_fn=mock_call)
+    assert "error" in blocked
+    assert "stale" in blocked["error"].lower()
+
+    stale_transition = await pool.fetchrow(
+        """
+        SELECT previous_state, new_state, reason
+        FROM butler_registry_eligibility_log
+        WHERE butler_name = 'recovering'
+        ORDER BY observed_at DESC
+        LIMIT 1
+        """
+    )
+    assert stale_transition is not None
+    assert stale_transition["previous_state"] == "active"
+    assert stale_transition["new_state"] == "stale"
+    assert stale_transition["reason"] == "ttl_expired"
+
+    await register_butler(pool, "recovering", "http://localhost:9350/sse", liveness_ttl_seconds=5)
+    recovery_transition = await pool.fetchrow(
+        """
+        SELECT previous_state, new_state, reason
+        FROM butler_registry_eligibility_log
+        WHERE butler_name = 'recovering'
+        ORDER BY observed_at DESC
+        LIMIT 1
+        """
+    )
+    assert recovery_transition is not None
+    assert recovery_transition["previous_state"] == "stale"
+    assert recovery_transition["new_state"] == "active"
+    assert recovery_transition["reason"] == "health_restored"
+
+
 # ------------------------------------------------------------------
 # _call_butler_tool — in-process FastMCP server
 # ------------------------------------------------------------------
@@ -1500,14 +1702,19 @@ async def test_dispatch_decomposed_parallel_mode_runs_concurrently(pool, monkeyp
         tool_name,
         args,
         source_butler="switchboard",
-        *,
-        call_fn=None,
+        **kwargs,
     ):
+        call_fn = kwargs.get("call_fn")
         assert call_fn is not None
         result = await call_fn(target_butler, tool_name, args)
         return {"result": result}
 
     monkeypatch.setattr(dispatch_module, "route", fake_route)
+
+    async def noop_validate(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(dispatch_module, "validate_route_target", noop_validate)
 
     in_flight = 0
     max_in_flight = 0
@@ -1548,9 +1755,9 @@ async def test_dispatch_decomposed_ordered_mode_runs_serially(pool, monkeypatch)
         tool_name,
         args,
         source_butler="switchboard",
-        *,
-        call_fn=None,
+        **kwargs,
     ):
+        call_fn = kwargs.get("call_fn")
         assert call_fn is not None
         result = await call_fn(target_butler, tool_name, args)
         return {"result": result}
@@ -1668,6 +1875,68 @@ async def test_dispatch_decomposed_persists_fanout_execution_metadata(pool):
     assert isinstance(execution_payload, list)
     assert len(execution_payload) == 2
     assert execution_payload[1]["dependency"]["depends_on"] == ["p1"]
+
+
+async def test_dispatch_decomposed_rejects_target_missing_required_capability(pool):
+    """Planner validation rejects targets that do not advertise required capability."""
+    from butlers.tools.switchboard import dispatch_decomposed, register_butler
+
+    await pool.execute("DELETE FROM butler_registry")
+    await pool.execute("DELETE FROM routing_log")
+    await register_butler(
+        pool,
+        "calendar-only",
+        "http://localhost:9501/sse",
+        capabilities=["calendar", "trigger"],
+    )
+
+    async def mock_call(endpoint_url, tool_name, args):
+        return {"ok": True}
+
+    results = await dispatch_decomposed(
+        pool,
+        targets=[{"butler": "calendar-only", "prompt": "send email"}],
+        tool_name="email_send_message",
+        call_fn=mock_call,
+    )
+
+    assert len(results) == 1
+    assert results[0]["result"] is None
+    assert "required capability 'email_send_message'" in str(results[0]["error"])
+    rows = await pool.fetch("SELECT * FROM routing_log")
+    assert rows == []
+
+
+async def test_dispatch_decomposed_rejects_route_contract_mismatch(pool):
+    """Planner validation enforces route_contract_min/max compatibility."""
+    from butlers.tools.switchboard import dispatch_decomposed, register_butler
+
+    await pool.execute("DELETE FROM butler_registry")
+    await pool.execute("DELETE FROM routing_log")
+    await register_butler(
+        pool,
+        "new-contract",
+        "http://localhost:9502/sse",
+        capabilities=["trigger"],
+        route_contract_min=2,
+        route_contract_max=3,
+    )
+
+    async def mock_call(endpoint_url, tool_name, args):
+        return {"ok": True}
+
+    results = await dispatch_decomposed(
+        pool,
+        targets=[{"butler": "new-contract", "prompt": "hello"}],
+        route_contract_version=1,
+        call_fn=mock_call,
+    )
+
+    assert len(results) == 1
+    assert results[0]["result"] is None
+    assert "Route contract mismatch" in str(results[0]["error"])
+    rows = await pool.fetch("SELECT * FROM routing_log")
+    assert rows == []
 
 
 # ------------------------------------------------------------------
