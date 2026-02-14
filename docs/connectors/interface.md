@@ -45,7 +45,7 @@ Connectors submit `ingest.v1` payloads.
   "schema_version": "ingest.v1",
   "source": {
     "channel": "telegram|slack|email|api|mcp",
-    "provider": "telegram|slack|imap|internal",
+    "provider": "telegram|slack|gmail|imap|internal",
     "endpoint_identity": "bot-or-mailbox-or-client-id"
   },
   "event": {
@@ -67,6 +67,14 @@ Connectors submit `ingest.v1` payloads.
   }
 }
 ```
+
+Canonical channel-provider pairings:
+- `source.channel=telegram` MUST use `source.provider=telegram`.
+- `source.channel=slack` MUST use `source.provider=slack`.
+- `source.channel=email` with Gmail connectors MUST use `source.provider=gmail`.
+- `source.channel=email` with generic IMAP connectors MUST use `source.provider=imap`.
+- `source.channel=api` MUST use `source.provider=internal`.
+- `source.channel=mcp` MUST use `source.provider=internal`.
 
 Request-context rule:
 - Connector sends source/event/sender facts.
@@ -156,7 +164,7 @@ Required behavior:
 Reference connector runtime config (recommended naming):
 - `SWITCHBOARD_API_BASE_URL` (required): base URL for Switchboard API.
 - `SWITCHBOARD_API_TOKEN` (required when auth enabled): bearer token or equivalent secret.
-- `CONNECTOR_PROVIDER` (required): provider name (`telegram`, `imap`, etc.).
+- `CONNECTOR_PROVIDER` (required): provider name (`telegram`, `gmail`, `imap`, etc.).
 - `CONNECTOR_CHANNEL` (required): canonical channel value (`telegram`, `email`, etc.).
 - `CONNECTOR_ENDPOINT_IDENTITY` (required): receiving identity (bot id, mailbox, client id).
 - `CONNECTOR_CURSOR_PATH` (required for polling sources): durable checkpoint file/path.

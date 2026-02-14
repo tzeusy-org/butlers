@@ -89,6 +89,18 @@ def test_ingest_v1_valid_envelope() -> None:
     assert envelope.payload.normalized_text == "ping"
 
 
+def test_ingest_v1_accepts_email_channel_with_gmail_provider() -> None:
+    payload = _valid_ingest_payload()
+    payload["source"]["channel"] = "email"
+    payload["source"]["provider"] = "gmail"
+    payload["source"]["endpoint_identity"] = "gmail:user:alice@gmail.com"
+
+    envelope = IngestEnvelopeV1.model_validate(payload)
+
+    assert envelope.source.channel == "email"
+    assert envelope.source.provider == "gmail"
+
+
 def test_route_v1_valid_envelope() -> None:
     envelope = RouteEnvelopeV1.model_validate(_valid_route_payload())
     assert envelope.schema_version == "route.v1"

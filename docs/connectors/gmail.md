@@ -43,6 +43,9 @@ Gmail mapping:
 - `payload.normalized_text`: normalized subject/body text for downstream processing
 - `control.idempotency_key`: optional fallback key, e.g. `gmail:<endpoint_identity>:<message_id>`
 
+Provider contract note:
+- Gmail ingestion MUST use `source.provider=gmail` (not `imap`).
+
 Switchboard assigns canonical request context:
 - Required: `request_id`, `received_at`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`
 - Optional: `source_thread_identity`, `trace_context`
