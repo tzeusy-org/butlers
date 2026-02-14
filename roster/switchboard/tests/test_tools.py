@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from dataclasses import dataclass
@@ -52,6 +53,20 @@ async def pool(provisioned_postgres_pool):
                 success BOOLEAN NOT NULL,
                 duration_ms INTEGER,
                 error TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS fanout_execution_log (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_channel TEXT NOT NULL,
+                source_id TEXT,
+                tool_name TEXT NOT NULL,
+                fanout_mode TEXT NOT NULL,
+                join_policy TEXT NOT NULL,
+                abort_policy TEXT NOT NULL,
+                plan_payload JSONB NOT NULL,
+                execution_payload JSONB NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
@@ -1468,6 +1483,191 @@ async def test_dispatch_decomposed_propagates_identity_source_metadata(pool):
         "identity": "bot",
         "tool_name": "bot_telegram_get_updates",
     }
+
+
+async def test_dispatch_decomposed_parallel_mode_runs_concurrently(pool, monkeypatch):
+    """parallel fanout mode executes independent subroutes concurrently."""
+    from butlers.tools.switchboard import dispatch_decomposed, register_butler
+    from butlers.tools.switchboard.routing import dispatch as dispatch_module
+
+    await pool.execute("DELETE FROM butler_registry")
+    await register_butler(pool, "a", "http://localhost:8601/sse")
+    await register_butler(pool, "b", "http://localhost:8602/sse")
+
+    async def fake_route(
+        pool,
+        target_butler,
+        tool_name,
+        args,
+        source_butler="switchboard",
+        *,
+        call_fn=None,
+    ):
+        assert call_fn is not None
+        result = await call_fn(target_butler, tool_name, args)
+        return {"result": result}
+
+    monkeypatch.setattr(dispatch_module, "route", fake_route)
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def mock_call(endpoint_url, tool_name, args):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return {"ok": endpoint_url}
+
+    await dispatch_decomposed(
+        pool,
+        targets=[
+            {"butler": "a", "prompt": "a"},
+            {"butler": "b", "prompt": "b"},
+        ],
+        fanout_mode="parallel",
+        call_fn=mock_call,
+    )
+
+    assert max_in_flight >= 2
+
+
+async def test_dispatch_decomposed_ordered_mode_runs_serially(pool, monkeypatch):
+    """ordered fanout mode executes one subroute at a time."""
+    from butlers.tools.switchboard import dispatch_decomposed, register_butler
+    from butlers.tools.switchboard.routing import dispatch as dispatch_module
+
+    await pool.execute("DELETE FROM butler_registry")
+    await register_butler(pool, "a", "http://localhost:8603/sse")
+    await register_butler(pool, "b", "http://localhost:8604/sse")
+
+    async def fake_route(
+        pool,
+        target_butler,
+        tool_name,
+        args,
+        source_butler="switchboard",
+        *,
+        call_fn=None,
+    ):
+        assert call_fn is not None
+        result = await call_fn(target_butler, tool_name, args)
+        return {"result": result}
+
+    monkeypatch.setattr(dispatch_module, "route", fake_route)
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def mock_call(endpoint_url, tool_name, args):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return {"ok": endpoint_url}
+
+    await dispatch_decomposed(
+        pool,
+        targets=[
+            {"butler": "a", "prompt": "a"},
+            {"butler": "b", "prompt": "b"},
+        ],
+        fanout_mode="ordered",
+        call_fn=mock_call,
+    )
+
+    assert max_in_flight == 1
+
+
+async def test_dispatch_decomposed_conditional_mode_skips_unmet_dependencies(pool):
+    """conditional mode skips dependent subroutes when prerequisites fail."""
+    from butlers.tools.switchboard import dispatch_decomposed, register_butler
+
+    await pool.execute("DELETE FROM butler_registry")
+    await register_butler(pool, "primary", "http://localhost:8605/sse")
+    await register_butler(pool, "dependent", "http://localhost:8606/sse")
+
+    async def mock_call(endpoint_url, tool_name, args):
+        if "8605" in endpoint_url:
+            raise ConnectionError("primary down")
+        return {"ok": endpoint_url}
+
+    results = await dispatch_decomposed(
+        pool,
+        targets=[
+            {"butler": "primary", "prompt": "step 1", "subrequest_id": "s1"},
+            {
+                "butler": "dependent",
+                "prompt": "step 2",
+                "subrequest_id": "s2",
+                "depends_on": ["s1"],
+            },
+        ],
+        fanout_mode="conditional",
+        call_fn=mock_call,
+    )
+
+    assert len(results) == 2
+    assert results[0]["error"] is not None
+    assert results[0]["error_class"] == "target_unavailable"
+    assert results[1]["result"] is None
+    assert results[1]["error_class"] == "validation_error"
+    assert "Dependency unmet" in (results[1]["error"] or "")
+    assert results[1]["dependency"]["outcome"] == "unmet"
+
+
+async def test_dispatch_decomposed_persists_fanout_execution_metadata(pool):
+    """fanout execution records persist mode/policy and dependency outcomes."""
+    from butlers.tools.switchboard import dispatch_decomposed, register_butler
+
+    await pool.execute("DELETE FROM butler_registry")
+    await register_butler(pool, "one", "http://localhost:8607/sse")
+    await register_butler(pool, "two", "http://localhost:8608/sse")
+
+    async def mock_call(endpoint_url, tool_name, args):
+        if "8608" in endpoint_url:
+            raise TimeoutError("timed out")
+        return {"ok": True}
+
+    await dispatch_decomposed(
+        pool,
+        targets=[
+            {"butler": "one", "prompt": "first", "subrequest_id": "p1"},
+            {"butler": "two", "prompt": "second", "subrequest_id": "p2", "depends_on": ["p1"]},
+        ],
+        fanout_mode="conditional",
+        join_policy="wait_for_all",
+        abort_policy="on_required_failure",
+        call_fn=mock_call,
+    )
+
+    row = await pool.fetchrow(
+        """
+        SELECT fanout_mode, join_policy, abort_policy, plan_payload, execution_payload
+        FROM fanout_execution_log
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
+    assert row is not None
+    assert row["fanout_mode"] == "conditional"
+    assert row["join_policy"] == "wait_for_all"
+    assert row["abort_policy"] == "on_required_failure"
+
+    plan_payload = row["plan_payload"]
+    execution_payload = row["execution_payload"]
+    if isinstance(plan_payload, str):
+        plan_payload = json.loads(plan_payload)
+    if isinstance(execution_payload, str):
+        execution_payload = json.loads(execution_payload)
+
+    assert plan_payload["fanout_mode"] == "conditional"
+    assert len(plan_payload["subrequests"]) == 2
+    assert isinstance(execution_payload, list)
+    assert len(execution_payload) == 2
+    assert execution_payload[1]["dependency"]["depends_on"] == ["p1"]
 
 
 # ------------------------------------------------------------------

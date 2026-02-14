@@ -142,6 +142,27 @@ class TestMultipleResponses:
         assert isinstance(reply, str)
         assert len(reply) > 0
 
+    async def test_conflict_arbitration_prefers_higher_priority(self):
+        results = [
+            {
+                "butler": "health",
+                "result": "Book 9am slot",
+                "error": None,
+                "arbitration": {"group": "schedule", "priority": 1},
+                "subrequest_id": "s1",
+            },
+            {
+                "butler": "general",
+                "result": "Book 11am slot",
+                "error": None,
+                "arbitration": {"group": "schedule", "priority": 10},
+                "subrequest_id": "s2",
+            },
+        ]
+
+        reply = aggregate_responses(results)
+        assert reply == "Book 11am slot"
+
 
 # ------------------------------------------------------------------
 # Edge cases
@@ -213,3 +234,19 @@ class TestEdgeCases:
         await aggregate_responses(results, dispatch_fn=capturing_dispatch)
         assert len(captured_kwargs) == 1
         assert captured_kwargs[0].get("trigger_source") == "tick"
+
+    async def test_partial_success_includes_actionable_error_class(self):
+        results = [
+            {"butler": "health", "result": "Vitals logged", "error": None},
+            {
+                "butler": "email",
+                "result": None,
+                "error": "ConnectionError: downstream unavailable",
+                "error_class": "target_unavailable",
+            },
+        ]
+
+        reply = aggregate_responses(results)
+        assert "Vitals logged" in reply
+        assert "target_unavailable" in reply
+        assert "downstream unavailable" in reply

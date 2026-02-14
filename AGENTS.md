@@ -170,6 +170,7 @@ Memory is a **common module** (`[modules.memory]`) enabled per butler, not a ded
 Alembic revisions are chain-prefixed (`core_*`, `mem_*`, `sw_*`) rather than bare numeric IDs. Butler-specific migrations resolve from `roster/<butler>/migrations/` via `butlers.migrations._resolve_chain_dir()` (not legacy `butlers/<name>/migrations/` paths).
 - Within a chain, set `branch_labels` only on the branch root revision (e.g. `rel_001`); repeating the same label on later revisions causes Alembic duplicate-branch errors.
 - Do not leave stray migration files in chain directories: even if chain tests only assert expected filenames, Alembic will still load every `*.py` in the versions path and fail on duplicate `revision` IDs.
+- Switchboard migrations already include `sw_005` as the latest linear revision; new switchboard revisions must continue from `sw_005` (for example `sw_006`) to avoid multi-head failures during `switchboard@head` upgrades.
 
 ### Known Warnings (not bugs)
 - 2 RuntimeWarnings in CLI tests from monkeypatched `asyncio.run` — unawaited coroutines in test mocking
@@ -307,6 +308,10 @@ make test-qg
 ### Beads no-db worktree hydration contract
 - When a worker worktree may be stale relative to newly-created issues, run `bd sync --import` in that worktree before `bd show <id>` lookups.
 - Regression coverage lives in `tests/tools/test_beads_worktree_hydration.py` and verifies stale lookup failure followed by successful hydration.
+
+### Beads worktree write guardrail
+- In git worktrees, `bd` operations can target the primary repo DB/JSONL instead of the worktree copy; verify with `bd --no-db show <id>` before write operations.
+- For worker-branch bead metadata commits, run `bd --no-db` for create/update/dep commands in the worktree so `.beads/issues.jsonl` changes are tracked on that branch.
 
 ### Beads PR-review `external_ref` uniqueness contract
 - Beads enforces global uniqueness for `issues.external_ref`; a dedicated `pr-review-task` bead cannot reuse the same `gh-pr:<number>` already attached to the original implementation bead.

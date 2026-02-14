@@ -42,6 +42,7 @@ from butlers.tools.switchboard.routing.dispatch import (
     aggregate_responses,
     dispatch_decomposed,
     dispatch_to_targets,
+    plan_fanout,
 )
 from butlers.tools.switchboard.routing.route import (
     _call_butler_tool,
@@ -77,6 +78,7 @@ __all__ = [
     "parse_ingest_envelope",
     "parse_notify_request",
     "parse_route_envelope",
+    "plan_fanout",
     "post_mail",
     "register_butler",
     "route",

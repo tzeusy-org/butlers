@@ -504,6 +504,7 @@ Rules:
 - Conflicts are detected at aggregation time when incompatible outcomes are returned.
 - Arbitration policy must declare winning precedence or conflict surfacing behavior.
 - User-facing responses must disclose unresolved conflicts when no deterministic winner exists.
+- Current deterministic winner rule for grouped conflicts: highest explicit arbitration priority, then lexical butler name, then lexical subrequest id.
 
 ### 15.4 Fanout Dependency Model
 Fanout execution must support explicit dependency semantics.
@@ -516,6 +517,7 @@ Required modes:
 Rules:
 - Join policy and abort policy must be explicit per fanout plan.
 - Execution metadata must record which dependency mode was used.
+- Fanout execution records persist mode/policy plus per-subrequest dependency outcomes in `fanout_execution_log`.
 
 ### 15.5 Partial-Success Response Policy
 Switchboard must define stable user-facing behavior for mixed outcomes.
