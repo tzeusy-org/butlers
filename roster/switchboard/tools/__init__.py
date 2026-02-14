@@ -9,6 +9,10 @@ from butlers.tools.switchboard.extraction.audit_log import (
     extraction_log_undo,
     log_extraction,
 )
+from butlers.tools.switchboard.ingestion.ingest import (
+    IngestAcceptedResponse,
+    ingest_v1,
+)
 from butlers.tools.switchboard.notification.deliver import (
     SUPPORTED_CHANNELS,
     _build_channel_args,
@@ -67,6 +71,7 @@ __all__ = [
     "ELIGIBILITY_ACTIVE",
     "ELIGIBILITY_QUARANTINED",
     "ELIGIBILITY_STALE",
+    "IngestAcceptedResponse",
     "IngestEnvelopeV1",
     "NotifyRequestV1",
     "RouteEnvelopeV1",
@@ -87,6 +92,7 @@ __all__ = [
     "extraction_log_list",
     "extraction_log_undo",
     "get_switchboard_telemetry",
+    "ingest_v1",
     "list_butlers",
     "log_extraction",
     "log_notification",
