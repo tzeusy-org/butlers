@@ -28,3 +28,5 @@ on our last interaction and any upcoming dates.
 provider = "google"
 calendar_id = "butler-relationship@group.calendar.google.com"
 default_conflict_policy = "suggest"
+
+[modules.memory]

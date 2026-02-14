@@ -95,25 +95,6 @@ class ApprovalConfig:
 
 
 @dataclass
-class MemoryConfig:
-    """Configuration for Memory Butler integration from [butler.memory]."""
-
-    enabled: bool = True
-    port: int = 8150
-    context_token_budget: int = 3000
-    retrieval_limit: int = 20
-    retrieval_mode: str = "hybrid"
-    score_weights: dict[str, float] = field(
-        default_factory=lambda: {
-            "relevance": 0.4,
-            "importance": 0.3,
-            "recency": 0.2,
-            "confidence": 0.1,
-        }
-    )
-
-
-@dataclass
 class ButlerConfig:
     """Parsed and validated butler configuration."""
 
@@ -128,7 +109,6 @@ class ButlerConfig:
     env_optional: list[str] = field(default_factory=list)
     shutdown_timeout_s: float = 30.0
     switchboard_url: str | None = None
-    memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -382,18 +362,6 @@ def load_config(config_dir: Path) -> ButlerConfig:
     butler_runtime = _parse_runtime(butler_section)
     runtime = RuntimeConfig(type=runtime_type, model=butler_runtime.model)
 
-    # --- [butler.memory] sub-section ---
-    memory_section = butler_section.get("memory", {})
-    memory_retrieval = memory_section.get("retrieval", {})
-    memory_config = MemoryConfig(
-        enabled=memory_section.get("enabled", True),
-        port=memory_section.get("port", 8150),
-        context_token_budget=memory_retrieval.get("context_token_budget", 3000),
-        retrieval_limit=memory_retrieval.get("default_limit", 20),
-        retrieval_mode=memory_retrieval.get("default_mode", "hybrid"),
-        score_weights=memory_retrieval.get("score_weights", MemoryConfig().score_weights),
-    )
-
     return ButlerConfig(
         name=name,
         port=port,
@@ -406,5 +374,4 @@ def load_config(config_dir: Path) -> ButlerConfig:
         env_optional=env_optional,
         shutdown_timeout_s=shutdown_timeout_s,
         switchboard_url=switchboard_url,
-        memory=memory_config,
     )

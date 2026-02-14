@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
-from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
 from butlers.config import ButlerConfig
@@ -32,8 +31,6 @@ from butlers.core.skills import read_system_prompt
 from butlers.core.telemetry import get_traceparent_env
 
 logger = logging.getLogger(__name__)
-_MEMORY_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
-_MEMORY_CLIENT_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 @dataclass
@@ -102,152 +99,55 @@ def _build_env(
     return env
 
 
-def _memory_client_lock(url: str) -> asyncio.Lock:
-    lock = _MEMORY_CLIENT_LOCKS.get(url)
-    if lock is None:
-        lock = asyncio.Lock()
-        _MEMORY_CLIENT_LOCKS[url] = lock
-    return lock
+def _memory_module_enabled(config: ButlerConfig) -> bool:
+    raw = config.modules.get("memory")
+    return isinstance(raw, dict)
 
 
-def _is_cached_memory_client_healthy(client_ctx: MCPClient, client: Any) -> bool:
-    probe = client_ctx if hasattr(client_ctx, "is_connected") else client
-    checker = getattr(probe, "is_connected", None)
-    if callable(checker):
-        try:
-            return bool(checker())
-        except Exception:
-            return False
-    return True
-
-
-async def _close_cached_memory_client(url: str) -> None:
-    cached = _MEMORY_CLIENTS.pop(url, None)
-    if cached is None:
-        return
-
-    client_ctx, _client = cached
+def _memory_context_token_budget(config: ButlerConfig) -> int:
+    raw = config.modules.get("memory", {})
+    if not isinstance(raw, dict):
+        return 3000
+    retrieval = raw.get("retrieval", {})
+    if not isinstance(retrieval, dict):
+        return 3000
+    budget = retrieval.get("context_token_budget", 3000)
     try:
-        await client_ctx.__aexit__(None, None, None)
-    except asyncio.CancelledError:
-        logger.debug("Cancelled while closing cached memory client for %s", url, exc_info=True)
-    except Exception:
-        logger.debug("Failed to close cached memory client for %s", url, exc_info=True)
-
-
-async def _get_cached_memory_client(
-    url: str,
-    *,
-    reconnect: bool = False,
-) -> Any:
-    async with _memory_client_lock(url):
-        if reconnect:
-            await _close_cached_memory_client(url)
-
-        cached = _MEMORY_CLIENTS.get(url)
-        if cached is not None:
-            client_ctx, client = cached
-            if _is_cached_memory_client_healthy(client_ctx, client):
-                return client
-            await _close_cached_memory_client(url)
-
-        client_ctx = MCPClient(url, name="spawner-memory")
-        entered_client = await client_ctx.__aenter__()
-        client = entered_client if entered_client is not None else client_ctx
-        _MEMORY_CLIENTS[url] = (client_ctx, client)
-        return client
-
-
-async def _call_memory_tool_with_reconnect(
-    url: str,
-    tool_name: str,
-    arguments: dict[str, str],
-    timeout: float,
-) -> Any:
-    first_exc: Exception | None = None
-
-    for reconnect in (False, True):
-        try:
-            client = await _get_cached_memory_client(url, reconnect=reconnect)
-            return await asyncio.wait_for(client.call_tool(tool_name, arguments), timeout=timeout)
-        except TimeoutError:
-            await _close_cached_memory_client(url)
-            raise
-        except Exception as exc:
-            if reconnect:
-                if first_exc is None:
-                    message = f"Failed to call {tool_name} on Memory Butler at {url}: {exc}"
-                else:
-                    message = (
-                        f"Failed to call {tool_name} on Memory Butler at {url}: "
-                        f"{first_exc} (reconnect failed: {exc})"
-                    )
-                raise ConnectionError(message) from exc
-
-            first_exc = exc
-            logger.info("Memory tool call failed (%s); reconnecting once", tool_name)
+        parsed = int(budget)
+    except (TypeError, ValueError):
+        return 3000
+    return parsed if parsed > 0 else 3000
 
 
 async def _reset_memory_client_cache_for_tests() -> None:
-    """Test helper: close and clear cached Memory Butler clients."""
-    urls = list(_MEMORY_CLIENTS.keys())
-    for url in urls:
-        await _close_cached_memory_client(url)
-    _MEMORY_CLIENT_LOCKS.clear()
+    """Compatibility no-op for tests from legacy shared-memory architecture."""
+    return None
 
 
 async def fetch_memory_context(
+    pool: asyncpg.Pool | None,
     butler_name: str,
     prompt: str,
     *,
-    timeout: float = 5.0,
-    memory_butler_port: int = 8150,
+    token_budget: int = 3000,
 ) -> str | None:
-    """Fetch memory context from the Memory Butler's MCP server.
+    """Fetch memory context via local memory tools when the module is enabled."""
+    if pool is None:
+        return None
 
-    Connects to the Memory Butler via SSE and calls the ``memory_context``
-    tool with the given prompt and butler name.
-
-    Parameters
-    ----------
-    butler_name:
-        Name of the butler requesting memory context.
-    prompt:
-        The trigger prompt to send for context retrieval.
-    timeout:
-        Request timeout in seconds. Defaults to 5.0.
-    memory_butler_port:
-        Port the Memory Butler listens on. Defaults to 8150.
-
-    Returns
-    -------
-    str | None
-        The memory context string on success, or None on any failure.
-    """
-    url = f"http://localhost:{memory_butler_port}/sse"
     try:
-        result = await _call_memory_tool_with_reconnect(
-            url,
-            "memory_context",
-            {"trigger_prompt": prompt, "butler": butler_name},
-            timeout,
-        )
-        if result.is_error:
-            logger.warning(
-                "Memory Butler returned error for butler %s: %s",
-                butler_name,
-                result.content,
-            )
-            return None
-        # Extract text from first content block
-        if result.content:
-            text = getattr(result.content[0], "text", None)
-            if isinstance(text, str) and text:
-                return text
-        logger.warning(
-            "Memory Butler returned empty response for butler %s",
+        from butlers.tools.memory import context as _context
+        from butlers.tools.memory._helpers import get_embedding_engine
+
+        context = await _context.memory_context(
+            pool,
+            get_embedding_engine(),
+            prompt,
             butler_name,
+            token_budget=token_budget,
         )
+        if isinstance(context, str) and context.strip():
+            return context
         return None
     except Exception:
         logger.warning(
@@ -259,57 +159,24 @@ async def fetch_memory_context(
 
 
 async def store_session_episode(
+    pool: asyncpg.Pool | None,
     butler_name: str,
     session_output: str,
     session_id: uuid.UUID | None = None,
-    *,
-    timeout: float = 5.0,
-    memory_butler_port: int = 8150,
 ) -> bool:
-    """Store a session episode to the Memory Butler after CC session completes.
+    """Store a session episode through local memory module tools."""
+    if pool is None:
+        return False
 
-    Connects to the Memory Butler via SSE and calls the
-    ``memory_store_episode`` tool.
-
-    Parameters
-    ----------
-    butler_name:
-        Name of the butler whose session completed.
-    session_output:
-        The output text from the completed CC session.
-    session_id:
-        Optional session UUID to associate with the episode.
-    timeout:
-        Request timeout in seconds. Defaults to 5.0.
-    memory_butler_port:
-        Port the Memory Butler listens on. Defaults to 8150.
-
-    Returns
-    -------
-    bool
-        True on success, False on any failure.
-    """
-    url = f"http://localhost:{memory_butler_port}/sse"
-    arguments: dict[str, str] = {
-        "content": session_output,
-        "butler": butler_name,
-    }
-    if session_id is not None:
-        arguments["session_id"] = str(session_id)
     try:
-        result = await _call_memory_tool_with_reconnect(
-            url,
-            "memory_store_episode",
-            arguments,
-            timeout,
+        from butlers.tools.memory import writing as _writing
+
+        await _writing.memory_store_episode(
+            pool,
+            session_output,
+            butler_name,
+            session_id=str(session_id) if session_id is not None else None,
         )
-        if result.is_error:
-            logger.warning(
-                "Memory Butler returned error storing episode for butler %s: %s",
-                butler_name,
-                result.content,
-            )
-            return False
         return True
     except Exception:
         logger.warning(
@@ -540,12 +407,13 @@ class Spawner:
             system_prompt = read_system_prompt(self._config_dir, self._config.name)
 
             memory_ctx: str | None = None
-            # Inject memory context (graceful fallback on failure)
-            if self._config.memory.enabled:
+            memory_enabled = _memory_module_enabled(self._config)
+            if memory_enabled:
                 memory_ctx = await fetch_memory_context(
+                    self._pool,
                     self._config.name,
                     final_prompt,
-                    memory_butler_port=self._config.memory.port,
+                    token_budget=_memory_context_token_budget(self._config),
                 )
             system_prompt = _compose_system_prompt(system_prompt, memory_ctx)
 
@@ -558,12 +426,6 @@ class Spawner:
                     "url": f"http://localhost:{self._config.port}/sse",
                 },
             }
-
-            # Include Memory MCP server for all butlers (except memory butler itself)
-            if self._config.memory.enabled and self._config.name != "memory":
-                mcp_servers["memory"] = {
-                    "url": f"http://localhost:{self._config.memory.port}/sse",
-                }
 
             # Invoke via runtime adapter
             result_text, tool_calls, usage = await self._runtime.invoke(
@@ -609,9 +471,10 @@ class Spawner:
                     output_tokens=output_tokens,
                 )
 
-            # Store episode to Memory Butler (fire-and-forget, failure doesn't block)
-            if spawner_result.success and spawner_result.output:
+            # Store episode via module-local memory tools (failure doesn't block)
+            if memory_enabled and spawner_result.success and spawner_result.output:
                 await store_session_episode(
+                    self._pool,
                     self._config.name,
                     spawner_result.output,
                     session_id=session_id,

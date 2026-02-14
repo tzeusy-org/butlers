@@ -49,3 +49,5 @@ Use the health_summary and trend_report tools to compile this data.
 provider = "google"
 calendar_id = "butler-health@group.calendar.google.com"
 default_conflict_policy = "suggest"
+
+[modules.memory]

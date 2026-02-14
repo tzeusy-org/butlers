@@ -26,7 +26,7 @@ ROSTER_DIR = Path(__file__).resolve().parent.parent.parent / "roster"
 MODULES_DIR = Path(__file__).resolve().parent / "modules"
 
 # Shared chains: always included regardless of butler identity
-_SHARED_CHAINS = ["core", "memory"]
+_SHARED_CHAINS = ["core"]
 
 
 def _discover_module_chains() -> list[str]:
@@ -119,7 +119,8 @@ def get_all_chains() -> list[str]:
     shared = [c for c in _SHARED_CHAINS if _resolve_chain_dir(c) is not None]
     shared_set = set(shared)
     modules = [c for c in _discover_module_chains() if c not in shared_set]
-    butlers = [c for c in _discover_butler_chains() if c not in shared_set]
+    module_set = set(modules)
+    butlers = [c for c in _discover_butler_chains() if c not in shared_set and c not in module_set]
     return shared + modules + butlers
 
 
@@ -152,18 +153,27 @@ def _build_alembic_config(db_url: str, chains: list[str] | None = None) -> Confi
 
 
 def has_butler_chain(butler_name: str) -> bool:
-    """Check whether a butler-name-specific Alembic version chain exists.
+    """Check for a butler-specific migration chain not owned by a module.
 
-    A chain is considered to exist when the directory
-    ``roster/<butler_name>/migrations/`` is present and contains at least one
-    ``.py`` migration file (excluding ``__init__.py``).
+    Butler-specific chains are discovered in ``roster/<butler_name>/migrations/``.
+    If a module migration chain exists at ``src/butlers/modules/<butler_name>/migrations/``
+    and contains revisions, this function returns ``False`` so module chains
+    take precedence.
 
     Args:
         butler_name: The butler identity name (e.g. ``"relationship"``).
 
     Returns:
-        ``True`` if a non-empty migration chain directory exists for the butler.
+        ``True`` if a non-empty, non-module migration chain exists for the butler.
     """
+    module_chain_dir = MODULES_DIR / butler_name / "migrations"
+    if module_chain_dir.is_dir():
+        module_migration_files = [
+            f for f in module_chain_dir.iterdir() if f.suffix == ".py" and f.name != "__init__.py"
+        ]
+        if module_migration_files:
+            return False
+
     chain_dir = ROSTER_DIR / butler_name / "migrations"
     if not chain_dir.is_dir():
         return False

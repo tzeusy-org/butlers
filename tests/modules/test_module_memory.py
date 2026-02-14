@@ -43,9 +43,9 @@ class TestModuleABC:
         mod = MemoryModule()
         assert mod.dependencies == []
 
-    def test_migration_revisions_none(self):
+    def test_migration_revisions_memory_chain(self):
         mod = MemoryModule()
-        assert mod.migration_revisions() is None
+        assert mod.migration_revisions() == "memory"
 
 
 # ---------------------------------------------------------------------------

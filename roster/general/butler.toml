@@ -10,3 +10,5 @@ name = "butler_general"
 provider = "google"
 calendar_id = "butler-general@group.calendar.google.com"
 default_conflict_policy = "suggest"
+
+[modules.memory]

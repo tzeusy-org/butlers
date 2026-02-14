@@ -1,7 +1,7 @@
 """Memory system endpoints — episodes, facts, rules, stats, activity.
 
-Provides read-only endpoints for browsing the shared memory subsystem.
-All data is queried from the ``memory`` butler's PostgreSQL database.
+Provides read-only endpoints for browsing memory data through the dashboard API.
+Data is read from the configured ``memory`` pool as the current projection source.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def _get_db_manager() -> DatabaseManager:
 
 
 def _pool(db: DatabaseManager):
-    """Retrieve the memory butler's connection pool.
+    """Retrieve the dashboard memory projection pool.
 
     Raises HTTPException 503 if the pool is not available.
     """

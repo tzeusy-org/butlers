@@ -190,6 +190,7 @@ def _make_config(
     port: int = 9100,
     env_required: list[str] | None = None,
     env_optional: list[str] | None = None,
+    modules: dict[str, dict] | None = None,
     model: str | None | object = _SENTINEL,
 ) -> ButlerConfig:
     runtime = RuntimeConfig(model=model) if model is not _SENTINEL else RuntimeConfig()
@@ -197,6 +198,7 @@ def _make_config(
         name=name,
         port=port,
         runtime=runtime,
+        modules=modules or {},
         env_required=env_required or [],
         env_optional=env_optional or [],
     )
@@ -843,6 +845,7 @@ class TestFullFlow:
             name="flow-butler",
             port=9200,
             env_required=["CUSTOM_VAR"],
+            modules={"memory": {}},
         )
 
         adapter = MockAdapter(
@@ -869,9 +872,10 @@ class TestFullFlow:
                 result = await spawner.trigger("do the thing", "schedule")
 
         mock_fetch.assert_called_once_with(
+            None,
             "flow-butler",
             "do the thing",
-            memory_butler_port=config.memory.port,
+            token_budget=3000,
         )
 
         assert result.output == "All done!"
@@ -896,6 +900,7 @@ class TestFullFlow:
         config = _make_config(
             name="flow-butler",
             port=9200,
+            modules={"memory": {}},
         )
 
         adapter = MockAdapter(result_text="All done!", capture=True)

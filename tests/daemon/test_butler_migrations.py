@@ -190,7 +190,7 @@ class TestDiscoverModuleChains:
     def test_real_discovery_finds_known_modules(self) -> None:
         """The real modules/ directory should contain the known module chains."""
         chains = _discover_module_chains()
-        for expected in ["approvals", "mailbox"]:
+        for expected in ["approvals", "mailbox", "memory"]:
             assert expected in chains, f"Expected {expected} in discovered module chains"
 
 
@@ -292,6 +292,7 @@ class TestGetAllChains:
         chains = get_all_chains()
         assert "mailbox" in chains
         assert "approvals" in chains
+        assert "memory" in chains
 
 
 # ---------------------------------------------------------------------------

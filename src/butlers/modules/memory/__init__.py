@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from butlers.modules.base import Module
 
@@ -19,7 +19,24 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryModuleConfig(BaseModel):
-    """Configuration for the Memory module (currently empty)."""
+    """Configuration for the Memory module."""
+
+    class RetrievalConfig(BaseModel):
+        """Config for memory retrieval and context assembly defaults."""
+
+        context_token_budget: int = 3000
+        default_limit: int = 20
+        default_mode: str = "hybrid"
+        score_weights: dict[str, float] = Field(
+            default_factory=lambda: {
+                "relevance": 0.4,
+                "importance": 0.3,
+                "recency": 0.2,
+                "confidence": 0.1,
+            }
+        )
+
+    retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
 
 
 class MemoryModule(Module):
@@ -28,6 +45,7 @@ class MemoryModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
         self._embedding_engine: Any = None
+        self._config: MemoryModuleConfig = MemoryModuleConfig()
 
     @property
     def name(self) -> str:
@@ -42,11 +60,13 @@ class MemoryModule(Module):
         return []
 
     def migration_revisions(self) -> str | None:
-        return None
+        return "memory"
 
     async def on_startup(self, config: Any, db: Any) -> None:
         """Store the Database reference for later pool access."""
         self._db = db
+        if isinstance(config, MemoryModuleConfig):
+            self._config = config
 
     async def on_shutdown(self) -> None:
         """Clear state references."""
@@ -70,7 +90,10 @@ class MemoryModule(Module):
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         """Register all 12 memory MCP tools."""
         self._db = db
+        if isinstance(config, MemoryModuleConfig):
+            self._config = config
         module = self  # capture for closures
+        default_context_budget = self._config.retrieval.context_token_budget
 
         # Import sub-modules (not individual functions) to avoid name collisions
         # between the MCP closure names and the imported symbols.
@@ -253,7 +276,7 @@ class MemoryModule(Module):
         async def memory_context(
             trigger_prompt: str,
             butler: str,
-            token_budget: int = 3000,
+            token_budget: int = default_context_budget,
         ) -> str:
             """Build a memory context block for injection into a CC system prompt."""
             return await _context.memory_context(

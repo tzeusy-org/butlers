@@ -32,18 +32,18 @@ _resolve_chain_dir = _mod._resolve_chain_dir
 has_butler_chain = _mod.has_butler_chain
 
 # ---------------------------------------------------------------------------
-# Migration chain discovery for memory roster
+# Migration chain discovery for module-local memory migrations
 # ---------------------------------------------------------------------------
-ROSTER_DIR = Path(__file__).resolve().parent.parent.parent / "roster"
-MEMORY_MIGRATIONS_DIR = ROSTER_DIR / "memory" / "migrations"
+MODULES_DIR = Path(__file__).resolve().parent.parent.parent / "src" / "butlers" / "modules"
+MEMORY_MIGRATIONS_DIR = MODULES_DIR / "memory" / "migrations"
 
 
 class TestMemoryChainRegistration:
     """Verify that the memory chain is registered and discoverable."""
 
-    def test_memory_in_shared_chains(self) -> None:
-        """'memory' should be listed in the _SHARED_CHAINS constant."""
-        assert "memory" in _SHARED_CHAINS
+    def test_memory_not_in_shared_chains(self) -> None:
+        """'memory' is module-owned and should not be listed in _SHARED_CHAINS."""
+        assert "memory" not in _SHARED_CHAINS
 
     def test_memory_in_get_all_chains(self) -> None:
         """'memory' should appear in the list returned by get_all_chains()."""
@@ -83,8 +83,8 @@ class TestMemoryChainRegistration:
             )
 
     def test_has_butler_chain_for_memory(self) -> None:
-        """has_butler_chain('memory') should return True since it has migrations."""
-        assert has_butler_chain("memory") is True
+        """has_butler_chain('memory') should be False when module chain owns it."""
+        assert has_butler_chain("memory") is False
 
     def test_has_butler_chain_for_nonexistent(self) -> None:
         """has_butler_chain for a non-existent butler returns False."""

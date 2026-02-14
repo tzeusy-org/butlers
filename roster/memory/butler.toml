@@ -34,27 +34,4 @@ the max_entries limit, delete the oldest consolidated episodes first. Never dele
 unconsolidated episodes that have not expired.
 """
 
-[butler.memory]
-embedding_model = "all-MiniLM-L6-v2"
-embedding_dimensions = 384
-
-[butler.memory.episodes]
-default_ttl_days = 7
-max_entries = 10000
-
-[butler.memory.facts]
-retrieval_confidence_threshold = 0.2
-expiry_confidence_threshold = 0.05
-
-[butler.memory.rules]
-promote_to_established = { min_successes = 5, min_effectiveness = 0.6 }
-promote_to_proven = { min_successes = 15, min_effectiveness = 0.8, min_age_days = 30 }
-harmful_to_antipattern = { min_harmful = 3, max_effectiveness = 0.3 }
-
-[butler.memory.retrieval]
-default_limit = 20
-default_mode = "hybrid"
-context_token_budget = 3000
-score_weights = { relevance = 0.4, importance = 0.3, recency = 0.2, confidence = 0.1 }
-
 [modules.memory]

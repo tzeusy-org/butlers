@@ -11,7 +11,14 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
+MIGRATIONS_DIR = (
+    Path(__file__).resolve().parent.parent.parent.parent
+    / "src"
+    / "butlers"
+    / "modules"
+    / "memory"
+    / "migrations"
+)
 
 
 def _load_migration(filename: str):

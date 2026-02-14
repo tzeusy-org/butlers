@@ -10,8 +10,8 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-ROSTER_DIR = Path(__file__).resolve().parent.parent.parent / "roster"
-MIGRATION_DIR = ROSTER_DIR / "memory" / "migrations"
+MODULES_DIR = Path(__file__).resolve().parent.parent.parent / "src" / "butlers" / "modules"
+MIGRATION_DIR = MODULES_DIR / "memory" / "migrations"
 MIGRATION_FILE = MIGRATION_DIR / "001_create_episodes.py"
 
 
