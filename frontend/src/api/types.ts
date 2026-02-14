@@ -847,3 +847,97 @@ export interface RuleParams {
   offset?: number;
   limit?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Approvals
+// ---------------------------------------------------------------------------
+
+export interface ApprovalAction {
+  id: string;
+  tool_name: string;
+  tool_args: Record<string, unknown>;
+  status: string;
+  requested_at: string;
+  agent_summary?: string | null;
+  session_id?: string | null;
+  expires_at?: string | null;
+  decided_by?: string | null;
+  decided_at?: string | null;
+  execution_result?: Record<string, unknown> | null;
+  approval_rule_id?: string | null;
+}
+
+export interface ApprovalRule {
+  id: string;
+  tool_name: string;
+  arg_constraints: Record<string, unknown>;
+  description: string;
+  created_from?: string | null;
+  created_at: string;
+  expires_at?: string | null;
+  max_uses?: number | null;
+  use_count: number;
+  active: boolean;
+}
+
+export interface RuleConstraintSuggestion {
+  action_id: string;
+  tool_name: string;
+  tool_args: Record<string, unknown>;
+  suggested_constraints: Record<string, unknown>;
+}
+
+export interface ApprovalMetrics {
+  total_pending: number;
+  total_approved_today: number;
+  total_rejected_today: number;
+  total_auto_approved_today: number;
+  total_expired_today: number;
+  avg_decision_latency_seconds?: number | null;
+  auto_approval_rate: number;
+  rejection_rate: number;
+  failure_count_today: number;
+  active_rules_count: number;
+}
+
+export interface ApprovalActionParams {
+  tool_name?: string;
+  status?: string;
+  butler?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface ApprovalRuleParams {
+  tool_name?: string;
+  active?: boolean;
+  butler?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface ApprovalActionApproveRequest {
+  create_rule?: boolean;
+}
+
+export interface ApprovalActionRejectRequest {
+  reason?: string | null;
+}
+
+export interface ApprovalRuleCreateRequest {
+  tool_name: string;
+  arg_constraints: Record<string, unknown>;
+  description: string;
+  expires_at?: string | null;
+  max_uses?: number | null;
+}
+
+export interface ApprovalRuleFromActionRequest {
+  action_id: string;
+  constraint_overrides?: Record<string, unknown> | null;
+}
+
+export interface ExpireStaleActionsResponse {
+  expired_count: number;
+  expired_ids: string[];
+}

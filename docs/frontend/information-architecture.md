@@ -23,6 +23,7 @@ Sidebar entries:
 - Notifications (`/notifications`)
 - Issues (`/issues`)
 - Audit Log (`/audit-log`)
+- Approvals (`/approvals`)
 - Contacts (`/contacts`)
 - Groups (`/groups`)
 - Health (`/health/measurements`)
@@ -48,6 +49,8 @@ Note: `Costs` exists as a route (`/costs`) but is not a sidebar item.
 | `/notifications` | Notifications center | Delivery stats + filtered feed |
 | `/issues` | Issues center | Active alerts and operator-dismissable issue list |
 | `/audit-log` | Audit log | Filterable operation history |
+| `/approvals` | Approvals queue | Pending action queue + filters + decision workflows |
+| `/approvals/rules` | Approval rules | Standing rules list/detail/revoke flows |
 | `/contacts` | Contacts list | Search/filter contacts with pagination |
 | `/contacts/:contactId` | Contact detail | Profile + notes/interactions/gifts/loans/activity tabs |
 | `/groups` | Groups list | Relationship groups and membership metrics |
@@ -112,13 +115,22 @@ On `/contacts/:contactId`:
 - `Loans`
 - `Activity`
 
-## Planned Integration (Not Implemented Yet)
+## Approvals Integration
 
-Approvals module integration candidates for the single-pane dashboard:
+The approvals module is integrated into the single-pane dashboard:
 
 - Sidebar entry: `Approvals` (`/approvals`)
-- Route: `/approvals` (pending queue + filters + rule quick actions)
-- Route: `/approvals/actions/:actionId` (decision detail view)
-- Route: `/approvals/rules` (standing rules management)
+- Route: `/approvals` (pending queue + filters + metrics + decision workflows)
+- Route: `/approvals/rules` (standing rules list/detail/create/revoke flows)
 
-These are target-state additions and should not be treated as currently implemented routes.
+The main approvals page provides:
+- Metrics dashboard with pending count, approval/rejection/auto-approval stats
+- Filterable action queue (by tool, status, butler)
+- Action detail dialog with approve/reject/rule creation
+- Stale action expiry management
+
+The rules page provides:
+- Filterable rules list (by tool, active status, butler)
+- Rule detail dialog with constraint inspection
+- Rule revocation capability
+- Use count and limit tracking

@@ -178,7 +178,7 @@ Grouped result keys required by frontend:
 - `GET /api/memory/rules/{ruleId}` -> `ApiResponse<MemoryRule>`
 - `GET /api/memory/activity` -> `ApiResponse<MemoryActivity[]>`
 
-## Approvals Domain Contract (Target State)
+## Approvals Domain Contract
 
 - `GET /api/approvals/actions` -> `PaginatedResponse<ApprovalAction>`
 - `GET /api/approvals/actions/{actionId}` -> `ApiResponse<ApprovalAction>`

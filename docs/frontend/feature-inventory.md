@@ -264,4 +264,4 @@ This inventory describes what is implemented today in `frontend/src/**`.
 ## Current Gaps / Partial States
 
 - Many domain pages are read-focused with no create/edit/delete flows.
-- Approvals workflows (pending action queue, decision UI, standing rule management) are not yet implemented in frontend routes; currently operated via approvals MCP tools.
+- Approvals workflows are implemented with dedicated frontend surfaces at `/approvals` (action queue + decision UI + metrics) and `/approvals/rules` (standing rule management).

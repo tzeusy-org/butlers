@@ -9,6 +9,7 @@ const navItems = [
   { path: '/notifications', label: 'Notifications' },
   { path: '/issues', label: 'Issues' },
   { path: '/audit-log', label: 'Audit Log' },
+  { path: '/approvals', label: 'Approvals' },
   { path: '/contacts', label: 'Contacts' },
   { path: '/groups', label: 'Groups' },
   { path: '/health/measurements', label: 'Health' },

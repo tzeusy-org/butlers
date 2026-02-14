@@ -5,6 +5,17 @@
  */
 
 import type {
+  ApprovalAction,
+  ApprovalActionApproveRequest,
+  ApprovalActionParams,
+  ApprovalActionRejectRequest,
+  ApprovalMetrics,
+  ApprovalRule,
+  ApprovalRuleCreateRequest,
+  ApprovalRuleFromActionRequest,
+  ApprovalRuleParams,
+  ExpireStaleActionsResponse,
+  RuleConstraintSuggestion,
   ActivityFeedItem,
   ApiResponse,
   AuditEntry,
@@ -842,4 +853,148 @@ export function getMemoryActivity(
 ): Promise<ApiResponse<MemoryActivity[]>> {
   const params = limit != null ? `?limit=${limit}` : "";
   return apiFetch<ApiResponse<MemoryActivity[]>>(`/memory/activity${params}`);
+}
+
+// ---------------------------------------------------------------------------
+// Approvals
+// ---------------------------------------------------------------------------
+
+function approvalActionSearchParams(params?: ApprovalActionParams): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (params?.tool_name) qs.set("tool_name", params.tool_name);
+  if (params?.status) qs.set("status", params.status);
+  if (params?.butler) qs.set("butler", params.butler);
+  if (params?.offset != null) qs.set("offset", params.offset.toString());
+  if (params?.limit != null) qs.set("limit", params.limit.toString());
+  return qs;
+}
+
+function approvalRuleSearchParams(params?: ApprovalRuleParams): URLSearchParams {
+  const qs = new URLSearchParams();
+  if (params?.tool_name) qs.set("tool_name", params.tool_name);
+  if (params?.active != null) qs.set("active", params.active.toString());
+  if (params?.butler) qs.set("butler", params.butler);
+  if (params?.offset != null) qs.set("offset", params.offset.toString());
+  if (params?.limit != null) qs.set("limit", params.limit.toString());
+  return qs;
+}
+
+export function getApprovalActions(
+  params?: ApprovalActionParams,
+): Promise<PaginatedResponse<ApprovalAction>> {
+  const qs = approvalActionSearchParams(params).toString();
+  return apiFetch<PaginatedResponse<ApprovalAction>>(
+    qs ? `/approvals/actions?${qs}` : "/approvals/actions",
+  );
+}
+
+export function getApprovalAction(actionId: string): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>(
+    `/approvals/actions/${encodeURIComponent(actionId)}`,
+  );
+}
+
+export function getExecutedActions(
+  params?: ApprovalActionParams,
+): Promise<PaginatedResponse<ApprovalAction>> {
+  const qs = approvalActionSearchParams(params).toString();
+  return apiFetch<PaginatedResponse<ApprovalAction>>(
+    qs ? `/approvals/actions/executed?${qs}` : "/approvals/actions/executed",
+  );
+}
+
+export function approveAction(
+  actionId: string,
+  request: ApprovalActionApproveRequest,
+): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>(
+    `/approvals/actions/${encodeURIComponent(actionId)}/approve`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+export function rejectAction(
+  actionId: string,
+  request: ApprovalActionRejectRequest,
+): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>(
+    `/approvals/actions/${encodeURIComponent(actionId)}/reject`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+export function expireStaleActions(
+  butler?: string,
+  hours?: number,
+): Promise<ApiResponse<ExpireStaleActionsResponse>> {
+  const params = new URLSearchParams();
+  if (butler) params.set("butler", butler);
+  if (hours != null) params.set("hours", hours.toString());
+  const qs = params.toString();
+  return apiFetch<ApiResponse<ExpireStaleActionsResponse>>(
+    qs ? `/approvals/actions/expire-stale?${qs}` : "/approvals/actions/expire-stale",
+    { method: "POST" },
+  );
+}
+
+export function getApprovalRules(
+  params?: ApprovalRuleParams,
+): Promise<PaginatedResponse<ApprovalRule>> {
+  const qs = approvalRuleSearchParams(params).toString();
+  return apiFetch<PaginatedResponse<ApprovalRule>>(
+    qs ? `/approvals/rules?${qs}` : "/approvals/rules",
+  );
+}
+
+export function getApprovalRule(ruleId: string): Promise<ApiResponse<ApprovalRule>> {
+  return apiFetch<ApiResponse<ApprovalRule>>(
+    `/approvals/rules/${encodeURIComponent(ruleId)}`,
+  );
+}
+
+export function createApprovalRule(
+  request: ApprovalRuleCreateRequest,
+): Promise<ApiResponse<ApprovalRule>> {
+  return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export function createRuleFromAction(
+  request: ApprovalRuleFromActionRequest,
+): Promise<ApiResponse<ApprovalRule>> {
+  return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules/from-action", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export function revokeApprovalRule(ruleId: string): Promise<ApiResponse<ApprovalRule>> {
+  return apiFetch<ApiResponse<ApprovalRule>>(
+    `/approvals/rules/${encodeURIComponent(ruleId)}/revoke`,
+    { method: "POST" },
+  );
+}
+
+export function getRuleSuggestions(
+  actionId: string,
+): Promise<ApiResponse<RuleConstraintSuggestion>> {
+  return apiFetch<ApiResponse<RuleConstraintSuggestion>>(
+    `/approvals/rules/suggestions/${encodeURIComponent(actionId)}`,
+  );
+}
+
+export function getApprovalMetrics(): Promise<ApiResponse<ApprovalMetrics>> {
+  return apiFetch<ApiResponse<ApprovalMetrics>>("/approvals/metrics");
 }

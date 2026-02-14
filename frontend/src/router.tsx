@@ -26,6 +26,8 @@ import ResearchPage from './pages/ResearchPage.tsx'
 import CollectionsPage from './pages/CollectionsPage.tsx'
 import EntitiesPage from './pages/EntitiesPage.tsx'
 import EntityDetailPage from './pages/EntityDetailPage.tsx'
+import ApprovalsPage from './pages/ApprovalsPage.tsx'
+import ApprovalRulesPage from './pages/ApprovalRulesPage.tsx'
 
 export const router = createBrowserRouter([
   {
@@ -42,6 +44,8 @@ export const router = createBrowserRouter([
       { path: '/notifications', element: <NotificationsPage /> },
       { path: '/issues', element: <IssuesPage /> },
       { path: '/audit-log', element: <AuditLogPage /> },
+      { path: '/approvals', element: <ApprovalsPage /> },
+      { path: '/approvals/rules', element: <ApprovalRulesPage /> },
       { path: '/contacts', element: <ContactsPage /> },
       { path: '/contacts/:contactId', element: <ContactDetailPage /> },
       { path: '/groups', element: <GroupsPage /> },
