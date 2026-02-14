@@ -6,3 +6,5 @@ Connectors are transport-only adapters that:
 - Submit to Switchboard ingest API
 - Handle checkpointing and resume logic
 """
+
+__all__ = ["gmail"]

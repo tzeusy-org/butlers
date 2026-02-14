@@ -37,6 +37,7 @@ dev = [
 ]
 
 [project.scripts]
+gmail-connector = "butlers.connectors.gmail:main"
 butlers = "butlers.cli:cli"
 
 [tool.ruff]
