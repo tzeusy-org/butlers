@@ -318,10 +318,25 @@ Idempotency invariant:
 
 ## 13. Security and Safety Invariants
 - Origin spoofing prevention: Messenger must verify `origin_butler` against authenticated routed caller metadata, not payload alone.
+- Caller authentication: `route.execute` enforces `request_context.source_endpoint_identity` against `trusted_route_callers` (default: `["switchboard"]`) before any business logic or delivery side effects. Unknown callers receive a deterministic `validation_error` with `retryable=false`.
+- Caller authorization: Only callers listed in `trusted_route_callers` may terminate `notify.v1` delivery requests through Messenger `route.execute`. This is a hard security boundary that prevents unauthenticated network callers from triggering outbound delivery adapters directly.
 - Least privilege: credential scopes (`bot`, `user`) must be isolated and only used by corresponding tool surfaces.
 - Sensitive data hygiene: credentials, tokens, and full raw message payloads must not be logged.
 - Policy enforcement: recipient allow/deny checks must run before provider calls.
 - No blind broadcast on missing targeting context.
+
+### 13.1 Route Execution Authentication Contract
+All butlers (not just Messenger) enforce `trusted_route_callers` on `route.execute`:
+- Default trusted callers: `["switchboard"]`.
+- Configurable via `[butler.security].trusted_route_callers` in `butler.toml`.
+- Rejection is deterministic: unauthorized callers always receive `validation_error` with a message identifying the rejected `source_endpoint_identity`.
+- The check runs after route envelope parsing but before any spawner trigger or delivery adapter call.
+
+### 13.2 Rollout and Compatibility
+- **Backward compatible**: The default `trusted_route_callers = ["switchboard"]` matches the existing Switchboard-only dispatch topology. No butler.toml changes are required for standard deployments.
+- **Custom deployments**: Operators who route through non-Switchboard control planes must add their caller identities to `[butler.security].trusted_route_callers`.
+- **Empty list**: Setting `trusted_route_callers = []` rejects all `route.execute` callers, effectively disabling routed execution. This is useful for butlers that should never accept routed requests.
+- **Migration path**: Existing deployments using the default Switchboard topology require no changes. The guardrail is transparent to authorized callers.
 
 ## 14. Observability Contract
 ### 14.1 Metrics

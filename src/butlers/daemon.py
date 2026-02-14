@@ -875,6 +875,27 @@ class ButlerDaemon:
             route_context = parsed_route.request_context.model_dump(mode="json")
             route_request_id = str(parsed_route.request_context.request_id)
 
+            # --- Authn/authz: enforce trusted caller identity ---
+            caller_identity = parsed_route.request_context.source_endpoint_identity
+            trusted_callers = daemon.config.trusted_route_callers
+            if caller_identity not in trusted_callers:
+                message = (
+                    f"Unauthorized route.execute caller: "
+                    f"source_endpoint_identity '{caller_identity}' "
+                    f"is not in trusted_route_callers."
+                )
+                logger.warning(
+                    "route.execute authz rejected: butler=%s caller=%s trusted=%s",
+                    daemon.config.name,
+                    caller_identity,
+                    trusted_callers,
+                )
+                return _route_error_response(
+                    context_payload=route_context,
+                    error_class="validation_error",
+                    message=message,
+                )
+
             if daemon.config.name != "messenger":
                 context_text: str | None = None
                 if isinstance(parsed_route.input.context, dict):

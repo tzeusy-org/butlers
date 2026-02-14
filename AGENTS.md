@@ -415,6 +415,12 @@ make test-qg
 - `tests/test_tool_name_compliance.py::test_legacy_unprefixed_tool_names_absent_from_repo_text_surfaces` scans docs/spec text in addition to code; avoid bare legacy tool tokens in prose/examples and use identity-prefixed names instead (for example `bot_switchboard_handle_message`).
 - The same compliance scan also flags standalone legacy tokens in test literals/fixtures; when asserting legacy-name rejection, construct those names dynamically (for example `"send" + "_message"`) rather than embedding bare tokens directly.
 
+### Route.execute authn/authz contract
+- `src/butlers/daemon.py` `route.execute` enforces `request_context.source_endpoint_identity` against `ButlerConfig.trusted_route_callers` (default: `("switchboard",)`) before any spawner trigger or delivery adapter call.
+- Unauthorized callers receive a deterministic `validation_error` response with `retryable=false`; no side effects occur.
+- `[butler.security].trusted_route_callers` in `butler.toml` overrides the default; empty list rejects all callers.
+- Regression tests in `tests/daemon/test_route_execute_authz.py` cover unauthenticated/unauthorized rejection, custom config, and authorized pass-through.
+
 ### Core tool registration contract
 - `src/butlers/daemon.py` exports `CORE_TOOL_NAMES` as the canonical core-tool set (including `notify`); registration tests should assert against this set to prevent drift between `_register_core_tools()` behavior and expected tool coverage.
 
