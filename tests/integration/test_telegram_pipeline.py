@@ -221,6 +221,9 @@ class TestProcessUpdate:
         await mod.process_update(update)
 
         assert captured_args["source"] == "telegram"
+        assert captured_args["source_channel"] == "telegram"
+        assert captured_args["source_identity"] == "bot"
+        assert captured_args["source_tool"] == "bot_telegram_get_updates"
         assert captured_args["chat_id"] == "999"
         assert captured_args["message"] == "test"
 
@@ -494,3 +497,108 @@ class TestPollLoopPipeline:
         )
         assert poll_log.source == "telegram"
         assert poll_log.update_count == 1
+
+
+class TestIdentityScopedToolFlows:
+    """Verify user/bot send and ingest tool behavior."""
+
+    async def test_user_and_bot_send_reply_tools_delegate_helpers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Both identity-scoped send/reply tools invoke shared helpers."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        mod = TelegramModule()
+        mcp = MagicMock()
+        tools: dict[str, object] = {}
+
+        def capture_tool():
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool = capture_tool
+        await mod.register_tools(mcp=mcp, config=None, db=None)
+
+        send_mock = AsyncMock(return_value={"ok": True, "type": "send"})
+        reply_mock = AsyncMock(return_value={"ok": True, "type": "reply"})
+        mod._send_message = send_mock  # type: ignore[method-assign]
+        mod._reply_to_message = reply_mock  # type: ignore[method-assign]
+
+        user_send = await tools["user_telegram_send_message"](chat_id="1", text="hello")  # type: ignore[index]
+        bot_send = await tools["bot_telegram_send_message"](chat_id="2", text="hi")  # type: ignore[index]
+        user_reply = await tools["user_telegram_reply_to_message"](  # type: ignore[index]
+            chat_id="3",
+            message_id=11,
+            text="user reply",
+        )
+        bot_reply = await tools["bot_telegram_reply_to_message"](  # type: ignore[index]
+            chat_id="4",
+            message_id=12,
+            text="bot reply",
+        )
+
+        assert user_send["type"] == "send"
+        assert bot_send["type"] == "send"
+        assert user_reply["type"] == "reply"
+        assert bot_reply["type"] == "reply"
+        assert send_mock.await_args_list[0].args == ("1", "hello")
+        assert send_mock.await_args_list[1].args == ("2", "hi")
+        assert reply_mock.await_args_list[0].args == ("3", 11, "user reply")
+        assert reply_mock.await_args_list[1].args == ("4", 12, "bot reply")
+
+    async def test_user_and_bot_get_updates_tools_delegate_helper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Both identity-scoped ingest tools delegate to the updates helper."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        mod = TelegramModule()
+        mcp = MagicMock()
+        tools: dict[str, object] = {}
+
+        def capture_tool():
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool = capture_tool
+        await mod.register_tools(mcp=mcp, config=None, db=None)
+
+        updates = [{"update_id": 1}, {"update_id": 2}]
+        get_updates_mock = AsyncMock(return_value=updates)
+        mod._get_updates = get_updates_mock  # type: ignore[method-assign]
+
+        user_updates = await tools["user_telegram_get_updates"]()  # type: ignore[index]
+        bot_updates = await tools["bot_telegram_get_updates"]()  # type: ignore[index]
+
+        assert user_updates == updates
+        assert bot_updates == updates
+        assert get_updates_mock.await_count == 2
+
+    async def test_legacy_unprefixed_telegram_tool_names_are_not_callable(self):
+        """Legacy unprefixed Telegram names are absent from registration surfaces."""
+        mod = TelegramModule()
+        mcp = MagicMock()
+        tools: dict[str, object] = {}
+
+        def capture_tool():
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool = capture_tool
+        await mod.register_tools(mcp=mcp, config=None, db=None)
+
+        legacy_send = "send" + "_message"
+        legacy_reply = "reply" + "_to_message"
+        legacy_updates = "get" + "_updates"
+        assert legacy_send not in tools
+        assert legacy_reply not in tools
+        assert legacy_updates not in tools
+        with pytest.raises(KeyError):
+            _ = tools[legacy_send]

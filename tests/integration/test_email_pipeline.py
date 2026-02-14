@@ -180,6 +180,9 @@ class TestProcessIncoming:
         await mod.process_incoming(email_data)
 
         assert captured_args["source"] == "email"
+        assert captured_args["source_channel"] == "email"
+        assert captured_args["source_identity"] == "bot"
+        assert captured_args["source_tool"] == "bot_email_check_and_route_inbox"
         assert captured_args["from"] == "sender@example.com"
         assert captured_args["subject"] == "Important"
         assert captured_args["message_id"] == "42"
@@ -371,3 +374,121 @@ class TestCheckAndRouteInbox:
 
         assert "bot_email_check_and_route_inbox" in tools
         assert callable(tools["bot_email_check_and_route_inbox"])
+
+
+class TestIdentityScopedToolFlows:
+    """Verify user/bot send and ingest tool behavior."""
+
+    async def test_user_and_bot_send_reply_tools_delegate_helpers(self):
+        """Both identity-scoped send/reply tools invoke shared helpers."""
+        mod = EmailModule()
+        mcp = MagicMock()
+        tools: dict[str, Any] = {}
+
+        def capture_tool():
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool = capture_tool
+        await mod.register_tools(mcp=mcp, config=None, db=None)
+
+        send_mock = AsyncMock(return_value={"status": "sent"})
+        reply_mock = AsyncMock(return_value={"status": "sent", "thread_id": "thread-1"})
+        mod._send_email = send_mock  # type: ignore[method-assign]
+        mod._reply_to_thread = reply_mock  # type: ignore[method-assign]
+
+        user_send = await tools["user_email_send_message"]("a@example.com", "Hi", "Hello")
+        bot_send = await tools["bot_email_send_message"]("b@example.com", "Yo", "Sup")
+        user_reply = await tools["user_email_reply_to_thread"](
+            "a@example.com", "thread-1", "Reply body"
+        )
+        bot_reply = await tools["bot_email_reply_to_thread"](
+            "b@example.com", "thread-2", "Another reply"
+        )
+
+        assert user_send == {"status": "sent"}
+        assert bot_send == {"status": "sent"}
+        assert user_reply["thread_id"] == "thread-1"
+        assert bot_reply["thread_id"] == "thread-1"
+        assert send_mock.await_args_list[0].args == ("a@example.com", "Hi", "Hello")
+        assert send_mock.await_args_list[1].args == ("b@example.com", "Yo", "Sup")
+        assert reply_mock.await_args_list[0].args == (
+            "a@example.com",
+            "thread-1",
+            "Reply body",
+            None,
+        )
+        assert reply_mock.await_args_list[1].args == (
+            "b@example.com",
+            "thread-2",
+            "Another reply",
+            None,
+        )
+
+    async def test_user_and_bot_ingest_tools_delegate_helpers(self):
+        """Identity-scoped inbox tools and bot route-ingest tool remain callable."""
+        mod = EmailModule()
+        mcp = MagicMock()
+        tools: dict[str, Any] = {}
+
+        def capture_tool():
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool = capture_tool
+        await mod.register_tools(mcp=mcp, config=None, db=None)
+
+        search_mock = AsyncMock(return_value=[{"message_id": "1"}])
+        read_mock = AsyncMock(return_value={"message_id": "1", "body": "hello"})
+        route_mock = AsyncMock(
+            return_value={"status": "ok", "total": 0, "routed": 0, "results": []}
+        )
+        mod._search_inbox = search_mock  # type: ignore[method-assign]
+        mod._read_email = read_mock  # type: ignore[method-assign]
+        mod._check_and_route_inbox = route_mock  # type: ignore[method-assign]
+
+        user_search = await tools["user_email_search_inbox"]("UNSEEN")
+        bot_search = await tools["bot_email_search_inbox"]("ALL")
+        user_read = await tools["user_email_read_message"]("1")
+        bot_read = await tools["bot_email_read_message"]("2")
+        bot_ingest = await tools["bot_email_check_and_route_inbox"]()
+
+        assert user_search == [{"message_id": "1"}]
+        assert bot_search == [{"message_id": "1"}]
+        assert user_read["message_id"] == "1"
+        assert bot_read["message_id"] == "1"
+        assert bot_ingest["status"] == "ok"
+        assert search_mock.await_args_list[0].args == ("UNSEEN",)
+        assert search_mock.await_args_list[1].args == ("ALL",)
+        assert read_mock.await_args_list[0].args == ("1",)
+        assert read_mock.await_args_list[1].args == ("2",)
+        route_mock.assert_awaited_once_with()
+
+    async def test_legacy_unprefixed_email_tool_names_are_not_callable(self):
+        """Legacy unprefixed email names are absent from registration surfaces."""
+        mod = EmailModule()
+        mcp = MagicMock()
+        tools: dict[str, Any] = {}
+
+        def capture_tool():
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mcp.tool = capture_tool
+        await mod.register_tools(mcp=mcp, config=None, db=None)
+
+        legacy_send = "send" + "_email"
+        legacy_ingest = "check" + "_and_route_inbox"
+        assert legacy_send not in tools
+        assert legacy_ingest not in tools
+        with pytest.raises(KeyError):
+            _ = tools[legacy_send]

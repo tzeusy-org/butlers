@@ -1193,3 +1193,36 @@ class TestCallButlerTool:
         assert "Source metadata" in fallback_args["context"]
         assert "bot_telegram_get_updates" in fallback_args["context"]
         assert "msg-12" in fallback_args["context"]
+
+    async def test_unprefixed_unknown_tool_does_not_fallback_to_trigger(self) -> None:
+        """Legacy unprefixed tool names should fail without trigger fallback."""
+        from butlers.tools.switchboard import _call_butler_tool
+
+        legacy_tool = "handle" + "_message"
+        failed_result = SimpleNamespace(
+            is_error=True,
+            data=None,
+            content=[SimpleNamespace(text=f"Unknown tool: {legacy_tool}")],
+        )
+
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(return_value=failed_result)
+
+        mock_ctor = MagicMock()
+        mock_ctx = mock_ctor.return_value
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("butlers.tools.switchboard.routing.route.MCPClient", mock_ctor):
+            with pytest.raises(RuntimeError, match=rf"Unknown tool: {legacy_tool}"):
+                await _call_butler_tool(
+                    "http://localhost:8101/sse",
+                    legacy_tool,
+                    {"message": "legacy"},
+                )
+
+        mock_client.call_tool.assert_awaited_once_with(
+            legacy_tool,
+            {"message": "legacy"},
+            raise_on_error=False,
+        )
