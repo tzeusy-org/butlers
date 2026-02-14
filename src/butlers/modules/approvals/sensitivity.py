@@ -147,3 +147,81 @@ def suggest_constraints(
             constraints[arg_name] = {"type": "any"}
 
     return constraints
+
+
+def redact_tool_args(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    module: Module | None = None,
+) -> dict[str, Any]:
+    """Redact sensitive arguments in tool_args for safe API exposure.
+
+    For each argument in *tool_args*:
+    - If the argument is sensitive (per module metadata or heuristic),
+      replace its value with the string "[REDACTED]".
+    - If the argument is not sensitive, preserve the original value.
+
+    Parameters
+    ----------
+    tool_name:
+        The name of the MCP tool.
+    tool_args:
+        The actual arguments from the tool invocation.
+    module:
+        The ``Module`` instance that registered *tool_name*. When ``None``,
+        only heuristic and default classification apply.
+
+    Returns
+    -------
+    dict[str, Any]
+        A copy of tool_args with sensitive values redacted.
+    """
+    redacted: dict[str, Any] = {}
+
+    for arg_name, arg_value in tool_args.items():
+        is_sensitive = resolve_arg_sensitivity(tool_name, arg_name, module)
+        if is_sensitive:
+            redacted[arg_name] = "[REDACTED]"
+        else:
+            redacted[arg_name] = arg_value
+
+    return redacted
+
+
+def redact_constraints(
+    tool_name: str,
+    arg_constraints: dict[str, dict[str, Any]],
+    module: Module | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Redact sensitive constraint values for safe API exposure.
+
+    For each constraint in *arg_constraints*:
+    - If the argument is sensitive and the constraint has a "value" field,
+      replace the value with "[REDACTED]".
+    - If the argument is not sensitive, preserve the original constraint.
+
+    Parameters
+    ----------
+    tool_name:
+        The name of the MCP tool.
+    arg_constraints:
+        The constraint dict from a standing rule.
+    module:
+        The ``Module`` instance that registered *tool_name*. When ``None``,
+        only heuristic and default classification apply.
+
+    Returns
+    -------
+    dict[str, dict[str, Any]]
+        A copy of arg_constraints with sensitive values redacted.
+    """
+    redacted: dict[str, dict[str, Any]] = {}
+
+    for arg_name, constraint in arg_constraints.items():
+        is_sensitive = resolve_arg_sensitivity(tool_name, arg_name, module)
+        if is_sensitive and "value" in constraint:
+            redacted[arg_name] = {**constraint, "value": "[REDACTED]"}
+        else:
+            redacted[arg_name] = constraint
+
+    return redacted

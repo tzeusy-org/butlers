@@ -262,6 +262,17 @@ class ScheduleCost(BaseModel):
 # Notification models (re-exported from sub-module)
 # ---------------------------------------------------------------------------
 
+from butlers.api.models.approval import (  # noqa: E402
+    ApprovalAction,
+    ApprovalActionApproveRequest,
+    ApprovalActionRejectRequest,
+    ApprovalMetrics,
+    ApprovalRule,
+    ApprovalRuleCreateRequest,
+    ApprovalRuleFromActionRequest,
+    ExpireStaleActionsResponse,
+    RuleConstraintSuggestion,
+)
 from butlers.api.models.audit import AuditEntry  # noqa: E402
 from butlers.api.models.butler import ModuleStatus  # noqa: E402
 from butlers.api.models.general import (  # noqa: E402
@@ -311,6 +322,13 @@ from butlers.api.models.timeline import TimelineEvent, TimelineResponse  # noqa:
 from butlers.api.models.trace import SpanNode, TraceDetail, TraceSummary  # noqa: E402
 
 __all__ = [
+    "ApprovalAction",
+    "ApprovalActionApproveRequest",
+    "ApprovalActionRejectRequest",
+    "ApprovalMetrics",
+    "ApprovalRule",
+    "ApprovalRuleCreateRequest",
+    "ApprovalRuleFromActionRequest",
     "AuditEntry",
     "ActivityFeedItem",
     "ApiMeta",
@@ -334,6 +352,7 @@ __all__ = [
     "MemoryRule",
     "ErrorDetail",
     "ErrorResponse",
+    "ExpireStaleActionsResponse",
     "Gift",
     "Group",
     "GroupListResponse",
@@ -355,6 +374,7 @@ __all__ = [
     "RegistryEntry",
     "Research",
     "RoutingEntry",
+    "RuleConstraintSuggestion",
     "Schedule",
     "ScheduleCost",
     "SearchResponse",

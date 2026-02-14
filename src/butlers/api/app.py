@@ -28,6 +28,7 @@ from butlers.api.deps import (
     wire_db_dependencies,
 )
 from butlers.api.middleware import register_error_handlers
+from butlers.api.routers.approvals import router as approvals_router
 from butlers.api.routers.audit import router as audit_router
 from butlers.api.routers.butlers import router as butlers_router
 from butlers.api.routers.costs import router as costs_router
@@ -128,6 +129,7 @@ def create_app(
     register_error_handlers(app)
 
     # --- Routers ---
+    app.include_router(approvals_router)
     app.include_router(butlers_router)
     app.include_router(notifications_router)
     app.include_router(butler_notifications_router)
