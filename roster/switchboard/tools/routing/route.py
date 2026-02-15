@@ -180,6 +180,7 @@ def _extract_source_metadata(args: dict[str, Any]) -> dict[str, Any]:
 def _build_trigger_context(
     base_context: str | None,
     source_metadata: dict[str, Any],
+    request_context: dict[str, Any] | None = None,
 ) -> str | None:
     metadata_blob = (
         json.dumps(source_metadata, ensure_ascii=False, sort_keys=True) if source_metadata else None
@@ -187,11 +188,17 @@ def _build_trigger_context(
     metadata_context = (
         f"Source metadata (channel/identity/tool): {metadata_blob}" if metadata_blob else None
     )
+    request_context_block = None
+    if request_context:
+        request_context_blob = json.dumps(request_context, ensure_ascii=False, sort_keys=True)
+        request_context_block = f"request_context: {request_context_blob}"
     parts: list[str] = []
     if base_context not in (None, ""):
         parts.append(base_context)
     if metadata_context:
         parts.append(metadata_context)
+    if request_context_block:
+        parts.append(request_context_block)
     return "\n\n".join(parts) if parts else None
 
 
@@ -199,9 +206,12 @@ def _build_trigger_args(args: dict[str, Any]) -> dict[str, Any]:
     """Map routed args to daemon ``trigger`` args."""
     prompt = str(args.get("prompt") or args.get("message") or "")
     trigger_args: dict[str, Any] = {"prompt": prompt}
+    raw_request_context = args.get("request_context")
+    request_context = raw_request_context if isinstance(raw_request_context, dict) else None
     context = _build_trigger_context(
         str(args["context"]) if args.get("context") is not None else None,
         _extract_source_metadata(args),
+        request_context=request_context,
     )
     if context not in (None, ""):
         trigger_args["context"] = context

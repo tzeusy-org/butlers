@@ -610,20 +610,20 @@ class TelegramModule(Module):
 
             # Phase 1: Log receipt
             request_id = str(uuid4())
+            received_at = datetime.now(UTC)
+            sender_identity = _extract_sender_identity(update, fallback=chat_id)
+            request_context = {
+                "request_id": message_key,
+                "received_at": received_at.isoformat(),
+                "source_channel": "telegram",
+                "source_endpoint_identity": "telegram:bot",
+                "source_sender_identity": sender_identity,
+                "source_thread_identity": chat_id,
+                "trace_context": {},
+            }
             message_inbox_id = None
             db_pool = self._get_db_pool()
             if db_pool is not None:
-                received_at = datetime.now(UTC)
-                sender_identity = _extract_sender_identity(update, fallback=chat_id)
-                request_context = {
-                    "request_id": message_key,
-                    "received_at": received_at.isoformat(),
-                    "source_channel": "telegram",
-                    "source_endpoint_identity": "telegram:bot",
-                    "source_sender_identity": sender_identity,
-                    "source_thread_identity": chat_id,
-                    "trace_context": {},
-                }
                 processing_metadata = {
                     "ingest_tool": "bot_telegram_get_updates",
                     "source_metadata": {
@@ -687,6 +687,7 @@ class TelegramModule(Module):
                     "source_id": message_key,
                     "raw_metadata": update,
                     "request_id": request_id,
+                    "request_context": request_context,
                 },
                 message_inbox_id=message_inbox_id,
             )
