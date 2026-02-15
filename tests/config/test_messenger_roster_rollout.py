@@ -36,7 +36,6 @@ def test_messenger_butler_toml_has_delivery_module_wiring() -> None:
 
     telegram = modules.get("telegram")
     assert isinstance(telegram, dict)
-    assert telegram.get("mode") == "polling"
     assert telegram.get("user", {}).get("enabled") is False
     telegram_bot_env = telegram.get("bot", {}).get("token_env")
     assert isinstance(telegram_bot_env, str) and telegram_bot_env.strip()

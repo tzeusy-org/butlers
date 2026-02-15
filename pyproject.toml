@@ -28,6 +28,11 @@ dependencies = [
     "structlog",
 ]
 
+[project.optional-dependencies]
+connectors = [
+    "telethon>=1.36.0",
+]
+
 [dependency-groups]
 dev = [
     "ruff",
@@ -39,6 +44,7 @@ dev = [
 
 [project.scripts]
 gmail-connector = "butlers.connectors.gmail:main"
+telegram-user-client-connector = "butlers.connectors.telegram_user_client:run_telegram_user_client_connector"
 butlers = "butlers.cli:cli"
 
 [tool.ruff]

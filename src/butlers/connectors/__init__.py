@@ -7,4 +7,4 @@ Connectors are transport-only adapters that:
 - Handle checkpointing and resume logic
 """
 
-__all__ = ["gmail"]
+__all__ = ["gmail", "telegram_bot", "telegram_user_client"]

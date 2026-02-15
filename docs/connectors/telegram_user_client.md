@@ -1,7 +1,9 @@
 # Telegram User Client Connector
 
-Status: Draft (project-specific connector profile)
+Status: Draft (v2-only feature, implementation complete)
 Depends on: `docs/connectors/interface.md`
+Implementation: `src/butlers/connectors/telegram_user_client.py`
+Deployment guide: `docs/connectors/telegram_user_client_deployment.md`
 
 ## 1. Purpose
 This connector runs a Telegram **user client** (not a bot) and continuously ingests message activity visible to the user's Telegram account into the butler ecosystem.
@@ -130,3 +132,41 @@ This connector does not:
 - Bypass dedupe/request-context assignment at ingress.
 - Perform direct specialist-butler routing.
 - Require manual export/upload as the primary data path.
+
+## 11. Implementation Status
+
+### Completed Features (2026-02-15)
+- ✅ Live user-client session via Telethon (MTProto)
+- ✅ Real-time message event subscription
+- ✅ Normalization to `ingest.v1` format
+- ✅ Idempotent submission to Switchboard ingest API
+- ✅ Durable checkpoint with restart-safe replay
+- ✅ Bounded in-flight concurrency control
+- ✅ Optional bounded backfill on startup
+- ✅ Graceful degradation when Telethon not installed
+- ✅ Comprehensive test coverage
+
+### Remaining v2-Only Gaps
+The following features are documented but not yet implemented:
+
+1. **Privacy/Consent Guardrails (Section 8)**
+   - Explicit consent flow before enabling
+   - Chat/sender allow/deny lists
+   - Content redaction for sensitive patterns
+   - Audit trail of connector lifecycle events
+
+2. **Feature Gating**
+   - Explicit feature flag enforcement
+   - Configuration validation before startup
+
+3. **Scope Controls**
+   - Per-chat filtering (allowlist/denylist)
+   - Per-sender filtering
+   - Message type filtering (e.g., exclude media, only text)
+
+4. **Advanced Monitoring**
+   - Structured metrics export
+   - Health check endpoint
+   - Lag monitoring and alerting
+
+These gaps are marked as v2-only and should be implemented before production deployment with real user accounts. See `docs/connectors/telegram_user_client_deployment.md` for deployment guidance and interim safeguards.

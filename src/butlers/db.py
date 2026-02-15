@@ -126,13 +126,9 @@ class Database:
             # container image or OS update).  This is a no-op when versions
             # already match.
             try:
-                await conn.execute(
-                    "ALTER DATABASE template1 REFRESH COLLATION VERSION"
-                )
+                await conn.execute("ALTER DATABASE template1 REFRESH COLLATION VERSION")
             except Exception:
-                logger.debug(
-                    "Could not refresh template1 collation version (non-fatal)"
-                )
+                logger.debug("Could not refresh template1 collation version (non-fatal)")
 
             exists = await conn.fetchval(
                 "SELECT 1 FROM pg_database WHERE datname = $1",
