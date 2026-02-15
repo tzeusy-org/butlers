@@ -52,3 +52,9 @@ pgdata/
 
 # tmp
 .tmp
+# bd worktree
+.worktrees/parallel-agents/butlers-902/
+# bd worktree
+.worktrees/parallel-agents/butlers-903/
+# bd worktree
+.worktrees/parallel-agents/butlers-zb7.5/
