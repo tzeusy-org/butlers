@@ -26,6 +26,7 @@ from opentelemetry import trace
 from opentelemetry.context import Context
 
 from butlers.config import ButlerConfig
+from butlers.core.audit import write_audit_entry
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.sessions import session_complete, session_create
 from butlers.core.skills import read_system_prompt
@@ -211,6 +212,9 @@ class Spawner:
         DEPRECATED — Callable to use for the actual SDK invocation. Prefer
         passing a RuntimeAdapter via ``runtime``. When neither ``runtime``
         nor ``sdk_query`` is provided, a default ClaudeCodeAdapter is created.
+    audit_pool:
+        Optional asyncpg pool pointed at the switchboard database for writing
+        daemon-side audit log entries.
     """
 
     def __init__(
@@ -221,11 +225,13 @@ class Spawner:
         module_credentials_env: dict[str, list[str]] | None = None,
         runtime: RuntimeAdapter | None = None,
         sdk_query: Any = None,
+        audit_pool: asyncpg.Pool | None = None,
     ) -> None:
         self._config = config
         self._config_dir = config_dir
         self._pool = pool
         self._module_credentials_env = module_credentials_env
+        self._audit_pool = audit_pool
         self._lock = asyncio.Lock()
         self._accepting = True
         self._in_flight: set[asyncio.Task] = set()
@@ -489,6 +495,23 @@ class Spawner:
                     output_tokens=output_tokens,
                 )
 
+            # Write daemon-side audit log entry
+            await write_audit_entry(
+                self._audit_pool,
+                self._config.name,
+                "session",
+                {
+                    "session_id": str(session_id) if session_id else None,
+                    "trigger_source": trigger_source,
+                    "prompt": final_prompt[:200],
+                    "duration_ms": duration_ms,
+                    "tool_calls_count": len(tool_calls),
+                    "model": model,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                },
+            )
+
             # Store episode via module-local memory tools (failure doesn't block)
             if memory_enabled and spawner_result.success and spawner_result.output:
                 await store_session_episode(
@@ -528,6 +551,21 @@ class Spawner:
                     success=False,
                     error=error_msg,
                 )
+
+            # Write daemon-side audit log entry (error)
+            await write_audit_entry(
+                self._audit_pool,
+                self._config.name,
+                "session",
+                {
+                    "session_id": str(session_id) if session_id else None,
+                    "trigger_source": trigger_source,
+                    "prompt": final_prompt[:200],
+                    "duration_ms": duration_ms,
+                },
+                result="error",
+                error=error_msg,
+            )
 
             return spawner_result
 

@@ -25,6 +25,7 @@ const OPERATION_OPTIONS = [
   "all",
   "trigger",
   "tick",
+  "session",
   "schedule.create",
   "schedule.update",
   "schedule.delete",

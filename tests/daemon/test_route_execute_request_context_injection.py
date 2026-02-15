@@ -365,3 +365,83 @@ class TestRouteExecuteRequestContextInjection:
         assert parsed_ctx["source_sender_identity"] == "sender-888"
         assert parsed_ctx["source_endpoint_identity"] == "switchboard"
         assert "received_at" in parsed_ctx
+
+    async def test_interactive_channel_injects_guidance_for_telegram(
+        self, tmp_path: Path
+    ) -> None:
+        """Telegram source_channel triggers INTERACTIVE DATA SOURCE block."""
+        patches = _patch_infra()
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        mock_trigger_result = MagicMock()
+        mock_trigger_result.output = "ok"
+        mock_trigger_result.success = True
+        mock_trigger_result.error = None
+        mock_trigger_result.duration_ms = 10
+        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(source_channel="telegram"),
+            input={"prompt": "Track medication."},
+        )
+
+        assert result["status"] == "ok"
+        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
+        assert "INTERACTIVE DATA SOURCE" in context_arg
+        assert 'channel="telegram"' in context_arg
+        assert 'intent="reply"' in context_arg
+        assert "notify()" in context_arg
+
+    async def test_interactive_channel_injects_guidance_for_email(
+        self, tmp_path: Path
+    ) -> None:
+        """Email source_channel triggers INTERACTIVE DATA SOURCE block."""
+        patches = _patch_infra()
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        mock_trigger_result = MagicMock()
+        mock_trigger_result.output = "ok"
+        mock_trigger_result.success = True
+        mock_trigger_result.error = None
+        mock_trigger_result.duration_ms = 10
+        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(source_channel="email"),
+            input={"prompt": "Check inbox."},
+        )
+
+        assert result["status"] == "ok"
+        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
+        assert "INTERACTIVE DATA SOURCE" in context_arg
+        assert 'channel="email"' in context_arg
+
+    async def test_non_interactive_channel_omits_guidance(self, tmp_path: Path) -> None:
+        """MCP source_channel does NOT inject INTERACTIVE DATA SOURCE block."""
+        patches = _patch_infra()
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        mock_trigger_result = MagicMock()
+        mock_trigger_result.output = "ok"
+        mock_trigger_result.success = True
+        mock_trigger_result.error = None
+        mock_trigger_result.duration_ms = 10
+        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(source_channel="mcp"),
+            input={"prompt": "Internal check."},
+        )
+
+        assert result["status"] == "ok"
+        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
+        assert "INTERACTIVE DATA SOURCE" not in context_arg

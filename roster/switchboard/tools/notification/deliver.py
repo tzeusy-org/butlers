@@ -155,9 +155,21 @@ async def _deliver_via_notify_request(
     log_metadata["notify_request"] = notify_request.model_dump(mode="json")
     log_metadata["request_context"] = request_context.model_dump(mode="json")
 
+    # Create a switchboard-scoped context for the route.v1 envelope so the
+    # messenger's authz check sees source_endpoint_identity="switchboard".
+    # The original ingestion context is already preserved inside
+    # input.context.notify_request for the messenger's reply targeting.
+    route_context = RouteRequestContextV1.model_validate({
+        "request_id": str(request_context.request_id),
+        "received_at": (request_context.received_at or datetime.now(UTC)).isoformat(),
+        "source_channel": "mcp",
+        "source_endpoint_identity": "switchboard",
+        "source_sender_identity": source_butler,
+    })
+
     route_payload = _build_notify_route_envelope(
         notify_request,
-        request_context=request_context,
+        request_context=route_context,
     )
     parse_route_envelope(route_payload)
 

@@ -360,6 +360,44 @@ def _validate_messenger_requirements(name: str, modules: dict[str, dict[str, Any
         )
 
 
+def list_butlers(roster_dir: Path | None = None) -> list[ButlerConfig]:
+    """Discover all butlers from the roster directory.
+
+    Scans ``roster/*/`` for directories containing a ``butler.toml`` and returns
+    the parsed configs sorted by name.
+
+    Parameters
+    ----------
+    roster_dir:
+        Path to the roster directory. Defaults to ``<repo>/roster/``.
+
+    Returns
+    -------
+    list[ButlerConfig]
+        Parsed configs sorted by butler name.
+    """
+    if roster_dir is None:
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        roster_dir = repo_root / "roster"
+
+    if not roster_dir.is_dir():
+        return []
+
+    configs: list[ButlerConfig] = []
+    for entry in sorted(roster_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        toml_path = entry / "butler.toml"
+        if not toml_path.exists():
+            continue
+        try:
+            configs.append(load_config(entry))
+        except ConfigError:
+            pass
+
+    return configs
+
+
 def load_config(config_dir: Path) -> ButlerConfig:
     """Load and validate a butler.toml from *config_dir*.
 

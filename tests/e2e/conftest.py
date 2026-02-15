@@ -134,11 +134,15 @@ async def butler_ecosystem(
     Yields:
         ButlerEcosystem with all daemons running and pools connected.
     """
-    from butlers.config import list_butlers
+    from butlers.config import list_butlers, load_config
     from butlers.daemon import ButlerDaemon
     from butlers.db import Database
 
     ecosystem = ButlerEcosystem(postgres_container=postgres_container)
+
+    # Port offset so e2e tests don't collide with production daemons or
+    # infrastructure (8100→19100).  9100 is taken by Prometheus node_exporter.
+    E2E_PORT_OFFSET = 11000
 
     # Connection params from testcontainer
     host = postgres_container.get_container_host_ip()
@@ -149,6 +153,11 @@ async def butler_ecosystem(
     # Discover all roster butlers
     butler_names = [b.name for b in list_butlers()]
     logger.info("Discovered %d butlers: %s", len(butler_names), butler_names)
+
+    # Pre-compute switchboard e2e port for switchboard_url patching.
+    # Load switchboard config to read its base port rather than hardcoding.
+    switchboard_base_config = load_config(Path("roster") / "switchboard")
+    switchboard_e2e_port = switchboard_base_config.port + E2E_PORT_OFFSET
 
     # Bootstrap each butler
     for butler_name in butler_names:
@@ -168,15 +177,21 @@ async def butler_ecosystem(
         pool = await db.connect()
         ecosystem.pools[butler_name] = pool
 
-        # Initialize and start daemon
+        # Initialize daemon and pre-load config with offset port
         daemon = ButlerDaemon(butler_name=butler_name, db=db)
+        config = load_config(daemon.config_dir)
+        config.port += E2E_PORT_OFFSET
+        if config.name != "switchboard":
+            config.switchboard_url = f"http://localhost:{switchboard_e2e_port}/sse"
+        daemon.config = config
+
         await daemon.start()
         ecosystem.butlers[butler_name] = daemon
 
         logger.info(
             "Butler %s started on port %s",
             butler_name,
-            daemon.config.butler.port,
+            daemon.config.port,
         )
 
     # Health check: wait for all SSE ports to respond
@@ -215,7 +230,7 @@ async def _wait_for_ecosystem_health(
     while pending and time.monotonic() < deadline:
         for butler_name in list(pending):
             daemon = ecosystem.butlers[butler_name]
-            port = daemon.config.butler.port
+            port = daemon.config.port
             url = f"http://localhost:{port}/sse"
 
             try:

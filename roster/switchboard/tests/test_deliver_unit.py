@@ -940,7 +940,69 @@ class TestDeliverNotifyRouting:
             routed_payload["input"]["context"]["notify_request"]["request_context"]["request_id"]
             == "018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa"
         )
-        assert routed_payload["request_context"]["source_endpoint_identity"] == "switchboard-bot"
+        # Route envelope uses switchboard-scoped context for messenger authz
+        assert routed_payload["request_context"]["source_endpoint_identity"] == "switchboard"
+        assert routed_payload["request_context"]["source_sender_identity"] == "health"
+        assert routed_payload["request_context"]["source_channel"] == "mcp"
+        # Original context is preserved inside notify_request for reply targeting
+        inner_ctx = routed_payload["input"]["context"]["notify_request"]["request_context"]
+        assert inner_ctx["source_endpoint_identity"] == "switchboard-bot"
+        assert inner_ctx["source_sender_identity"] == "user-123"
+        assert inner_ctx["source_thread_identity"] == "chat-123"
+
+    async def test_notify_route_context_preserves_request_id_lineage(self) -> None:
+        """Route envelope request_id matches the original notify request_context request_id."""
+        from butlers.tools.switchboard import deliver
+
+        pool = _make_mock_pool(
+            fetchrow_side_effect=[
+                [],
+                _registry_row("messenger", "http://localhost:9200/sse"),
+                _notif_id_row(),
+            ],
+        )
+        captured: list[dict[str, Any]] = []
+
+        async def mock_call(endpoint_url, tool_name, args):
+            captured.append({"endpoint_url": endpoint_url, "tool_name": tool_name, "args": args})
+            return {"status": "ok", "result": {"notify_response": {"status": "ok"}}}
+
+        original_request_id = "018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa"
+        notify_request = {
+            "schema_version": "notify.v1",
+            "origin_butler": "health",
+            "delivery": {
+                "intent": "reply",
+                "channel": "telegram",
+                "message": "Got it.",
+                "recipient": "chat-123",
+            },
+            "request_context": {
+                "request_id": original_request_id,
+                "received_at": "2026-02-13T12:00:00+00:00",
+                "source_channel": "telegram",
+                "source_endpoint_identity": "telegram:BigButlerBot",
+                "source_sender_identity": "user-123",
+                "source_thread_identity": "chat-123",
+            },
+        }
+        result = await deliver(
+            pool,
+            source_butler="health",
+            notify_request=notify_request,
+            call_fn=mock_call,
+        )
+
+        assert result["status"] == "sent"
+        routed_payload = captured[0]["args"]
+        # Route-level request_id preserves lineage from the original request
+        assert routed_payload["request_context"]["request_id"] == original_request_id
+        # Switchboard-scoped identity for messenger authz
+        assert routed_payload["request_context"]["source_endpoint_identity"] == "switchboard"
+        # Inner notify_request preserves original context for reply targeting
+        inner_ctx = routed_payload["input"]["context"]["notify_request"]["request_context"]
+        assert inner_ctx["request_id"] == original_request_id
+        assert inner_ctx["source_endpoint_identity"] == "telegram:BigButlerBot"
 
     async def test_invalid_notify_request_fails_validation(self) -> None:
         from butlers.tools.switchboard import deliver

@@ -521,8 +521,9 @@ class ButlerDaemon:
         module is recorded as failed and skipped in later phases while the
         butler continues to start with the remaining healthy modules.
         """
-        # 1. Load config
-        self.config = load_config(self.config_dir)
+        # 1. Load config (skip if pre-set, e.g. by e2e fixtures)
+        if self.config is None:
+            self.config = load_config(self.config_dir)
 
         # 1b. Configure structured logging for this butler
         from butlers.core.logging import configure_logging
@@ -1100,6 +1101,21 @@ class ButlerDaemon:
                     "REQUEST CONTEXT (for reply targeting and audit traceability):"
                     f"\n{request_ctx_json}"
                 )
+
+                # Inject interactive guidance when source is user-facing
+                _INTERACTIVE_CHANNELS = frozenset({"telegram", "email"})
+                source_channel = parsed_route.request_context.source_channel
+                if source_channel in _INTERACTIVE_CHANNELS:
+                    context_parts.append(
+                        "INTERACTIVE DATA SOURCE:\n"
+                        f"This message originated from an interactive channel ({source_channel}). "
+                        "The user expects a reply through the same channel. "
+                        "Use the notify() tool to send your response:\n"
+                        f'- channel="{source_channel}"\n'
+                        '- intent="reply" for contextual responses\n'
+                        '- intent="react" with emoji for quick acknowledgments (telegram only)\n'
+                        "- Pass the request_context from above as the request_context parameter"
+                    )
 
                 # Add original input.context if present
                 if isinstance(parsed_route.input.context, dict):
