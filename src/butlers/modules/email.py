@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import smtplib
+import warnings
 from email.mime.text import MIMEText
 from typing import Any
 
@@ -102,10 +103,14 @@ class EmailConfig(BaseModel):
 class EmailModule(Module):
     """Email module providing user_*/bot_* email tools.
 
+    **DEPRECATED**: The ``bot_email_check_and_route_inbox`` tool is deprecated.
+    Use ``GmailConnector`` for canonical ingestion instead.
+
     When a ``MessagePipeline`` is set via ``set_pipeline()``, the
     ``bot_email_check_and_route_inbox`` tool becomes functional: it fetches unseen
     emails, classifies each via ``classify_message()``, and routes them
-    to the appropriate butler.
+    to the appropriate butler. This bypasses the canonical ingest API
+    and should not be used in production deployments.
 
     The ``user_*`` and ``bot_*`` prefixes represent tool scope. Both currently
     use the same configured SMTP/IMAP credentials.
@@ -364,8 +369,26 @@ class EmailModule(Module):
     async def _check_and_route_inbox(self) -> dict:
         """Check for unseen emails and route each through the pipeline.
 
+        **DEPRECATED**: This method is deprecated as of v1.0 and will be removed in v2.0.
+        Use GmailConnector for canonical ingestion instead. This method bypasses
+        the connector-to-ingest API flow and may cause duplicate ingestion or
+        contract drift.
+
         Returns a summary dict with counts and per-email routing results.
         """
+        warnings.warn(
+            "EmailModule._check_and_route_inbox is deprecated and will be removed in v2.0. "
+            "Use GmailConnector for ingestion instead. "
+            "This method bypasses the canonical ingest API and may cause "
+            "duplicate ingestion or contract drift.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        logger.warning(
+            "Called DEPRECATED bot_email_check_and_route_inbox tool. "
+            "Migrate to GmailConnector to use the canonical ingest API."
+        )
+
         if self._pipeline is None:
             return {"status": "no_pipeline", "message": "No classification pipeline configured"}
 

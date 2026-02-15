@@ -134,9 +134,10 @@ class TestTelegramConfig:
     """Verify TelegramConfig validation and defaults."""
 
     def test_defaults(self):
-        """Default config uses polling mode with 1s interval."""
+        """Default config uses webhook mode (polling is deprecated)."""
         config = TelegramConfig()
-        assert config.mode == "polling"
+        assert config.mode == "webhook"
+        assert config.enable_legacy_polling is False
         assert config.webhook_url is None
         assert config.poll_interval == 1.0
         assert config.user.enabled is False
@@ -164,7 +165,8 @@ class TestTelegramConfig:
     def test_empty_dict_gives_defaults(self):
         """Empty dict produces default config."""
         config = TelegramConfig(**{})
-        assert config.mode == "polling"
+        assert config.mode == "webhook"
+        assert config.enable_legacy_polling is False
 
     def test_invalid_bot_token_env_rejected(self):
         with pytest.raises(ValueError, match="modules.telegram.bot.token_env"):
@@ -407,13 +409,15 @@ class TestPollingMode:
     """Test polling mode startup behaviour."""
 
     async def test_starts_poll_task(self, telegram_module: TelegramModule, monkeypatch):
-        """Polling mode creates an asyncio task for _poll_loop."""
+        """Polling mode creates an asyncio task when enable_legacy_polling=True."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
 
         # Mock _poll_loop to avoid real polling
         telegram_module._poll_loop = AsyncMock()  # type: ignore[method-assign]
 
-        await telegram_module.on_startup(config={"mode": "polling"}, db=None)
+        await telegram_module.on_startup(
+            config={"mode": "polling", "enable_legacy_polling": True}, db=None
+        )
 
         assert telegram_module._poll_task is not None
         assert not telegram_module._poll_task.done()
@@ -497,19 +501,21 @@ class TestPipelineIntegration:
         _, call_kwargs = mock_pipeline.process.await_args
         assert call_kwargs["message_text"] == "Need help"
         assert call_kwargs["tool_name"] == "bot_telegram_handle_message"
-        assert call_kwargs["tool_args"] == {
-            "source": "telegram",
-            "source_channel": "telegram",
-            "source_identity": "bot",
-            "source_endpoint_identity": "telegram:bot",
-            "sender_identity": "12345",
-            "external_event_id": None,
-            "external_thread_id": "12345",
-            "source_tool": "bot_telegram_get_updates",
-            "chat_id": "12345",
-            "source_id": None,
-            "raw_metadata": update,
-        }
+        # external_event_id is message_key or chat_id (here: "12345")
+        # request_id is generated, so we check it exists but not the value
+        tool_args = call_kwargs["tool_args"]
+        assert "request_id" in tool_args
+        assert tool_args["source"] == "telegram"
+        assert tool_args["source_channel"] == "telegram"
+        assert tool_args["source_identity"] == "bot"
+        assert tool_args["source_endpoint_identity"] == "telegram:bot"
+        assert tool_args["sender_identity"] == "12345"
+        assert tool_args["external_event_id"] == "12345"
+        assert tool_args["external_thread_id"] == "12345"
+        assert tool_args["source_tool"] == "bot_telegram_get_updates"
+        assert tool_args["chat_id"] == "12345"
+        assert tool_args["source_id"] is None
+        assert tool_args["raw_metadata"] == update
         assert call_kwargs["message_inbox_id"] is None
         assert telegram_module._routed_messages == [mock_result]
 
