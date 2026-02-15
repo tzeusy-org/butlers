@@ -38,7 +38,10 @@ from typing import Any, Literal
 import httpx
 import uvicorn
 from fastapi import FastAPI
+from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
+
+from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +157,12 @@ class TelegramBotConnector:
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
 
+        # Metrics
+        self._metrics = ConnectorMetrics(
+            connector_type="telegram_bot",
+            endpoint_identity=config.endpoint_identity,
+        )
+
         # Health tracking
         self._start_time = time.time()
         self._last_checkpoint_save: float | None = None
@@ -210,6 +219,11 @@ class TelegramBotConnector:
         @app.get("/health")
         async def health() -> HealthStatus:
             return await self.get_health_status()
+
+        @app.get("/metrics")
+        async def metrics() -> bytes:
+            """Prometheus metrics endpoint."""
+            return generate_latest(REGISTRY)
 
         config = uvicorn.Config(
             app,
@@ -339,10 +353,22 @@ class TelegramBotConnector:
             # Mark API as connected on success
             self._source_api_ok = True
 
+            # Record successful API call
+            self._metrics.record_source_api_call(api_method="getUpdates", status="success")
+
             return updates
-        except Exception:
+        except Exception as exc:
             # Mark API as disconnected on failure
             self._source_api_ok = False
+
+            # Record failed API call
+            is_rate_limited = (
+                isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+            )
+            status = "rate_limited" if is_rate_limited else "error"
+            self._metrics.record_source_api_call(api_method="getUpdates", status=status)
+            self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_updates")
+
             raise
 
     async def _set_webhook(self, webhook_url: str) -> dict[str, Any]:
@@ -356,10 +382,18 @@ class TelegramBotConnector:
             # Mark API as connected on success
             self._source_api_ok = True
 
+            # Record successful API call
+            self._metrics.record_source_api_call(api_method="setWebhook", status="success")
+
             return data
-        except Exception:
+        except Exception as exc:
             # Mark API as disconnected on failure
             self._source_api_ok = False
+
+            # Record failed API call
+            self._metrics.record_source_api_call(api_method="setWebhook", status="error")
+            self._metrics.record_error(error_type=get_error_type(exc), operation="set_webhook")
+
             raise
 
     # -------------------------------------------------------------------------
@@ -464,6 +498,9 @@ class TelegramBotConnector:
         if self._config.switchboard_api_token:
             headers["Authorization"] = f"Bearer {self._config.switchboard_api_token}"
 
+        start_time = time.perf_counter()
+        status = "error"
+
         try:
             resp = await self._http_client.post(url, json=envelope, headers=headers)
             resp.raise_for_status()
@@ -471,6 +508,9 @@ class TelegramBotConnector:
 
             # Record successful ingest submission
             self._last_ingest_submit = time.time()
+
+            # Determine status for metrics
+            status = "duplicate" if result.get("duplicate", False) else "success"
 
             logger.info(
                 "Submitted to Switchboard ingest",
@@ -491,6 +531,7 @@ class TelegramBotConnector:
                     "endpoint_identity": self._config.endpoint_identity,
                 },
             )
+            self._metrics.record_error(error_type=get_error_type(exc), operation="ingest_submit")
             raise
         except Exception as exc:
             logger.error(
@@ -500,7 +541,12 @@ class TelegramBotConnector:
                     "endpoint_identity": self._config.endpoint_identity,
                 },
             )
+            self._metrics.record_error(error_type=get_error_type(exc), operation="ingest_submit")
             raise
+        finally:
+            # Record metrics
+            latency = time.perf_counter() - start_time
+            self._metrics.record_ingest_submission(status=status, latency=latency)
 
     # -------------------------------------------------------------------------
     # Internal: Checkpoint persistence
@@ -554,6 +600,7 @@ class TelegramBotConnector:
 
             # Record successful checkpoint save
             self._last_checkpoint_save = time.time()
+            self._metrics.record_checkpoint_save(status="success")
 
             logger.debug(
                 "Saved checkpoint",
@@ -562,7 +609,9 @@ class TelegramBotConnector:
                     "last_update_id": self._last_update_id,
                 },
             )
-        except Exception:
+        except Exception as exc:
+            self._metrics.record_checkpoint_save(status="error")
+            self._metrics.record_error(error_type=get_error_type(exc), operation="checkpoint_save")
             logger.exception(
                 "Failed to save checkpoint",
                 extra={"cursor_path": str(self._config.cursor_path)},

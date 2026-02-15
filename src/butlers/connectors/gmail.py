@@ -47,7 +47,10 @@ from typing import Any, Literal
 import httpx
 import uvicorn
 from fastapi import FastAPI
+from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict
+
+from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +170,12 @@ class GmailConnectorRuntime:
         self._running = False
         self._semaphore = asyncio.Semaphore(config.connector_max_inflight)
 
+        # Metrics
+        self._metrics = ConnectorMetrics(
+            connector_type="gmail",
+            endpoint_identity=config.connector_endpoint_identity,
+        )
+
         # Health tracking
         self._start_time = time.time()
         self._last_checkpoint_save: float | None = None
@@ -219,6 +228,11 @@ class GmailConnectorRuntime:
         @app.get("/health")
         async def health() -> HealthStatus:
             return await self.get_health_status()
+
+        @app.get("/metrics")
+        async def metrics() -> bytes:
+            """Prometheus metrics endpoint."""
+            return generate_latest(REGISTRY)
 
         config = uvicorn.Config(
             app,
@@ -347,13 +361,19 @@ class GmailConnectorRuntime:
 
     async def _save_cursor(self, cursor: GmailCursor) -> None:
         """Save cursor state to disk."""
-        self._config.connector_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-        self._config.connector_cursor_path.write_text(cursor.model_dump_json(indent=2))
+        try:
+            self._config.connector_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+            self._config.connector_cursor_path.write_text(cursor.model_dump_json(indent=2))
 
-        # Record successful checkpoint save
-        self._last_checkpoint_save = time.time()
+            # Record successful checkpoint save
+            self._last_checkpoint_save = time.time()
+            self._metrics.record_checkpoint_save(status="success")
 
-        logger.debug("Saved cursor: historyId=%s", cursor.history_id)
+            logger.debug("Saved cursor: historyId=%s", cursor.history_id)
+        except Exception as exc:
+            self._metrics.record_checkpoint_save(status="error")
+            self._metrics.record_error(error_type=get_error_type(exc), operation="checkpoint_save")
+            raise
 
     async def _get_access_token(self) -> str:
         """Get valid OAuth access token (refresh if expired)."""
@@ -384,12 +404,15 @@ class GmailConnectorRuntime:
 
             # Mark API as connected on successful token refresh
             self._source_api_ok = True
+            self._metrics.record_source_api_call(api_method="token_refresh", status="success")
 
             logger.debug("Refreshed OAuth access token (expires in %ds)", expires_in)
             return self._access_token
-        except Exception:
+        except Exception as exc:
             # Mark API as disconnected on failure
             self._source_api_ok = False
+            self._metrics.record_source_api_call(api_method="token_refresh", status="error")
+            self._metrics.record_error(error_type=get_error_type(exc), operation="token_refresh")
             raise
 
     async def _gmail_get_profile(self) -> dict[str, Any]:
@@ -407,11 +430,14 @@ class GmailConnectorRuntime:
 
             # Mark API as connected on success
             self._source_api_ok = True
+            self._metrics.record_source_api_call(api_method="profile.get", status="success")
 
             return response.json()
-        except Exception:
+        except Exception as exc:
             # Mark API as disconnected on failure
             self._source_api_ok = False
+            self._metrics.record_source_api_call(api_method="profile.get", status="error")
+            self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_profile")
             raise
 
     async def _fetch_history_changes(self, start_history_id: str) -> list[dict[str, Any]]:
@@ -432,6 +458,7 @@ class GmailConnectorRuntime:
             if response.status_code == 404:
                 # History ID too old, reset to current
                 logger.warning("History ID %s is too old, resetting to current", start_history_id)
+                self._metrics.record_source_api_call(api_method="history.list", status="reset")
                 profile = await self._gmail_get_profile()
                 new_history_id = profile.get("historyId", start_history_id)
                 await self._save_cursor(
@@ -447,11 +474,14 @@ class GmailConnectorRuntime:
 
             # Mark API as connected on success
             self._source_api_ok = True
+            self._metrics.record_source_api_call(api_method="history.list", status="success")
 
             return data.get("history", [])
-        except Exception:
+        except Exception as exc:
             # Mark API as disconnected on failure
             self._source_api_ok = False
+            self._metrics.record_source_api_call(api_method="history.list", status="error")
+            self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_history")
             raise
 
     def _extract_message_ids_from_history(self, history: list[dict[str, Any]]) -> list[str]:
@@ -508,11 +538,14 @@ class GmailConnectorRuntime:
 
             # Mark API as connected on success
             self._source_api_ok = True
+            self._metrics.record_source_api_call(api_method="messages.get", status="success")
 
             return response.json()
-        except Exception:
+        except Exception as exc:
             # Mark API as disconnected on failure
             self._source_api_ok = False
+            self._metrics.record_source_api_call(api_method="messages.get", status="error")
+            self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_message")
             raise
 
     def _build_ingest_envelope(self, message_data: dict[str, Any]) -> dict[str, Any]:
@@ -599,38 +632,52 @@ class GmailConnectorRuntime:
         if self._config.switchboard_api_token:
             headers["Authorization"] = f"Bearer {self._config.switchboard_api_token}"
 
-        response = await self._http_client.post(
-            url,
-            json=envelope,
-            headers=headers,
-        )
+        start_time = time.perf_counter()
+        status = "error"
 
-        # Handle overload/rate limit
-        if response.status_code == 429:
-            retry_after = response.headers.get("Retry-After", "60")
-            logger.warning("Ingest API rate limited, retrying after %s seconds", retry_after)
-            await asyncio.sleep(int(retry_after))
-            # Retry once
+        try:
             response = await self._http_client.post(
                 url,
                 json=envelope,
                 headers=headers,
             )
 
-        response.raise_for_status()
-        result = response.json()
+            # Handle overload/rate limit
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After", "60")
+                logger.warning("Ingest API rate limited, retrying after %s seconds", retry_after)
+                await asyncio.sleep(int(retry_after))
+                # Retry once
+                response = await self._http_client.post(
+                    url,
+                    json=envelope,
+                    headers=headers,
+                )
 
-        # Record successful ingest submission
-        self._last_ingest_submit = time.time()
+            response.raise_for_status()
+            result = response.json()
 
-        if result.get("duplicate"):
-            logger.debug("Duplicate ingestion for %s", envelope["event"]["external_event_id"])
-        else:
-            logger.info(
-                "Ingestion accepted: request_id=%s, event_id=%s",
-                result.get("request_id"),
-                envelope["event"]["external_event_id"],
-            )
+            # Record successful ingest submission
+            self._last_ingest_submit = time.time()
+
+            # Determine status for metrics
+            status = "duplicate" if result.get("duplicate", False) else "success"
+
+            if result.get("duplicate"):
+                logger.debug("Duplicate ingestion for %s", envelope["event"]["external_event_id"])
+            else:
+                logger.info(
+                    "Ingestion accepted: request_id=%s, event_id=%s",
+                    result.get("request_id"),
+                    envelope["event"]["external_event_id"],
+                )
+        except Exception as exc:
+            self._metrics.record_error(error_type=get_error_type(exc), operation="ingest_submit")
+            raise
+        finally:
+            # Record metrics
+            latency = time.perf_counter() - start_time
+            self._metrics.record_ingest_submission(status=status, latency=latency)
 
 
 async def run_gmail_connector() -> None:

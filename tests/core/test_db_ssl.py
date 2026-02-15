@@ -111,7 +111,7 @@ async def test_provision_refreshes_template1_collation(mock_connect: AsyncMock) 
     # First execute call should be the collation refresh
     calls = [c.args[0] for c in conn.execute.await_args_list]
     assert calls[0] == "ALTER DATABASE template1 REFRESH COLLATION VERSION"
-    assert 'CREATE DATABASE' in calls[1]
+    assert "CREATE DATABASE" in calls[1]
 
 
 @patch("butlers.db.asyncpg.connect", new_callable=AsyncMock)
@@ -122,9 +122,7 @@ async def test_provision_continues_when_collation_refresh_fails(
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=1)  # DB already exists
     # First execute (collation refresh) raises, subsequent calls succeed
-    conn.execute = AsyncMock(
-        side_effect=[RuntimeError("permission denied"), None]
-    )
+    conn.execute = AsyncMock(side_effect=[RuntimeError("permission denied"), None])
     conn.close = AsyncMock()
     mock_connect.return_value = conn
 

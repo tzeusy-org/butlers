@@ -26,6 +26,7 @@ dependencies = [
     "sentence-transformers",
     "pgvector",
     "structlog",
+    "prometheus-client",
 ]
 
 [project.optional-dependencies]
