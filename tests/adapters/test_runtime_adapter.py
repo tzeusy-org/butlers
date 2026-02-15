@@ -405,6 +405,112 @@ async def test_claude_code_adapter_invoke_none_usage():
 
 
 # ---------------------------------------------------------------------------
+# ClaudeCodeAdapter stderr capture tests
+# ---------------------------------------------------------------------------
+
+
+async def test_claude_code_adapter_passes_stderr_options_when_butler_name_set(tmp_path: Path):
+    """ClaudeCodeAdapter passes debug_stderr and extra_args when butler_name is set."""
+    from claude_code_sdk import ResultMessage
+
+    captured_options = {}
+
+    async def mock_query(*, prompt, options):
+        captured_options["debug_stderr"] = options.debug_stderr
+        captured_options["extra_args"] = options.extra_args
+        yield ResultMessage(
+            subtype="result",
+            duration_ms=10,
+            duration_api_ms=8,
+            is_error=False,
+            num_turns=1,
+            session_id="test",
+            total_cost_usd=0.0,
+            usage={},
+            result="ok",
+        )
+
+    adapter = ClaudeCodeAdapter(
+        sdk_query=mock_query, butler_name="test-butler", log_root=tmp_path
+    )
+    await adapter.invoke(
+        prompt="hi",
+        system_prompt="sys",
+        mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+        env={},
+    )
+
+    # Verify the options were set correctly
+    assert captured_options["extra_args"] == {"debug-to-stderr": None}
+    assert captured_options["debug_stderr"] is not None
+    # File should have been closed after invoke returns
+    assert captured_options["debug_stderr"].closed
+
+    # Verify the log file was created
+    stderr_log = tmp_path / "butlers" / "test-butler_cc_stderr.log"
+    assert stderr_log.exists()
+    content = stderr_log.read_text()
+    assert "CC session start:" in content
+
+
+async def test_claude_code_adapter_no_stderr_without_butler_name():
+    """ClaudeCodeAdapter does not set debug_stderr when butler_name is not set."""
+    from claude_code_sdk import ResultMessage
+
+    captured_options = {}
+
+    async def mock_query(*, prompt, options):
+        captured_options["debug_stderr"] = options.debug_stderr
+        captured_options["extra_args"] = options.extra_args
+        yield ResultMessage(
+            subtype="result",
+            duration_ms=10,
+            duration_api_ms=8,
+            is_error=False,
+            num_turns=1,
+            session_id="test",
+            total_cost_usd=0.0,
+            usage={},
+            result="ok",
+        )
+
+    adapter = ClaudeCodeAdapter(sdk_query=mock_query)
+    await adapter.invoke(
+        prompt="hi",
+        system_prompt="sys",
+        mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+        env={},
+    )
+
+    # Without butler_name, extra_args should be default empty dict
+    assert captured_options["extra_args"] == {}
+
+
+async def test_claude_code_adapter_stderr_closed_on_error(tmp_path: Path):
+    """ClaudeCodeAdapter closes stderr file even when SDK raises an error."""
+    captured_options = {}
+
+    async def mock_query(*, prompt, options):
+        captured_options["debug_stderr"] = options.debug_stderr
+        raise RuntimeError("SDK error")
+        yield  # make it a generator  # pragma: no cover
+
+    adapter = ClaudeCodeAdapter(
+        sdk_query=mock_query, butler_name="test-butler", log_root=tmp_path
+    )
+    with pytest.raises(RuntimeError, match="SDK error"):
+        await adapter.invoke(
+            prompt="hi",
+            system_prompt="sys",
+            mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+            env={},
+        )
+
+    # File should be closed even after error
+    assert captured_options["debug_stderr"].closed
+
+
+# ---------------------------------------------------------------------------
 # Import path tests
 # ---------------------------------------------------------------------------
 

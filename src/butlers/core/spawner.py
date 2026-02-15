@@ -249,7 +249,11 @@ class Spawner:
             # Default: create a ClaudeCodeAdapter with the real SDK query
             from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
 
-            self._runtime = ClaudeCodeAdapter()
+            log_root = Path(config.logging.log_root or "logs")
+            self._runtime = ClaudeCodeAdapter(
+                butler_name=config.name,
+                log_root=log_root,
+            )
 
     async def trigger(
         self,

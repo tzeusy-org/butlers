@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,10 +36,24 @@ class ClaudeCodeAdapter(RuntimeAdapter):
     sdk_query:
         Callable to use for the actual SDK invocation. Defaults to
         ``claude_code_sdk.query``. Override in tests to inject a mock.
+    butler_name:
+        Name of the butler this adapter serves. Used to construct per-butler
+        stderr log paths. Optional; when omitted stderr is not captured.
+    log_root:
+        Root directory for log files. Defaults to ``logs``. Stderr from
+        Claude Code CLI subprocesses is written to
+        ``{log_root}/butlers/{butler_name}_cc_stderr.log``.
     """
 
-    def __init__(self, sdk_query: Any = None) -> None:
+    def __init__(
+        self,
+        sdk_query: Any = None,
+        butler_name: str | None = None,
+        log_root: Path | None = None,
+    ) -> None:
         self._sdk_query = sdk_query or query
+        self._butler_name = butler_name
+        self._log_root = log_root or Path("logs")
 
     @property
     def binary_name(self) -> str:
@@ -79,38 +94,67 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 # Already an McpSSEServerConfig or compatible object
                 sdk_mcp_servers[name] = server_cfg
 
-        options = ClaudeCodeOptions(
-            system_prompt=system_prompt,
-            mcp_servers=sdk_mcp_servers,
-            permission_mode="bypassPermissions",
-            model=model,
-            env=env,
-            max_turns=max_turns,
-            cwd=str(cwd) if cwd else None,
-        )
+        # Open per-butler stderr log file for Claude Code CLI diagnostics
+        stderr_file = None
+        stderr_kwargs: dict[str, Any] = {}
+        if self._butler_name:
+            try:
+                stderr_dir = self._log_root / "butlers"
+                stderr_dir.mkdir(parents=True, exist_ok=True)
+                stderr_path = stderr_dir / f"{self._butler_name}_cc_stderr.log"
+                stderr_file = open(stderr_path, "a", buffering=1)  # noqa: SIM115
+                ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                stderr_file.write(f"\n--- CC session start: {ts} ---\n")
+                stderr_file.flush()
+                stderr_kwargs = {
+                    "debug_stderr": stderr_file,
+                    "extra_args": {"debug-to-stderr": None},
+                }
+            except OSError:
+                logger.warning(
+                    "Could not open CC stderr log for %s", self._butler_name, exc_info=True
+                )
 
-        result_text: str | None = None
-        tool_calls: list[dict[str, Any]] = []
-        usage: dict[str, Any] | None = None
+        try:
+            options = ClaudeCodeOptions(
+                system_prompt=system_prompt,
+                mcp_servers=sdk_mcp_servers,
+                permission_mode="bypassPermissions",
+                model=model,
+                env=env,
+                max_turns=max_turns,
+                cwd=str(cwd) if cwd else None,
+                **stderr_kwargs,
+            )
 
-        async for message in self._sdk_query(prompt=prompt, options=options):
-            if isinstance(message, ResultMessage):
-                result_text = message.result or ""
-                # Extract token usage from the ResultMessage
-                if message.usage:
-                    usage = dict(message.usage)
-            elif hasattr(message, "content"):
-                for block in getattr(message, "content", []):
-                    if isinstance(block, ToolUseBlock):
-                        tool_calls.append(
-                            {
-                                "id": block.id,
-                                "name": block.name,
-                                "input": block.input,
-                            }
-                        )
+            result_text: str | None = None
+            tool_calls: list[dict[str, Any]] = []
+            usage: dict[str, Any] | None = None
 
-        return result_text, tool_calls, usage
+            async for message in self._sdk_query(prompt=prompt, options=options):
+                if isinstance(message, ResultMessage):
+                    result_text = message.result or ""
+                    # Extract token usage from the ResultMessage
+                    if message.usage:
+                        usage = dict(message.usage)
+                elif hasattr(message, "content"):
+                    for block in getattr(message, "content", []):
+                        if isinstance(block, ToolUseBlock):
+                            tool_calls.append(
+                                {
+                                    "id": block.id,
+                                    "name": block.name,
+                                    "input": block.input,
+                                }
+                            )
+
+            return result_text, tool_calls, usage
+        finally:
+            if stderr_file is not None:
+                try:
+                    stderr_file.close()
+                except OSError:
+                    pass
 
     def build_config_file(
         self,
