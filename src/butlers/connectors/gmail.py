@@ -28,6 +28,11 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - GMAIL_REFRESH_TOKEN (required)
 - GMAIL_WATCH_RENEW_INTERVAL_S (optional, default 86400 = 1 day)
 - GMAIL_POLL_INTERVAL_S (optional, default 60)
+- GMAIL_PUBSUB_ENABLED (optional, default false; enables Pub/Sub push mode)
+- GMAIL_PUBSUB_TOPIC (required if GMAIL_PUBSUB_ENABLED=true; GCP Pub/Sub topic)
+- GMAIL_PUBSUB_WEBHOOK_PORT (optional, default 8081; port for Pub/Sub webhook)
+- GMAIL_PUBSUB_WEBHOOK_PATH (optional, default /gmail/webhook; path for Pub/Sub webhook)
+- GMAIL_PUBSUB_WEBHOOK_TOKEN (optional but recommended; auth token for webhook security)
 """
 
 from __future__ import annotations
@@ -46,7 +51,7 @@ from typing import Any, Literal
 
 import httpx
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict
 
@@ -94,6 +99,13 @@ class GmailConnectorConfig(BaseModel):
     gmail_watch_renew_interval_s: int = 86400  # 1 day
     gmail_poll_interval_s: int = 60
 
+    # Pub/Sub push notification config (optional)
+    gmail_pubsub_enabled: bool = False
+    gmail_pubsub_topic: str | None = None
+    gmail_pubsub_webhook_port: int = 8081
+    gmail_pubsub_webhook_path: str = "/gmail/webhook"
+    gmail_pubsub_webhook_token: str | None = None  # Optional auth token for webhook
+
     @classmethod
     def from_env(cls) -> GmailConnectorConfig:
         """Load connector config from environment variables."""
@@ -133,6 +145,28 @@ class GmailConnectorConfig(BaseModel):
                 f"GMAIL_POLL_INTERVAL_S must be an integer, got: {poll_interval_str}"
             ) from exc
 
+        # Parse Pub/Sub config
+        pubsub_enabled = os.environ.get("GMAIL_PUBSUB_ENABLED", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        pubsub_topic = os.environ.get("GMAIL_PUBSUB_TOPIC")
+
+        if pubsub_enabled and not pubsub_topic:
+            raise ValueError("GMAIL_PUBSUB_TOPIC is required when GMAIL_PUBSUB_ENABLED=true")
+
+        pubsub_webhook_port_str = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PORT", "8081")
+        try:
+            pubsub_webhook_port = int(pubsub_webhook_port_str)
+        except ValueError as exc:
+            raise ValueError(
+                f"GMAIL_PUBSUB_WEBHOOK_PORT must be an integer, got: {pubsub_webhook_port_str}"
+            ) from exc
+
+        pubsub_webhook_path = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook")
+        pubsub_webhook_token = os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN")
+
         return cls(
             switchboard_api_base_url=os.environ["SWITCHBOARD_API_BASE_URL"],
             switchboard_api_token=os.environ.get("SWITCHBOARD_API_TOKEN"),
@@ -147,6 +181,11 @@ class GmailConnectorConfig(BaseModel):
             gmail_refresh_token=os.environ["GMAIL_REFRESH_TOKEN"],
             gmail_watch_renew_interval_s=watch_renew_interval,
             gmail_poll_interval_s=poll_interval,
+            gmail_pubsub_enabled=pubsub_enabled,
+            gmail_pubsub_topic=pubsub_topic,
+            gmail_pubsub_webhook_port=pubsub_webhook_port,
+            gmail_pubsub_webhook_path=pubsub_webhook_path,
+            gmail_pubsub_webhook_token=pubsub_webhook_token,
         )
 
 
@@ -183,6 +222,12 @@ class GmailConnectorRuntime:
         self._source_api_ok: bool | None = None
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
+
+        # Pub/Sub webhook tracking
+        self._webhook_server: uvicorn.Server | None = None
+        self._webhook_thread: Thread | None = None
+        self._watch_expiration: datetime | None = None
+        self._notification_queue: asyncio.Queue[dict[str, Any]] | None = None
 
     async def get_health_status(self) -> HealthStatus:
         """Get current health status for Kubernetes probes."""
@@ -252,6 +297,57 @@ class GmailConnectorRuntime:
             extra={"port": self._config.connector_health_port},
         )
 
+    def _start_webhook_server(self) -> None:
+        """Start FastAPI webhook server for Pub/Sub notifications in background thread."""
+        app = FastAPI(title="Gmail Pub/Sub Webhook")
+
+        @app.post(self._config.gmail_pubsub_webhook_path)
+        async def webhook(request: Request) -> dict[str, str]:
+            """Handle incoming Pub/Sub push notifications."""
+            try:
+                # Verify webhook token if configured
+                if self._config.gmail_pubsub_webhook_token:
+                    auth_header = request.headers.get("Authorization", "")
+                    expected_token = f"Bearer {self._config.gmail_pubsub_webhook_token}"
+                    if auth_header != expected_token:
+                        logger.warning("Webhook request with invalid or missing auth token")
+                        return {"status": "unauthorized"}
+
+                body = await request.json()
+                logger.debug("Received Pub/Sub notification: %s", body)
+
+                # Queue notification for processing
+                if self._notification_queue:
+                    await self._notification_queue.put(body)
+                else:
+                    logger.warning("Notification queue not initialized, dropping notification")
+
+                return {"status": "accepted"}
+            except Exception as exc:
+                logger.error("Error handling webhook notification: %s", exc, exc_info=True)
+                return {"status": "error", "message": str(exc)}
+
+        config = uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=self._config.gmail_pubsub_webhook_port,
+            log_level="warning",
+        )
+        self._webhook_server = uvicorn.Server(config)
+
+        def run_server() -> None:
+            asyncio.run(self._webhook_server.serve())
+
+        self._webhook_thread = Thread(target=run_server, daemon=True)
+        self._webhook_thread.start()
+        logger.info(
+            "Pub/Sub webhook server started",
+            extra={
+                "port": self._config.gmail_pubsub_webhook_port,
+                "path": self._config.gmail_pubsub_webhook_path,
+            },
+        )
+
     async def start(self) -> None:
         """Start the Gmail connector runtime."""
         self._running = True
@@ -260,9 +356,21 @@ class GmailConnectorRuntime:
         # Start health server
         self._start_health_server()
 
+        # Start Pub/Sub webhook server if enabled
+        if self._config.gmail_pubsub_enabled:
+            self._notification_queue = asyncio.Queue()
+            self._start_webhook_server()
+            # Start Gmail watch
+            try:
+                await self._gmail_watch_start()
+            except Exception as exc:
+                logger.error("Failed to start Gmail watch, falling back to polling: %s", exc)
+                self._config = self._config.model_copy(update={"gmail_pubsub_enabled": False})
+
         logger.info(
-            "Gmail connector starting: cursor=%s",
+            "Gmail connector starting: cursor=%s, pubsub=%s",
             self._config.connector_cursor_path,
+            self._config.gmail_pubsub_enabled,
         )
         logger.debug(
             "Gmail connector endpoint: %s",
@@ -287,7 +395,14 @@ class GmailConnectorRuntime:
         logger.info("Gmail connector stopped")
 
     async def _run_ingestion_loop(self) -> None:
-        """Main ingestion loop: poll for history changes and ingest new messages."""
+        """Main ingestion loop: process notifications or poll for history changes."""
+        if self._config.gmail_pubsub_enabled:
+            await self._run_pubsub_ingestion_loop()
+        else:
+            await self._run_polling_ingestion_loop()
+
+    async def _run_polling_ingestion_loop(self) -> None:
+        """Polling-based ingestion loop: poll for history changes and ingest new messages."""
         while self._running:
             try:
                 # Load current cursor
@@ -317,12 +432,79 @@ class GmailConnectorRuntime:
                     logger.debug("No new history changes")
 
             except Exception as exc:
-                logger.error("Error in ingestion loop: %s", exc, exc_info=True)
+                logger.error("Error in polling ingestion loop: %s", exc, exc_info=True)
                 # Back off on error
                 await asyncio.sleep(min(60, self._config.gmail_poll_interval_s * 2))
 
             # Wait before next poll
             await asyncio.sleep(self._config.gmail_poll_interval_s)
+
+    async def _run_pubsub_ingestion_loop(self) -> None:
+        """Pub/Sub-based ingestion loop: process push notifications with polling fallback."""
+        last_poll_time = time.time()
+        poll_fallback_interval = max(
+            300, self._config.gmail_poll_interval_s * 5
+        )  # Poll every 5 minutes minimum
+
+        while self._running:
+            try:
+                # Renew watch if needed
+                await self._gmail_watch_renew_if_needed()
+
+                # Wait for notification with timeout
+                notification_received = False
+                try:
+                    if self._notification_queue:
+                        # Wait for notification with timeout
+                        timeout = self._config.gmail_poll_interval_s
+                        await asyncio.wait_for(self._notification_queue.get(), timeout=timeout)
+                        notification_received = True
+                        logger.debug("Received push notification, triggering history fetch")
+                except TimeoutError:
+                    # No notification received, check if we should do fallback poll
+                    current_time = time.time()
+                    if current_time - last_poll_time >= poll_fallback_interval:
+                        logger.debug(
+                            "No notifications for %ds, running fallback poll",
+                            poll_fallback_interval,
+                        )
+                        notification_received = True  # Trigger history fetch
+                        last_poll_time = current_time
+
+                if notification_received:
+                    # Load current cursor
+                    cursor = await self._load_cursor()
+
+                    # Fetch history changes since last cursor
+                    history_changes = await self._fetch_history_changes(cursor.history_id)
+
+                    if history_changes:
+                        logger.info("Found %d history changes to process", len(history_changes))
+
+                        # Process each history change (extract message IDs)
+                        message_ids = self._extract_message_ids_from_history(history_changes)
+
+                        # Fetch and ingest each new message
+                        await self._ingest_messages(message_ids)
+
+                        # Update cursor to latest history ID
+                        latest_history_id = history_changes[-1].get("id", cursor.history_id)
+                        await self._save_cursor(
+                            GmailCursor(
+                                history_id=latest_history_id,
+                                last_updated_at=datetime.now(UTC).isoformat(),
+                            )
+                        )
+                    else:
+                        logger.debug("No new history changes")
+
+                    # Update last poll time
+                    last_poll_time = time.time()
+
+            except Exception as exc:
+                logger.error("Error in Pub/Sub ingestion loop: %s", exc, exc_info=True)
+                # Back off on error
+                await asyncio.sleep(min(60, self._config.gmail_poll_interval_s * 2))
 
     async def _ensure_cursor_file(self) -> None:
         """Ensure cursor file exists with initial state if missing."""
@@ -439,6 +621,62 @@ class GmailConnectorRuntime:
             self._metrics.record_source_api_call(api_method="profile.get", status="error")
             self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_profile")
             raise
+
+    async def _gmail_watch_start(self) -> dict[str, Any]:
+        """Start Gmail watch for push notifications via Pub/Sub."""
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized")
+
+        if not self._config.gmail_pubsub_topic:
+            raise RuntimeError("Pub/Sub topic not configured")
+
+        try:
+            token = await self._get_access_token()
+            response = await self._http_client.post(
+                "https://gmail.googleapis.com/gmail/v1/users/me/watch",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "topicName": self._config.gmail_pubsub_topic,
+                    "labelIds": ["INBOX"],  # Watch inbox by default
+                },
+            )
+            response.raise_for_status()
+
+            watch_response = response.json()
+            # Extract expiration timestamp
+            expiration_ms = int(watch_response.get("expiration", 0))
+            if expiration_ms:
+                self._watch_expiration = datetime.fromtimestamp(expiration_ms / 1000, UTC)
+                logger.info(
+                    "Gmail watch started, expires at %s",
+                    self._watch_expiration.isoformat(),
+                )
+            else:
+                logger.warning("Watch response did not include expiration timestamp")
+
+            return watch_response
+        except Exception:
+            logger.error("Failed to start Gmail watch", exc_info=True)
+            raise
+
+    async def _gmail_watch_renew_if_needed(self) -> None:
+        """Renew Gmail watch if approaching expiration."""
+        if not self._config.gmail_pubsub_enabled:
+            return
+
+        # Renew if no expiration set or within renewal interval of expiration
+        now = datetime.now(UTC)
+        should_renew = (
+            self._watch_expiration is None
+            or (self._watch_expiration - now).total_seconds()
+            < self._config.gmail_watch_renew_interval_s
+        )
+
+        if should_renew:
+            try:
+                await self._gmail_watch_start()
+            except Exception as exc:
+                logger.error("Failed to renew Gmail watch: %s", exc, exc_info=True)
 
     async def _fetch_history_changes(self, start_history_id: str) -> list[dict[str, Any]]:
         """Fetch history changes since the given historyId."""

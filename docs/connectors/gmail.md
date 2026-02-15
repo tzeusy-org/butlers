@@ -15,18 +15,33 @@ Control-plane rule:
 - Switchboard owns canonical request-context assignment and dedupe decisions.
 
 ## 2. Live Ingestion Model
-Primary live path:
-- Use Gmail push notifications (`users.watch`) with history-based delta fetch (`users.history.list`) to ingest newly arrived mail.
 
-Recommended flow:
-1. Create/refresh Gmail watch subscription.
-2. Receive notification for mailbox changes.
-3. Fetch changed message ids from Gmail history API.
-4. Fetch message payload/metadata for each new email.
-5. Normalize and submit each event to Switchboard ingest.
+### 2.1 Pub/Sub Push Mode (Recommended for Production)
+When enabled via `GMAIL_PUBSUB_ENABLED=true`, the connector uses Gmail push notifications with Pub/Sub for near real-time ingestion:
 
-Fallback:
-- If push is unavailable or stale, run bounded catch-up polling using last durable `historyId`.
+1. Start Gmail watch subscription via `users.watch` API pointing to configured Pub/Sub topic
+2. Run HTTP webhook server to receive Pub/Sub push notifications
+3. On notification, immediately fetch history changes via `users.history.list`
+4. Fetch message payload/metadata for each new email
+5. Normalize and submit each event to Switchboard ingest
+6. Auto-renew watch subscription before expiration (default 1 day)
+
+Fallback polling:
+- Even in Pub/Sub mode, connector runs periodic polling (every 5 minutes minimum) as a safety net
+- Ensures no messages are missed if notifications are delayed or dropped
+
+### 2.2 Polling Mode (Default for v1)
+When Pub/Sub is disabled (default), connector uses polling-based history fetch:
+
+1. Poll Gmail history API at configured interval (default 60s)
+2. Fetch changed message ids from Gmail history API
+3. Fetch message payload/metadata for each new email
+4. Normalize and submit each event to Switchboard ingest
+
+Trade-offs:
+- Simpler setup (no Pub/Sub topic or webhook endpoint required)
+- Higher latency (~60s vs near real-time)
+- Sufficient for most v1 use cases
 
 ## 3. Request Context Mapping (Interface Alignment)
 Use `ingest.v1` from `docs/connectors/interface.md`.
@@ -67,10 +82,16 @@ Gmail API auth variables (OAuth-based):
 - `GMAIL_REDIRECT_URI` (required for token lifecycle in some setups)
 
 Optional runtime controls:
-- `GMAIL_LABEL_INCLUDE` (comma-separated label filter)
-- `GMAIL_LABEL_EXCLUDE` (comma-separated label filter)
-- `GMAIL_WATCH_TOPIC` (Pub/Sub topic/resource for notifications)
-- `GMAIL_WATCH_RENEW_INTERVAL_S` (watch renewal cadence)
+- `GMAIL_POLL_INTERVAL_S` (polling interval in seconds, default 60)
+- `GMAIL_WATCH_RENEW_INTERVAL_S` (watch renewal cadence, default 86400 = 1 day)
+- `GMAIL_LABEL_INCLUDE` (comma-separated label filter, future)
+- `GMAIL_LABEL_EXCLUDE` (comma-separated label filter, future)
+
+Pub/Sub push notification controls (optional, for near real-time ingestion):
+- `GMAIL_PUBSUB_ENABLED` (enable Pub/Sub push mode, default false)
+- `GMAIL_PUBSUB_TOPIC` (required when enabled; GCP Pub/Sub topic, e.g., `projects/my-project/topics/gmail-push`)
+- `GMAIL_PUBSUB_WEBHOOK_PORT` (webhook server port, default 8081)
+- `GMAIL_PUBSUB_WEBHOOK_PATH` (webhook endpoint path, default `/gmail/webhook`)
 
 Security requirements:
 - Never commit OAuth secrets/tokens.
@@ -114,7 +135,51 @@ Because this connector processes personal email, enforce:
 - Audit logging for connector lifecycle/config changes.
 - Retention aligned with platform memory and ingestion policy.
 
-## 8. Non-Goals
+## 8. Pub/Sub Setup Guide
+
+### 8.1 Prerequisites
+To use Pub/Sub push mode, you need:
+1. GCP project with Cloud Pub/Sub API enabled
+2. Pub/Sub topic created for Gmail notifications
+3. Gmail API domain-wide delegation or user OAuth consent for `https://www.googleapis.com/auth/gmail.readonly` scope
+4. Public endpoint for webhook (or Cloud Run/GKE with proper ingress)
+
+### 8.2 Creating Pub/Sub Topic
+```bash
+# Create topic
+gcloud pubsub topics create gmail-push
+
+# Grant Gmail permission to publish
+gcloud pubsub topics add-iam-policy-binding gmail-push \
+  --member=serviceAccount:gmail-api-push@system.gserviceaccount.com \
+  --role=roles/pubsub.publisher
+```
+
+### 8.3 Connector Configuration
+Set environment variables:
+```bash
+GMAIL_PUBSUB_ENABLED=true
+GMAIL_PUBSUB_TOPIC=projects/my-project/topics/gmail-push
+GMAIL_PUBSUB_WEBHOOK_PORT=8081
+GMAIL_PUBSUB_WEBHOOK_PATH=/gmail/webhook
+GMAIL_PUBSUB_WEBHOOK_TOKEN=your-secret-token  # Optional but recommended
+```
+
+### 8.4 Webhook Endpoint
+The connector automatically starts an HTTP server on the configured port to receive Pub/Sub push notifications. Ensure this endpoint is:
+- Publicly accessible (or accessible to GCP Pub/Sub service)
+- Protected with `GMAIL_PUBSUB_WEBHOOK_TOKEN` (strongly recommended to prevent unauthorized requests)
+- Behind HTTPS in production (Cloud Run/Load Balancer handles this)
+
+When `GMAIL_PUBSUB_WEBHOOK_TOKEN` is set, the webhook verifies that incoming requests include `Authorization: Bearer <token>` header. Configure your Pub/Sub push subscription to send this header.
+
+### 8.5 Watch Lifecycle
+- Watch subscription is created on connector startup
+- Auto-renewed when approaching expiration (configurable via `GMAIL_WATCH_RENEW_INTERVAL_S`)
+- Watch expires after ~7 days if not renewed
+- Connector logs watch expiration timestamps for monitoring
+
+## 9. Non-Goals
 This connector does not:
 - Bypass Switchboard canonical ingest semantics.
 - Perform direct specialist-butler routing.
