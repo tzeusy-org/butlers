@@ -57,14 +57,15 @@ async def test_butler_status_tools(butler_ecosystem: ButlerEcosystem) -> None:
         async with MCPClient(url) as client:
             result = await client.call_tool("status", {})
             assert result is not None, f"Butler {butler_name} status returned None"
-            assert "butler" in result, f"Butler {butler_name} status missing 'butler' key"
-            assert result["butler"] == butler_name, (
-                f"Butler {butler_name} status returned wrong name: {result['butler']}"
+            assert "name" in result, f"Butler {butler_name} status missing 'name' key"
+            assert result["name"] == butler_name, (
+                f"Butler {butler_name} status returned wrong name: {result['name']}"
             )
             assert "modules" in result, f"Butler {butler_name} status missing 'modules' key"
-            assert isinstance(result["modules"], list), (
-                f"Butler {butler_name} modules is not a list"
+            assert isinstance(result["modules"], dict), (
+                f"Butler {butler_name} modules is not a dict"
             )
+            assert "health" in result, f"Butler {butler_name} status missing 'health' key"
 
 
 # ---------------------------------------------------------------------------
@@ -239,4 +240,6 @@ async def test_concurrent_status_calls(butler_ecosystem: ButlerEcosystem) -> Non
     assert len(results) == len(butler_ecosystem.butlers)
     for result in results:
         assert result is not None
-        assert "butler" in result
+        assert "name" in result
+        assert "modules" in result
+        assert "health" in result
