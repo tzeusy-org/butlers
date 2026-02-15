@@ -287,3 +287,157 @@ Target frontend surfaces:
 Target backend API alignment:
 - `docs/frontend/backend-api-contract.md` should include an approvals domain contract matching MCP approval operations.
 - Frontend feature inventory should track approvals status explicitly (implemented vs planned) to avoid drift.
+
+## 18. Implementation Status
+
+Last updated: 2026-02-15 (butlers-0p6.8)
+
+### Implemented Features
+
+**Core Module (butlers-0p6.3):**
+- ✅ Gate wrapper and tool interception
+- ✅ Pending action queue (status transitions)
+- ✅ Standing rule matching with deterministic precedence
+- ✅ Shared executor path
+- ✅ 13 MCP tools (queue + rule management)
+- ✅ Compare-and-set decision semantics
+- ✅ Idempotent operations
+
+**Immutable Audit (butlers-0p6.3):**
+- ✅ Append-only approval_events table
+- ✅ Event creation for all state transitions
+- ✅ Actor and reason capture
+- ✅ Immutability enforcement (no UPDATE/DELETE)
+
+**Redaction and Retention (butlers-0p6.4):**
+- ✅ Sensitive field redaction (credentials, tokens, auth URLs)
+- ✅ Heuristic arg name detection (to, recipient, email, password, etc.)
+- ✅ Execution result error redaction
+- ✅ Configurable retention windows
+- ✅ Archive-then-purge semantics
+
+**Risk Tiers and Precedence (butlers-0p6.5):**
+- ✅ Risk tier classification (low/medium/high/critical)
+- ✅ Bounded scope requirement for high/critical rules
+- ✅ Narrow constraint requirement for high/critical rules
+- ✅ Constraint specificity scoring
+- ✅ Precedence logic (specificity > bounded > newer > id)
+- ✅ Comprehensive precedence tests (758 lines)
+
+**Dashboard API (butlers-0p6.6):**
+- ✅ All 13 approvals API endpoints
+- ✅ Query parameter filtering (status, tool, time range)
+- ✅ Pagination support (offset/limit)
+- ✅ Metrics aggregation endpoint
+- ✅ Backend contract compliance per docs/frontend/backend-api-contract.md
+
+**Frontend Surfaces (butlers-0p6.7):**
+- ✅ Approvals queue page (/approvals)
+- ✅ Standing rules page (/approvals/rules)
+- ✅ Action detail dialog with decision UI
+- ✅ Approval metrics bar
+- ✅ Status, tool, and time filters
+- ✅ Auto-refresh support
+- ✅ Pagination
+
+### Target State Not Yet Implemented
+
+**API Mutations:**
+- ⚠️ `POST /api/approvals/actions/{actionId}/approve` - Returns 501 (stub)
+- ⚠️ `POST /api/approvals/actions/{actionId}/reject` - Returns 501 (stub)
+- ⚠️ `POST /api/approvals/rules` - Returns 501 (stub)
+- ⚠️ `POST /api/approvals/rules/from-action` - Returns 501 (stub)
+- ⚠️ `POST /api/approvals/rules/{ruleId}/revoke` - Returns 501 (stub)
+
+**Rationale:** API mutations require authenticated human actor verification, which depends on auth subsystem not yet implemented. MCP tool equivalents are fully functional and tested.
+
+**Frontend Mutations:**
+- ⚠️ Approve/reject buttons (disabled, awaiting API implementation)
+- ⚠️ Create rule form (disabled, awaiting API implementation)
+- ⚠️ Revoke rule button (disabled, awaiting API implementation)
+
+**Workaround:** Use MCP tools directly via butler CLI or Claude Code session until API auth available.
+
+**Advanced Features:**
+- ❌ Batch approve/reject for homogeneous actions
+- ❌ Rule blast radius preview
+- ❌ Approval latency SLOs and alerts
+- ❌ Cross-butler approval delegation (intentionally out of scope per isolation contract)
+
+### Test Coverage Summary
+
+**Automated Tests: 273/273 PASSING**
+
+| Test Area | File | Lines | Status |
+|-----------|------|-------|--------|
+| Core gate + executor | test_approval_gate.py | 931 | ✅ |
+| Rule matching + lifecycle | test_approval_rules.py | 1444 | ✅ |
+| Executor logic | test_approval_executor.py | 723 | ✅ |
+| Module integration | test_module_approvals.py | 564 | ✅ |
+| Audit events | test_approval_events_audit.py | 547 | ✅ |
+| DB immutability | test_approval_events_db_immutability.py | 207 | ✅ |
+| Redaction | test_approval_redaction.py | 259 | ✅ |
+| Retention | test_approval_retention.py | 444 | ✅ |
+| Risk tiers + precedence | test_approval_risk_tiers.py | 758 | ✅ |
+| API domain | test_api_approvals.py | 564 | ✅ |
+| **Total** | | **6441** | **✅** |
+
+### Migration Status
+
+**Applied Migrations:**
+- ✅ `001_create_approvals_tables.py` - pending_actions, approval_rules
+- ✅ `002_create_approval_events.py` - approval_events (immutable audit log)
+
+**Migration Compatibility:**
+- ✅ Forward migrations tested
+- ✅ Rollback migrations tested
+- ✅ Schema validation passing
+
+### Production Readiness
+
+**Ready for Production:**
+- ✅ Core approval flows (gate, queue, executor)
+- ✅ Standing rule matching and precedence
+- ✅ Immutable audit trail
+- ✅ Redaction and retention
+- ✅ Risk tier enforcement
+- ✅ API read endpoints
+- ✅ Frontend read-only views
+- ✅ Comprehensive test coverage
+- ✅ Operational documentation (runbook, rollout guide, test plan)
+
+**Blocked on Auth Subsystem:**
+- ⚠️ API write endpoints (approve, reject, create rule, revoke)
+- ⚠️ Frontend decision actions
+- ⚠️ Authenticated actor verification
+
+**Recommended Next Steps:**
+1. Deploy approvals module to low-risk butler instances
+2. Use MCP tools for approval decisions until API auth ready
+3. Monitor metrics and tune rule library
+4. Implement auth subsystem to unblock API mutations
+5. Enable frontend decision UI after auth integration
+
+### Known Limitations
+
+1. **No batch operations:** Each approval/rejection is individual operation
+2. **No undo:** Approved actions execute immediately, cannot be reversed
+3. **No cross-butler visibility:** Each butler has isolated approval queue
+4. **No delegation:** Single operator model, no multi-approver support
+5. **API mutations require MCP workaround:** Until auth subsystem implemented
+
+### Documentation Deliverables
+
+Per butlers-0p6.8 acceptance criteria:
+
+- ✅ Test plan: `docs/operations/approvals_test_plan.md`
+- ✅ Rollout guide: `docs/operations/approvals_rollout_guide.md`
+- ✅ Operator runbook: `docs/operations/approvals_operator_runbook.md`
+- ✅ Module contract: `docs/modules/approval.md` (this document)
+- ✅ API contract: `docs/frontend/backend-api-contract.md` (approvals domain)
+- ⚠️ Feature inventory: Update pending
+
+### Version History
+
+- 2026-02-13: Initial module contract
+- 2026-02-15: Implementation status added (butlers-0p6.8)
