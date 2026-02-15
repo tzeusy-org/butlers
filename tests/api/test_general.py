@@ -16,7 +16,6 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.general import _get_db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -53,7 +52,13 @@ def _app_with_mock_db(
         mock_db.pool.side_effect = KeyError("No pool for butler: general")
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    # Override the dependency for the dynamically-loaded general router
+    # The router module is loaded during create_app() and stored in app.state
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "general" and hasattr(router_module, "_get_db_manager"):
+            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            break
 
     return app
 

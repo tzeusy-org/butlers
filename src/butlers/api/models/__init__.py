@@ -275,21 +275,7 @@ from butlers.api.models.approval import (  # noqa: E402
 )
 from butlers.api.models.audit import AuditEntry  # noqa: E402
 from butlers.api.models.butler import ModuleStatus  # noqa: E402
-from butlers.api.models.general import (  # noqa: E402
-    Collection,
-    Entity,
-    RegistryEntry,
-    RoutingEntry,
-)
-from butlers.api.models.health import (  # noqa: E402
-    Condition,
-    Dose,
-    Meal,
-    Measurement,
-    Medication,
-    Research,
-    Symptom,
-)
+from butlers.api.models.general import RegistryEntry, RoutingEntry  # noqa: E402
 from butlers.api.models.memory import (  # noqa: E402
     Episode,
     Fact,
@@ -318,14 +304,10 @@ __all__ = [
     "ApiMeta",
     "ApiResponse",
     "ButlerConfigResponse",
-    "Collection",
-    "Condition",
     "CostSummary",
     "ButlerDetail",
     "ButlerSummary",
     "DailyCost",
-    "Dose",
-    "Entity",
     "Episode",
     "Fact",
     "MemoryActivity",
@@ -336,9 +318,6 @@ __all__ = [
     "ExpireStaleActionsResponse",
     "HealthResponse",
     "Issue",
-    "Meal",
-    "Measurement",
-    "Medication",
     "ModuleInfo",
     "ModuleStatus",
     "NotificationStats",
@@ -346,7 +325,6 @@ __all__ = [
     "PaginatedResponse",
     "PaginationMeta",
     "RegistryEntry",
-    "Research",
     "RoutingEntry",
     "RuleConstraintSuggestion",
     "Schedule",
@@ -362,7 +340,6 @@ __all__ = [
     "SpanNode",
     "StateEntry",
     "StateSetRequest",
-    "Symptom",
     "TraceDetail",
     "TraceSummary",
     "TickResponse",

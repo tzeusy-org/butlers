@@ -6,14 +6,29 @@ directly from the general butler's PostgreSQL database via asyncpg.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
+import sys
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.api.models.general import Collection, Entity
+
+# Dynamically load models module from the same directory
+_models_path = Path(__file__).parent / "models.py"
+_spec = importlib.util.spec_from_file_location("general_api_models", _models_path)
+if _spec is not None and _spec.loader is not None:
+    _models = importlib.util.module_from_spec(_spec)
+    sys.modules["general_api_models"] = _models
+    _spec.loader.exec_module(_models)
+
+    Collection = _models.Collection
+    Entity = _models.Entity
+else:
+    raise RuntimeError("Failed to load general API models")
 
 logger = logging.getLogger(__name__)
 
