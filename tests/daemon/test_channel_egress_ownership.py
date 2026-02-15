@@ -323,7 +323,7 @@ class _EgressMisclassifiedAsInputModule(Module):
         pass
 
     def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        # Misclassified: send_message declared as input to try bypassing filter.
+        # Misclassified: output tool declared as input to try bypassing filter.
         return (ToolIODescriptor(name="user_telegram_send_message"),)
 
     def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
@@ -688,7 +688,7 @@ class TestDirectDeliveryBypassRejection:
                 "request_id": _TEST_UUID7,
                 "received_at": "2026-02-14T00:00:00Z",
                 "source_channel": "telegram",
-                "source_endpoint_identity": "bot-switchboard",
+                "source_endpoint_identity": "switchboard",
                 "source_sender_identity": "health",
             },
             input={

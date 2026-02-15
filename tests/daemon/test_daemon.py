@@ -225,6 +225,7 @@ def _patch_infra():
             "butlers.daemon.validate_module_credentials", return_value={}
         ),
         "init_telemetry": patch("butlers.daemon.init_telemetry"),
+        "configure_logging": patch("butlers.core.logging.configure_logging"),
         "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.daemon.FastMCP"),
         "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
@@ -1305,6 +1306,7 @@ name = "butler_test"
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["configure_logging"],
             caplog.at_level(logging.WARNING, logger="butlers.daemon"),
         ):
             daemon = ButlerDaemon(tmp_path)
@@ -1718,6 +1720,7 @@ name = "ghp_1234567890abcdefghij1234567890abcdef"
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["configure_logging"],
             caplog.at_level(logging.WARNING, logger="butlers.daemon"),
         ):
             daemon = ButlerDaemon(tmp_path)

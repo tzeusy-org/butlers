@@ -260,6 +260,9 @@ butlers up
 # Or start a specific butler
 butlers up --only switchboard --only general
 
+# Start messenger butler (requires Telegram/email credentials)
+butlers up --only switchboard --only messenger
+
 # List discovered butlers
 butlers list
 ```
@@ -320,6 +323,7 @@ Each butler service mounts its config directory read-only from `butlers/<name>/`
 | General       | 8101 | Catch-all assistant with collections/entities          |
 | Relationship  | 8102 | Contacts, interactions, gifts, activity feed           |
 | Health        | 8103 | Measurements, medications, conditions, symptoms        |
+| Messenger     | 8104 | Delivery relay — Telegram and email channel outputs    |
 | Heartbeat     | 8199 | System monitor — ticks all butlers every 10 min        |
 | Dashboard API | 8200 | Web UI backend for monitoring and managing butlers     |
 | Frontend      | 5173 | Vite dev server (development only)                     |

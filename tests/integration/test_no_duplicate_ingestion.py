@@ -10,7 +10,7 @@ import warnings
 
 
 class TestEmailModuleDeprecation:
-    """Test that EmailModule check_and_route_inbox is properly deprecated."""
+    """Test that EmailModule _check_and_route_inbox is properly deprecated."""
 
     def test_email_check_and_route_inbox_emits_warning(self):
         """Verify deprecation warning on bot_email_check_and_route_inbox call."""
@@ -34,7 +34,7 @@ class TestEmailModuleDeprecation:
             assert "GmailConnector" in str(deprecation_warnings[0].message)
 
     def test_email_check_and_route_inbox_logs_deprecation(self, caplog):
-        """Verify deprecation is logged when calling check_and_route_inbox."""
+        """Verify deprecation is logged when calling _check_and_route_inbox."""
         import asyncio
 
         from butlers.modules.email import EmailModule

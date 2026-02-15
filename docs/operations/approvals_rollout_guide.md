@@ -82,7 +82,7 @@ tail -n 100 logs/butler_<name>.log
    
    [modules.approvals.gated_tools]
    # Start with high-impact tools only
-   # send_email = { risk_tier = "high", expiry_hours = 24 }
+   # bot_email_send = { risk_tier = "high", expiry_hours = 24 }
    # send_telegram_message = { risk_tier = "medium" }
    ```
 
@@ -162,7 +162,7 @@ Common config issues:
    ```python
    # Example: Auto-approve emails to team
    await butler.call_tool("create_approval_rule", {
-       "tool_name": "send_email",
+       "tool_name": "bot_email_send",
        "arg_constraints": {
            "to": {"type": "pattern", "value": "*@mycompany.com"}
        },

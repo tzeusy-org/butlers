@@ -185,6 +185,8 @@ class TestMessagePipelineProcess:
             source_metadata: dict[str, Any] | None = None,
             *,
             call_fn: Any | None = None,
+            request_id: str | None = None,
+            fanout_mode: str | None = None,
         ) -> list[dict[str, Any]]:
             captured["targets"] = targets
             captured["source_channel"] = source_channel
@@ -267,6 +269,8 @@ class TestMessagePipelineProcess:
             source_metadata: dict[str, Any] | None = None,
             *,
             call_fn: Any | None = None,
+            request_id: str | None = None,
+            fanout_mode: str | None = None,
         ) -> list[dict[str, Any]]:
             return [
                 {"butler": "health", "result": "ok", "error": None},

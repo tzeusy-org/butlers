@@ -172,7 +172,7 @@ def test_wrapping_mcp_keeps_legacy_modules_compatible_without_descriptors():
 
 @pytest.mark.asyncio
 async def test_register_module_tools_rejects_declared_descriptors_not_registered():
-    """Daemon rejects modules that declare descriptors but skip registration."""
+    """Daemon disables modules that declare descriptors but skip registration."""
     module = MissingRegistrationDescriptorModule()
     daemon = _daemon()
     daemon._modules = [module]  # noqa: SLF001
@@ -181,10 +181,13 @@ async def test_register_module_tools_rejects_declared_descriptors_not_registered
     daemon.db = object()
     daemon.mcp = FakeMCP()
 
-    with pytest.raises(
-        ModuleToolValidationError,
-        match=(
-            "declared tool descriptors that were not registered: bot_email_send, user_email_receive"
-        ),
-    ):
-        await daemon._register_module_tools()  # noqa: SLF001
+    await daemon._register_module_tools()  # noqa: SLF001
+
+    # Module should be disabled (non-fatal) with a tool-phase failure
+    status = daemon._module_statuses.get(module.name)  # noqa: SLF001
+    assert status is not None, "Module should have a recorded status"
+    assert status.status == "failed"
+    assert status.phase == "tools"
+    assert "declared tool descriptors that were not registered" in status.error
+    assert "bot_email_send" in status.error
+    assert "user_email_receive" in status.error

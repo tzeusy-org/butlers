@@ -38,11 +38,11 @@ Every channel tool name must declare whether it acts as `user_*` or `bot_*`. The
 Tools are categorized by direction (input vs output) in module metadata:
 
 - **Inputs**: Tools that read or receive data from external sources
-  - Examples: `get_updates`, `search_inbox`, `read_message`
+  - Examples: `bot_telegram_get_updates`, `bot_email_search_inbox`, `bot_email_read_message`
   - Generally do not require approval
   
 - **Outputs**: Tools that send data or perform actions externally
-  - Examples: `send_message`, `reply_to_message`, `send_email`
+  - Examples: `bot_telegram_send_message`, `bot_telegram_reply_to_message`, `bot_email_send_message`
   - Subject to approval policies based on identity and risk
 
 Modules declare these surfaces via `Module` base class methods:
@@ -418,12 +418,12 @@ The refactor from unprefixed to identity-prefixed names was completed in the `bu
    - Added naming validation during module registration
 
 2. **Telegram refactor** (butlers-bj0.2):
-   - Replaced unprefixed `send_message`, `reply_to_message`, `get_updates`
+   - Replaced unprefixed tools (e.g. `telegram_send_msg`, `telegram_reply`, `telegram_updates`)
    - With prefixed `user_telegram_*` and `bot_telegram_*` tools
    - Updated all tests and callsites
 
 3. **Email refactor** (butlers-bj0.3):
-   - Replaced unprefixed `send_message`, `search_inbox`, etc.
+   - Replaced unprefixed tools (e.g. `email_send`, `email_search`, etc.)
    - With prefixed `user_email_*` and `bot_email_*` tools
    - Updated all tests and callsites
 

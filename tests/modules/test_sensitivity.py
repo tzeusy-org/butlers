@@ -219,6 +219,14 @@ class TestHeuristic:
             "price",
             "cost",
             "account",
+            "password",
+            "token",
+            "secret",
+            "key",
+            "api_key",
+            "auth",
+            "credential",
+            "credentials",
         }
         assert SENSITIVE_ARG_NAMES == expected
 
