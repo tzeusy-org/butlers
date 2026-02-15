@@ -182,7 +182,7 @@ def _app_with_mock_db(
     )
 
     if pools_by_name is None:
-        pools_by_name = {"memory": mock_pool} if pool_available else {}
+        pools_by_name = {"general": mock_pool} if pool_available else {}
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = list(pools_by_name.keys())

@@ -29,19 +29,8 @@ def _get_db_manager() -> DatabaseManager:
 
 
 def _memory_pool_names(db: DatabaseManager) -> list[str]:
-    """Return butler names to probe for memory tables.
-
-    Falls back to legacy ``memory`` for compatibility when no list is exposed.
-    """
-    try:
-        names = list(db.butler_names)
-    except TypeError:
-        names = []
-
-    if not names:
-        names = ["memory"]
-
-    return sorted(set(names))
+    """Return butler names to probe for memory tables."""
+    return sorted(db.butler_names)
 
 
 def _memory_pools(db: DatabaseManager) -> list[tuple[str, object]]:

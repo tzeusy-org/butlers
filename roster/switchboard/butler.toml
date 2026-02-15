@@ -14,6 +14,8 @@ enabled = false
 [modules.telegram.bot]
 token_env = "BUTLER_TELEGRAM_TOKEN"
 
+[modules.memory]
+
 [modules.email]
 
 [modules.email.user]
