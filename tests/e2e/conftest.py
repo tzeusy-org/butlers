@@ -242,9 +242,7 @@ async def _wait_for_ecosystem_health(
                     async with client.stream("GET", url, timeout=2.0) as response:
                         if response.status_code == 200:
                             pending.remove(butler_name)
-                            logger.debug(
-                                "Butler %s is healthy (port %s)", butler_name, port
-                            )
+                            logger.debug("Butler %s is healthy (port %s)", butler_name, port)
             except Exception:
                 # Expected during startup — keep polling
                 pass
