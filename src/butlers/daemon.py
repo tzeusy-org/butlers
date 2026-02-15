@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
+import asyncpg
 import uvicorn
 from fastmcp import Client as MCPClient
 from fastmcp import FastMCP
@@ -465,6 +466,7 @@ class ButlerDaemon:
         self._server_task: asyncio.Task | None = None
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
+        self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
 
     @property
     def _active_modules(self) -> list[Module]:
@@ -643,12 +645,16 @@ class ButlerDaemon:
                 f"The {self.config.runtime.type!r} runtime requires {binary!r} to be installed."
             )
 
+        # 10a. Set up audit pool for daemon-side audit logging
+        audit_pool = await self._create_audit_pool(pool)
+
         self.spawner = Spawner(
             config=self.config,
             config_dir=self.config_dir,
             pool=pool,
             module_credentials_env=active_module_creds,
             runtime=runtime,
+            audit_pool=audit_pool,
         )
 
         # 10b. Wire message classification pipeline for switchboard modules
@@ -710,11 +716,16 @@ class ButlerDaemon:
         if self.spawner is None:
             return
 
+        # Shared dict reference — populated by pipeline before CC spawn,
+        # read by route_to_butler tool during CC session.
+        self._routing_session_ctx: dict[str, Any] = {}
+
         pipeline = MessagePipeline(
             switchboard_pool=pool,
             dispatch_fn=self.spawner.trigger,
             source_butler="switchboard",
             enable_ingress_dedupe=True,
+            routing_session_ctx=self._routing_session_ctx,
         )
         self._pipeline = pipeline
 
@@ -748,6 +759,34 @@ class ButlerDaemon:
         )
         self._server = uvicorn.Server(config)
         self._server_task = asyncio.create_task(self._server.serve())
+
+    async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
+        """Create or reuse a connection pool for daemon-side audit logging.
+
+        The switchboard butler reuses its own pool (it already points at
+        ``butler_switchboard``).  Other butlers open a small dedicated pool
+        to the switchboard database.
+
+        Returns ``None`` (with a warning) if the pool cannot be created.
+        """
+        if self.config.name == "switchboard":
+            return own_pool
+
+        try:
+            audit_db = Database.from_env("butler_switchboard")
+            audit_db.min_pool_size = 1
+            audit_db.max_pool_size = 2
+            await audit_db.connect()
+            self._audit_db = audit_db
+            logger.info("Audit pool connected to butler_switchboard")
+            return audit_db.pool
+        except Exception:
+            logger.warning(
+                "Failed to create audit pool for %s; daemon audit logging disabled",
+                self.config.name,
+                exc_info=True,
+            )
+            return None
 
     async def _connect_switchboard(self) -> None:
         """Open an MCP client connection to the Switchboard butler.
@@ -1400,11 +1439,21 @@ class ButlerDaemon:
                 result_payload={"notify_response": notify_response},
             )
 
-        # Switchboard-only: ingest tool for connector submissions
+        # Switchboard-only: ingest + route_to_butler tools
         if butler_name == "switchboard":
             from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+            from butlers.tools.switchboard.routing.route import (
+                _build_trigger_context,
+            )
+            from butlers.tools.switchboard.routing.route import (
+                route as _switchboard_route,
+            )
 
             pipeline = daemon._pipeline
+
+            # Shared routing context dict — same dict reference as pipeline's.
+            # Safe because spawner lock serializes CC sessions.
+            _routing_session_ctx = getattr(daemon, "_routing_session_ctx", {})
 
             async def _process_ingested_message(
                 pipeline: MessagePipeline,
@@ -1494,6 +1543,80 @@ class ButlerDaemon:
                         )
 
                 return result.model_dump(mode="json")
+
+            @mcp.tool()
+            @tool_span("route_to_butler", butler_name=butler_name)
+            async def route_to_butler(
+                butler: str,
+                prompt: str,
+                context: str | None = None,
+            ) -> dict[str, Any]:
+                """Route a message to a specific butler.
+
+                Called by the CC instance during message classification to
+                directly route a sub-message to the target butler.
+
+                Args:
+                    butler: Name of the target butler (e.g. "health", "relationship").
+                    prompt: Self-contained prompt for the target butler.
+                    context: Optional additional context for the target butler.
+                """
+                source_metadata = _routing_session_ctx.get("source_metadata", {})
+                request_context = _routing_session_ctx.get("request_context")
+                request_id = _routing_session_ctx.get("request_id", "unknown")
+
+                trigger_context = _build_trigger_context(
+                    context,
+                    source_metadata,
+                    request_context=request_context,
+                )
+                route_args: dict[str, Any] = {
+                    "prompt": prompt,
+                    "message": prompt,
+                    "source_metadata": source_metadata,
+                    "source_channel": source_metadata.get("channel", "switchboard"),
+                    "source_identity": source_metadata.get("identity", "unknown"),
+                    "source_tool": source_metadata.get("tool_name", "route_to_butler"),
+                    "request_id": request_id,
+                    "__switchboard_route_context": {
+                        "request_id": request_id,
+                        "fanout_mode": "tool_routed",
+                        "segment_id": f"route-{butler}",
+                        "attempt": 1,
+                    },
+                }
+                if trigger_context is not None:
+                    route_args["context"] = trigger_context
+                source_id = source_metadata.get("source_id")
+                if source_id is not None:
+                    route_args["source_id"] = source_id
+
+                try:
+                    result = await _switchboard_route(
+                        pool,
+                        target_butler=butler,
+                        tool_name="bot_switchboard_handle_message",
+                        args=route_args,
+                        source_butler="switchboard",
+                    )
+                    if isinstance(result, dict) and result.get("error"):
+                        return {
+                            "status": "error",
+                            "butler": butler,
+                            "error": str(result["error"]),
+                        }
+                    return {"status": "ok", "butler": butler}
+                except Exception as exc:
+                    logger.warning(
+                        "route_to_butler failed for %s: %s",
+                        butler,
+                        exc,
+                    )
+                    return {
+                        "status": "error",
+                        "butler": butler,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
 
         @mcp.tool()
         async def tick() -> dict:
@@ -2243,7 +2366,12 @@ class ButlerDaemon:
             except Exception:
                 logger.exception("Error during shutdown of module: %s", mod.name)
 
-        # 5. Close DB pool
+        # 5. Close audit DB pool (if separate from main DB)
+        if self._audit_db is not None:
+            await self._audit_db.close()
+            self._audit_db = None
+
+        # 6. Close DB pool
         if self.db:
             await self.db.close()
 

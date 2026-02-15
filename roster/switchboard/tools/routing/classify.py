@@ -191,6 +191,10 @@ def _apply_capability_preferences(
 ) -> list[dict[str, Any]]:
     """Apply conservative capability preferences while preserving domain ownership.
 
+    .. deprecated::
+        No longer used by pipeline. Routing guidance is now embedded in the
+        CC prompt and the CC routes directly via ``route_to_butler``.
+
     We rewrite general-fallback entries in two cases:
     - Scheduling intents → prefer a calendar-capable butler.
     - Food/nutrition intents → prefer health butler.
@@ -314,6 +318,12 @@ async def classify_message(
 ) -> list[dict[str, Any]]:
     """Use CC spawner to classify and decompose a message across butlers.
 
+    .. deprecated::
+        Replaced by tool-based routing via ``route_to_butler`` MCP tool.
+        The CC now calls ``route_to_butler`` directly instead of returning
+        JSON classification. This function is kept for backward compatibility
+        with direct callers outside the pipeline.
+
     Spawns a CC instance that sees the butler registry and determines
     which butler(s) should handle the message.  If the message spans
     multiple domains the CC instance decomposes it into distinct
@@ -411,6 +421,9 @@ async def classify_message_multi(
 ) -> list[str]:
     """Back-compat helper returning only target butler names.
 
+    .. deprecated::
+        Replaced by tool-based routing via ``route_to_butler`` MCP tool.
+
     Older callers/tests expect a list like ``["health", "email"]`` rather than
     structured decomposition entries. This wrapper preserves that interface while
     delegating classification to :func:`classify_message`.
@@ -459,6 +472,10 @@ def _parse_classification(
     original_message: str,
 ) -> list[dict[str, Any]]:
     """Parse the JSON classification response from CC.
+
+    .. deprecated::
+        No longer used by pipeline. The CC now routes directly via
+        ``route_to_butler`` tool calls instead of returning JSON.
 
     Validates that each entry references a known butler and has the
     required keys.  Returns the fallback on any parse or validation

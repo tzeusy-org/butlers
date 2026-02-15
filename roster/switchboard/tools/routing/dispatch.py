@@ -123,6 +123,9 @@ def plan_fanout(
 ) -> FanoutPlan:
     """Build a deterministic fanout plan with explicit dependency semantics.
 
+    .. deprecated::
+        No longer used by pipeline. Kept for backward compatibility.
+
     Modes:
     - ``parallel``: independent subroutes execute concurrently.
     - ``ordered``: subroutes execute in input order (default dependency chain).
@@ -505,6 +508,11 @@ async def dispatch_decomposed(
 ) -> list[dict[str, Any]]:
     """Dispatch decomposed sub-messages to multiple butlers.
 
+    .. deprecated::
+        No longer called by the pipeline. The CC now routes directly via
+        ``route_to_butler`` tool calls. Kept for backward compatibility
+        with direct callers.
+
     This function first builds a fanout plan with explicit dependency semantics,
     join policy, and abort policy. It then executes according to the selected
     mode:
@@ -824,6 +832,10 @@ def aggregate_responses(
     dispatch_fn: Any | None = None,
 ) -> str | Any:
     """Aggregate multiple butler responses into a single coherent reply.
+
+    .. deprecated::
+        No longer called by pipeline. The CC now routes via tool calls and
+        returns a text summary directly. Kept for backward compatibility.
 
     When a message is decomposed and dispatched to multiple butlers, this
     function combines their individual responses into one natural-sounding
