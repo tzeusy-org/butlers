@@ -34,7 +34,12 @@ def postgres_container():
 
 @pytest.fixture
 async def pool(postgres_container):
-    """Create a fresh database with the sessions table and return a pool."""
+    """Create a fresh database with the sessions table and return a pool.
+
+    WARNING: This fixture duplicates the 'sessions' table schema. If you update
+    the schema via migrations, you MUST update it here as well to prevent
+    schema drift in tests.
+    """
     db_name = _unique_db_name()
 
     # Create the database via the admin connection
@@ -77,6 +82,7 @@ async def pool(postgres_container):
             input_tokens INTEGER,
             output_tokens INTEGER,
             parent_session_id UUID,
+            request_id TEXT,
             started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             completed_at TIMESTAMPTZ
         )
@@ -122,6 +128,39 @@ async def test_create_session_persists_fields(pool):
     assert session["output_tokens"] is None
     assert session["completed_at"] is None
     assert session["started_at"] is not None
+
+
+async def test_create_session_with_request_id(pool):
+    """Created session with request_id persists the field correctly."""
+    from butlers.core.sessions import session_create, sessions_get
+
+    request_id = "01JH8X5JQRM7FKTZQNP8Z4Y9W6"  # Example UUIDv7
+    session_id = await session_create(
+        pool,
+        prompt="Routed message",
+        trigger_source="trigger",
+        trace_id="trace-123",
+        request_id=request_id,
+    )
+    session = await sessions_get(pool, session_id)
+    assert session is not None
+    assert session["request_id"] == request_id
+    assert session["prompt"] == "Routed message"
+    assert session["trigger_source"] == "trigger"
+
+
+async def test_create_session_without_request_id_defaults_null(pool):
+    """Created session without request_id has NULL for that field."""
+    from butlers.core.sessions import session_create, sessions_get
+
+    session_id = await session_create(
+        pool,
+        prompt="Scheduled task",
+        trigger_source="schedule:daily-report",
+    )
+    session = await sessions_get(pool, session_id)
+    assert session is not None
+    assert session["request_id"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +404,7 @@ async def test_sessions_get_returns_full_record(pool):
         "error",
         "input_tokens",
         "output_tokens",
+        "request_id",
         "started_at",
         "completed_at",
     }

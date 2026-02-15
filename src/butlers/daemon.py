@@ -1082,6 +1082,7 @@ class ButlerDaemon:
                         context=context_text,
                         trigger_source="trigger",
                         parent_context=parent_ctx,
+                        request_id=route_request_id,
                     )
                 except TimeoutError as exc:
                     return _route_error_response(

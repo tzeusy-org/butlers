@@ -58,6 +58,7 @@ async def session_create(
     trigger_source: str,
     trace_id: str | None = None,
     model: str | None = None,
+    request_id: str | None = None,
 ) -> uuid.UUID:
     """Insert a new session row and return its UUID.
 
@@ -68,6 +69,7 @@ async def session_create(
             ``"tick"``, ``"external"``, ``"trigger"``, or ``"schedule:<task-name>"``.
         trace_id: Optional OpenTelemetry trace ID for correlation.
         model: Optional model identifier used for this invocation.
+        request_id: Optional request ID from ingestion request_context (UUIDv7 format).
 
     Returns:
         The UUID of the newly created session.
@@ -83,14 +85,15 @@ async def session_create(
 
     session_id: uuid.UUID = await pool.fetchval(
         """
-        INSERT INTO sessions (prompt, trigger_source, trace_id, model)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO sessions (prompt, trigger_source, trace_id, model, request_id)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id
         """,
         prompt,
         trigger_source,
         trace_id,
         model,
+        request_id,
     )
     logger.info("Session created: %s (trigger=%s, model=%s)", session_id, trigger_source, model)
     return session_id
@@ -183,7 +186,7 @@ async def sessions_list(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error,
-               input_tokens, output_tokens,
+               input_tokens, output_tokens, request_id,
                started_at, completed_at
         FROM sessions
         ORDER BY started_at DESC
@@ -214,7 +217,8 @@ async def sessions_active(
     rows = await pool.fetch(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
-               duration_ms, trace_id, model, cost, success, error, started_at, completed_at
+               duration_ms, trace_id, model, cost, success, error, request_id,
+               started_at, completed_at
         FROM sessions
         WHERE completed_at IS NULL
         ORDER BY started_at DESC
@@ -240,7 +244,7 @@ async def sessions_get(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error,
-               input_tokens, output_tokens,
+               input_tokens, output_tokens, request_id,
                started_at, completed_at
         FROM sessions
         WHERE id = $1

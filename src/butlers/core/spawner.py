@@ -252,6 +252,7 @@ class Spawner:
         context: str | None = None,
         max_turns: int = 20,
         parent_context: Context | None = None,
+        request_id: str | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -273,6 +274,9 @@ class Spawner:
         parent_context:
             Optional OpenTelemetry context for trace propagation. When provided,
             the spawned session's span will be a child of the parent trace.
+        request_id:
+            Optional request ID from ingestion request_context (UUIDv7 format).
+            For non-ingestion triggers (scheduler, tick), this should be None.
 
         Returns
         -------
@@ -308,7 +312,9 @@ class Spawner:
             self._in_flight.add(task)
         try:
             async with self._lock:
-                return await self._run(prompt, trigger_source, context, max_turns, parent_context)
+                return await self._run(
+                    prompt, trigger_source, context, max_turns, parent_context, request_id
+                )
         finally:
             if task is not None:
                 self._in_flight.discard(task)
@@ -373,6 +379,7 @@ class Spawner:
         context: str | None = None,
         max_turns: int = 20,
         parent_context: Context | None = None,
+        request_id: str | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -401,10 +408,15 @@ class Spawner:
             if span.is_recording():
                 trace_id = format(span.get_span_context().trace_id, "032x")
 
-            # Create session record with trace_id
+            # Create session record with trace_id and request_id
             if self._pool is not None:
                 session_id = await session_create(
-                    self._pool, final_prompt, trigger_source, trace_id, model=model
+                    self._pool,
+                    final_prompt,
+                    trigger_source,
+                    trace_id,
+                    model=model,
+                    request_id=request_id,
                 )
                 # Set session_id on span
                 span.set_attribute("session_id", str(session_id))

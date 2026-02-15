@@ -165,7 +165,12 @@ def postgres_container():
 
 @pytest.fixture
 async def pool(postgres_container):
-    """Create a fresh database with the sessions table and return a pool."""
+    """Create a fresh database with the sessions table and return a pool.
+
+    WARNING: This fixture duplicates the 'sessions' table schema. If you update
+    the schema via migrations, you MUST update it here as well to prevent
+    schema drift in tests.
+    """
     db_name = _unique_db_name()
 
     admin_conn = await asyncpg.connect(
@@ -207,7 +212,8 @@ async def pool(postgres_container):
             completed_at TIMESTAMPTZ,
             input_tokens INTEGER,
             output_tokens INTEGER,
-            parent_session_id UUID REFERENCES sessions(id)
+            parent_session_id UUID REFERENCES sessions(id),
+            request_id TEXT
         )
     """)
     yield p
@@ -343,6 +349,7 @@ class TestSessionsActive:
             "cost",
             "success",
             "error",
+            "request_id",
             "started_at",
             "completed_at",
         }
