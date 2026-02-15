@@ -1179,7 +1179,7 @@ class ButlerDaemon:
                             recipient,
                             rendered_text,
                         )
-                    else:
+                    elif intent == "reply":
                         thread_identity = (
                             notify_context.source_thread_identity if notify_context else None
                         )
@@ -1204,6 +1204,46 @@ class ButlerDaemon:
                         adapter_result = await telegram_module._reply_to_message(
                             chat_id, reply_message_id, rendered_text
                         )
+                    elif intent == "react":
+                        thread_identity = (
+                            notify_context.source_thread_identity if notify_context else None
+                        )
+                        if not thread_identity:
+                            raise ValueError(
+                                "notify_request.request_context.source_thread_identity is required "
+                                "for telegram react intent."
+                            )
+                        chat_id, separator, message_id_raw = thread_identity.partition(":")
+                        if not chat_id or not separator or not message_id_raw:
+                            raise ValueError(
+                                "Telegram react requires source_thread_identity formatted as "
+                                "'<chat_id>:<message_id>'."
+                            )
+                        try:
+                            target_message_id = int(message_id_raw)
+                        except ValueError as exc:
+                            raise ValueError(
+                                "Telegram react source_thread_identity must include an integer "
+                                "message_id."
+                            ) from exc
+                        emoji = notify_request.delivery.emoji
+                        if not emoji:
+                            raise ValueError("React intent requires delivery.emoji.")
+                        # Call Telegram setMessageReaction API directly
+                        url = f"{telegram_module._base_url()}/setMessageReaction"
+                        client = telegram_module._get_client()
+                        resp = await client.post(
+                            url,
+                            json={
+                                "chat_id": chat_id,
+                                "message_id": target_message_id,
+                                "reaction": [{"type": "emoji", "emoji": emoji}],
+                            },
+                        )
+                        resp.raise_for_status()
+                        adapter_result = resp.json()
+                    else:
+                        raise ValueError(f"Unsupported telegram intent: {intent}")
 
                 elif channel == "email":
                     email_module = modules_by_name.get("email")
@@ -1474,6 +1514,7 @@ class ButlerDaemon:
             recipient: str | None = None,
             subject: str | None = None,
             intent: str = "send",
+            emoji: str | None = None,
             request_context: dict[str, Any] | None = None,
         ) -> dict:
             """Send an outbound notification via the Switchboard.
@@ -1494,14 +1535,17 @@ class ButlerDaemon:
             subject:
                 Optional channel-specific subject (for example email).
             intent:
-                Delivery intent. Supported values: ``"send"`` (default) and
-                ``"reply"``.
+                Delivery intent. Supported values: ``"send"`` (default),
+                ``"reply"``, and ``"react"``.
+            emoji:
+                Optional emoji for react intent. Required when intent is
+                ``"react"``.
             request_context:
                 Optional routed request-context metadata for reply targeting and
                 lineage propagation.
             """
-            # Validate message is not empty/whitespace
-            if not message or not message.strip():
+            # Validate message is not empty/whitespace (not required for react intent)
+            if intent != "react" and (not message or not message.strip()):
                 return {
                     "status": "error",
                     "error": "Message must not be empty or whitespace-only.",
@@ -1517,11 +1561,34 @@ class ButlerDaemon:
                     ),
                 }
 
-            if intent not in {"send", "reply"}:
+            if intent not in {"send", "reply", "react"}:
                 return {
                     "status": "error",
                     "error": "Unsupported notify intent. Supported intents: send, reply",
                 }
+
+            # React intent validation
+            if intent == "react":
+                if not emoji:
+                    return {
+                        "status": "error",
+                        "error": "React intent requires emoji parameter.",
+                    }
+                if channel not in {"telegram"}:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"React intent is not supported for channel '{channel}'. "
+                            "Only telegram supports reactions."
+                        ),
+                    }
+                if not request_context or not request_context.get("source_thread_identity"):
+                    return {
+                        "status": "error",
+                        "error": (
+                            "React intent requires request_context with source_thread_identity."
+                        ),
+                    }
 
             client = daemon.switchboard_client
             if client is None:
@@ -1539,6 +1606,8 @@ class ButlerDaemon:
                     "message": message,
                 },
             }
+            if emoji is not None:
+                notify_request["delivery"]["emoji"] = emoji
             if recipient is not None:
                 notify_request["delivery"]["recipient"] = recipient
             if subject is not None:

@@ -440,11 +440,12 @@ Canonical notify request envelope (target-state):
   "schema_version": "notify.v1",
   "origin_butler": "health",
   "delivery": {
-    "intent": "send|reply",
+    "intent": "send|reply|react",
     "channel": "telegram|email|sms|chat",
     "message": "user-visible content",
     "recipient": "optional explicit recipient identity",
-    "subject": "optional, channel-specific (for example email)"
+    "subject": "optional, channel-specific (for example email)",
+    "emoji": "optional emoji for react intent (required when intent=react)"
   },
   "request_context": {
     "request_id": "uuid7",
@@ -462,11 +463,16 @@ Notify request rules:
 - `origin_butler` is required and must match the requesting butler identity.
 - `delivery.intent`, `delivery.channel`, and `delivery.message` are required.
 - `delivery.intent="reply"` requires `request_context` with at least:
-- `request_context.request_id`
-- `request_context.source_channel`
-- `request_context.source_endpoint_identity`
-- `request_context.source_sender_identity`
-- If the target channel requires thread targeting, `request_context.source_thread_identity` is required for `reply`.
+  - `request_context.request_id`
+  - `request_context.source_channel`
+  - `request_context.source_endpoint_identity`
+  - `request_context.source_sender_identity`
+  - If the target channel requires thread targeting, `request_context.source_thread_identity` is required for `reply`.
+- `delivery.intent="react"` requires:
+  - `delivery.emoji` (the reaction emoji, e.g. "👍", "❤️", "🔥")
+  - `request_context` with `source_thread_identity` (for telegram: `<chat_id>:<message_id>`)
+  - `delivery.channel` must be `telegram` (currently the only channel supporting reactions)
+  - `delivery.message` is not required for react intent
 - Unknown required schema versions or missing required fields must fail deterministically with typed validation errors.
 
 Notify transport mapping rule:

@@ -24,11 +24,9 @@ NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 SourceChannel = Literal["telegram", "slack", "email", "api", "mcp"]
 SourceProvider = Literal["telegram", "slack", "gmail", "imap", "internal"]
 NotifyChannel = Literal["telegram", "email", "sms", "chat"]
-NotifyIntent = Literal["send", "reply"]
+NotifyIntent = Literal["send", "reply", "react"]
 PolicyTier = Literal["default", "interactive", "high_priority"]
 FanoutMode = Literal["parallel", "ordered", "conditional"]
-NotifyIntent = Literal["send", "reply"]
-NotifyChannel = Literal["telegram", "email", "sms", "chat"]
 _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = {
     "telegram": frozenset({"telegram"}),
     "slack": frozenset({"slack"}),
@@ -386,9 +384,23 @@ class NotifyDeliveryV1(BaseModel):
 
     intent: NotifyIntent
     channel: NotifyChannel
-    message: NonEmptyStr
+    message: str  # Can be empty for react intent
     recipient: NonEmptyStr | None = None
     subject: NonEmptyStr | None = None
+    emoji: NonEmptyStr | None = None
+
+    @field_validator("message")
+    @classmethod
+    def _validate_message_required_for_send_reply(cls, value: str, info: ValidationInfo) -> str:
+        """Message must be non-empty for send and reply intents."""
+        intent = info.data.get("intent")
+        if intent in ("send", "reply") and (not value or not value.strip()):
+            raise PydanticCustomError(
+                "message_required",
+                "delivery.message must be non-empty for {intent} intent.",
+                {"intent": intent},
+            )
+        return value
 
 
 class NotifyRequestV1(BaseModel):
@@ -424,6 +436,41 @@ class NotifyRequestV1(BaseModel):
                 "notify.v1 telegram reply intent requires request_context.source_thread_identity.",
                 {},
             )
+
+        return self
+
+    @model_validator(mode="after")
+    def _validate_react_context(self) -> NotifyRequestV1:
+        """Validate react intent requirements."""
+        if self.delivery.intent != "react":
+            return self
+
+        # React intent requires emoji
+        if not self.delivery.emoji:
+            raise PydanticCustomError(
+                "react_emoji_required",
+                "notify.v1 react intent requires delivery.emoji.",
+                {},
+            )
+
+        # React intent requires request_context for source message identification
+        if self.request_context is None:
+            raise PydanticCustomError(
+                "react_context_required",
+                "notify.v1 react intent requires request_context.",
+                {},
+            )
+
+        # React intent requires source_thread_identity for telegram
+        if self.delivery.channel == "telegram" and not self.request_context.source_thread_identity:
+            raise PydanticCustomError(
+                "react_thread_required",
+                "notify.v1 telegram react intent requires request_context.source_thread_identity.",
+                {},
+            )
+
+        # React intent does not use message field
+        # (allowing but not requiring it for flexibility)
 
         return self
 
