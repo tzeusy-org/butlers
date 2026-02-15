@@ -63,3 +63,5 @@ logs/
 .worktrees/parallel-agents/butlers-zb7.5/
 # bd worktree
 .worktrees/parallel-agents/butlers-904/
+# bd worktree
+.worktrees/parallel-agents/butlers-905/
