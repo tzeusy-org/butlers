@@ -18,4 +18,5 @@ __all__ = [
     "messenger_delivery_search",
     "messenger_delivery_status",
     "messenger_delivery_trace",
+    "rate_limiter",
 ]
