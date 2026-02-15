@@ -55,6 +55,11 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+# SQL migrations and tests have long SQL strings that shouldn't be split
+"roster/*/migrations/*.py" = ["E501"]
+"roster/*/tests/test_*_migrations.py" = ["E501"]
+
 [tool.ruff.lint.isort]
 # Butler-specific tools are dynamically loaded from roster/<name>/tools.py
 # at runtime, but ruff can't detect them as first-party without this hint.
