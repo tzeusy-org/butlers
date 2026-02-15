@@ -50,18 +50,11 @@ pgdata/
 /frontend/node_modules/
 /frontend/dist/
 
-# Logs (structured output from butlers daemons)
-logs/
-
 # tmp
 .tmp
 # bd worktree
-.worktrees/parallel-agents/butlers-902/
+.worktrees/parallel-agents/butlers-bj0.9/
 # bd worktree
-.worktrees/parallel-agents/butlers-903/
+.worktrees/parallel-agents/butlers-zb7.7/
 # bd worktree
-.worktrees/parallel-agents/butlers-zb7.5/
-# bd worktree
-.worktrees/parallel-agents/butlers-904/
-# bd worktree
-.worktrees/parallel-agents/butlers-905/
+.worktrees/parallel-agents/butlers-906/
