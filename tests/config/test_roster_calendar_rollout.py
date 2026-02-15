@@ -27,7 +27,7 @@ def test_calendar_enabled_butlers_have_dedicated_subcalendar_ids() -> None:
 
         assert isinstance(calendar, dict), f"{butler_name} is missing [modules.calendar]"
         assert calendar.get("provider") == "google"
-        assert calendar.get("default_conflict_policy") == "suggest"
+        assert calendar.get("conflicts", {}).get("policy") == "suggest"
 
         calendar_id = calendar.get("calendar_id")
         assert isinstance(calendar_id, str) and calendar_id.strip()
