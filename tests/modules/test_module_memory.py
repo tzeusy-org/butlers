@@ -125,12 +125,12 @@ class TestRegisterTools:
         with patch.dict(
             "sys.modules",
             {
-                "butlers.tools.memory": MagicMock(),
-                "butlers.tools.memory.writing": MagicMock(),
-                "butlers.tools.memory.reading": MagicMock(),
-                "butlers.tools.memory.feedback": MagicMock(),
-                "butlers.tools.memory.management": MagicMock(),
-                "butlers.tools.memory.context": MagicMock(),
+                "butlers.modules.memory.tools": MagicMock(),
+                "butlers.modules.memory.tools.writing": MagicMock(),
+                "butlers.modules.memory.tools.reading": MagicMock(),
+                "butlers.modules.memory.tools.feedback": MagicMock(),
+                "butlers.modules.memory.tools.management": MagicMock(),
+                "butlers.modules.memory.tools.context": MagicMock(),
             },
         ):
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
@@ -158,12 +158,12 @@ class TestRegisterTools:
         with patch.dict(
             "sys.modules",
             {
-                "butlers.tools.memory": MagicMock(),
-                "butlers.tools.memory.writing": MagicMock(),
-                "butlers.tools.memory.reading": MagicMock(),
-                "butlers.tools.memory.feedback": MagicMock(),
-                "butlers.tools.memory.management": MagicMock(),
-                "butlers.tools.memory.context": MagicMock(),
+                "butlers.modules.memory.tools": MagicMock(),
+                "butlers.modules.memory.tools.writing": MagicMock(),
+                "butlers.modules.memory.tools.reading": MagicMock(),
+                "butlers.modules.memory.tools.feedback": MagicMock(),
+                "butlers.modules.memory.tools.management": MagicMock(),
+                "butlers.modules.memory.tools.context": MagicMock(),
             },
         ):
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
@@ -194,7 +194,7 @@ class TestToolDelegation:
         mock_context = MagicMock()
 
         # Wire sub-mocks as attributes of the parent so that
-        # ``from butlers.tools.memory import writing`` resolves correctly.
+        # ``from butlers.modules.memory.tools import writing`` resolves correctly.
         parent_mock = MagicMock()
         parent_mock.writing = mock_writing
         parent_mock.reading = mock_reading
@@ -217,12 +217,12 @@ class TestToolDelegation:
         with patch.dict(
             "sys.modules",
             {
-                "butlers.tools.memory": parent_mock,
-                "butlers.tools.memory.writing": mock_writing,
-                "butlers.tools.memory.reading": mock_reading,
-                "butlers.tools.memory.feedback": mock_feedback,
-                "butlers.tools.memory.management": mock_management,
-                "butlers.tools.memory.context": mock_context,
+                "butlers.modules.memory.tools": parent_mock,
+                "butlers.modules.memory.tools.writing": mock_writing,
+                "butlers.modules.memory.tools.reading": mock_reading,
+                "butlers.modules.memory.tools.feedback": mock_feedback,
+                "butlers.modules.memory.tools.management": mock_management,
+                "butlers.modules.memory.tools.context": mock_context,
             },
         ):
             await mod.register_tools(mcp=mcp, config=None, db=fake_db)

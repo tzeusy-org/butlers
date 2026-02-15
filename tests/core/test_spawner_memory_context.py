@@ -35,12 +35,12 @@ class TestFetchMemoryContext:
 
         with (
             patch(
-                "butlers.tools.memory.context.memory_context",
+                "butlers.modules.memory.tools.context.memory_context",
                 new_callable=AsyncMock,
                 return_value="Remembered context",
             ) as mock_context,
             patch(
-                "butlers.tools.memory._helpers.get_embedding_engine",
+                "butlers.modules.memory.tools._helpers.get_embedding_engine",
                 return_value=embedding,
             ),
         ):
@@ -57,7 +57,7 @@ class TestFetchMemoryContext:
 
     async def test_returns_none_when_tool_raises(self):
         with patch(
-            "butlers.tools.memory.context.memory_context",
+            "butlers.modules.memory.tools.context.memory_context",
             new_callable=AsyncMock,
             side_effect=RuntimeError("boom"),
         ):
@@ -71,11 +71,14 @@ class TestFetchMemoryContext:
     async def test_returns_none_for_empty_context(self):
         with (
             patch(
-                "butlers.tools.memory.context.memory_context",
+                "butlers.modules.memory.tools.context.memory_context",
                 new_callable=AsyncMock,
                 return_value="   ",
             ),
-            patch("butlers.tools.memory._helpers.get_embedding_engine", return_value=object()),
+            patch(
+                "butlers.modules.memory.tools._helpers.get_embedding_engine",
+                return_value=object(),
+            ),
         ):
             result = await fetch_memory_context(AsyncMock(), "my-butler", "hello")
         assert result is None

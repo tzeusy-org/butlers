@@ -1,7 +1,7 @@
 """Memory module — wires memory domain tools into the butler's MCP server.
 
 Registers 12 MCP tools that delegate to the existing implementations in
-``butlers.tools.memory``. The tool closures strip ``pool`` and
+``butlers.modules.memory.tools``. The tool closures strip ``pool`` and
 ``embedding_engine`` from the MCP-visible signature and inject them from
 module state at call time.
 """
@@ -82,7 +82,7 @@ class MemoryModule(Module):
     def _get_embedding_engine(self):
         """Lazy-load and return the shared embedding engine singleton."""
         if self._embedding_engine is None:
-            from butlers.tools.memory import get_embedding_engine
+            from butlers.modules.memory.tools import get_embedding_engine
 
             self._embedding_engine = get_embedding_engine()
         return self._embedding_engine
@@ -98,11 +98,11 @@ class MemoryModule(Module):
         # Import sub-modules (not individual functions) to avoid name collisions
         # between the MCP closure names and the imported symbols.
         # Deferred to avoid import-time side effects (sentence_transformers).
-        from butlers.tools.memory import context as _context
-        from butlers.tools.memory import feedback as _feedback
-        from butlers.tools.memory import management as _management
-        from butlers.tools.memory import reading as _reading
-        from butlers.tools.memory import writing as _writing
+        from butlers.modules.memory.tools import context as _context
+        from butlers.modules.memory.tools import feedback as _feedback
+        from butlers.modules.memory.tools import management as _management
+        from butlers.modules.memory.tools import reading as _reading
+        from butlers.modules.memory.tools import writing as _writing
 
         # --- Writing tools ---
 

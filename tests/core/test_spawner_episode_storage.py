@@ -33,7 +33,7 @@ class TestStoreSessionEpisode:
     async def test_returns_true_on_success(self):
         pool = AsyncMock()
         with patch(
-            "butlers.tools.memory.writing.memory_store_episode",
+            "butlers.modules.memory.tools.writing.memory_store_episode",
             new_callable=AsyncMock,
             return_value={"id": "abc"},
         ) as mock_store:
@@ -49,7 +49,7 @@ class TestStoreSessionEpisode:
 
     async def test_returns_false_when_tool_raises(self):
         with patch(
-            "butlers.tools.memory.writing.memory_store_episode",
+            "butlers.modules.memory.tools.writing.memory_store_episode",
             new_callable=AsyncMock,
             side_effect=RuntimeError("boom"),
         ):
@@ -65,7 +65,7 @@ class TestStoreSessionEpisode:
         sid = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         with patch(
-            "butlers.tools.memory.writing.memory_store_episode",
+            "butlers.modules.memory.tools.writing.memory_store_episode",
             new_callable=AsyncMock,
             return_value={"id": "abc"},
         ) as mock_store:

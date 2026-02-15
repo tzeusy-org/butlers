@@ -136,8 +136,8 @@ async def fetch_memory_context(
         return None
 
     try:
-        from butlers.tools.memory import context as _context
-        from butlers.tools.memory._helpers import get_embedding_engine
+        from butlers.modules.memory.tools import context as _context
+        from butlers.modules.memory.tools._helpers import get_embedding_engine
 
         context = await _context.memory_context(
             pool,
@@ -169,7 +169,7 @@ async def store_session_episode(
         return False
 
     try:
-        from butlers.tools.memory import writing as _writing
+        from butlers.modules.memory.tools import writing as _writing
 
         await _writing.memory_store_episode(
             pool,
