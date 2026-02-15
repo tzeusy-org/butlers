@@ -220,6 +220,57 @@ def dashboard(host: str, port: int) -> None:
     uvicorn.run("butlers.api.app:create_app", host=host, port=port, factory=True)
 
 
+@cli.group()
+def db() -> None:
+    """Database management commands."""
+
+
+@db.command()
+@click.option(
+    "--only",
+    callback=_parse_comma_separated,
+    default="",
+    help="Provision only specific butlers (comma-separated)",
+)
+@click.option(
+    "--dir",
+    "butlers_dir",
+    type=click.Path(exists=True, path_type=Path),
+    default=DEFAULT_BUTLERS_DIR,
+    help="Directory containing butler configs",
+)
+def provision(only: tuple[str, ...], butlers_dir: Path) -> None:
+    """Provision PostgreSQL databases for all (or selected) butlers."""
+    configs = _discover_configs(butlers_dir)
+    if not configs:
+        click.echo(f"No butler configs found in {butlers_dir}/")
+        sys.exit(1)
+
+    if only:
+        configs = {name: path for name, path in configs.items() if name in only}
+        missing = set(only) - set(configs.keys())
+        if missing:
+            click.echo(f"Butler(s) not found: {', '.join(sorted(missing))}")
+            sys.exit(1)
+
+    asyncio.run(_provision_databases(configs))
+
+
+async def _provision_databases(configs: dict[str, Path]) -> None:
+    """Provision databases for the given butler configs."""
+    from butlers.db import Database
+
+    for name, config_dir in sorted(configs.items()):
+        config = load_config(config_dir)
+        db_name = config.db_name or f"butler_{name}"
+        try:
+            database = Database.from_env(db_name)
+            await database.provision()
+            click.echo(f"  {name}: provisioned ({db_name})")
+        except Exception as exc:
+            click.echo(f"  {name}: FAILED ({exc})")
+
+
 def _discover_configs(butlers_dir: Path) -> dict[str, Path]:
     """Discover all butler.toml configs in a directory.
 

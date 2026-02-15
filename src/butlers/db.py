@@ -138,7 +138,7 @@ class Database:
                 # Can't use parameterized query for CREATE DATABASE
                 # Sanitize db_name to prevent SQL injection
                 safe_name = self.db_name.replace('"', '""')
-                await conn.execute(f'CREATE DATABASE "{safe_name}"')
+                await conn.execute(f'CREATE DATABASE "{safe_name}" TEMPLATE template0')
                 logger.info("Created database: %s", self.db_name)
             else:
                 logger.info("Database already exists: %s", self.db_name)

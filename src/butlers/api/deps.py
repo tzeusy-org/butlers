@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 from butlers.api.db import DatabaseManager
 from butlers.api.pricing import PricingConfig, load_pricing
 from butlers.config import ConfigError, load_config
-from butlers.db import db_params_from_env
+from butlers.db import Database, db_params_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +340,8 @@ async def init_db_manager(
 
     for cfg in butler_configs:
         try:
+            db = Database.from_env(cfg.db_name or f"butler_{cfg.name}")
+            await db.provision()
             await mgr.add_butler(cfg.name, db_name=cfg.db_name)
         except Exception:
             logger.warning("Failed to add DB pool for butler %s", cfg.name, exc_info=True)

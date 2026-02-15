@@ -6,6 +6,9 @@ dist/
 build/
 *.egg
 
+# Logs
+logs
+
 # Virtual environments
 .venv/
 venv/
@@ -52,21 +55,19 @@ pgdata/
 
 # tmp
 .tmp
-# bd worktree
 .worktrees/parallel-agents/butlers-bj0.9/
-# bd worktree
 .worktrees/parallel-agents/butlers-zb7.7/
-# bd worktree
 .worktrees/parallel-agents/butlers-906/
-# bd worktree
 .worktrees/parallel-agents/butlers-911.1/
-# bd worktree
 .worktrees/parallel-agents/butlers-912/
-# bd worktree
 .worktrees/parallel-agents/butlers-911.2/
-# bd worktree
 .worktrees/parallel-agents/butlers-911.5/
-# bd worktree
 .worktrees/parallel-agents/butlers-911.3/
-# bd worktree
 .worktrees/parallel-agents/butlers-911.4/
+.worktrees/parallel-agents/butlers-911.8/
+.worktrees/parallel-agents/butlers-911.6/
+.worktrees/parallel-agents/butlers-911.7/
+# bd worktree
+.worktrees/parallel-agents/butlers-911.10/
+# bd worktree
+.worktrees/parallel-agents/butlers-916.1/
