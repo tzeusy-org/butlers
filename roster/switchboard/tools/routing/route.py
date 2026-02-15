@@ -536,20 +536,25 @@ async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, A
     RuntimeError
         If the target tool returns an MCP error result.
     """
-    result = await _call_tool_with_router_client(endpoint_url, tool_name, args)
-    if getattr(result, "is_error", False):
-        error_text = _extract_mcp_error_text(result)
-        # Route-level compatibility:
-        # - identity-prefixed routing names (for channel-scoped pipeline calls)
-        # map to core daemon ``trigger`` when unavailable on the target.
-        if _is_identity_prefixed_tool_name(tool_name) and "Unknown tool" in error_text:
-            trigger_args = _build_trigger_args(args)
-            result = await _call_tool_with_router_client(endpoint_url, "trigger", trigger_args)
+    # Route-level compatibility:
+    # - identity-prefixed routing names (for channel-scoped pipeline calls)
+    # map to core daemon ``trigger`` directly to avoid "Unknown tool" warnings.
+    effective_tool_name = tool_name
+    effective_args = args
+    if _is_identity_prefixed_tool_name(tool_name):
+        effective_tool_name = "trigger"
+        effective_args = _build_trigger_args(args)
+
+    result = await _call_tool_with_router_client(endpoint_url, effective_tool_name, effective_args)
 
     if getattr(result, "is_error", False):
         error_text = _extract_mcp_error_text(result)
         if not error_text:
-            error_text = f"Tool '{tool_name}' returned an error."
+            # Use effective_tool_name to show what was actually called
+            if effective_tool_name != tool_name:
+                error_text = f"Tool '{effective_tool_name}' (from '{tool_name}') returned an error."
+            else:
+                error_text = f"Tool '{tool_name}' returned an error."
         raise RuntimeError(error_text)
 
     # FastMCP 2.x CallToolResult carries structured data directly.

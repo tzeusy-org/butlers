@@ -1073,7 +1073,10 @@ class TestCallButlerTool:
         await _reset_router_client_cache_for_tests()
 
     async def test_uses_mcp_client_and_returns_data(self) -> None:
-        """_call_butler_tool should call FastMCP and return result.data."""
+        """_call_butler_tool should call FastMCP and return result.data.
+
+        Identity-prefixed tools are now routed directly to trigger upfront.
+        """
         from butlers.tools.switchboard import _call_butler_tool
 
         mock_result = SimpleNamespace(is_error=False, data={"ok": True}, content=[])
@@ -1094,9 +1097,10 @@ class TestCallButlerTool:
 
         assert result == {"ok": True}
         mock_ctor.assert_called_once_with("http://localhost:8101/sse", name="switchboard-router")
+        # Identity-prefixed tool is transformed to trigger with empty prompt
         mock_client.call_tool.assert_awaited_once_with(
-            "bot_switchboard_handle_message",
-            {},
+            "trigger",
+            {"prompt": ""},
             raise_on_error=False,
         )
 
@@ -1176,7 +1180,10 @@ class TestCallButlerTool:
         assert mock_ctor.call_count == 2
 
     async def test_wraps_client_failure_as_connection_error(self) -> None:
-        """_call_butler_tool should preserve failed-call context in the exception."""
+        """_call_butler_tool should preserve failed-call context in the exception.
+
+        Identity-prefixed tools are transformed to trigger, so the error mentions trigger.
+        """
         from butlers.tools.switchboard import _call_butler_tool
 
         mock_client = AsyncMock()
@@ -1190,7 +1197,7 @@ class TestCallButlerTool:
         with patch("butlers.tools.switchboard.routing.route.MCPClient", mock_ctor):
             with pytest.raises(
                 ConnectionError,
-                match="Failed to call tool bot_switchboard_handle_message",
+                match="Failed to call tool trigger",
             ):
                 await _call_butler_tool(
                     "http://localhost:8101/sse",
@@ -1199,18 +1206,14 @@ class TestCallButlerTool:
                 )
 
     async def test_switchboard_prefixed_tool_falls_back_to_trigger(self) -> None:
-        """Unknown identity-prefixed switchboard tools should retry via trigger."""
+        """Identity-prefixed switchboard tools route directly to trigger (no fallback retry)."""
         from butlers.tools.switchboard import _call_butler_tool
 
-        first_result = SimpleNamespace(
-            is_error=True,
-            data=None,
-            content=[SimpleNamespace(text="Unknown tool: bot_switchboard_handle_message")],
-        )
-        second_result = SimpleNamespace(is_error=False, data={"output": "ok"}, content=[])
+        # Now only one call happens - directly to trigger
+        success_result = SimpleNamespace(is_error=False, data={"output": "ok"}, content=[])
 
         mock_client = AsyncMock()
-        mock_client.call_tool = AsyncMock(side_effect=[first_result, second_result])
+        mock_client.call_tool = AsyncMock(return_value=success_result)
 
         mock_ctor = MagicMock()
         mock_ctx = mock_ctor.return_value
@@ -1225,32 +1228,25 @@ class TestCallButlerTool:
             )
 
         assert result == {"output": "ok"}
-        assert mock_client.call_tool.await_count == 2
-        assert mock_client.call_tool.await_args_list[0].args == (
-            "bot_switchboard_handle_message",
-            {"message": "hello from telegram", "source": "telegram"},
-        )
-        fallback_tool, fallback_args = mock_client.call_tool.await_args_list[1].args
-        assert fallback_tool == "trigger"
-        assert fallback_args["prompt"] == "hello from telegram"
-        assert "Source metadata" in fallback_args["context"]
-        assert "telegram" in fallback_args["context"]
+        # Only 1 call now - upfront transformation to trigger
+        assert mock_client.call_tool.await_count == 1
+        tool_name, tool_args = mock_client.call_tool.await_args_list[0].args
+        assert tool_name == "trigger"
+        # _build_trigger_args extracts "message" as prompt and "source" in context
+        assert tool_args["prompt"] == "hello from telegram"
+        assert "Source metadata" in tool_args["context"]
+        assert "telegram" in tool_args["context"]
         assert mock_client.call_tool.await_args_list[0].kwargs == {"raise_on_error": False}
-        assert mock_client.call_tool.await_args_list[1].kwargs == {"raise_on_error": False}
 
     async def test_prefixed_tool_falls_back_to_trigger(self) -> None:
-        """Unknown identity-prefixed tools should retry via trigger."""
+        """Identity-prefixed tools route directly to trigger (no fallback retry)."""
         from butlers.tools.switchboard import _call_butler_tool
 
-        first_result = SimpleNamespace(
-            is_error=True,
-            data=None,
-            content=[SimpleNamespace(text="Unknown tool: bot_telegram_handle_message")],
-        )
-        second_result = SimpleNamespace(is_error=False, data={"output": "ok"}, content=[])
+        # Now only one call happens - directly to trigger
+        success_result = SimpleNamespace(is_error=False, data={"output": "ok"}, content=[])
 
         mock_client = AsyncMock()
-        mock_client.call_tool = AsyncMock(side_effect=[first_result, second_result])
+        mock_client.call_tool = AsyncMock(return_value=success_result)
 
         mock_ctor = MagicMock()
         mock_ctx = mock_ctor.return_value
@@ -1271,16 +1267,14 @@ class TestCallButlerTool:
             )
 
         assert result == {"output": "ok"}
-        first_tool, first_args = mock_client.call_tool.await_args_list[0].args
-        assert first_tool == "bot_telegram_handle_message"
-        assert first_args["prompt"] == "hello from telegram"
-
-        fallback_tool, fallback_args = mock_client.call_tool.await_args_list[1].args
-        assert fallback_tool == "trigger"
-        assert fallback_args["prompt"] == "hello from telegram"
-        assert "Source metadata" in fallback_args["context"]
-        assert "bot_telegram_get_updates" in fallback_args["context"]
-        assert "msg-12" in fallback_args["context"]
+        # Only 1 call now - upfront transformation to trigger
+        assert mock_client.call_tool.await_count == 1
+        tool_name, tool_args = mock_client.call_tool.await_args_list[0].args
+        assert tool_name == "trigger"
+        assert tool_args["prompt"] == "hello from telegram"
+        assert "Source metadata" in tool_args["context"]
+        assert "bot_telegram_get_updates" in tool_args["context"]
+        assert "msg-12" in tool_args["context"]
 
     async def test_unprefixed_unknown_tool_does_not_fallback_to_trigger(self) -> None:
         """Legacy unprefixed tool names should fail without trigger fallback."""

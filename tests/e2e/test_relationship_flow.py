@@ -43,7 +43,7 @@ async def test_contact_creation_via_spawner(
 
     # Trigger spawner with contact creation request
     prompt = "Add a new contact: Sarah Chen, my colleague at Anthropic"
-    result = await relationship_daemon.spawner.trigger(prompt, trigger_source="external")
+    result = await relationship_daemon.spawner.trigger(prompt)
 
     # Verify spawner returned success
     assert result is not None, "Spawner should return result"
@@ -107,7 +107,7 @@ async def test_note_logging_via_spawner(
 
     # Step 1: Create a contact first
     contact_creation_prompt = "Add a new contact: John Smith, my friend"
-    await relationship_daemon.spawner.trigger(contact_creation_prompt, trigger_source="external")
+    await relationship_daemon.spawner.trigger(contact_creation_prompt)
 
     # Query for the created contact to get its ID
     contact_row = await relationship_pool.fetchrow(
@@ -125,7 +125,7 @@ async def test_note_logging_via_spawner(
 
     # Step 2: Log a note about the contact
     note_prompt = "Note about John Smith: He loves hiking and specialty coffee"
-    result = await relationship_daemon.spawner.trigger(note_prompt, trigger_source="external")
+    result = await relationship_daemon.spawner.trigger(note_prompt)
 
     # Verify spawner returned success
     assert result is not None, "Spawner should return result"
@@ -180,12 +180,12 @@ async def test_multiple_contacts_session_tracking(
 
     # Create first contact
     prompt1 = "Add contact: Alice Johnson, alice@example.com"
-    result1 = await relationship_daemon.spawner.trigger(prompt1, trigger_source="external")
+    result1 = await relationship_daemon.spawner.trigger(prompt1)
     assert result1 is not None, "First spawner call should return result"
 
     # Create second contact
     prompt2 = "Add contact: Bob Williams, my neighbor"
-    result2 = await relationship_daemon.spawner.trigger(prompt2, trigger_source="external")
+    result2 = await relationship_daemon.spawner.trigger(prompt2)
     assert result2 is not None, "Second spawner call should return result"
 
     # Verify contact count increased by 2
