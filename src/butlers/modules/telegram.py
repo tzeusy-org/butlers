@@ -1,22 +1,11 @@
 """Telegram module — identity-prefixed Telegram MCP tools.
 
-**DEPRECATION NOTICE**: Module-owned polling mode is deprecated as of v1.0.
-Ingestion responsibility has moved to ``TelegramBotConnector`` which submits
-messages through the canonical ingest API. Module polling will be removed in v2.0.
-
-For new deployments, use ``TelegramBotConnector`` instead of module polling.
-Module polling remains available for backward compatibility but is disabled
-by default. To enable (not recommended), set ``modules.telegram.enable_legacy_polling=true``
-in butler.toml and set ``mode="polling"``.
+Ingestion is handled by ``TelegramBotConnector`` which submits messages through
+the canonical ingest API. This module provides identity-prefixed MCP tools for
+sending/receiving messages and webhook setup.
 
 Configured via [modules.telegram] with optional
 [modules.telegram.user] and [modules.telegram.bot] credential scopes in butler.toml.
-
-Migration Path:
-    1. Deploy ``TelegramBotConnector`` as a separate runtime
-    2. Configure it to submit to switchboard ingest API
-    3. Remove ``mode="polling"`` from module config
-    4. Remove pipeline attachment from module
 """
 
 from __future__ import annotations
@@ -26,7 +15,6 @@ import json
 import logging
 import os
 import re
-import warnings
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -128,16 +116,9 @@ class IngressPersistenceResult:
 
 
 class TelegramConfig(BaseModel):
-    """Configuration for the Telegram module.
+    """Configuration for the Telegram module."""
 
-    **DEPRECATED**: Module-owned polling is deprecated. Use TelegramBotConnector instead.
-    Set enable_legacy_polling=true to enable deprecated polling (not recommended).
-    """
-
-    mode: str = "webhook"  # "polling" or "webhook" (polling is deprecated)
-    enable_legacy_polling: bool = False  # Must be true to use deprecated polling mode
     webhook_url: str | None = None
-    poll_interval: float = 1.0
     user: TelegramUserCredentialsConfig = Field(default_factory=TelegramUserCredentialsConfig)
     bot: TelegramBotCredentialsConfig = Field(default_factory=TelegramBotCredentialsConfig)
     model_config = ConfigDict(extra="forbid")
@@ -154,9 +135,7 @@ class TelegramModule(Module):
     def __init__(self) -> None:
         self._config: TelegramConfig = TelegramConfig()
         self._client: httpx.AsyncClient | None = None
-        self._poll_task: asyncio.Task[None] | None = None
         self._last_update_id: int = 0
-        self._updates_buffer: list[dict[str, Any]] = []
         self._pipeline: MessagePipeline | None = None
         self._routed_messages: list[RoutingResult] = []
         self._db: Any = None
@@ -565,53 +544,19 @@ class TelegramModule(Module):
             _register_get_updates_tool(identity)
 
     async def on_startup(self, config: Any, db: Any) -> None:
-        """Start polling or set webhook based on config.
-
-        **DEPRECATED**: Module-owned polling is deprecated. Use TelegramBotConnector instead.
-        """
+        """Set webhook if configured. Ingestion is handled by TelegramBotConnector."""
         self._config = (
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))
         )
         self._client = httpx.AsyncClient()
         self._last_update_id = 0
-        self._updates_buffer = []
         self._db = db
 
-        if self._config.mode == "webhook" and self._config.webhook_url:
+        if self._config.webhook_url:
             await self._set_webhook(self._config.webhook_url)
-        elif self._config.mode == "polling":
-            # Check if legacy polling is explicitly enabled
-            if not self._config.enable_legacy_polling:
-                logger.error(
-                    "Module-owned polling is DEPRECATED and disabled by default. "
-                    "Ingestion is now handled by TelegramBotConnector. "
-                    "Set modules.telegram.enable_legacy_polling=true to enable (not recommended). "
-                    "This feature will be removed in v2.0."
-                )
-                return
-
-            warnings.warn(
-                "TelegramModule polling mode is deprecated and will be removed in v2.0. "
-                "Use TelegramBotConnector for ingestion instead. "
-                "Module polling bypasses the canonical ingest API and may cause "
-                "duplicate ingestion or contract drift.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            logger.warning(
-                "Starting DEPRECATED module-owned Telegram polling. "
-                "Migrate to TelegramBotConnector to use the canonical ingest API."
-            )
-            self._poll_task = asyncio.create_task(self._poll_loop())
 
     async def on_shutdown(self) -> None:
-        """Clean up: cancel polling, close HTTP client."""
-        if self._poll_task and not self._poll_task.done():
-            self._poll_task.cancel()
-            try:
-                await self._poll_task
-            except asyncio.CancelledError:
-                pass
+        """Clean up: close HTTP client."""
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -868,42 +813,6 @@ class TelegramModule(Module):
         resp.raise_for_status()
         data: dict[str, Any] = resp.json()
         return data
-
-    async def _poll_loop(self) -> None:
-        """Long-polling loop for dev mode.
-
-        **DEPRECATED**: This method is deprecated as of v1.0 and will be removed in v2.0.
-        Use TelegramBotConnector for canonical ingestion instead.
-
-        When a pipeline is configured, each incoming update is automatically
-        forwarded through the classification and routing pipeline.
-
-        This bypasses the connector-to-ingest API flow and should not be used
-        in production deployments.
-        """
-        while True:
-            try:
-                updates = await self._get_updates()
-                if updates:
-                    self._updates_buffer.extend(updates)
-                    logger.info(
-                        "Polled Telegram updates",
-                        extra={
-                            "source": "telegram",
-                            "update_count": len(updates),
-                        },
-                    )
-
-                    # Route through classification pipeline if available
-                    for update in updates:
-                        await self.process_update(update)
-
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("Error polling Telegram updates")
-
-            await asyncio.sleep(self._config.poll_interval)
 
 
 def _extract_text(update: dict[str, Any]) -> str | None:

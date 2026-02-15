@@ -8,60 +8,6 @@ from __future__ import annotations
 
 import warnings
 
-import pytest
-
-
-class TestTelegramModuleDeprecation:
-    """Test that TelegramModule polling is properly deprecated."""
-
-    def test_telegram_config_defaults_to_disabled_polling(self):
-        """Verify that TelegramConfig defaults to webhook mode with polling disabled."""
-        from butlers.modules.telegram import TelegramConfig
-
-        config = TelegramConfig()
-        assert config.mode == "webhook"
-        assert config.enable_legacy_polling is False
-
-    def test_telegram_module_warns_on_legacy_polling(self):
-        """Verify deprecation warning is emitted when legacy polling is enabled."""
-        import asyncio
-
-        from butlers.modules.telegram import TelegramConfig, TelegramModule
-
-        config = TelegramConfig(mode="polling", enable_legacy_polling=True)
-        module = TelegramModule()
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            # Run on_startup which should emit warning
-            asyncio.run(module.on_startup(config, None))
-
-            # Should have at least one DeprecationWarning
-            deprecation_warnings = [
-                warning for warning in w if issubclass(warning.category, DeprecationWarning)
-            ]
-            assert len(deprecation_warnings) > 0
-            assert "deprecated" in str(deprecation_warnings[0].message).lower()
-            assert "TelegramBotConnector" in str(deprecation_warnings[0].message)
-
-    def test_telegram_module_rejects_polling_without_explicit_flag(self, caplog):
-        """Verify that polling is rejected when enable_legacy_polling is not set."""
-        import asyncio
-
-        from butlers.modules.telegram import TelegramConfig, TelegramModule
-
-        config = TelegramConfig(mode="polling", enable_legacy_polling=False)
-        module = TelegramModule()
-
-        asyncio.run(module.on_startup(config, None))
-
-        # Should have error log about disabled polling
-        assert any(
-            "DEPRECATED and disabled by default" in record.message for record in caplog.records
-        )
-        # Polling task should not be created
-        assert module._poll_task is None
-
 
 class TestEmailModuleDeprecation:
     """Test that EmailModule check_and_route_inbox is properly deprecated."""
@@ -137,27 +83,9 @@ class TestConnectorModuleBoundary:
         assert email_module is not None
 
 
-@pytest.mark.parametrize(
-    "module_class,config_mode_field,expected_default",
-    [
-        pytest.param(
-            "TelegramConfig",
-            "mode",
-            "webhook",
-            id="telegram_defaults_to_webhook",
-        ),
-        pytest.param(
-            "TelegramConfig",
-            "enable_legacy_polling",
-            False,
-            id="telegram_polling_disabled_by_default",
-        ),
-    ],
-)
-def test_safe_ingestion_defaults(module_class, config_mode_field, expected_default):
-    """Verify that module configs default to safe (non-polling) settings."""
-    if module_class == "TelegramConfig":
-        from butlers.modules.telegram import TelegramConfig
+def test_telegram_config_defaults_to_no_webhook():
+    """Verify that TelegramConfig defaults with no webhook URL (ingestion via connector)."""
+    from butlers.modules.telegram import TelegramConfig
 
-        config = TelegramConfig()
-        assert getattr(config, config_mode_field) == expected_default
+    config = TelegramConfig()
+    assert config.webhook_url is None

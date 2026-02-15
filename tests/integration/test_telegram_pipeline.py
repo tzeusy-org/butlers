@@ -2,14 +2,12 @@
 
 Verifies that:
 - TelegramModule.process_update() classifies and routes messages
-- The polling loop forwards updates through the pipeline
 - Updates without text are skipped
 - Pipeline errors are handled gracefully
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -399,106 +397,6 @@ class TestProcessUpdate:
         assert second is not None
         # Both updates are processed through the pipeline (dedup handled upstream by pipeline)
         assert pipeline.process.await_count == 2
-
-
-# ---------------------------------------------------------------------------
-# Poll loop integration
-# ---------------------------------------------------------------------------
-
-
-class TestPollLoopPipeline:
-    """Verify that the poll loop routes updates through the pipeline."""
-
-    async def test_poll_loop_routes_updates(self):
-        """Poll loop calls process_update for each received update."""
-        mod = TelegramModule()
-        mod.set_pipeline(_make_pipeline(classify_result="health"))
-
-        call_count = 0
-        original_process = mod.process_update
-
-        async def counting_process(update):
-            nonlocal call_count
-            call_count += 1
-            return await original_process(update)
-
-        mod.process_update = counting_process  # type: ignore[method-assign]
-
-        # Mock _get_updates to return 2 updates then cancel
-        iteration = 0
-
-        async def mock_get_updates():
-            nonlocal iteration
-            iteration += 1
-            if iteration == 1:
-                return [
-                    {"update_id": 1, "message": {"text": "msg1", "chat": {"id": 1}}},
-                    {"update_id": 2, "message": {"text": "msg2", "chat": {"id": 2}}},
-                ]
-            raise asyncio.CancelledError
-
-        mod._get_updates = mock_get_updates  # type: ignore[method-assign]
-        mod._config.poll_interval = 0.01
-
-        with pytest.raises(asyncio.CancelledError):
-            await mod._poll_loop()
-
-        # Both updates should have been processed
-        assert call_count == 2
-
-    async def test_poll_loop_without_pipeline_still_buffers(self):
-        """Without a pipeline, poll loop still buffers updates (legacy behavior)."""
-        mod = TelegramModule()
-        # No pipeline set
-
-        iteration = 0
-
-        async def mock_get_updates():
-            nonlocal iteration
-            iteration += 1
-            if iteration == 1:
-                return [{"update_id": 1, "message": {"text": "msg", "chat": {"id": 1}}}]
-            raise asyncio.CancelledError
-
-        mod._get_updates = mock_get_updates  # type: ignore[method-assign]
-        mod._config.poll_interval = 0.01
-
-        with pytest.raises(asyncio.CancelledError):
-            await mod._poll_loop()
-
-        assert len(mod._updates_buffer) == 1
-        assert mod._routed_messages == []
-
-    async def test_poll_loop_logs_update_count_at_info(self, caplog: pytest.LogCaptureFixture):
-        """Poll loop emits INFO log with update count."""
-        mod = TelegramModule()
-        mod.set_pipeline(_make_pipeline(classify_result="general"))
-
-        iteration = 0
-
-        async def mock_get_updates():
-            nonlocal iteration
-            iteration += 1
-            if iteration == 1:
-                return [{"update_id": 1, "message": {"text": "msg", "chat": {"id": 1}}}]
-            raise asyncio.CancelledError
-
-        mod._get_updates = mock_get_updates  # type: ignore[method-assign]
-        mod._config.poll_interval = 0.01
-
-        with caplog.at_level(logging.INFO, logger="butlers.modules.telegram"):
-            with pytest.raises(asyncio.CancelledError):
-                await mod._poll_loop()
-
-        poll_log = next(
-            r
-            for r in caplog.records
-            if r.name == "butlers.modules.telegram"
-            and r.levelno == logging.INFO
-            and r.getMessage() == "Polled Telegram updates"
-        )
-        assert poll_log.source == "telegram"
-        assert poll_log.update_count == 1
 
 
 class TestIdentityScopedToolFlows:

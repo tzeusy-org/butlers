@@ -7,7 +7,6 @@ description = "Outbound delivery execution plane for Telegram and Email"
 name = "butler_messenger"
 
 [modules.telegram]
-mode = "polling"
 
 [modules.telegram.user]
 enabled = false

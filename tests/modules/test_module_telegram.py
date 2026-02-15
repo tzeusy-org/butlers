@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -134,39 +133,28 @@ class TestTelegramConfig:
     """Verify TelegramConfig validation and defaults."""
 
     def test_defaults(self):
-        """Default config uses webhook mode (polling is deprecated)."""
+        """Default config has no webhook URL and standard credential scopes."""
         config = TelegramConfig()
-        assert config.mode == "webhook"
-        assert config.enable_legacy_polling is False
         assert config.webhook_url is None
-        assert config.poll_interval == 1.0
         assert config.user.enabled is False
         assert config.user.token_env == "USER_TELEGRAM_TOKEN"
         assert config.bot.enabled is True
         assert config.bot.token_env == "BUTLER_TELEGRAM_TOKEN"
 
-    def test_polling_mode(self):
-        """Polling mode can be set explicitly."""
-        config = TelegramConfig(mode="polling", poll_interval=2.0)
-        assert config.mode == "polling"
-        assert config.poll_interval == 2.0
-
-    def test_webhook_mode(self):
-        """Webhook mode with URL."""
-        config = TelegramConfig(mode="webhook", webhook_url="https://example.com/hook")
-        assert config.mode == "webhook"
+    def test_webhook_with_url(self):
+        """Webhook URL can be set."""
+        config = TelegramConfig(webhook_url="https://example.com/hook")
         assert config.webhook_url == "https://example.com/hook"
 
     def test_from_dict(self):
         """Config can be constructed from a dict (as from butler.toml)."""
-        config = TelegramConfig(**{"mode": "webhook", "webhook_url": "https://x.com/hook"})
-        assert config.mode == "webhook"
+        config = TelegramConfig(**{"webhook_url": "https://x.com/hook"})
+        assert config.webhook_url == "https://x.com/hook"
 
     def test_empty_dict_gives_defaults(self):
         """Empty dict produces default config."""
         config = TelegramConfig(**{})
-        assert config.mode == "webhook"
-        assert config.enable_legacy_polling is False
+        assert config.webhook_url is None
 
     def test_invalid_bot_token_env_rejected(self):
         with pytest.raises(ValueError, match="modules.telegram.bot.token_env"):
@@ -398,85 +386,6 @@ class TestGetUpdates:
         result = await tool_fn()
 
         assert result == []
-
-
-# ---------------------------------------------------------------------------
-# Startup — polling mode
-# ---------------------------------------------------------------------------
-
-
-class TestPollingMode:
-    """Test polling mode startup behaviour."""
-
-    async def test_starts_poll_task(self, telegram_module: TelegramModule, monkeypatch):
-        """Polling mode creates an asyncio task when enable_legacy_polling=True."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        # Mock _poll_loop to avoid real polling
-        telegram_module._poll_loop = AsyncMock()  # type: ignore[method-assign]
-
-        await telegram_module.on_startup(
-            config={"mode": "polling", "enable_legacy_polling": True}, db=None
-        )
-
-        assert telegram_module._poll_task is not None
-        assert not telegram_module._poll_task.done()
-
-        # Clean up
-        await telegram_module.on_shutdown()
-
-    async def test_poll_loop_calls_get_updates(self, telegram_module: TelegramModule, monkeypatch):
-        """The poll loop calls _get_updates repeatedly."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        call_count = 0
-
-        async def mock_get_updates():
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 3:
-                raise asyncio.CancelledError
-            return []
-
-        telegram_module._get_updates = mock_get_updates  # type: ignore[method-assign]
-        telegram_module._config = TelegramConfig(poll_interval=0.01)
-        telegram_module._client = AsyncMock(spec=httpx.AsyncClient)
-
-        with pytest.raises(asyncio.CancelledError):
-            await telegram_module._poll_loop()
-
-        assert call_count >= 2
-
-    async def test_poll_loop_calls_process_update_for_each_update(
-        self, telegram_module: TelegramModule, monkeypatch
-    ):
-        """Polling forwards each update into process_update()."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        updates = [
-            {"update_id": 1, "message": {"text": "one"}},
-            {"update_id": 2, "message": {"text": "two"}},
-        ]
-
-        call_count = 0
-
-        async def mock_get_updates():
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return updates
-            raise asyncio.CancelledError
-
-        telegram_module._get_updates = mock_get_updates  # type: ignore[method-assign]
-        telegram_module.process_update = AsyncMock()  # type: ignore[method-assign]
-        telegram_module._config = TelegramConfig(poll_interval=0.01)
-        telegram_module._client = AsyncMock(spec=httpx.AsyncClient)
-
-        with pytest.raises(asyncio.CancelledError):
-            await telegram_module._poll_loop()
-
-        assert telegram_module._updates_buffer == updates
-        assert telegram_module.process_update.await_count == len(updates)
 
 
 class TestPipelineIntegration:
@@ -814,27 +723,23 @@ class TestWebhookMode:
         )
 
         await telegram_module.on_startup(
-            config={"mode": "webhook", "webhook_url": "https://example.com/hook"},
+            config={"webhook_url": "https://example.com/hook"},
             db=None,
         )
 
         telegram_module._set_webhook.assert_called_once_with("https://example.com/hook")
 
-        # No poll task should be created
-        assert telegram_module._poll_task is None
-
         await telegram_module.on_shutdown()
 
-    async def test_webhook_no_url_does_not_set(self, telegram_module: TelegramModule, monkeypatch):
-        """Webhook mode without a URL does not call setWebhook."""
+    async def test_no_url_does_not_set_webhook(self, telegram_module: TelegramModule, monkeypatch):
+        """Startup without a webhook URL does not call setWebhook."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
 
         telegram_module._set_webhook = AsyncMock()  # type: ignore[method-assign]
 
-        await telegram_module.on_startup(config={"mode": "webhook"}, db=None)
+        await telegram_module.on_startup(config={}, db=None)
 
         telegram_module._set_webhook.assert_not_called()
-        assert telegram_module._poll_task is None
 
         await telegram_module.on_shutdown()
 
@@ -846,22 +751,6 @@ class TestWebhookMode:
 
 class TestShutdown:
     """Test on_shutdown cleanup behaviour."""
-
-    async def test_cancels_poll_task(self, telegram_module: TelegramModule, monkeypatch):
-        """Shutdown cancels the polling task."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        # Create a long-running fake task
-        async def forever():
-            await asyncio.sleep(3600)
-
-        telegram_module._poll_task = asyncio.create_task(forever())
-        telegram_module._client = httpx.AsyncClient()
-
-        await telegram_module.on_shutdown()
-
-        assert telegram_module._poll_task.done()
-        assert telegram_module._poll_task.cancelled()
 
     async def test_closes_http_client(self, telegram_module: TelegramModule):
         """Shutdown closes the HTTP client."""
@@ -947,6 +836,6 @@ class TestRegistryIntegration:
 
         reg = ModuleRegistry()
         reg.register(TelegramModule)
-        modules = reg.load_from_config({"telegram": {"mode": "polling"}})
+        modules = reg.load_from_config({"telegram": {}})
         assert len(modules) == 1
         assert modules[0].name == "telegram"
