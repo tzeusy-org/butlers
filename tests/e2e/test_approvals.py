@@ -255,7 +255,7 @@ async def test_non_gated_tool_bypasses_approval(
     layer entirely and execute immediately.
     """
     butler = butler_ecosystem.butlers[approval_test_butler]
-    port = butler.config.butler.port
+    port = butler.config.port
     url = f"http://localhost:{port}/sse"
 
     # Use state_set as a non-gated tool

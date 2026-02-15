@@ -41,7 +41,7 @@ async def test_state_persists_across_sessions(
     ephemeral MCP client connections.
     """
     health = butler_ecosystem.butlers["health"]
-    port = health.config.butler.port
+    port = health.config.port
     url = f"http://localhost:{port}/sse"
 
     # Session 1: Write state
@@ -81,7 +81,7 @@ async def test_jsonb_type_fidelity(
     preserves types (e.g., int 42 stays int, not float 42.0).
     """
     health = butler_ecosystem.butlers["health"]
-    port = health.config.butler.port
+    port = health.config.port
     url = f"http://localhost:{port}/sse"
 
     # Test all JSON types
@@ -148,8 +148,8 @@ async def test_state_isolation_between_butlers(
     health = butler_ecosystem.butlers["health"]
     relationship = butler_ecosystem.butlers["relationship"]
 
-    health_port = health.config.butler.port
-    relationship_port = relationship.config.butler.port
+    health_port = health.config.port
+    relationship_port = relationship.config.port
 
     health_url = f"http://localhost:{health_port}/sse"
     relationship_url = f"http://localhost:{relationship_port}/sse"
@@ -199,7 +199,7 @@ async def test_prefix_listing(
     starting with that prefix, supporting namespace-style organization.
     """
     health = butler_ecosystem.butlers["health"]
-    port = health.config.butler.port
+    port = health.config.port
     url = f"http://localhost:{port}/sse"
 
     async with MCPClient(url) as client:
@@ -258,7 +258,7 @@ async def test_overwrite_behavior(
     Validates that state_set upserts correctly and the latest value wins.
     """
     health = butler_ecosystem.butlers["health"]
-    port = health.config.butler.port
+    port = health.config.port
     url = f"http://localhost:{port}/sse"
 
     async with MCPClient(url) as client:
@@ -303,7 +303,7 @@ async def test_delete_behavior(
     returns null (not an error).
     """
     health = butler_ecosystem.butlers["health"]
-    port = health.config.butler.port
+    port = health.config.port
     url = f"http://localhost:{port}/sse"
 
     async with MCPClient(url) as client:

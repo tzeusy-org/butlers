@@ -313,7 +313,7 @@ async def test_pool_exhaustion_queues_gracefully(
     requests when all connections are busy, rather than rejecting them.
     """
     health = butler_ecosystem.butlers["health"]
-    port = health.config.butler.port
+    port = health.config.port
     url = f"http://localhost:{port}/sse"
 
     async with MCPClient(url) as client:

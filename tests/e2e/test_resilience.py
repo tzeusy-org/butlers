@@ -57,7 +57,7 @@ async def test_butler_kill_and_recovery(
     5. Route to health succeeds again
     """
     health_daemon = butler_ecosystem.butlers["health"]
-    health_port = health_daemon.config.butler.port
+    health_port = health_daemon.config.port
 
     # Step 1: Verify health is reachable
     url = f"http://localhost:{health_port}/sse"
@@ -469,7 +469,7 @@ async def test_module_failure_isolation(
     """
     # Use general butler as test target
     general_daemon = butler_ecosystem.butlers["general"]
-    port = general_daemon.config.butler.port
+    port = general_daemon.config.port
     url = f"http://localhost:{port}/sse"
 
     # Call status tool (core functionality)
