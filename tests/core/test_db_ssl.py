@@ -35,6 +35,7 @@ async def test_provision_passes_ssl_to_asyncpg_connect(mock_connect: AsyncMock) 
     """provision() forwards ssl mode to asyncpg.connect."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=1)
+    conn.execute = AsyncMock()
     conn.close = AsyncMock()
     mock_connect.return_value = conn
 
@@ -66,6 +67,7 @@ async def test_provision_retries_with_ssl_disable_on_ssl_upgrade_connection_lost
     """provision() retries once with ssl=disable on SSL upgrade connection loss."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=1)
+    conn.execute = AsyncMock()
     conn.close = AsyncMock()
     mock_connect.side_effect = [ConnectionError("unexpected connection_lost() call"), conn]
 
@@ -92,3 +94,40 @@ async def test_connect_retries_with_ssl_disable_on_ssl_upgrade_connection_lost(
     assert mock_create_pool.await_count == 2
     assert mock_create_pool.await_args_list[0].kwargs.get("ssl") is None
     assert mock_create_pool.await_args_list[1].kwargs["ssl"] == "disable"
+
+
+@patch("butlers.db.asyncpg.connect", new_callable=AsyncMock)
+async def test_provision_refreshes_template1_collation(mock_connect: AsyncMock) -> None:
+    """provision() refreshes template1 collation version before CREATE DATABASE."""
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=None)  # DB does not exist
+    conn.execute = AsyncMock()
+    conn.close = AsyncMock()
+    mock_connect.return_value = conn
+
+    db = Database(db_name="test_db")
+    await db.provision()
+
+    # First execute call should be the collation refresh
+    calls = [c.args[0] for c in conn.execute.await_args_list]
+    assert calls[0] == "ALTER DATABASE template1 REFRESH COLLATION VERSION"
+    assert 'CREATE DATABASE' in calls[1]
+
+
+@patch("butlers.db.asyncpg.connect", new_callable=AsyncMock)
+async def test_provision_continues_when_collation_refresh_fails(
+    mock_connect: AsyncMock,
+) -> None:
+    """provision() proceeds even if template1 collation refresh fails."""
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=1)  # DB already exists
+    # First execute (collation refresh) raises, subsequent calls succeed
+    conn.execute = AsyncMock(
+        side_effect=[RuntimeError("permission denied"), None]
+    )
+    conn.close = AsyncMock()
+    mock_connect.return_value = conn
+
+    db = Database(db_name="test_db")
+    # Should not raise despite the collation refresh error
+    await db.provision()
