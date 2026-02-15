@@ -194,6 +194,9 @@ def _patch_infra():
         "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
         "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
         "validate_credentials": patch("butlers.daemon.validate_credentials"),
+        "validate_module_credentials": patch(
+            "butlers.daemon.validate_module_credentials", return_value={}
+        ),
         "init_telemetry": patch("butlers.daemon.init_telemetry"),
         "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.daemon.FastMCP"),
@@ -204,6 +207,9 @@ def _patch_infra():
         ),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
+        "connect_switchboard": patch.object(
+            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
+        ),
         "mock_db": mock_db,
         "mock_pool": mock_pool,
         "mock_spawner": mock_spawner,
@@ -230,6 +236,7 @@ class TestValidConfigPasses:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -237,6 +244,7 @@ class TestValidConfigPasses:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -256,6 +264,7 @@ class TestValidConfigPasses:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -263,6 +272,7 @@ class TestValidConfigPasses:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -282,6 +292,7 @@ class TestValidConfigPasses:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -289,6 +300,7 @@ class TestValidConfigPasses:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -300,10 +312,10 @@ class TestValidConfigPasses:
 
 
 class TestMissingRequiredField:
-    """Missing a required field in the config should raise ModuleConfigError."""
+    """Missing a required field marks the module as failed (non-fatal)."""
 
-    async def test_missing_required_field_raises(self, tmp_path: Path) -> None:
-        """Omitting a required field (api_key) should raise ModuleConfigError."""
+    async def test_missing_required_field_marks_failed(self, tmp_path: Path) -> None:
+        """Omitting a required field (api_key) marks module as failed."""
         butler_dir = _make_butler_toml(tmp_path, modules={"strict_mod": {"timeout": 10}})
         registry = _make_registry(StrictModule)
         patches = _patch_infra()
@@ -312,6 +324,7 @@ class TestMissingRequiredField:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -319,12 +332,15 @@ class TestMissingRequiredField:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
-            with pytest.raises(ModuleConfigError, match="strict_mod"):
-                await daemon.start()
+            await daemon.start()  # Non-fatal — should not raise
 
-    async def test_missing_required_field_mentions_field_name(self, tmp_path: Path) -> None:
+        assert daemon._module_statuses["strict_mod"].status == "failed"
+        assert daemon._module_statuses["strict_mod"].phase == "config"
+
+    async def test_missing_required_field_error_mentions_field_name(self, tmp_path: Path) -> None:
         """The error message should mention the missing field name."""
         butler_dir = _make_butler_toml(tmp_path, modules={"strict_mod": {}})
         registry = _make_registry(StrictModule)
@@ -334,6 +350,7 @@ class TestMissingRequiredField:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -341,17 +358,20 @@ class TestMissingRequiredField:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
-            with pytest.raises(ModuleConfigError, match="api_key"):
-                await daemon.start()
+            await daemon.start()
+
+        assert daemon._module_statuses["strict_mod"].status == "failed"
+        assert "api_key" in daemon._module_statuses["strict_mod"].error
 
 
 class TestExtraFieldRejected:
-    """Extra/unknown fields in the config should raise ModuleConfigError."""
+    """Extra/unknown fields in the config mark the module as failed (non-fatal)."""
 
-    async def test_extra_field_raises(self, tmp_path: Path) -> None:
-        """An unknown field should cause a validation error."""
+    async def test_extra_field_marks_failed(self, tmp_path: Path) -> None:
+        """An unknown field marks the module as config-failed."""
         butler_dir = _make_butler_toml(
             tmp_path,
             modules={"strict_mod": {"api_key": "sk-123", "unknown_field": "bad"}},
@@ -363,6 +383,7 @@ class TestExtraFieldRejected:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -370,12 +391,15 @@ class TestExtraFieldRejected:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
-            with pytest.raises(ModuleConfigError, match="strict_mod"):
-                await daemon.start()
+            await daemon.start()
 
-    async def test_extra_field_mentions_field_name(self, tmp_path: Path) -> None:
+        assert daemon._module_statuses["strict_mod"].status == "failed"
+        assert daemon._module_statuses["strict_mod"].phase == "config"
+
+    async def test_extra_field_error_mentions_field_name(self, tmp_path: Path) -> None:
         """The error message should mention the extra field name."""
         butler_dir = _make_butler_toml(
             tmp_path,
@@ -388,6 +412,7 @@ class TestExtraFieldRejected:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -395,17 +420,20 @@ class TestExtraFieldRejected:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
-            with pytest.raises(ModuleConfigError, match="bogus"):
-                await daemon.start()
+            await daemon.start()
+
+        assert daemon._module_statuses["defaults_mod"].status == "failed"
+        assert "bogus" in daemon._module_statuses["defaults_mod"].error
 
 
 class TestTypeMismatch:
-    """Type mismatches in config values should raise ModuleConfigError."""
+    """Type mismatches in config values mark the module as failed (non-fatal)."""
 
-    async def test_wrong_type_raises(self, tmp_path: Path) -> None:
-        """Passing a string where an int is expected should fail."""
+    async def test_wrong_type_marks_failed(self, tmp_path: Path) -> None:
+        """Passing a string where an int is expected marks module as config-failed."""
         butler_dir = _make_butler_toml(
             tmp_path,
             modules={"strict_mod": {"api_key": "sk-123", "timeout": "not_a_number"}},
@@ -417,6 +445,7 @@ class TestTypeMismatch:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -424,10 +453,13 @@ class TestTypeMismatch:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
-            with pytest.raises(ModuleConfigError, match="strict_mod"):
-                await daemon.start()
+            await daemon.start()
+
+        assert daemon._module_statuses["strict_mod"].status == "failed"
+        assert daemon._module_statuses["strict_mod"].phase == "config"
 
 
 class TestNoSchemaFallback:
@@ -446,6 +478,7 @@ class TestNoSchemaFallback:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -453,6 +486,7 @@ class TestNoSchemaFallback:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -474,6 +508,7 @@ class TestNoSchemaFallback:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -481,6 +516,7 @@ class TestNoSchemaFallback:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()  # Should not raise
@@ -490,11 +526,11 @@ class TestNoSchemaFallback:
         assert mod._tools_config["any_key"] == "any_value"
 
 
-class TestValidationPreventsStartup:
-    """Config validation failure should prevent subsequent startup steps."""
+class TestValidationPreventsModuleStartup:
+    """Config validation failure should prevent the module's on_startup."""
 
-    async def test_validation_failure_prevents_spawner_creation(self, tmp_path: Path) -> None:
-        """If config validation fails, Spawner should not be created."""
+    async def test_validation_failure_skips_module_startup(self, tmp_path: Path) -> None:
+        """If config validation fails, the module's on_startup is not called."""
         butler_dir = _make_butler_toml(
             tmp_path,
             modules={"strict_mod": {}},  # Missing api_key
@@ -506,19 +542,24 @@ class TestValidationPreventsStartup:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
-            patches["Spawner"] as mock_spawner_cls,
+            patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
-            with pytest.raises(ModuleConfigError):
-                await daemon.start()
+            await daemon.start()
 
-        mock_spawner_cls.assert_not_called()
+        # Module should be config-failed, on_startup never called
+        assert daemon._module_statuses["strict_mod"].status == "failed"
+        assert daemon._module_statuses["strict_mod"].phase == "config"
+        mod = daemon._modules[0]
+        assert mod._startup_config is None  # on_startup was never called
 
 
 class TestModuleConfigErrorIsImportable:

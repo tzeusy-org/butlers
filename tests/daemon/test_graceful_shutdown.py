@@ -530,10 +530,10 @@ class TestDaemonGracefulShutdown:
 
 
 class TestStartupFailureCleanup:
-    """Test that already-initialized modules get cleaned up on startup failure."""
+    """Test that module startup failures are non-fatal and properly recorded."""
 
-    async def test_startup_failure_cleans_up_started_modules(self, tmp_path: Path) -> None:
-        """If a module fails on_startup, already-started modules get on_shutdown."""
+    async def test_module_startup_failure_is_non_fatal(self, tmp_path: Path) -> None:
+        """If a module fails on_startup, the butler still starts; the module is marked failed."""
         butler_dir = _make_butler_toml(
             tmp_path,
             modules={"stub_ok": {}, "stub_failing": {}},
@@ -556,21 +556,21 @@ class TestStartupFailureCleanup:
             patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
-            with pytest.raises(RuntimeError, match="Module startup failed"):
-                await daemon.start()
+            await daemon.start()  # Should NOT raise
 
-        # stub_ok was started, so it should have been cleaned up
+        # stub_ok started successfully and is active
         stub_ok = next(m for m in daemon._modules if m.name == "stub_ok")
         assert stub_ok.started is True
-        assert stub_ok.shutdown_called is True
 
-        # stub_failing never started successfully, so it should NOT be cleaned up
-        stub_failing = next(m for m in daemon._modules if m.name == "stub_failing")
-        assert stub_failing.started is False
-        assert stub_failing.shutdown_called is False
+        # stub_failing is marked as failed in module statuses
+        assert daemon._module_statuses["stub_failing"].status == "failed"
+        assert daemon._module_statuses["stub_failing"].phase == "startup"
 
-    async def test_startup_failure_does_not_start_later_modules(self, tmp_path: Path) -> None:
-        """Modules after the failing one should never start."""
+        # stub_ok is active
+        assert daemon._module_statuses["stub_ok"].status == "active"
+
+    async def test_dependent_module_cascade_fails(self, tmp_path: Path) -> None:
+        """Module depending on a failed module gets cascade-failed."""
         butler_dir = _make_butler_toml(
             tmp_path,
             modules={"stub_ok": {}, "stub_failing": {}, "stub_after": {}},
@@ -593,18 +593,23 @@ class TestStartupFailureCleanup:
             patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
-            with pytest.raises(RuntimeError, match="Module startup failed"):
-                await daemon.start()
+            await daemon.start()  # Should NOT raise
 
-        # stub_after should never have been started or shut down
+        # stub_after depends on stub_failing, so it should cascade-fail
+        assert daemon._module_statuses["stub_after"].status == "cascade_failed"
+
+        # stub_after should NOT have started
         stub_after = next(m for m in daemon._modules if m.name == "stub_after")
         assert stub_after.started is False
-        assert stub_after.shutdown_called is False
 
-    async def test_startup_failure_cleanup_continues_on_shutdown_error(
-        self, tmp_path: Path
-    ) -> None:
-        """If cleanup shutdown also errors, the original error propagates."""
+        # stub_failing is recorded as failed
+        assert daemon._module_statuses["stub_failing"].status == "failed"
+
+        # stub_ok is active
+        assert daemon._module_statuses["stub_ok"].status == "active"
+
+    async def test_failed_module_not_shutdown(self, tmp_path: Path) -> None:
+        """Failed modules do not get on_shutdown called during butler shutdown."""
         butler_dir = _make_butler_toml(
             tmp_path,
             modules={"stub_ok": {}, "stub_failing": {}},
@@ -627,20 +632,20 @@ class TestStartupFailureCleanup:
             patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
 
-            # Make stub_ok's on_shutdown also raise
-            # We need to patch it after modules are loaded, so we patch during start
-            original_start = daemon.start
+        await daemon.shutdown()
 
-            async def patched_start():
-                await original_start()
+        # stub_ok was active, so it should have on_shutdown called
+        stub_ok = next(m for m in daemon._modules if m.name == "stub_ok")
+        assert stub_ok.shutdown_called is True
 
-            # Instead, let's just verify the original error propagates
-            with pytest.raises(RuntimeError, match="Module startup failed"):
-                await daemon.start()
+        # stub_failing was never started successfully, so no on_shutdown
+        stub_failing = next(m for m in daemon._modules if m.name == "stub_failing")
+        assert stub_failing.shutdown_called is False
 
-    async def test_no_cleanup_needed_when_no_modules_started(self, tmp_path: Path) -> None:
-        """If the first module fails, no cleanup is needed."""
+    async def test_first_module_failure_is_non_fatal(self, tmp_path: Path) -> None:
+        """If the first module fails, the butler still starts."""
 
         class FirstModFails(Module):
             def __init__(self):
@@ -689,8 +694,10 @@ class TestStartupFailureCleanup:
             patches["connect_switchboard"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
-            with pytest.raises(RuntimeError, match="first module fails"):
-                await daemon.start()
+            await daemon.start()  # Should NOT raise
+
+        # The failing module should be marked as failed
+        assert daemon._module_statuses["first_fail"].status == "failed"
 
         # The failing module should NOT have on_shutdown called
         first_fail = next(m for m in daemon._modules if m.name == "first_fail")

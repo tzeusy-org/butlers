@@ -609,7 +609,7 @@ class ButlerDaemon:
                     status="failed", phase="startup", error=error_msg
                 )
                 logger.warning("Module '%s' disabled: on_startup failed: %s", mod.name, error_msg)
-        self._cascade_module_failures()
+                self._cascade_module_failures()
 
         # 10. Create Spawner with runtime adapter (verify binary on PATH)
         adapter_cls = get_adapter(self.config.runtime.type)
