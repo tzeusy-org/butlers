@@ -365,8 +365,17 @@ def get_db_manager() -> DatabaseManager:
     return _db_manager
 
 
-def wire_db_dependencies(app: FastAPI) -> None:
-    """Override all router-level ``_get_db_manager`` stubs with the singleton."""
+def wire_db_dependencies(app: FastAPI, dynamic_modules: list | None = None) -> None:
+    """Override all router-level ``_get_db_manager`` stubs with the singleton.
+
+    Parameters
+    ----------
+    app:
+        The FastAPI application instance.
+    dynamic_modules:
+        Optional list of dynamically-loaded router modules (from roster/{butler}/api/).
+        Each module is scanned for a _get_db_manager stub function.
+    """
     from butlers.api.routers import (
         audit,
         butlers,
@@ -384,6 +393,7 @@ def wire_db_dependencies(app: FastAPI) -> None:
         traces,
     )
 
+    # Wire static routers (existing core routers)
     for module in [
         audit,
         butlers,
@@ -401,3 +411,13 @@ def wire_db_dependencies(app: FastAPI) -> None:
         traces,
     ]:
         app.dependency_overrides[module._get_db_manager] = get_db_manager
+
+    # Wire dynamically-loaded butler routers
+    if dynamic_modules:
+        for module in dynamic_modules:
+            if hasattr(module, "_get_db_manager"):
+                app.dependency_overrides[module._get_db_manager] = get_db_manager
+                logger.debug(
+                    "Wired DB dependency for dynamic module: %s",
+                    module.__name__,
+                )

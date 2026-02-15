@@ -104,7 +104,7 @@ class TestLifespan:
         async def fake_init_db_manager(_butler_configs):
             calls["init_db_manager"] += 1
 
-        def fake_wire_db_dependencies(_app):
+        def fake_wire_db_dependencies(_app, dynamic_modules=None):
             calls["wire_db_dependencies"] += 1
 
         async def fake_shutdown_db_manager():

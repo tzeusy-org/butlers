@@ -28,6 +28,7 @@ from butlers.api.deps import (
     wire_db_dependencies,
 )
 from butlers.api.middleware import register_error_handlers
+from butlers.api.router_discovery import discover_butler_routers
 from butlers.api.routers.approvals import router as approvals_router
 from butlers.api.routers.audit import router as audit_router
 from butlers.api.routers.butlers import router as butlers_router
@@ -78,7 +79,10 @@ async def lifespan(app: FastAPI):
     butler_configs = get_butler_configs()
     try:
         await init_db_manager(butler_configs)
-        wire_db_dependencies(app)
+        # Wire DB dependencies for both static and dynamic routers
+        dynamic_routers = getattr(app.state, "butler_routers", [])
+        dynamic_modules = [module for _, module in dynamic_routers]
+        wire_db_dependencies(app, dynamic_modules=dynamic_modules)
         logger.info("DatabaseManager initialized for %d butler(s)", len(butler_configs))
     except Exception:
         logger.warning("Failed to initialize DatabaseManager; DB endpoints will be unavailable")
@@ -128,7 +132,18 @@ def create_app(
 
     register_error_handlers(app)
 
-    # --- Routers ---
+    # --- Auto-discovered Butler Routers ---
+    # Discover and mount roster/{butler}/api/router.py routers
+    butler_routers = discover_butler_routers()
+    app.state.butler_routers = butler_routers  # Store for wire_db_dependencies
+
+    for butler_name, router_module in butler_routers:
+        app.include_router(router_module.router)
+        logger.info(
+            "Mounted butler router: %s (prefix=%s)", butler_name, router_module.router.prefix
+        )
+
+    # --- Core Static Routers ---
     app.include_router(approvals_router)
     app.include_router(butlers_router)
     app.include_router(notifications_router)
