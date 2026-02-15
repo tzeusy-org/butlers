@@ -37,6 +37,7 @@ const STATUS_OPTIONS = [
 interface FilterState {
   butler: string;
   trigger_source: string;
+  request_id: string;
   status: string;
   since: string;
   until: string;
@@ -45,6 +46,7 @@ interface FilterState {
 const EMPTY_FILTERS: FilterState = {
   butler: "all",
   trigger_source: "",
+  request_id: "",
   status: "all",
   since: "",
   until: "",
@@ -71,6 +73,7 @@ export default function SessionsPage() {
     limit: PAGE_SIZE,
     ...(filters.butler !== "all" ? { butler: filters.butler } : {}),
     ...(filters.trigger_source ? { trigger_source: filters.trigger_source } : {}),
+    ...(filters.request_id ? { request_id: filters.request_id } : {}),
     ...(filters.status !== "all" ? { status: filters.status } : {}),
     ...(filters.since ? { since: filters.since } : {}),
     ...(filters.until ? { until: filters.until } : {}),
@@ -99,6 +102,7 @@ export default function SessionsPage() {
   const hasActiveFilters =
     filters.butler !== "all" ||
     filters.trigger_source !== "" ||
+    filters.request_id !== "" ||
     filters.status !== "all" ||
     filters.since !== "" ||
     filters.until !== "";
@@ -106,6 +110,11 @@ export default function SessionsPage() {
   function handleSessionClick(session: SessionSummary) {
     setSelectedSessionId(session.id);
     setSelectedSessionButler(session.butler ?? "");
+  }
+
+  function handleRequestIdClick(requestId: string) {
+    setFilters((prev) => ({ ...prev, request_id: requestId }));
+    setPage(0);
   }
 
   return (
@@ -167,6 +176,23 @@ export default function SessionsPage() {
                 value={filters.trigger_source}
                 onChange={(e) => handleFilterChange("trigger_source", e.target.value)}
                 className="w-44"
+              />
+            </div>
+
+            {/* Request ID */}
+            <div className="space-y-1">
+              <label
+                htmlFor="filter-request-id"
+                className="text-muted-foreground text-xs font-medium"
+              >
+                Request ID
+              </label>
+              <Input
+                id="filter-request-id"
+                placeholder="Filter by request ID..."
+                value={filters.request_id}
+                onChange={(e) => handleFilterChange("request_id", e.target.value)}
+                className="w-56 font-mono"
               />
             </div>
 
@@ -247,6 +273,7 @@ export default function SessionsPage() {
             sessions={sessions}
             isLoading={isLoading}
             onSessionClick={handleSessionClick}
+            onRequestIdClick={handleRequestIdClick}
             showButlerColumn={true}
           />
         </CardContent>

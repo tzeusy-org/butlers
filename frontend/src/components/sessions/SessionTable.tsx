@@ -24,6 +24,8 @@ export interface SessionTableProps {
   onSessionClick?: (session: SessionSummary) => void;
   /** Show the butler column — true for cross-butler views, false for single-butler. */
   showButlerColumn?: boolean;
+  /** Optional callback when a request_id is clicked to auto-fill the filter. */
+  onRequestIdClick?: (requestId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +58,11 @@ function formatDuration(ms: number | null): string {
 function truncate(text: string, max = 60): string {
   if (text.length <= max) return text;
   return text.slice(0, max) + "\u2026";
+}
+
+/** Truncate a UUID to show only the first 8 characters. */
+function truncateUuid(uuid: string): string {
+  return uuid.slice(0, 8);
 }
 
 /** Format token counts to a compact string (e.g. "1.2K", "3.5M"). */
@@ -130,6 +137,7 @@ function SkeletonRows({
             <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           )}
           <TableCell><Skeleton className="h-4 w-14" /></TableCell>
+          <TableCell><Skeleton className="h-4 w-16" /></TableCell>
           <TableCell><Skeleton className="h-4 w-48" /></TableCell>
           <TableCell><Skeleton className="h-4 w-12" /></TableCell>
           <TableCell><Skeleton className="h-4 w-20" /></TableCell>
@@ -162,6 +170,7 @@ export function SessionTable({
   isLoading,
   onSessionClick,
   showButlerColumn = false,
+  onRequestIdClick,
 }: SessionTableProps) {
   if (!isLoading && sessions.length === 0) {
     return <EmptyState />;
@@ -174,6 +183,7 @@ export function SessionTable({
           <TableHead>Time</TableHead>
           {showButlerColumn && <TableHead>Butler</TableHead>}
           <TableHead>Trigger</TableHead>
+          <TableHead>Request ID</TableHead>
           <TableHead>Prompt</TableHead>
           <TableHead>Duration</TableHead>
           <TableHead>Status</TableHead>
@@ -208,6 +218,25 @@ export function SessionTable({
                 )}
                 <TableCell className="text-xs text-muted-foreground">
                   {session.trigger_source}
+                </TableCell>
+                <TableCell
+                  className="font-mono text-xs text-muted-foreground"
+                  title={session.request_id ?? undefined}
+                >
+                  {session.request_id ? (
+                    <button
+                      type="button"
+                      className="hover:text-foreground transition-colors underline decoration-dotted"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRequestIdClick?.(session.request_id!);
+                      }}
+                    >
+                      {truncateUuid(session.request_id)}
+                    </button>
+                  ) : (
+                    "\u2014"
+                  )}
                 </TableCell>
                 <TableCell
                   className="text-muted-foreground max-w-xs"
