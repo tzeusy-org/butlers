@@ -7,27 +7,40 @@ directly from the relationship butler's PostgreSQL database via asyncpg.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
+import sys
 from datetime import date
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
-from butlers.api.models.relationship import (
-    ActivityFeedItem,
-    ContactDetail,
-    ContactListResponse,
-    ContactSummary,
-    Gift,
-    Group,
-    GroupListResponse,
-    Interaction,
-    Label,
-    Loan,
-    Note,
-    UpcomingDate,
-)
+
+# Load local models module
+_api_dir = Path(__file__).parent
+_models_path = _api_dir / "models.py"
+if _models_path.exists():
+    spec = importlib.util.spec_from_file_location("relationship_api_models_internal", _models_path)
+    if spec is not None and spec.loader is not None:
+        _models_module = importlib.util.module_from_spec(spec)
+        sys.modules["relationship_api_models_internal"] = _models_module
+        spec.loader.exec_module(_models_module)
+
+        # Import models from the loaded module
+        ActivityFeedItem = _models_module.ActivityFeedItem
+        ContactDetail = _models_module.ContactDetail
+        ContactListResponse = _models_module.ContactListResponse
+        ContactSummary = _models_module.ContactSummary
+        Gift = _models_module.Gift
+        Group = _models_module.Group
+        GroupListResponse = _models_module.GroupListResponse
+        Interaction = _models_module.Interaction
+        Label = _models_module.Label
+        Loan = _models_module.Loan
+        Note = _models_module.Note
+        UpcomingDate = _models_module.UpcomingDate
 
 logger = logging.getLogger(__name__)
 

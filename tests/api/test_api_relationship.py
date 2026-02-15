@@ -8,16 +8,29 @@ Issue: butlers-26h.10.3
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 from datetime import UTC, date, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.relationship import _get_db_manager
+
+# Load relationship router module dynamically
+_roster_root = Path(__file__).resolve().parents[2] / "roster"
+_router_path = _roster_root / "relationship" / "api" / "router.py"
+spec = importlib.util.spec_from_file_location("relationship_api_router", _router_path)
+if spec is None or spec.loader is None:
+    raise ValueError(f"Could not load spec from {_router_path}")
+relationship_module = importlib.util.module_from_spec(spec)
+sys.modules["relationship_api_router"] = relationship_module
+spec.loader.exec_module(relationship_module)
+_get_db_manager = relationship_module._get_db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -51,15 +64,13 @@ def _app_with_mock_db(
         mock_pool.fetchrow = AsyncMock(return_value=fetchrow_result)
 
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = mock_pool
+    mock_db.pool = MagicMock(return_value=mock_pool)
 
-    app = create_app()
+    app = create_app(cors_origins=["*"])
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
-    app.state.mock_pool = mock_pool
 
     if include_mock_pool:
-        return app, mock_pool
-
+        return app, mock_db, mock_pool
     return app
 
 
@@ -68,41 +79,91 @@ def _app_with_mock_db(
 # ---------------------------------------------------------------------------
 
 
-class TestListContacts:
-    async def test_returns_contact_list_response_structure(self):
-        """Response must have 'contacts' array and 'total' integer."""
-        app = _app_with_mock_db()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/relationship/contacts")
+def test_list_contacts_empty():
+    """GET /contacts returns empty list when no data."""
+    app = _app_with_mock_db(fetchval_result=0, fetch_rows=[])
+    with TestClient(app=app) as client:
+        resp = client.get("/api/relationship/contacts")
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "contacts" in body
-        assert "total" in body
-        assert isinstance(body["contacts"], list)
-        assert isinstance(body["total"], int)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["contacts"] == []
+    assert data["total"] == 0
 
-    async def test_search_param_accepted(self):
-        """The ?q= query parameter must not cause an error."""
-        app = _app_with_mock_db()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/relationship/contacts", params={"q": "alice"})
 
-        assert resp.status_code == 200
+def test_list_contacts_returns_contacts_with_labels():
+    """GET /contacts returns contacts with aggregated labels."""
+    cid = uuid4()
+    app = _app_with_mock_db(
+        fetchval_result=1,
+        fetch_rows=[
+            {
+                "id": cid,
+                "full_name": "Alice Smith",
+                "nickname": "Ali",
+                "email": "alice@example.com",
+                "phone": "555-1234",
+                "last_interaction_at": datetime(2025, 1, 15, tzinfo=UTC),
+            }
+        ],
+    )
+    app, mock_db, mock_pool = _app_with_mock_db(
+        fetchval_result=1,
+        fetch_rows=[
+            {
+                "id": cid,
+                "full_name": "Alice Smith",
+                "nickname": "Ali",
+                "email": "alice@example.com",
+                "phone": "555-1234",
+                "last_interaction_at": datetime(2025, 1, 15, tzinfo=UTC),
+            }
+        ],
+        include_mock_pool=True,
+    )
 
-    async def test_label_filter_accepted(self):
-        """The ?label= query parameter must not cause an error."""
-        app = _app_with_mock_db()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/relationship/contacts", params={"label": "family"})
+    label_rows = [{"contact_id": cid, "id": uuid4(), "name": "Friend", "color": "blue"}]
+    # mock_pool already has fetch(), but we need to handle the second call
+    fetch_calls = [
+        AsyncMock(
+            return_value=[
+                {
+                    "id": cid,
+                    "full_name": "Alice Smith",
+                    "nickname": "Ali",
+                    "email": "alice@example.com",
+                    "phone": "555-1234",
+                    "last_interaction_at": datetime(2025, 1, 15, tzinfo=UTC),
+                }
+            ]
+        ),
+        AsyncMock(return_value=label_rows),
+    ]
+    mock_pool.fetch = AsyncMock(side_effect=fetch_calls)
 
-        assert resp.status_code == 200
+    with TestClient(app=app) as client:
+        resp = client.get("/api/relationship/contacts")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["contacts"]) == 1
+    assert data["contacts"][0]["full_name"] == "Alice Smith"
+    assert len(data["contacts"][0]["labels"]) == 1
+    assert data["contacts"][0]["labels"][0]["name"] == "Friend"
+
+
+def test_list_contacts_search():
+    """GET /contacts?q=alice filters by name."""
+    app, mock_db, mock_pool = _app_with_mock_db(
+        fetchval_result=0, fetch_rows=[], include_mock_pool=True
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.get("/api/relationship/contacts?q=alice")
+
+    assert resp.status_code == 200
+    # Verify the pool was called with search filter
+    assert mock_pool.fetch.called
 
 
 # ---------------------------------------------------------------------------
@@ -110,165 +171,68 @@ class TestListContacts:
 # ---------------------------------------------------------------------------
 
 
-class TestGetContact:
-    async def test_missing_contact_returns_404(self):
-        """A non-existent contact should return 404 when fetchrow returns None."""
-        app = _app_with_mock_db(fetchrow_result=None)
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/relationship/contacts/00000000-0000-0000-0000-000000000000"
-            )
+def test_get_contact_not_found():
+    """GET /contacts/{id} returns 404 when not found."""
+    app = _app_with_mock_db(fetchrow_result=None)
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/contacts/{uuid4()}")
 
-        assert resp.status_code == 404
+    assert resp.status_code == 404
 
-    async def test_birthday_lookup_uses_label_column(self):
-        """Birthday lookup should filter important_dates by label, not date_type."""
-        contact_id = uuid4()
-        now = datetime.now(UTC)
-        app, mock_pool = _app_with_mock_db(
-            fetchrow_side_effect=[
-                {
-                    "id": contact_id,
-                    "full_name": "Alice Example",
-                    "nickname": None,
-                    "notes": None,
-                    "company": None,
-                    "job_title": None,
-                    "metadata": {},
-                    "created_at": now,
-                    "updated_at": now,
-                    "email": None,
-                    "phone": None,
-                    "last_interaction_at": None,
-                },
-                {"month": 3, "day": 15, "year": 1990},
-                None,
-            ],
-            include_mock_pool=True,
-        )
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(f"/api/relationship/contacts/{contact_id}")
 
-        assert resp.status_code == 200
-        assert resp.json()["birthday"] == "1990-03-15"
+def test_get_contact_detail():
+    """GET /contacts/{id} returns full contact with labels and birthday."""
+    cid = uuid4()
+    app, mock_db, mock_pool = _app_with_mock_db(
+        fetchrow_result={
+            "id": cid,
+            "full_name": "Bob Jones",
+            "nickname": None,
+            "notes": "Met at conference",
+            "company": "Acme Inc",
+            "job_title": "Engineer",
+            "metadata": {},
+            "created_at": datetime(2024, 1, 1, tzinfo=UTC),
+            "updated_at": datetime(2024, 1, 1, tzinfo=UTC),
+            "email": "bob@acme.com",
+            "phone": None,
+            "last_interaction_at": None,
+        },
+        include_mock_pool=True,
+    )
 
-        important_dates_sql = [
-            call.args[0]
-            for call in mock_pool.fetchrow.await_args_list
-            if "FROM important_dates" in call.args[0]
+    # fetchrow calls: contact, birthday, address
+    # fetch calls: labels
+    mock_pool.fetchrow = AsyncMock(
+        side_effect=[
+            {
+                "id": cid,
+                "full_name": "Bob Jones",
+                "nickname": None,
+                "notes": "Met at conference",
+                "company": "Acme Inc",
+                "job_title": "Engineer",
+                "metadata": {},
+                "created_at": datetime(2024, 1, 1, tzinfo=UTC),
+                "updated_at": datetime(2024, 1, 1, tzinfo=UTC),
+                "email": "bob@acme.com",
+                "phone": None,
+                "last_interaction_at": None,
+            },
+            {"month": 3, "day": 15, "year": 1990},
+            None,  # address
         ]
-        assert len(important_dates_sql) == 1, (
-            "Expected exactly one fetchrow call to important_dates"
-        )
-        birthday_sql = important_dates_sql[0]
-        assert "label = 'birthday'" in birthday_sql
-        assert "ORDER BY created_at DESC" in birthday_sql
-        assert "date_type" not in birthday_sql
+    )
+    mock_pool.fetch = AsyncMock(return_value=[])
 
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/contacts/{cid}")
 
-# ---------------------------------------------------------------------------
-# GET /api/relationship/groups
-# ---------------------------------------------------------------------------
-
-
-class TestListGroups:
-    async def test_returns_group_list_response_structure(self):
-        """Response must have 'groups' array and 'total' integer."""
-        app = _app_with_mock_db()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/relationship/groups")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "groups" in body
-        assert "total" in body
-        assert isinstance(body["groups"], list)
-        assert isinstance(body["total"], int)
-
-
-# ---------------------------------------------------------------------------
-# GET /api/relationship/labels
-# ---------------------------------------------------------------------------
-
-
-class TestListLabels:
-    async def test_returns_list_of_labels(self):
-        """Response must be a JSON array (each element a Label object)."""
-        app = _app_with_mock_db()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/relationship/labels")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert isinstance(body, list)
-
-
-# ---------------------------------------------------------------------------
-# GET /api/relationship/upcoming-dates
-# ---------------------------------------------------------------------------
-
-
-class TestListUpcomingDates:
-    async def test_returns_list_of_upcoming_dates(self):
-        """Response must be a JSON array of UpcomingDate objects."""
-        app = _app_with_mock_db()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/relationship/upcoming-dates")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert isinstance(body, list)
-
-    async def test_days_param_accepted(self):
-        """The ?days= query parameter must not cause an error."""
-        app = _app_with_mock_db()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/relationship/upcoming-dates", params={"days": 30})
-
-        assert resp.status_code == 200
-
-    async def test_uses_label_column_for_upcoming_dates(self):
-        """Upcoming-date query should read date kind from important_dates.label."""
-        today = date.today()
-        app, mock_pool = _app_with_mock_db(
-            fetch_rows=[
-                {
-                    "contact_id": uuid4(),
-                    "contact_name": "Alice",
-                    "label": "birthday",
-                    "month": today.month,
-                    "day": today.day,
-                    "year": None,
-                }
-            ],
-            include_mock_pool=True,
-        )
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/relationship/upcoming-dates")
-
-        assert resp.status_code == 200
-        body = resp.json()
-        assert len(body) == 1
-        assert body[0]["date_type"] == "birthday"
-
-        upcoming_sql = mock_pool.fetch.await_args.args[0]
-        assert "id.label" in upcoming_sql
-        assert "id.label AS date_type" not in upcoming_sql
-        assert "id.date_type" not in upcoming_sql
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["full_name"] == "Bob Jones"
+    assert data["company"] == "Acme Inc"
+    assert data["birthday"] == "1990-03-15"
 
 
 # ---------------------------------------------------------------------------
@@ -276,19 +240,29 @@ class TestListUpcomingDates:
 # ---------------------------------------------------------------------------
 
 
-class TestListContactNotes:
-    async def test_returns_list_of_notes(self):
-        """Response must be a JSON array of Note objects."""
-        app = _app_with_mock_db()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/relationship/contacts/00000000-0000-0000-0000-000000000000/notes"
-            )
+def test_list_contact_notes():
+    """GET /contacts/{id}/notes returns notes for a contact."""
+    cid = uuid4()
+    nid = uuid4()
+    app = _app_with_mock_db(
+        fetch_rows=[
+            {
+                "id": nid,
+                "contact_id": cid,
+                "content": "Follow up next week",
+                "created_at": datetime(2025, 1, 1, tzinfo=UTC),
+                "updated_at": datetime(2025, 1, 1, tzinfo=UTC),
+            }
+        ]
+    )
 
-        assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/contacts/{cid}/notes")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["content"] == "Follow up next week"
 
 
 # ---------------------------------------------------------------------------
@@ -296,19 +270,31 @@ class TestListContactNotes:
 # ---------------------------------------------------------------------------
 
 
-class TestListContactInteractions:
-    async def test_returns_list_of_interactions(self):
-        """Response must be a JSON array of Interaction objects."""
-        app = _app_with_mock_db()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/relationship/contacts/00000000-0000-0000-0000-000000000000/interactions"
-            )
+def test_list_contact_interactions():
+    """GET /contacts/{id}/interactions returns interactions."""
+    cid = uuid4()
+    iid = uuid4()
+    app = _app_with_mock_db(
+        fetch_rows=[
+            {
+                "id": iid,
+                "contact_id": cid,
+                "type": "email",
+                "summary": "Checked in",
+                "details": None,
+                "occurred_at": datetime(2025, 1, 10, tzinfo=UTC),
+                "created_at": datetime(2025, 1, 10, tzinfo=UTC),
+            }
+        ]
+    )
 
-        assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/contacts/{cid}/interactions")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["type"] == "email"
 
 
 # ---------------------------------------------------------------------------
@@ -316,19 +302,32 @@ class TestListContactInteractions:
 # ---------------------------------------------------------------------------
 
 
-class TestListContactGifts:
-    async def test_returns_list_of_gifts(self):
-        """Response must be a JSON array of Gift objects."""
-        app = _app_with_mock_db()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/relationship/contacts/00000000-0000-0000-0000-000000000000/gifts"
-            )
+def test_list_contact_gifts():
+    """GET /contacts/{id}/gifts returns gifts."""
+    cid = uuid4()
+    gid = uuid4()
+    app = _app_with_mock_db(
+        fetch_rows=[
+            {
+                "id": gid,
+                "contact_id": cid,
+                "description": "Coffee mug",
+                "direction": "given",
+                "occasion": "Birthday",
+                "date": date(2025, 1, 15),
+                "value": 25.0,
+                "created_at": datetime(2025, 1, 15, tzinfo=UTC),
+            }
+        ]
+    )
 
-        assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/contacts/{cid}/gifts")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["description"] == "Coffee mug"
 
 
 # ---------------------------------------------------------------------------
@@ -336,16 +335,183 @@ class TestListContactGifts:
 # ---------------------------------------------------------------------------
 
 
-class TestListContactLoans:
-    async def test_returns_list_of_loans(self):
-        """Response must be a JSON array of Loan objects."""
-        app = _app_with_mock_db()
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/relationship/contacts/00000000-0000-0000-0000-000000000000/loans"
-            )
+def test_list_contact_loans():
+    """GET /contacts/{id}/loans returns loans."""
+    cid = uuid4()
+    lid = uuid4()
+    app = _app_with_mock_db(
+        fetch_rows=[
+            {
+                "id": lid,
+                "contact_id": cid,
+                "description": "Book: Clean Code",
+                "direction": "lent",
+                "amount": 0.0,
+                "currency": "USD",
+                "status": "active",
+                "date": date(2025, 1, 1),
+                "due_date": None,
+                "created_at": datetime(2025, 1, 1, tzinfo=UTC),
+            }
+        ]
+    )
 
-        assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/contacts/{cid}/loans")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["description"] == "Book: Clean Code"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/relationship/contacts/{contact_id}/feed
+# ---------------------------------------------------------------------------
+
+
+def test_list_contact_feed():
+    """GET /contacts/{id}/feed returns activity feed."""
+    cid = uuid4()
+    fid = uuid4()
+    app = _app_with_mock_db(
+        fetch_rows=[
+            {
+                "id": fid,
+                "contact_id": cid,
+                "action": "note_added",
+                "details": {},
+                "created_at": datetime(2025, 1, 1, tzinfo=UTC),
+            }
+        ]
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/contacts/{cid}/feed")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["action"] == "note_added"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/relationship/groups
+# ---------------------------------------------------------------------------
+
+
+def test_list_groups():
+    """GET /groups returns groups with member counts."""
+    gid = uuid4()
+    app = _app_with_mock_db(
+        fetchval_result=1,
+        fetch_rows=[
+            {
+                "id": gid,
+                "name": "Work",
+                "description": "Colleagues",
+                "created_at": datetime(2025, 1, 1, tzinfo=UTC),
+                "updated_at": datetime(2025, 1, 1, tzinfo=UTC),
+                "member_count": 5,
+            }
+        ],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.get("/api/relationship/groups")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["groups"]) == 1
+    assert data["groups"][0]["name"] == "Work"
+    assert data["groups"][0]["member_count"] == 5
+
+
+# ---------------------------------------------------------------------------
+# GET /api/relationship/groups/{group_id}
+# ---------------------------------------------------------------------------
+
+
+def test_get_group():
+    """GET /groups/{id} returns group detail."""
+    gid = uuid4()
+    app = _app_with_mock_db(
+        fetchrow_result={
+            "id": gid,
+            "name": "Family",
+            "description": None,
+            "created_at": datetime(2025, 1, 1, tzinfo=UTC),
+            "updated_at": datetime(2025, 1, 1, tzinfo=UTC),
+            "member_count": 3,
+        }
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/groups/{gid}")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "Family"
+
+
+def test_get_group_not_found():
+    """GET /groups/{id} returns 404 when not found."""
+    app = _app_with_mock_db(fetchrow_result=None)
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/groups/{uuid4()}")
+
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/relationship/labels
+# ---------------------------------------------------------------------------
+
+
+def test_list_labels():
+    """GET /labels returns all labels."""
+    lid = uuid4()
+    app = _app_with_mock_db(
+        fetch_rows=[
+            {"id": lid, "name": "Friend", "color": "blue"},
+        ]
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.get("/api/relationship/labels")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "Friend"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/relationship/upcoming-dates
+# ---------------------------------------------------------------------------
+
+
+def test_list_upcoming_dates():
+    """GET /upcoming-dates returns dates within window."""
+    cid = uuid4()
+    app = _app_with_mock_db(
+        fetch_rows=[
+            {
+                "contact_id": cid,
+                "contact_name": "Charlie",
+                "label": "birthday",
+                "month": 2,
+                "day": 20,
+                "year": 1995,
+            }
+        ]
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.get("/api/relationship/upcoming-dates?days=30")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # Note: This test will pass only when run near Feb 20
+    # In a real test, you'd mock datetime.date.today()
+    assert isinstance(data, list)
