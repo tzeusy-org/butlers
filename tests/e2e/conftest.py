@@ -235,10 +235,16 @@ async def _wait_for_ecosystem_health(
 
             try:
                 async with httpx.AsyncClient() as client:
-                    response = await client.get(url, timeout=1.0)
-                    if response.status_code == 200:
-                        pending.remove(butler_name)
-                        logger.debug("Butler %s is healthy (port %s)", butler_name, port)
+                    # Use stream() because /sse is a Server-Sent Events endpoint
+                    # that never completes.  stream() yields after receiving the
+                    # response headers so we can check the status code without
+                    # waiting for the (infinite) body.
+                    async with client.stream("GET", url, timeout=2.0) as response:
+                        if response.status_code == 200:
+                            pending.remove(butler_name)
+                            logger.debug(
+                                "Butler %s is healthy (port %s)", butler_name, port
+                            )
             except Exception:
                 # Expected during startup — keep polling
                 pass
