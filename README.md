@@ -205,6 +205,10 @@ Module ABC
 ├── credentials_env   → env vars this module needs
 ├── register_tools()  → add MCP tools to the FastMCP server
 ├── migration_revisions() → Alembic branch label for DB tables
+├── user_inputs()     → declare user-identity input tool descriptors
+├── user_outputs()    → declare user-identity output tool descriptors
+├── bot_inputs()      → declare bot-identity input tool descriptors
+├── bot_outputs()     → declare bot-identity output tool descriptors
 ├── on_startup()      → post-migration initialization
 └── on_shutdown()     → cleanup (reverse topological order)
 ```
@@ -231,6 +235,8 @@ Approval defaults:
 
 - User-scoped send/reply outputs are default-gated (`approval_default="always"`).
 - Bot-scoped outputs are policy-driven and only gated when configured (or when descriptor defaults require it).
+
+See `docs/modules/io_model.md` for the complete identity-scoped I/O architecture contract.
 
 ## Getting Started
 
