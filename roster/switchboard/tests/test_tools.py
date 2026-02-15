@@ -935,9 +935,11 @@ async def test_classify_message_auto_discovers_when_registry_empty(pool, tmp_pat
         return FakeResult()
 
     result = await classify_message(pool, "I like chicken rice", capturing_dispatch)
+    # CC returned "general" but _apply_capability_preferences rewrites food
+    # messages to "health" when a health butler is available.
     assert result == [
         {
-            "butler": "general",
+            "butler": "health",
             "prompt": "I like chicken rice",
             "segment": {"rationale": "General preference statement"},
         }
