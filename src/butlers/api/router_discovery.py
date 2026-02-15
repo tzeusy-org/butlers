@@ -29,6 +29,9 @@ _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3] / "roster"
 def _load_router_module(router_path: Path, module_name: str) -> ModuleType:
     """Load a Python module from a file path using importlib.
 
+    If the module is already loaded in sys.modules, returns the existing
+    module to ensure consistency across test and app initialization.
+
     Parameters
     ----------
     router_path:
@@ -46,6 +49,10 @@ def _load_router_module(router_path: Path, module_name: str) -> ModuleType:
     ValueError
         If the module spec cannot be loaded.
     """
+    # Return existing module if already loaded (e.g., from tests)
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+
     spec = importlib.util.spec_from_file_location(module_name, router_path)
     if spec is None or spec.loader is None:
         raise ValueError(f"Could not load spec from {router_path}")

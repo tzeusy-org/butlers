@@ -275,7 +275,6 @@ from butlers.api.models.approval import (  # noqa: E402
 )
 from butlers.api.models.audit import AuditEntry  # noqa: E402
 from butlers.api.models.butler import ModuleStatus  # noqa: E402
-from butlers.api.models.general import RegistryEntry, RoutingEntry  # noqa: E402
 from butlers.api.models.memory import (  # noqa: E402
     Episode,
     Fact,
@@ -324,8 +323,6 @@ __all__ = [
     "NotificationSummary",
     "PaginatedResponse",
     "PaginationMeta",
-    "RegistryEntry",
-    "RoutingEntry",
     "RuleConstraintSuggestion",
     "Schedule",
     "ScheduleCost",

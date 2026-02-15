@@ -9,6 +9,9 @@ Issue: butlers-26h.12.3
 
 from __future__ import annotations
 
+import importlib.util
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -16,7 +19,18 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.switchboard_views import _get_db_manager
+
+# Dynamically load the switchboard router to get _get_db_manager
+# Use the same module name as router_discovery.py to ensure we get the same module instance
+_roster_root = Path(__file__).resolve().parents[2] / "roster"
+_router_path = _roster_root / "switchboard" / "api" / "router.py"
+spec = importlib.util.spec_from_file_location("switchboard_api_router", _router_path)
+if spec is None or spec.loader is None:
+    raise ValueError(f"Could not load spec from {_router_path}")
+switchboard_module = importlib.util.module_from_spec(spec)
+sys.modules["switchboard_api_router"] = switchboard_module
+spec.loader.exec_module(switchboard_module)
+_get_db_manager = switchboard_module._get_db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -52,7 +66,7 @@ def _app_with_mock_db(
     else:
         mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
 
-    app = create_app()
+    app = create_app(cors_origins=["*"])
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     return app

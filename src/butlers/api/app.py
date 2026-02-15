@@ -51,7 +51,6 @@ from butlers.api.routers.sessions import (
 )
 from butlers.api.routers.sse import router as sse_router
 from butlers.api.routers.state import router as state_router
-from butlers.api.routers.switchboard_views import router as switchboard_views_router
 from butlers.api.routers.timeline import router as timeline_router
 from butlers.api.routers.traces import router as traces_router
 
@@ -156,7 +155,6 @@ def create_app(
     app.include_router(search_router)
     app.include_router(audit_router)
     app.include_router(memory_router)
-    app.include_router(switchboard_views_router)
     app.include_router(sse_router)
 
     @app.get("/api/health")
