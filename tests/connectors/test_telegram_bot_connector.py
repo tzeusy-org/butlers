@@ -117,7 +117,7 @@ def test_normalize_to_ingest_v1_basic_message(
     assert envelope["source"]["provider"] == "telegram"
     assert envelope["source"]["endpoint_identity"] == "test_bot"
     assert envelope["event"]["external_event_id"] == "12345"
-    assert envelope["event"]["external_thread_id"] == "987654321"
+    assert envelope["event"]["external_thread_id"] == "987654321:1"
     assert envelope["sender"]["identity"] == "987654321"
     assert envelope["payload"]["normalized_text"] == "Hello world"
     assert envelope["payload"]["raw"] == sample_telegram_update
@@ -148,7 +148,7 @@ def test_normalize_to_ingest_v1_edited_message(connector: TelegramBotConnector) 
     envelope = connector._normalize_to_ingest_v1(update)
 
     assert envelope["event"]["external_event_id"] == "12346"
-    assert envelope["event"]["external_thread_id"] == "111222333"
+    assert envelope["event"]["external_thread_id"] == "111222333:2"
     assert envelope["sender"]["identity"] == "111222333"
     assert envelope["payload"]["normalized_text"] == "Edited text"
 
@@ -168,7 +168,7 @@ def test_normalize_to_ingest_v1_channel_post(connector: TelegramBotConnector) ->
     envelope = connector._normalize_to_ingest_v1(update)
 
     assert envelope["event"]["external_event_id"] == "12347"
-    assert envelope["event"]["external_thread_id"] == "-1001234567890"
+    assert envelope["event"]["external_thread_id"] == "-1001234567890:3"
     # No 'from' in channel_post, should default to "unknown"
     assert envelope["sender"]["identity"] == "unknown"
     assert envelope["payload"]["normalized_text"] == "Channel announcement"

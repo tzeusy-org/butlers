@@ -618,7 +618,7 @@ class TelegramModule(Module):
                 "source_channel": "telegram",
                 "source_endpoint_identity": "telegram:bot",
                 "source_sender_identity": sender_identity,
-                "source_thread_identity": chat_id,
+                "source_thread_identity": message_key or chat_id,
                 "trace_context": {},
             }
             message_inbox_id = None

@@ -449,6 +449,7 @@ class TelegramBotConnector:
                 msg = update[key]
                 break
 
+        message_id = None
         if msg:
             if "chat" in msg and isinstance(msg["chat"], dict):
                 chat_id = str(msg["chat"].get("id", ""))
@@ -456,7 +457,13 @@ class TelegramBotConnector:
             if "from" in msg and isinstance(msg["from"], dict):
                 sender_id = str(msg["from"].get("id", "unknown"))
 
+            message_id = msg.get("message_id")
             normalized_text = msg.get("text", "")
+
+        # Build thread identity as chat_id:message_id for reply targeting
+        thread_identity = (
+            f"{chat_id}:{message_id}" if chat_id and message_id is not None else chat_id
+        )
 
         # Build ingest.v1 envelope
         envelope = {
@@ -468,7 +475,7 @@ class TelegramBotConnector:
             },
             "event": {
                 "external_event_id": update_id,
-                "external_thread_id": chat_id,
+                "external_thread_id": thread_identity,
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {

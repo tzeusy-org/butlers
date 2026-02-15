@@ -1391,22 +1391,31 @@ class ButlerDaemon:
             ) -> None:
                 """Background task: classify and route an ingested message."""
                 try:
+                    channel = source.get("channel", "unknown")
+                    endpoint_identity = source.get("endpoint_identity", "unknown")
+                    request_context = {
+                        "request_id": request_id,
+                        "received_at": event.get("observed_at", ""),
+                        "source_channel": channel,
+                        "source_endpoint_identity": f"{channel}:{endpoint_identity}",
+                        "source_sender_identity": sender.get("identity", "unknown"),
+                        "source_thread_identity": event.get("external_thread_id"),
+                        "trace_context": {},
+                    }
                     await pipeline.process(
                         message_text=message_text,
                         tool_name="bot_switchboard_handle_message",
                         tool_args={
-                            "source": source.get("channel", "unknown"),
-                            "source_channel": source.get("channel", "unknown"),
-                            "source_identity": source.get("endpoint_identity", "unknown"),
-                            "source_endpoint_identity": (
-                                f"{source.get('channel', 'unknown')}"
-                                f":{source.get('endpoint_identity', 'unknown')}"
-                            ),
+                            "source": channel,
+                            "source_channel": channel,
+                            "source_identity": endpoint_identity,
+                            "source_endpoint_identity": f"{channel}:{endpoint_identity}",
                             "sender_identity": sender.get("identity", "unknown"),
                             "external_event_id": event.get("external_event_id", ""),
                             "external_thread_id": event.get("external_thread_id"),
                             "source_tool": "ingest",
                             "request_id": request_id,
+                            "request_context": request_context,
                         },
                         message_inbox_id=message_inbox_id,
                     )
