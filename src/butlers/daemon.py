@@ -1030,11 +1030,26 @@ class ButlerDaemon:
                 )
 
             if daemon.config.name != "messenger":
-                context_text: str | None = None
+                # Prepare context with injected request_context
+                context_parts: list[str] = []
+
+                # Add request_context header for CC session
+                request_ctx_json = json.dumps(route_context, ensure_ascii=False, indent=2)
+                context_parts.append(
+                    "REQUEST CONTEXT (for reply targeting and audit traceability):"
+                    f"\n{request_ctx_json}"
+                )
+
+                # Add original input.context if present
                 if isinstance(parsed_route.input.context, dict):
-                    context_text = json.dumps(parsed_route.input.context, ensure_ascii=False)
+                    input_ctx_json = json.dumps(
+                        parsed_route.input.context, ensure_ascii=False, indent=2
+                    )
+                    context_parts.append(f"\nINPUT CONTEXT:\n{input_ctx_json}")
                 elif isinstance(parsed_route.input.context, str):
-                    context_text = parsed_route.input.context
+                    context_parts.append(f"\nINPUT CONTEXT:\n{parsed_route.input.context}")
+
+                context_text = "\n".join(context_parts) if context_parts else None
                 try:
                     trigger_result = await spawner.trigger(
                         prompt=parsed_route.input.prompt,
