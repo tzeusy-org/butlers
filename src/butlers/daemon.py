@@ -1585,6 +1585,76 @@ class ButlerDaemon:
                     "error": f"Switchboard call failed: {exc}",
                 }
 
+        # Messenger-specific operational domain tools
+        if butler_name == "messenger":
+            from butlers.tools.messenger import (
+                messenger_delivery_attempts,
+                messenger_delivery_search,
+                messenger_delivery_status,
+                messenger_delivery_trace,
+            )
+
+            @mcp.tool()
+            @tool_span("messenger_delivery_status", butler_name=butler_name)
+            async def _messenger_delivery_status(delivery_id: str) -> dict:
+                """Get the current status of a delivery request.
+
+                Returns the current terminal or in-flight status of a single
+                delivery, including the latest attempt outcome and provider
+                delivery ID when available.
+                """
+                return await messenger_delivery_status(pool, delivery_id)
+
+            @mcp.tool()
+            @tool_span("messenger_delivery_search", butler_name=butler_name)
+            async def _messenger_delivery_search(
+                origin_butler: str | None = None,
+                channel: str | None = None,
+                intent: str | None = None,
+                status: str | None = None,
+                since: str | None = None,
+                until: str | None = None,
+                limit: int = 50,
+            ) -> dict:
+                """Search delivery history with filters.
+
+                Returns paginated delivery summaries sorted by recency (newest
+                first). Supports filtering by origin butler, channel, intent,
+                status, and time range.
+                """
+                return await messenger_delivery_search(
+                    pool,
+                    origin_butler=origin_butler,
+                    channel=channel,
+                    intent=intent,
+                    status=status,
+                    since=since,
+                    until=until,
+                    limit=limit,
+                )
+
+            @mcp.tool()
+            @tool_span("messenger_delivery_attempts", butler_name=butler_name)
+            async def _messenger_delivery_attempts(delivery_id: str) -> dict:
+                """Get the full attempt history for a delivery.
+
+                Returns the full attempt log for a delivery: timestamps,
+                outcomes, latencies, error classes, retryability. Essential
+                for diagnosing flaky provider behavior.
+                """
+                return await messenger_delivery_attempts(pool, delivery_id)
+
+            @mcp.tool()
+            @tool_span("messenger_delivery_trace", butler_name=butler_name)
+            async def _messenger_delivery_trace(request_id: str) -> dict:
+                """Reconstruct full lineage for a request.
+
+                Traces from the originating butler's notify.v1 envelope through
+                Switchboard routing, Messenger admission, validation, target
+                resolution, provider attempts, and terminal outcome.
+                """
+                return await messenger_delivery_trace(pool, request_id)
+
     def _validate_module_configs(self) -> dict[str, Any]:
         """Validate each module's raw config dict against its config_schema.
 

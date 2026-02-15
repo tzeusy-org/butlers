@@ -1,11 +1,6 @@
-"""Messenger butler operational domain tools.
+"""Delivery tools for Messenger butler."""
 
-Re-exports all public symbols for the Messenger butler's operational tools.
-"""
-
-from __future__ import annotations
-
-from butlers.tools.messenger.delivery import (
+from butlers.tools.messenger.delivery.tracking import (
     messenger_delivery_attempts,
     messenger_delivery_search,
     messenger_delivery_status,
@@ -13,7 +8,6 @@ from butlers.tools.messenger.delivery import (
 )
 
 __all__ = [
-    "idempotency",
     "messenger_delivery_attempts",
     "messenger_delivery_search",
     "messenger_delivery_status",
