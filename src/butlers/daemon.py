@@ -18,13 +18,14 @@ The ButlerDaemon manages the lifecycle of a butler:
 13. Register module MCP tools
 13b. Apply approval gates to configured gated tools
 14. Start FastMCP SSE server on configured port
+15. Launch switchboard heartbeat (non-switchboard butlers)
 
 On startup failure, already-initialized modules get on_shutdown() called.
 
 Graceful shutdown: (a) stops the MCP server, (b) stops accepting new triggers,
 (c) drains in-flight CC sessions up to a configurable timeout,
-(d) closes Switchboard MCP client, (e) shuts down modules in reverse
-topological order, (f) closes DB pool.
+(d) cancels switchboard heartbeat, (e) closes Switchboard MCP client,
+(f) shuts down modules in reverse topological order, (g) closes DB pool.
 """
 
 from __future__ import annotations
@@ -88,6 +89,7 @@ from butlers.tools.switchboard.routing.contracts import parse_notify_request, pa
 
 logger = logging.getLogger(__name__)
 
+_SWITCHBOARD_HEARTBEAT_INTERVAL_S = 30
 
 CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
@@ -465,6 +467,7 @@ class ButlerDaemon:
         self._accepting_connections = False
         self._server: uvicorn.Server | None = None
         self._server_task: asyncio.Task | None = None
+        self._switchboard_heartbeat_task: asyncio.Task | None = None
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
         self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
@@ -696,6 +699,12 @@ class ButlerDaemon:
         # 14. Start FastMCP SSE server on configured port
         await self._start_mcp_server()
 
+        # 15. Launch switchboard heartbeat (non-switchboard butlers only)
+        if self.config.switchboard_url is not None:
+            self._switchboard_heartbeat_task = asyncio.create_task(
+                self._switchboard_heartbeat_loop()
+            )
+
         # Mark as accepting connections and record startup time
         self._accepting_connections = True
         self._started_at = time.monotonic()
@@ -840,6 +849,38 @@ class ButlerDaemon:
                 logger.warning("Error closing Switchboard client", exc_info=True)
             finally:
                 self.switchboard_client = None
+
+    async def _switchboard_heartbeat_loop(self) -> None:
+        """Periodically check and re-establish the Switchboard connection.
+
+        Runs as a background task for the lifetime of the butler.  On each
+        tick it either attempts to connect (when ``switchboard_client`` is
+        ``None``) or probes liveness of the existing connection via
+        ``list_tools()``.  A failed probe triggers a disconnect + reconnect.
+
+        All exceptions (except ``CancelledError``) are swallowed so that the
+        heartbeat never crashes the butler.
+        """
+        try:
+            while True:
+                await asyncio.sleep(_SWITCHBOARD_HEARTBEAT_INTERVAL_S)
+                try:
+                    if self.switchboard_client is None:
+                        logger.debug("Switchboard heartbeat: client is None, attempting reconnect")
+                        await self._connect_switchboard()
+                    else:
+                        try:
+                            await asyncio.wait_for(
+                                self.switchboard_client.list_tools(), timeout=5.0
+                            )
+                        except Exception:
+                            logger.warning("Switchboard heartbeat: connection dead, reconnecting")
+                            await self._disconnect_switchboard()
+                            await self._connect_switchboard()
+                except Exception:
+                    logger.warning("Switchboard heartbeat: unexpected error", exc_info=True)
+        except asyncio.CancelledError:
+            return
 
     def _collect_module_credentials(self) -> dict[str, list[str]]:
         """Collect credentials_env from enabled modules.
@@ -1794,7 +1835,7 @@ class ButlerDaemon:
         @tool_span("notify", butler_name=butler_name)
         async def notify(
             channel: str,
-            message: str,
+            message: str | None = None,
             recipient: str | None = None,
             subject: str | None = None,
             intent: str = "send",
@@ -1813,7 +1854,7 @@ class ButlerDaemon:
             channel:
                 Notification channel — currently 'telegram' or 'email'.
             message:
-                The message text to deliver.
+                The message text to deliver (required for send/reply intents).
             recipient:
                 Optional explicit recipient identifier.
             subject:
@@ -1828,6 +1869,24 @@ class ButlerDaemon:
                 Optional routed request-context metadata for reply targeting and
                 lineage propagation.
             """
+            # Validate message is present (not required for react intent)
+            if intent != "react" and message is None:
+                logger.error(
+                    "notify() called without required 'message' parameter: "
+                    "channel=%r, intent=%r, emoji=%r, request_context=%r",
+                    channel,
+                    intent,
+                    emoji,
+                    request_context,
+                )
+                return {
+                    "status": "error",
+                    "error": (
+                        "Missing required 'message' parameter. "
+                        "notify() requires: channel, message, request_context."
+                    ),
+                }
+
             # Validate message is not empty/whitespace (not required for react intent)
             if intent != "react" and (not message or not message.strip()):
                 return {
@@ -2364,9 +2423,10 @@ class ButlerDaemon:
 
         1. Stop MCP server
         2. Stop accepting new triggers and drain in-flight CC sessions
-        3. Close Switchboard MCP client
-        4. Module on_shutdown in reverse topological order
-        5. Close DB pool
+        3. Cancel switchboard heartbeat
+        4. Close Switchboard MCP client
+        5. Module on_shutdown in reverse topological order
+        6. Close DB pool
         """
         logger.info(
             "Shutting down butler: %s",
@@ -2391,10 +2451,19 @@ class ButlerDaemon:
             timeout = self.config.shutdown_timeout_s if self.config else 30.0
             await self.spawner.drain(timeout=timeout)
 
-        # 3. Close Switchboard MCP client
+        # 3. Cancel switchboard heartbeat
+        if self._switchboard_heartbeat_task is not None:
+            self._switchboard_heartbeat_task.cancel()
+            try:
+                await self._switchboard_heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._switchboard_heartbeat_task = None
+
+        # 4. Close Switchboard MCP client
         await self._disconnect_switchboard()
 
-        # 4. Module shutdown in reverse topological order (active modules only)
+        # 5. Module shutdown in reverse topological order (active modules only)
         active_set = {m.name for m in self._active_modules}
         for mod in reversed(self._modules):
             if mod.name not in active_set:
@@ -2404,12 +2473,12 @@ class ButlerDaemon:
             except Exception:
                 logger.exception("Error during shutdown of module: %s", mod.name)
 
-        # 5. Close audit DB pool (if separate from main DB)
+        # 6. Close audit DB pool (if separate from main DB)
         if self._audit_db is not None:
             await self._audit_db.close()
             self._audit_db = None
 
-        # 6. Close DB pool
+        # 7. Close DB pool
         if self.db:
             await self.db.close()
 

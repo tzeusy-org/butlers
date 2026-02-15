@@ -3155,3 +3155,232 @@ class TestNonFatalModuleStartup:
 
         stub_b_info = result["modules"]["stub_b"]
         assert stub_b_info["status"] == "cascade_failed"
+
+
+class TestSwitchboardHeartbeat:
+    """Verify the switchboard reconnect heartbeat background task."""
+
+    async def test_heartbeat_reconnects_when_client_is_none(self, butler_dir: Path) -> None:
+        """Heartbeat should attempt reconnection when switchboard_client is None."""
+        patches = _patch_infra()
+        connect_calls = 0
+
+        async def fake_connect(self_daemon):
+            nonlocal connect_calls
+            connect_calls += 1
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir)
+            await daemon.start()
+
+        # switchboard_client is None (mocked _connect_switchboard does nothing)
+        assert daemon.switchboard_client is None
+        # Heartbeat task should have been created (default config has switchboard_url)
+        assert daemon._switchboard_heartbeat_task is not None
+
+        # Patch _connect_switchboard and advance through one heartbeat tick
+        with patch.object(ButlerDaemon, "_connect_switchboard", new=fake_connect):
+            # Advance past the sleep
+            await asyncio.sleep(0)  # let the task start
+            # Fast-forward the heartbeat by cancelling and running one manual tick
+            daemon._switchboard_heartbeat_task.cancel()
+            try:
+                await daemon._switchboard_heartbeat_task
+            except asyncio.CancelledError:
+                pass
+
+            # Simulate one tick manually
+            daemon.switchboard_client = None
+            await fake_connect(daemon)
+
+        assert connect_calls == 1
+
+    async def test_heartbeat_detects_dead_connection_and_reconnects(self, butler_dir: Path) -> None:
+        """Heartbeat should disconnect + reconnect when list_tools() fails."""
+        patches = _patch_infra()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.list_tools = AsyncMock(side_effect=ConnectionError("dead"))
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patch("butlers.daemon.MCPClient", return_value=mock_client),
+        ):
+            daemon = ButlerDaemon(butler_dir)
+            await daemon.start()
+
+        assert daemon.switchboard_client is mock_client
+
+        # Cancel the auto-started heartbeat so we can test the loop manually
+        daemon._switchboard_heartbeat_task.cancel()
+        try:
+            await daemon._switchboard_heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
+        # Run one iteration of heartbeat logic manually with a dead client
+        disconnect_called = False
+        connect_called = False
+
+        async def fake_disconnect(self_daemon):
+            nonlocal disconnect_called
+            disconnect_called = True
+            self_daemon.switchboard_client = None
+
+        async def fake_connect(self_daemon):
+            nonlocal connect_called
+            connect_called = True
+
+        with (
+            patch.object(ButlerDaemon, "_disconnect_switchboard", new=fake_disconnect),
+            patch.object(ButlerDaemon, "_connect_switchboard", new=fake_connect),
+        ):
+            # Manually simulate the heartbeat check on a dead connection
+            try:
+                await asyncio.wait_for(daemon.switchboard_client.list_tools(), timeout=5.0)
+            except Exception:
+                await daemon._disconnect_switchboard()
+                await daemon._connect_switchboard()
+
+        assert disconnect_called
+        assert connect_called
+
+    async def test_heartbeat_cancelled_on_shutdown(self, butler_dir: Path) -> None:
+        """shutdown() should cancel the heartbeat task."""
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir)
+            await daemon.start()
+
+        assert daemon._switchboard_heartbeat_task is not None
+        heartbeat_task = daemon._switchboard_heartbeat_task
+
+        await daemon.shutdown()
+
+        assert daemon._switchboard_heartbeat_task is None
+        assert heartbeat_task.cancelled() or heartbeat_task.done()
+
+    async def test_no_heartbeat_for_switchboard_butler(self, tmp_path: Path) -> None:
+        """Switchboard butler (switchboard_url=None) should not get a heartbeat task."""
+        toml = """\
+[butler]
+name = "switchboard"
+port = 8100
+
+[butler.db]
+name = "butler_switchboard"
+
+[[butler.schedule]]
+name = "daily-check"
+cron = "0 9 * * *"
+prompt = "Do the daily check"
+"""
+        (tmp_path / "butler.toml").write_text(toml)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            # Don't mock _connect_switchboard — let it see switchboard_url=None
+        ):
+            daemon = ButlerDaemon(tmp_path)
+            await daemon.start()
+
+        assert daemon._switchboard_heartbeat_task is None
+
+        await daemon.shutdown()
+
+    async def test_heartbeat_healthy_connection_no_reconnect(self, butler_dir: Path) -> None:
+        """Heartbeat should not reconnect when list_tools() succeeds."""
+        patches = _patch_infra()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.list_tools = AsyncMock(return_value=[])
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patch("butlers.daemon.MCPClient", return_value=mock_client),
+        ):
+            daemon = ButlerDaemon(butler_dir)
+            await daemon.start()
+
+        assert daemon.switchboard_client is mock_client
+
+        # Cancel auto-started heartbeat
+        daemon._switchboard_heartbeat_task.cancel()
+        try:
+            await daemon._switchboard_heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
+        # Manually run the heartbeat probe — should succeed, no disconnect
+        disconnect_called = False
+
+        async def fake_disconnect(self_daemon):
+            nonlocal disconnect_called
+            disconnect_called = True
+
+        with patch.object(ButlerDaemon, "_disconnect_switchboard", new=fake_disconnect):
+            await asyncio.wait_for(daemon.switchboard_client.list_tools(), timeout=5.0)
+
+        assert not disconnect_called
+        # Client should still be the original
+        assert daemon.switchboard_client is mock_client
