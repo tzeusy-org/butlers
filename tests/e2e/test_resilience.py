@@ -220,8 +220,8 @@ async def test_serial_dispatch_lock_contention(
     # Fire two triggers concurrently
     start_time = datetime.now(UTC)
     results = await asyncio.gather(
-        spawner.trigger("Record weight 80kg", trigger_source="test-lock-1"),
-        spawner.trigger("Record weight 75kg", trigger_source="test-lock-2"),
+        spawner.trigger("Record weight 80kg", trigger_source="external"),
+        spawner.trigger("Record weight 75kg", trigger_source="external"),
     )
 
     # Both should succeed
@@ -525,7 +525,7 @@ async def test_lock_release_after_error(
 
     result_1 = await spawner.trigger(
         "Call a tool that doesn't exist named fake_nonexistent_tool_xyz",
-        trigger_source="test-lock-error-1",
+        trigger_source="external",
     )
 
     # The spawner may succeed even if the LLM can't complete the task perfectly
@@ -535,7 +535,7 @@ async def test_lock_release_after_error(
     # Second trigger: should succeed without hanging
     result_2 = await spawner.trigger(
         "Get status",
-        trigger_source="test-lock-error-2",
+        trigger_source="external",
     )
 
     assert result_2.success is True, "Second trigger should succeed (lock was released)"
