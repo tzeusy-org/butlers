@@ -366,9 +366,7 @@ class TestRouteExecuteRequestContextInjection:
         assert parsed_ctx["source_endpoint_identity"] == "switchboard"
         assert "received_at" in parsed_ctx
 
-    async def test_interactive_channel_injects_guidance_for_telegram(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_interactive_channel_injects_guidance_for_telegram(self, tmp_path: Path) -> None:
         """Telegram source_channel triggers INTERACTIVE DATA SOURCE block."""
         patches = _patch_infra()
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
@@ -395,9 +393,7 @@ class TestRouteExecuteRequestContextInjection:
         assert 'intent="reply"' in context_arg
         assert "notify()" in context_arg
 
-    async def test_interactive_channel_injects_guidance_for_email(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_interactive_channel_injects_guidance_for_email(self, tmp_path: Path) -> None:
         """Email source_channel triggers INTERACTIVE DATA SOURCE block."""
         patches = _patch_infra()
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")

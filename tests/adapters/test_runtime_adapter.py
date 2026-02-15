@@ -430,9 +430,7 @@ async def test_claude_code_adapter_passes_stderr_options_when_butler_name_set(tm
             result="ok",
         )
 
-    adapter = ClaudeCodeAdapter(
-        sdk_query=mock_query, butler_name="test-butler", log_root=tmp_path
-    )
+    adapter = ClaudeCodeAdapter(sdk_query=mock_query, butler_name="test-butler", log_root=tmp_path)
     await adapter.invoke(
         prompt="hi",
         system_prompt="sys",
@@ -495,9 +493,7 @@ async def test_claude_code_adapter_stderr_closed_on_error(tmp_path: Path):
         raise RuntimeError("SDK error")
         yield  # make it a generator  # pragma: no cover
 
-    adapter = ClaudeCodeAdapter(
-        sdk_query=mock_query, butler_name="test-butler", log_root=tmp_path
-    )
+    adapter = ClaudeCodeAdapter(sdk_query=mock_query, butler_name="test-butler", log_root=tmp_path)
     with pytest.raises(RuntimeError, match="SDK error"):
         await adapter.invoke(
             prompt="hi",
