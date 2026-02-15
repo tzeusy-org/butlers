@@ -2,11 +2,10 @@
 
 Validates data contracts between pipeline stages per docs/tests/e2e/contracts.md:
 1. IngestEnvelopeV1 validation (schema, channel/provider, timestamps, extra fields)
-2. Idempotency contract (same key → same request_id)
+2. Idempotency contract (same key -> same request_id)
 3. Classification response validation (well-formed, LLM failures, unknown butler)
-4. FanoutPlan validation (invalid mode, missing dependencies)
-5. Route contract version (version match, quarantined butler)
-6. SpawnerResult contract (successful/failed invocation, session persistence)
+4. Route contract version (version match, quarantined butler)
+5. SpawnerResult contract (successful/failed invocation, session persistence)
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ import pytest
 from pydantic import ValidationError
 
 from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
-from butlers.tools.switchboard.routing.dispatch import plan_fanout
 
 if TYPE_CHECKING:
     from asyncpg.pool import Pool
@@ -342,80 +340,7 @@ def test_classification_extra_keys_ignored():
 
 
 # ---------------------------------------------------------------------------
-# Contract 4: FanoutPlan Validation
-# ---------------------------------------------------------------------------
-
-
-def test_fanout_plan_single_subrequest():
-    """Single classification entry should produce FanoutPlan with one subrequest."""
-    targets = [
-        {
-            "butler": "health",
-            "prompt": "Log weight 80kg",
-            "segment": {"rationale": "Health measurement"},
-        }
-    ]
-
-    plan = plan_fanout(targets, fanout_mode="parallel")
-
-    assert plan.mode == "parallel"
-    assert len(plan.subrequests) == 1
-    assert plan.subrequests[0].butler == "health"
-
-
-def test_fanout_plan_multiple_subrequests():
-    """Multiple classification entries should produce multiple subrequests."""
-    targets = [
-        {"butler": "health", "prompt": "Track metformin 500mg"},
-        {"butler": "relationship", "prompt": "Remind to call Mom"},
-    ]
-
-    plan = plan_fanout(targets, fanout_mode="ordered")
-
-    assert plan.mode == "ordered"
-    assert len(plan.subrequests) == 2
-    assert plan.subrequests[0].butler == "health"
-    assert plan.subrequests[1].butler == "relationship"
-
-
-def test_fanout_plan_invalid_mode_raises():
-    """Invalid fanout mode should raise ValueError."""
-    targets = [{"butler": "health", "prompt": "Test"}]
-
-    with pytest.raises(ValueError, match="Invalid fanout mode"):
-        plan_fanout(targets, fanout_mode="invalid_mode")  # type: ignore[arg-type]
-
-
-def test_fanout_plan_missing_dependency_target_raises():
-    """Dependency on nonexistent subrequest should raise or be detected."""
-    targets = [
-        {
-            "butler": "health",
-            "prompt": "Test",
-            "subrequest_id": "req1",
-            "depends_on": ["nonexistent_req"],
-        }
-    ]
-
-    # Note: Current implementation may not validate dependency targets at plan time
-    # This test documents expected behavior per contract
-    plan = plan_fanout(targets, fanout_mode="conditional")
-
-    # Validate that dependency references nonexistent ID
-    assert plan.subrequests[0].depends_on == ("nonexistent_req",)
-    # Execution-time validation should detect this and fail
-
-
-def test_fanout_plan_missing_butler_field_raises():
-    """Missing required 'butler' field should raise ValueError."""
-    targets = [{"prompt": "Test message"}]  # Missing 'butler'
-
-    with pytest.raises(ValueError, match="Missing required target field 'butler'"):
-        plan_fanout(targets, fanout_mode="parallel")
-
-
-# ---------------------------------------------------------------------------
-# Contract 5: Route Contract Version
+# Contract 4: Route Contract Version
 # ---------------------------------------------------------------------------
 
 
@@ -474,7 +399,7 @@ async def test_route_contract_quarantined_butler_skipped(switchboard_pool: Pool)
 
 
 # ---------------------------------------------------------------------------
-# Contract 6: SpawnerResult Contract
+# Contract 5: SpawnerResult Contract
 # ---------------------------------------------------------------------------
 
 

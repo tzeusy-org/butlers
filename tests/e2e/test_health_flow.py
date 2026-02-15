@@ -1,32 +1,23 @@
 """E2E tests for complex health butler flows.
 
 Tests the health butler's measurement tracking, medication management, and
-full ingest→classify→route→execute pipeline with real LLM calls.
+spawner-driven tool execution with real LLM calls.
 
 Scenarios:
 1. Direct health tool execution: call measurement_log() directly against health DB,
    query measurements table, call measurement_latest() to verify round-trip
-2. Full ingest → classify → route → dispatch → execute: build IngestEnvelopeV1,
-   call ingest_v1(), classify_message(), dispatch_decomposed() with live MCP call_fn
-   to health butler SSE, assert sessions table in health DB, assert measurements
-   table has expected row
-3. Medication tracking through real spawner: ecosystem['health'].spawner.trigger()
+2. Medication tracking through real spawner: ecosystem['health'].spawner.trigger()
    with medication prompt, assert SpawnerResult.success, assert tool_calls contains
    medication calls, query medications table
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
 import pytest
 
 from butlers.tools.health import measurement_latest, measurement_log, medication_list
-from butlers.tools.switchboard.ingestion.ingest import ingest_v1
-from butlers.tools.switchboard.routing.classify import classify_message
-from butlers.tools.switchboard.routing.dispatch import dispatch_decomposed
 
 if TYPE_CHECKING:
     from asyncpg.pool import Pool
@@ -93,167 +84,7 @@ async def test_direct_measurement_tools(
 
 
 # ---------------------------------------------------------------------------
-# Scenario 2: Full ingest → classify → route → dispatch → execute
-# ---------------------------------------------------------------------------
-
-
-async def test_full_pipeline_ingest_to_execute(
-    butler_ecosystem: ButlerEcosystem,
-    switchboard_pool: Pool,
-    health_pool: Pool,
-    cost_tracker: CostTracker,
-) -> None:
-    """Build IngestEnvelopeV1, ingest, classify, dispatch to health butler via MCP.
-
-    Tests the complete message processing pipeline:
-    1. Create IngestEnvelopeV1 with health-related message
-    2. Call ingest_v1() to persist in message_inbox
-    3. Call classify_message() to route to health butler
-    4. Call dispatch_decomposed() with live MCP routing
-    5. Assert session created in health DB
-    6. Assert measurement row exists
-
-    This validates the full switchboard → health butler flow with real LLM calls
-    and MCP routing.
-    """
-    # Build canonical ingest envelope
-    now = datetime.now(UTC)
-    event_id = f"test-health-flow-{uuid4().hex[:8]}"
-    message_text = "I weigh 76.2 kg this morning"
-
-    envelope_payload = {
-        "schema_version": "ingest.v1",
-        "source": {
-            "channel": "telegram",
-            "provider": "telegram",
-            "endpoint_identity": "test-endpoint-health",
-        },
-        "event": {
-            "external_event_id": event_id,
-            "external_thread_id": "thread-health-001",
-            "observed_at": now.isoformat(),
-        },
-        "sender": {
-            "identity": "user-health-test",
-        },
-        "payload": {
-            "raw": {"text": message_text},
-            "normalized_text": message_text,
-        },
-        "control": {
-            "policy_tier": "default",
-        },
-    }
-
-    # Step 1: Ingest
-    ingest_response = await ingest_v1(switchboard_pool, envelope_payload)
-
-    assert ingest_response.status == "accepted", "Ingest should accept the message"
-    assert ingest_response.duplicate is False, "Should not be a duplicate"
-    assert ingest_response.request_id is not None, "Should return request_id"
-    request_id = ingest_response.request_id
-
-    # Verify message_inbox row
-    inbox_row = await switchboard_pool.fetchrow(
-        """
-        SELECT * FROM message_inbox
-        WHERE (request_context ->> 'request_id')::uuid = $1
-        """,
-        request_id,
-    )
-    assert inbox_row is not None, "Should have message_inbox entry"
-
-    # Step 2: Classify
-    switchboard_daemon = butler_ecosystem.butlers["switchboard"]
-    assert switchboard_daemon.spawner is not None, "Switchboard spawner must be initialized"
-    dispatch_fn = switchboard_daemon.spawner.trigger
-
-    routing_entries = await classify_message(switchboard_pool, message_text, dispatch_fn)
-
-    assert len(routing_entries) >= 1, "Should produce at least 1 routing entry"
-    assert routing_entries[0]["butler"] == "health", "Should route to health butler"
-    health_prompt = routing_entries[0]["prompt"]
-
-    # Step 3: Dispatch decomposed to health butler
-    targets = [
-        {
-            "butler": "health",
-            "prompt": health_prompt,
-            "subrequest_id": f"health-sub-{uuid4().hex[:8]}",
-        }
-    ]
-
-    dispatch_results = await dispatch_decomposed(
-        switchboard_pool,
-        targets,
-        source_channel="switchboard",
-        source_id=str(request_id),
-        tool_name="test_full_pipeline",
-        source_metadata={
-            "channel": "telegram",
-            "identity": "user-health-test",
-            "tool_name": "route.execute",
-        },
-        fanout_mode="parallel",
-    )
-
-    assert len(dispatch_results) == 1, "Should get 1 dispatch result"
-    result = dispatch_results[0]
-
-    assert result["butler"] == "health", "Should target health butler"
-    assert result["success"] is True, "Dispatch should succeed"
-    assert result["error"] is None, "Should have no error"
-
-    # Step 4: Verify routing_log
-    routing_log_entry = await switchboard_pool.fetchrow(
-        """
-        SELECT * FROM routing_log
-        WHERE source_id = $1 AND target_butler = 'health'
-        ORDER BY routed_at DESC
-        LIMIT 1
-        """,
-        str(request_id),
-    )
-
-    assert routing_log_entry is not None, "Should have routing_log entry"
-    assert routing_log_entry["success"] is True, "Routing should be marked successful"
-
-    # Step 5: Verify session in health DB
-    health_session = await health_pool.fetchrow(
-        """
-        SELECT * FROM sessions
-        WHERE trigger_source = 'external'
-        ORDER BY triggered_at DESC
-        LIMIT 1
-        """
-    )
-
-    assert health_session is not None, "Should have created session in health DB"
-    assert health_session["success"] is not None, "Session should have success status"
-
-    # Step 6: Verify measurement in health DB (if LLM executed the tool)
-    # Note: This depends on LLM correctly parsing "76.2 kg" and calling measurement_log()
-    # We'll check if any weight measurement exists from this test run
-    measurement_count = await health_pool.fetchval(
-        """
-        SELECT COUNT(*) FROM measurements
-        WHERE type = 'weight'
-        AND measured_at > $1
-        """,
-        now,
-    )
-
-    # Allow flexibility: LLM might or might not execute tool depending on prompt interpretation
-    # But we've validated the full pipeline works
-    assert measurement_count >= 0, "Measurement count should be non-negative"
-
-    # Track LLM usage (classify_message + any spawner calls)
-    # TODO: Extract real token counts when telemetry is available
-    cost_tracker.record(input_tokens=0, output_tokens=0)
-
-
-# ---------------------------------------------------------------------------
-# Scenario 3: Medication tracking through spawner
+# Scenario 2: Medication tracking through spawner
 # ---------------------------------------------------------------------------
 
 

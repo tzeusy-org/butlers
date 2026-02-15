@@ -32,11 +32,6 @@ from butlers.tools.switchboard.registry.registry import (
     resolve_routing_target,
     validate_route_target,
 )
-from butlers.tools.switchboard.routing.classify import (
-    _parse_classification,
-    classify_message,
-    classify_message_multi,
-)
 from butlers.tools.switchboard.routing.contracts import (
     IngestEnvelopeV1,
     NotifyRequestV1,
@@ -45,14 +40,6 @@ from butlers.tools.switchboard.routing.contracts import (
     parse_ingest_envelope,
     parse_notify_request,
     parse_route_envelope,
-)
-from butlers.tools.switchboard.routing.dispatch import (
-    ButlerResult,
-    _fallback_concatenate,
-    aggregate_responses,
-    dispatch_decomposed,
-    dispatch_to_targets,
-    plan_fanout,
 )
 from butlers.tools.switchboard.routing.route import (
     _call_butler_tool,
@@ -66,7 +53,6 @@ from butlers.tools.switchboard.routing.telemetry import (
 )
 
 __all__ = [
-    "ButlerResult",
     "DEFAULT_ROUTE_CONTRACT_VERSION",
     "ELIGIBILITY_ACTIVE",
     "ELIGIBILITY_QUARANTINED",
@@ -79,16 +65,9 @@ __all__ = [
     "SUPPORTED_CHANNELS",
     "_build_channel_args",
     "_call_butler_tool",
-    "_fallback_concatenate",
     "_log_routing",
-    "_parse_classification",
-    "aggregate_responses",
-    "classify_message",
-    "classify_message_multi",
     "deliver",
     "discover_butlers",
-    "dispatch_decomposed",
-    "dispatch_to_targets",
     "extraction_log_list",
     "extraction_log_undo",
     "get_switchboard_telemetry",
@@ -99,7 +78,6 @@ __all__ = [
     "parse_ingest_envelope",
     "parse_notify_request",
     "parse_route_envelope",
-    "plan_fanout",
     "post_mail",
     "register_butler",
     "reset_switchboard_telemetry_for_tests",

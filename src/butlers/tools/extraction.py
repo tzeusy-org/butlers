@@ -15,7 +15,6 @@ Flow:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -423,71 +422,3 @@ async def extract_signals(
     await _log_extractions(pool, extractions)
 
     return extractions
-
-
-async def handle_message_with_extraction(
-    pool: asyncpg.Pool,
-    message: str,
-    classify_dispatch_fn: Any,
-    extract_dispatch_fn: Any,
-    extractor_schemas: list[ExtractorSchema] | None = None,
-    *,
-    route_call_fn: Any | None = None,
-) -> dict[str, Any]:
-    """Handle a message with concurrent classification and extraction.
-
-    Runs classify_message() and extract_signals() in parallel using
-    asyncio.gather(). The primary response from classification is
-    returned immediately; extraction results are logged but do not
-    block.
-
-    Parameters
-    ----------
-    pool:
-        Database connection pool.
-    message:
-        The incoming message.
-    classify_dispatch_fn:
-        Dispatch function for the classify_message CC call.
-    extract_dispatch_fn:
-        Dispatch function for the extract_signals CC call.
-    extractor_schemas:
-        Optional list of ExtractorSchemas.
-    route_call_fn:
-        Optional callable for testing route dispatch.
-
-    Returns
-    -------
-    dict with keys:
-        - target_butler: str — the primary classification result
-        - extractions: list[Extraction] — all extracted signals
-    """
-    from butlers.tools.switchboard import classify_message
-
-    async def _classify() -> str:
-        result = await classify_message(pool, message, classify_dispatch_fn)
-        # classify_message returns list[dict] with {butler, prompt} entries;
-        # extract the primary target butler name from the first entry.
-        if result and isinstance(result, list) and len(result) > 0:
-            return result[0].get("butler", "general")
-        return "general"
-
-    async def _extract() -> list[Extraction]:
-        try:
-            return await extract_signals(
-                pool,
-                message,
-                extract_dispatch_fn,
-                extractor_schemas,
-                call_fn=route_call_fn,
-            )
-        except Exception:
-            logger.exception("Extraction failed — not blocking primary response")
-            return []
-
-    target_butler, extractions = await asyncio.gather(_classify(), _extract())
-
-    return {
-        "target_butler": target_butler,
-        "extractions": extractions,
-    }

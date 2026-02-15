@@ -4,13 +4,11 @@ This module executes scenarios defined in scenarios.py via pytest.mark.parametri
 Each scenario is automatically converted into a test case without code changes.
 
 Test functions:
-- test_scenario_classification: Validates routing decisions via classify_message()
 - test_scenario_side_effects: Triggers butler spawner and validates DB state
 
 Tag-based filtering works via pytest -k:
   pytest -k 'smoke'              # Run only smoke tests
   pytest -k 'health and smoke'   # Run health smoke tests
-  pytest -k 'classification'     # Run all classification tests
 """
 
 from __future__ import annotations
@@ -39,74 +37,8 @@ def _scenario_id(scenario: E2EScenario) -> str:
     return f"{scenario.id}[{tags_str}]"
 
 
-# Filter scenarios for classification tests (those with expected_butler)
-CLASSIFICATION_SCENARIOS = [s for s in ALL_SCENARIOS if s.expected_butler is not None]
-
 # Filter scenarios for side-effect tests (those with db_assertions)
 SIDE_EFFECT_SCENARIOS = [s for s in ALL_SCENARIOS if s.db_assertions]
-
-
-# ---------------------------------------------------------------------------
-# Classification Tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", CLASSIFICATION_SCENARIOS, ids=_scenario_id)
-async def test_scenario_classification(
-    scenario: E2EScenario,
-    butler_ecosystem: ButlerEcosystem,
-    cost_tracker: CostTracker,
-) -> None:
-    """Validate routing decision via classify_message() on switchboard.
-
-    For each scenario with expected_butler:
-    1. Call classify_message() via switchboard MCP client
-    2. Parse the routing decision
-    3. Assert the target butler matches expected_butler
-    4. Track LLM usage in cost_tracker
-    """
-    switchboard_daemon = butler_ecosystem.butlers["switchboard"]
-    port = switchboard_daemon.config.port
-    url = f"http://localhost:{port}/sse"
-
-    logger.info(
-        "Running classification scenario: %s (expected: %s)",
-        scenario.id,
-        scenario.expected_butler,
-    )
-
-    async with MCPClient(url) as client:
-        # Call classify_message tool
-        result = await client.call_tool(
-            "classify_message",
-            {"message": scenario.input_prompt},
-        )
-
-        # Extract routing decision
-        assert result is not None, f"classify_message returned None for {scenario.id}"
-        assert isinstance(result, list), f"classify_message should return list, got {type(result)}"
-        assert len(result) > 0, f"classify_message returned empty list for {scenario.id}"
-
-        # Validate routing
-        first_entry = result[0]
-        assert "butler" in first_entry, f"Missing 'butler' key in {scenario.id}"
-        routed_butler = first_entry["butler"]
-
-        assert routed_butler == scenario.expected_butler, (
-            f"Routing mismatch for {scenario.id}: "
-            f"expected {scenario.expected_butler}, got {routed_butler}"
-        )
-
-        logger.info(
-            "Classification passed: %s → %s",
-            scenario.id,
-            routed_butler,
-        )
-
-        # TODO: Track LLM usage when telemetry is available
-        # For now, increment call count as a placeholder
-        cost_tracker.record(input_tokens=0, output_tokens=0)
 
 
 # ---------------------------------------------------------------------------
