@@ -56,8 +56,14 @@ def _make_mock_pool(
         row_mocks = []
         for row in registry_rows:
             m = MagicMock()
+            # Fix lambda capture: explicitly capture row value in default argument
             m.__getitem__ = lambda self, key, r=row: r[key]
             m.get = lambda key, default=None, r=row: r.get(key, default)
+            # Support dict() conversion for asyncpg.Record compatibility
+            m.__iter__ = lambda self, r=row: iter(r)
+            m.keys = lambda self, r=row: r.keys()
+            m.values = lambda self, r=row: r.values()
+            m.items = lambda self, r=row: r.items()
             row_mocks.append(m)
 
         pool.fetch = AsyncMock(return_value=row_mocks)
@@ -78,13 +84,15 @@ def _notif_id_row() -> dict[str, Any]:
 
 def _registry_row(name: str, endpoint: str = "http://localhost:9100/sse") -> dict[str, Any]:
     """Return a dict row for butler_registry lookups."""
+    # Use a fixed timestamp to avoid TTL expiry during test execution
+    fixed_now = datetime.now(UTC)
     return {
         "name": name,
         "endpoint_url": endpoint,
         "description": None,
         "modules": [],
-        "last_seen_at": datetime.now(UTC),
-        "registered_at": datetime.now(UTC),
+        "last_seen_at": fixed_now,
+        "registered_at": fixed_now,
         "eligibility_state": "active",
         "liveness_ttl_seconds": 300,
         "quarantined_at": None,
@@ -92,7 +100,8 @@ def _registry_row(name: str, endpoint: str = "http://localhost:9100/sse") -> dic
         "route_contract_min": 1,
         "route_contract_max": 1,
         "capabilities": ["trigger", "telegram", "email"],
-        "eligibility_updated_at": datetime.now(UTC),
+        "eligibility_updated_at": fixed_now,
+        "id": uuid.uuid4(),  # Add id field for completeness
     }
 
 
@@ -885,6 +894,7 @@ class TestDeliverNotifyRouting:
 
         pool = _make_mock_pool(
             fetchrow_side_effect=[
+                [],  # Unused fetch return (notify path skips module lookup)
                 _registry_row("messenger", "http://localhost:9200/sse"),
                 _notif_id_row(),
             ],
@@ -954,6 +964,7 @@ class TestDeliverNotifyRouting:
 
         pool = _make_mock_pool(
             fetchrow_side_effect=[
+                [],  # Unused fetch return (notify path skips module lookup)
                 _registry_row("messenger", "http://localhost:9200/sse"),
                 _notif_id_row(),
             ],
