@@ -198,6 +198,46 @@ class TestExtractRoutedButlers:
         assert acked == ["health"]
         assert failed == []
 
+    def test_mcp_namespaced_tool_name(self):
+        """CC SDK returns MCP-namespaced names like mcp__switchboard__route_to_butler."""
+        tool_calls = [
+            {
+                "name": "mcp__switchboard__route_to_butler",
+                "input": {"butler": "health", "prompt": "track meds"},
+            }
+        ]
+        routed, acked, failed = _extract_routed_butlers(tool_calls)
+        assert routed == ["health"]
+        assert acked == ["health"]
+        assert failed == []
+
+    def test_input_key_instead_of_args(self):
+        """CC SDK uses 'input' key; older code used 'args'."""
+        tool_calls = [
+            {
+                "name": "route_to_butler",
+                "input": {"butler": "general", "prompt": "hello"},
+                "result": {"status": "ok", "butler": "general"},
+            }
+        ]
+        routed, acked, failed = _extract_routed_butlers(tool_calls)
+        assert routed == ["general"]
+        assert acked == ["general"]
+        assert failed == []
+
+    def test_mcp_namespaced_with_result(self):
+        """MCP-namespaced name with a result dict."""
+        tool_calls = [
+            {
+                "name": "mcp__switchboard__route_to_butler",
+                "input": {"butler": "health", "prompt": "x"},
+                "result": {"status": "error", "butler": "health", "error": "fail"},
+            }
+        ]
+        routed, acked, failed = _extract_routed_butlers(tool_calls)
+        assert routed == ["health"]
+        assert failed == ["health"]
+
     def test_mixed_success_and_failure(self):
         tool_calls = [
             {

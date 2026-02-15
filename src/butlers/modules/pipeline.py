@@ -107,7 +107,8 @@ def _extract_routed_butlers(
     ----------
     tool_calls:
         List of tool call dicts from SpawnerResult, each with keys
-        ``name``, ``args``, and optionally ``result``.
+        ``name``, ``input`` (or ``args``), and optionally ``result``.
+        The ``name`` may be MCP-namespaced (e.g. ``mcp__switchboard__route_to_butler``).
 
     Returns
     -------
@@ -120,9 +121,12 @@ def _extract_routed_butlers(
     failed: list[str] = []
 
     for call in tool_calls:
-        if call.get("name") != "route_to_butler":
+        name = call.get("name", "")
+        # Match both bare name and MCP-namespaced (e.g. mcp__switchboard__route_to_butler)
+        if name != "route_to_butler" and not name.endswith("__route_to_butler"):
             continue
-        args = call.get("args", {})
+        # CC SDK stores args under "input"; other runtimes may use "args"
+        args = call.get("input") or call.get("args") or {}
         butler = str(args.get("butler", "")).strip()
         if not butler:
             continue
@@ -565,7 +569,7 @@ class MessagePipeline:
     async def process(
         self,
         message_text: str,
-        tool_name: str = "bot_switchboard_handle_message",
+        tool_name: str = "route.execute",
         tool_args: dict[str, Any] | None = None,
         message_inbox_id: Any | None = None,
     ) -> RoutingResult:
@@ -771,12 +775,29 @@ class MessagePipeline:
                                 "outcome": "no_tool_calls",
                             },
                         )
-                        fallback_args: dict[str, Any] = {
-                            "prompt": message_text,
-                            "message": message_text,
+                        fallback_envelope: dict[str, Any] = {
+                            "schema_version": "route.v1",
+                            "request_context": {
+                                "request_id": request_id,
+                                "received_at": datetime.now(UTC).isoformat(),
+                                "source_channel": source,
+                                "source_endpoint_identity": "switchboard",
+                                "source_sender_identity": source_metadata.get(
+                                    "identity", "unknown"
+                                ),
+                                "source_thread_identity": (
+                                    request_context.get("source_thread_identity")
+                                    if request_context
+                                    else None
+                                ),
+                                "trace_context": {},
+                            },
+                            "input": {"prompt": message_text},
+                            "target": {
+                                "butler": "general",
+                                "tool": "route.execute",
+                            },
                             "source_metadata": source_metadata,
-                            "source_channel": source,
-                            "request_id": request_id,
                             "__switchboard_route_context": {
                                 "request_id": request_id,
                                 "fanout_mode": "tool_routed",
@@ -788,8 +809,8 @@ class MessagePipeline:
                             fallback_result = await _fallback_route(
                                 self._pool,
                                 target_butler="general",
-                                tool_name="bot_switchboard_handle_message",
-                                args=fallback_args,
+                                tool_name="route.execute",
+                                args=fallback_envelope,
                                 source_butler="switchboard",
                             )
                             routed = ["general"]

@@ -1610,9 +1610,7 @@ class ButlerDaemon:
                         "received_at": datetime.now(UTC).isoformat(),
                         "source_channel": source_metadata.get("channel", "mcp"),
                         "source_endpoint_identity": "switchboard",
-                        "source_sender_identity": source_metadata.get(
-                            "identity", "unknown"
-                        ),
+                        "source_sender_identity": source_metadata.get("identity", "unknown"),
                         "source_thread_identity": (
                             request_context.get("source_thread_identity")
                             if request_context

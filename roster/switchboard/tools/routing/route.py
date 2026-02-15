@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 from typing import Any
 
@@ -26,7 +25,6 @@ from butlers.tools.switchboard.routing.telemetry import (
 logger = logging.getLogger(__name__)
 _ROUTER_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
 _ROUTER_CLIENT_LOCKS: dict[str, asyncio.Lock] = {}
-_IDENTITY_TOOL_RE = re.compile(r"^(user|bot)_[a-z0-9_]+_[a-z0-9_]+$")
 
 
 def _router_lock(endpoint_url: str) -> asyncio.Lock:
@@ -148,74 +146,6 @@ def _extract_mcp_error_text(result: Any) -> str:
         first = content[0]
         return str(getattr(first, "text", "") or first)
     return ""
-
-
-def _is_identity_prefixed_tool_name(tool_name: str) -> bool:
-    return bool(_IDENTITY_TOOL_RE.fullmatch(tool_name))
-
-
-def _extract_source_metadata(args: dict[str, Any]) -> dict[str, Any]:
-    """Extract a compact source-metadata payload from route args."""
-    raw = args.get("source_metadata")
-    metadata: dict[str, Any] = {}
-    if isinstance(raw, dict):
-        for key, value in raw.items():
-            if value in (None, ""):
-                continue
-            metadata[str(key)] = str(value)
-
-    if args.get("source_channel") not in (None, ""):
-        metadata.setdefault("channel", str(args["source_channel"]))
-    if args.get("source") not in (None, ""):
-        metadata.setdefault("channel", str(args["source"]))
-    if args.get("source_identity") not in (None, ""):
-        metadata.setdefault("identity", str(args["source_identity"]))
-    if args.get("source_tool") not in (None, ""):
-        metadata.setdefault("tool_name", str(args["source_tool"]))
-    if args.get("source_id") not in (None, ""):
-        metadata.setdefault("source_id", str(args["source_id"]))
-    return metadata
-
-
-def _build_trigger_context(
-    base_context: str | None,
-    source_metadata: dict[str, Any],
-    request_context: dict[str, Any] | None = None,
-) -> str | None:
-    metadata_blob = (
-        json.dumps(source_metadata, ensure_ascii=False, sort_keys=True) if source_metadata else None
-    )
-    metadata_context = (
-        f"Source metadata (channel/identity/tool): {metadata_blob}" if metadata_blob else None
-    )
-    request_context_block = None
-    if request_context:
-        request_context_blob = json.dumps(request_context, ensure_ascii=False, sort_keys=True)
-        request_context_block = f"request_context: {request_context_blob}"
-    parts: list[str] = []
-    if base_context not in (None, ""):
-        parts.append(base_context)
-    if metadata_context:
-        parts.append(metadata_context)
-    if request_context_block:
-        parts.append(request_context_block)
-    return "\n\n".join(parts) if parts else None
-
-
-def _build_trigger_args(args: dict[str, Any]) -> dict[str, Any]:
-    """Map routed args to daemon ``trigger`` args."""
-    prompt = str(args.get("prompt") or args.get("message") or "")
-    trigger_args: dict[str, Any] = {"prompt": prompt}
-    raw_request_context = args.get("request_context")
-    request_context = raw_request_context if isinstance(raw_request_context, dict) else None
-    context = _build_trigger_context(
-        str(args["context"]) if args.get("context") is not None else None,
-        _extract_source_metadata(args),
-        request_context=request_context,
-    )
-    if context not in (None, ""):
-        trigger_args["context"] = context
-    return trigger_args
 
 
 def _extract_route_context(args: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -536,25 +466,12 @@ async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, A
     RuntimeError
         If the target tool returns an MCP error result.
     """
-    # Route-level compatibility:
-    # - identity-prefixed routing names (for channel-scoped pipeline calls)
-    # map to core daemon ``trigger`` directly to avoid "Unknown tool" warnings.
-    effective_tool_name = tool_name
-    effective_args = args
-    if _is_identity_prefixed_tool_name(tool_name):
-        effective_tool_name = "trigger"
-        effective_args = _build_trigger_args(args)
-
-    result = await _call_tool_with_router_client(endpoint_url, effective_tool_name, effective_args)
+    result = await _call_tool_with_router_client(endpoint_url, tool_name, args)
 
     if getattr(result, "is_error", False):
         error_text = _extract_mcp_error_text(result)
         if not error_text:
-            # Use effective_tool_name to show what was actually called
-            if effective_tool_name != tool_name:
-                error_text = f"Tool '{effective_tool_name}' (from '{tool_name}') returned an error."
-            else:
-                error_text = f"Tool '{tool_name}' returned an error."
+            error_text = f"Tool '{tool_name}' returned an error."
         raise RuntimeError(error_text)
 
     # FastMCP 2.x CallToolResult carries structured data directly.
