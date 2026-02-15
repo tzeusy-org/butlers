@@ -510,3 +510,75 @@ ERROR: Failed to fetch history changes: 401 Unauthorized
 | `GMAIL_REFRESH_TOKEN` | Yes | - | OAuth refresh token |
 | `GMAIL_WATCH_RENEW_INTERVAL_S` | No | `86400` | Watch renewal interval (seconds) |
 | `GMAIL_POLL_INTERVAL_S` | No | `60` | History polling interval (seconds) |
+
+---
+
+## Token Management
+
+Connector authentication uses bearer tokens managed by the Switchboard butler framework.
+
+**Complete Token Management Documentation:**  
+See `docs/switchboard/api_authentication.md` for full coverage of:
+- Token generation and issuance
+- Secure storage and distribution
+- Rotation procedures (automated and emergency)
+- Revocation and incident response
+- Token scope and permissions
+- Security best practices
+
+**Token-Related Operations Quick Reference:**
+
+### Token Rotation (Planned)
+
+```bash
+# Generate new token
+NEW_TOKEN=$(bd token create \
+  --type connector \
+  --channel telegram \
+  --provider telegram \
+  --endpoint "support_bot" \
+  --expires-in 90d \
+  --replaces <old_token_id> \
+  --json | jq -r '.token')
+
+# Update secret manager
+aws secretsmanager update-secret \
+  --secret-id switchboard/connectors/telegram-bot \
+  --secret-string "$NEW_TOKEN"
+
+# Restart connector
+kubectl rollout restart deployment/telegram-connector
+
+# Verify health
+kubectl logs -f deployment/telegram-connector | grep "authenticated"
+
+# Revoke old token after grace period
+bd token revoke <old_token_id> --reason "Rotated to new token"
+```
+
+### Token Revocation (Emergency)
+
+```bash
+# Immediate revocation if compromised
+bd token revoke <token_id> \
+  --reason "SECURITY: Token compromised, immediate revocation" \
+  --force
+
+# Generate replacement
+NEW_TOKEN=$(bd token create \
+  --type connector \
+  --channel telegram \
+  --provider telegram \
+  --endpoint "support_bot" \
+  --expires-in 90d \
+  --description "EMERGENCY replacement" \
+  --json | jq -r '.token')
+
+# Update and restart immediately
+aws secretsmanager update-secret \
+  --secret-id switchboard/connectors/telegram-bot \
+  --secret-string "$NEW_TOKEN"
+kubectl rollout restart deployment/telegram-connector --force
+```
+
+For detailed procedures and troubleshooting, consult `docs/switchboard/api_authentication.md`.

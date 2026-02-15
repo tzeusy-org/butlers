@@ -201,3 +201,36 @@ During migration:
 - Preserve existing dedupe identities so request lineage stays stable.
 - Keep fallback paths fail-safe (no dropped accepted events).
 - Use `docs/connectors/connector_ingestion_migration_delta_matrix.md` as the implementation cutover map (current-path mapping, ownership boundaries, and rollback checkpoints).
+
+## 12. Authentication and Token Management
+
+Connector authentication uses bearer tokens issued and managed by the Switchboard butler framework.
+
+**Complete Token Lifecycle Documentation:**  
+See `docs/switchboard/api_authentication.md` for comprehensive coverage of:
+- Token generation and issuance procedures
+- Secure distribution and storage requirements
+- Rotation schedules and procedures (automated and emergency)
+- Revocation processes and audit trails
+- Token scope and permission model
+- Security best practices and incident response
+
+**Quick Reference for Connector Deployment:**
+
+Required environment variable:
+```bash
+export SWITCHBOARD_API_TOKEN="sw_live_..."  # Obtain from platform team
+```
+
+Token scope must match connector's source identity:
+- Token `channel` = envelope `source.channel`
+- Token `provider` = envelope `source.provider`
+- Token `endpoint_identity` = envelope `source.endpoint_identity`
+
+Token security requirements:
+- Store in secret manager (AWS Secrets Manager, GCP Secret Manager, Vault, K8s Secrets)
+- Never commit to version control
+- Rotate every 90 days (production) or 7 days (development)
+- Revoke immediately if compromised
+
+For detailed procedures, consult `docs/switchboard/api_authentication.md`.
