@@ -37,6 +37,7 @@ import re
 import shutil
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -74,7 +75,7 @@ from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_list as _state_list
 from butlers.core.state import state_set as _state_set
 from butlers.core.telemetry import extract_trace_context, init_telemetry, tool_span
-from butlers.credentials import detect_secrets, validate_credentials
+from butlers.credentials import detect_secrets, validate_credentials, validate_module_credentials
 from butlers.db import Database
 from butlers.migrations import has_butler_chain, run_migrations
 from butlers.modules.approvals.gate import apply_approval_gates
@@ -202,6 +203,17 @@ _CHANNEL_EGRESS_RE = re.compile(
 )
 
 _TOOL_NAME_RE = re.compile(r"^(user|bot)_[a-z0-9_]+_[a-z0-9_]+$")
+
+
+@dataclass
+class ModuleStartupStatus:
+    """Per-module startup outcome tracked by the daemon."""
+
+    status: str  # "active", "failed", "cascade_failed"
+    phase: str | None = None  # "credentials", "config", "migration", "startup", "tools"
+    error: str | None = None
+
+
 _ROUTE_ERROR_RETRYABLE: dict[str, bool] = {
     "validation_error": False,
     "target_unavailable": True,
@@ -431,6 +443,7 @@ class ButlerDaemon:
         self.mcp: FastMCP | None = None
         self.spawner: Spawner | None = None
         self._modules: list[Module] = []
+        self._module_statuses: dict[str, ModuleStartupStatus] = {}
         self._module_configs: dict[str, Any] = {}
         self._gated_tool_originals: dict[str, Any] = {}
         self._started_at: float | None = None
@@ -439,13 +452,72 @@ class ButlerDaemon:
         self._server_task: asyncio.Task | None = None
         self.switchboard_client: MCPClient | None = None
 
+    @property
+    def _active_modules(self) -> list[Module]:
+        """Return modules that have not failed during startup."""
+        return [
+            m
+            for m in self._modules
+            if m.name not in self._module_statuses
+            or self._module_statuses[m.name].status == "active"
+        ]
+
+    def _cascade_module_failures(self) -> None:
+        """Mark modules whose dependencies failed as ``cascade_failed``.
+
+        Uses a fixed-point loop: if module B depends on module A and A is
+        failed/cascade_failed, B is marked cascade_failed too.  Repeats
+        until no new cascades are found.
+        """
+        failed_names = {
+            name
+            for name, s in self._module_statuses.items()
+            if s.status in ("failed", "cascade_failed")
+        }
+        changed = True
+        while changed:
+            changed = False
+            for mod in self._modules:
+                if mod.name in failed_names:
+                    continue
+                for dep in mod.dependencies:
+                    if dep in failed_names:
+                        self._module_statuses[mod.name] = ModuleStartupStatus(
+                            status="cascade_failed",
+                            phase="dependency",
+                            error=f"Dependency '{dep}' failed",
+                        )
+                        failed_names.add(mod.name)
+                        changed = True
+                        logger.warning(
+                            "Module '%s' cascade-failed: dependency '%s' is unavailable",
+                            mod.name,
+                            dep,
+                        )
+                        break
+
     async def start(self) -> None:
         """Execute the full startup sequence.
 
         Steps execute in order. A failure at any step prevents subsequent steps.
+        Module-specific steps (config validation, credentials, migrations,
+        on_startup, tool registration) are non-fatal per-module: a failing
+        module is recorded as failed and skipped in later phases while the
+        butler continues to start with the remaining healthy modules.
         """
         # 1. Load config
         self.config = load_config(self.config_dir)
+
+        # 1b. Configure structured logging for this butler
+        from butlers.core.logging import configure_logging
+
+        log_root = Path(self.config.logging.log_root or "logs")
+        configure_logging(
+            level=self.config.logging.level,
+            fmt=self.config.logging.format,
+            log_root=log_root,
+            butler_name=self.config.name,
+        )
         logger.info("Loaded config for butler: %s", self.config.name)
 
         # 2. Initialize telemetry
@@ -460,17 +532,35 @@ class ButlerDaemon:
         # 3. Initialize modules (topological order)
         self._modules = self._registry.load_from_config(self.config.modules)
 
-        # 4. Validate module config schemas before env credential checks.
-        # This gives clearer feedback for malformed identity-scoped config.
+        # 4. Validate module config schemas (non-fatal per-module).
         self._module_configs = self._validate_module_configs()
 
-        # 5. Validate credentials
+        # 5. Validate credentials — core + butler.env are still fatal.
         module_creds = self._collect_module_credentials()
         validate_credentials(
             self.config.env_required,
             self.config.env_optional,
-            module_credentials=module_creds,
         )
+
+        # 5b. Validate module credentials (non-fatal per-module).
+        module_cred_failures = validate_module_credentials(module_creds)
+        for mod_key, missing_vars in module_cred_failures.items():
+            # mod_key may be "modname" or "modname.scope" — map to root module.
+            root_mod = mod_key.split(".")[0]
+            error_msg = f"Missing env var(s): {', '.join(missing_vars)}"
+            self._module_statuses[root_mod] = ModuleStartupStatus(
+                status="failed", phase="credentials", error=error_msg
+            )
+            logger.warning("Module '%s' disabled: %s", root_mod, error_msg)
+        self._cascade_module_failures()
+
+        # Filter module_creds to exclude failed modules for spawner.
+        active_module_creds = {
+            k: v
+            for k, v in module_creds.items()
+            if k.split(".")[0] not in self._module_statuses
+            or self._module_statuses[k.split(".")[0]].status == "active"
+        }
 
         # 6. Provision database
         self.db = Database.from_env(self.config.db_name)
@@ -486,31 +576,40 @@ class ButlerDaemon:
             logger.info("Running butler-specific migrations for: %s", self.config.name)
             await run_migrations(db_url, chain=self.config.name)
 
-        # 8. Run module Alembic migrations
+        # 8. Run module Alembic migrations (non-fatal per-module)
         for mod in self._modules:
+            if mod.name in self._module_statuses:
+                continue
             rev = mod.migration_revisions()
             if rev:
-                await run_migrations(db_url, chain=rev)
+                try:
+                    await run_migrations(db_url, chain=rev)
+                except Exception as exc:
+                    error_msg = str(exc)
+                    self._module_statuses[mod.name] = ModuleStartupStatus(
+                        status="failed", phase="migration", error=error_msg
+                    )
+                    logger.warning(
+                        "Module '%s' disabled: migration failed: %s", mod.name, error_msg
+                    )
+        self._cascade_module_failures()
 
-        # 9. Call module on_startup (topological order)
+        # 9. Call module on_startup (non-fatal per-module)
         started_modules: list[Module] = []
-        try:
-            for mod in self._modules:
+        for mod in self._modules:
+            if mod.name in self._module_statuses:
+                continue
+            try:
                 validated_config = self._module_configs.get(mod.name)
                 await mod.on_startup(validated_config, self.db)
                 started_modules.append(mod)
-        except Exception:
-            # Clean up already-started modules in reverse order
-            logger.error(
-                "Startup failure; cleaning up %d already-started module(s)",
-                len(started_modules),
-            )
-            for mod in reversed(started_modules):
-                try:
-                    await mod.on_shutdown()
-                except Exception:
-                    logger.exception("Error during cleanup shutdown of module: %s", mod.name)
-            raise
+            except Exception as exc:
+                error_msg = str(exc)
+                self._module_statuses[mod.name] = ModuleStartupStatus(
+                    status="failed", phase="startup", error=error_msg
+                )
+                logger.warning("Module '%s' disabled: on_startup failed: %s", mod.name, error_msg)
+        self._cascade_module_failures()
 
         # 10. Create Spawner with runtime adapter (verify binary on PATH)
         adapter_cls = get_adapter(self.config.runtime.type)
@@ -527,7 +626,7 @@ class ButlerDaemon:
             config=self.config,
             config_dir=self.config_dir,
             pool=pool,
-            module_credentials_env=module_creds,
+            module_credentials_env=active_module_creds,
             runtime=runtime,
         )
 
@@ -547,7 +646,7 @@ class ButlerDaemon:
         self.mcp = FastMCP(self.config.name)
         self._register_core_tools()
 
-        # 13. Register module MCP tools
+        # 13. Register module MCP tools (non-fatal per-module)
         await self._register_module_tools()
 
         # 13b. Apply approval gates to configured gated tools
@@ -556,13 +655,28 @@ class ButlerDaemon:
         # 13c. Wire calendar overlap-approval enqueuer when both modules are loaded
         self._wire_calendar_approval_enqueuer()
 
+        # Mark remaining modules as active
+        for mod in self._modules:
+            if mod.name not in self._module_statuses:
+                self._module_statuses[mod.name] = ModuleStartupStatus(status="active")
+
         # 14. Start FastMCP SSE server on configured port
         await self._start_mcp_server()
 
         # Mark as accepting connections and record startup time
         self._accepting_connections = True
         self._started_at = time.monotonic()
-        logger.info("Butler %s started on port %d", self.config.name, self.config.port)
+
+        failed_count = sum(1 for s in self._module_statuses.values() if s.status != "active")
+        if failed_count:
+            logger.warning(
+                "Butler %s started on port %d with %d failed module(s)",
+                self.config.name,
+                self.config.port,
+                failed_count,
+            )
+        else:
+            logger.info("Butler %s started on port %d", self.config.name, self.config.port)
 
     def _wire_pipelines(self, pool: Any) -> None:
         """Attach a MessagePipeline to modules that support set_pipeline().
@@ -583,7 +697,7 @@ class ButlerDaemon:
         )
 
         wired_modules: list[str] = []
-        for mod in self._modules:
+        for mod in self._active_modules:
             set_pipeline = getattr(mod, "set_pipeline", None)
             if callable(set_pipeline):
                 set_pipeline(pipeline)
@@ -607,7 +721,7 @@ class ButlerDaemon:
             app,
             host="0.0.0.0",
             port=self.config.port,
-            log_level="info",
+            log_level="warning",
             timeout_graceful_shutdown=0,
         )
         self._server = uvicorn.Server(config)
@@ -642,12 +756,11 @@ class ButlerDaemon:
             self.switchboard_client = client
             logger.info("Connected to Switchboard at %s for butler %s", url, self.config.name)
         except Exception:
-            logger.warning(
-                "Failed to connect to Switchboard at %s for butler %s; "
-                "notify() will be unavailable until Switchboard is reachable",
+            logger.info(
+                "Switchboard not yet reachable at %s for butler %s; "
+                "notify() will be unavailable until Switchboard is up",
                 url,
                 self.config.name,
-                exc_info=True,
             )
 
     async def _disconnect_switchboard(self) -> None:
@@ -717,8 +830,8 @@ class ButlerDaemon:
     async def _check_health(self) -> str:
         """Check health of all core components.
 
-        Returns 'ok' when all components are healthy, 'degraded' otherwise.
-        Currently checks DB pool availability.
+        Returns 'ok' when all components are healthy, 'degraded' when the DB
+        pool is unavailable or any module has a non-active status.
         """
         try:
             pool = self.db.pool if self.db else None
@@ -728,6 +841,11 @@ class ButlerDaemon:
         except Exception:
             logger.warning("Health check failed: DB pool unavailable")
             return "degraded"
+
+        # Any failed module degrades overall health.
+        if any(s.status != "active" for s in self._module_statuses.values()):
+            return "degraded"
+
         return "ok"
 
     def _register_core_tools(self) -> None:
@@ -748,11 +866,23 @@ class ButlerDaemon:
             """Return butler identity, health, loaded modules, and uptime."""
             uptime_seconds = time.monotonic() - daemon._started_at if daemon._started_at else 0
             health = await daemon._check_health()
+            modules_dict: dict[str, dict[str, Any]] = {}
+            for mod in daemon._modules:
+                ms = daemon._module_statuses.get(mod.name)
+                if ms is None or ms.status == "active":
+                    modules_dict[mod.name] = {"status": "active"}
+                else:
+                    entry: dict[str, Any] = {"status": ms.status}
+                    if ms.phase:
+                        entry["phase"] = ms.phase
+                    if ms.error:
+                        entry["error"] = ms.error
+                    modules_dict[mod.name] = entry
             return {
                 "name": daemon.config.name,
                 "description": daemon.config.description,
                 "port": daemon.config.port,
-                "modules": [mod.name for mod in daemon._modules],
+                "modules": modules_dict,
                 "health": health,
                 "uptime_seconds": round(uptime_seconds, 1),
             }
@@ -1465,11 +1595,8 @@ class ButlerDaemon:
         Extra fields not declared in the schema are rejected. Missing required
         fields and type mismatches produce clear error messages.
 
-        Raises
-        ------
-        ModuleConfigError
-            If validation fails (missing required fields, extra unknown fields,
-            or type mismatches).
+        Modules that fail validation are recorded in ``_module_statuses``
+        and excluded from later startup phases (non-fatal).
         """
         validated: dict[str, Any] = {}
         # Keys consumed at the butler level (not part of module schemas)
@@ -1497,13 +1624,21 @@ class ButlerDaemon:
             try:
                 validated[mod.name] = effective_schema.model_validate(raw_config)
             except ValidationError as exc:
-                raise ModuleConfigError(
-                    f"Configuration validation failed for module '{mod.name}': {exc}"
-                ) from exc
+                error_msg = _format_validation_error(
+                    f"Config validation failed for module '{mod.name}'", exc
+                )
+                self._module_statuses[mod.name] = ModuleStartupStatus(
+                    status="failed", phase="config", error=error_msg
+                )
+                logger.warning("Module '%s' disabled: %s", mod.name, error_msg)
         return validated
 
     async def _register_module_tools(self) -> None:
         """Register MCP tools from all loaded modules.
+
+        Skips modules that have already been marked as failed.  Tool
+        registration failures are non-fatal: the module is recorded as
+        failed and skipped.
 
         Module tools are registered through a ``_SpanWrappingMCP`` proxy that
         automatically wraps each tool handler with a ``butler.tool.<name>``
@@ -1516,49 +1651,56 @@ class ButlerDaemon:
         """
         is_messenger = self.config.name == "messenger"
         for mod in self._modules:
-            declared_tool_names = self._validate_module_io_descriptors(mod)
+            mod_status = self._module_statuses.get(mod.name)
+            if mod_status is not None and mod_status.status != "active":
+                continue
 
-            # Enforce channel egress ownership before registration.
-            # Non-messenger butlers must not expose channel send/reply tools.
-            # Scan ALL descriptors (inputs + outputs) defensively — a module
-            # that misclassifies an egress tool as an input should still be
-            # caught.  Egress names are stripped from the declared set and
-            # silently filtered during registration, so modules can still be
-            # loaded for their ingress (input) capabilities.
-            filtered_egress: set[str] = set()
-            if not is_messenger:
-                all_names = (
-                    {d.name for d in mod.user_inputs()}
-                    | {d.name for d in mod.user_outputs()}
-                    | {d.name for d in mod.bot_inputs()}
-                    | {d.name for d in mod.bot_outputs()}
-                )
-                filtered_egress = {n for n in all_names if _is_channel_egress_tool(n)}
-                if filtered_egress:
-                    logger.info(
-                        "Stripping channel egress tools from non-messenger butler '%s' "
-                        "module '%s': %s (use notify.v1 for outbound delivery)",
-                        self.config.name,
-                        mod.name,
-                        ", ".join(sorted(filtered_egress)),
+            try:
+                declared_tool_names = self._validate_module_io_descriptors(mod)
+
+                # Enforce channel egress ownership before registration.
+                filtered_egress: set[str] = set()
+                if not is_messenger:
+                    all_names = (
+                        {d.name for d in mod.user_inputs()}
+                        | {d.name for d in mod.user_outputs()}
+                        | {d.name for d in mod.bot_inputs()}
+                        | {d.name for d in mod.bot_outputs()}
                     )
-                    declared_tool_names -= filtered_egress
+                    filtered_egress = {n for n in all_names if _is_channel_egress_tool(n)}
+                    if filtered_egress:
+                        logger.info(
+                            "Stripping channel egress tools from non-messenger butler '%s' "
+                            "module '%s': %s (use notify.v1 for outbound delivery)",
+                            self.config.name,
+                            mod.name,
+                            ", ".join(sorted(filtered_egress)),
+                        )
+                        declared_tool_names -= filtered_egress
 
-            wrapped_mcp = _SpanWrappingMCP(
-                self.mcp,
-                self.config.name,
-                module_name=mod.name,
-                declared_tool_names=declared_tool_names,
-                filtered_tool_names=filtered_egress,
-            )
-            validated_config = self._module_configs.get(mod.name)
-            await mod.register_tools(wrapped_mcp, validated_config, self.db)
-            missing_declared = wrapped_mcp.missing_declared_tool_names()
-            if missing_declared:
-                missing = ", ".join(sorted(missing_declared))
-                raise ModuleToolValidationError(
-                    f"Module '{mod.name}' declared tool descriptors that were not registered: "
-                    f"{missing}"
+                wrapped_mcp = _SpanWrappingMCP(
+                    self.mcp,
+                    self.config.name,
+                    module_name=mod.name,
+                    declared_tool_names=declared_tool_names,
+                    filtered_tool_names=filtered_egress,
+                )
+                validated_config = self._module_configs.get(mod.name)
+                await mod.register_tools(wrapped_mcp, validated_config, self.db)
+                missing_declared = wrapped_mcp.missing_declared_tool_names()
+                if missing_declared:
+                    missing = ", ".join(sorted(missing_declared))
+                    raise ModuleToolValidationError(
+                        f"Module '{mod.name}' declared tool descriptors that were not registered: "
+                        f"{missing}"
+                    )
+            except Exception as exc:
+                error_msg = str(exc)
+                self._module_statuses[mod.name] = ModuleStartupStatus(
+                    status="failed", phase="tools", error=error_msg
+                )
+                logger.warning(
+                    "Module '%s' disabled: tool registration failed: %s", mod.name, error_msg
                 )
 
     def _validate_module_io_descriptors(self, mod: Module) -> set[str]:
@@ -1626,7 +1768,7 @@ class ButlerDaemon:
         pool = self.db.pool
         originals = apply_approval_gates(self.mcp, approval_config, pool)
 
-        for mod in self._modules:
+        for mod in self._active_modules:
             if mod.name == "approvals" and hasattr(mod, "set_approval_policy"):
                 mod.set_approval_policy(approval_config)
                 break
@@ -1634,7 +1776,7 @@ class ButlerDaemon:
         # Wire the originals into the ApprovalsModule if it's loaded,
         # so the post-approval executor can invoke them directly
         if originals:
-            for mod in self._modules:
+            for mod in self._active_modules:
                 if mod.name == "approvals":
                     # Set up a tool executor that calls the original tool function
                     async def _execute_original(
@@ -1674,7 +1816,7 @@ class ButlerDaemon:
             return
 
         calendar_mod = None
-        for mod in self._modules:
+        for mod in self._active_modules:
             if mod.name == "calendar":
                 calendar_mod = mod
                 break
@@ -1753,7 +1895,7 @@ class ButlerDaemon:
         baseline even if metadata was omitted.
         """
         merged = dict(config.gated_tools)
-        for mod in self._modules:
+        for mod in self._active_modules:
             for descriptor in mod.user_outputs():
                 if descriptor.approval_default != "always" and not self._is_user_send_or_reply_tool(
                     descriptor.name
@@ -1814,8 +1956,11 @@ class ButlerDaemon:
         # 3. Close Switchboard MCP client
         await self._disconnect_switchboard()
 
-        # 4. Module shutdown in reverse topological order
+        # 4. Module shutdown in reverse topological order (active modules only)
+        active_set = {m.name for m in self._active_modules}
         for mod in reversed(self._modules):
+            if mod.name not in active_set:
+                continue
             try:
                 await mod.on_shutdown()
             except Exception:

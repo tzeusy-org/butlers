@@ -15,6 +15,7 @@ class ModuleStatus(BaseModel):
     name: str
     enabled: bool
     status: str
+    phase: str | None = None
     error: str | None = None
 
 

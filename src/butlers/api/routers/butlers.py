@@ -299,7 +299,12 @@ async def _get_module_health_via_mcp(
     mcp_manager: MCPClientManager,
     module_names: list[str],
 ) -> list[ModuleStatus]:
-    """Call the butler's MCP ``status()`` tool and extract per-module health."""
+    """Call the butler's MCP ``status()`` tool and extract per-module health.
+
+    Handles both the new dict format (``{"modules": {"mod": {"status": ...}}}``)
+    and the legacy list format (``{"modules": ["mod1", "mod2"]}``) for backward
+    compatibility with older butler daemons.
+    """
     try:
         client = await asyncio.wait_for(
             mcp_manager.get_client(name),
@@ -316,31 +321,52 @@ async def _get_module_health_via_mcp(
             if text:
                 status_data = json.loads(text)
 
-        live_modules: set[str] = set(status_data.get("modules", []))
+        raw_modules = status_data.get("modules", {})
         butler_health = status_data.get("health", "unknown")
+
+        # Backward compat: legacy list format → treat all as active.
+        if isinstance(raw_modules, list):
+            raw_modules = {m: {"status": "active"} for m in raw_modules}
 
         modules: list[ModuleStatus] = []
         for mod_name in module_names:
-            if mod_name in live_modules:
+            mod_info = raw_modules.get(mod_name)
+            if mod_info is None:
+                modules.append(
+                    ModuleStatus(
+                        name=mod_name,
+                        enabled=True,
+                        status="error",
+                        error="Module configured but not loaded by butler",
+                    )
+                )
+                continue
+
+            daemon_status = (
+                mod_info.get("status", "unknown") if isinstance(mod_info, dict) else "unknown"
+            )
+
+            if daemon_status == "active":
                 if butler_health == "ok":
                     mod_status = "connected"
                 elif butler_health == "degraded":
                     mod_status = "degraded"
                 else:
                     mod_status = "unknown"
+                modules.append(ModuleStatus(name=mod_name, enabled=True, status=mod_status))
             else:
-                mod_status = "error"
+                # failed or cascade_failed
+                error_msg = mod_info.get("error") if isinstance(mod_info, dict) else None
+                phase = mod_info.get("phase") if isinstance(mod_info, dict) else None
                 modules.append(
                     ModuleStatus(
                         name=mod_name,
                         enabled=True,
-                        status=mod_status,
-                        error="Module configured but not loaded by butler",
+                        status="error",
+                        phase=phase,
+                        error=error_msg or f"Module {daemon_status}",
                     )
                 )
-                continue
-
-            modules.append(ModuleStatus(name=mod_name, enabled=True, status=mod_status))
 
         return modules
 

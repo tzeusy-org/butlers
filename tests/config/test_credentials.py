@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from butlers.credentials import CredentialError, validate_credentials
+from butlers.credentials import CredentialError, validate_credentials, validate_module_credentials
 
 pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
@@ -459,3 +459,48 @@ def test_detect_secrets_case_sensitivity_keys():
     warnings = detect_secrets(config)
 
     assert len(warnings) == 3
+
+
+# ---------------------------------------------------------------------------
+# Tests for validate_module_credentials
+# ---------------------------------------------------------------------------
+
+
+def test_validate_module_credentials_returns_failures(monkeypatch: pytest.MonkeyPatch):
+    """Returns dict of module → missing vars when env vars are absent."""
+    monkeypatch.delenv("TG_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("CAL_CLIENT_SECRET", raising=False)
+    monkeypatch.setenv("CAL_CLIENT_ID", "present")
+
+    result = validate_module_credentials(
+        {
+            "telegram": ["TG_BOT_TOKEN"],
+            "calendar": ["CAL_CLIENT_ID", "CAL_CLIENT_SECRET"],
+        }
+    )
+
+    assert "telegram" in result
+    assert result["telegram"] == ["TG_BOT_TOKEN"]
+    assert "calendar" in result
+    assert result["calendar"] == ["CAL_CLIENT_SECRET"]
+
+
+def test_validate_module_credentials_empty_when_all_present(monkeypatch: pytest.MonkeyPatch):
+    """Returns empty dict when all module env vars are set."""
+    monkeypatch.setenv("TG_BOT_TOKEN", "tok-123")
+    monkeypatch.setenv("EMAIL_PASS", "pass-456")
+
+    result = validate_module_credentials(
+        {
+            "telegram": ["TG_BOT_TOKEN"],
+            "email": ["EMAIL_PASS"],
+        }
+    )
+
+    assert result == {}
+
+
+def test_validate_module_credentials_empty_input():
+    """Returns empty dict for empty input."""
+    result = validate_module_credentials({})
+    assert result == {}

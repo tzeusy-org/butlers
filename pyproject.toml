@@ -25,6 +25,7 @@ dependencies = [
     "httpx",
     "sentence-transformers",
     "pgvector",
+    "structlog",
 ]
 
 [dependency-groups]

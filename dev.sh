@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# Bootstrap a full Butlers dev environment in a tmux window.
-# Creates a "butlers-dev" window with 3 panes:
-#   Left:         Backend API  — postgres + butlers up
-#   Top-right:    Dashboard    — butlers dashboard
-#   Bottom-right: Frontend     — Vite dev server
+# Bootstrap a full Butlers dev environment in tmux.
+# Creates three windows:
+#   backend     — postgres + butlers up
+#   connectors  — telegram bot connector (polling)
+#   dashboard   — dashboard API (top) + Vite frontend (bottom)
 #
 # Usage: ./dev.sh
 
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WINDOW="butlers-dev"
 
 if ! command -v tmux &>/dev/null; then
   echo "Error: tmux is not installed" >&2
@@ -25,29 +24,35 @@ else
   tmux new-session -d -s "$SESSION" -c "$PROJECT_DIR" 2>/dev/null || true
 fi
 
-# Kill existing window if present (idempotent re-runs)
-tmux kill-window -t "${SESSION}:${WINDOW}" 2>/dev/null || true
+# Shared env loader (secrets + local .env)
+ENV_LOADER="export \$(grep -v '^#' /secrets/.dev.env | xargs -d '\n') && export \$(grep -v '^#' .env | xargs -d '\n')"
 
-# Create window and capture pane IDs — avoids index assumptions
-PANE_BACKEND=$(tmux new-window -t "$SESSION" -n "$WINDOW" -c "$PROJECT_DIR" -P -F '#{pane_id}')
-PANE_DASHBOARD=$(tmux split-window -t "$PANE_BACKEND" -h -c "$PROJECT_DIR" -P -F '#{pane_id}')
+# Kill existing windows if present (idempotent re-runs)
+for WIN in backend connectors dashboard; do
+  tmux kill-window -t "${SESSION}:${WIN}" 2>/dev/null || true
+done
+
+# ── backend window ──────────────────────────────────────────────────
+PANE_BACKEND=$(tmux new-window -t "$SESSION" -n backend -c "$PROJECT_DIR" -P -F '#{pane_id}')
+tmux send-keys -t "$PANE_BACKEND" \
+  "${ENV_LOADER} && uv sync --dev && docker compose stop postgres && docker compose up -d postgres && POSTGRES_PORT=54320 uv run butlers up" Enter
+
+# ── connectors window ──────────────────────────────────────────────
+PANE_TELEGRAM=$(tmux new-window -t "$SESSION" -n connectors -c "$PROJECT_DIR" -P -F '#{pane_id}')
+tmux send-keys -t "$PANE_TELEGRAM" \
+  "${ENV_LOADER} && mkdir -p .tmp/connectors && sleep 10 && uv run python -m butlers.connectors.telegram_bot" Enter
+
+# ── dashboard window ───────────────────────────────────────────────
+PANE_DASHBOARD=$(tmux new-window -t "$SESSION" -n dashboard -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_FRONTEND=$(tmux split-window -t "$PANE_DASHBOARD" -v -c "${PROJECT_DIR}/frontend" -P -F '#{pane_id}')
 
-# Backend: sync deps, start postgres, run butlers
-tmux send-keys -t "$PANE_BACKEND" \
-  "export $(grep -v '^#' /secrets/.dev.env | xargs -d '\n') && export $(grep -v '^#' .env | xargs -d '\n') && uv sync --dev && docker compose stop postgres && docker compose up -d postgres && POSTGRES_PORT=54320 uv run butlers up" Enter
-
-# Dashboard API
 tmux send-keys -t "$PANE_DASHBOARD" \
   "POSTGRES_PORT=54320 uv run butlers dashboard --host 0.0.0.0 --port 8200" Enter
-
-# Frontend: install + vite dev server
 tmux send-keys -t "$PANE_FRONTEND" \
   "npm install && npm run dev -- --host 0.0.0.0" Enter
 
-# Even out the layout and focus backend
-tmux select-layout -t "${SESSION}:${WINDOW}" main-vertical
-tmux select-pane -t "$PANE_BACKEND"
+# Focus the backend window
+tmux select-window -t "${SESSION}:backend"
 
 # Attach if we started detached
 if [ -z "${TMUX:-}" ]; then

@@ -21,10 +21,10 @@ DEFAULT_BUTLERS_DIR = Path("roster")
 
 
 def _configure_logging() -> None:
-    """Configure app logging and suppress verbose HTTP client request logs."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(name)s: %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    """Configure structured logging with sensible CLI defaults."""
+    from butlers.core.logging import configure_logging
+
+    configure_logging()  # defaults: INFO, text, no file
 
 
 def _parse_comma_separated(ctx, param, value):

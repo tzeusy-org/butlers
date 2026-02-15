@@ -27,6 +27,7 @@ class TestModuleStatus:
             "enabled": True,
             "status": "ok",
             "error": None,
+            "phase": None,
         }
 
     def test_failed_module(self):

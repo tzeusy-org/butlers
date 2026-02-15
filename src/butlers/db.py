@@ -120,6 +120,20 @@ class Database:
             )
             conn = await asyncpg.connect(**retry_kwargs)
         try:
+            # Refresh collation version on template1 to prevent CREATE DATABASE
+            # failures when the OS collation library version differs from what
+            # was recorded when the template was created (e.g. after a
+            # container image or OS update).  This is a no-op when versions
+            # already match.
+            try:
+                await conn.execute(
+                    "ALTER DATABASE template1 REFRESH COLLATION VERSION"
+                )
+            except Exception:
+                logger.debug(
+                    "Could not refresh template1 collation version (non-fatal)"
+                )
+
             exists = await conn.fetchval(
                 "SELECT 1 FROM pg_database WHERE datname = $1",
                 self.db_name,

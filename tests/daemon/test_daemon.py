@@ -221,6 +221,9 @@ def _patch_infra():
         "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
         "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
         "validate_credentials": patch("butlers.daemon.validate_credentials"),
+        "validate_module_credentials": patch(
+            "butlers.daemon.validate_module_credentials", return_value={}
+        ),
         "init_telemetry": patch("butlers.daemon.init_telemetry"),
         "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.daemon.FastMCP"),
@@ -256,6 +259,7 @@ class TestStartupSequence:
             patches["db_from_env"] as mock_from_env,
             patches["run_migrations"] as mock_migrations,
             patches["validate_credentials"] as mock_validate,
+            patches["validate_module_credentials"],
             patches["init_telemetry"] as mock_telemetry,
             patches["sync_schedules"] as mock_sync,
             patches["FastMCP"] as mock_fastmcp,
@@ -319,6 +323,7 @@ class TestStartupSequence:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -343,6 +348,7 @@ class TestStartupSequence:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -389,6 +395,7 @@ class TestCoreToolRegistration:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patch("butlers.daemon.FastMCP", return_value=mock_mcp),
@@ -433,6 +440,7 @@ class TestTriggerToolDispatch:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patch("butlers.daemon.FastMCP", return_value=mock_mcp),
@@ -468,6 +476,7 @@ class TestModuleToolRegistration:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -493,6 +502,7 @@ class TestModuleToolRegistration:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -517,6 +527,7 @@ class TestModuleToolRegistration:
             patches["db_from_env"],
             patches["run_migrations"] as mock_migrations,
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -546,6 +557,7 @@ class TestModuleToolRegistration:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -575,6 +587,7 @@ class TestShutdownSequence:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -611,6 +624,7 @@ class TestShutdownSequence:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -636,6 +650,7 @@ class TestShutdownSequence:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -675,6 +690,7 @@ class TestShutdownSequence:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -732,6 +748,7 @@ class TestMCPServerStartup:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patch("butlers.daemon.FastMCP", return_value=mock_mcp),
@@ -758,7 +775,7 @@ class TestMCPServerStartup:
             assert kwargs == {
                 "host": "0.0.0.0",
                 "port": 9100,
-                "log_level": "info",
+                "log_level": "warning",
                 "timeout_graceful_shutdown": 0,
             }
 
@@ -796,6 +813,7 @@ class TestMCPServerStartup:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patch("butlers.daemon.FastMCP", return_value=mock_mcp),
@@ -920,6 +938,7 @@ class TestStatusTool:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patch("butlers.daemon.FastMCP", return_value=mock_mcp),
@@ -938,7 +957,7 @@ class TestStatusTool:
         assert result["name"] == "test-butler"
         assert result["description"] == "A test butler"
         assert result["port"] == 9100
-        assert result["modules"] == []
+        assert result["modules"] == {}
         assert result["health"] == "ok"
         assert isinstance(result["uptime_seconds"], float)
         assert result["uptime_seconds"] >= 0
@@ -966,6 +985,7 @@ class TestStatusTool:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patch("butlers.daemon.FastMCP", return_value=mock_mcp),
@@ -980,7 +1000,8 @@ class TestStatusTool:
 
         assert status_fn is not None
         result = await status_fn()
-        assert set(result["modules"]) == {"stub_a", "stub_b"}
+        assert set(result["modules"].keys()) == {"stub_a", "stub_b"}
+        assert all(v["status"] == "active" for v in result["modules"].values())
 
 
 class TestHealthCheck:
@@ -1006,6 +1027,7 @@ class TestHealthCheck:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patch("butlers.daemon.FastMCP", return_value=mock_mcp),
@@ -1097,7 +1119,7 @@ class TestHealthCheck:
         assert result["name"] == "test-butler"
         assert result["description"] == "A test butler"
         assert result["port"] == 9100
-        assert result["modules"] == []
+        assert result["modules"] == {}
         assert isinstance(result["uptime_seconds"], float)
 
 
@@ -1141,6 +1163,7 @@ class TestStartupFailurePropagation:
             patches["db_from_env"],
             patches["run_migrations"] as mock_migrations,
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1168,6 +1191,7 @@ class TestScheduleSync:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"] as mock_sync,
             patches["FastMCP"],
@@ -1190,10 +1214,10 @@ class TestScheduleSync:
 
 
 class TestModuleCredentials:
-    """Verify module credentials are collected and passed to validation."""
+    """Verify module credentials are collected and validated separately."""
 
-    async def test_module_creds_passed_to_validate(self, butler_dir_with_modules: Path) -> None:
-        """validate_credentials should receive module credential env vars."""
+    async def test_module_creds_validated_separately(self, butler_dir_with_modules: Path) -> None:
+        """validate_module_credentials should receive module credential env vars."""
         registry = _make_registry(StubModuleA, StubModuleB)
         patches = _patch_infra()
 
@@ -1201,6 +1225,7 @@ class TestModuleCredentials:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"] as mock_validate,
+            patches["validate_module_credentials"] as mock_mod_validate,
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1213,15 +1238,15 @@ class TestModuleCredentials:
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
 
+        # Core validate_credentials called without module_credentials
         mock_validate.assert_called_once()
-        call_kwargs = mock_validate.call_args
-        # Third argument (module_credentials keyword)
-        module_creds = call_kwargs.kwargs.get(
-            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
-        )
-        assert module_creds is not None
-        assert "stub_a" in module_creds
-        assert "STUB_A_TOKEN" in module_creds["stub_a"]
+        assert "module_credentials" not in mock_validate.call_args.kwargs
+
+        # validate_module_credentials called with module creds
+        mock_mod_validate.assert_called_once()
+        mod_creds_arg = mock_mod_validate.call_args[0][0]
+        assert "stub_a" in mod_creds_arg
+        assert "STUB_A_TOKEN" in mod_creds_arg["stub_a"]
 
 
 class TestSecretDetection:
@@ -1237,6 +1262,7 @@ class TestSecretDetection:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1272,6 +1298,7 @@ name = "butler_test"
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1302,6 +1329,7 @@ name = "butler_test"
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1343,6 +1371,7 @@ optional = ["OPTIONAL_KEY"]
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1380,6 +1409,7 @@ class TestModuleCredentialsTomlSource:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"] as mock_validate,
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1391,12 +1421,12 @@ class TestModuleCredentialsTomlSource:
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
 
+        # validate_credentials is called without module_credentials
         mock_validate.assert_called_once()
-        call_kwargs = mock_validate.call_args
-        module_creds = call_kwargs.kwargs.get(
-            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
-        )
-        assert module_creds is not None
+        assert "module_credentials" not in mock_validate.call_args.kwargs
+
+        # Module creds are collected and checked internally
+        module_creds = daemon._collect_module_credentials()
         assert "stub_a" in module_creds
         # TOML-declared creds should be used, NOT the class property ["STUB_A_TOKEN"]
         assert module_creds["stub_a"] == ["TOML_TOKEN_A", "TOML_SECRET_A"]
@@ -1411,6 +1441,7 @@ class TestModuleCredentialsTomlSource:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"] as mock_validate,
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1423,11 +1454,9 @@ class TestModuleCredentialsTomlSource:
             await daemon.start()
 
         mock_validate.assert_called_once()
-        call_kwargs = mock_validate.call_args
-        module_creds = call_kwargs.kwargs.get(
-            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
-        )
-        assert module_creds is not None
+        assert "module_credentials" not in mock_validate.call_args.kwargs
+
+        module_creds = daemon._collect_module_credentials()
         # stub_a has credentials_env class property → should be used as fallback
         assert "stub_a" in module_creds
         assert module_creds["stub_a"] == ["STUB_A_TOKEN"]
@@ -1447,6 +1476,7 @@ class TestModuleCredentialsTomlSource:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"] as mock_validate,
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1459,11 +1489,9 @@ class TestModuleCredentialsTomlSource:
             await daemon.start()
 
         mock_validate.assert_called_once()
-        call_kwargs = mock_validate.call_args
-        module_creds = call_kwargs.kwargs.get(
-            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
-        )
-        assert module_creds is not None
+        assert "module_credentials" not in mock_validate.call_args.kwargs
+
+        module_creds = daemon._collect_module_credentials()
         # TOML declares empty list — should be used (not fall back to class)
         assert "stub_a" in module_creds
         assert module_creds["stub_a"] == []
@@ -1481,6 +1509,7 @@ class TestModuleCredentialsTomlSource:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"] as mock_validate,
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1493,11 +1522,9 @@ class TestModuleCredentialsTomlSource:
             await daemon.start()
 
         mock_validate.assert_called_once()
-        call_kwargs = mock_validate.call_args
-        module_creds = call_kwargs.kwargs.get(
-            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
-        )
-        assert module_creds is not None
+        assert "module_credentials" not in mock_validate.call_args.kwargs
+
+        module_creds = daemon._collect_module_credentials()
         # Invalid TOML type should be treated as explicitly empty (no class fallback).
         assert module_creds["stub_a"] == []
 
@@ -1514,6 +1541,7 @@ class TestModuleCredentialsTomlSource:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"] as mock_validate,
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1526,11 +1554,9 @@ class TestModuleCredentialsTomlSource:
             await daemon.start()
 
         mock_validate.assert_called_once()
-        call_kwargs = mock_validate.call_args
-        module_creds = call_kwargs.kwargs.get(
-            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
-        )
-        assert module_creds is not None
+        assert "module_credentials" not in mock_validate.call_args.kwargs
+
+        module_creds = daemon._collect_module_credentials()
         assert module_creds["stub_a"] == ["TOKEN_A", "TOKEN_B"]
 
     async def test_mixed_toml_and_class_credentials(self, tmp_path: Path) -> None:
@@ -1550,6 +1576,7 @@ class TestModuleCredentialsTomlSource:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"] as mock_validate,
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1562,11 +1589,9 @@ class TestModuleCredentialsTomlSource:
             await daemon.start()
 
         mock_validate.assert_called_once()
-        call_kwargs = mock_validate.call_args
-        module_creds = call_kwargs.kwargs.get(
-            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
-        )
-        assert module_creds is not None
+        assert "module_credentials" not in mock_validate.call_args.kwargs
+
+        module_creds = daemon._collect_module_credentials()
         # stub_a: TOML-declared
         assert module_creds["stub_a"] == ["CUSTOM_TOKEN"]
         # stub_b: no class credentials_env property, no TOML → absent
@@ -1585,6 +1610,7 @@ class TestModuleCredentialsTomlSource:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1613,7 +1639,6 @@ description = "A test butler"
 name = "butler_test"
 
 [modules.telegram]
-mode = "polling"
 
 [modules.telegram.user]
 enabled = false
@@ -1638,6 +1663,7 @@ password_env = "BOT_EMAIL_PASSWORD"
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"] as mock_validate,
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1651,11 +1677,9 @@ password_env = "BOT_EMAIL_PASSWORD"
             await daemon.start()
 
         mock_validate.assert_called_once()
-        call_kwargs = mock_validate.call_args
-        module_creds = call_kwargs.kwargs.get(
-            "module_credentials", call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
-        )
-        assert module_creds is not None
+        assert "module_credentials" not in mock_validate.call_args.kwargs
+
+        module_creds = daemon._collect_module_credentials()
         assert module_creds["telegram.bot"] == ["TG_BOT_TOKEN"]
         assert module_creds["email.bot"] == ["BOT_EMAIL_ADDRESS", "BOT_EMAIL_PASSWORD"]
         assert "telegram.user" not in module_creds
@@ -1663,6 +1687,7 @@ password_env = "BOT_EMAIL_PASSWORD"
 
         mock_spawner_cls.assert_called_once()
         spawner_kwargs = mock_spawner_cls.call_args.kwargs
+        # When validate_module_credentials returns {} (no failures), all creds are passed
         assert spawner_kwargs["module_credentials_env"] == module_creds
 
     async def test_multiple_secrets_detected(
@@ -1686,6 +1711,7 @@ name = "ghp_1234567890abcdefghij1234567890abcdef"
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1821,6 +1847,7 @@ class TestRuntimeAdapterPassedToSpawner:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1858,6 +1885,7 @@ class TestMessagePipelineWiring:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1897,6 +1925,7 @@ class TestMessagePipelineWiring:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1931,6 +1960,7 @@ class TestRuntimeBinaryCheck:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1950,6 +1980,7 @@ class TestRuntimeBinaryCheck:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1969,6 +2000,7 @@ class TestRuntimeBinaryCheck:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -1992,6 +2024,7 @@ class TestRuntimeBinaryCheck:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -2017,6 +2050,7 @@ class TestSwitchboardClientConnection:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -2054,6 +2088,7 @@ name = "butler_switchboard"
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -2080,6 +2115,7 @@ name = "butler_switchboard"
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -2105,6 +2141,7 @@ name = "butler_switchboard"
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -2134,6 +2171,7 @@ name = "butler_switchboard"
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -2165,6 +2203,7 @@ name = "butler_switchboard"
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -2211,6 +2250,7 @@ url = "http://custom-switchboard:9000/sse"
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -2235,6 +2275,7 @@ url = "http://custom-switchboard:9000/sse"
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patches["FastMCP"],
@@ -2277,6 +2318,7 @@ class TestNotifyTool:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patch("butlers.daemon.FastMCP", return_value=mock_mcp),
@@ -2611,6 +2653,7 @@ class TestRouteExecuteTool:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
+            patches["validate_module_credentials"],
             patches["init_telemetry"],
             patches["sync_schedules"],
             patch("butlers.daemon.FastMCP", return_value=mock_mcp),
@@ -2794,3 +2837,318 @@ class TestRouteExecuteTool:
         assert result["error"]["retryable"] is True
         assert result["result"]["notify_response"]["error"]["class"] == "target_unavailable"
         assert result["result"]["notify_response"]["error"]["retryable"] is True
+
+
+# ---------------------------------------------------------------------------
+# Non-fatal module startup tests
+# ---------------------------------------------------------------------------
+
+
+class StubModuleFailStartup(Module):
+    """Stub module whose on_startup always raises."""
+
+    def __init__(self) -> None:
+        self.started = False
+        self.shutdown_called = False
+        self.tools_registered = False
+
+    @property
+    def name(self) -> str:
+        return "stub_fail"
+
+    @property
+    def config_schema(self) -> type[BaseModel] | None:
+        return None
+
+    @property
+    def dependencies(self) -> list[str]:
+        return []
+
+    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+        self.tools_registered = True
+
+    def migration_revisions(self) -> str | None:
+        return None
+
+    async def on_startup(self, config: Any, db: Any) -> None:
+        raise RuntimeError("on_startup boom")
+
+    async def on_shutdown(self) -> None:
+        self.shutdown_called = True
+
+
+class TestNonFatalModuleStartup:
+    """Verify that module failures during startup are handled gracefully."""
+
+    async def test_module_credential_failure_non_fatal(self, tmp_path: Path) -> None:
+        """Butler starts even when a module's credentials are missing."""
+        butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}, "stub_b": {}})
+        registry = _make_registry(StubModuleA, StubModuleB)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            # Return credential failure for stub_a
+            patch(
+                "butlers.daemon.validate_module_credentials",
+                return_value={"stub_a": ["STUB_A_TOKEN"]},
+            ),
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        # Butler started successfully
+        assert daemon._started_at is not None
+        # stub_a is marked failed
+        assert daemon._module_statuses["stub_a"].status == "failed"
+        assert daemon._module_statuses["stub_a"].phase == "credentials"
+        # stub_b depends on stub_a → cascade_failed
+        assert daemon._module_statuses["stub_b"].status == "cascade_failed"
+
+    async def test_core_credential_failure_still_fatal(self, tmp_path: Path) -> None:
+        """Missing ANTHROPIC_API_KEY still raises (core credentials are fatal)."""
+        butler_dir = _make_butler_toml(tmp_path)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patch(
+                "butlers.daemon.validate_credentials",
+                side_effect=CredentialError("Missing ANTHROPIC_API_KEY"),
+            ),
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir)
+            with pytest.raises(CredentialError, match="ANTHROPIC_API_KEY"):
+                await daemon.start()
+
+    async def test_module_startup_failure_non_fatal(self, tmp_path: Path) -> None:
+        """Butler starts when a module's on_startup raises."""
+        butler_dir = _make_butler_toml(tmp_path, modules={"stub_fail": {}, "stub_a": {}})
+        registry = _make_registry(StubModuleFailStartup, StubModuleA)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        assert daemon._started_at is not None
+        assert daemon._module_statuses["stub_fail"].status == "failed"
+        assert daemon._module_statuses["stub_fail"].phase == "startup"
+        assert daemon._module_statuses["stub_a"].status == "active"
+
+    async def test_dependency_cascade(self, tmp_path: Path) -> None:
+        """When a module fails, dependent modules are marked cascade_failed."""
+        butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}, "stub_b": {}})
+        registry = _make_registry(StubModuleA, StubModuleB)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patch(
+                "butlers.daemon.validate_module_credentials",
+                return_value={"stub_a": ["STUB_A_TOKEN"]},
+            ),
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        # stub_a failed → stub_b (depends on stub_a) cascade_failed
+        assert daemon._module_statuses["stub_a"].status == "failed"
+        assert daemon._module_statuses["stub_b"].status == "cascade_failed"
+        assert "stub_a" in daemon._module_statuses["stub_b"].error
+
+    async def test_failed_module_skipped_in_tool_registration(self, tmp_path: Path) -> None:
+        """A failed module's register_tools is never called."""
+        butler_dir = _make_butler_toml(tmp_path, modules={"stub_fail": {}, "stub_a": {}})
+        registry = _make_registry(StubModuleFailStartup, StubModuleA)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        # Failed module should not have tools registered
+        fail_mod = next(m for m in daemon._modules if m.name == "stub_fail")
+        assert not fail_mod.tools_registered
+        # Active module should have tools registered
+        active_mod = next(m for m in daemon._modules if m.name == "stub_a")
+        assert active_mod.tools_registered
+
+    async def test_failed_module_skipped_in_shutdown(self, tmp_path: Path) -> None:
+        """A failed module's on_shutdown is not called during shutdown."""
+        butler_dir = _make_butler_toml(tmp_path, modules={"stub_fail": {}, "stub_a": {}})
+        registry = _make_registry(StubModuleFailStartup, StubModuleA)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        await daemon.shutdown()
+
+        fail_mod = next(m for m in daemon._modules if m.name == "stub_fail")
+        assert not fail_mod.shutdown_called
+        active_mod = next(m for m in daemon._modules if m.name == "stub_a")
+        assert active_mod.shutdown_called
+
+    async def test_health_degraded_with_failed_module(self, tmp_path: Path) -> None:
+        """Health returns 'degraded' when any module has failed."""
+        butler_dir = _make_butler_toml(tmp_path, modules={"stub_fail": {}, "stub_a": {}})
+        registry = _make_registry(StubModuleFailStartup, StubModuleA)
+        patches = _patch_infra()
+        status_fn = None
+
+        mock_mcp = MagicMock()
+
+        def tool_decorator(*_decorator_args, **_decorator_kwargs):
+            def decorator(fn):
+                nonlocal status_fn
+                if fn.__name__ == "status":
+                    status_fn = fn
+                return fn
+
+            return decorator
+
+        mock_mcp.tool = tool_decorator
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patch("butlers.daemon.FastMCP", return_value=mock_mcp),
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        assert status_fn is not None
+        result = await status_fn()
+        assert result["health"] == "degraded"
+        assert result["modules"]["stub_fail"]["status"] == "failed"
+        assert result["modules"]["stub_a"]["status"] == "active"
+
+    async def test_status_reports_module_failure_details(self, tmp_path: Path) -> None:
+        """status() includes phase and error for failed modules."""
+        butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}, "stub_b": {}})
+        registry = _make_registry(StubModuleA, StubModuleB)
+        patches = _patch_infra()
+        status_fn = None
+
+        mock_mcp = MagicMock()
+
+        def tool_decorator(*_decorator_args, **_decorator_kwargs):
+            def decorator(fn):
+                nonlocal status_fn
+                if fn.__name__ == "status":
+                    status_fn = fn
+                return fn
+
+            return decorator
+
+        mock_mcp.tool = tool_decorator
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patch(
+                "butlers.daemon.validate_module_credentials",
+                return_value={"stub_a": ["STUB_A_TOKEN"]},
+            ),
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patch("butlers.daemon.FastMCP", return_value=mock_mcp),
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        assert status_fn is not None
+        result = await status_fn()
+        stub_a_info = result["modules"]["stub_a"]
+        assert stub_a_info["status"] == "failed"
+        assert stub_a_info["phase"] == "credentials"
+        assert "STUB_A_TOKEN" in stub_a_info["error"]
+
+        stub_b_info = result["modules"]["stub_b"]
+        assert stub_b_info["status"] == "cascade_failed"

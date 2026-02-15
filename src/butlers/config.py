@@ -31,6 +31,15 @@ class ConfigError(Exception):
 
 
 @dataclass
+class LoggingConfig:
+    """Logging configuration from [butler.logging] section."""
+
+    level: str = "INFO"
+    format: str = "text"  # "text" or "json"
+    log_root: str | None = None
+
+
+@dataclass
 class ScheduleConfig:
     """A single scheduled task entry from [[butler.schedule]]."""
 
@@ -135,6 +144,7 @@ class ButlerConfig:
     port: int
     description: str | None = None
     db_name: str = ""
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     schedules: list[ScheduleConfig] = field(default_factory=list)
     modules: dict[str, dict] = field(default_factory=dict)
@@ -410,6 +420,21 @@ def load_config(config_dir: Path) -> ButlerConfig:
     shutdown_section = butler_section.get("shutdown", {})
     shutdown_timeout_s = float(shutdown_section.get("timeout_s", 30.0))
 
+    # --- [butler.logging] sub-section ---
+    logging_section = butler_section.get("logging", {})
+    log_level = str(logging_section.get("level", "INFO")).upper()
+    log_format = str(logging_section.get("format", "text")).lower()
+    if log_format not in ("text", "json"):
+        raise ConfigError(
+            f"Invalid butler.logging.format: {log_format!r}. Expected 'text' or 'json'."
+        )
+    log_root = logging_section.get("log_root")
+    logging_config = LoggingConfig(
+        level=log_level,
+        format=log_format,
+        log_root=log_root,
+    )
+
     # --- [butler.switchboard] sub-section ---
     switchboard_section = butler_section.get("switchboard", {})
     switchboard_url: str | None = switchboard_section.get("url")
@@ -469,6 +494,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         port=port,
         description=description,
         db_name=db_name,
+        logging=logging_config,
         runtime=runtime,
         schedules=schedules,
         modules=modules,

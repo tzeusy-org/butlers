@@ -13,6 +13,7 @@ from butlers.config import (
     ButlerConfig,
     ConfigError,
     GatedToolConfig,
+    LoggingConfig,
     RuntimeConfig,
     ScheduleConfig,
     load_config,
@@ -1039,3 +1040,108 @@ port = 8103
         cfg = load_config(config_dir)
 
         assert cfg.switchboard_url == "http://localhost:8100/sse"
+
+
+# ---------------------------------------------------------------------------
+# Logging config tests
+# ---------------------------------------------------------------------------
+
+
+class TestLoggingConfig:
+    """Tests for [butler.logging] section parsing."""
+
+    def test_logging_defaults(self):
+        """LoggingConfig dataclass defaults."""
+        lc = LoggingConfig()
+        assert lc.level == "INFO"
+        assert lc.format == "text"
+        assert lc.log_root is None
+
+    def test_logging_defaults_from_minimal_toml(self, tmp_path: Path):
+        """Minimal config gets default LoggingConfig."""
+        config_dir = _write_toml(tmp_path, MINIMAL_TOML)
+        cfg = load_config(config_dir)
+        assert cfg.logging.level == "INFO"
+        assert cfg.logging.format == "text"
+        assert cfg.logging.log_root is None
+
+    def test_logging_section_parsed(self, tmp_path: Path):
+        """[butler.logging] section is parsed correctly."""
+        toml = """\
+[butler]
+name = "logbot"
+port = 7100
+
+[butler.logging]
+level = "DEBUG"
+format = "json"
+log_root = "/var/log/butlers"
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+        assert cfg.logging.level == "DEBUG"
+        assert cfg.logging.format == "json"
+        assert cfg.logging.log_root == "/var/log/butlers"
+
+    def test_logging_level_case_insensitive(self, tmp_path: Path):
+        """Level is uppercased during parsing."""
+        toml = """\
+[butler]
+name = "logbot"
+port = 7100
+
+[butler.logging]
+level = "debug"
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+        assert cfg.logging.level == "DEBUG"
+
+    def test_logging_format_case_insensitive(self, tmp_path: Path):
+        """Format is lowercased during parsing."""
+        toml = """\
+[butler]
+name = "logbot"
+port = 7100
+
+[butler.logging]
+format = "JSON"
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+        assert cfg.logging.format == "json"
+
+    def test_logging_invalid_format_raises(self, tmp_path: Path):
+        """Invalid format value raises ConfigError."""
+        toml = """\
+[butler]
+name = "logbot"
+port = 7100
+
+[butler.logging]
+format = "yaml"
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        with pytest.raises(ConfigError, match="Invalid butler.logging.format"):
+            load_config(config_dir)
+
+    def test_logging_env_var_in_log_root(self, tmp_path: Path, monkeypatch):
+        """log_root supports ${ENV_VAR} resolution."""
+        monkeypatch.setenv("LOG_DIR", "/tmp/butler-logs")
+        toml = """\
+[butler]
+name = "logbot"
+port = 7100
+
+[butler.logging]
+log_root = "${LOG_DIR}"
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+        assert cfg.logging.log_root == "/tmp/butler-logs"
+
+    def test_butler_config_includes_logging(self):
+        """ButlerConfig includes logging field with defaults."""
+        cfg = ButlerConfig(name="test", port=9000)
+        assert isinstance(cfg.logging, LoggingConfig)
+        assert cfg.logging.level == "INFO"

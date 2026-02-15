@@ -98,10 +98,14 @@ class tool_span:
     # -- context manager protocol ------------------------------------------
 
     def __enter__(self) -> trace.Span:
+        from butlers.core.logging import set_butler_context
+
         tracer = trace.get_tracer(_TRACER_NAME)
         self._span = tracer.start_span(self._span_name)
         self._span.set_attribute("butler.name", self._butler_name)
         self._token = trace.context_api.attach(trace.set_span_in_context(self._span))
+        # Ensure butler context is correct for multi-butler mode
+        set_butler_context(self._butler_name)
         return self._span
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001

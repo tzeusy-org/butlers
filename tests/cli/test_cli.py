@@ -47,33 +47,27 @@ class TestVersion:
 
 
 class TestLoggingConfiguration:
-    def test_configure_logging_suppresses_http_client_request_logs(self, monkeypatch):
-        calls: list[dict[str, object]] = []
+    def test_configure_logging_suppresses_http_client_request_logs(self):
         httpx_logger = logging.getLogger("httpx")
         httpcore_logger = logging.getLogger("httpcore")
         original_httpx_level = httpx_logger.level
         original_httpcore_level = httpcore_logger.level
+        original_root_handlers = logging.getLogger().handlers[:]
         httpx_logger.setLevel(logging.NOTSET)
         httpcore_logger.setLevel(logging.NOTSET)
 
-        monkeypatch.setattr(
-            "butlers.cli.logging.basicConfig",
-            lambda **kwargs: calls.append(kwargs),
-        )
         try:
             _configure_logging()
 
-            assert calls == [
-                {
-                    "level": logging.INFO,
-                    "format": "%(levelname)s: %(name)s: %(message)s",
-                }
-            ]
+            # Structured logging is configured on root logger
+            root = logging.getLogger()
+            assert len(root.handlers) >= 1
             assert httpx_logger.level == logging.WARNING
             assert httpcore_logger.level == logging.WARNING
         finally:
             httpx_logger.setLevel(original_httpx_level)
             httpcore_logger.setLevel(original_httpcore_level)
+            logging.getLogger().handlers[:] = original_root_handlers
 
 
 class TestListCommand:
