@@ -68,7 +68,7 @@ async def test_serial_dispatch_under_load(
     tasks = [
         spawner.trigger(
             prompt=f"Record weight {70 + i}kg",
-            trigger_source=f"load-test-serial-{i}",
+            trigger_source="external",
         )
         for i in range(n)
     ]
@@ -84,7 +84,7 @@ async def test_serial_dispatch_under_load(
         SELECT id, triggered_at, completed_at
         FROM sessions
         WHERE triggered_at >= $1
-        AND trigger_source LIKE 'load-test-serial-%'
+        AND trigger_source = 'external'
         ORDER BY triggered_at
         """,
         start_time,
@@ -264,7 +264,7 @@ async def test_lock_release_after_error(
     # First trigger: intentionally cause an error with an impossible request
     result_1 = await spawner.trigger(
         "Call a tool that doesn't exist named fake_nonexistent_tool_xyz_12345",
-        trigger_source="test-lock-error-1",
+        trigger_source="external",
     )
 
     # The spawner may succeed even if the LLM can't complete the task perfectly
@@ -274,7 +274,7 @@ async def test_lock_release_after_error(
     # Second trigger: should succeed without hanging
     result_2 = await spawner.trigger(
         "Get status",
-        trigger_source="test-lock-error-2",
+        trigger_source="external",
     )
 
     assert result_2.success is True, "Second trigger should succeed (lock was released)"
@@ -285,7 +285,7 @@ async def test_lock_release_after_error(
         """
         SELECT id, success, error FROM sessions
         WHERE triggered_at >= $1
-        AND trigger_source LIKE 'test-lock-error-%'
+        AND trigger_source = 'external'
         ORDER BY triggered_at
         """,
         start_time,
