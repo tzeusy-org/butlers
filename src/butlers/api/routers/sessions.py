@@ -42,10 +42,12 @@ def _get_db_manager() -> DatabaseManager:
 # Shared SQL builder
 # ---------------------------------------------------------------------------
 
-_SUMMARY_COLUMNS = "id, prompt, trigger_source, success, started_at, completed_at, duration_ms"
+_SUMMARY_COLUMNS = (
+    "id, prompt, trigger_source, request_id, success, started_at, completed_at, duration_ms"
+)
 
 _DETAIL_COLUMNS = (
-    "id, prompt, trigger_source, result, tool_calls, duration_ms, trace_id, cost, "
+    "id, prompt, trigger_source, result, tool_calls, duration_ms, trace_id, request_id, cost, "
     "started_at, completed_at, success, error, model, input_tokens, output_tokens, "
     "parent_session_id"
 )
@@ -57,6 +59,7 @@ def _build_where(
     success: bool | None = None,
     from_date: datetime | None = None,
     to_date: datetime | None = None,
+    request_id: str | None = None,
     start_idx: int = 1,
 ) -> tuple[str, list[object], int]:
     """Build a dynamic WHERE clause from the common session filter params.
@@ -87,6 +90,11 @@ def _build_where(
         args.append(to_date)
         idx += 1
 
+    if request_id is not None:
+        conditions.append(f"request_id = ${idx}")
+        args.append(request_id)
+        idx += 1
+
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     return where_clause, args, idx
 
@@ -98,6 +106,7 @@ def _row_to_summary(row, *, butler: str | None = None) -> SessionSummary:
         butler=butler,
         prompt=row["prompt"],
         trigger_source=row["trigger_source"],
+        request_id=row["request_id"],
         success=row["success"],
         started_at=row["started_at"],
         completed_at=row["completed_at"],
@@ -125,6 +134,7 @@ def _row_to_detail(row, *, butler: str | None = None) -> SessionDetail:
         tool_calls=tool_calls if tool_calls else [],
         duration_ms=row["duration_ms"],
         trace_id=row["trace_id"],
+        request_id=row["request_id"],
         cost=cost,
         started_at=row["started_at"],
         completed_at=row["completed_at"],
@@ -151,6 +161,7 @@ async def list_sessions(
     success: bool | None = Query(None, description="Filter by success status"),
     from_date: datetime | None = Query(None, description="Sessions started after this time"),
     to_date: datetime | None = Query(None, description="Sessions started before this time"),
+    request_id: str | None = Query(None, description="Filter by request_id"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[SessionSummary]:
     """Return paginated sessions aggregated across all butler databases.
@@ -165,6 +176,7 @@ async def list_sessions(
         success=success,
         from_date=from_date,
         to_date=to_date,
+        request_id=request_id,
     )
 
     # Fan-out query across all (or filtered) butler DBs
@@ -214,6 +226,7 @@ async def list_butler_sessions(
     success: bool | None = Query(None, description="Filter by success status"),
     from_date: datetime | None = Query(None, description="Sessions started after this time"),
     to_date: datetime | None = Query(None, description="Sessions started before this time"),
+    request_id: str | None = Query(None, description="Filter by request_id"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[SessionSummary]:
     """Return paginated sessions for a single butler.
@@ -233,6 +246,7 @@ async def list_butler_sessions(
         success=success,
         from_date=from_date,
         to_date=to_date,
+        request_id=request_id,
     )
 
     # Count query

@@ -139,6 +139,7 @@ class SessionSummary(BaseModel):
     butler: str | None = None
     prompt: str
     trigger_source: str
+    request_id: str | None = None
     success: bool | None = None
     started_at: datetime
     completed_at: datetime | None = None

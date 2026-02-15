@@ -191,6 +191,8 @@ function sessionSearchParams(params?: SessionParams): URLSearchParams {
   if (params?.butler != null && params.butler !== "") sp.set("butler", params.butler);
   if (params?.trigger_source != null && params.trigger_source !== "")
     sp.set("trigger_source", params.trigger_source);
+  if (params?.request_id != null && params.request_id !== "")
+    sp.set("request_id", params.request_id);
   if (params?.status != null && params.status !== "all") sp.set("status", params.status);
   if (params?.since != null && params.since !== "") sp.set("since", params.since);
   if (params?.until != null && params.until !== "") sp.set("until", params.until);

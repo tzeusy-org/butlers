@@ -24,6 +24,7 @@ class SessionDetail(BaseModel):
     tool_calls: list[dict[str, Any]] = []
     duration_ms: int | None = None
     trace_id: str | None = None
+    request_id: str | None = None
     cost: dict[str, Any] | None = None
     started_at: datetime
     completed_at: datetime | None = None

@@ -74,6 +74,7 @@ export interface SessionSummary {
   butler?: string;
   prompt: string;
   trigger_source: string;
+  request_id?: string | null;
   success: boolean | null;
   started_at: string;
   completed_at: string | null;
@@ -92,6 +93,7 @@ export interface SessionDetail {
   tool_calls: unknown[];
   duration_ms: number | null;
   trace_id: string | null;
+  request_id: string | null;
   cost: Record<string, unknown> | null;
   started_at: string;
   completed_at: string | null;
@@ -109,6 +111,7 @@ export interface SessionParams {
   limit?: number;
   butler?: string;
   trigger_source?: string;
+  request_id?: string;
   status?: string; // "all" | "success" | "failed"
   since?: string;
   until?: string;
