@@ -70,9 +70,32 @@ roster/butler-name/
 ├── MANIFESTO.md    # Public-facing identity, purpose, and value proposition
 ├── CLAUDE.md       # Butler personality/instructions (system prompt)
 ├── AGENTS.md       # Runtime agent notes
+├── api/            # Dashboard API routes (optional)
+│   ├── router.py   # FastAPI router (exports module-level 'router' variable)
+│   └── models.py   # Pydantic models for request/response schemas
 ├── skills/         # Skills available to CC instances (SKILL.md + optional scripts)
 └── butler.toml     # Identity, schedule, modules config
 ```
+
+### Creating a New Butler
+
+When adding a new butler to the roster, follow this checklist:
+
+1. **Directory structure:** Create `roster/{butler-name}/` with required config files
+2. **MANIFESTO.md:** Define the butler's identity, purpose, and value proposition
+3. **CLAUDE.md:** Write the butler personality and system prompt instructions
+4. **AGENTS.md:** Initialize with "# Notes to self" header for runtime agent notes
+5. **butler.toml:** Configure identity (name, description), schedule (cron expressions), and enabled modules
+6. **Database schema:** Create Alembic migration in `src/butlers/migrations/versions/` for butler-specific tables
+7. **MCP tools:** If needed, implement butler-specific MCP tools as a custom module in `src/butlers/modules/`
+8. **Dashboard routes:** If the butler needs web dashboard endpoints, create `roster/{butler-name}/api/router.py` and `models.py`
+   - router.py must export a module-level `router` variable (APIRouter instance)
+   - Use `from butlers.api.db import DatabaseManager` and `Depends(_get_db_manager)` for DB access
+   - No `__init__.py` needed in the api/ directory
+   - Auto-discovery handles registration via `src/butlers/api/router_discovery.py`
+9. **Skills:** Add butler-specific skills to `roster/{butler-name}/skills/` (each skill needs a SKILL.md)
+10. **Tests:** Write unit tests for MCP tools, API routes, and database operations
+11. **Switchboard registration:** Update the Switchboard butler to route requests to the new butler
 
 ## Code Layout
 
@@ -93,6 +116,7 @@ tests/               # pytest tests
 - **Module dependencies:** Resolved via topological sort
 - **Modules only add tools** — they never touch core infrastructure
 - **Manifesto-driven design:** Each butler has a `MANIFESTO.md` that defines its identity, purpose, and value proposition for users. New features, tools, and UX decisions for a butler should be deeply aligned with its manifesto. When in doubt about scope or framing, consult the manifesto.
+- **Butler-specific API routes:** Dashboard API routes live in `roster/{butler}/api/router.py` and are auto-discovered by `src/butlers/api/router_discovery.py`. Each router.py must export a module-level `router` variable (APIRouter instance). No `__init__.py` needed. DB dependencies are auto-wired via `wire_db_dependencies()`. Co-locate Pydantic models in `models.py` alongside router.py.
 
 ## Implementation Plan
 
