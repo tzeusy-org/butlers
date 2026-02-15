@@ -190,7 +190,7 @@ class TestRouteExecuteTracePropagation:
     async def test_trace_context_propagated_to_spawner(
         self, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
-        """Trace context from route.execute is passed to spawner.trigger."""
+        """route.execute span is a child of the switchboard's trace."""
         patches = _patch_infra()
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
         daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
@@ -207,6 +207,7 @@ class TestRouteExecuteTracePropagation:
         tracer = trace.get_tracer("test")
         with tracer.start_as_current_span("switchboard.route") as parent_span:
             parent_trace_id = parent_span.get_span_context().trace_id
+            parent_span_id = parent_span.get_span_context().span_id
             trace_context = inject_trace_context()
 
         # Call route.execute with trace_context
@@ -220,17 +221,13 @@ class TestRouteExecuteTracePropagation:
         assert result["status"] == "ok"
         daemon.spawner.trigger.assert_awaited_once()
 
-        # Verify parent_context was passed to spawner.trigger
-        call_args = daemon.spawner.trigger.call_args
-        assert call_args is not None
-        parent_ctx_arg = call_args.kwargs.get("parent_context")
-        assert parent_ctx_arg is not None
-
-        # Verify the context has the correct trace_id by creating a span with it
-        with tracer.start_as_current_span("child_span", context=parent_ctx_arg) as child_span:
-            child_trace_id = child_span.get_span_context().trace_id
-
-        assert child_trace_id == parent_trace_id
+        # Verify route.execute created a span under the switchboard's trace
+        spans = otel_provider.get_finished_spans()
+        route_spans = [s for s in spans if s.name == "butler.tool.route.execute"]
+        assert len(route_spans) == 1
+        route_span = route_spans[0]
+        assert route_span.context.trace_id == parent_trace_id
+        assert route_span.parent.span_id == parent_span_id
 
     async def test_no_trace_context_creates_independent_trace(
         self, tmp_path: Path, otel_provider: InMemorySpanExporter

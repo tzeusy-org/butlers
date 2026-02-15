@@ -38,6 +38,7 @@ import shutil
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -973,7 +974,6 @@ class ButlerDaemon:
             }
 
         @mcp.tool(name="route.execute")
-        @tool_span("route.execute", butler_name=butler_name)
         async def route_execute(
             schema_version: str,
             request_context: dict[str, Any],
@@ -984,6 +984,31 @@ class ButlerDaemon:
             trace_context: dict[str, str] | None = None,
         ) -> dict[str, Any]:
             """Execute routed requests and terminate messenger notify deliveries."""
+            parent_ctx = extract_trace_context(trace_context) if trace_context else None
+            tracer = trace.get_tracer("butlers")
+            with tracer.start_as_current_span(
+                "butler.tool.route.execute", context=parent_ctx
+            ) as _span:
+                _span.set_attribute("butler.name", butler_name)
+                return await _route_execute_inner(
+                    schema_version=schema_version,
+                    request_context=request_context,
+                    input=input,
+                    subrequest=subrequest,
+                    target=target,
+                    source_metadata=source_metadata,
+                    trace_context=trace_context,
+                )
+
+        async def _route_execute_inner(
+            schema_version: str,
+            request_context: dict[str, Any],
+            input: dict[str, Any],
+            subrequest: dict[str, Any] | None = None,
+            target: dict[str, Any] | None = None,
+            source_metadata: dict[str, Any] | None = None,
+            trace_context: dict[str, str] | None = None,
+        ) -> dict[str, Any]:
             started_at = time.monotonic()
 
             def _elapsed_ms() -> int:
@@ -1132,15 +1157,11 @@ class ButlerDaemon:
 
                 context_text = "\n".join(context_parts) if context_parts else None
 
-                # Extract parent trace context for propagation
-                parent_ctx = extract_trace_context(trace_context) if trace_context else None
-
                 try:
                     trigger_result = await spawner.trigger(
                         prompt=parsed_route.input.prompt,
                         context=context_text,
                         trigger_source="trigger",
-                        parent_context=parent_ctx,
                         request_id=route_request_id,
                     )
                 except TimeoutError as exc:
@@ -1463,9 +1484,6 @@ class ButlerDaemon:
         if butler_name == "switchboard":
             from butlers.tools.switchboard.ingestion.ingest import ingest_v1
             from butlers.tools.switchboard.routing.route import (
-                _build_trigger_context,
-            )
-            from butlers.tools.switchboard.routing.route import (
                 route as _switchboard_route,
             )
 
@@ -1585,19 +1603,26 @@ class ButlerDaemon:
                 request_context = _routing_session_ctx.get("request_context")
                 request_id = _routing_session_ctx.get("request_id", "unknown")
 
-                trigger_context = _build_trigger_context(
-                    context,
-                    source_metadata,
-                    request_context=request_context,
-                )
-                route_args: dict[str, Any] = {
-                    "prompt": prompt,
-                    "message": prompt,
+                envelope: dict[str, Any] = {
+                    "schema_version": "route.v1",
+                    "request_context": {
+                        "request_id": request_id,
+                        "received_at": datetime.now(UTC).isoformat(),
+                        "source_channel": source_metadata.get("channel", "mcp"),
+                        "source_endpoint_identity": "switchboard",
+                        "source_sender_identity": source_metadata.get(
+                            "identity", "unknown"
+                        ),
+                        "source_thread_identity": (
+                            request_context.get("source_thread_identity")
+                            if request_context
+                            else None
+                        ),
+                        "trace_context": {},
+                    },
+                    "input": {"prompt": prompt, "context": context},
+                    "target": {"butler": butler, "tool": "route.execute"},
                     "source_metadata": source_metadata,
-                    "source_channel": source_metadata.get("channel", "switchboard"),
-                    "source_identity": source_metadata.get("identity", "unknown"),
-                    "source_tool": source_metadata.get("tool_name", "route_to_butler"),
-                    "request_id": request_id,
                     "__switchboard_route_context": {
                         "request_id": request_id,
                         "fanout_mode": "tool_routed",
@@ -1605,18 +1630,13 @@ class ButlerDaemon:
                         "attempt": 1,
                     },
                 }
-                if trigger_context is not None:
-                    route_args["context"] = trigger_context
-                source_id = source_metadata.get("source_id")
-                if source_id is not None:
-                    route_args["source_id"] = source_id
 
                 try:
                     result = await _switchboard_route(
                         pool,
                         target_butler=butler,
-                        tool_name="bot_switchboard_handle_message",
-                        args=route_args,
+                        tool_name="route.execute",
+                        args=envelope,
                         source_butler="switchboard",
                     )
                     if isinstance(result, dict) and result.get("error"):
