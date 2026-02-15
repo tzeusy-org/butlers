@@ -55,3 +55,124 @@ class E2EScenario:
     db_assertions: list[DbAssertion] = field(default_factory=list)
     timeout_seconds: int = 30
     tags: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Health Butler Scenarios
+# ---------------------------------------------------------------------------
+
+HEALTH_SCENARIOS = [
+    E2EScenario(
+        id="health-weight-log",
+        description="Log a weight measurement",
+        input_prompt="I weigh 75.5 kg today",
+        expected_butler="health",
+        tags=["classification", "health", "smoke"],
+        db_assertions=[
+            DbAssertion(
+                butler="health",
+                query="SELECT COUNT(*) as count FROM measurements WHERE type = 'weight'",
+                expected=1,
+                description="Weight measurement should be logged",
+            ),
+        ],
+    ),
+    E2EScenario(
+        id="health-medication-track",
+        description="Track medication intake",
+        input_prompt="I take aspirin 100mg daily for my heart",
+        expected_butler="health",
+        tags=["classification", "health"],
+        db_assertions=[
+            DbAssertion(
+                butler="health",
+                query="SELECT COUNT(*) as count FROM medications WHERE name ILIKE '%aspirin%'",
+                expected=1,
+                description="Medication should be tracked",
+            ),
+        ],
+    ),
+    E2EScenario(
+        id="health-food-preference",
+        description="Food preference classification",
+        input_prompt="I like chicken rice",
+        expected_butler="health",
+        tags=["classification", "health"],
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Relationship Butler Scenarios
+# ---------------------------------------------------------------------------
+
+RELATIONSHIP_SCENARIOS = [
+    E2EScenario(
+        id="relationship-contact-create",
+        description="Create a new contact",
+        input_prompt="Add Sarah Chen as a new contact, her email is sarah@example.com",
+        expected_butler="relationship",
+        tags=["classification", "relationship", "smoke"],
+        db_assertions=[
+            DbAssertion(
+                butler="relationship",
+                query="SELECT COUNT(*) as count FROM contacts WHERE name ILIKE '%sarah%'",
+                expected=1,
+                description="Contact should be created",
+            ),
+        ],
+    ),
+    E2EScenario(
+        id="relationship-reminder",
+        description="Set a social reminder",
+        input_prompt="Remind me to call Mom next week",
+        expected_butler="relationship",
+        tags=["classification", "relationship"],
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Switchboard Classification Scenarios
+# ---------------------------------------------------------------------------
+
+SWITCHBOARD_SCENARIOS = [
+    E2EScenario(
+        id="switchboard-classify-health",
+        description="Route health query to health butler",
+        input_prompt="What medications am I currently taking?",
+        expected_butler="health",
+        tags=["classification", "switchboard", "smoke"],
+    ),
+    E2EScenario(
+        id="switchboard-classify-relationship",
+        description="Route relationship query to relationship butler",
+        input_prompt="Who did I meet last month?",
+        expected_butler="relationship",
+        tags=["classification", "switchboard"],
+    ),
+    E2EScenario(
+        id="switchboard-classify-general",
+        description="Route general query to general butler",
+        input_prompt="What's the weather today?",
+        expected_butler="general",
+        tags=["classification", "switchboard", "smoke"],
+    ),
+    E2EScenario(
+        id="switchboard-multi-domain",
+        description="Multi-domain message decomposition",
+        input_prompt=(
+            "I saw Dr. Smith today and got prescribed metformin 500mg twice daily. "
+            "Also, remind me to send her a thank-you card next week."
+        ),
+        expected_butler=None,  # Multi-target scenario
+        tags=["classification", "switchboard", "decomposition"],
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
+# Combined Scenario List
+# ---------------------------------------------------------------------------
+
+ALL_SCENARIOS = HEALTH_SCENARIOS + RELATIONSHIP_SCENARIOS + SWITCHBOARD_SCENARIOS
