@@ -56,8 +56,6 @@ Choose the appropriate response mode based on the message type and action taken:
 
 ### Memory Classification
 
-Extract facts from conversational messages and store them using the general butler's entity storage and memory tools.
-
 #### General Domain Taxonomy
 
 The general butler handles catch-all data that doesn't fit specialist domains. Use flexible subject/predicate structures.
@@ -132,56 +130,6 @@ User: "What was that coffee shop I liked?"
 2. entity_search(collection="places", query={"type": "coffee"})
 3. Find: "Blue Bottle on 5th St"
 4. notify(channel="telegram", message="Blue Bottle on 5th St — you saved that as a good coffee spot.", intent="reply", request_context=<from session>)
-```
-
-### Notify Usage
-
-Call `notify()` to send responses back to the user via the channel they messaged you from.
-
-**Parameters**:
-- `channel`: Extract from `request_context.source_channel` (e.g., "telegram")
-- `message`: Your response text (required except for react intent)
-- `intent`: One of "send", "reply", "react"
-  - Use "reply" when responding in context of the incoming message
-  - Use "react" for emoji-only acknowledgment
-  - Use "send" for new outbound messages
-- `emoji`: Required when intent is "react" (e.g., "✅", "📝", "💡")
-- `request_context`: Pass through the exact REQUEST CONTEXT object from your context above
-
-**Examples**:
-
-```python
-# React only
-notify(
-    channel="telegram",
-    intent="react",
-    emoji="✅",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
-
-# Reply with message
-notify(
-    channel="telegram",
-    message="Added to your reading list: 'Thinking, Fast and Slow'",
-    intent="reply",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
-
-# React + reply (call notify twice)
-# First react
-notify(
-    channel="telegram",
-    intent="react",
-    emoji="📝",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
-# Then reply
-notify(
-    channel="telegram",
-    message="Note saved to your ideas collection. You now have 12 ideas logged.",
-    intent="reply",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
 ```
 
 ### Complete Examples

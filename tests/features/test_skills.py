@@ -41,6 +41,144 @@ def test_read_system_prompt_empty_file_returns_default(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 9.1 — @include directive resolution
+# ---------------------------------------------------------------------------
+
+
+def _setup_roster(tmp_path: Path, butler: str = "test-butler") -> Path:
+    """Create a roster/<butler>/ layout and return the butler config dir."""
+    config_dir = tmp_path / butler
+    config_dir.mkdir()
+    return config_dir
+
+
+def test_read_system_prompt_resolves_includes(tmp_path: Path) -> None:
+    """A <!-- @include shared/FOO.md --> directive is replaced with file contents."""
+    config_dir = _setup_roster(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "NOTIFY.md").write_text("Notify instructions here.", encoding="utf-8")
+    (config_dir / "CLAUDE.md").write_text(
+        "# Butler\n<!-- @include shared/NOTIFY.md -->\nDone.", encoding="utf-8"
+    )
+    result = read_system_prompt(config_dir, "test")
+    assert "Notify instructions here." in result
+    assert "<!-- @include" not in result
+    assert result.startswith("# Butler\n")
+    assert result.endswith("\nDone.")
+
+
+def test_read_system_prompt_missing_include_preserves_directive(tmp_path: Path) -> None:
+    """When the included file does not exist, the directive is preserved as-is."""
+    config_dir = _setup_roster(tmp_path)
+    directive = "<!-- @include shared/MISSING.md -->"
+    (config_dir / "CLAUDE.md").write_text(f"# Butler\n{directive}\nEnd.", encoding="utf-8")
+    result = read_system_prompt(config_dir, "test")
+    assert directive in result
+
+
+def test_read_system_prompt_no_recursive_includes(tmp_path: Path) -> None:
+    """Directives inside included files are NOT resolved (no recursion)."""
+    config_dir = _setup_roster(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "OUTER.md").write_text(
+        "Outer content\n<!-- @include shared/INNER.md -->", encoding="utf-8"
+    )
+    (shared / "INNER.md").write_text("Inner content", encoding="utf-8")
+    (config_dir / "CLAUDE.md").write_text("<!-- @include shared/OUTER.md -->", encoding="utf-8")
+    result = read_system_prompt(config_dir, "test")
+    assert "Outer content" in result
+    # The nested directive should be present verbatim, NOT resolved
+    assert "<!-- @include shared/INNER.md -->" in result
+    assert "Inner content" not in result
+
+
+def test_read_system_prompt_multiple_includes(tmp_path: Path) -> None:
+    """Multiple include directives in one file are all resolved."""
+    config_dir = _setup_roster(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "A.md").write_text("AAA", encoding="utf-8")
+    (shared / "B.md").write_text("BBB", encoding="utf-8")
+    (config_dir / "CLAUDE.md").write_text(
+        "Start\n<!-- @include shared/A.md -->\nMiddle\n<!-- @include shared/B.md -->\nEnd",
+        encoding="utf-8",
+    )
+    result = read_system_prompt(config_dir, "test")
+    assert "AAA" in result
+    assert "BBB" in result
+    assert "<!-- @include" not in result
+    assert result == "Start\nAAA\nMiddle\nBBB\nEnd"
+
+
+def test_include_rejects_path_traversal(tmp_path: Path) -> None:
+    """Include paths with '..' segments are rejected and the directive is preserved."""
+    config_dir = _setup_roster(tmp_path)
+    # Create the file that a traversal would reach
+    (tmp_path / "secret.md").write_text("SECRET", encoding="utf-8")
+    directive = "<!-- @include ../secret.md -->"
+    (config_dir / "CLAUDE.md").write_text(directive, encoding="utf-8")
+    result = read_system_prompt(config_dir, "test")
+    assert directive in result
+    assert "SECRET" not in result
+
+
+# ---------------------------------------------------------------------------
+# 9.1 — BUTLER_SKILLS.md auto-append
+# ---------------------------------------------------------------------------
+
+
+def test_read_system_prompt_appends_butler_skills(tmp_path: Path) -> None:
+    """BUTLER_SKILLS.md from shared/ is auto-appended to the system prompt."""
+    config_dir = _setup_roster(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "BUTLER_SKILLS.md").write_text("## Shared Skills\n- skill-a", encoding="utf-8")
+    (config_dir / "CLAUDE.md").write_text("# Butler prompt", encoding="utf-8")
+    result = read_system_prompt(config_dir, "test")
+    assert result == "# Butler prompt\n\n## Shared Skills\n- skill-a"
+
+
+def test_read_system_prompt_no_butler_skills_file(tmp_path: Path) -> None:
+    """When BUTLER_SKILLS.md is absent, the prompt is unchanged."""
+    config_dir = _setup_roster(tmp_path)
+    (config_dir / "CLAUDE.md").write_text("# Butler prompt", encoding="utf-8")
+    result = read_system_prompt(config_dir, "test")
+    assert result == "# Butler prompt"
+
+
+def test_butler_skills_appended_after_includes(tmp_path: Path) -> None:
+    """Includes are resolved first, then BUTLER_SKILLS.md is appended."""
+    config_dir = _setup_roster(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "NOTIFY.md").write_text("Notify content", encoding="utf-8")
+    (shared / "BUTLER_SKILLS.md").write_text("## Skills", encoding="utf-8")
+    (config_dir / "CLAUDE.md").write_text(
+        "# Butler\n<!-- @include shared/NOTIFY.md -->\nEnd.", encoding="utf-8"
+    )
+    result = read_system_prompt(config_dir, "test")
+    # Includes resolved
+    assert "Notify content" in result
+    assert "<!-- @include" not in result
+    # Skills appended at the end
+    assert result.endswith("\n\n## Skills")
+
+
+def test_read_system_prompt_default_no_butler_skills(tmp_path: Path) -> None:
+    """Default prompt (no CLAUDE.md) does not get BUTLER_SKILLS.md appended."""
+    config_dir = _setup_roster(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "BUTLER_SKILLS.md").write_text("## Skills", encoding="utf-8")
+    # No CLAUDE.md — should get default prompt without skills
+    result = read_system_prompt(config_dir, "test")
+    assert result == "You are the test butler."
+    assert "Skills" not in result
+
+
+# ---------------------------------------------------------------------------
 # 9.1 — get_skills_dir
 # ---------------------------------------------------------------------------
 

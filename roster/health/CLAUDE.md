@@ -63,8 +63,6 @@ Choose the appropriate response mode based on the message type and action taken:
 
 ### Memory Classification
 
-Extract facts from conversational messages and store them using the health butler's domain tools and memory tools.
-
 #### Health Domain Taxonomy
 
 **Subject**: 
@@ -154,56 +152,6 @@ User: "What's my average blood pressure this month?"
 3. memory_recall(topic="blood pressure target")
 4. Synthesize: "Your average blood pressure this month is 122/78. That's within your target range."
 5. notify(channel="telegram", message=<answer>, intent="reply", request_context=<from session>)
-```
-
-### Notify Usage
-
-Call `notify()` to send responses back to the user via the channel they messaged you from.
-
-**Parameters**:
-- `channel`: Extract from `request_context.source_channel` (e.g., "telegram")
-- `message`: Your response text (required except for react intent)
-- `intent`: One of "send", "reply", "react"
-  - Use "reply" when responding in context of the incoming message
-  - Use "react" for emoji-only acknowledgment
-  - Use "send" for new outbound messages
-- `emoji`: Required when intent is "react" (e.g., "✅", "💊", "❤️")
-- `request_context`: Pass through the exact REQUEST CONTEXT object from your context above
-
-**Examples**:
-
-```python
-# React only
-notify(
-    channel="telegram",
-    intent="react",
-    emoji="✅",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
-
-# Reply with message
-notify(
-    channel="telegram",
-    message="Weight logged: 165 lbs. That's down 2 lbs from last week!",
-    intent="reply",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
-
-# React + reply (call notify twice)
-# First react
-notify(
-    channel="telegram",
-    intent="react",
-    emoji="💊",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
-# Then reply
-notify(
-    channel="telegram",
-    message="Medication dose logged. You've taken 28 out of 30 doses this month (93% adherence).",
-    intent="reply",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
 ```
 
 ### Complete Examples

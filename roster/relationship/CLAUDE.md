@@ -65,8 +65,6 @@ Choose the appropriate response mode based on the message type and action taken:
 
 ### Memory Classification
 
-Extract facts from conversational messages and store them using the relationship butler's domain tools and memory tools.
-
 #### Relationship Domain Taxonomy
 
 **Subject**: Person's full name or contact identifier
@@ -144,56 +142,6 @@ User: "What does Alice like?"
 3. note_search(query="Alice preferences")
 4. Synthesize: "Alice loves hiking and specialty coffee. She mentioned wanting to visit Iceland."
 5. notify(channel="telegram", message=<answer>, intent="reply", request_context=<from session>)
-```
-
-### Notify Usage
-
-Call `notify()` to send responses back to the user via the channel they messaged you from.
-
-**Parameters**:
-- `channel`: Extract from `request_context.source_channel` (e.g., "telegram")
-- `message`: Your response text (required except for react intent)
-- `intent`: One of "send", "reply", "react"
-  - Use "reply" when responding in context of the incoming message
-  - Use "react" for emoji-only acknowledgment
-  - Use "send" for new outbound messages
-- `emoji`: Required when intent is "react" (e.g., "✅", "❤️", "👍")
-- `request_context`: Pass through the exact REQUEST CONTEXT object from your context above
-
-**Examples**:
-
-```python
-# React only
-notify(
-    channel="telegram",
-    intent="react",
-    emoji="✅",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
-
-# Reply with message
-notify(
-    channel="telegram",
-    message="Logged your coffee chat with Sarah. Should I set a follow-up reminder?",
-    intent="reply",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
-
-# React + reply (call notify twice)
-# First react
-notify(
-    channel="telegram",
-    intent="react",
-    emoji="✅",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
-# Then reply
-notify(
-    channel="telegram",
-    message="Gift idea saved for Bob: noise-canceling headphones",
-    intent="reply",
-    request_context=<the REQUEST CONTEXT object from your context above>
-)
 ```
 
 ### Complete Examples

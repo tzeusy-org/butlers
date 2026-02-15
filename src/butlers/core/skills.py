@@ -29,10 +29,58 @@ _DEFAULT_PROMPT_TEMPLATE = "You are the {butler_name} butler."
 # optionally followed by groups of hyphen + lowercase letters/digits
 _KEBAB_CASE_PATTERN = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 
+# Include directive: <!-- @include shared/NOTIFY.md -->
+_INCLUDE_PATTERN = re.compile(r"^\s*<!--\s*@include\s+([\w/._-]+\.md)\s*-->\s*$")
+
 
 # ---------------------------------------------------------------------------
 # 9.1 — CLAUDE.md and skills directory for CC spawner
 # ---------------------------------------------------------------------------
+
+
+def _resolve_includes(content: str, roster_dir: Path) -> str:
+    """Replace ``<!-- @include path/to/file.md -->`` directives with file contents.
+
+    Paths are resolved relative to *roster_dir* (the parent of a butler's
+    config directory).  ``..`` segments are rejected (logged as a warning and
+    the directive is preserved as-is).  Includes are **not** recursive — any
+    directives inside included files are left untouched.
+    """
+    lines = content.split("\n")
+    out: list[str] = []
+    for line in lines:
+        m = _INCLUDE_PATTERN.match(line)
+        if m is None:
+            out.append(line)
+            continue
+        rel_path = m.group(1)
+        if ".." in rel_path.split("/"):
+            logger.warning("Include path contains '..', skipping: %s", rel_path)
+            out.append(line)
+            continue
+        target = roster_dir / rel_path
+        if not target.is_file():
+            logger.warning("Include file not found, preserving directive: %s", target)
+            out.append(line)
+            continue
+        included = target.read_text(encoding="utf-8").rstrip("\n")
+        out.append(included)
+    return "\n".join(out)
+
+
+def _append_shared_skills(content: str, roster_dir: Path) -> str:
+    """Append ``BUTLER_SKILLS.md`` from the shared directory if it exists.
+
+    The file is expected at ``roster_dir / "shared" / "BUTLER_SKILLS.md"``.
+    When present, its contents are appended to *content* separated by two
+    newlines.  Otherwise *content* is returned unchanged.
+    """
+    butler_skills = roster_dir / "shared" / "BUTLER_SKILLS.md"
+    if butler_skills.is_file():
+        skills_content = butler_skills.read_text(encoding="utf-8").rstrip("\n")
+        if skills_content:
+            return content + "\n\n" + skills_content
+    return content
 
 
 def read_system_prompt(config_dir: Path, butler_name: str) -> str:
@@ -40,12 +88,18 @@ def read_system_prompt(config_dir: Path, butler_name: str) -> str:
 
     Returns the file content if present and non-empty.  Otherwise returns a
     sensible default incorporating the butler's name.
+
+    Any ``<!-- @include ... -->`` directives are resolved relative to the
+    roster directory (``config_dir.parent``).  After include resolution,
+    ``BUTLER_SKILLS.md`` from the shared directory is appended if present.
     """
     claude_md = config_dir / "CLAUDE.md"
     if claude_md.is_file():
         content = claude_md.read_text(encoding="utf-8").strip()
         if content:
-            return content
+            roster_dir = config_dir.parent
+            content = _resolve_includes(content, roster_dir)
+            return _append_shared_skills(content, roster_dir)
     default = _DEFAULT_PROMPT_TEMPLATE.format(butler_name=butler_name)
     logger.debug("CLAUDE.md missing or empty in %s — using default prompt", config_dir)
     return default
