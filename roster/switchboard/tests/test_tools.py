@@ -1115,7 +1115,7 @@ def otel_provider():
 
 
 async def test_route_injects_trace_context(pool, otel_provider):
-    """route() injects _trace_context into forwarded args when a span is active."""
+    """route() injects trace_context into forwarded args when a span is active."""
     from butlers.tools.switchboard import register_butler, route
 
     await register_butler(pool, "traced", "http://localhost:8600/sse")
@@ -1134,12 +1134,12 @@ async def test_route_injects_trace_context(pool, otel_provider):
     forwarded = captured_args[0]
     assert "key" in forwarded
     assert forwarded["key"] == "val"
-    assert "_trace_context" in forwarded
-    assert "traceparent" in forwarded["_trace_context"]
+    assert "trace_context" in forwarded
+    assert "traceparent" in forwarded["trace_context"]
 
 
 async def test_route_injects_empty_trace_context_without_span(pool, otel_provider):
-    """route() still works when no active span is present (no _trace_context or empty)."""
+    """route() still works when no active span is present (no trace_context or empty)."""
     from butlers.tools.switchboard import register_butler, route
 
     await register_butler(pool, "nospan", "http://localhost:8601/sse")
@@ -1156,7 +1156,7 @@ async def test_route_injects_empty_trace_context_without_span(pool, otel_provide
     assert len(captured_args) == 1
     forwarded = captured_args[0]
     assert forwarded["x"] == 1
-    # _trace_context may or may not be present depending on whether inject returns empty
+    # trace_context may or may not be present depending on whether inject returns empty
     # but the route should still succeed
 
 
@@ -1174,8 +1174,8 @@ async def test_route_does_not_mutate_original_args(pool, otel_provider):
     with tracer.start_as_current_span("test-parent"):
         await route(pool, "nomut", "ping", original_args, call_fn=noop_call)
 
-    # Original args must not have _trace_context injected
-    assert "_trace_context" not in original_args
+    # Original args must not have trace_context injected
+    assert "trace_context" not in original_args
 
 
 # ------------------------------------------------------------------

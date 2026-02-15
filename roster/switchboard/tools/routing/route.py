@@ -353,7 +353,7 @@ async def route(
             # Inject trace context into args
             trace_context = inject_trace_context()
             if trace_context:
-                route_args = {**route_args, "_trace_context": trace_context}
+                route_args = {**route_args, "trace_context": trace_context}
 
             try:
                 if call_fn is not None:

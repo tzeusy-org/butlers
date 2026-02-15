@@ -586,7 +586,7 @@ class TestSwitchboardRoutingIntegration:
         assert call_log[0]["endpoint_url"] == "http://localhost:9200/sse"
         assert call_log[0]["tool_name"] == "state_get"
         assert call_log[0]["args"]["key"] == "test"
-        assert "_trace_context" in call_log[0]["args"]  # Trace context injected
+        assert "trace_context" in call_log[0]["args"]  # Trace context injected
 
         # Verify result
         assert result == {"result": {"status": "ok"}}

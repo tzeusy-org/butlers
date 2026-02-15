@@ -1,0 +1,9 @@
+{
+  "classify_latency_p95_ms": 4200,
+  "route_latency_cached_p95_ms": 180,
+  "pipeline_latency_p95_ms": 65000,
+  "tokens_per_classification_mean": 1800,
+  "cost_per_run_mean_usd": 0.046,
+  "baseline_date": "2026-02-16",
+  "baseline_note": "Initial baseline metrics for E2E performance tests. Established on first test run."
+}
