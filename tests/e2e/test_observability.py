@@ -20,6 +20,7 @@ Scenarios:
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -314,6 +315,80 @@ async def test_tool_call_instrumentation(
     # Track cost
     if session["input_tokens"] and session["output_tokens"]:
         cost_tracker.record(session["input_tokens"], session["output_tokens"])
+
+
+# ---------------------------------------------------------------------------
+# Scenario 4: No unexpected errors in log
+# ---------------------------------------------------------------------------
+
+
+async def test_no_unexpected_errors_in_log(
+    butler_ecosystem: ButlerEcosystem,
+    general_pool: Pool,
+    e2e_log_path: Path,
+    cost_tracker: CostTracker,
+) -> None:
+    """Verify no unexpected ERROR log entries after a clean run.
+
+    Scans the E2E log file for ERROR entries. Only expected module degradation
+    errors should be present (e.g., missing API keys for optional modules).
+    Any other ERROR indicates a system failure.
+    """
+    general_daemon = butler_ecosystem.butlers["general"]
+    assert general_daemon.spawner is not None, "General spawner must be initialized"
+
+    # Trigger a simple successful query
+    prompt = "What is 5+3?"
+    result = await general_daemon.spawner.trigger(
+        prompt=prompt,
+        trigger_source="external",
+        context=None,
+        max_turns=3,
+    )
+
+    assert result.success, f"Trigger should succeed: {result.error}"
+    assert result.session_id is not None, "Should have session_id"
+
+    # Track cost
+    session = await general_pool.fetchrow(
+        """
+        SELECT input_tokens, output_tokens
+        FROM sessions
+        WHERE id = $1
+        """,
+        result.session_id,
+    )
+    if session and session["input_tokens"] and session["output_tokens"]:
+        cost_tracker.record(session["input_tokens"], session["output_tokens"])
+
+    # Scan log file for ERROR entries
+    import re
+
+    error_pattern = re.compile(r"\[ERROR\]")
+    expected_error_patterns = [
+        # Module degradation warnings (expected when API keys missing)
+        r"Module .* failed to start",
+        r"degraded mode",
+        r"credential validation failed",
+    ]
+
+    unexpected_errors = []
+    with open(e2e_log_path) as log_file:
+        for line in log_file:
+            if error_pattern.search(line):
+                # Check if this is an expected error
+                is_expected = any(
+                    re.search(pattern, line, re.IGNORECASE) for pattern in expected_error_patterns
+                )
+                if not is_expected:
+                    unexpected_errors.append(line.strip())
+
+    # Assert no unexpected errors (allow up to 5 lines for context)
+    if unexpected_errors:
+        error_summary = "\n".join(unexpected_errors[:5])
+        assert False, (
+            f"Found {len(unexpected_errors)} unexpected ERROR log entries:\n{error_summary}"
+        )
 
 
 # ---------------------------------------------------------------------------
