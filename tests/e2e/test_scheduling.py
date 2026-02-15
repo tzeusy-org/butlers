@@ -72,7 +72,7 @@ async def test_heartbeat_tick_triggers_all_butlers(
 
     # Fire heartbeat tick via MCP tool
     heartbeat_daemon = butler_ecosystem.butlers["heartbeat"]
-    port = heartbeat_daemon.config.butler.port
+    port = heartbeat_daemon.config.port
     url = f"http://localhost:{port}/sse"
 
     async with MCPClient(url) as client:
@@ -206,7 +206,7 @@ async def test_toml_schedule_sync(butler_ecosystem: ButlerEcosystem) -> None:
         pool = butler_ecosystem.pools[butler_name]
 
         # Get TOML schedules from config
-        toml_schedules = daemon.config.butler.schedule
+        toml_schedules = daemon.config.schedules
         if not toml_schedules:
             continue
 
@@ -293,7 +293,7 @@ async def test_schedule_crud_via_mcp(butler_ecosystem: ButlerEcosystem, health_p
     via MCP client calls.
     """
     health_daemon = butler_ecosystem.butlers["health"]
-    port = health_daemon.config.butler.port
+    port = health_daemon.config.port
     url = f"http://localhost:{port}/sse"
 
     test_schedule_name = f"e2e-test-schedule-{uuid.uuid4()}"

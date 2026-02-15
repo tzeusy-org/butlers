@@ -67,7 +67,7 @@ async def test_scenario_classification(
     4. Track LLM usage in cost_tracker
     """
     switchboard_daemon = butler_ecosystem.butlers["switchboard"]
-    port = switchboard_daemon.config.butler.port
+    port = switchboard_daemon.config.port
     url = f"http://localhost:{port}/sse"
 
     logger.info(
@@ -201,7 +201,7 @@ async def test_scenario_side_effects(
     daemon = butler_ecosystem.butlers.get(target_butler)
     assert daemon is not None, f"Butler {target_butler} not found in ecosystem"
 
-    port = daemon.config.butler.port
+    port = daemon.config.port
     url = f"http://localhost:{port}/sse"
 
     logger.info(

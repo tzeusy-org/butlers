@@ -383,7 +383,7 @@ async def test_inter_butler_communication_only_via_switchboard(
 
     # Verify health spawner's MCP config only includes health endpoint
     assert health_daemon.spawner is not None
-    health_port = health_daemon.config.butler.port
+    health_port = health_daemon.config.port
 
     # The spawner's _run method generates mcp_servers dict at line 442-446
     # We can't directly inspect it without triggering, but we can verify
@@ -393,7 +393,7 @@ async def test_inter_butler_communication_only_via_switchboard(
     # Similarly verify relationship butler
     relationship_daemon = butler_ecosystem.butlers["relationship"]
     assert relationship_daemon.spawner is not None
-    relationship_port = relationship_daemon.config.butler.port
+    relationship_port = relationship_daemon.config.port
 
     # Each butler should have a unique port
     assert health_port != relationship_port, "Each butler should have its own unique SSE port"

@@ -30,7 +30,7 @@ pytestmark = pytest.mark.e2e
 async def test_all_butlers_running(butler_ecosystem: ButlerEcosystem) -> None:
     """For each butler, assert SSE port is reachable (socket connect)."""
     for butler_name, daemon in butler_ecosystem.butlers.items():
-        port = daemon.config.butler.port
+        port = daemon.config.port
 
         # Try to establish a TCP connection to the SSE port
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -51,7 +51,7 @@ async def test_all_butlers_running(butler_ecosystem: ButlerEcosystem) -> None:
 async def test_butler_status_tools(butler_ecosystem: ButlerEcosystem) -> None:
     """Call status() via MCP client on each butler, assert name/health/modules in response."""
     for butler_name, daemon in butler_ecosystem.butlers.items():
-        port = daemon.config.butler.port
+        port = daemon.config.port
         url = f"http://localhost:{port}/sse"
 
         async with MCPClient(url) as client:
@@ -230,8 +230,7 @@ async def test_concurrent_status_calls(butler_ecosystem: ButlerEcosystem) -> Non
             return await client.call_tool("status", {})
 
     tasks = [
-        check_status(name, daemon.config.butler.port)
-        for name, daemon in butler_ecosystem.butlers.items()
+        check_status(name, daemon.config.port) for name, daemon in butler_ecosystem.butlers.items()
     ]
 
     results = await asyncio.gather(*tasks)
