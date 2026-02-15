@@ -58,6 +58,7 @@ export default function SessionsPage() {
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
   const [page, setPage] = useState(0);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSessionButler, setSelectedSessionButler] = useState<string>("");
   const autoRefreshControl = useAutoRefresh(10_000);
 
   // Fetch butler names for the dropdown
@@ -104,6 +105,7 @@ export default function SessionsPage() {
 
   function handleSessionClick(session: SessionSummary) {
     setSelectedSessionId(session.id);
+    setSelectedSessionButler(session.butler ?? "");
   }
 
   return (
@@ -279,7 +281,7 @@ export default function SessionsPage() {
 
       {/* Session detail drawer */}
       <SessionDetailDrawer
-        butler={filters.butler !== "all" ? filters.butler : ""}
+        butler={selectedSessionButler}
         sessionId={selectedSessionId}
         onClose={() => setSelectedSessionId(null)}
       />
