@@ -103,7 +103,45 @@ Approval behavior by identity:
 Switchboard dispatch policy:
 - Default outbound notify execution should target bot-scoped channel outputs unless policy explicitly requests user-scoped identity.
 
-### 5.1 Ownership Boundary Matrix
+### 5.1 Operational Domain Tools
+
+Beyond `route.execute` and channel adapters, Messenger must provide domain-specific MCP tools that justify its existence as a standalone butler. These tools are Messenger's own — they live in `roster/messenger/tools/` and are not module-provided.
+
+#### 5.1.1 Delivery Tracking
+
+Tools for querying delivery state and history. These read from the durable `delivery_requests`, `delivery_attempts`, and `delivery_receipts` tables (section 12).
+
+- **`messenger_delivery_status(delivery_id)`** — Return the current terminal or in-flight status of a single delivery, including the latest attempt outcome and provider delivery ID when available.
+- **`messenger_delivery_search(origin_butler?, channel?, intent?, status?, since?, until?, limit?)`** — Search delivery history with filters. Returns paginated delivery summaries sorted by recency.
+- **`messenger_delivery_attempts(delivery_id)`** — Return the full attempt log for a delivery: timestamps, outcomes, latencies, error classes, retryability. Essential for diagnosing flaky provider behavior.
+- **`messenger_delivery_trace(request_id)`** — Reconstruct full lineage for a request: from the originating butler's `notify.v1` envelope through Switchboard routing, Messenger admission, validation, target resolution, provider attempts, and terminal outcome. Joins across `delivery_requests`, `delivery_attempts`, and `delivery_receipts`.
+
+#### 5.1.2 Dead Letter Management
+
+Tools for inspecting and replaying deliveries that exhausted retries or were manually quarantined. These operate on the `delivery_dead_letter` table (section 12).
+
+- **`messenger_dead_letter_list(channel?, origin_butler?, error_class?, since?, limit?)`** — List dead-lettered deliveries with filters. Returns enough context (origin, channel, error class, failure summary) to triage without inspecting each one.
+- **`messenger_dead_letter_inspect(dead_letter_id)`** — Return the full dead letter record: original request envelope, all attempt outcomes, quarantine reason, and replay eligibility assessment.
+- **`messenger_dead_letter_replay(dead_letter_id)`** — Re-submit a dead-lettered delivery through the standard admission/validation/delivery pipeline. The replayed delivery gets a new attempt chain but preserves the original idempotency key lineage. Returns the new delivery outcome.
+- **`messenger_dead_letter_discard(dead_letter_id, reason)`** — Permanently mark a dead letter as discarded with a human-readable reason. Discarded dead letters are excluded from replay eligibility and list queries by default.
+
+#### 5.1.3 Validation and Dry-Run
+
+Tools for pre-flight checking without side effects.
+
+- **`messenger_validate_notify(notify_request)`** — Run the full validation pipeline (schema, required fields, origin verification, targeting) against a `notify.v1` envelope without executing delivery. Returns a structured validation result with pass/fail and any error details. Useful for origin butlers to pre-check before submitting.
+- **`messenger_dry_run(notify_request)`** — Full validation plus target resolution and rate-limit headroom check, without executing the provider call. Returns the resolved target identity, channel adapter that would handle delivery, current rate-limit budget remaining, and whether the delivery would be admitted or rejected. Does not persist anything.
+
+#### 5.1.4 Operational Health
+
+Tools for runtime introspection of Messenger's delivery infrastructure. These support both automated monitoring and manual operator triage.
+
+- **`messenger_circuit_status(channel?)`** — Return circuit breaker state (`closed`, `open`, `half-open`) per channel/provider. When open, includes the trip reason, trip timestamp, and configured recovery timeout.
+- **`messenger_rate_limit_status(channel?, identity_scope?)`** — Return current rate-limit headroom per channel and identity scope. Shows budget consumed vs total, window reset time, and whether any per-recipient anti-flood limits are active.
+- **`messenger_queue_depth(channel?)`** — Return count of in-flight deliveries, optionally filtered by channel. Includes breakdown by status (admitted, awaiting-retry, in-provider-call).
+- **`messenger_delivery_stats(since?, until?, group_by?)`** — Aggregate delivery metrics over a time window. Supports grouping by `channel`, `intent`, `origin_butler`, `outcome`, `error_class`. Returns counts, success rate, p50/p95 latency, retry rate, and dead-letter rate.
+
+### 5.2 Ownership Boundary Matrix
 - Switchboard owns ingress connectors, canonical ingest normalization, request-context assignment, and routing orchestration.
 - Messenger owns outbound channel delivery execution (`send`/`reply`) and provider-facing delivery adapters.
 - Non-messenger butlers must not expose direct outbound delivery tools and must request delivery through `notify.v1`.
@@ -403,6 +441,7 @@ Operational rule:
 - Delivery idempotency must be enforced by canonical keys + DB uniqueness, not best-effort retries alone.
 - Rate-limit and admission-control policy must become first-class configurable behavior, not adapter-local heuristics.
 - Delivery audit model must include attempt-level durability and dead-letter replay surfaces.
+- Messenger must implement its operational domain tools (section 5.1): delivery tracking, dead letter management, validation/dry-run, and operational health introspection. These are currently absent — `roster/messenger/tools/` does not exist yet.
 
 ## 18. Conformance Checklist (Target State)
 - `route.execute` rejects missing/invalid `input.context.notify_request` with deterministic `validation_error`.
@@ -421,8 +460,12 @@ Operational rule:
    - Require `route.v1` transport with embedded `notify.v1`, and `route_response.v1` with embedded `notify_response.v1`.
 3. Idempotency + durability:
    - Add canonical idempotency key derivation, DB uniqueness, attempt-level persistence, and dead-letter storage.
+   - Implement delivery tracking tools (`messenger_delivery_status`, `messenger_delivery_search`, `messenger_delivery_attempts`, `messenger_delivery_trace`) against the durable delivery tables.
+   - Implement dead letter management tools (`messenger_dead_letter_list`, `messenger_dead_letter_inspect`, `messenger_dead_letter_replay`, `messenger_dead_letter_discard`).
 4. Reliability policy:
    - Add explicit admission/rate-limit policy, retry/timeout/circuit controls, and typed error normalization.
+   - Implement validation tools (`messenger_validate_notify`, `messenger_dry_run`) to support pre-flight checking.
+   - Implement operational health tools (`messenger_circuit_status`, `messenger_rate_limit_status`, `messenger_queue_depth`, `messenger_delivery_stats`) against runtime state.
 5. Operations hardening:
    - Enforce telemetry/SLI coverage and alerting tied to error-budget burn and delivery stability.
 
