@@ -451,6 +451,7 @@ class ButlerDaemon:
         self._server: uvicorn.Server | None = None
         self._server_task: asyncio.Task | None = None
         self.switchboard_client: MCPClient | None = None
+        self._pipeline: MessagePipeline | None = None
 
     @property
     def _active_modules(self) -> list[Module]:
@@ -695,6 +696,7 @@ class ButlerDaemon:
             source_butler="switchboard",
             enable_ingress_dedupe=True,
         )
+        self._pipeline = pipeline
 
         wired_modules: list[str] = []
         for mod in self._active_modules:
@@ -1376,6 +1378,44 @@ class ButlerDaemon:
         if butler_name == "switchboard":
             from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
+            pipeline = daemon._pipeline
+
+            async def _process_ingested_message(
+                pipeline: MessagePipeline,
+                request_id: str,
+                message_text: str,
+                source: dict[str, Any],
+                event: dict[str, Any],
+                sender: dict[str, Any],
+                message_inbox_id: Any,
+            ) -> None:
+                """Background task: classify and route an ingested message."""
+                try:
+                    await pipeline.process(
+                        message_text=message_text,
+                        tool_name="bot_switchboard_handle_message",
+                        tool_args={
+                            "source": source.get("channel", "unknown"),
+                            "source_channel": source.get("channel", "unknown"),
+                            "source_identity": source.get("endpoint_identity", "unknown"),
+                            "source_endpoint_identity": (
+                                f"{source.get('channel', 'unknown')}"
+                                f":{source.get('endpoint_identity', 'unknown')}"
+                            ),
+                            "sender_identity": sender.get("identity", "unknown"),
+                            "external_event_id": event.get("external_event_id", ""),
+                            "external_thread_id": event.get("external_thread_id"),
+                            "source_tool": "ingest",
+                            "request_id": request_id,
+                        },
+                        message_inbox_id=message_inbox_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Background pipeline processing failed for request_id=%s",
+                        request_id,
+                    )
+
             @mcp.tool()
             @tool_span("ingest", butler_name=butler_name)
             async def ingest(
@@ -1398,9 +1438,27 @@ class ButlerDaemon:
                     envelope["control"] = control
                 try:
                     result = await ingest_v1(pool, envelope)
-                    return result.model_dump(mode="json")
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
+
+                # Fire-and-forget: route the accepted message via the pipeline
+                if not result.duplicate and pipeline is not None:
+                    normalized_text = payload.get("normalized_text", "")
+                    if normalized_text:
+                        asyncio.create_task(
+                            _process_ingested_message(
+                                pipeline=pipeline,
+                                request_id=str(result.request_id),
+                                message_text=normalized_text,
+                                source=source,
+                                event=event,
+                                sender=sender,
+                                message_inbox_id=result.request_id,
+                            ),
+                            name=f"ingest-route-{result.request_id}",
+                        )
+
+                return result.model_dump(mode="json")
 
         @mcp.tool()
         async def tick() -> dict:

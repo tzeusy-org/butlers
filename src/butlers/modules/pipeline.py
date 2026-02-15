@@ -738,31 +738,24 @@ class MessagePipeline:
                             with tracer.start_as_current_span(
                                 "butlers.switchboard.persistence.write"
                             ):
-                                async with self._pool.acquire() as conn:
-                                    await conn.execute(
-                                        """
-                                        UPDATE message_inbox
-                                        SET
-                                            classification = $1,
-                                            classified_at = $2,
-                                            classification_duration_ms = $3,
-                                            routing_results = $4,
-                                            response_summary = $5,
-                                            completed_at = $6
-                                        WHERE id = $7
-                                        """,
-                                        json.dumps(
-                                            {"request_id": request_id, "payload": classification}
-                                        ),
-                                        datetime.now(UTC),
-                                        int(classification_latency_ms),
-                                        json.dumps(
-                                            {"request_id": request_id, "results": sub_results}
-                                        ),
-                                        aggregated,
-                                        datetime.now(UTC),
-                                        message_inbox_id,
-                                    )
+                                await self._update_message_inbox_lifecycle(
+                                    message_inbox_id=message_inbox_id,
+                                    decomposition_output={
+                                        "request_id": request_id,
+                                        "payload": classification,
+                                    },
+                                    dispatch_outcomes={
+                                        "request_id": request_id,
+                                        "results": sub_results,
+                                    },
+                                    response_summary=aggregated
+                                    if isinstance(aggregated, str)
+                                    else str(aggregated),
+                                    lifecycle_state=lifecycle_state,
+                                    classified_at=datetime.now(UTC),
+                                    classification_duration_ms=classification_latency_ms,
+                                    final_state_at=datetime.now(UTC),
+                                )
 
                         return RoutingResult(
                             target_butler="multi",
@@ -815,25 +808,19 @@ class MessagePipeline:
 
                     if message_inbox_id:
                         with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
-                            async with self._pool.acquire() as conn:
-                                await conn.execute(
-                                    """
-                                    UPDATE message_inbox
-                                    SET
-                                        classification = $1,
-                                        classified_at = $2,
-                                        classification_duration_ms = $3,
-                                        response_summary = $4,
-                                        completed_at = $5
-                                    WHERE id = $6
-                                    """,
-                                    json.dumps({"request_id": request_id, "error": error_msg}),
-                                    datetime.now(UTC),
-                                    int(classification_latency_ms),
-                                    "Classification failed",
-                                    datetime.now(UTC),
-                                    message_inbox_id,
-                                )
+                            await self._update_message_inbox_lifecycle(
+                                message_inbox_id=message_inbox_id,
+                                decomposition_output={
+                                    "request_id": request_id,
+                                    "error": error_msg,
+                                },
+                                dispatch_outcomes=None,
+                                response_summary="Classification failed",
+                                lifecycle_state="errored",
+                                classified_at=datetime.now(UTC),
+                                classification_duration_ms=classification_latency_ms,
+                                final_state_at=datetime.now(UTC),
+                            )
 
                     return RoutingResult(
                         target_butler="general",
@@ -920,29 +907,22 @@ class MessagePipeline:
 
                     if message_inbox_id:
                         with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
-                            async with self._pool.acquire() as conn:
-                                await conn.execute(
-                                    """
-                                    UPDATE message_inbox
-                                    SET
-                                        classification = $1,
-                                        classified_at = $2,
-                                        classification_duration_ms = $3,
-                                        routing_results = $4,
-                                        response_summary = $5,
-                                        completed_at = $6
-                                    WHERE id = $7
-                                    """,
-                                    json.dumps(
-                                        {"request_id": request_id, "payload": classification}
-                                    ),
-                                    datetime.now(UTC),
-                                    int(classification_latency_ms),
-                                    json.dumps({"request_id": request_id, "error": error_msg}),
-                                    "Routing failed",
-                                    datetime.now(UTC),
-                                    message_inbox_id,
-                                )
+                            await self._update_message_inbox_lifecycle(
+                                message_inbox_id=message_inbox_id,
+                                decomposition_output={
+                                    "request_id": request_id,
+                                    "payload": classification,
+                                },
+                                dispatch_outcomes={
+                                    "request_id": request_id,
+                                    "error": error_msg,
+                                },
+                                response_summary="Routing failed",
+                                lifecycle_state="errored",
+                                classified_at=datetime.now(UTC),
+                                classification_duration_ms=classification_latency_ms,
+                                final_state_at=datetime.now(UTC),
+                            )
 
                     return RoutingResult(
                         target_butler=target,
@@ -991,29 +971,22 @@ class MessagePipeline:
 
                     if message_inbox_id:
                         with tracer.start_as_current_span("butlers.switchboard.persistence.write"):
-                            async with self._pool.acquire() as conn:
-                                await conn.execute(
-                                    """
-                                    UPDATE message_inbox
-                                    SET
-                                        classification = $1,
-                                        classified_at = $2,
-                                        classification_duration_ms = $3,
-                                        routing_results = $4,
-                                        response_summary = $5,
-                                        completed_at = $6
-                                    WHERE id = $7
-                                    """,
-                                    json.dumps(
-                                        {"request_id": request_id, "payload": classification}
-                                    ),
-                                    datetime.now(UTC),
-                                    int(classification_latency_ms),
-                                    json.dumps({"request_id": request_id, "payload": result}),
-                                    "Routing failed",
-                                    datetime.now(UTC),
-                                    message_inbox_id,
-                                )
+                            await self._update_message_inbox_lifecycle(
+                                message_inbox_id=message_inbox_id,
+                                decomposition_output={
+                                    "request_id": request_id,
+                                    "payload": classification,
+                                },
+                                dispatch_outcomes={
+                                    "request_id": request_id,
+                                    "payload": result,
+                                },
+                                response_summary="Routing failed",
+                                lifecycle_state="errored",
+                                classified_at=datetime.now(UTC),
+                                classification_duration_ms=classification_latency_ms,
+                                final_state_at=datetime.now(UTC),
+                            )
 
                     return RoutingResult(
                         target_butler=target,
