@@ -433,13 +433,26 @@ class ButlerDaemon:
 
     def __init__(
         self,
-        config_dir: Path,
+        config_dir: Path | None = None,
         registry: ModuleRegistry | None = None,
+        *,
+        butler_name: str | None = None,
+        db: Database | None = None,
     ) -> None:
-        self.config_dir = config_dir
+        if config_dir is None and butler_name is None:
+            raise ValueError("Either config_dir or butler_name must be provided")
+        if config_dir is not None and butler_name is not None:
+            raise ValueError("Cannot provide both config_dir and butler_name")
+
+        # If butler_name is provided, derive config_dir from roster/
+        if butler_name is not None:
+            self.config_dir = Path("roster") / butler_name
+        else:
+            self.config_dir = config_dir  # type: ignore
+
         self._registry = registry or default_registry()
         self.config: ButlerConfig | None = None
-        self.db: Database | None = None
+        self.db: Database | None = db  # Allow injected Database for testing
         self.mcp: FastMCP | None = None
         self.spawner: Spawner | None = None
         self._modules: list[Module] = []
@@ -564,9 +577,16 @@ class ButlerDaemon:
         }
 
         # 6. Provision database
-        self.db = Database.from_env(self.config.db_name)
-        await self.db.provision()
-        pool = await self.db.connect()
+        # If db was injected (e.g., for testing), skip provisioning
+        if self.db is None:
+            self.db = Database.from_env(self.config.db_name)
+            await self.db.provision()
+            pool = await self.db.connect()
+        else:
+            # Database already provisioned and connected externally
+            pool = self.db.pool
+            if pool is None:
+                raise RuntimeError("Injected Database must already be connected")
 
         # 7. Run core Alembic migrations
         db_url = self._build_db_url()

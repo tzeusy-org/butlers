@@ -1,7 +1,7 @@
-.PHONY: lint format test test-unit test-integration test-core test-modules test-qg test-qg-serial test-qg-parallel check
+.PHONY: lint format test test-unit test-integration test-core test-modules test-e2e test-qg test-qg-serial test-qg-parallel check
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
-QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py
+QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
 
 lint:
 	uv run ruff check src/ tests/
@@ -28,6 +28,10 @@ test-core:
 # Module tests — tests/modules/ directory
 test-modules:
 	uv run pytest tests/modules/ -v
+
+# E2E tests — requires ANTHROPIC_API_KEY, claude binary, and Docker
+test-e2e:
+	uv run pytest tests/e2e/ -v -s
 
 # Quality-gate default: parallel xdist (see docs/PYTEST_QG_ALTERNATIVES_QKX5.md benchmark).
 test-qg:
