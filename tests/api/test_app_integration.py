@@ -19,11 +19,11 @@ class TestAppWithDiscoveredRouters:
         client = TestClient(app)
 
         # The health butler router should be discovered and mounted
-        response = client.get("/api/health-butler/vitals")
+        response = client.get("/api/health/measurements")
 
         # Should return 200 (or 500 if DB not initialized, which is fine for this test)
         # We're just checking the route exists
-        assert response.status_code in (200, 500)
+        assert response.status_code in (200, 500, 503)
 
     def test_app_logs_discovered_routers(self, caplog):
         caplog.set_level("INFO")
@@ -43,8 +43,8 @@ class TestAppWithDiscoveredRouters:
         # Check that routes exist with the correct prefix
         routes = [route.path for route in app.routes]
 
-        # Health butler should have routes under /api/health-butler
-        health_routes = [r for r in routes if r.startswith("/api/health-butler")]
+        # Health butler should have routes under /api/health
+        health_routes = [r for r in routes if r.startswith("/api/health/")]
         assert len(health_routes) > 0
 
     def test_core_routers_still_mounted(self):

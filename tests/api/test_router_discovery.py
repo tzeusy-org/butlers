@@ -276,7 +276,7 @@ class TestIntegrationWithRealRoster:
         health_router = next(module for name, module in routers if name == "health")
         assert hasattr(health_router, "router")
         assert isinstance(health_router.router, APIRouter)
-        assert health_router.router.prefix == "/api/health-butler"
+        assert health_router.router.prefix == "/api/health"
 
     def test_health_router_imports_shared_models(self):
         """Health router successfully imports ApiResponse from shared models."""

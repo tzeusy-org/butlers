@@ -34,7 +34,6 @@ from butlers.api.routers.audit import router as audit_router
 from butlers.api.routers.butlers import router as butlers_router
 from butlers.api.routers.costs import router as costs_router
 from butlers.api.routers.general import router as general_router
-from butlers.api.routers.health import router as health_router
 from butlers.api.routers.issues import router as issues_router
 from butlers.api.routers.memory import router as memory_router
 from butlers.api.routers.notifications import (
@@ -159,7 +158,6 @@ def create_app(
     app.include_router(timeline_router)
     app.include_router(search_router)
     app.include_router(audit_router)
-    app.include_router(health_router)
     app.include_router(memory_router)
     app.include_router(general_router)
     app.include_router(switchboard_views_router)
