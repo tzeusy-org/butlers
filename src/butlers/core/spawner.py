@@ -23,6 +23,7 @@ from typing import Any
 
 import asyncpg
 from opentelemetry import trace
+from opentelemetry.context import Context
 
 from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
@@ -250,6 +251,7 @@ class Spawner:
         trigger_source: str,
         context: str | None = None,
         max_turns: int = 20,
+        parent_context: Context | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -268,6 +270,9 @@ class Spawner:
             this will be prepended to the prompt with two newlines separating them.
         max_turns:
             Maximum number of turns for the CC session. Defaults to 20.
+        parent_context:
+            Optional OpenTelemetry context for trace propagation. When provided,
+            the spawned session's span will be a child of the parent trace.
 
         Returns
         -------
@@ -303,7 +308,7 @@ class Spawner:
             self._in_flight.add(task)
         try:
             async with self._lock:
-                return await self._run(prompt, trigger_source, context, max_turns)
+                return await self._run(prompt, trigger_source, context, max_turns, parent_context)
         finally:
             if task is not None:
                 self._in_flight.discard(task)
@@ -367,6 +372,7 @@ class Spawner:
         trigger_source: str,
         context: str | None = None,
         max_turns: int = 20,
+        parent_context: Context | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -379,9 +385,9 @@ class Spawner:
         # Read the configured model (defaults to Haiku if not overridden)
         model = self._config.runtime.model
 
-        # Get tracer and start butler.cc_session span
+        # Get tracer and start butler.cc_session span with parent context
         tracer = trace.get_tracer("butlers")
-        span = tracer.start_span("butler.cc_session")
+        span = tracer.start_span("butler.cc_session", context=parent_context)
         span.set_attribute("butler.name", self._config.name)
         span.set_attribute("prompt_length", len(final_prompt))
 

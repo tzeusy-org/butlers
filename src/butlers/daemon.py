@@ -937,7 +937,7 @@ class ButlerDaemon:
             subrequest: dict[str, Any] | None = None,
             target: dict[str, Any] | None = None,
             source_metadata: dict[str, Any] | None = None,
-            trace_context: dict[str, Any] | None = None,
+            trace_context: dict[str, str] | None = None,
         ) -> dict[str, Any]:
             """Execute routed requests and terminate messenger notify deliveries."""
             started_at = time.monotonic()
@@ -1072,11 +1072,16 @@ class ButlerDaemon:
                     context_parts.append(f"\nINPUT CONTEXT:\n{parsed_route.input.context}")
 
                 context_text = "\n".join(context_parts) if context_parts else None
+
+                # Extract parent trace context for propagation
+                parent_ctx = extract_trace_context(trace_context) if trace_context else None
+
                 try:
                     trigger_result = await spawner.trigger(
                         prompt=parsed_route.input.prompt,
                         context=context_text,
                         trigger_source="trigger",
+                        parent_context=parent_ctx,
                     )
                 except TimeoutError as exc:
                     return _route_error_response(
