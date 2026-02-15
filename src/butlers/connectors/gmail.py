@@ -12,6 +12,7 @@ Key behaviors:
 - Idempotent submission to Switchboard ingest API
 - Bounded in-flight requests with exponential backoff
 - Explicit overload handling (no silent drops)
+- Health endpoint for Kubernetes readiness/liveness probes
 
 Environment variables (see `docs/connectors/gmail.md` section 4):
 - SWITCHBOARD_API_BASE_URL (required)
@@ -21,6 +22,7 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - CONNECTOR_ENDPOINT_IDENTITY (required, e.g. "gmail:user:alice@gmail.com")
 - CONNECTOR_CURSOR_PATH (required; stores last historyId)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
+- CONNECTOR_HEALTH_PORT (optional, default 8080)
 - GMAIL_CLIENT_ID (required)
 - GMAIL_CLIENT_SECRET (required)
 - GMAIL_REFRESH_TOKEN (required)
@@ -36,14 +38,29 @@ import html
 import json
 import logging
 import os
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from threading import Thread
+from typing import Any, Literal
 
 import httpx
+import uvicorn
+from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
 
 logger = logging.getLogger(__name__)
+
+
+class HealthStatus(BaseModel):
+    """Health check response model for Kubernetes probes."""
+
+    status: Literal["healthy", "unhealthy"]
+    uptime_seconds: float
+    last_checkpoint_save_at: str | None
+    last_ingest_submit_at: str | None
+    source_api_connectivity: Literal["connected", "disconnected", "unknown"]
+    timestamp: str
 
 
 class GmailConnectorConfig(BaseModel):
@@ -61,6 +78,9 @@ class GmailConnectorConfig(BaseModel):
     connector_endpoint_identity: str
     connector_cursor_path: Path
     connector_max_inflight: int = 8
+
+    # Health check config
+    connector_health_port: int = 8080
 
     # Gmail API OAuth
     gmail_client_id: str
@@ -84,6 +104,14 @@ class GmailConnectorConfig(BaseModel):
         except ValueError as exc:
             raise ValueError(
                 f"CONNECTOR_MAX_INFLIGHT must be an integer, got: {max_inflight_str}"
+            ) from exc
+
+        health_port_str = os.environ.get("CONNECTOR_HEALTH_PORT", "8080")
+        try:
+            health_port = int(health_port_str)
+        except ValueError as exc:
+            raise ValueError(
+                f"CONNECTOR_HEALTH_PORT must be an integer, got: {health_port_str}"
             ) from exc
 
         watch_renew_str = os.environ.get("GMAIL_WATCH_RENEW_INTERVAL_S", "86400")
@@ -110,6 +138,7 @@ class GmailConnectorConfig(BaseModel):
             connector_endpoint_identity=os.environ["CONNECTOR_ENDPOINT_IDENTITY"],
             connector_cursor_path=Path(cursor_path_str),
             connector_max_inflight=max_inflight,
+            connector_health_port=health_port,
             gmail_client_id=os.environ["GMAIL_CLIENT_ID"],
             gmail_client_secret=os.environ["GMAIL_CLIENT_SECRET"],
             gmail_refresh_token=os.environ["GMAIL_REFRESH_TOKEN"],
@@ -138,10 +167,84 @@ class GmailConnectorRuntime:
         self._running = False
         self._semaphore = asyncio.Semaphore(config.connector_max_inflight)
 
+        # Health tracking
+        self._start_time = time.time()
+        self._last_checkpoint_save: float | None = None
+        self._last_ingest_submit: float | None = None
+        self._source_api_ok: bool | None = None
+        self._health_server: uvicorn.Server | None = None
+        self._health_thread: Thread | None = None
+
+    async def get_health_status(self) -> HealthStatus:
+        """Get current health status for Kubernetes probes."""
+        uptime = time.time() - self._start_time
+
+        last_checkpoint_save_at = None
+        if self._last_checkpoint_save is not None:
+            last_checkpoint_save_at = datetime.fromtimestamp(
+                self._last_checkpoint_save, UTC
+            ).isoformat()
+
+        last_ingest_submit_at = None
+        if self._last_ingest_submit is not None:
+            last_ingest_submit_at = datetime.fromtimestamp(
+                self._last_ingest_submit, UTC
+            ).isoformat()
+
+        if self._source_api_ok is None:
+            connectivity = "unknown"
+        elif self._source_api_ok:
+            connectivity = "connected"
+        else:
+            connectivity = "disconnected"
+
+        # Determine overall status
+        status = "healthy"
+        if self._source_api_ok is False:
+            status = "unhealthy"
+
+        return HealthStatus(
+            status=status,
+            uptime_seconds=uptime,
+            last_checkpoint_save_at=last_checkpoint_save_at,
+            last_ingest_submit_at=last_ingest_submit_at,
+            source_api_connectivity=connectivity,
+            timestamp=datetime.now(UTC).isoformat(),
+        )
+
+    def _start_health_server(self) -> None:
+        """Start FastAPI health check server in background thread."""
+        app = FastAPI(title="Gmail Connector Health")
+
+        @app.get("/health")
+        async def health() -> HealthStatus:
+            return await self.get_health_status()
+
+        config = uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=self._config.connector_health_port,
+            log_level="warning",
+        )
+        self._health_server = uvicorn.Server(config)
+
+        def run_server() -> None:
+            asyncio.run(self._health_server.serve())
+
+        self._health_thread = Thread(target=run_server, daemon=True)
+        self._health_thread.start()
+        logger.info(
+            "Health server started",
+            extra={"port": self._config.connector_health_port},
+        )
+
     async def start(self) -> None:
         """Start the Gmail connector runtime."""
         self._running = True
         self._http_client = httpx.AsyncClient(timeout=30.0)
+
+        # Start health server
+        self._start_health_server()
 
         logger.info(
             "Gmail connector starting: cursor=%s",
@@ -246,6 +349,10 @@ class GmailConnectorRuntime:
         """Save cursor state to disk."""
         self._config.connector_cursor_path.parent.mkdir(parents=True, exist_ok=True)
         self._config.connector_cursor_path.write_text(cursor.model_dump_json(indent=2))
+
+        # Record successful checkpoint save
+        self._last_checkpoint_save = time.time()
+
         logger.debug("Saved cursor: historyId=%s", cursor.history_id)
 
     async def _get_access_token(self) -> str:
@@ -258,68 +365,94 @@ class GmailConnectorRuntime:
         if not self._http_client:
             raise RuntimeError("HTTP client not initialized")
 
-        response = await self._http_client.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "client_id": self._config.gmail_client_id,
-                "client_secret": self._config.gmail_client_secret,
-                "refresh_token": self._config.gmail_refresh_token,
-                "grant_type": "refresh_token",
-            },
-        )
-        response.raise_for_status()
-        token_data = response.json()
+        try:
+            response = await self._http_client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": self._config.gmail_client_id,
+                    "client_secret": self._config.gmail_client_secret,
+                    "refresh_token": self._config.gmail_refresh_token,
+                    "grant_type": "refresh_token",
+                },
+            )
+            response.raise_for_status()
+            token_data = response.json()
 
-        self._access_token = token_data["access_token"]
-        expires_in = token_data.get("expires_in", 3600)
-        self._token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+            self._access_token = token_data["access_token"]
+            expires_in = token_data.get("expires_in", 3600)
+            self._token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
 
-        logger.debug("Refreshed OAuth access token (expires in %ds)", expires_in)
-        return self._access_token
+            # Mark API as connected on successful token refresh
+            self._source_api_ok = True
+
+            logger.debug("Refreshed OAuth access token (expires in %ds)", expires_in)
+            return self._access_token
+        except Exception:
+            # Mark API as disconnected on failure
+            self._source_api_ok = False
+            raise
 
     async def _gmail_get_profile(self) -> dict[str, Any]:
         """Fetch Gmail profile to get current historyId."""
         if not self._http_client:
             raise RuntimeError("HTTP client not initialized")
 
-        token = await self._get_access_token()
-        response = await self._http_client.get(
-            "https://gmail.googleapis.com/gmail/v1/users/me/profile",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        response.raise_for_status()
-        return response.json()
+        try:
+            token = await self._get_access_token()
+            response = await self._http_client.get(
+                "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+
+            # Mark API as connected on success
+            self._source_api_ok = True
+
+            return response.json()
+        except Exception:
+            # Mark API as disconnected on failure
+            self._source_api_ok = False
+            raise
 
     async def _fetch_history_changes(self, start_history_id: str) -> list[dict[str, Any]]:
         """Fetch history changes since the given historyId."""
         if not self._http_client:
             raise RuntimeError("HTTP client not initialized")
 
-        token = await self._get_access_token()
+        try:
+            token = await self._get_access_token()
 
-        # Gmail history.list API
-        response = await self._http_client.get(
-            "https://gmail.googleapis.com/gmail/v1/users/me/history",
-            params={"startHistoryId": start_history_id},
-            headers={"Authorization": f"Bearer {token}"},
-        )
-
-        if response.status_code == 404:
-            # History ID too old, reset to current
-            logger.warning("History ID %s is too old, resetting to current", start_history_id)
-            profile = await self._gmail_get_profile()
-            new_history_id = profile.get("historyId", start_history_id)
-            await self._save_cursor(
-                GmailCursor(
-                    history_id=new_history_id,
-                    last_updated_at=datetime.now(UTC).isoformat(),
-                )
+            # Gmail history.list API
+            response = await self._http_client.get(
+                "https://gmail.googleapis.com/gmail/v1/users/me/history",
+                params={"startHistoryId": start_history_id},
+                headers={"Authorization": f"Bearer {token}"},
             )
-            return []
 
-        response.raise_for_status()
-        data = response.json()
-        return data.get("history", [])
+            if response.status_code == 404:
+                # History ID too old, reset to current
+                logger.warning("History ID %s is too old, resetting to current", start_history_id)
+                profile = await self._gmail_get_profile()
+                new_history_id = profile.get("historyId", start_history_id)
+                await self._save_cursor(
+                    GmailCursor(
+                        history_id=new_history_id,
+                        last_updated_at=datetime.now(UTC).isoformat(),
+                    )
+                )
+                return []
+
+            response.raise_for_status()
+            data = response.json()
+
+            # Mark API as connected on success
+            self._source_api_ok = True
+
+            return data.get("history", [])
+        except Exception:
+            # Mark API as disconnected on failure
+            self._source_api_ok = False
+            raise
 
     def _extract_message_ids_from_history(self, history: list[dict[str, Any]]) -> list[str]:
         """Extract new message IDs from history changes."""
@@ -364,14 +497,23 @@ class GmailConnectorRuntime:
         if not self._http_client:
             raise RuntimeError("HTTP client not initialized")
 
-        token = await self._get_access_token()
-        response = await self._http_client.get(
-            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}",
-            params={"format": "full"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        response.raise_for_status()
-        return response.json()
+        try:
+            token = await self._get_access_token()
+            response = await self._http_client.get(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}",
+                params={"format": "full"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+
+            # Mark API as connected on success
+            self._source_api_ok = True
+
+            return response.json()
+        except Exception:
+            # Mark API as disconnected on failure
+            self._source_api_ok = False
+            raise
 
     def _build_ingest_envelope(self, message_data: dict[str, Any]) -> dict[str, Any]:
         """Build ingest.v1 envelope from Gmail message data."""
@@ -477,6 +619,9 @@ class GmailConnectorRuntime:
 
         response.raise_for_status()
         result = response.json()
+
+        # Record successful ingest submission
+        self._last_ingest_submit = time.time()
 
         if result.get("duplicate"):
             logger.debug("Duplicate ingestion for %s", envelope["event"]["external_event_id"])

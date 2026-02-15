@@ -18,6 +18,7 @@ Environment Variables (from docs/connectors/telegram_bot.md):
     CONNECTOR_CURSOR_PATH: Checkpoint file path for polling mode (required for polling)
     CONNECTOR_POLL_INTERVAL_S: Poll interval in seconds (required for polling)
     CONNECTOR_MAX_INFLIGHT: Max concurrent ingest submissions (optional, default 8)
+    CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 8080)
     BUTLER_TELEGRAM_TOKEN: Telegram bot token (required)
 """
 
@@ -27,16 +28,32 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from threading import Thread
+from typing import Any, Literal
 
 import httpx
+import uvicorn
+from fastapi import FastAPI
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
+
+
+class HealthStatus(BaseModel):
+    """Health check response model for Kubernetes probes."""
+
+    status: Literal["healthy", "unhealthy"]
+    uptime_seconds: float
+    last_checkpoint_save_at: str | None
+    last_ingest_submit_at: str | None
+    source_api_connectivity: Literal["connected", "disconnected", "unknown"]
+    timestamp: str
 
 
 @dataclass
@@ -64,6 +81,9 @@ class TelegramBotConnectorConfig:
 
     # Concurrency control
     max_inflight: int = 8
+
+    # Health check config
+    health_port: int = 8080
 
     @classmethod
     def from_env(cls) -> TelegramBotConnectorConfig:
@@ -94,6 +114,8 @@ class TelegramBotConnectorConfig:
 
         max_inflight = int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8"))
 
+        health_port = int(os.environ.get("CONNECTOR_HEALTH_PORT", "8080"))
+
         return cls(
             switchboard_api_base_url=switchboard_api_base_url,
             switchboard_api_token=switchboard_api_token,
@@ -105,6 +127,7 @@ class TelegramBotConnectorConfig:
             poll_interval_s=poll_interval_s,
             webhook_url=webhook_url,
             max_inflight=max_inflight,
+            health_port=health_port,
         )
 
 
@@ -116,6 +139,7 @@ class TelegramBotConnector:
     - Normalize updates to ingest.v1 format
     - Submit to Switchboard ingest API
     - Persist polling cursor for safe resume
+    - Expose health endpoint for Kubernetes probes
 
     Does NOT:
     - Classify messages
@@ -130,9 +154,80 @@ class TelegramBotConnector:
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
 
+        # Health tracking
+        self._start_time = time.time()
+        self._last_checkpoint_save: float | None = None
+        self._last_ingest_submit: float | None = None
+        self._source_api_ok: bool | None = None
+        self._health_server: uvicorn.Server | None = None
+        self._health_thread: Thread | None = None
+
     @property
     def _telegram_api_base(self) -> str:
         return TELEGRAM_API_BASE.format(token=self._config.telegram_token)
+
+    async def get_health_status(self) -> HealthStatus:
+        """Get current health status for Kubernetes probes."""
+        uptime = time.time() - self._start_time
+
+        last_checkpoint_save_at = None
+        if self._last_checkpoint_save is not None:
+            last_checkpoint_save_at = datetime.fromtimestamp(
+                self._last_checkpoint_save, UTC
+            ).isoformat()
+
+        last_ingest_submit_at = None
+        if self._last_ingest_submit is not None:
+            last_ingest_submit_at = datetime.fromtimestamp(
+                self._last_ingest_submit, UTC
+            ).isoformat()
+
+        if self._source_api_ok is None:
+            connectivity = "unknown"
+        elif self._source_api_ok:
+            connectivity = "connected"
+        else:
+            connectivity = "disconnected"
+
+        # Determine overall status
+        status = "healthy"
+        if self._source_api_ok is False:
+            status = "unhealthy"
+
+        return HealthStatus(
+            status=status,
+            uptime_seconds=uptime,
+            last_checkpoint_save_at=last_checkpoint_save_at,
+            last_ingest_submit_at=last_ingest_submit_at,
+            source_api_connectivity=connectivity,
+            timestamp=datetime.now(UTC).isoformat(),
+        )
+
+    def _start_health_server(self) -> None:
+        """Start FastAPI health check server in background thread."""
+        app = FastAPI(title="Telegram Connector Health")
+
+        @app.get("/health")
+        async def health() -> HealthStatus:
+            return await self.get_health_status()
+
+        config = uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=self._config.health_port,
+            log_level="warning",
+        )
+        self._health_server = uvicorn.Server(config)
+
+        def run_server() -> None:
+            asyncio.run(self._health_server.serve())
+
+        self._health_thread = Thread(target=run_server, daemon=True)
+        self._health_thread.start()
+        logger.info(
+            "Health server started",
+            extra={"port": self._config.health_port},
+        )
 
     async def start_polling(self) -> None:
         """Start long-polling loop for dev mode.
@@ -142,6 +237,9 @@ class TelegramBotConnector:
         """
         if not self._config.cursor_path:
             raise ValueError("CONNECTOR_CURSOR_PATH is required for polling mode")
+
+        # Start health server
+        self._start_health_server()
 
         # Load checkpoint
         self._load_checkpoint()
@@ -194,6 +292,9 @@ class TelegramBotConnector:
         if not self._config.webhook_url:
             raise ValueError("CONNECTOR_WEBHOOK_URL is required for webhook mode")
 
+        # Start health server
+        self._start_health_server()
+
         await self._set_webhook(self._config.webhook_url)
         logger.info(
             "Registered Telegram webhook",
@@ -226,23 +327,40 @@ class TelegramBotConnector:
         if self._last_update_id is not None:
             params["offset"] = self._last_update_id + 1
 
-        resp = await self._http_client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-        updates: list[dict[str, Any]] = data.get("result", [])
+        try:
+            resp = await self._http_client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            updates: list[dict[str, Any]] = data.get("result", [])
 
-        if updates:
-            self._last_update_id = updates[-1]["update_id"]
+            if updates:
+                self._last_update_id = updates[-1]["update_id"]
 
-        return updates
+            # Mark API as connected on success
+            self._source_api_ok = True
+
+            return updates
+        except Exception:
+            # Mark API as disconnected on failure
+            self._source_api_ok = False
+            raise
 
     async def _set_webhook(self, webhook_url: str) -> dict[str, Any]:
         """Call Telegram setWebhook API."""
         url = f"{self._telegram_api_base}/setWebhook"
-        resp = await self._http_client.post(url, json={"url": webhook_url})
-        resp.raise_for_status()
-        data: dict[str, Any] = resp.json()
-        return data
+        try:
+            resp = await self._http_client.post(url, json={"url": webhook_url})
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+
+            # Mark API as connected on success
+            self._source_api_ok = True
+
+            return data
+        except Exception:
+            # Mark API as disconnected on failure
+            self._source_api_ok = False
+            raise
 
     # -------------------------------------------------------------------------
     # Internal: Update processing
@@ -351,6 +469,9 @@ class TelegramBotConnector:
             resp.raise_for_status()
             result = resp.json()
 
+            # Record successful ingest submission
+            self._last_ingest_submit = time.time()
+
             logger.info(
                 "Submitted to Switchboard ingest",
                 extra={
@@ -430,6 +551,9 @@ class TelegramBotConnector:
                 json.dump({"last_update_id": self._last_update_id}, f)
 
             tmp_path.replace(self._config.cursor_path)
+
+            # Record successful checkpoint save
+            self._last_checkpoint_save = time.time()
 
             logger.debug(
                 "Saved checkpoint",
