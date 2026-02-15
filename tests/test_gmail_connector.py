@@ -7,7 +7,6 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
 
 import pytest
 
@@ -28,8 +27,7 @@ def temp_cursor_path(tmp_path: Path) -> Path:
 def gmail_config(temp_cursor_path: Path) -> GmailConnectorConfig:
     """Create test Gmail connector config."""
     return GmailConnectorConfig(
-        switchboard_api_base_url="http://localhost:8000",
-        switchboard_api_token="test-token",
+        switchboard_mcp_url="http://localhost:8100/sse",
         connector_provider="gmail",
         connector_channel="email",
         connector_endpoint_identity="gmail:user:test@example.com",
@@ -55,8 +53,7 @@ class TestGmailConnectorConfig:
     def test_from_env_success(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test successful config loading from environment."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_API_BASE_URL", "http://localhost:8000")
-        monkeypatch.setenv("SWITCHBOARD_API_TOKEN", "test-token")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
         monkeypatch.setenv("CONNECTOR_PROVIDER", "gmail")
         monkeypatch.setenv("CONNECTOR_CHANNEL", "email")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
@@ -68,8 +65,7 @@ class TestGmailConnectorConfig:
 
         config = GmailConnectorConfig.from_env()
 
-        assert config.switchboard_api_base_url == "http://localhost:8000"
-        assert config.switchboard_api_token == "test-token"
+        assert config.switchboard_mcp_url == "http://localhost:8100/sse"
         assert config.connector_provider == "gmail"
         assert config.connector_channel == "email"
         assert config.connector_endpoint_identity == "gmail:user:test@example.com"
@@ -82,7 +78,7 @@ class TestGmailConnectorConfig:
     def test_from_env_missing_required(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test config loading fails with missing required env vars."""
         # Clear all required env vars
-        monkeypatch.delenv("SWITCHBOARD_API_BASE_URL", raising=False)
+        monkeypatch.delenv("SWITCHBOARD_MCP_URL", raising=False)
         monkeypatch.delenv("CONNECTOR_ENDPOINT_IDENTITY", raising=False)
         monkeypatch.delenv("GMAIL_CLIENT_ID", raising=False)
 
@@ -95,7 +91,7 @@ class TestGmailConnectorConfig:
     ) -> None:
         """Test config loading fails with invalid integer values."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_API_BASE_URL", "http://localhost:8000")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
@@ -306,7 +302,7 @@ class TestGmailConnectorRuntime:
         assert "Test body content" in envelope["payload"]["normalized_text"]
 
     async def test_submit_to_ingest_api_success(self, gmail_runtime: GmailConnectorRuntime) -> None:
-        """Test submitting envelope to Switchboard ingest API."""
+        """Test submitting envelope to Switchboard via MCP ingest tool."""
         envelope = {
             "schema_version": "ingest.v1",
             "source": {"channel": "email", "provider": "gmail", "endpoint_identity": "test"},
@@ -320,29 +316,22 @@ class TestGmailConnectorRuntime:
             "control": {"policy_tier": "default"},
         }
 
-        mock_response = MagicMock()
-        mock_response.status_code = 202
-        mock_response.json.return_value = {
-            "request_id": str(uuid4()),
-            "status": "accepted",
-            "duplicate": False,
-        }
-        mock_response.raise_for_status = MagicMock()
+        mock_result = {"request_id": "req-123", "duplicate": False, "status": "accepted"}
 
-        with patch.object(gmail_runtime, "_http_client", new=AsyncMock()) as mock_client:
-            mock_client.post = AsyncMock(return_value=mock_response)
-
+        with patch.object(
+            gmail_runtime._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_call:
             await gmail_runtime._submit_to_ingest_api(envelope)
 
-            mock_client.post.assert_called_once()
-            call_args = mock_client.post.call_args
-            assert call_args.kwargs["json"] == envelope
-            assert "Authorization" in call_args.kwargs["headers"]
+            mock_call.assert_called_once_with("ingest", envelope)
 
-    async def test_submit_to_ingest_api_rate_limit_retry(
+    async def test_submit_to_ingest_api_mcp_error(
         self, gmail_runtime: GmailConnectorRuntime
     ) -> None:
-        """Test ingest API handles 429 rate limit with retry."""
+        """Test handling of MCP errors during ingest submission."""
         envelope = {
             "schema_version": "ingest.v1",
             "source": {"channel": "email", "provider": "gmail", "endpoint_identity": "test"},
@@ -356,29 +345,40 @@ class TestGmailConnectorRuntime:
             "control": {"policy_tier": "default"},
         }
 
-        # First call returns 429, second call succeeds
-        mock_429_response = MagicMock()
-        mock_429_response.status_code = 429
-        mock_429_response.headers = {"Retry-After": "1"}
-
-        mock_success_response = MagicMock()
-        mock_success_response.status_code = 202
-        mock_success_response.json.return_value = {
-            "request_id": str(uuid4()),
-            "status": "accepted",
-            "duplicate": False,
-        }
-        mock_success_response.raise_for_status = MagicMock()
-
-        with (
-            patch.object(gmail_runtime, "_http_client", new=AsyncMock()) as mock_client,
-            patch("asyncio.sleep", new=AsyncMock()),
+        with patch.object(
+            gmail_runtime._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("Ingest tool error: Validation failed"),
         ):
-            mock_client.post = AsyncMock(side_effect=[mock_429_response, mock_success_response])
+            with pytest.raises(RuntimeError, match="Ingest tool error"):
+                await gmail_runtime._submit_to_ingest_api(envelope)
 
-            await gmail_runtime._submit_to_ingest_api(envelope)
+    async def test_submit_to_ingest_api_connection_error(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Test handling of connection errors to MCP server."""
+        envelope = {
+            "schema_version": "ingest.v1",
+            "source": {"channel": "email", "provider": "gmail", "endpoint_identity": "test"},
+            "event": {
+                "external_event_id": "msg1",
+                "external_thread_id": None,
+                "observed_at": datetime.now(UTC).isoformat(),
+            },
+            "sender": {"identity": "sender@example.com"},
+            "payload": {"raw": {}, "normalized_text": "test"},
+            "control": {"policy_tier": "default"},
+        }
 
-            assert mock_client.post.call_count == 2
+        with patch.object(
+            gmail_runtime._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("Cannot reach switchboard"),
+        ):
+            with pytest.raises(ConnectionError):
+                await gmail_runtime._submit_to_ingest_api(envelope)
 
     def test_extract_body_from_payload_text_plain(
         self, gmail_runtime: GmailConnectorRuntime
@@ -441,7 +441,7 @@ class TestGmailPubSubConfig:
     ) -> None:
         """Test Pub/Sub config when enabled with topic."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_API_BASE_URL", "http://localhost:8000")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
@@ -462,7 +462,7 @@ class TestGmailPubSubConfig:
     ) -> None:
         """Test Pub/Sub config fails when enabled without topic."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_API_BASE_URL", "http://localhost:8000")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
@@ -478,7 +478,7 @@ class TestGmailPubSubConfig:
     ) -> None:
         """Test Pub/Sub config with custom webhook settings."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_API_BASE_URL", "http://localhost:8000")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
@@ -499,7 +499,7 @@ class TestGmailPubSubConfig:
     ) -> None:
         """Test Pub/Sub is disabled by default."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_API_BASE_URL", "http://localhost:8000")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
@@ -516,7 +516,7 @@ class TestGmailPubSubConfig:
     ) -> None:
         """Test webhook token is loaded from environment."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_API_BASE_URL", "http://localhost:8000")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")

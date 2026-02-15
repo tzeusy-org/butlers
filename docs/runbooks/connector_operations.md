@@ -34,8 +34,7 @@ This runbook covers deployment, monitoring, recovery, and rollback operations fo
 **Configuration:**
 ```bash
 # Required environment variables
-export SWITCHBOARD_API_BASE_URL="http://localhost:8000"
-export SWITCHBOARD_API_TOKEN="your-switchboard-api-token"
+export SWITCHBOARD_MCP_URL="http://localhost:8100/sse"
 export CONNECTOR_PROVIDER="telegram"
 export CONNECTOR_CHANNEL="telegram"
 export CONNECTOR_ENDPOINT_IDENTITY="your_bot_username"
@@ -106,8 +105,7 @@ export CONNECTOR_WEBHOOK_URL="https://your-domain.com/telegram/webhook"
 **Configuration:**
 ```bash
 # Required environment variables
-export SWITCHBOARD_API_BASE_URL="http://localhost:8000"
-export SWITCHBOARD_API_TOKEN="your-switchboard-api-token"
+export SWITCHBOARD_MCP_URL="http://localhost:8100/sse"
 export CONNECTOR_PROVIDER="gmail"
 export CONNECTOR_CHANNEL="email"
 export CONNECTOR_ENDPOINT_IDENTITY="gmail:user:your-email@gmail.com"
@@ -415,7 +413,7 @@ WARNING: History ID 12345 is too old, resetting to current
 **Diagnosis:**
 1. Check connector process is running: `ps aux | grep connector`
 2. Check source API connectivity: `curl -I https://api.telegram.org` or Gmail API
-3. Check Switchboard API health: `curl $SWITCHBOARD_API_BASE_URL/health`
+3. Check Switchboard MCP server health: `curl $SWITCHBOARD_MCP_URL`
 4. Review connector logs for errors
 
 **Resolution:**
@@ -483,8 +481,7 @@ ERROR: Failed to fetch history changes: 401 Unauthorized
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `SWITCHBOARD_API_BASE_URL` | Yes | - | Base URL for Switchboard API |
-| `SWITCHBOARD_API_TOKEN` | Yes* | - | Bearer token for ingest API auth (*if auth enabled) |
+| `SWITCHBOARD_MCP_URL` | Yes | - | SSE endpoint for Switchboard MCP server |
 | `CONNECTOR_PROVIDER` | Yes | `telegram` | Provider identifier |
 | `CONNECTOR_CHANNEL` | Yes | `telegram` | Channel identifier |
 | `CONNECTOR_ENDPOINT_IDENTITY` | Yes | - | Bot username or ID |
@@ -498,8 +495,7 @@ ERROR: Failed to fetch history changes: 401 Unauthorized
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `SWITCHBOARD_API_BASE_URL` | Yes | - | Base URL for Switchboard API |
-| `SWITCHBOARD_API_TOKEN` | Yes* | - | Bearer token for ingest API auth (*if auth enabled) |
+| `SWITCHBOARD_MCP_URL` | Yes | - | SSE endpoint for Switchboard MCP server |
 | `CONNECTOR_PROVIDER` | Yes | `gmail` | Provider identifier |
 | `CONNECTOR_CHANNEL` | Yes | `email` | Channel identifier |
 | `CONNECTOR_ENDPOINT_IDENTITY` | Yes | - | Mailbox identity (e.g., `gmail:user:email@example.com`) |

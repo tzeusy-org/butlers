@@ -1372,6 +1372,36 @@ class ButlerDaemon:
                 result_payload={"notify_response": notify_response},
             )
 
+        # Switchboard-only: ingest tool for connector submissions
+        if butler_name == "switchboard":
+            from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+
+            @mcp.tool()
+            @tool_span("ingest", butler_name=butler_name)
+            async def ingest(
+                schema_version: str,
+                source: dict[str, Any],
+                event: dict[str, Any],
+                sender: dict[str, Any],
+                payload: dict[str, Any],
+                control: dict[str, Any] | None = None,
+            ) -> dict[str, Any]:
+                """Accept an ingest.v1 envelope from a connector."""
+                envelope: dict[str, Any] = {
+                    "schema_version": schema_version,
+                    "source": source,
+                    "event": event,
+                    "sender": sender,
+                    "payload": payload,
+                }
+                if control is not None:
+                    envelope["control"] = control
+                try:
+                    result = await ingest_v1(pool, envelope)
+                    return result.model_dump(mode="json")
+                except ValueError as exc:
+                    return {"status": "error", "error": str(exc)}
+
         @mcp.tool()
         async def tick() -> dict:
             """Evaluate due scheduled tasks and dispatch them now."""

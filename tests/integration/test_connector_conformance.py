@@ -13,10 +13,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from unittest.mock import AsyncMock, patch
 
-import httpx
 import pytest
 
 from butlers.connectors.gmail import GmailConnectorConfig, GmailConnectorRuntime
@@ -37,8 +35,7 @@ pytestmark = pytest.mark.integration
 def telegram_config(tmp_path: Path) -> TelegramBotConnectorConfig:
     """Create test Telegram connector config."""
     return TelegramBotConnectorConfig(
-        switchboard_api_base_url="http://localhost:8000",
-        switchboard_api_token="test-token",
+        switchboard_mcp_url="http://localhost:8100/sse",
         provider="telegram",
         channel="telegram",
         endpoint_identity="test_bot",
@@ -53,8 +50,7 @@ def telegram_config(tmp_path: Path) -> TelegramBotConnectorConfig:
 def gmail_config(tmp_path: Path) -> GmailConnectorConfig:
     """Create test Gmail connector config."""
     return GmailConnectorConfig(
-        switchboard_api_base_url="http://localhost:8000",
-        switchboard_api_token="test-token",
+        switchboard_mcp_url="http://localhost:8100/sse",
         connector_provider="gmail",
         connector_channel="email",
         connector_endpoint_identity="gmail:user:test@example.com",
@@ -90,7 +86,7 @@ class TestTelegramConnectorConformance:
     async def test_telegram_ingest_acceptance(
         self, telegram_connector: TelegramBotConnector
     ) -> None:
-        """Test Telegram connector successfully submits to ingest API and receives request_id."""
+        """Test Telegram connector successfully submits to ingest MCP tool."""
         telegram_update = {
             "update_id": 12345,
             "message": {
@@ -102,17 +98,14 @@ class TestTelegramConnectorConformance:
             },
         }
 
-        expected_request_id = str(uuid4())
-        mock_response = MagicMock()
-        mock_response.status_code = 202
-        mock_response.json.return_value = {
-            "request_id": expected_request_id,
-            "status": "accepted",
-            "duplicate": False,
-        }
-        mock_response.raise_for_status = MagicMock()
+        mock_result = {"request_id": "req-123", "status": "accepted", "duplicate": False}
 
-        with patch.object(telegram_connector._http_client, "post", return_value=mock_response):
+        with patch.object(
+            telegram_connector._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
             envelope = telegram_connector._normalize_to_ingest_v1(telegram_update)
             await telegram_connector._submit_to_ingest(envelope)
 
@@ -142,32 +135,17 @@ class TestTelegramConnectorConformance:
             },
         }
 
-        request_id = str(uuid4())
-
         # First submission: accepted
-        first_response = MagicMock()
-        first_response.status_code = 202
-        first_response.json.return_value = {
-            "request_id": request_id,
-            "status": "accepted",
-            "duplicate": False,
-        }
-        first_response.raise_for_status = MagicMock()
+        first_result = {"request_id": "req-123", "status": "accepted", "duplicate": False}
 
         # Second submission: duplicate accepted (same request_id returned)
-        second_response = MagicMock()
-        second_response.status_code = 202
-        second_response.json.return_value = {
-            "request_id": request_id,
-            "status": "accepted",
-            "duplicate": True,
-        }
-        second_response.raise_for_status = MagicMock()
+        second_result = {"request_id": "req-123", "status": "accepted", "duplicate": True}
 
         with patch.object(
-            telegram_connector._http_client,
-            "post",
-            side_effect=[first_response, second_response],
+            telegram_connector._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            side_effect=[first_result, second_result],
         ):
             envelope = telegram_connector._normalize_to_ingest_v1(telegram_update)
 
@@ -243,7 +221,7 @@ class TestGmailConnectorConformance:
     """Conformance tests for Gmail connector ingest flow."""
 
     async def test_gmail_ingest_acceptance(self, gmail_connector: GmailConnectorRuntime) -> None:
-        """Test Gmail connector successfully submits to ingest API and receives request_id."""
+        """Test Gmail connector successfully submits to ingest MCP tool."""
         gmail_message = {
             "id": "msg123",
             "threadId": "thread456",
@@ -261,19 +239,14 @@ class TestGmailConnectorConformance:
             },
         }
 
-        expected_request_id = str(uuid4())
-        mock_response = MagicMock()
-        mock_response.status_code = 202
-        mock_response.json.return_value = {
-            "request_id": expected_request_id,
-            "status": "accepted",
-            "duplicate": False,
-        }
-        mock_response.raise_for_status = MagicMock()
+        mock_result = {"request_id": "req-123", "status": "accepted", "duplicate": False}
 
-        with patch.object(gmail_connector, "_http_client", new=AsyncMock()) as mock_client:
-            mock_client.post = AsyncMock(return_value=mock_response)
-
+        with patch.object(
+            gmail_connector._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
             envelope = gmail_connector._build_ingest_envelope(gmail_message)
             await gmail_connector._submit_to_ingest_api(envelope)
 
@@ -305,31 +278,18 @@ class TestGmailConnectorConformance:
             },
         }
 
-        request_id = str(uuid4())
-
         # First submission: accepted
-        first_response = MagicMock()
-        first_response.status_code = 202
-        first_response.json.return_value = {
-            "request_id": request_id,
-            "status": "accepted",
-            "duplicate": False,
-        }
-        first_response.raise_for_status = MagicMock()
+        first_result = {"request_id": "req-123", "status": "accepted", "duplicate": False}
 
         # Second submission: duplicate accepted
-        second_response = MagicMock()
-        second_response.status_code = 202
-        second_response.json.return_value = {
-            "request_id": request_id,
-            "status": "accepted",
-            "duplicate": True,
-        }
-        second_response.raise_for_status = MagicMock()
+        second_result = {"request_id": "req-123", "status": "accepted", "duplicate": True}
 
-        with patch.object(gmail_connector, "_http_client", new=AsyncMock()) as mock_client:
-            mock_client.post = AsyncMock(side_effect=[first_response, second_response])
-
+        with patch.object(
+            gmail_connector._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            side_effect=[first_result, second_result],
+        ):
             envelope = gmail_connector._build_ingest_envelope(gmail_message)
 
             # First submission
@@ -425,10 +385,10 @@ class TestCrossConnectorConformance:
         # The key requirement: same source event MUST produce same dedupe identity
         pass
 
-    async def test_telegram_http_error_handling(
+    async def test_telegram_mcp_error_handling(
         self, telegram_connector: TelegramBotConnector
     ) -> None:
-        """Test that connector handles HTTP errors from ingest API gracefully."""
+        """Test that connector handles MCP errors from ingest tool gracefully."""
         telegram_update = {
             "update_id": 88888,
             "message": {
@@ -440,60 +400,42 @@ class TestCrossConnectorConformance:
             },
         }
 
-        # Simulate 500 error from ingest API
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-        mock_response.text = "Internal Server Error"
-        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Internal Server Error", request=MagicMock(), response=mock_response
-        )
-
-        with patch.object(telegram_connector._http_client, "post", return_value=mock_response):
+        with patch.object(
+            telegram_connector._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("Ingest tool error: Internal error"),
+        ):
             envelope = telegram_connector._normalize_to_ingest_v1(telegram_update)
 
             # Should raise the error (caller is responsible for retry logic)
-            with pytest.raises(httpx.HTTPStatusError):
+            with pytest.raises(RuntimeError, match="Ingest tool error"):
                 await telegram_connector._submit_to_ingest(envelope)
 
-    async def test_gmail_rate_limit_handling(self, gmail_connector: GmailConnectorRuntime) -> None:
-        """Test that Gmail connector handles 429 rate limit with retry."""
+    async def test_gmail_mcp_error_handling(self, gmail_connector: GmailConnectorRuntime) -> None:
+        """Test that Gmail connector handles MCP errors from ingest tool gracefully."""
         gmail_message = {
             "id": "msg666",
             "threadId": "thread666",
             "internalDate": "1708000000000",
             "payload": {
                 "headers": [
-                    {"name": "From", "value": "ratelimit@example.com"},
-                    {"name": "Subject", "value": "Rate Limit Test"},
-                    {"name": "Message-ID", "value": "<ratelimit@example.com>"},
+                    {"name": "From", "value": "error@example.com"},
+                    {"name": "Subject", "value": "Error Test"},
+                    {"name": "Message-ID", "value": "<error@example.com>"},
                 ],
                 "mimeType": "text/plain",
-                "body": {"data": "UmF0ZSBsaW1pdA=="},
+                "body": {"data": "RXJyb3IgdGVzdA=="},
             },
         }
 
-        # First call returns 429, second call succeeds
-        mock_429_response = MagicMock()
-        mock_429_response.status_code = 429
-        mock_429_response.headers = {"Retry-After": "1"}
-
-        mock_success_response = MagicMock()
-        mock_success_response.status_code = 202
-        mock_success_response.json.return_value = {
-            "request_id": str(uuid4()),
-            "status": "accepted",
-            "duplicate": False,
-        }
-        mock_success_response.raise_for_status = MagicMock()
-
-        with (
-            patch.object(gmail_connector, "_http_client", new=AsyncMock()) as mock_client,
-            patch("asyncio.sleep", new=AsyncMock()),
+        with patch.object(
+            gmail_connector._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("Cannot reach switchboard"),
         ):
-            mock_client.post = AsyncMock(side_effect=[mock_429_response, mock_success_response])
-
             envelope = gmail_connector._build_ingest_envelope(gmail_message)
-            await gmail_connector._submit_to_ingest_api(envelope)
 
-            # Verify retry occurred
-            assert mock_client.post.call_count == 2
+            with pytest.raises(ConnectionError):
+                await gmail_connector._submit_to_ingest_api(envelope)

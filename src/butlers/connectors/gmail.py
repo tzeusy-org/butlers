@@ -9,14 +9,13 @@ Key behaviors:
 - OAuth-based authentication for Gmail API access
 - Watch/history delta flow with bounded polling fallback
 - Durable historyId cursor with restart-safe replay
-- Idempotent submission to Switchboard ingest API
+- Idempotent submission to Switchboard MCP server via ingest tool
 - Bounded in-flight requests with exponential backoff
 - Explicit overload handling (no silent drops)
 - Health endpoint for Kubernetes readiness/liveness probes
 
 Environment variables (see `docs/connectors/gmail.md` section 4):
-- SWITCHBOARD_API_BASE_URL (required)
-- SWITCHBOARD_API_TOKEN (required when auth enabled)
+- SWITCHBOARD_MCP_URL (required)
 - CONNECTOR_PROVIDER=gmail (required)
 - CONNECTOR_CHANNEL=email (required)
 - CONNECTOR_ENDPOINT_IDENTITY (required, e.g. "gmail:user:alice@gmail.com")
@@ -55,6 +54,7 @@ from fastapi import FastAPI, Request
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict
 
+from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 
 logger = logging.getLogger(__name__)
@@ -76,9 +76,8 @@ class GmailConnectorConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    # Switchboard API
-    switchboard_api_base_url: str
-    switchboard_api_token: str | None = None
+    # Switchboard MCP
+    switchboard_mcp_url: str
 
     # Connector identity
     connector_provider: str = "gmail"
@@ -168,8 +167,7 @@ class GmailConnectorConfig(BaseModel):
         pubsub_webhook_token = os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN")
 
         return cls(
-            switchboard_api_base_url=os.environ["SWITCHBOARD_API_BASE_URL"],
-            switchboard_api_token=os.environ.get("SWITCHBOARD_API_TOKEN"),
+            switchboard_mcp_url=os.environ["SWITCHBOARD_MCP_URL"],
             connector_provider=os.environ.get("CONNECTOR_PROVIDER", "gmail"),
             connector_channel=os.environ.get("CONNECTOR_CHANNEL", "email"),
             connector_endpoint_identity=os.environ["CONNECTOR_ENDPOINT_IDENTITY"],
@@ -204,6 +202,9 @@ class GmailConnectorRuntime:
     def __init__(self, config: GmailConnectorConfig) -> None:
         self._config = config
         self._http_client: httpx.AsyncClient | None = None
+        self._mcp_client = CachedMCPClient(
+            config.switchboard_mcp_url, client_name="gmail-connector"
+        )
         self._access_token: str | None = None
         self._token_expires_at: datetime | None = None
         self._running = False
@@ -389,6 +390,7 @@ class GmailConnectorRuntime:
     async def stop(self) -> None:
         """Stop the Gmail connector runtime."""
         self._running = False
+        await self._mcp_client.aclose()
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
@@ -861,52 +863,31 @@ class GmailConnectorRuntime:
         return "(no body)"
 
     async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
-        """Submit ingest.v1 envelope to Switchboard ingest API."""
-        if not self._http_client:
-            raise RuntimeError("HTTP client not initialized")
-
-        url = f"{self._config.switchboard_api_base_url}/api/switchboard/ingest"
-        headers = {"Content-Type": "application/json"}
-        if self._config.switchboard_api_token:
-            headers["Authorization"] = f"Bearer {self._config.switchboard_api_token}"
-
+        """Submit ingest.v1 envelope to Switchboard via MCP ingest tool."""
         start_time = time.perf_counter()
         status = "error"
 
         try:
-            response = await self._http_client.post(
-                url,
-                json=envelope,
-                headers=headers,
-            )
+            result = await self._mcp_client.call_tool("ingest", envelope)
 
-            # Handle overload/rate limit
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After", "60")
-                logger.warning("Ingest API rate limited, retrying after %s seconds", retry_after)
-                await asyncio.sleep(int(retry_after))
-                # Retry once
-                response = await self._http_client.post(
-                    url,
-                    json=envelope,
-                    headers=headers,
-                )
-
-            response.raise_for_status()
-            result = response.json()
+            # Check for tool-level error response
+            if isinstance(result, dict) and result.get("status") == "error":
+                error_msg = result.get("error", "Unknown ingest error")
+                raise RuntimeError(f"Ingest tool error: {error_msg}")
 
             # Record successful ingest submission
             self._last_ingest_submit = time.time()
 
             # Determine status for metrics
-            status = "duplicate" if result.get("duplicate", False) else "success"
+            is_duplicate = isinstance(result, dict) and result.get("duplicate", False)
+            status = "duplicate" if is_duplicate else "success"
 
-            if result.get("duplicate"):
+            if is_duplicate:
                 logger.debug("Duplicate ingestion for %s", envelope["event"]["external_event_id"])
             else:
                 logger.info(
                     "Ingestion accepted: request_id=%s, event_id=%s",
-                    result.get("request_id"),
+                    result.get("request_id") if isinstance(result, dict) else None,
                     envelope["event"]["external_event_id"],
                 )
         except Exception as exc:

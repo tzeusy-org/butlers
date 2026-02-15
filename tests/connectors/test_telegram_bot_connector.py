@@ -6,9 +6,8 @@ import asyncio
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
-import httpx
 import pytest
 
 from butlers.connectors.telegram_bot import (
@@ -22,8 +21,7 @@ def mock_config(tmp_path: Path) -> TelegramBotConnectorConfig:
     """Create a mock connector configuration."""
     cursor_path = tmp_path / "cursor.json"
     return TelegramBotConnectorConfig(
-        switchboard_api_base_url="http://localhost:8000",
-        switchboard_api_token="test-token",
+        switchboard_mcp_url="http://localhost:8100/sse",
         provider="telegram",
         channel="telegram",
         endpoint_identity="test_bot",
@@ -64,8 +62,7 @@ def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     """Test loading configuration from environment variables."""
     cursor_path = tmp_path / "cursor.json"
 
-    monkeypatch.setenv("SWITCHBOARD_API_BASE_URL", "http://localhost:8000")
-    monkeypatch.setenv("SWITCHBOARD_API_TOKEN", "test-token")
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
     monkeypatch.setenv("CONNECTOR_PROVIDER", "telegram")
     monkeypatch.setenv("CONNECTOR_CHANNEL", "telegram")
     monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "my_bot")
@@ -76,8 +73,7 @@ def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 
     config = TelegramBotConnectorConfig.from_env()
 
-    assert config.switchboard_api_base_url == "http://localhost:8000"
-    assert config.switchboard_api_token == "test-token"
+    assert config.switchboard_mcp_url == "http://localhost:8100/sse"
     assert config.provider == "telegram"
     assert config.channel == "telegram"
     assert config.endpoint_identity == "my_bot"
@@ -89,12 +85,12 @@ def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 
 def test_config_from_env_missing_required_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that missing required env vars raise ValueError."""
-    # Missing SWITCHBOARD_API_BASE_URL
-    with pytest.raises(ValueError, match="SWITCHBOARD_API_BASE_URL"):
+    # Missing SWITCHBOARD_MCP_URL
+    with pytest.raises(ValueError, match="SWITCHBOARD_MCP_URL"):
         TelegramBotConnectorConfig.from_env()
 
     # Missing CONNECTOR_ENDPOINT_IDENTITY
-    monkeypatch.setenv("SWITCHBOARD_API_BASE_URL", "http://localhost:8000")
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
     with pytest.raises(ValueError, match="CONNECTOR_ENDPOINT_IDENTITY"):
         TelegramBotConnectorConfig.from_env()
 
@@ -192,7 +188,7 @@ def test_normalize_to_ingest_v1_missing_fields(connector: TelegramBotConnector) 
 
 
 # -----------------------------------------------------------------------------
-# Ingest submission tests
+# Ingest submission tests (MCP-based)
 # -----------------------------------------------------------------------------
 
 
@@ -201,28 +197,21 @@ async def test_submit_to_ingest_success(
     connector: TelegramBotConnector,
     sample_telegram_update: dict[str, Any],
 ) -> None:
-    """Test successful submission to Switchboard ingest API."""
+    """Test successful submission to Switchboard via MCP ingest tool."""
     envelope = connector._normalize_to_ingest_v1(sample_telegram_update)
 
-    mock_response = Mock()
-    mock_response.status_code = 202
-    mock_response.json.return_value = {
+    mock_result = {
         "request_id": "12345678-1234-1234-1234-123456789012",
         "status": "accepted",
         "duplicate": False,
     }
-    mock_response.raise_for_status = Mock()
 
-    with patch.object(connector._http_client, "post", return_value=mock_response) as mock_post:
+    with patch.object(
+        connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
+    ) as mock_call:
         await connector._submit_to_ingest(envelope)
 
-        # Verify API call
-        mock_post.assert_called_once()
-        call_args = mock_post.call_args
-        assert call_args[0][0] == "http://localhost:8000/api/switchboard/ingest"
-        assert call_args[1]["json"] == envelope
-        assert call_args[1]["headers"]["Content-Type"] == "application/json"
-        assert call_args[1]["headers"]["Authorization"] == "Bearer test-token"
+        mock_call.assert_called_once_with("ingest", envelope)
 
 
 @pytest.mark.asyncio
@@ -233,37 +222,51 @@ async def test_submit_to_ingest_duplicate_accepted(
     """Test that duplicate submissions are treated as success."""
     envelope = connector._normalize_to_ingest_v1(sample_telegram_update)
 
-    mock_response = Mock()
-    mock_response.status_code = 202
-    mock_response.json.return_value = {
+    mock_result = {
         "request_id": "12345678-1234-1234-1234-123456789012",
         "status": "accepted",
         "duplicate": True,
     }
-    mock_response.raise_for_status = Mock()
 
-    with patch.object(connector._http_client, "post", return_value=mock_response):
+    with patch.object(
+        connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
+    ):
         # Should not raise, duplicate is success
         await connector._submit_to_ingest(envelope)
 
 
 @pytest.mark.asyncio
-async def test_submit_to_ingest_http_error(
+async def test_submit_to_ingest_mcp_error(
     connector: TelegramBotConnector,
     sample_telegram_update: dict[str, Any],
 ) -> None:
-    """Test handling of HTTP errors from ingest API."""
+    """Test handling of MCP errors from ingest tool."""
     envelope = connector._normalize_to_ingest_v1(sample_telegram_update)
 
-    mock_response = Mock()
-    mock_response.status_code = 400
-    mock_response.text = "Invalid payload"
-    mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-        "Bad Request", request=Mock(), response=mock_response
-    )
+    mock_result = {"status": "error", "error": "Invalid ingest.v1 envelope"}
 
-    with patch.object(connector._http_client, "post", return_value=mock_response):
-        with pytest.raises(httpx.HTTPStatusError):
+    with patch.object(
+        connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
+    ):
+        with pytest.raises(RuntimeError, match="Ingest tool error"):
+            await connector._submit_to_ingest(envelope)
+
+
+@pytest.mark.asyncio
+async def test_submit_to_ingest_connection_error(
+    connector: TelegramBotConnector,
+    sample_telegram_update: dict[str, Any],
+) -> None:
+    """Test handling of connection errors to MCP server."""
+    envelope = connector._normalize_to_ingest_v1(sample_telegram_update)
+
+    with patch.object(
+        connector._mcp_client,
+        "call_tool",
+        new_callable=AsyncMock,
+        side_effect=ConnectionError("Cannot reach switchboard"),
+    ):
+        with pytest.raises(ConnectionError):
             await connector._submit_to_ingest(envelope)
 
 
@@ -435,17 +438,16 @@ async def test_process_update_end_to_end(
     connector: TelegramBotConnector,
     sample_telegram_update: dict[str, Any],
 ) -> None:
-    """Test end-to-end update processing: normalize + submit."""
-    mock_ingest_response = Mock()
-    mock_ingest_response.status_code = 202
-    mock_ingest_response.json.return_value = {
+    """Test end-to-end update processing: normalize + submit via MCP."""
+    mock_result = {
         "request_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         "status": "accepted",
         "duplicate": False,
     }
-    mock_ingest_response.raise_for_status = Mock()
 
-    with patch.object(connector._http_client, "post", return_value=mock_ingest_response):
+    with patch.object(
+        connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
+    ):
         await connector._process_update(sample_telegram_update)
 
         # Should complete without error
@@ -481,13 +483,13 @@ async def test_concurrency_limit_enforced(
 
     submission_times: list[float] = []
 
-    async def mock_submit_with_delay(envelope: dict[str, Any]) -> None:
+    async def mock_submit(envelope: dict[str, Any]) -> None:
         import time
 
         submission_times.append(time.time())
         await asyncio.sleep(0.1)
 
-    with patch.object(connector, "_submit_to_ingest", side_effect=mock_submit_with_delay):
+    with patch.object(connector, "_submit_to_ingest", side_effect=mock_submit):
         # Submit 4 updates concurrently
         tasks = [
             connector._process_update({**sample_telegram_update, "update_id": i}) for i in range(4)

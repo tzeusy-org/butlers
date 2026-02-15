@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 from butlers.connectors.telegram_user_client import (
@@ -29,8 +28,7 @@ def mock_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, str]:
     """Set up mock environment variables for connector config."""
     cursor_path = tmp_path / "cursor.json"
     env_vars = {
-        "SWITCHBOARD_API_BASE_URL": "http://localhost:8000",
-        "SWITCHBOARD_API_TOKEN": "test-token",
+        "SWITCHBOARD_MCP_URL": "http://localhost:8100/sse",
         "CONNECTOR_PROVIDER": "telegram",
         "CONNECTOR_CHANNEL": "telegram",
         "CONNECTOR_ENDPOINT_IDENTITY": "telegram:user:123456",
@@ -50,8 +48,7 @@ def config(tmp_path: Path) -> TelegramUserClientConnectorConfig:
     """Create a test connector config."""
     cursor_path = tmp_path / "cursor.json"
     return TelegramUserClientConnectorConfig(
-        switchboard_api_base_url="http://localhost:8000",
-        switchboard_api_token="test-token",
+        switchboard_mcp_url="http://localhost:8100/sse",
         provider="telegram",
         channel="telegram",
         endpoint_identity="telegram:user:123456",
@@ -70,8 +67,7 @@ class TestTelegramUserClientConnectorConfig:
         """Test loading config from environment variables."""
         config = TelegramUserClientConnectorConfig.from_env()
 
-        assert config.switchboard_api_base_url == "http://localhost:8000"
-        assert config.switchboard_api_token == "test-token"
+        assert config.switchboard_mcp_url == "http://localhost:8100/sse"
         assert config.provider == "telegram"
         assert config.channel == "telegram"
         assert config.endpoint_identity == "telegram:user:123456"
@@ -82,8 +78,8 @@ class TestTelegramUserClientConnectorConfig:
 
     def test_from_env_missing_required_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test that missing required fields raise ValueError."""
-        # Missing SWITCHBOARD_API_BASE_URL
-        with pytest.raises(ValueError, match="SWITCHBOARD_API_BASE_URL"):
+        # Missing SWITCHBOARD_MCP_URL
+        with pytest.raises(ValueError, match="SWITCHBOARD_MCP_URL"):
             TelegramUserClientConnectorConfig.from_env()
 
     def test_from_env_invalid_api_id(
@@ -110,7 +106,7 @@ class TestTelegramUserClientConnector:
         """Test connector initializes correctly."""
         connector = TelegramUserClientConnector(config)
         assert connector._config == config
-        assert connector._http_client is not None
+        assert connector._mcp_client is not None
         assert connector._running is False
         assert connector._last_message_id is None
 
@@ -147,7 +143,7 @@ class TestTelegramUserClientConnector:
     async def test_submit_to_ingest_success(
         self, config: TelegramUserClientConnectorConfig
     ) -> None:
-        """Test successful submission to Switchboard ingest API."""
+        """Test successful submission to Switchboard via MCP ingest tool."""
         connector = TelegramUserClientConnector(config)
 
         envelope = {
@@ -173,31 +169,22 @@ class TestTelegramUserClientConnector:
             },
         }
 
-        # Mock successful HTTP response
-        mock_response = MagicMock()
-        mock_response.status_code = 202
-        mock_response.json.return_value = {
-            "request_id": "req-123",
-            "duplicate": False,
-        }
+        mock_result = {"request_id": "req-123", "duplicate": False, "status": "accepted"}
 
-        with patch.object(connector._http_client, "post", new_callable=AsyncMock) as mock_post:
-            mock_post.return_value = mock_response
-            mock_response.raise_for_status = MagicMock()
-
+        with patch.object(
+            connector._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_call:
             await connector._submit_to_ingest(envelope)
 
-            # Verify POST was called with correct parameters
-            mock_post.assert_called_once()
-            call_args = mock_post.call_args
-            assert call_args[0][0] == "http://localhost:8000/api/switchboard/ingest"
-            assert call_args[1]["json"] == envelope
-            assert call_args[1]["headers"]["Authorization"] == "Bearer test-token"
+            mock_call.assert_called_once_with("ingest", envelope)
 
-    async def test_submit_to_ingest_http_error(
+    async def test_submit_to_ingest_mcp_error(
         self, config: TelegramUserClientConnectorConfig
     ) -> None:
-        """Test handling of HTTP errors during ingest submission."""
+        """Test handling of MCP errors during ingest submission."""
         connector = TelegramUserClientConnector(config)
 
         envelope: dict[str, Any] = {
@@ -220,20 +207,39 @@ class TestTelegramUserClientConnector:
             },
         }
 
-        # Mock HTTP error response
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-        mock_response.text = "Internal Server Error"
+        mock_result = {"status": "error", "error": "Validation failed"}
 
-        with patch.object(connector._http_client, "post", new_callable=AsyncMock) as mock_post:
-            mock_post.return_value = mock_response
-            mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-                "500 Server Error",
-                request=MagicMock(),
-                response=mock_response,
-            )
+        with patch.object(
+            connector._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            with pytest.raises(RuntimeError, match="Ingest tool error"):
+                await connector._submit_to_ingest(envelope)
 
-            with pytest.raises(httpx.HTTPStatusError):
+    async def test_submit_to_ingest_connection_error(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Test handling of connection errors to MCP server."""
+        connector = TelegramUserClientConnector(config)
+
+        envelope: dict[str, Any] = {
+            "schema_version": "ingest.v1",
+            "source": {"channel": "telegram", "provider": "telegram", "endpoint_identity": "x"},
+            "event": {"external_event_id": "1", "observed_at": datetime.now(UTC).isoformat()},
+            "sender": {"identity": "1"},
+            "payload": {"raw": {}, "normalized_text": "test"},
+            "control": {"idempotency_key": "test", "policy_tier": "default"},
+        }
+
+        with patch.object(
+            connector._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("Cannot reach switchboard"),
+        ):
+            with pytest.raises(ConnectionError):
                 await connector._submit_to_ingest(envelope)
 
     def test_load_checkpoint_no_file(self, config: TelegramUserClientConnectorConfig) -> None:
@@ -300,14 +306,14 @@ class TestTelegramUserClientConnector:
             "message": "Test message",
         }
 
-        # Mock successful ingest submission
-        mock_response = MagicMock()
-        mock_response.status_code = 202
-        mock_response.json.return_value = {"request_id": "req-123", "duplicate": False}
-        mock_response.raise_for_status = MagicMock()
+        # Mock successful MCP ingest call
+        mock_result = {"request_id": "req-123", "duplicate": False, "status": "accepted"}
 
         with patch.object(
-            connector._http_client, "post", new_callable=AsyncMock, return_value=mock_response
+            connector._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            return_value=mock_result,
         ):
             await connector._process_message(mock_message)
 
@@ -324,11 +330,11 @@ class TestTelegramUserClientConnector:
         mock_message = MagicMock()
         mock_message.id = None
 
-        with patch.object(connector._http_client, "post", new_callable=AsyncMock) as mock_post:
+        with patch.object(connector._mcp_client, "call_tool", new_callable=AsyncMock) as mock_call:
             await connector._process_message(mock_message)
 
-            # Verify no API call was made
-            mock_post.assert_not_called()
+            # Verify no MCP call was made
+            mock_call.assert_not_called()
 
     async def test_process_message_handles_errors_gracefully(
         self, config: TelegramUserClientConnectorConfig
@@ -426,7 +432,7 @@ class TestTelegramUserClientConnectorUnit:
         if not TELETHON_AVAILABLE:
             # Verify that trying to create a connector raises an error
             config = TelegramUserClientConnectorConfig(
-                switchboard_api_base_url="http://localhost:8000",
+                switchboard_mcp_url="http://localhost:8100/sse",
                 telegram_api_id=12345,
                 telegram_api_hash="test",
                 telegram_user_session="test",

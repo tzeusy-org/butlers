@@ -49,8 +49,7 @@ Switchboard assigns canonical request context on ingest acceptance:
 
 ## 4. Environment Variables
 Base connector variables (shared contract):
-- `SWITCHBOARD_API_BASE_URL` (required)
-- `SWITCHBOARD_API_TOKEN` (required when auth is enabled)
+- `SWITCHBOARD_MCP_URL` (required; SSE endpoint for Switchboard MCP server)
 - `CONNECTOR_PROVIDER=telegram` (required)
 - `CONNECTOR_CHANNEL=telegram` (required)
 - `CONNECTOR_ENDPOINT_IDENTITY` (required, user-client identity)

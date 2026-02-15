@@ -626,8 +626,8 @@ spec:
       - name: connector
         image: butlers/telegram-connector:latest
         env:
-        - name: SWITCHBOARD_API_BASE_URL
-          value: "http://switchboard:8000"
+        - name: SWITCHBOARD_MCP_URL
+          value: "http://switchboard:8100/sse"
         - name: CONNECTOR_COORDINATION_BACKEND
           value: "redis"
         - name: REDIS_URL

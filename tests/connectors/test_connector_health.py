@@ -22,8 +22,7 @@ class TestTelegramBotConnectorHealth:
         """Create test Telegram connector config."""
         cursor_path = tmp_path / "telegram_cursor.json"
         return TelegramBotConnectorConfig(
-            switchboard_api_base_url="http://localhost:8000",
-            switchboard_api_token="test-token",
+            switchboard_mcp_url="http://localhost:8100/sse",
             provider="telegram",
             channel="telegram",
             endpoint_identity="telegram:bot:test_bot",
@@ -121,8 +120,7 @@ class TestGmailConnectorHealth:
         """Create test Gmail connector config."""
         cursor_path = tmp_path / "gmail_cursor.json"
         return GmailConnectorConfig(
-            switchboard_api_base_url="http://localhost:8000",
-            switchboard_api_token="test-token",
+            switchboard_mcp_url="http://localhost:8100/sse",
             connector_provider="gmail",
             connector_channel="email",
             connector_endpoint_identity="gmail:user:test@example.com",

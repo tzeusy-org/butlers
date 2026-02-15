@@ -3,15 +3,14 @@
 This connector is a transport-only adapter that:
 - Polls Telegram for updates (dev mode) or registers webhooks (prod mode)
 - Normalizes Telegram updates to canonical ingest.v1 format
-- Submits normalized events to Switchboard ingest API
+- Submits normalized events to Switchboard MCP server via ingest tool
 - Persists durable checkpoints for safe resume after crashes
 
 The connector does NOT perform classification or routing - those remain
 downstream responsibilities of the Switchboard after ingest acceptance.
 
 Environment Variables (from docs/connectors/telegram_bot.md):
-    SWITCHBOARD_API_BASE_URL: Base URL for Switchboard API (required)
-    SWITCHBOARD_API_TOKEN: Bearer token for ingest auth (required when auth enabled)
+    SWITCHBOARD_MCP_URL: SSE endpoint URL for Switchboard MCP server (required)
     CONNECTOR_PROVIDER: "telegram" (required)
     CONNECTOR_CHANNEL: "telegram" (required)
     CONNECTOR_ENDPOINT_IDENTITY: Bot username or configured bot ID (required)
@@ -41,6 +40,7 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
+from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 
 logger = logging.getLogger(__name__)
@@ -63,9 +63,8 @@ class HealthStatus(BaseModel):
 class TelegramBotConnectorConfig:
     """Configuration for Telegram bot connector runtime."""
 
-    # Switchboard API config
-    switchboard_api_base_url: str
-    switchboard_api_token: str | None = None
+    # Switchboard MCP config
+    switchboard_mcp_url: str
 
     # Connector identity
     provider: str = "telegram"
@@ -91,11 +90,9 @@ class TelegramBotConnectorConfig:
     @classmethod
     def from_env(cls) -> TelegramBotConnectorConfig:
         """Load configuration from environment variables."""
-        switchboard_api_base_url = os.environ.get("SWITCHBOARD_API_BASE_URL")
-        if not switchboard_api_base_url:
-            raise ValueError("SWITCHBOARD_API_BASE_URL environment variable is required")
-
-        switchboard_api_token = os.environ.get("SWITCHBOARD_API_TOKEN")
+        switchboard_mcp_url = os.environ.get("SWITCHBOARD_MCP_URL")
+        if not switchboard_mcp_url:
+            raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
 
         provider = os.environ.get("CONNECTOR_PROVIDER", "telegram")
         channel = os.environ.get("CONNECTOR_CHANNEL", "telegram")
@@ -120,8 +117,7 @@ class TelegramBotConnectorConfig:
         health_port = int(os.environ.get("CONNECTOR_HEALTH_PORT", "8080"))
 
         return cls(
-            switchboard_api_base_url=switchboard_api_base_url,
-            switchboard_api_token=switchboard_api_token,
+            switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
             channel=channel,
             endpoint_identity=endpoint_identity,
@@ -153,6 +149,7 @@ class TelegramBotConnector:
     def __init__(self, config: TelegramBotConnectorConfig) -> None:
         self._config = config
         self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._mcp_client = CachedMCPClient(config.switchboard_mcp_url, client_name="telegram-bot")
         self._last_update_id: int | None = None
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
@@ -328,6 +325,7 @@ class TelegramBotConnector:
     async def stop(self) -> None:
         """Stop the connector gracefully."""
         self._running = False
+        await self._mcp_client.aclose()
         await self._http_client.aclose()
 
     # -------------------------------------------------------------------------
@@ -489,50 +487,37 @@ class TelegramBotConnector:
         return envelope
 
     async def _submit_to_ingest(self, envelope: dict[str, Any]) -> None:
-        """Submit ingest.v1 envelope to Switchboard ingest API.
+        """Submit ingest.v1 envelope to Switchboard via MCP ingest tool.
 
         Handles retries and treats accepted duplicates as success.
         """
-        url = f"{self._config.switchboard_api_base_url}/api/switchboard/ingest"
-        headers = {"Content-Type": "application/json"}
-        if self._config.switchboard_api_token:
-            headers["Authorization"] = f"Bearer {self._config.switchboard_api_token}"
-
         start_time = time.perf_counter()
         status = "error"
 
         try:
-            resp = await self._http_client.post(url, json=envelope, headers=headers)
-            resp.raise_for_status()
-            result = resp.json()
+            result = await self._mcp_client.call_tool("ingest", envelope)
+
+            # Check for tool-level error response
+            if isinstance(result, dict) and result.get("status") == "error":
+                error_msg = result.get("error", "Unknown ingest error")
+                raise RuntimeError(f"Ingest tool error: {error_msg}")
 
             # Record successful ingest submission
             self._last_ingest_submit = time.time()
 
             # Determine status for metrics
-            status = "duplicate" if result.get("duplicate", False) else "success"
+            is_duplicate = isinstance(result, dict) and result.get("duplicate", False)
+            status = "duplicate" if is_duplicate else "success"
 
             logger.info(
                 "Submitted to Switchboard ingest",
                 extra={
-                    "request_id": result.get("request_id"),
-                    "duplicate": result.get("duplicate", False),
+                    "request_id": result.get("request_id") if isinstance(result, dict) else None,
+                    "duplicate": is_duplicate,
                     "endpoint_identity": self._config.endpoint_identity,
                     "external_event_id": envelope["event"]["external_event_id"],
                 },
             )
-        except httpx.HTTPStatusError as exc:
-            # Log and re-raise for retry handling
-            logger.error(
-                "Switchboard ingest API error",
-                extra={
-                    "status_code": exc.response.status_code,
-                    "response": exc.response.text,
-                    "endpoint_identity": self._config.endpoint_identity,
-                },
-            )
-            self._metrics.record_error(error_type=get_error_type(exc), operation="ingest_submit")
-            raise
         except Exception as exc:
             logger.error(
                 "Failed to submit to Switchboard ingest",

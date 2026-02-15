@@ -7,7 +7,7 @@ Transport-only adapters for external message ingestion.
 Connectors are responsible for:
 - Reading events from external systems (Telegram, Gmail, etc.)
 - Normalizing to canonical `ingest.v1` format
-- Submitting to Switchboard ingest API
+- Submitting to Switchboard MCP server via ingest tool
 - Handling checkpointing and crash-safe resume
 
 Connectors do NOT:
@@ -22,8 +22,7 @@ All classification and routing happens downstream in Switchboard after ingest ac
 ### Running in Polling Mode (Dev)
 
 ```bash
-export SWITCHBOARD_API_BASE_URL="http://localhost:8000"
-export SWITCHBOARD_API_TOKEN="your-token"
+export SWITCHBOARD_MCP_URL="http://localhost:8100/sse"
 export CONNECTOR_PROVIDER="telegram"
 export CONNECTOR_CHANNEL="telegram"
 export CONNECTOR_ENDPOINT_IDENTITY="your_bot_username"
@@ -37,8 +36,7 @@ python -m butlers.connectors.telegram_bot
 ### Running in Webhook Mode (Prod)
 
 ```bash
-export SWITCHBOARD_API_BASE_URL="http://localhost:8000"
-export SWITCHBOARD_API_TOKEN="your-token"
+export SWITCHBOARD_MCP_URL="http://localhost:8100/sse"
 export CONNECTOR_PROVIDER="telegram"
 export CONNECTOR_CHANNEL="telegram"
 export CONNECTOR_ENDPOINT_IDENTITY="your_bot_username"
@@ -57,7 +55,7 @@ Incoming updates should be POSTed to your webhook endpoint and processed via
 See `docs/connectors/telegram_bot.md` for full configuration reference.
 
 Required environment variables:
-- `SWITCHBOARD_API_BASE_URL`: Base URL for Switchboard API
+- `SWITCHBOARD_MCP_URL`: SSE endpoint URL for Switchboard MCP server
 - `CONNECTOR_ENDPOINT_IDENTITY`: Bot username or ID
 - `BUTLER_TELEGRAM_TOKEN`: Telegram bot token
 
@@ -69,7 +67,6 @@ Webhook mode requires:
 - `CONNECTOR_WEBHOOK_URL`: Public HTTPS webhook URL
 
 Optional:
-- `SWITCHBOARD_API_TOKEN`: Bearer token for ingest auth (when auth enabled)
 - `CONNECTOR_MAX_INFLIGHT`: Max concurrent ingest submissions (default: 8)
 
 ### Checkpoint Persistence

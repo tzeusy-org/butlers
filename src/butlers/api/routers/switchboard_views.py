@@ -1,22 +1,21 @@
 """Switchboard butler endpoints.
 
-Provides endpoints for the routing log, butler registry, and connector
-ingestion. All data is queried directly from the switchboard butler's
-PostgreSQL database via asyncpg.
+Provides read-only endpoints for the routing log and butler registry.
+All data is queried directly from the switchboard butler's PostgreSQL
+database via asyncpg.
+
+Ingestion has moved to the Switchboard MCP server's ``ingest`` tool.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.general import RegistryEntry, RoutingEntry
-from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
 logger = logging.getLogger(__name__)
 
@@ -168,33 +167,3 @@ async def list_registry(
         )
 
     return ApiResponse[list[RegistryEntry]](data=data)
-
-
-# ---------------------------------------------------------------------------
-# POST /ingest — connector ingestion endpoint
-# ---------------------------------------------------------------------------
-
-
-@router.post("/ingest", status_code=202)
-async def submit_ingest(
-    request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> JSONResponse:
-    """Accept an ingest.v1 envelope from a connector.
-
-    Returns 202 Accepted with a canonical request reference.
-    Duplicate submissions return the same reference (idempotent).
-    """
-    pool = _pool(db)
-
-    body: dict[str, Any] = await request.json()
-
-    try:
-        result = await ingest_v1(pool, body)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    return JSONResponse(
-        status_code=202,
-        content=result.model_dump(mode="json"),
-    )

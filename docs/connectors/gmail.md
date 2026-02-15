@@ -67,8 +67,7 @@ Switchboard assigns canonical request context:
 
 ## 4. Environment Variables
 Base connector variables:
-- `SWITCHBOARD_API_BASE_URL` (required)
-- `SWITCHBOARD_API_TOKEN` (required when auth is enabled)
+- `SWITCHBOARD_MCP_URL` (required; SSE endpoint for Switchboard MCP server)
 - `CONNECTOR_PROVIDER=gmail` (required)
 - `CONNECTOR_CHANNEL=email` (required)
 - `CONNECTOR_ENDPOINT_IDENTITY` (required)

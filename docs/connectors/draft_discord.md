@@ -43,8 +43,7 @@ Switchboard assigns canonical request context:
 
 ## 4. Environment Variables (Draft)
 Base connector variables:
-- `SWITCHBOARD_API_BASE_URL` (required)
-- `SWITCHBOARD_API_TOKEN` (required when auth is enabled)
+- `SWITCHBOARD_MCP_URL` (required; SSE endpoint for Switchboard MCP server)
 - `CONNECTOR_PROVIDER=discord` (required)
 - `CONNECTOR_CHANNEL=discord` (required)
 - `CONNECTOR_ENDPOINT_IDENTITY` (required)

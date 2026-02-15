@@ -12,13 +12,12 @@ Key behaviors:
 - Live user-client session via Telethon (MTProto)
 - Real-time message event subscription
 - Durable checkpoint with restart-safe replay
-- Idempotent submission to Switchboard ingest API
+- Idempotent submission to Switchboard MCP server via ingest tool
 - Privacy/consent safeguards and scope controls
 - Bounded in-flight requests with graceful degradation
 
 Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
-- SWITCHBOARD_API_BASE_URL (required)
-- SWITCHBOARD_API_TOKEN (required when auth enabled)
+- SWITCHBOARD_MCP_URL (required)
 - CONNECTOR_PROVIDER=telegram (required)
 - CONNECTOR_CHANNEL=telegram (required)
 - CONNECTOR_ENDPOINT_IDENTITY (required, user-client identity e.g. "telegram:user:123456")
@@ -49,7 +48,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import httpx
+from butlers.connectors.mcp_client import CachedMCPClient
 
 # Telethon is marked as optional dependency - handle import gracefully
 try:
@@ -72,9 +71,8 @@ logger = logging.getLogger(__name__)
 class TelegramUserClientConnectorConfig:
     """Configuration for Telegram user-client connector runtime."""
 
-    # Switchboard API config
-    switchboard_api_base_url: str
-    switchboard_api_token: str | None = None
+    # Switchboard MCP config
+    switchboard_mcp_url: str
 
     # Connector identity
     provider: str = "telegram"
@@ -99,11 +97,9 @@ class TelegramUserClientConnectorConfig:
         if not TELETHON_AVAILABLE:
             raise RuntimeError("Telethon is not installed. Install with: uv pip install telethon")
 
-        switchboard_api_base_url = os.environ.get("SWITCHBOARD_API_BASE_URL")
-        if not switchboard_api_base_url:
-            raise ValueError("SWITCHBOARD_API_BASE_URL environment variable is required")
-
-        switchboard_api_token = os.environ.get("SWITCHBOARD_API_TOKEN")
+        switchboard_mcp_url = os.environ.get("SWITCHBOARD_MCP_URL")
+        if not switchboard_mcp_url:
+            raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
 
         provider = os.environ.get("CONNECTOR_PROVIDER", "telegram")
         channel = os.environ.get("CONNECTOR_CHANNEL", "telegram")
@@ -139,8 +135,7 @@ class TelegramUserClientConnectorConfig:
         max_inflight = int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8"))
 
         return cls(
-            switchboard_api_base_url=switchboard_api_base_url,
-            switchboard_api_token=switchboard_api_token,
+            switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
             channel=channel,
             endpoint_identity=endpoint_identity,
@@ -181,7 +176,9 @@ class TelegramUserClientConnector:
             raise RuntimeError("Telethon is not installed. Install with: uv pip install telethon")
 
         self._config = config
-        self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._mcp_client = CachedMCPClient(
+            config.switchboard_mcp_url, client_name="telegram-user-client"
+        )
         self._telegram_client: TelegramClient | None = None
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
@@ -258,7 +255,7 @@ class TelegramUserClientConnector:
         if self._telegram_client and self._telegram_client.is_connected():
             await self._telegram_client.disconnect()
 
-        await self._http_client.aclose()
+        await self._mcp_client.aclose()
         logger.info("Telegram user-client connector stopped")
 
     # -------------------------------------------------------------------------
@@ -379,39 +376,29 @@ class TelegramUserClientConnector:
         return envelope
 
     async def _submit_to_ingest(self, envelope: dict[str, Any]) -> None:
-        """Submit ingest.v1 envelope to Switchboard ingest API.
+        """Submit ingest.v1 envelope to Switchboard via MCP ingest tool.
 
         Handles retries and treats accepted duplicates as success.
         """
-        url = f"{self._config.switchboard_api_base_url}/api/switchboard/ingest"
-        headers = {"Content-Type": "application/json"}
-        if self._config.switchboard_api_token:
-            headers["Authorization"] = f"Bearer {self._config.switchboard_api_token}"
-
         try:
-            resp = await self._http_client.post(url, json=envelope, headers=headers)
-            resp.raise_for_status()
-            result = resp.json()
+            result = await self._mcp_client.call_tool("ingest", envelope)
+
+            # Check for tool-level error response
+            if isinstance(result, dict) and result.get("status") == "error":
+                error_msg = result.get("error", "Unknown ingest error")
+                raise RuntimeError(f"Ingest tool error: {error_msg}")
 
             logger.info(
                 "Submitted to Switchboard ingest",
                 extra={
-                    "request_id": result.get("request_id"),
-                    "duplicate": result.get("duplicate", False),
+                    "request_id": result.get("request_id") if isinstance(result, dict) else None,
+                    "duplicate": (
+                        result.get("duplicate", False) if isinstance(result, dict) else False
+                    ),
                     "endpoint_identity": self._config.endpoint_identity,
                     "external_event_id": envelope["event"]["external_event_id"],
                 },
             )
-        except httpx.HTTPStatusError as exc:
-            # Log error without response body to avoid leaking sensitive data
-            logger.error(
-                "Switchboard ingest API error",
-                extra={
-                    "status_code": exc.response.status_code,
-                    "endpoint_identity": self._config.endpoint_identity,
-                },
-            )
-            raise
         except Exception as exc:
             logger.error(
                 "Failed to submit to Switchboard ingest",

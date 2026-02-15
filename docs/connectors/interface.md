@@ -94,20 +94,14 @@ API semantics:
 - Response includes canonical request reference (request id).
 - Duplicate submissions for the same dedupe identity return the same canonical request reference.
 
-Example request:
-
-```bash
-curl -sS -X POST "$SWITCHBOARD_API_BASE_URL/api/switchboard/ingest" \
-  -H "Authorization: Bearer $SWITCHBOARD_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d @event.json
-```
-
-The path above is an example for this repo's target API shape.
+Transport:
+- Connectors submit envelopes via MCP tool call (`ingest`) to the Switchboard MCP server.
+- Transport is SSE-based MCP (fastmcp.Client), not HTTP POST.
+- The MCP server endpoint is configured via `SWITCHBOARD_MCP_URL`.
 
 Auth and exposure:
-- Ingestion API is private by default.
-- Public exposure requires explicit authn/authz and rate limits.
+- MCP server is private by default (localhost SSE).
+- Public exposure requires explicit network-level access control.
 
 ## 5. Data Source Modes
 Supported source models:
@@ -162,8 +156,7 @@ Required behavior:
 
 ## 9. Environment Variables (Base)
 Reference connector runtime config (recommended naming):
-- `SWITCHBOARD_API_BASE_URL` (required): base URL for Switchboard API.
-- `SWITCHBOARD_API_TOKEN` (required when auth enabled): bearer token or equivalent secret.
+- `SWITCHBOARD_MCP_URL` (required): SSE endpoint URL for Switchboard MCP server (e.g. `http://localhost:8100/sse`).
 - `CONNECTOR_PROVIDER` (required): provider name (`telegram`, `gmail`, `imap`, etc.).
 - `CONNECTOR_CHANNEL` (required): canonical channel value (`telegram`, `email`, etc.).
 - `CONNECTOR_ENDPOINT_IDENTITY` (required): receiving identity (bot id, mailbox, client id).

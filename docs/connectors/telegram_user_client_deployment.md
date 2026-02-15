@@ -61,9 +61,8 @@ uv sync --extra connectors
 Required variables:
 
 ```bash
-# Switchboard API connection
-export SWITCHBOARD_API_BASE_URL="https://switchboard.example.com"  # Use http://localhost:8000 for local dev only
-export SWITCHBOARD_API_TOKEN="sw_live_..."  # Get from platform team
+# Switchboard MCP server connection
+export SWITCHBOARD_MCP_URL="http://switchboard:8100/sse"  # Use http://localhost:8100/sse for local dev
 
 # Connector identity
 export CONNECTOR_PROVIDER="telegram"
@@ -154,8 +153,7 @@ services:
     image: butlers:latest
     command: telegram-user-client-connector
     environment:
-      SWITCHBOARD_API_BASE_URL: http://switchboard:8000
-      SWITCHBOARD_API_TOKEN_FILE: /run/secrets/switchboard_token
+      SWITCHBOARD_MCP_URL: http://switchboard:8100/sse
       CONNECTOR_PROVIDER: telegram
       CONNECTOR_CHANNEL: telegram
       CONNECTOR_ENDPOINT_IDENTITY: telegram:user:${TELEGRAM_USER_ID}
@@ -214,8 +212,7 @@ sudo journalctl -u telegram-user-client-connector -f
 cat /var/lib/butlers/connectors/telegram-user-client/cursor.json
 
 # Check Switchboard ingest metrics
-curl -H "Authorization: Bearer $SWITCHBOARD_API_TOKEN" \
-  http://localhost:8000/api/switchboard/metrics
+curl http://localhost:8100/metrics
 ```
 
 ### Key Metrics
@@ -235,10 +232,9 @@ Monitor these metrics:
 - Check network connectivity to Telegram servers
 - Ensure session string is not expired/revoked
 
-**Ingest API errors:**
-- Verify SWITCHBOARD_API_BASE_URL is reachable
-- Check SWITCHBOARD_API_TOKEN is valid and not expired
-- Review Switchboard logs for rate limiting or validation errors
+**Ingest MCP errors:**
+- Verify SWITCHBOARD_MCP_URL is reachable
+- Review Switchboard logs for validation errors
 
 **High checkpoint lag:**
 - Increase CONNECTOR_MAX_INFLIGHT for higher throughput
