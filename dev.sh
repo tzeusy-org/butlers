@@ -33,21 +33,23 @@ for WIN in backend connectors dashboard; do
 done
 
 # ── backend window ──────────────────────────────────────────────────
-PANE_BACKEND=$(tmux new-window -t "$SESSION" -n backend -c "$PROJECT_DIR" -P -F '#{pane_id}')
+PANE_BACKEND=$(tmux new-window -t "$SESSION:" -n backend -c "$PROJECT_DIR" -P -F '#{pane_id}')
 tmux send-keys -t "$PANE_BACKEND" \
   "${ENV_LOADER} && uv sync --dev && docker compose stop postgres && docker compose up -d postgres && POSTGRES_PORT=54320 uv run butlers up" Enter
 
 # ── connectors window ──────────────────────────────────────────────
-PANE_TELEGRAM=$(tmux new-window -t "$SESSION" -n connectors -c "$PROJECT_DIR" -P -F '#{pane_id}')
+PANE_TELEGRAM=$(tmux new-window -t "$SESSION:" -n connectors -c "$PROJECT_DIR" -P -F '#{pane_id}')
 tmux send-keys -t "$PANE_TELEGRAM" \
   "${ENV_LOADER} && mkdir -p .tmp/connectors && sleep 10 && uv run python -m butlers.connectors.telegram_bot" Enter
 
 # ── dashboard window ───────────────────────────────────────────────
-PANE_DASHBOARD=$(tmux new-window -t "$SESSION" -n dashboard -c "$PROJECT_DIR" -P -F '#{pane_id}')
+PANE_DASHBOARD=$(tmux new-window -t "$SESSION:" -n dashboard -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_FRONTEND=$(tmux split-window -t "$PANE_DASHBOARD" -v -c "${PROJECT_DIR}/frontend" -P -F '#{pane_id}')
 
 tmux send-keys -t "$PANE_DASHBOARD" \
   "POSTGRES_PORT=54320 uv run butlers dashboard --host 0.0.0.0 --port 8200" Enter
+# Brief wait for shell init in the split pane
+sleep 0.3
 tmux send-keys -t "$PANE_FRONTEND" \
   "npm install && npm run dev -- --host 0.0.0.0" Enter
 
