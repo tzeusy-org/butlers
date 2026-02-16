@@ -76,7 +76,7 @@ Features that increase data-entry burden without proportional relationship value
 - `contact_update(contact_id, **fields)` — Update any contact field.
 - `contact_get(contact_id | name)` — Retrieve full contact record with related data.
 - `contact_search(query, limit?)` — Full-text search across name, company, job title, notes, and contact info fields.
-- `contact_resolve(name)` — Resolve a name string to a contact_id with confidence levels (high/medium/none). Useful for fuzzy name matching from conversational input.
+- `contact_resolve(name, context?)` — Resolve a name string to a contact_id with confidence levels (high/medium/none). Uses salience-based disambiguation when multiple contacts share a first name (see §10.4). Returns `inferred` flag and reason when salience was used to auto-resolve.
 - `contact_archive(contact_id)` — Soft-delete via `listed=false`. Archived contacts are excluded from default queries but recoverable.
 - `contact_merge(source_id, target_id)` — Merge two contact records, combining all related entities. Target survives, source is archived. *(Target state — not yet implemented.)*
 - `contact_export_vcard(contact_id?)` — Export one or all contacts as vCard 3.0 format.
@@ -311,6 +311,100 @@ When ingesting facts that conflict with existing data:
 - **Memory facts:** Use the memory module's supersession mechanism (new fact supersedes old with linking).
 - **Domain records:** Flag conflicts for user confirmation rather than silently overwriting (e.g. "I have Sarah's birthday as March 15, but you just said March 16 — which is correct?").
 
+### 10.4 Contact Salience and First-Name Disambiguation
+
+#### Problem
+
+When a user says "I met Chloe on Saturday", the system must resolve "Chloe" to a contact record. If the address book contains both Chloe Wong (partner) and Chloe Tan (former colleague), a naive first-name match returns an ambiguous result. In practice, the vast majority of bare first-name mentions refer to the *most important* person with that name — but the current resolver has no model of importance.
+
+#### Design Principle
+
+Contacts have implicit **salience** — a composite signal of relational closeness, interaction density, and user-declared importance. When multiple contacts match a first-name query, salience scoring breaks ties transparently: the system picks the most salient candidate and confirms the inference to the user rather than asking every time.
+
+#### Salience Score Computation
+
+When `contact_resolve` encounters multiple candidates for a name query, it computes a **salience score** for each candidate by summing weighted signals from existing domain data:
+
+| Signal | Data Source | Scoring | Rationale |
+|--------|------------|---------|-----------|
+| Relationship type | `relationships` table (type to user) | spouse/partner: +50, parent/child/sibling: +30, close friend: +20, friend: +10, colleague: +5, acquaintance: +2 | Closest relationships dominate casual mentions |
+| Interaction frequency | `interactions` count (last 90 days) | +2 per interaction, capped at +20 | Frequent contact correlates with conversational relevance |
+| Interaction recency | `interactions` most recent timestamp | <7 days: +15, <30 days: +10, <90 days: +5, else: +0 | Recent interactions boost contextual relevance |
+| Fact & note density | `quick_facts` + `notes` row count | +1 per record, capped at +10 | More recorded detail implies deeper engagement |
+| Stay-in-touch cadence | `contacts.stay_in_touch_days` | weekly (≤7): +10, biweekly (≤14): +7, monthly (≤30): +5 | User explicitly declared contact importance |
+| Group membership | `group_members` → `groups.group_type` | family: +10, couple: +15, friends: +5, team: +3 | Membership in close-tie groups implies higher salience |
+
+The salience score is added to the existing candidate `score` (which includes name-match quality and context-boost points). This means salience acts as a tiebreaker when name-match quality is equal, and strong name matches can still override salience (e.g., "Chloe Tan" as an exact full-name match still resolves to Chloe Tan regardless of salience).
+
+Salience is computed lazily — only when disambiguation is needed (multiple candidates), not on every resolve call.
+
+#### Resolution Thresholds
+
+After salience scoring, the resolver applies these decision rules:
+
+| Condition | Behavior |
+|-----------|----------|
+| Single candidate after name match | Return as HIGH confidence, no salience needed |
+| Multiple candidates, top scorer leads by ≥30 points | Return top candidate as HIGH confidence with `inferred: true` |
+| Multiple candidates, gap <30 points | Return MEDIUM confidence with `inferred: false`, present all candidates |
+| No candidates | Return NONE confidence |
+
+The 30-point threshold is chosen because it requires at least a meaningful relationship-type difference (spouse vs. colleague = 45 points) or a strong combination of frequency + recency signals. Trivial differences (e.g., one extra note) don't trigger auto-resolution.
+
+#### Resolver Response Shape
+
+When salience-based inference is applied, the resolver response includes two additional fields:
+
+```python
+{
+    "contact_id": "<resolved-uuid>",
+    "confidence": "high",
+    "inferred": True,                                      # salience was used to pick winner
+    "inferred_reason": "partner, most frequent contact",   # human-readable explanation
+    "candidates": [
+        {"contact_id": "...", "name": "Chloe Wong", "score": 145, "salience": 85},
+        {"contact_id": "...", "name": "Chloe Tan",  "score": 62,  "salience": 12}
+    ]
+}
+```
+
+When salience is not needed (single match) or doesn't produce a clear winner, `inferred` is `false` and `inferred_reason` is `null`.
+
+#### LLM Confirmation Behavior
+
+The resolver provides the data; the LLM provides the UX. The butler's response behavior depends on the `inferred` flag:
+
+| `inferred` | LLM Behavior |
+|------------|--------------|
+| `true` | Proceed with the resolved contact and confirm: *"Assuming you're referring to Chloe Wong (your partner) — noted that you met her on Saturday."* |
+| `false`, multiple candidates | Ask the user: *"Did you mean Chloe Wong or Chloe Tan?"* |
+| N/A (single match) | Proceed silently (no disambiguation needed) |
+
+The confirmation phrasing should include the `inferred_reason` in parentheses to make the inference transparent and correctable. If the user corrects the inference (e.g., "No, I meant Chloe Tan"), the butler should:
+1. Redo the action with the correct contact.
+2. Optionally note the correction for future context boosting (though salience scores are computed live, not cached, so this is supplementary).
+
+#### Switchboard Integration
+
+The `relationship-extractor` skill on the Switchboard already produces `contact_hint` fields and handles ambiguous matches at the extraction level. Salience scoring is applied *after* extraction, during the `contact_resolve` call that the Switchboard makes before routing. The extractor's existing `candidates` array in ambiguous-match scenarios will be enriched with salience scores.
+
+#### Salience Score Properties
+
+- **Not cached.** Computed on-demand from live data. As interaction patterns change, salience shifts automatically.
+- **Not user-editable.** The user influences salience indirectly through relationship types, interaction frequency, and stay-in-touch settings. No "pin this contact" override — the system should reflect actual relationship patterns.
+- **Composable with context boost.** Salience and textual context boosting stack. If "Chloe from work" appears in context and Chloe Tan's metadata includes "work", the context boost can lift Chloe Tan past Chloe Wong's salience advantage — which is the correct behavior.
+- **Zero-cost for unambiguous names.** The salience query only runs when `contact_resolve` finds ≥2 candidates. Single-match names skip it entirely.
+
+#### Edge Cases
+
+| Scenario | Expected Behavior |
+|----------|-------------------|
+| New contact "Chloe Tan" with 0 interactions | Salience near zero; Chloe Wong (partner) auto-resolves. Correct default. |
+| User starts interacting with Chloe Tan daily | Interaction frequency/recency gradually raises Chloe Tan's salience. After sustained contact, system may start asking rather than assuming. |
+| "Chloe from work mentioned..." | Context boost for "work" stacks with salience. If Chloe Tan is the work colleague, context can override salience. |
+| Three contacts named "Alex" | Same logic applies. If one Alex is a close friend (salience 60) and the other two are acquaintances (salience 5-10), the close friend auto-resolves. If two are close, the system asks. |
+| Nickname match (e.g., "Chlo" → Chloe) | Resolver already handles nickname/diminutive matching. Salience applies after candidate identification, regardless of how candidates were found. |
+
 ## 11. Interactive Response Contract
 When `request_context` is present with a user-facing `source_channel`, the butler engages interactive response mode per the behavioral contract in `roster/relationship/CLAUDE.md`.
 
@@ -351,6 +445,7 @@ Guideline: Always respond when `request_context` is present. Silence feels like 
 - Interactive Telegram response mode
 
 ### Phase 2: Relationship Intelligence
+- **Contact salience and first-name disambiguation:** Salience-based scoring for `contact_resolve` when multiple contacts share a first name, with transparent LLM confirmation (see §10.4).
 - **Stay-in-touch digest and detailed status:** Proactive daily digest generation and per-contact staleness detail view (basic set/overdue is Phase 1).
 - **Contact merge:** Deduplicate contacts, combining all related entities into a single record.
 - **Contact timeline API:** Unified chronological view combining notes, interactions, gifts, dates, and feed events.
