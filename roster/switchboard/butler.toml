@@ -24,3 +24,19 @@ enabled = false
 [modules.email.bot]
 address_env = "BUTLER_EMAIL_ADDRESS"
 password_env = "BUTLER_EMAIL_PASSWORD"
+
+# Connector statistics rollup and pruning jobs
+[[butler.schedule]]
+name = "connector-stats-hourly-rollup"
+cron = "5 * * * *"
+prompt = "Run the hourly connector statistics rollup job by calling the appropriate Python function to aggregate heartbeat data from the previous hour."
+
+[[butler.schedule]]
+name = "connector-stats-daily-rollup"
+cron = "15 0 * * *"
+prompt = "Run the daily connector statistics rollup job by calling the appropriate Python function to aggregate hourly data and compute uptime percentages for the previous day."
+
+[[butler.schedule]]
+name = "connector-stats-pruning"
+cron = "30 1 * * *"
+prompt = "Run the connector statistics pruning job to remove old heartbeat partitions, hourly stats, and daily stats according to retention policies."
