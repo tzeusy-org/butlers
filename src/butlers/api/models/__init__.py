@@ -276,6 +276,18 @@ from butlers.api.models.approval import (  # noqa: E402
 )
 from butlers.api.models.audit import AuditEntry  # noqa: E402
 from butlers.api.models.butler import ModuleStatus  # noqa: E402
+from butlers.api.models.connector import (  # noqa: E402
+    ConnectorCheckpoint,
+    ConnectorCounters,
+    ConnectorDaySummary,
+    ConnectorDetail,
+    ConnectorFanoutEntry,
+    ConnectorStats,
+    ConnectorStatsBucket,
+    ConnectorStatsSummary,
+    ConnectorSummary,
+    derive_liveness,
+)
 from butlers.api.models.memory import (  # noqa: E402
     Episode,
     Fact,
@@ -307,7 +319,17 @@ __all__ = [
     "CostSummary",
     "ButlerDetail",
     "ButlerSummary",
+    "ConnectorCheckpoint",
+    "ConnectorCounters",
+    "ConnectorDaySummary",
+    "ConnectorDetail",
+    "ConnectorFanoutEntry",
+    "ConnectorStats",
+    "ConnectorStatsBucket",
+    "ConnectorStatsSummary",
+    "ConnectorSummary",
     "DailyCost",
+    "derive_liveness",
     "Episode",
     "Fact",
     "MemoryActivity",
