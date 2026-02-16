@@ -27,6 +27,7 @@ dependencies = [
     "pgvector",
     "structlog",
     "prometheus-client",
+    "pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]

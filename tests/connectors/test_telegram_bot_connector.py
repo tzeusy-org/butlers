@@ -105,12 +105,13 @@ def test_config_from_env_missing_required_fields(monkeypatch: pytest.MonkeyPatch
 # -----------------------------------------------------------------------------
 
 
-def test_normalize_to_ingest_v1_basic_message(
+@pytest.mark.asyncio
+async def test_normalize_to_ingest_v1_basic_message(
     connector: TelegramBotConnector,
     sample_telegram_update: dict[str, Any],
 ) -> None:
     """Test normalization of a basic Telegram message to ingest.v1."""
-    envelope = connector._normalize_to_ingest_v1(sample_telegram_update)
+    envelope = await connector._normalize_to_ingest_v1(sample_telegram_update)
 
     assert envelope["schema_version"] == "ingest.v1"
     assert envelope["source"]["channel"] == "telegram"
@@ -131,7 +132,8 @@ def test_normalize_to_ingest_v1_basic_message(
     assert "Z" in observed_at or "+" in observed_at or "-" in observed_at[-6:]
 
 
-def test_normalize_to_ingest_v1_edited_message(connector: TelegramBotConnector) -> None:
+@pytest.mark.asyncio
+async def test_normalize_to_ingest_v1_edited_message(connector: TelegramBotConnector) -> None:
     """Test normalization of edited message."""
     update = {
         "update_id": 12346,
@@ -145,7 +147,7 @@ def test_normalize_to_ingest_v1_edited_message(connector: TelegramBotConnector) 
         },
     }
 
-    envelope = connector._normalize_to_ingest_v1(update)
+    envelope = await connector._normalize_to_ingest_v1(update)
 
     assert envelope["event"]["external_event_id"] == "12346"
     assert envelope["event"]["external_thread_id"] == "111222333:2"
@@ -153,7 +155,8 @@ def test_normalize_to_ingest_v1_edited_message(connector: TelegramBotConnector) 
     assert envelope["payload"]["normalized_text"] == "Edited text"
 
 
-def test_normalize_to_ingest_v1_channel_post(connector: TelegramBotConnector) -> None:
+@pytest.mark.asyncio
+async def test_normalize_to_ingest_v1_channel_post(connector: TelegramBotConnector) -> None:
     """Test normalization of channel post."""
     update = {
         "update_id": 12347,
@@ -165,7 +168,7 @@ def test_normalize_to_ingest_v1_channel_post(connector: TelegramBotConnector) ->
         },
     }
 
-    envelope = connector._normalize_to_ingest_v1(update)
+    envelope = await connector._normalize_to_ingest_v1(update)
 
     assert envelope["event"]["external_event_id"] == "12347"
     assert envelope["event"]["external_thread_id"] == "-1001234567890:3"
@@ -174,11 +177,12 @@ def test_normalize_to_ingest_v1_channel_post(connector: TelegramBotConnector) ->
     assert envelope["payload"]["normalized_text"] == "Channel announcement"
 
 
-def test_normalize_to_ingest_v1_missing_fields(connector: TelegramBotConnector) -> None:
+@pytest.mark.asyncio
+async def test_normalize_to_ingest_v1_missing_fields(connector: TelegramBotConnector) -> None:
     """Test normalization handles missing optional fields gracefully."""
     update = {"update_id": 12348}  # Minimal update with no message
 
-    envelope = connector._normalize_to_ingest_v1(update)
+    envelope = await connector._normalize_to_ingest_v1(update)
 
     assert envelope["event"]["external_event_id"] == "12348"
     assert envelope["event"]["external_thread_id"] is None
@@ -198,7 +202,7 @@ async def test_submit_to_ingest_success(
     sample_telegram_update: dict[str, Any],
 ) -> None:
     """Test successful submission to Switchboard via MCP ingest tool."""
-    envelope = connector._normalize_to_ingest_v1(sample_telegram_update)
+    envelope = await connector._normalize_to_ingest_v1(sample_telegram_update)
 
     mock_result = {
         "request_id": "12345678-1234-1234-1234-123456789012",
@@ -220,7 +224,7 @@ async def test_submit_to_ingest_duplicate_accepted(
     sample_telegram_update: dict[str, Any],
 ) -> None:
     """Test that duplicate submissions are treated as success."""
-    envelope = connector._normalize_to_ingest_v1(sample_telegram_update)
+    envelope = await connector._normalize_to_ingest_v1(sample_telegram_update)
 
     mock_result = {
         "request_id": "12345678-1234-1234-1234-123456789012",
@@ -241,7 +245,7 @@ async def test_submit_to_ingest_mcp_error(
     sample_telegram_update: dict[str, Any],
 ) -> None:
     """Test handling of MCP errors from ingest tool."""
-    envelope = connector._normalize_to_ingest_v1(sample_telegram_update)
+    envelope = await connector._normalize_to_ingest_v1(sample_telegram_update)
 
     mock_result = {"status": "error", "error": "Invalid ingest.v1 envelope"}
 
@@ -258,7 +262,7 @@ async def test_submit_to_ingest_connection_error(
     sample_telegram_update: dict[str, Any],
 ) -> None:
     """Test handling of connection errors to MCP server."""
-    envelope = connector._normalize_to_ingest_v1(sample_telegram_update)
+    envelope = await connector._normalize_to_ingest_v1(sample_telegram_update)
 
     with patch.object(
         connector._mcp_client,
@@ -530,3 +534,251 @@ async def test_process_update_handles_submission_error(
     ):
         # Should not raise, just log error
         await connector._process_update(sample_telegram_update)
+
+
+# -----------------------------------------------------------------------------
+# Media download and storage tests
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_normalize_to_ingest_v1_photo_message(connector: TelegramBotConnector) -> None:
+    """Test normalization of photo message with attachment."""
+    update = {
+        "update_id": 12350,
+        "message": {
+            "message_id": 10,
+            "from": {"id": 123456789, "first_name": "Photographer"},
+            "chat": {"id": 123456789, "type": "private"},
+            "date": 1708014000,
+            "photo": [
+                {"file_id": "small_photo_id", "width": 90, "height": 90, "file_size": 1000},
+                {"file_id": "medium_photo_id", "width": 320, "height": 320, "file_size": 15000},
+                {"file_id": "large_photo_id", "width": 800, "height": 800, "file_size": 50000},
+            ],
+            "caption": "Check out this photo!",
+        },
+    }
+
+    # Mock blob store
+    mock_blob_store = AsyncMock()
+    mock_blob_store.put.return_value = "local://2026/02/16/test-photo.jpg"
+    connector._blob_store = mock_blob_store
+
+    # Mock Telegram file download
+    mock_file_response = Mock()
+    mock_file_response.json.return_value = {
+        "ok": True,
+        "result": {"file_id": "large_photo_id", "file_path": "photos/file_1.jpg"},
+    }
+    mock_file_response.raise_for_status = Mock()
+
+    mock_download_response = Mock()
+    mock_download_response.content = b"fake_jpeg_data"
+    mock_download_response.raise_for_status = Mock()
+
+    with (
+        patch.object(connector._http_client, "get") as mock_get,
+    ):
+        mock_get.side_effect = [mock_file_response, mock_download_response]
+
+        envelope = await connector._normalize_to_ingest_v1(update)
+
+    assert envelope["payload"]["normalized_text"] == "Check out this photo!"
+    assert envelope["payload"]["attachments"] is not None
+    assert len(envelope["payload"]["attachments"]) == 1
+
+    attachment = envelope["payload"]["attachments"][0]
+    assert attachment["media_type"] == "image/jpeg"
+    assert attachment["storage_ref"] == "local://2026/02/16/test-photo.jpg"
+    assert attachment["size_bytes"] == len(b"fake_jpeg_data")
+    assert attachment["width"] == 800
+    assert attachment["height"] == 800
+
+    # Verify blob store was called
+    mock_blob_store.put.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_normalize_to_ingest_v1_document_message(connector: TelegramBotConnector) -> None:
+    """Test normalization of document message with attachment."""
+    update = {
+        "update_id": 12351,
+        "message": {
+            "message_id": 11,
+            "from": {"id": 987654321, "first_name": "Sender"},
+            "chat": {"id": 987654321, "type": "private"},
+            "date": 1708014100,
+            "document": {
+                "file_id": "doc_file_id",
+                "file_name": "report.pdf",
+                "mime_type": "application/pdf",
+                "file_size": 12345,
+            },
+            "caption": "Here's the report",
+        },
+    }
+
+    # Mock blob store
+    mock_blob_store = AsyncMock()
+    mock_blob_store.put.return_value = "local://2026/02/16/report.pdf"
+    connector._blob_store = mock_blob_store
+
+    # Mock Telegram file download
+    mock_file_response = Mock()
+    mock_file_response.json.return_value = {
+        "ok": True,
+        "result": {"file_id": "doc_file_id", "file_path": "documents/file_2.pdf"},
+    }
+    mock_file_response.raise_for_status = Mock()
+
+    mock_download_response = Mock()
+    mock_download_response.content = b"fake_pdf_data"
+    mock_download_response.raise_for_status = Mock()
+
+    with (
+        patch.object(connector._http_client, "get") as mock_get,
+    ):
+        mock_get.side_effect = [mock_file_response, mock_download_response]
+
+        envelope = await connector._normalize_to_ingest_v1(update)
+
+    assert envelope["payload"]["normalized_text"] == "Here's the report"
+    assert envelope["payload"]["attachments"] is not None
+    assert len(envelope["payload"]["attachments"]) == 1
+
+    attachment = envelope["payload"]["attachments"][0]
+    assert attachment["media_type"] == "application/pdf"
+    assert attachment["storage_ref"] == "local://2026/02/16/report.pdf"
+    assert attachment["size_bytes"] == len(b"fake_pdf_data")
+    assert attachment["filename"] == "report.pdf"
+
+    # Verify blob store was called
+    mock_blob_store.put.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_normalize_to_ingest_v1_text_only_no_attachments(
+    connector: TelegramBotConnector,
+) -> None:
+    """Test normalization of text-only message produces no attachments."""
+    update = {
+        "update_id": 12352,
+        "message": {
+            "message_id": 12,
+            "from": {"id": 111222333, "first_name": "Texter"},
+            "chat": {"id": 111222333, "type": "private"},
+            "date": 1708014200,
+            "text": "Just text, no media",
+        },
+    }
+
+    envelope = await connector._normalize_to_ingest_v1(update)
+
+    assert envelope["payload"]["normalized_text"] == "Just text, no media"
+    assert "attachments" not in envelope["payload"]
+
+
+@pytest.mark.asyncio
+async def test_download_telegram_file_graceful_degradation(
+    connector: TelegramBotConnector,
+) -> None:
+    """Test that media download failures don't block text ingestion."""
+    update = {
+        "update_id": 12353,
+        "message": {
+            "message_id": 13,
+            "from": {"id": 444555666, "first_name": "FailUser"},
+            "chat": {"id": 444555666, "type": "private"},
+            "date": 1708014300,
+            "photo": [
+                {"file_id": "broken_photo_id", "width": 800, "height": 600, "file_size": 50000},
+            ],
+            "caption": "Photo with text",
+        },
+    }
+
+    # Mock failed file download
+    with patch.object(
+        connector._http_client,
+        "get",
+        side_effect=Exception("Telegram API down"),
+    ):
+        envelope = await connector._normalize_to_ingest_v1(update)
+
+    # Text should still be extracted
+    assert envelope["payload"]["normalized_text"] == "Photo with text"
+    # Attachments should be empty or None on failure
+    assert "attachments" not in envelope["payload"] or len(envelope["payload"]["attachments"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_image_compression_for_large_files(connector: TelegramBotConnector) -> None:
+    """Test that images >5MB are compressed before storage."""
+    update = {
+        "update_id": 12354,
+        "message": {
+            "message_id": 14,
+            "from": {"id": 777888999, "first_name": "BigPhoto"},
+            "chat": {"id": 777888999, "type": "private"},
+            "date": 1708014400,
+            "photo": [
+                {
+                    "file_id": "huge_photo_id",
+                    "width": 4000,
+                    "height": 3000,
+                    "file_size": 6000000,
+                },
+            ],
+        },
+    }
+
+    # Create a fake large image with random noise to prevent compression (>5MB)
+    import random
+    from io import BytesIO
+
+    from PIL import Image
+
+    # Create image with random noise to ensure it doesn't compress too well
+    img = Image.new("RGB", (4000, 3000))
+    pixels = img.load()
+    for i in range(4000):
+        for j in range(3000):
+            pixels[i, j] = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+
+    large_jpeg = BytesIO()
+    img.save(large_jpeg, format="JPEG", quality=100)
+    large_jpeg_data = large_jpeg.getvalue()
+
+    # Skip test if we can't generate a large enough image
+    if len(large_jpeg_data) <= 5 * 1024 * 1024:
+        pytest.skip("Could not generate >5MB test image")
+
+    # Mock blob store
+    mock_blob_store = AsyncMock()
+    mock_blob_store.put.return_value = "local://2026/02/16/compressed.jpg"
+    connector._blob_store = mock_blob_store
+
+    # Mock Telegram file download
+    mock_file_response = Mock()
+    mock_file_response.json.return_value = {
+        "ok": True,
+        "result": {"file_id": "huge_photo_id", "file_path": "photos/huge.jpg"},
+    }
+    mock_file_response.raise_for_status = Mock()
+
+    mock_download_response = Mock()
+    mock_download_response.content = large_jpeg_data
+    mock_download_response.raise_for_status = Mock()
+
+    with (
+        patch.object(connector._http_client, "get") as mock_get,
+    ):
+        mock_get.side_effect = [mock_file_response, mock_download_response]
+
+        await connector._normalize_to_ingest_v1(update)
+
+    # Verify compression happened by checking stored data size
+    stored_data = mock_blob_store.put.call_args[0][0]
+    assert len(stored_data) < 5 * 1024 * 1024  # Compressed to <5MB
+    assert len(stored_data) < len(large_jpeg_data)  # Smaller than original

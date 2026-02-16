@@ -101,3 +101,90 @@ The following gaps were identified during conformance test and documentation rev
 2. Run conformance tests as part of CI/CD pipeline
 3. Monitor production connector deployments for undocumented edge cases
 4. Update runbook with lessons learned from operational incidents
+
+## 2026-02-16 - Telegram Media Download and Storage
+
+### Added
+- **Media download support in Telegram bot connector**: Extends connector to download and store media files (photos, documents, voice, video, stickers, etc.) via blob storage abstraction
+  
+- **Automatic image compression**: Images exceeding 5MB are automatically compressed with iterative quality reduction (85→75→65→55→45→35) to meet Claude API limits
+
+- **Graceful degradation**: Media download failures log errors but do not block text ingestion, ensuring messages are always processed even if media fails
+
+- **New connector methods**:
+  - `_download_telegram_file(file_id)`: Downloads file from Telegram API
+  - `_compress_image_if_needed(data, mime_type)`: Compresses large images to <5MB
+  - `_store_media(data, content_type, filename, width, height)`: Stores media via BlobStore and returns attachment metadata
+
+- **Blob storage integration**: 
+  - Added `blob_store_dir` to `TelegramBotConnectorConfig`
+  - Default blob storage directory: `.blobs/`
+  - Configurable via `CONNECTOR_BLOB_STORE_DIR` environment variable
+
+- **Dependencies**:
+  - Added `pillow>=10.0.0` for image compression
+
+### Modified
+- **`_normalize_to_ingest_v1` method**: 
+  - Now async (was sync)
+  - Extracts media from all supported Telegram media types
+  - Populates `attachments` field in IngestPayloadV1 envelope
+  - Extracts caption text for media messages
+
+- **Supported media types**:
+  - Photo (array, uses largest size)
+  - Document (PDFs, etc.)
+  - Voice messages
+  - Video
+  - Audio
+  - Stickers
+  - Animations (GIFs)
+  - Video notes (circular videos)
+
+### Test Coverage
+- Photo message with attachment validation
+- Document message with correct MIME type
+- Text-only messages (no attachments)
+- Graceful degradation on download failures
+- Image compression for files >5MB
+- Dimensions and metadata preservation
+
+### Implementation Details
+
+**Media extraction flow:**
+1. Check message for media keys (photo, document, voice, etc.)
+2. Extract file_id and metadata (MIME type, filename, dimensions)
+3. Download file via Telegram getFile API
+4. Compress images >5MB with iterative quality reduction
+5. Store via BlobStore (LocalBlobStore implementation)
+6. Build IngestAttachment metadata with storage_ref
+7. Add to envelope's `payload.attachments` field
+
+**Compression strategy:**
+- Only images are compressed (non-images pass through)
+- Target size: 5MB (Claude API limit)
+- Iterative quality reduction: 85, 75, 65, 55, 45, 35
+- Uses Pillow JPEG compression with `optimize=True`
+- If target not reached at quality 35, uses best effort
+
+**Error handling:**
+- Download failures logged and tracked via metrics
+- Text ingestion continues even if media fails
+- Metrics record `media_download_errors` and `media_storage_errors`
+
+### Documentation Sync Status
+
+| Document | Status | Notes |
+|----------|--------|-------|
+| `docs/connectors/telegram_bot.md` | ⚠️ Needs update | Media download flow not yet documented |
+| `src/butlers/connectors/telegram_bot.py` | ✅ Synced | Implementation includes docstrings |
+| `roster/switchboard/tools/routing/contracts.py` | ✅ Synced | IngestAttachment contract already defined |
+
+### Follow-Up Items
+
+1. Update `docs/connectors/telegram_bot.md` with media download flow
+2. Document blob storage configuration in connector operations runbook
+3. Add metrics dashboard for media download/storage operations
+4. Consider adding blob storage garbage collection for orphaned files
+5. Add integration test for end-to-end media flow (Telegram → BlobStore → Claude API)
+
