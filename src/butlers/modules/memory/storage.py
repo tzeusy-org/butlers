@@ -185,8 +185,9 @@ async def store_fact(
         The UUID of the newly created fact.
     """
     fact_id = uuid.uuid4()
-    embedding = embedding_engine.embed(content)
-    search_text = preprocess_text(content)
+    searchable = f"{subject} {predicate} {content}"
+    embedding = embedding_engine.embed(searchable)
+    search_text = preprocess_text(searchable)
     decay_rate = validate_permanence(permanence)
     now = datetime.now(UTC)
     tags_json = json.dumps(tags or [])

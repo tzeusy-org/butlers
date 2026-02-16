@@ -104,10 +104,10 @@ class TestStoreFactBasic:
         result = await store_fact(pool, "user", "favorite_color", "blue", embedding_engine)
         assert isinstance(result, uuid.UUID)
 
-    async def test_embedding_called_with_content(self, mock_pool, embedding_engine):
+    async def test_embedding_called_with_searchable_text(self, mock_pool, embedding_engine):
         pool, _conn = mock_pool
         await store_fact(pool, "user", "name", "Alice", embedding_engine)
-        embedding_engine.embed.assert_called_once_with("Alice")
+        embedding_engine.embed.assert_called_once_with("user name Alice")
 
     async def test_insert_called(self, mock_pool, embedding_engine):
         pool, conn = mock_pool
