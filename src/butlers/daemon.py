@@ -1527,6 +1527,9 @@ class ButlerDaemon:
             from butlers.tools.switchboard.routing.route import (
                 route as _switchboard_route,
             )
+            from roster.switchboard.tools.connector.heartbeat import (
+                heartbeat as connector_heartbeat_v1,
+            )
 
             pipeline = daemon._pipeline
 
@@ -1696,6 +1699,44 @@ class ButlerDaemon:
                         "butler": butler,
                         "error": f"{type(exc).__name__}: {exc}",
                     }
+
+            @mcp.tool(name="connector.heartbeat")
+            @tool_span("connector.heartbeat", butler_name=butler_name)
+            async def connector_heartbeat(
+                schema_version: str,
+                connector: dict[str, Any],
+                status: dict[str, Any],
+                counters: dict[str, Any],
+                checkpoint: dict[str, Any] | None = None,
+                sent_at: str = "",
+            ) -> dict[str, Any]:
+                """Accept a connector.heartbeat.v1 envelope for liveness tracking.
+
+                Connectors submit heartbeats every 2 minutes to report their operational
+                state, counters, and checkpoint progress. The Switchboard persists these
+                to the connector_registry and connector_heartbeat_log tables.
+
+                Self-registers unknown connectors on first heartbeat.
+                """
+                envelope: dict[str, Any] = {
+                    "schema_version": schema_version,
+                    "connector": connector,
+                    "status": status,
+                    "counters": counters,
+                    "sent_at": sent_at,
+                }
+                if checkpoint is not None:
+                    envelope["checkpoint"] = checkpoint
+
+                try:
+                    result = await connector_heartbeat_v1(pool, envelope)
+                    return result.model_dump(mode="json")
+                except ValueError as exc:
+                    logger.warning("Heartbeat validation failed: %s", exc)
+                    return {"status": "error", "error": str(exc)}
+                except Exception as exc:
+                    logger.error("Heartbeat processing failed: %s", exc, exc_info=True)
+                    return {"status": "error", "error": f"Internal error: {exc}"}
 
         @mcp.tool()
         async def tick() -> dict:
