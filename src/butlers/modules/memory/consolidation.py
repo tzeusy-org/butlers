@@ -28,7 +28,7 @@ async def run_consolidation(
 ) -> dict[str, Any]:
     """Fetch unconsolidated episodes, group by source butler, and return stats.
 
-    Episodes with ``consolidated = false`` are fetched in chronological order
+    Episodes with ``consolidation_status = 'pending'`` are fetched in chronological order
     and grouped by their ``butler`` column.  For each butler group the
     function collects the episodes ready for downstream prompt building
     (task 6.2) and CC spawning (task 6.4).
@@ -47,7 +47,7 @@ async def run_consolidation(
     rows = await pool.fetch(
         "SELECT id, butler, content, importance, metadata, created_at "
         "FROM episodes "
-        "WHERE consolidated = false "
+        "WHERE consolidation_status = 'pending' "
         "ORDER BY created_at ASC"
     )
 
@@ -116,7 +116,7 @@ async def run_episode_cleanup(
         cap_result = await pool.execute(
             "DELETE FROM episodes WHERE id IN ("
             "  SELECT id FROM episodes "
-            "  WHERE consolidated = true "
+            "  WHERE consolidation_status = 'consolidated' "
             "  ORDER BY created_at ASC "
             "  LIMIT $1"
             ")",

@@ -118,11 +118,17 @@ async def test_realtime_history_returns_messages(switchboard_dsn):
         thread = f"chat:{uuid.uuid4().hex[:8]}"
 
         await _insert_message(
-            pool, text="hello", sender="user1", thread_identity=thread,
+            pool,
+            text="hello",
+            sender="user1",
+            thread_identity=thread,
             received_at=now - timedelta(minutes=5),
         )
         await _insert_message(
-            pool, text="world", sender="user2", thread_identity=thread,
+            pool,
+            text="world",
+            sender="user2",
+            thread_identity=thread,
             received_at=now - timedelta(minutes=3),
         )
 
@@ -145,12 +151,19 @@ async def test_realtime_history_count_window(switchboard_dsn):
         thread = f"chat:{uuid.uuid4().hex[:8]}"
 
         await _insert_message(
-            pool, text="old msg", sender="user1", thread_identity=thread,
+            pool,
+            text="old msg",
+            sender="user1",
+            thread_identity=thread,
             received_at=now - timedelta(hours=1),
         )
 
         messages = await _load_realtime_history(
-            pool, thread, now, max_time_window_minutes=15, max_message_count=30,
+            pool,
+            thread,
+            now,
+            max_time_window_minutes=15,
+            max_message_count=30,
         )
 
         assert len(messages) == 1
@@ -179,11 +192,17 @@ async def test_realtime_history_excludes_other_threads(switchboard_dsn):
         thread_b = f"chat:{uuid.uuid4().hex[:8]}"
 
         await _insert_message(
-            pool, text="thread A", sender="u1", thread_identity=thread_a,
+            pool,
+            text="thread A",
+            sender="u1",
+            thread_identity=thread_a,
             received_at=now - timedelta(minutes=2),
         )
         await _insert_message(
-            pool, text="thread B", sender="u2", thread_identity=thread_b,
+            pool,
+            text="thread B",
+            sender="u2",
+            thread_identity=thread_b,
             received_at=now - timedelta(minutes=2),
         )
 
@@ -207,12 +226,20 @@ async def test_email_history_returns_chain(switchboard_dsn):
         thread = f"email:{uuid.uuid4().hex[:8]}"
 
         await _insert_message(
-            pool, text="First email", sender="alice@example.com",
-            thread_identity=thread, received_at=now - timedelta(days=2), channel="email",
+            pool,
+            text="First email",
+            sender="alice@example.com",
+            thread_identity=thread,
+            received_at=now - timedelta(days=2),
+            channel="email",
         )
         await _insert_message(
-            pool, text="Reply email", sender="bob@example.com",
-            thread_identity=thread, received_at=now - timedelta(days=1), channel="email",
+            pool,
+            text="Reply email",
+            sender="bob@example.com",
+            thread_identity=thread,
+            received_at=now - timedelta(days=1),
+            channel="email",
         )
 
         messages = await _load_email_history(pool, thread, now)
@@ -233,7 +260,9 @@ async def test_email_history_truncates_oldest(switchboard_dsn):
 
         for i in range(3):
             await _insert_message(
-                pool, text="x" * 100, sender=f"u{i}@test.com",
+                pool,
+                text="x" * 100,
+                sender=f"u{i}@test.com",
                 thread_identity=thread,
                 received_at=now - timedelta(hours=3 - i),
                 channel="email",
@@ -258,8 +287,11 @@ async def test_conversation_history_telegram(switchboard_dsn):
         thread = f"chat:{uuid.uuid4().hex[:8]}"
 
         await _insert_message(
-            pool, text="previous message", sender="user42",
-            thread_identity=thread, received_at=now - timedelta(minutes=5),
+            pool,
+            text="previous message",
+            sender="user42",
+            thread_identity=thread,
+            received_at=now - timedelta(minutes=5),
         )
 
         result = await _load_conversation_history(pool, "telegram", thread, now)
@@ -276,7 +308,10 @@ async def test_conversation_history_none_for_api(switchboard_dsn):
     pool = await asyncpg.create_pool(switchboard_dsn)
     try:
         result = await _load_conversation_history(
-            pool, "api", "some-thread", datetime.now(UTC),
+            pool,
+            "api",
+            "some-thread",
+            datetime.now(UTC),
         )
         assert result == ""
     finally:

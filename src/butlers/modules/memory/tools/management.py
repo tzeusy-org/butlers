@@ -51,11 +51,11 @@ async def memory_stats(
     # --- Episodes ---
     ep_total = await pool.fetchval("SELECT COUNT(*) FROM episodes")
     ep_unconsolidated = await pool.fetchval(
-        "SELECT COUNT(*) FROM episodes WHERE consolidated = false"
+        "SELECT COUNT(*) FROM episodes WHERE consolidation_status = 'pending'"
     )
     ep_backlog_age = await pool.fetchval(
         "SELECT EXTRACT(EPOCH FROM (now() - MIN(created_at))) / 3600 "
-        "FROM episodes WHERE consolidated = false"
+        "FROM episodes WHERE consolidation_status = 'pending'"
     )
 
     # --- Facts ---

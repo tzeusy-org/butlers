@@ -75,7 +75,7 @@ class TestRunConsolidation:
 
         pool.fetch.assert_awaited_once()
         sql = pool.fetch.call_args[0][0]
-        assert "consolidated = false" in sql
+        assert "consolidation_status = 'pending'" in sql
         assert "ORDER BY created_at" in sql
 
     async def test_groups_episodes_by_source_butler(self) -> None:
@@ -159,7 +159,7 @@ class TestRunEpisodeCleanup:
         assert result["capacity_deleted"] == 50
         # Capacity delete SQL should target consolidated episodes
         cap_sql = pool.execute.call_args_list[1][0][0]
-        assert "consolidated = true" in cap_sql
+        assert "consolidation_status = 'consolidated'" in cap_sql
         assert "ORDER BY created_at ASC" in cap_sql
         # The excess (150 - 100 = 50) should be passed as a parameter
         cap_param = pool.execute.call_args_list[1][0][1]
@@ -175,9 +175,9 @@ class TestRunEpisodeCleanup:
 
         # The capacity delete query must only target consolidated episodes
         cap_sql = pool.execute.call_args_list[1][0][0]
-        assert "consolidated = true" in cap_sql
+        assert "consolidation_status = 'consolidated'" in cap_sql
         # Unconsolidated episodes must NOT be targeted
-        assert "consolidated = false" not in cap_sql
+        assert "consolidation_status = 'pending'" not in cap_sql
 
     async def test_handles_no_episodes_to_delete(self) -> None:
         """When nothing is expired and count is within limits, return zeros."""

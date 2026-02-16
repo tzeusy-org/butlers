@@ -59,6 +59,7 @@ async def execute_consolidation(
     butler_name: str,
     *,
     scope: str | None = None,
+    max_retries: int = 3,
 ) -> dict[str, Any]:
     """Apply parsed consolidation results to the database.
 
@@ -67,7 +68,7 @@ async def execute_consolidation(
     2. Updated facts: store via store_fact() (auto-supersedes), create derived_from links
     3. New rules: store via store_rule(), create derived_from links to source episodes
     4. Confirmations: call confirm_memory() for each referenced fact UUID
-    5. Mark all source episodes as consolidated=true
+    5. Mark all source episodes as consolidated or failed based on execution outcome
 
     Args:
         pool: asyncpg connection pool
@@ -76,6 +77,7 @@ async def execute_consolidation(
         source_episode_ids: UUIDs of episodes that were consolidated
         butler_name: Name of the butler that sourced these episodes
         scope: Scope for new facts/rules (defaults to butler_name)
+        max_retries: Maximum retry count before marking as dead_letter (default 3)
 
     Returns:
         Dict with stats: facts_created, facts_updated, rules_created,
@@ -161,17 +163,41 @@ async def execute_consolidation(
             logger.error(msg)
             errors.append(msg)
 
-    # --- Mark source episodes as consolidated ---
+    # --- Mark source episodes based on outcome ---
     episodes_consolidated = 0
     if source_episode_ids:
         try:
-            await pool.execute(
-                "UPDATE episodes SET consolidated = true WHERE id = ANY($1)",
-                source_episode_ids,
-            )
-            episodes_consolidated = len(source_episode_ids)
+            if errors:
+                # If there were any errors, mark as failed and increment retry count
+                await pool.execute(
+                    """
+                    UPDATE episodes
+                    SET consolidation_status = CASE
+                            WHEN retry_count + 1 >= $2 THEN 'dead_letter'
+                            ELSE 'failed'
+                        END,
+                        retry_count = retry_count + 1,
+                        last_error = $3
+                    WHERE id = ANY($1)
+                    """,
+                    source_episode_ids,
+                    max_retries,
+                    "; ".join(errors[:5]),  # Store up to 5 error messages
+                )
+            else:
+                # Success: mark as consolidated
+                await pool.execute(
+                    """
+                    UPDATE episodes
+                    SET consolidation_status = 'consolidated',
+                        consolidated = true
+                    WHERE id = ANY($1)
+                    """,
+                    source_episode_ids,
+                )
+                episodes_consolidated = len(source_episode_ids)
         except Exception as exc:
-            msg = f"Failed to mark episodes as consolidated: {exc}"
+            msg = f"Failed to update episode consolidation status: {exc}"
             logger.error(msg)
             errors.append(msg)
 

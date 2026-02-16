@@ -1550,9 +1550,7 @@ class ButlerDaemon:
                 / "connector"
                 / "heartbeat.py"
             )
-            _hb_spec = _ilu.spec_from_file_location(
-                "roster_switchboard_heartbeat", _hb_path
-            )
+            _hb_spec = _ilu.spec_from_file_location("roster_switchboard_heartbeat", _hb_path)
             assert _hb_spec is not None and _hb_spec.loader is not None
             _hb_mod = _ilu.module_from_spec(_hb_spec)
             _hb_spec.loader.exec_module(_hb_mod)

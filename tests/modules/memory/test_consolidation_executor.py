@@ -313,7 +313,7 @@ class TestEpisodeConsolidation:
     """Tests for marking episodes as consolidated."""
 
     async def test_episodes_marked_consolidated(self) -> None:
-        """All source episodes are marked consolidated=true after execution."""
+        """All source episodes are marked consolidated after successful execution."""
         pool = _mock_pool()
         engine = _mock_embedding_engine()
         episode_ids = _make_episode_ids(3)
@@ -334,7 +334,8 @@ class TestEpisodeConsolidation:
         pool.execute.assert_awaited_once()
         call_args = pool.execute.call_args
         sql = call_args[0][0]
-        assert "UPDATE episodes SET consolidated = true" in sql
+        assert "consolidation_status = 'consolidated'" in sql
+        assert "consolidated = true" in sql
         assert "ANY($1)" in sql
         assert call_args[0][1] == episode_ids
 
@@ -504,6 +505,82 @@ class TestEmptyResult:
 # ---------------------------------------------------------------------------
 # Tests — Scope defaults to butler_name
 # ---------------------------------------------------------------------------
+
+
+class TestRetryAndFailureHandling:
+    """Tests for retry and failure state machine."""
+
+    async def test_episodes_marked_failed_on_error(self) -> None:
+        """Episodes are marked as failed with retry count incremented on error."""
+        pool = _mock_pool()
+        engine = _mock_embedding_engine()
+        episode_ids = _make_episode_ids(2)
+
+        parsed = ConsolidationResult(
+            new_facts=[
+                NewFact(subject="user", predicate="likes", content="broken"),
+            ],
+        )
+
+        with (
+            patch.object(
+                _exec_mod,
+                "store_fact",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("storage error"),
+            ),
+            patch.object(_exec_mod, "create_link", new_callable=AsyncMock),
+            patch.object(_exec_mod, "store_rule", new_callable=AsyncMock),
+            patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock),
+        ):
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
+
+        # Episodes should not be counted as consolidated
+        assert result["episodes_consolidated"] == 0
+        assert len(result["errors"]) > 0
+
+        # Verify the UPDATE query marks as failed
+        pool.execute.assert_awaited_once()
+        call_args = pool.execute.call_args
+        sql = call_args[0][0]
+        assert "consolidation_status" in sql
+        assert "retry_count = retry_count + 1" in sql
+        assert "last_error" in sql
+        # Should use CASE statement for dead_letter transition
+        assert "CASE" in sql
+        assert "dead_letter" in sql
+        assert call_args[0][1] == episode_ids
+
+    async def test_episodes_marked_dead_letter_after_max_retries(self) -> None:
+        """Episodes transition to dead_letter after max retries."""
+        pool = _mock_pool()
+        engine = _mock_embedding_engine()
+        episode_ids = _make_episode_ids(1)
+
+        parsed = ConsolidationResult(
+            new_facts=[
+                NewFact(subject="user", predicate="likes", content="broken"),
+            ],
+        )
+
+        with (
+            patch.object(
+                _exec_mod,
+                "store_fact",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("persistent error"),
+            ),
+            patch.object(_exec_mod, "create_link", new_callable=AsyncMock),
+            patch.object(_exec_mod, "store_rule", new_callable=AsyncMock),
+            patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock),
+        ):
+            await execute_consolidation(
+                pool, engine, parsed, episode_ids, "test-butler", max_retries=2
+            )
+
+        # Verify max_retries parameter is passed to the query
+        call_args = pool.execute.call_args
+        assert call_args[0][2] == 2  # max_retries parameter
 
 
 class TestScopeDefault:
