@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -271,7 +272,7 @@ class TestGmailConnectorRuntime:
 
         assert set(message_ids) == {"msg1", "msg2", "msg3"}
 
-    def test_build_ingest_envelope(self, gmail_runtime: GmailConnectorRuntime) -> None:
+    async def test_build_ingest_envelope(self, gmail_runtime: GmailConnectorRuntime) -> None:
         """Test building ingest.v1 envelope from Gmail message data."""
         message_data = {
             "id": "msg123",
@@ -290,7 +291,7 @@ class TestGmailConnectorRuntime:
             },
         }
 
-        envelope = gmail_runtime._build_ingest_envelope(message_data)
+        envelope = await gmail_runtime._build_ingest_envelope(message_data)
 
         assert envelope["schema_version"] == "ingest.v1"
         assert envelope["source"]["channel"] == "email"
@@ -820,3 +821,455 @@ class TestWebhookAuthentication:
 
         # When no token configured, auth should be disabled
         assert runtime._config.gmail_pubsub_webhook_token is None
+
+
+class TestGmailAttachmentExtraction:
+    """Tests for Gmail attachment extraction and storage."""
+
+    @pytest.fixture
+    def mock_blob_store(self) -> AsyncMock:
+        """Create mock blob store."""
+        store = AsyncMock()
+        store.put = AsyncMock(return_value="local://2026/02/16/test.jpg")
+        return store
+
+    @pytest.fixture
+    def gmail_runtime_with_blob_store(
+        self, gmail_config: GmailConnectorConfig, mock_blob_store: AsyncMock
+    ) -> GmailConnectorRuntime:
+        """Create Gmail runtime with blob store."""
+        return GmailConnectorRuntime(gmail_config, blob_store=mock_blob_store)
+
+    def test_extract_attachments_with_image(self, gmail_runtime: GmailConnectorRuntime) -> None:
+        """Test extracting image attachment from payload."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": "dGVzdA=="},
+                },
+                {
+                    "mimeType": "image/jpeg",
+                    "filename": "photo.jpg",
+                    "body": {
+                        "attachmentId": "att123",
+                        "size": 1024,
+                    },
+                },
+            ],
+        }
+
+        attachments = gmail_runtime._extract_attachments(payload)
+
+        assert len(attachments) == 1
+        assert attachments[0]["filename"] == "photo.jpg"
+        assert attachments[0]["mime_type"] == "image/jpeg"
+        assert attachments[0]["attachment_id"] == "att123"
+        assert attachments[0]["size_bytes"] == 1024
+
+    def test_extract_attachments_with_pdf(self, gmail_runtime: GmailConnectorRuntime) -> None:
+        """Test extracting PDF attachment from payload."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "document.pdf",
+                    "body": {
+                        "attachmentId": "att456",
+                        "size": 2048,
+                    },
+                },
+            ],
+        }
+
+        attachments = gmail_runtime._extract_attachments(payload)
+
+        assert len(attachments) == 1
+        assert attachments[0]["mime_type"] == "application/pdf"
+        assert attachments[0]["filename"] == "document.pdf"
+
+    def test_extract_attachments_skips_unsupported_types(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Test that unsupported MIME types are skipped."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "application/zip",
+                    "filename": "archive.zip",
+                    "body": {
+                        "attachmentId": "att789",
+                        "size": 1024,
+                    },
+                },
+                {
+                    "mimeType": "image/jpeg",
+                    "filename": "photo.jpg",
+                    "body": {
+                        "attachmentId": "att123",
+                        "size": 1024,
+                    },
+                },
+            ],
+        }
+
+        attachments = gmail_runtime._extract_attachments(payload)
+
+        # Only JPEG should be extracted
+        assert len(attachments) == 1
+        assert attachments[0]["mime_type"] == "image/jpeg"
+
+    def test_extract_attachments_empty_payload(self, gmail_runtime: GmailConnectorRuntime) -> None:
+        """Test extracting attachments from payload without attachments."""
+        payload = {
+            "mimeType": "text/plain",
+            "body": {"data": "dGVzdA=="},
+        }
+
+        attachments = gmail_runtime._extract_attachments(payload)
+
+        assert len(attachments) == 0
+
+    def test_extract_attachments_nested_parts(self, gmail_runtime: GmailConnectorRuntime) -> None:
+        """Test extracting attachments from deeply nested multipart structure."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "multipart/alternative",
+                    "parts": [
+                        {
+                            "mimeType": "text/plain",
+                            "body": {"data": "dGVzdA=="},
+                        },
+                        {
+                            "mimeType": "text/html",
+                            "body": {"data": "PGI+dGVzdDwvYj4="},
+                        },
+                    ],
+                },
+                {
+                    "mimeType": "image/png",
+                    "filename": "screenshot.png",
+                    "body": {
+                        "attachmentId": "att999",
+                        "size": 3072,
+                    },
+                },
+            ],
+        }
+
+        attachments = gmail_runtime._extract_attachments(payload)
+
+        assert len(attachments) == 1
+        assert attachments[0]["mime_type"] == "image/png"
+
+    def test_extract_attachments_inline_image(self, gmail_runtime: GmailConnectorRuntime) -> None:
+        """Test that inline images (Content-Disposition: inline) are included."""
+        payload = {
+            "mimeType": "multipart/related",
+            "parts": [
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": "PGltZyBzcmM9ImNpZDppbWcxIj4="},
+                },
+                {
+                    "mimeType": "image/png",
+                    "filename": "inline-image.png",
+                    "headers": [
+                        {
+                            "name": "Content-Disposition",
+                            "value": "inline; filename=inline-image.png",
+                        },
+                        {"name": "Content-ID", "value": "<img1>"},
+                    ],
+                    "body": {
+                        "attachmentId": "att_inline",
+                        "size": 2048,
+                    },
+                },
+            ],
+        }
+
+        attachments = gmail_runtime._extract_attachments(payload)
+
+        # Inline images should still be extracted
+        assert len(attachments) == 1
+        assert attachments[0]["mime_type"] == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_download_gmail_attachment_success(
+        self, gmail_runtime_with_blob_store: GmailConnectorRuntime
+    ) -> None:
+        """Test successful attachment download from Gmail API."""
+        runtime = gmail_runtime_with_blob_store
+        runtime._http_client = AsyncMock()
+        runtime._get_access_token = AsyncMock(return_value="test-token")
+
+        # Mock successful API response
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": base64.urlsafe_b64encode(b"test attachment data").decode()
+        }
+        mock_response.raise_for_status = MagicMock()
+        runtime._http_client.get = AsyncMock(return_value=mock_response)
+
+        result = await runtime._download_gmail_attachment("msg123", "att456")
+
+        assert result == b"test attachment data"
+        runtime._http_client.get.assert_awaited_once()
+        call_args = runtime._http_client.get.call_args
+        assert "msg123" in call_args[0][0]
+        assert "att456" in call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_download_gmail_attachment_no_data(
+        self, gmail_runtime_with_blob_store: GmailConnectorRuntime
+    ) -> None:
+        """Test download fails when API returns no data."""
+        runtime = gmail_runtime_with_blob_store
+        runtime._http_client = AsyncMock()
+        runtime._get_access_token = AsyncMock(return_value="test-token")
+
+        # Mock API response with no data
+        mock_response = MagicMock()
+        mock_response.json.return_value = {}
+        mock_response.raise_for_status = MagicMock()
+        runtime._http_client.get = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(ValueError, match="No data in attachment response"):
+            await runtime._download_gmail_attachment("msg123", "att456")
+
+    @pytest.mark.asyncio
+    async def test_process_attachments_success(
+        self, gmail_runtime_with_blob_store: GmailConnectorRuntime, mock_blob_store: AsyncMock
+    ) -> None:
+        """Test successful attachment processing and storage."""
+        runtime = gmail_runtime_with_blob_store
+        runtime._http_client = AsyncMock()
+        runtime._get_access_token = AsyncMock(return_value="test-token")
+
+        # Mock attachment download
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": base64.urlsafe_b64encode(b"fake image data").decode()
+        }
+        mock_response.raise_for_status = MagicMock()
+        runtime._http_client.get = AsyncMock(return_value=mock_response)
+
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "image/jpeg",
+                    "filename": "photo.jpg",
+                    "body": {
+                        "attachmentId": "att123",
+                        "size": 1024,
+                    },
+                },
+            ],
+        }
+
+        result = await runtime._process_attachments("msg123", payload)
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["media_type"] == "image/jpeg"
+        assert result[0]["storage_ref"] == "local://2026/02/16/test.jpg"
+        assert result[0]["size_bytes"] == 1024
+        assert result[0]["filename"] == "photo.jpg"
+
+        # Verify blob store was called
+        mock_blob_store.put.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_process_attachments_no_blob_store(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Test that attachments are skipped when blob store is not configured."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "image/jpeg",
+                    "filename": "photo.jpg",
+                    "body": {
+                        "attachmentId": "att123",
+                        "size": 1024,
+                    },
+                },
+            ],
+        }
+
+        result = await gmail_runtime._process_attachments("msg123", payload)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_process_attachments_oversized_skipped(
+        self, gmail_runtime_with_blob_store: GmailConnectorRuntime, mock_blob_store: AsyncMock
+    ) -> None:
+        """Test that attachments >5MB are skipped with warning."""
+        runtime = gmail_runtime_with_blob_store
+
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "image/jpeg",
+                    "filename": "huge.jpg",
+                    "body": {
+                        "attachmentId": "att_big",
+                        "size": 6 * 1024 * 1024,  # 6MB
+                    },
+                },
+            ],
+        }
+
+        result = await runtime._process_attachments("msg123", payload)
+
+        # Should return None (no attachments processed)
+        assert result is None
+        # Blob store should not be called
+        mock_blob_store.put.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_process_attachments_download_failure_continues(
+        self, gmail_runtime_with_blob_store: GmailConnectorRuntime, mock_blob_store: AsyncMock
+    ) -> None:
+        """Test that download failures don't block other attachments."""
+        runtime = gmail_runtime_with_blob_store
+        runtime._http_client = AsyncMock()
+        runtime._get_access_token = AsyncMock(return_value="test-token")
+
+        # First attachment fails, second succeeds
+        call_count = 0
+
+        async def mock_get(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call fails
+                raise Exception("Download failed")
+            else:
+                # Second call succeeds
+                mock_response = MagicMock()
+                mock_response.json.return_value = {
+                    "data": base64.urlsafe_b64encode(b"good data").decode()
+                }
+                mock_response.raise_for_status = MagicMock()
+                return mock_response
+
+        runtime._http_client.get = mock_get
+
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "image/jpeg",
+                    "filename": "bad.jpg",
+                    "body": {
+                        "attachmentId": "att_bad",
+                        "size": 1024,
+                    },
+                },
+                {
+                    "mimeType": "image/png",
+                    "filename": "good.png",
+                    "body": {
+                        "attachmentId": "att_good",
+                        "size": 2048,
+                    },
+                },
+            ],
+        }
+
+        result = await runtime._process_attachments("msg123", payload)
+
+        # Should have one attachment (the successful one)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["filename"] == "good.png"
+
+    @pytest.mark.asyncio
+    async def test_build_ingest_envelope_with_attachments(
+        self, gmail_runtime_with_blob_store: GmailConnectorRuntime, mock_blob_store: AsyncMock
+    ) -> None:
+        """Test that _build_ingest_envelope includes attachments."""
+        runtime = gmail_runtime_with_blob_store
+        runtime._http_client = AsyncMock()
+        runtime._get_access_token = AsyncMock(return_value="test-token")
+
+        # Mock attachment download
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": base64.urlsafe_b64encode(b"attachment data").decode()
+        }
+        mock_response.raise_for_status = MagicMock()
+        runtime._http_client.get = AsyncMock(return_value=mock_response)
+
+        message_data = {
+            "id": "msg123",
+            "threadId": "thread456",
+            "internalDate": "1708099200000",
+            "payload": {
+                "headers": [
+                    {"name": "Subject", "value": "Test Email"},
+                    {"name": "From", "value": "sender@example.com"},
+                    {"name": "Message-ID", "value": "<msg123@example.com>"},
+                ],
+                "mimeType": "multipart/mixed",
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": base64.urlsafe_b64encode(b"Email body").decode()},
+                    },
+                    {
+                        "mimeType": "image/jpeg",
+                        "filename": "photo.jpg",
+                        "body": {
+                            "attachmentId": "att123",
+                            "size": 1024,
+                        },
+                    },
+                ],
+            },
+        }
+
+        envelope = await runtime._build_ingest_envelope(message_data)
+
+        assert envelope["schema_version"] == "ingest.v1"
+        assert envelope["payload"]["attachments"] is not None
+        assert len(envelope["payload"]["attachments"]) == 1
+        assert envelope["payload"]["attachments"][0]["media_type"] == "image/jpeg"
+        assert envelope["payload"]["attachments"][0]["filename"] == "photo.jpg"
+
+    @pytest.mark.asyncio
+    async def test_build_ingest_envelope_without_attachments(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Test that emails without attachments work correctly."""
+        message_data = {
+            "id": "msg123",
+            "threadId": "thread456",
+            "internalDate": "1708099200000",
+            "payload": {
+                "headers": [
+                    {"name": "Subject", "value": "Test Email"},
+                    {"name": "From", "value": "sender@example.com"},
+                    {"name": "Message-ID", "value": "<msg123@example.com>"},
+                ],
+                "mimeType": "text/plain",
+                "body": {"data": base64.urlsafe_b64encode(b"Email body").decode()},
+            },
+        }
+
+        envelope = await gmail_runtime._build_ingest_envelope(message_data)
+
+        assert envelope["schema_version"] == "ingest.v1"
+        # attachments should be None when no blob store
+        assert envelope["payload"]["attachments"] is None

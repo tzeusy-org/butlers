@@ -57,6 +57,7 @@ from pydantic import BaseModel, ConfigDict
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.storage.blobs import BlobStore
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,21 @@ class HealthStatus(BaseModel):
     last_ingest_submit_at: str | None
     source_api_connectivity: Literal["connected", "disconnected", "unknown"]
     timestamp: str
+
+
+# Supported attachment MIME types
+SUPPORTED_ATTACHMENT_TYPES = frozenset(
+    {
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "application/pdf",
+    }
+)
+
+# Max attachment size: 5MB
+MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024
 
 
 class GmailConnectorConfig(BaseModel):
@@ -200,8 +216,9 @@ class GmailCursor(BaseModel):
 class GmailConnectorRuntime:
     """Gmail connector runtime using watch/history delta flow."""
 
-    def __init__(self, config: GmailConnectorConfig) -> None:
+    def __init__(self, config: GmailConnectorConfig, blob_store: BlobStore | None = None) -> None:
         self._config = config
+        self._blob_store = blob_store
         self._http_client: httpx.AsyncClient | None = None
         self._mcp_client = CachedMCPClient(
             config.switchboard_mcp_url, client_name="gmail-connector"
@@ -817,7 +834,7 @@ class GmailConnectorRuntime:
                 message_data = await self._fetch_message(message_id)
 
                 # Build ingest.v1 envelope
-                envelope = self._build_ingest_envelope(message_data)
+                envelope = await self._build_ingest_envelope(message_data)
 
                 # Submit to Switchboard ingest API
                 await self._submit_to_ingest_api(envelope)
@@ -853,7 +870,7 @@ class GmailConnectorRuntime:
             self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_message")
             raise
 
-    def _build_ingest_envelope(self, message_data: dict[str, Any]) -> dict[str, Any]:
+    async def _build_ingest_envelope(self, message_data: dict[str, Any]) -> dict[str, Any]:
         """Build ingest.v1 envelope from Gmail message data."""
         message_id = message_data.get("id", "unknown")
         thread_id = message_data.get("threadId")
@@ -872,6 +889,9 @@ class GmailConnectorRuntime:
 
         # Build normalized text
         normalized_text = f"Subject: {html.escape(subject)}\n\n{html.escape(body)}"
+
+        # Process attachments
+        attachments = await self._process_attachments(message_id, message_data.get("payload", {}))
 
         # Observed timestamp
         try:
@@ -898,6 +918,7 @@ class GmailConnectorRuntime:
             "payload": {
                 "raw": message_data,
                 "normalized_text": normalized_text,
+                "attachments": attachments,
             },
             "control": {
                 "policy_tier": "default",
@@ -926,6 +947,186 @@ class GmailConnectorRuntime:
                     return body
 
         return "(no body)"
+
+    def _extract_attachments(self, payload: dict[str, Any], depth: int = 0) -> list[dict[str, Any]]:
+        """Walk MIME parts tree, identify supported attachments.
+
+        Returns list of dicts with:
+            - filename: str | None
+            - mime_type: str
+            - attachment_id: str
+            - size_bytes: int
+        """
+        if depth > 20:
+            logger.warning("Maximum recursion depth reached in attachment extraction")
+            return []
+
+        attachments = []
+        mime_type = payload.get("mimeType", "")
+
+        # Check if this part is an attachment
+        body = payload.get("body", {})
+        attachment_id = body.get("attachmentId")
+        size = body.get("size", 0)
+
+        # Get filename from part
+        filename = payload.get("filename")
+
+        # Criteria for attachment:
+        # 1. Has attachmentId (Gmail API marks it as attachment)
+        # 2. Has supported MIME type
+        # 3. Not a text body part
+
+        has_attachment_id = bool(attachment_id)
+        is_supported_type = mime_type in SUPPORTED_ATTACHMENT_TYPES
+
+        if has_attachment_id and is_supported_type:
+            attachments.append(
+                {
+                    "filename": filename or None,
+                    "mime_type": mime_type,
+                    "attachment_id": attachment_id,
+                    "size_bytes": size,
+                }
+            )
+
+        # Recurse into multipart
+        parts = payload.get("parts", [])
+        for part in parts:
+            attachments.extend(self._extract_attachments(part, depth + 1))
+
+        return attachments
+
+    async def _download_gmail_attachment(self, message_id: str, attachment_id: str) -> bytes:
+        """Download attachment data from Gmail API.
+
+        Args:
+            message_id: Gmail message ID
+            attachment_id: Attachment ID from message part
+
+        Returns:
+            Binary attachment data
+
+        Raises:
+            Exception: If download fails
+        """
+        token = await self._get_access_token()
+
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized")
+
+        url = f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/attachments/{attachment_id}"
+        headers = {"Authorization": f"Bearer {token}"}
+
+        try:
+            response = await self._http_client.get(url, headers=headers)
+            response.raise_for_status()
+
+            data = response.json()
+            # Gmail returns base64url-encoded data
+            attachment_data_b64 = data.get("data", "")
+            if not attachment_data_b64:
+                raise ValueError(f"No data in attachment response for {attachment_id}")
+
+            # Decode base64url
+            attachment_bytes = base64.urlsafe_b64decode(attachment_data_b64)
+            return attachment_bytes
+
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "Failed to download attachment: %s (status=%d)",
+                attachment_id,
+                exc.response.status_code,
+            )
+            raise
+        except Exception as exc:
+            logger.error("Failed to download attachment %s: %s", attachment_id, exc)
+            raise
+
+    async def _process_attachments(
+        self, message_id: str, payload: dict[str, Any]
+    ) -> tuple[dict[str, Any], ...] | None:
+        """Extract and store attachments from message payload.
+
+        Args:
+            message_id: Gmail message ID for downloading attachments
+            payload: Gmail message payload dict
+
+        Returns:
+            Tuple of IngestAttachment dicts, or None if no attachments
+        """
+        if not self._blob_store:
+            # Blob storage not configured, skip attachments
+            return None
+
+        # Extract attachment metadata
+        attachment_metas = self._extract_attachments(payload)
+        if not attachment_metas:
+            return None
+
+        processed_attachments = []
+
+        for meta in attachment_metas:
+            attachment_id = meta["attachment_id"]
+            size_bytes = meta["size_bytes"]
+            mime_type = meta["mime_type"]
+            filename = meta["filename"]
+
+            # Skip oversized attachments
+            if size_bytes > MAX_ATTACHMENT_SIZE_BYTES:
+                logger.warning(
+                    "Skipping oversized attachment: %s (%d bytes > %d bytes limit)",
+                    filename or attachment_id,
+                    size_bytes,
+                    MAX_ATTACHMENT_SIZE_BYTES,
+                )
+                continue
+
+            try:
+                # Download attachment bytes
+                attachment_bytes = await self._download_gmail_attachment(message_id, attachment_id)
+
+                # Store via blob storage
+                storage_ref = await self._blob_store.put(
+                    attachment_bytes,
+                    content_type=mime_type,
+                    filename=filename,
+                )
+
+                # Build IngestAttachment dict
+                attachment_dict = {
+                    "media_type": mime_type,
+                    "storage_ref": storage_ref,
+                    "size_bytes": size_bytes,
+                }
+                if filename:
+                    attachment_dict["filename"] = filename
+
+                processed_attachments.append(attachment_dict)
+
+                logger.info(
+                    "Stored attachment: %s (%s, %d bytes) -> %s",
+                    filename or attachment_id,
+                    mime_type,
+                    size_bytes,
+                    storage_ref,
+                )
+
+            except Exception as exc:
+                # Log error but don't block text ingestion
+                logger.error(
+                    "Failed to process attachment %s: %s",
+                    filename or attachment_id,
+                    exc,
+                    exc_info=True,
+                )
+                # Continue with other attachments
+                continue
+
+        if not processed_attachments:
+            return None
+
+        return tuple(processed_attachments)
 
     async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
         """Submit ingest.v1 envelope to Switchboard via MCP ingest tool."""
