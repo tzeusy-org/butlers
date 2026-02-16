@@ -112,7 +112,11 @@ pgdata/
 .worktrees/parallel-agents/butlers-0qp.23.6/
 .worktrees/parallel-agents/butlers-0qp.23.5/
 .worktrees/parallel-agents/butlers-0qp.23.7/
-# bd worktree
 .worktrees/parallel-agents/butlers-940.1/
-# bd worktree
 .worktrees/parallel-agents/butlers-940.2/
+.worktrees/parallel-agents/butlers-941.1/
+.worktrees/parallel-agents/butlers-940.3/
+.worktrees/parallel-agents/butlers-945/
+.worktrees/parallel-agents/butlers-940.4/
+# bd worktree
+.worktrees/parallel-agents/butlers-946/
