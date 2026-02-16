@@ -30,9 +30,6 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-
-# For image compression
-from io import BytesIO
 from pathlib import Path
 from threading import Thread
 from typing import Any, Literal
@@ -40,18 +37,78 @@ from typing import Any, Literal
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from PIL import Image
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
-from butlers.storage.blobs import BlobStore, LocalBlobStore
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
+
+_MEDIA_TYPE_LABELS: dict[str, str] = {
+    "photo": "Photo",
+    "sticker": "Sticker",
+    "voice": "Voice message",
+    "video_note": "Video message",
+    "video": "Video",
+    "animation": "GIF",
+    "document": "Document",
+    "audio": "Audio",
+    "location": "Location",
+    "contact": "Contact",
+    "poll": "Poll",
+    "dice": "Dice",
+}
+
+
+def _extract_normalized_text(msg: dict[str, Any]) -> str | None:
+    """Extract meaningful text from a Telegram message dict.
+
+    Returns the best available text representation using a tiered strategy:
+    1. text — standard text messages
+    2. caption — media messages with captions
+    3. Media type descriptor — synthesized tag like [Photo], [Sticker: 😀]
+    4. None — service messages with no user content
+    """
+    # Tier 1: explicit text field
+    if msg.get("text"):
+        return msg["text"]
+
+    # Tier 2: caption on media messages
+    if msg.get("caption"):
+        return msg["caption"]
+
+    # Tier 3: media type descriptor
+    for media_key, label in _MEDIA_TYPE_LABELS.items():
+        if media_key not in msg:
+            continue
+
+        # Enrich specific media types
+        if media_key == "poll" and isinstance(msg["poll"], dict):
+            question = msg["poll"].get("question", "")
+            if question:
+                return f"[Poll: {question}]"
+
+        if media_key == "sticker" and isinstance(msg["sticker"], dict):
+            emoji = msg["sticker"].get("emoji", "")
+            if emoji:
+                return f"[Sticker: {emoji}]"
+
+        if media_key == "contact" and isinstance(msg["contact"], dict):
+            contact = msg["contact"]
+            first = contact.get("first_name", "")
+            last = contact.get("last_name", "")
+            name = f"{first} {last}".strip() if (first or last) else ""
+            if name:
+                return f"[Contact: {name}]"
+
+        return f"[{label}]"
+
+    # Tier 4: no extractable content (service messages like new_chat_members, etc.)
+    return None
 
 
 class HealthStatus(BaseModel):
@@ -93,9 +150,6 @@ class TelegramBotConnectorConfig:
     # Health check config
     health_port: int = 8080
 
-    # Blob storage config
-    blob_store_dir: Path | None = None
-
     @classmethod
     def from_env(cls) -> TelegramBotConnectorConfig:
         """Load configuration from environment variables."""
@@ -125,9 +179,6 @@ class TelegramBotConnectorConfig:
 
         health_port = int(os.environ.get("CONNECTOR_HEALTH_PORT", "8080"))
 
-        blob_store_dir_str = os.environ.get("CONNECTOR_BLOB_STORE_DIR")
-        blob_store_dir = Path(blob_store_dir_str) if blob_store_dir_str else Path(".blobs")
-
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
@@ -139,7 +190,6 @@ class TelegramBotConnectorConfig:
             webhook_url=webhook_url,
             max_inflight=max_inflight,
             health_port=health_port,
-            blob_store_dir=blob_store_dir,
         )
 
 
@@ -166,12 +216,6 @@ class TelegramBotConnector:
         self._last_update_id: int | None = None
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
-
-        # Blob storage for media
-        if config.blob_store_dir:
-            self._blob_store: BlobStore = LocalBlobStore(config.blob_store_dir)
-        else:
-            self._blob_store: BlobStore = LocalBlobStore(Path(".blobs"))
 
         # Metrics
         self._metrics = ConnectorMetrics(
@@ -472,213 +516,6 @@ class TelegramBotConnector:
 
             raise
 
-    async def _download_telegram_file(self, file_id: str) -> tuple[bytes, str]:
-        """Download file from Telegram and return (data, mime_type).
-
-        Args:
-            file_id: Telegram file_id to download
-
-        Returns:
-            Tuple of (file_data, mime_type)
-
-        Raises:
-            Exception: If download fails
-        """
-        start_time = time.perf_counter()
-
-        try:
-            # Step 1: Get file path from Telegram
-            get_file_url = f"{self._telegram_api_base}/getFile"
-            file_resp = await self._http_client.get(get_file_url, params={"file_id": file_id})
-            file_resp.raise_for_status()
-            file_data = file_resp.json()
-
-            if not file_data.get("ok"):
-                raise RuntimeError(f"Telegram getFile failed: {file_data}")
-
-            file_path = file_data["result"]["file_path"]
-
-            # Step 2: Download file content
-            download_url = (
-                f"https://api.telegram.org/file/bot{self._config.telegram_token}/{file_path}"
-            )
-            download_resp = await self._http_client.get(download_url)
-            download_resp.raise_for_status()
-
-            content = download_resp.content
-
-            # Infer MIME type from file extension
-            mime_type = "application/octet-stream"
-            if file_path.endswith((".jpg", ".jpeg")):
-                mime_type = "image/jpeg"
-            elif file_path.endswith(".png"):
-                mime_type = "image/png"
-            elif file_path.endswith(".gif"):
-                mime_type = "image/gif"
-            elif file_path.endswith(".webp"):
-                mime_type = "image/webp"
-            elif file_path.endswith(".mp4"):
-                mime_type = "video/mp4"
-            elif file_path.endswith(".pdf"):
-                mime_type = "application/pdf"
-
-            # Record metrics
-            latency = time.perf_counter() - start_time
-            self._metrics.record_source_api_call(api_method="getFile", status="success")
-
-            logger.debug(
-                "Downloaded Telegram file",
-                extra={
-                    "file_id": file_id,
-                    "size_bytes": len(content),
-                    "mime_type": mime_type,
-                    "latency": latency,
-                },
-            )
-
-            return (content, mime_type)
-
-        except Exception as exc:
-            latency = time.perf_counter() - start_time
-            self._metrics.record_source_api_call(api_method="getFile", status="error")
-            self._metrics.record_error(error_type=get_error_type(exc), operation="media_download")
-            logger.error(
-                "Failed to download Telegram file",
-                extra={
-                    "file_id": file_id,
-                    "error": str(exc),
-                    "latency": latency,
-                },
-            )
-            raise
-
-    def _compress_image_if_needed(self, data: bytes, mime_type: str) -> bytes:
-        """Compress image if it exceeds 5MB (Claude API limit).
-
-        Args:
-            data: Original image data
-            mime_type: MIME type of the image
-
-        Returns:
-            Compressed image data (or original if compression not needed/possible)
-        """
-        # Only compress images
-        if not mime_type.startswith("image/"):
-            return data
-
-        # Check if compression needed
-        size_mb = len(data) / (1024 * 1024)
-        target_size_bytes = 5 * 1024 * 1024  # 5MB
-        if len(data) <= target_size_bytes:
-            return data
-
-        try:
-            # Load image
-            img = Image.open(BytesIO(data))
-
-            # Iteratively compress with decreasing quality until we hit target
-            # Start at quality 85, decrease by 10 each iteration
-            for quality in [85, 75, 65, 55, 45, 35]:
-                output = BytesIO()
-                img.convert("RGB").save(output, format="JPEG", quality=quality, optimize=True)
-                compressed_data = output.getvalue()
-
-                if len(compressed_data) <= target_size_bytes:
-                    compression_ratio = len(compressed_data) / len(data)
-                    logger.info(
-                        "Compressed image for Claude API limit",
-                        extra={
-                            "original_size_mb": size_mb,
-                            "compressed_size_mb": len(compressed_data) / (1024 * 1024),
-                            "compression_ratio": compression_ratio,
-                            "quality": quality,
-                        },
-                    )
-                    return compressed_data
-
-            # If we still haven't hit target, use the last compression
-            logger.warning(
-                "Could not compress image below 5MB, using best effort",
-                extra={
-                    "original_size_mb": size_mb,
-                    "compressed_size_mb": len(compressed_data) / (1024 * 1024),
-                },
-            )
-            return compressed_data
-
-        except Exception as exc:
-            logger.warning(
-                "Failed to compress image, using original",
-                extra={"error": str(exc), "size_mb": size_mb},
-            )
-            return data
-
-    async def _store_media(
-        self,
-        data: bytes,
-        content_type: str,
-        filename: str | None,
-        width: int | None = None,
-        height: int | None = None,
-    ) -> dict[str, Any]:
-        """Store media via BlobStore and return attachment metadata.
-
-        Args:
-            data: Media binary data
-            content_type: MIME type
-            filename: Optional original filename
-            width: Optional image width in pixels
-            height: Optional image height in pixels
-
-        Returns:
-            IngestAttachment dict with storage metadata
-        """
-        try:
-            # Compress images if needed
-            processed_data = self._compress_image_if_needed(data, content_type)
-
-            # Store via BlobStore
-            storage_ref = await self._blob_store.put(
-                processed_data,
-                content_type=content_type,
-                filename=filename,
-            )
-
-            # Build attachment metadata
-            attachment: dict[str, Any] = {
-                "media_type": content_type,
-                "storage_ref": storage_ref,
-                "size_bytes": len(processed_data),
-            }
-
-            if filename:
-                attachment["filename"] = filename
-
-            if width is not None:
-                attachment["width"] = width
-
-            if height is not None:
-                attachment["height"] = height
-
-            logger.debug(
-                "Stored media attachment",
-                extra={
-                    "storage_ref": storage_ref,
-                    "media_type": content_type,
-                    "size_bytes": len(processed_data),
-                },
-            )
-
-            return attachment
-
-        except Exception as exc:
-            self._metrics.record_error(error_type=get_error_type(exc), operation="media_storage")
-            logger.error(
-                "Failed to store media",
-                extra={"error": str(exc), "content_type": content_type},
-            )
-            raise
-
     # -------------------------------------------------------------------------
     # Internal: Update processing
     # -------------------------------------------------------------------------
@@ -692,11 +529,16 @@ class TelegramBotConnector:
         3. Submits to Switchboard ingest API
         4. Handles retries and errors
 
+        Updates that produce no usable content (service messages, non-message
+        updates) are silently skipped.
+
         Does NOT classify or route - that happens downstream.
         """
         async with self._semaphore:
             try:
-                envelope = await self._normalize_to_ingest_v1(update)
+                envelope = self._normalize_to_ingest_v1(update)
+                if envelope is None:
+                    return  # Nothing to ingest
                 await self._submit_to_ingest(envelope)
             except Exception:
                 logger.exception(
@@ -707,8 +549,11 @@ class TelegramBotConnector:
                     },
                 )
 
-    async def _normalize_to_ingest_v1(self, update: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_to_ingest_v1(self, update: dict[str, Any]) -> dict[str, Any] | None:
         """Normalize Telegram update to canonical ingest.v1 format.
+
+        Returns None when the update has no usable content (service messages,
+        non-message updates like callback_query/inline_query).
 
         Mapping (from docs/connectors/telegram_bot.md):
         - source.channel: "telegram"
@@ -720,14 +565,11 @@ class TelegramBotConnector:
         - sender.identity: message.from.id
         - payload.raw: full Telegram update JSON
         - payload.normalized_text: extracted text
-        - payload.attachments: media files (photos, documents, etc.)
         - control.idempotency_key: telegram:<endpoint_identity>:<update_id>
         """
         update_id = str(update.get("update_id", "unknown"))
         chat_id = None
         sender_id = "unknown"
-        normalized_text = ""
-        attachments: list[dict[str, Any]] = []
 
         # Extract message data (handles message, edited_message, channel_post)
         msg = None
@@ -736,179 +578,24 @@ class TelegramBotConnector:
                 msg = update[key]
                 break
 
-        message_id = None
-        if msg:
-            if "chat" in msg and isinstance(msg["chat"], dict):
-                chat_id = str(msg["chat"].get("id", ""))
+        # No message object at all → non-message update (callback_query, inline_query, etc.)
+        if msg is None:
+            return None
 
-            if "from" in msg and isinstance(msg["from"], dict):
-                sender_id = str(msg["from"].get("id", "unknown"))
+        # Extract text using tiered strategy
+        normalized_text = _extract_normalized_text(msg)
 
-            message_id = msg.get("message_id")
+        # No extractable content → service message (new_chat_members, title changes, etc.)
+        if normalized_text is None:
+            return None
 
-            # Extract text from either 'text' or 'caption' field
-            normalized_text = msg.get("text") or msg.get("caption", "")
+        if "chat" in msg and isinstance(msg["chat"], dict):
+            chat_id = str(msg["chat"].get("id", ""))
 
-            # Download and store media attachments
-            # Photo: array of PhotoSize objects, use largest
-            if "photo" in msg and isinstance(msg["photo"], list) and msg["photo"]:
-                try:
-                    # Get largest photo size
-                    largest = max(msg["photo"], key=lambda p: p.get("file_size", 0))
-                    file_id = largest.get("file_id")
-                    width = largest.get("width")
-                    height = largest.get("height")
+        if "from" in msg and isinstance(msg["from"], dict):
+            sender_id = str(msg["from"].get("id", "unknown"))
 
-                    if file_id:
-                        data, mime_type = await self._download_telegram_file(file_id)
-                        attachment = await self._store_media(
-                            data, mime_type, None, width=width, height=height
-                        )
-                        attachments.append(attachment)
-                except Exception:
-                    logger.exception(
-                        "Failed to download photo, continuing with text-only",
-                        extra={"update_id": update_id},
-                    )
-
-            # Document (PDFs, etc.)
-            if "document" in msg and isinstance(msg["document"], dict):
-                try:
-                    doc = msg["document"]
-                    file_id = doc.get("file_id")
-                    filename = doc.get("file_name")
-                    mime_type_from_tg = doc.get("mime_type")
-
-                    if file_id:
-                        data, inferred_mime = await self._download_telegram_file(file_id)
-                        # Prefer Telegram's mime_type if available
-                        final_mime = mime_type_from_tg or inferred_mime
-                        attachment = await self._store_media(data, final_mime, filename)
-                        attachments.append(attachment)
-                except Exception:
-                    logger.exception(
-                        "Failed to download document, continuing with text-only",
-                        extra={"update_id": update_id},
-                    )
-
-            # Voice message
-            if "voice" in msg and isinstance(msg["voice"], dict):
-                try:
-                    voice = msg["voice"]
-                    file_id = voice.get("file_id")
-                    mime_type_from_tg = voice.get("mime_type", "audio/ogg")
-
-                    if file_id:
-                        data, inferred_mime = await self._download_telegram_file(file_id)
-                        final_mime = mime_type_from_tg or inferred_mime
-                        attachment = await self._store_media(data, final_mime, "voice.ogg")
-                        attachments.append(attachment)
-                except Exception:
-                    logger.exception(
-                        "Failed to download voice, continuing with text-only",
-                        extra={"update_id": update_id},
-                    )
-
-            # Video
-            if "video" in msg and isinstance(msg["video"], dict):
-                try:
-                    video = msg["video"]
-                    file_id = video.get("file_id")
-                    filename = video.get("file_name")
-                    mime_type_from_tg = video.get("mime_type", "video/mp4")
-                    width = video.get("width")
-                    height = video.get("height")
-
-                    if file_id:
-                        data, inferred_mime = await self._download_telegram_file(file_id)
-                        final_mime = mime_type_from_tg or inferred_mime
-                        attachment = await self._store_media(
-                            data, final_mime, filename, width=width, height=height
-                        )
-                        attachments.append(attachment)
-                except Exception:
-                    logger.exception(
-                        "Failed to download video, continuing with text-only",
-                        extra={"update_id": update_id},
-                    )
-
-            # Audio
-            if "audio" in msg and isinstance(msg["audio"], dict):
-                try:
-                    audio = msg["audio"]
-                    file_id = audio.get("file_id")
-                    filename = audio.get("file_name")
-                    mime_type_from_tg = audio.get("mime_type", "audio/mpeg")
-
-                    if file_id:
-                        data, inferred_mime = await self._download_telegram_file(file_id)
-                        final_mime = mime_type_from_tg or inferred_mime
-                        attachment = await self._store_media(data, final_mime, filename)
-                        attachments.append(attachment)
-                except Exception:
-                    logger.exception(
-                        "Failed to download audio, continuing with text-only",
-                        extra={"update_id": update_id},
-                    )
-
-            # Sticker
-            if "sticker" in msg and isinstance(msg["sticker"], dict):
-                try:
-                    sticker = msg["sticker"]
-                    file_id = sticker.get("file_id")
-                    width = sticker.get("width")
-                    height = sticker.get("height")
-
-                    if file_id:
-                        data, mime_type = await self._download_telegram_file(file_id)
-                        attachment = await self._store_media(
-                            data, mime_type, "sticker.webp", width=width, height=height
-                        )
-                        attachments.append(attachment)
-                except Exception:
-                    logger.exception(
-                        "Failed to download sticker, continuing with text-only",
-                        extra={"update_id": update_id},
-                    )
-
-            # Animation (GIF)
-            if "animation" in msg and isinstance(msg["animation"], dict):
-                try:
-                    animation = msg["animation"]
-                    file_id = animation.get("file_id")
-                    filename = animation.get("file_name")
-                    mime_type_from_tg = animation.get("mime_type", "video/mp4")
-                    width = animation.get("width")
-                    height = animation.get("height")
-
-                    if file_id:
-                        data, inferred_mime = await self._download_telegram_file(file_id)
-                        final_mime = mime_type_from_tg or inferred_mime
-                        attachment = await self._store_media(
-                            data, final_mime, filename, width=width, height=height
-                        )
-                        attachments.append(attachment)
-                except Exception:
-                    logger.exception(
-                        "Failed to download animation, continuing with text-only",
-                        extra={"update_id": update_id},
-                    )
-
-            # Video note (circular videos)
-            if "video_note" in msg and isinstance(msg["video_note"], dict):
-                try:
-                    video_note = msg["video_note"]
-                    file_id = video_note.get("file_id")
-
-                    if file_id:
-                        data, mime_type = await self._download_telegram_file(file_id)
-                        attachment = await self._store_media(data, mime_type, "video_note.mp4")
-                        attachments.append(attachment)
-                except Exception:
-                    logger.exception(
-                        "Failed to download video_note, continuing with text-only",
-                        extra={"update_id": update_id},
-                    )
+        message_id = msg.get("message_id")
 
         # Build thread identity as chat_id:message_id for reply targeting
         thread_identity = (
@@ -916,7 +603,7 @@ class TelegramBotConnector:
         )
 
         # Build ingest.v1 envelope
-        envelope: dict[str, Any] = {
+        return {
             "schema_version": "ingest.v1",
             "source": {
                 "channel": self._config.channel,
@@ -940,12 +627,6 @@ class TelegramBotConnector:
                 "policy_tier": "default",
             },
         }
-
-        # Add attachments if any were successfully downloaded
-        if attachments:
-            envelope["payload"]["attachments"] = tuple(attachments)
-
-        return envelope
 
     async def _submit_to_ingest(self, envelope: dict[str, Any]) -> None:
         """Submit ingest.v1 envelope to Switchboard via MCP ingest tool.
