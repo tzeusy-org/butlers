@@ -28,6 +28,7 @@ Sidebar entries:
 - Groups (`/groups`)
 - Health (`/health/measurements`)
 - Collections (`/collections`)
+- Connectors (`/connectors`)
 - Memory (`/memory`)
 - Entities (`/entities`)
 - Settings (`/settings`)
@@ -63,6 +64,8 @@ Note: `Costs` exists as a route (`/costs`) but is not a sidebar item.
 | `/collections` | General collections | Collection cards and entity counts |
 | `/entities` | General entities | Search/filter entity browser |
 | `/entities/:entityId` | Entity detail | Metadata + full JSON payload |
+| `/connectors` | Connectors overview | Connector cards + volume chart + fanout matrix + error log |
+| `/connectors/:connectorType/:endpointIdentity` | Connector detail | Full stats + timeseries + health history |
 | `/costs` | Costs and usage | Summary stats + chart + butler breakdown |
 | `/memory` | Memory system | Tier cards + browser + activity timeline |
 | `/settings` | Settings | Local UI preferences (theme, live-refresh defaults, search history controls) |

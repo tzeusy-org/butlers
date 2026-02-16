@@ -13,6 +13,7 @@ The backend is distributed across multiple butlers, modules, and databases. With
 The frontend is intentionally the single pane that combines:
 
 - Cross-butler status and topology.
+- Connector health, uptime, and ingestion volume visibility.
 - Session and trace visibility.
 - Notifications and auditability.
 - Approval queue and standing-rule governance for high-impact autonomous actions (target integration).

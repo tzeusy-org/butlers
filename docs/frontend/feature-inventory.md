@@ -233,6 +233,39 @@ This inventory describes what is implemented today in `frontend/src/**`.
 - Entity Detail (`/entities/:entityId`):
   - metadata and full JSON payload viewer
 
+## Connectors (`/connectors`)
+
+- Connector overview cards:
+  - One card per registered connector showing type icon, endpoint identity, liveness badge (online/stale/offline), self-reported health state (healthy/degraded/error), uptime percentage (today), last heartbeat age, and today's ingestion count.
+- Volume time series chart:
+  - Line or bar chart of ingestion volume per connector over selected period.
+  - Period selector: 24h / 7d / 30d.
+  - Toggle per-connector visibility.
+- Fanout distribution table:
+  - Matrix of connector x butler showing message counts for the selected period.
+  - Columns: target butlers. Rows: connectors. Cells: message count.
+- Error log panel:
+  - Recent connector errors (heartbeats with state != healthy).
+  - Columns: timestamp, connector type + identity, state (degraded/error), error message.
+- Cross-connector summary stats:
+  - Total connectors, online count, stale count, offline count, total messages ingested, total messages failed, overall error rate.
+
+## Connector Detail (`/connectors/:connectorType/:endpointIdentity`)
+
+- Connector identity card:
+  - Type, endpoint identity, instance ID, version, registered_via, first_seen_at.
+- Current status card:
+  - Liveness badge, health state, error message (if any), uptime, last heartbeat age.
+- Counters card:
+  - Lifetime monotonic counters: messages ingested, messages failed, source API calls, checkpoint saves, dedupe accepted.
+- Checkpoint card:
+  - Current cursor value and last updated timestamp.
+- Volume + health time series:
+  - Same chart as overview page but scoped to this connector.
+  - Period selector: 24h / 7d / 30d.
+- Fanout breakdown:
+  - Per-butler message distribution for this connector over selected period.
+
 ## Costs (`/costs`)
 
 - Period selector (7d/30d/90d).

@@ -1,7 +1,7 @@
 # Switchboard Butler: Permanent Definition
 
 Status: Normative
-Last updated: 2026-02-13
+Last updated: 2026-02-16
 Primary owner: Platform/Core
 
 ## 1. Role
@@ -347,6 +347,13 @@ Long-term durable tables and purposes:
 - `notifications`: durable notification delivery history including status/error and trace/session linkage.
 - `dashboard_audit_log`: durable audit surface for dashboard/API operations.
 
+Connector heartbeat and statistics tables:
+- `connector_registry`: current state of each known connector (self-registered, never auto-pruned).
+- `connector_heartbeat_log`: append-only heartbeat history (7-day retention, month-partitioned).
+- `connector_stats_hourly`: pre-aggregated hourly volume and health metrics (30-day retention).
+- `connector_stats_daily`: pre-aggregated daily volume, health, and uptime (1-year retention).
+- `connector_fanout_daily`: per-connector per-target-butler daily message counts (1-year retention).
+
 Long-term storage summary:
 - `butler_registry`, `routing_log`, `extraction_queue`, `extraction_log`, `notifications`, and `dashboard_audit_log` are persistent operational tables.
 - `extraction_queue` is operational-state storage with expiry metadata; entries remain persisted unless explicit expiry/cleanup logic runs.
@@ -684,7 +691,68 @@ All downstream dispatches must use a versioned route envelope:
 }
 ```
 
-### 17.5 Ingestion API Semantics
+### 17.5 Connector Heartbeat Ingestion
+
+Switchboard owns the connector heartbeat ingestion boundary.
+
+Rules:
+- Switchboard exposes a `connector.heartbeat` MCP tool that accepts `connector.heartbeat.v1` envelopes from connector processes.
+- Heartbeats are processed asynchronously and MUST NOT block the ingestion path.
+- On first heartbeat from an unknown `(connector_type, endpoint_identity)` pair, Switchboard auto-registers the connector (self-registration).
+- Connector liveness is derived from heartbeat recency: `online` (< 2 min), `stale` (2–4 min), `offline` (> 4 min).
+- Switchboard persists heartbeat state in `connector_registry` (current state) and `connector_heartbeat_log` (append-only history, 7-day retention, month-partitioned).
+- Counter deltas between consecutive heartbeats are computed and used as rollup input.
+- Switchboard MUST NOT auto-deregister connectors. Cleanup is an operator action.
+
+Full heartbeat protocol specification: `docs/connectors/heartbeat.md`.
+
+### 17.6 Connector Statistics and Aggregation
+
+Switchboard owns pre-aggregated connector statistics derived from heartbeat logs and `message_inbox` routing outcomes.
+
+Rollup tables:
+- `connector_stats_hourly`: Per-connector hourly volume and health metrics.
+- `connector_stats_daily`: Per-connector daily volume, health, and uptime percentage.
+- `connector_fanout_daily`: Per-connector per-target-butler daily message counts, derived from `message_inbox.dispatch_outcomes`.
+
+Rollup schedule:
+- Hourly rollup: runs at minute 5 of every hour.
+- Daily rollup + fanout rollup: runs at 00:15 UTC daily.
+
+Retention and pruning:
+- `connector_heartbeat_log`: 7 days (partition drop).
+- `connector_stats_hourly`: 30 days (row delete).
+- `connector_stats_daily`: 1 year (row delete).
+- `connector_fanout_daily`: 1 year (row delete).
+- `connector_registry`: never auto-pruned.
+
+Rules:
+- Rollup jobs are Switchboard scheduled tasks (cron-based).
+- Rollups MUST be idempotent and safe to re-run.
+- Pruning MUST log what was removed.
+
+Full statistics specification: `docs/connectors/statistics.md`.
+
+### 17.7 Connector Dashboard API
+
+Switchboard connector state and statistics are exposed via core dashboard API endpoints (not butler-specific routes).
+
+Required endpoints:
+- `GET /api/connectors` — list all known connectors with liveness and today's summary.
+- `GET /api/connectors/{connector_type}/{endpoint_identity}` — full detail for a single connector.
+- `GET /api/connectors/{connector_type}/{endpoint_identity}/stats?period=24h|7d|30d` — time-series volume and health statistics.
+- `GET /api/connectors/summary?period=24h|7d|30d` — aggregate cross-connector summary.
+- `GET /api/connectors/fanout?period=7d|30d` — connector-to-butler routing distribution matrix.
+
+Rules:
+- Endpoints query Switchboard database directly (rollup tables and `connector_registry`).
+- Liveness is derived at query time from `last_heartbeat_at` using staleness thresholds.
+- Fanout data is derived from pre-aggregated `connector_fanout_daily`, not live `message_inbox` queries.
+- Response models follow the standard `ApiResponse[T]` / `PaginatedResponse[T]` wrappers.
+
+Full endpoint specification and response schemas: `docs/connectors/statistics.md`.
+
+### 17.8 Ingestion API Semantics
 Rules:
 - Accepted ingest returns `202 Accepted` with canonical `request_id`.
 - Deduplication is evaluated at ingestion using channel-aware keys.

@@ -29,6 +29,7 @@ Domain hook refetch intervals:
   - timeline (default; can be overridden by page controls)
   - audit log
   - issues
+  - connectors list and summary
   - general entities/collections/switchboard
   - health datasets
   - memory stats/facts/rules/episodes
@@ -37,6 +38,7 @@ Domain hook refetch intervals:
   - cost summary
   - daily costs
   - top sessions (hook exists, not routed)
+  - connector stats and fanout (time-series data, slower refresh acceptable)
 - 15s:
   - memory activity
 - No automatic interval by default:
@@ -81,6 +83,8 @@ All other route surfaces are currently read-only.
   - contacts, groups, labels, contact subresources, upcoming dates
 - Health domain:
   - measurements, medications, medication doses, conditions, symptoms, meals, research
+- Connectors domain:
+  - connector list, connector detail, connector stats, cross-connector summary, fanout distribution
 - General/Switchboard domain:
   - collections, entities, routing log, registry
 - Memory domain:

@@ -159,6 +159,83 @@ Grouped result keys required by frontend:
 - `GET /api/health/meals` -> `PaginatedResponse<Meal>`
 - `GET /api/health/research` -> `PaginatedResponse<HealthResearch>`
 
+## Connectors Contract
+
+- `GET /api/connectors` -> `ApiResponse<ConnectorSummary[]>`
+- `GET /api/connectors/{connectorType}/{endpointIdentity}` -> `ApiResponse<ConnectorDetail>`
+- `GET /api/connectors/{connectorType}/{endpointIdentity}/stats` -> `ApiResponse<ConnectorStats>`
+- `GET /api/connectors/summary` -> `ApiResponse<ConnectorCrossSummary>`
+- `GET /api/connectors/fanout` -> `ApiResponse<ConnectorFanout>`
+
+Required query support:
+
+- `/api/connectors/{connectorType}/{endpointIdentity}/stats`:
+  - `period` (`24h` | `7d` | `30d`)
+- `/api/connectors/summary`:
+  - `period` (`24h` | `7d` | `30d`)
+- `/api/connectors/fanout`:
+  - `period` (`7d` | `30d`)
+
+Response model shapes:
+
+- `ConnectorSummary`:
+  - `connector_type`: string
+  - `endpoint_identity`: string
+  - `liveness`: `"online"` | `"stale"` | `"offline"`
+  - `state`: `"healthy"` | `"degraded"` | `"error"`
+  - `error_message`: string | null
+  - `version`: string | null
+  - `uptime_s`: number | null
+  - `last_heartbeat_at`: ISO timestamp | null
+  - `first_seen_at`: ISO timestamp
+  - `today`: `ConnectorDaySummary` | null
+
+- `ConnectorDaySummary`:
+  - `messages_ingested`: number
+  - `messages_failed`: number
+  - `uptime_pct`: number | null
+
+- `ConnectorDetail` (extends `ConnectorSummary`):
+  - `instance_id`: UUID | null
+  - `registered_via`: string
+  - `checkpoint`: `{ cursor: string | null, updated_at: ISO timestamp | null }` | null
+  - `counters`: `{ messages_ingested, messages_failed, source_api_calls, checkpoint_saves, dedupe_accepted }` | null
+
+- `ConnectorStats`:
+  - `connector_type`: string
+  - `endpoint_identity`: string
+  - `period`: string
+  - `summary`: `{ messages_ingested, messages_failed, error_rate_pct, uptime_pct, avg_messages_per_hour }`
+  - `timeseries`: `ConnectorStatsBucket[]`
+
+- `ConnectorStatsBucket`:
+  - `bucket`: ISO timestamp
+  - `messages_ingested`: number
+  - `messages_failed`: number
+  - `healthy_count`: number
+  - `degraded_count`: number
+  - `error_count`: number
+
+- `ConnectorCrossSummary`:
+  - `period`: string
+  - `total_connectors`: number
+  - `connectors_online`: number
+  - `connectors_stale`: number
+  - `connectors_offline`: number
+  - `total_messages_ingested`: number
+  - `total_messages_failed`: number
+  - `overall_error_rate_pct`: number
+  - `by_connector`: `ConnectorSummary[]` (lightweight subset)
+
+- `ConnectorFanout`:
+  - `period`: string
+  - `matrix`: `ConnectorFanoutEntry[]`
+
+- `ConnectorFanoutEntry`:
+  - `connector_type`: string
+  - `endpoint_identity`: string
+  - `targets`: `Record<string, number>` (butler name -> message count)
+
 ## General and Switchboard Views Contract
 
 - `GET /api/general/collections` -> `PaginatedResponse<GeneralCollection>`

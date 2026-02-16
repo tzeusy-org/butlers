@@ -2,6 +2,40 @@
 
 This file tracks updates to connector documentation to ensure synchronization with implementation.
 
+## 2026-02-16 - Heartbeat Protocol and Statistics
+
+### Added
+- **docs/connectors/heartbeat.md**: Normative specification for connector heartbeat protocol:
+  - `connector.heartbeat.v1` envelope schema
+  - 2-minute heartbeat interval with staleness thresholds (online/stale/offline)
+  - Self-registration on first heartbeat (no manual pre-configuration)
+  - Monotonic counter reporting (messages ingested, failed, source API calls)
+  - Switchboard persistence: `connector_registry` + `connector_heartbeat_log`
+  - Environment variables: `CONNECTOR_HEARTBEAT_INTERVAL_S`, `CONNECTOR_HEARTBEAT_ENABLED`
+
+- **docs/connectors/statistics.md**: Normative specification for connector statistics aggregation and dashboard API:
+  - Pre-aggregated rollup tables: hourly, daily, and fanout distribution
+  - Rollup job scheduling (hourly at :05, daily at 00:15 UTC)
+  - Retention and pruning policy: 7d raw heartbeats, 30d hourly, 1y daily
+  - Dashboard API endpoints: list, detail, stats, summary, fanout
+  - Frontend `/connectors` page spec: connector cards, volume charts, fanout matrix, error log
+  - Pydantic response model definitions
+
+### Updated
+- **docs/connectors/interface.md**: Added sections 13 (Heartbeat Protocol) and 14 (Statistics and Dashboard Visibility) to connector responsibilities. Heartbeat is now a MUST requirement for all connectors.
+- **docs/roles/switchboard_butler.md**: Added sections 17.5–17.7 covering connector heartbeat ingestion, statistics aggregation, and dashboard API ownership. Added connector tables to persistence surfaces (section 11).
+
+### Documentation Sync Status Update
+
+| Document | Implementation | Status | Notes |
+|----------|---------------|--------|-------|
+| `docs/connectors/heartbeat.md` | Not yet implemented | 📋 Spec ready | Awaiting implementation |
+| `docs/connectors/statistics.md` | Not yet implemented | 📋 Spec ready | Awaiting implementation |
+
+### Gaps Resolved
+- **Connector Health Check Endpoint** (previously gap #7): Resolved by heartbeat protocol. Connectors report liveness via `connector.heartbeat` MCP tool rather than HTTP health endpoints.
+- **Connector Metrics/Observability** (previously gap #4): Partially resolved. Heartbeat counters provide volume/error visibility. Prometheus metrics remain a separate concern for production monitoring.
+
 ## 2026-02-15 - Conformance Tests and Runbooks
 
 ### Added

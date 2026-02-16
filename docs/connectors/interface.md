@@ -1,7 +1,7 @@
 # Connector Interface Contract
 
 Status: Normative (Target State)
-Last updated: 2026-02-13
+Last updated: 2026-02-16
 Primary owner: Platform/Core
 
 ## 1. Purpose
@@ -30,6 +30,7 @@ Connectors MUST:
 - Submit to the canonical Switchboard ingest API.
 - Persist connector-local resume state (cursor/offset/high-water mark).
 - Enforce source-side and ingest-side rate limiting.
+- Send periodic heartbeats to the Switchboard (see section 13).
 
 Connectors MUST NOT:
 - Classify messages.
@@ -195,7 +196,36 @@ During migration:
 - Keep fallback paths fail-safe (no dropped accepted events).
 - Use `docs/connectors/connector_ingestion_migration_delta_matrix.md` as the implementation cutover map (current-path mapping, ownership boundaries, and rollback checkpoints).
 
-## 12. Authentication and Token Management
+## 13. Heartbeat Protocol
+
+Connectors MUST implement the heartbeat protocol to report liveness and operational statistics to the Switchboard.
+
+Full specification: `docs/connectors/heartbeat.md`
+
+Summary:
+- Connectors send a `connector.heartbeat.v1` envelope every 2 minutes via MCP tool call (`connector.heartbeat`).
+- Heartbeats carry self-reported health state (`healthy`, `degraded`, `error`), monotonic operational counters, and optional checkpoint state.
+- Connectors self-register on first heartbeat — no manual pre-configuration required.
+- Switchboard derives liveness from heartbeat recency: `online` (< 2 min), `stale` (2–4 min), `offline` (> 4 min).
+- Heartbeat failures MUST NOT block or crash the ingestion loop.
+
+Environment variables:
+- `CONNECTOR_HEARTBEAT_INTERVAL_S` (optional, default: `120`): Heartbeat interval.
+- `CONNECTOR_HEARTBEAT_ENABLED` (optional, default: `true`): Disable for development/testing.
+
+## 14. Statistics and Dashboard Visibility
+
+Connector ingestion statistics are aggregated by the Switchboard and exposed via the dashboard API.
+
+Full specification: `docs/connectors/statistics.md`
+
+Summary:
+- Hourly and daily rollups of ingestion volume, error rates, and health metrics.
+- Fanout distribution tracking: which butlers receive messages from which connectors.
+- Dashboard `/connectors` page with connector cards, volume charts, fanout matrix, and error log.
+- Rollup + prune retention: 7 days raw heartbeats, 30 days hourly stats, 1 year daily stats.
+
+## 15. Authentication and Token Management
 
 Connector authentication uses bearer tokens issued and managed by the Switchboard butler framework.
 
