@@ -101,6 +101,8 @@ EXPECTED_TOOL_NAMES = {
     "memory_forget",
     "memory_stats",
     "memory_context",
+    "memory_run_consolidation",
+    "memory_run_episode_cleanup",
 }
 
 
@@ -125,6 +127,8 @@ class TestRegisterTools:
         with patch.dict(
             "sys.modules",
             {
+                "butlers.modules.memory": MagicMock(),
+                "butlers.modules.memory.consolidation": MagicMock(),
                 "butlers.modules.memory.tools": MagicMock(),
                 "butlers.modules.memory.tools.writing": MagicMock(),
                 "butlers.modules.memory.tools.reading": MagicMock(),
@@ -137,9 +141,9 @@ class TestRegisterTools:
 
         return registered_tools
 
-    async def test_registers_twelve_tools(self):
+    async def test_registers_fourteen_tools(self):
         registered = await self._register_and_capture()
-        assert len(registered) == 12
+        assert len(registered) == 14
 
     async def test_tool_names_match(self):
         registered = await self._register_and_capture()
@@ -150,7 +154,7 @@ class TestRegisterTools:
         for tool_name, tool_fn in registered.items():
             assert asyncio.iscoroutinefunction(tool_fn), f"{tool_name} should be async"
 
-    async def test_mcp_tool_called_twelve_times(self):
+    async def test_mcp_tool_called_fourteen_times(self):
         mod = MemoryModule()
         mcp = MagicMock()
         mcp.tool.return_value = lambda fn: fn
@@ -158,6 +162,8 @@ class TestRegisterTools:
         with patch.dict(
             "sys.modules",
             {
+                "butlers.modules.memory": MagicMock(),
+                "butlers.modules.memory.consolidation": MagicMock(),
                 "butlers.modules.memory.tools": MagicMock(),
                 "butlers.modules.memory.tools.writing": MagicMock(),
                 "butlers.modules.memory.tools.reading": MagicMock(),
@@ -168,7 +174,7 @@ class TestRegisterTools:
         ):
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
 
-        assert mcp.tool.call_count == 12
+        assert mcp.tool.call_count == 14
 
 
 # ---------------------------------------------------------------------------

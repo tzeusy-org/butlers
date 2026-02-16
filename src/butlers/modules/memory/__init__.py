@@ -88,7 +88,7 @@ class MemoryModule(Module):
         return self._embedding_engine
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        """Register all 12 memory MCP tools."""
+        """Register all memory MCP tools."""
         self._db = db
         if isinstance(config, MemoryModuleConfig):
             self._config = config
@@ -98,6 +98,7 @@ class MemoryModule(Module):
         # Import sub-modules (not individual functions) to avoid name collisions
         # between the MCP closure names and the imported symbols.
         # Deferred to avoid import-time side effects (sentence_transformers).
+        from butlers.modules.memory import consolidation as _consolidation
         from butlers.modules.memory.tools import context as _context
         from butlers.modules.memory.tools import feedback as _feedback
         from butlers.modules.memory.tools import management as _management
@@ -285,4 +286,50 @@ class MemoryModule(Module):
                 trigger_prompt,
                 butler,
                 token_budget=token_budget,
+            )
+
+        # --- Consolidation and cleanup tools ---
+
+        @mcp.tool()
+        async def memory_run_consolidation() -> dict[str, Any]:
+            """Run memory consolidation to process unconsolidated episodes.
+
+            Fetches episodes with consolidation_status='pending', groups them by
+            source butler, and returns stats about episodes ready for consolidation.
+
+            Returns:
+                Dict with keys:
+                - episodes_processed: total unconsolidated episodes found
+                - butlers_processed: number of distinct butler groups
+                - groups: mapping of butler name to episode count
+            """
+            return await _consolidation.run_consolidation(
+                module._get_pool(),
+                module._get_embedding_engine(),
+            )
+
+        @mcp.tool()
+        async def memory_run_episode_cleanup(
+            max_entries: int = 10000,
+        ) -> dict[str, Any]:
+            """Run episode cleanup to delete expired episodes and enforce capacity limits.
+
+            Cleanup proceeds in three steps:
+            1. Delete episodes whose expires_at is in the past
+            2. Count how many episodes remain
+            3. If remaining count exceeds max_entries, delete oldest consolidated
+               episodes until within budget (unconsolidated episodes are preserved)
+
+            Args:
+                max_entries: Maximum number of episodes to retain (default 10000)
+
+            Returns:
+                Dict with keys:
+                - expired_deleted: episodes removed because they expired
+                - capacity_deleted: consolidated episodes removed for capacity
+                - remaining: total episodes still in the table
+            """
+            return await _consolidation.run_episode_cleanup(
+                module._get_pool(),
+                max_entries=max_entries,
             )

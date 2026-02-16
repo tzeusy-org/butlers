@@ -13,4 +13,14 @@ calendar_id = "butler-general@group.calendar.google.com"
 [modules.calendar.conflicts]
 policy = "suggest"
 
+[[butler.schedule]]
+name = "memory-consolidation"
+cron = "0 */6 * * *"
+prompt = "Run memory consolidation to process unconsolidated episodes and extract facts and rules."
+
+[[butler.schedule]]
+name = "memory-episode-cleanup"
+cron = "0 4 * * *"
+prompt = "Run memory episode cleanup to delete expired episodes and enforce capacity limits."
+
 [modules.memory]
