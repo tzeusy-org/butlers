@@ -123,6 +123,176 @@ class TestRunConsolidation:
         assert result["episodes_processed"] == 0
         assert result["butlers_processed"] == 0
         assert result["groups"] == {}
+        assert result["groups_consolidated"] == 0
+        assert result["facts_created"] == 0
+        assert result["episodes_consolidated"] == 0
+
+    async def test_without_spawner_returns_grouping_stats_only(self) -> None:
+        """When cc_spawner is None, only grouping stats are returned."""
+        rows = [
+            _episode_row(butler="alpha"),
+            _episode_row(butler="beta"),
+        ]
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=rows)
+        engine = MagicMock()
+
+        result = await run_consolidation(pool, engine, cc_spawner=None)
+
+        assert result["episodes_processed"] == 2
+        assert result["butlers_processed"] == 2
+        assert result["groups_consolidated"] == 0
+        assert result["facts_created"] == 0
+
+    async def test_orchestrates_full_pipeline_with_spawner(self) -> None:
+        """With cc_spawner, run_consolidation orchestrates the full pipeline."""
+        from unittest.mock import MagicMock as SyncMock
+
+        episodes = [_episode_row(butler="test-butler", content="test content")]
+
+        # Mock connection with transaction support
+        mock_conn = SyncMock()
+        mock_transaction = SyncMock()
+        mock_transaction.__aenter__ = AsyncMock(return_value=None)
+        mock_transaction.__aexit__ = AsyncMock(return_value=None)
+        mock_conn.transaction.return_value = mock_transaction
+
+        # Mock pool.acquire() to return an async context manager
+        mock_acquire_cm = SyncMock()
+        mock_acquire_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_acquire_cm.__aexit__ = AsyncMock(return_value=None)
+
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(
+            side_effect=[
+                episodes,  # Initial episodes query
+                [],  # Existing facts query
+                [],  # Existing rules query
+            ]
+        )
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        # Make acquire() a regular method that returns the context manager
+        pool.acquire = SyncMock(return_value=mock_acquire_cm)
+
+        engine = MagicMock()
+
+        # Mock spawner that returns valid JSON output
+        spawner = AsyncMock()
+        spawner.trigger = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                output='{"new_facts": [{"subject": "test", "predicate": "is", '
+                '"content": "example", "permanence": "standard"}], '
+                '"updated_facts": [], "new_rules": [], "confirmations": []}',
+            )
+        )
+
+        # Mock embedding and storage functions
+        import sys
+        from unittest.mock import patch
+
+        with patch.dict(
+            sys.modules,
+            {
+                "sentence_transformers": MagicMock(),
+            },
+        ):
+            result = await run_consolidation(pool, engine, cc_spawner=spawner)
+
+        assert result["episodes_processed"] == 1
+        assert result["butlers_processed"] == 1
+        spawner.trigger.assert_awaited_once()
+        # Verify prompt was passed to spawner
+        call_kwargs = spawner.trigger.call_args[1]
+        assert "prompt" in call_kwargs
+        assert "test content" in call_kwargs["prompt"]
+
+    async def test_partial_failure_does_not_block_other_groups(self) -> None:
+        """When one butler group fails, others continue processing."""
+        rows = [
+            _episode_row(butler="alpha"),
+            _episode_row(butler="beta"),
+        ]
+        pool = AsyncMock()
+        # First fetch: episodes
+        # Second fetch: facts for alpha (will fail)
+        # Third fetch: facts for beta
+        # Fourth fetch: rules for beta
+        pool.fetch = AsyncMock(
+            side_effect=[
+                rows,
+                Exception("Database error for alpha"),
+                [],  # facts for beta
+                [],  # rules for beta
+            ]
+        )
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        engine = MagicMock()
+
+        spawner = AsyncMock()
+        spawner.trigger = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                output='{"new_facts": [], "updated_facts": [], "new_rules": [], '
+                '"confirmations": []}',
+            )
+        )
+
+        result = await run_consolidation(pool, engine, cc_spawner=spawner)
+
+        assert result["butlers_processed"] == 2
+        assert result["groups_consolidated"] == 1  # Only beta succeeded
+        assert len(result["errors"]) > 0
+        assert "alpha" in result["errors"][0]
+
+    async def test_cc_failure_is_reported_in_errors(self) -> None:
+        """When CC session fails, error is captured in stats (sanitized)."""
+        episodes = [_episode_row(butler="test-butler")]
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=[episodes, [], []])
+        engine = MagicMock()
+
+        spawner = AsyncMock()
+        spawner.trigger = AsyncMock(
+            return_value=MagicMock(
+                success=False,
+                output=None,
+                error="CC timeout",
+            )
+        )
+
+        result = await run_consolidation(pool, engine, cc_spawner=spawner)
+
+        assert result["groups_consolidated"] == 0
+        assert len(result["errors"]) > 0
+        # Error message should be sanitized (no internal details in return value)
+        assert "test-butler" in result["errors"][0]
+        assert "CC session failed" in result["errors"][0]
+
+    async def test_episodes_marked_consolidated_only_after_success(self) -> None:
+        """Episodes are marked consolidated=true only after execute_consolidation."""
+        episodes = [_episode_row(butler="test-butler")]
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(side_effect=[episodes, [], []])
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        engine = MagicMock()
+
+        spawner = AsyncMock()
+        spawner.trigger = AsyncMock(
+            return_value=MagicMock(
+                success=True,
+                output='{"new_facts": [], "updated_facts": [], "new_rules": [], '
+                '"confirmations": []}',
+            )
+        )
+
+        await run_consolidation(pool, engine, cc_spawner=spawner)
+
+        # Verify UPDATE was called with consolidated=true
+        update_calls = [
+            call for call in pool.execute.call_args_list if "UPDATE episodes" in str(call)
+        ]
+        assert len(update_calls) > 0
 
 
 # ---------------------------------------------------------------------------

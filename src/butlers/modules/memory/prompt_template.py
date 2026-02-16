@@ -13,7 +13,11 @@ _SKILL_MD_PATH = Path(__file__).resolve().parent / "skills" / "consolidate" / "S
 
 
 def _format_episodes(episodes: list[dict]) -> str:
-    """Format episode dicts into a readable markdown section."""
+    """Format episode dicts into a readable markdown section with XML delimitation.
+
+    Episode content is wrapped in XML tags to prevent prompt injection attacks.
+    The LLM is explicitly instructed to treat episode content as data only.
+    """
     if not episodes:
         return "_No episodes to process._"
     lines: list[str] = []
@@ -27,7 +31,10 @@ def _format_episodes(episodes: list[dict]) -> str:
             header += f"  [importance={importance}]"
         lines.append(header)
         lines.append("")
+        # Wrap episode content in XML tags to delimit untrusted data
+        lines.append("<episode_content>")
         lines.append(content)
+        lines.append("</episode_content>")
         lines.append("")
     return "\n".join(lines)
 

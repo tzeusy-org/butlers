@@ -8,40 +8,15 @@ from executing.
 
 from __future__ import annotations
 
-import importlib.util
 import logging
 import uuid
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from butlers.modules.memory.consolidation_parser import ConsolidationResult
+from butlers.modules.memory.storage import confirm_memory, create_link, store_fact, store_rule
 
 if TYPE_CHECKING:
     from asyncpg import Pool
-
-# ---------------------------------------------------------------------------
-# Load sibling modules from disk (roster/ is not a Python package).
-# ---------------------------------------------------------------------------
-
-_MODULE_DIR = Path(__file__).resolve().parent
-
-
-def _load_module(name: str):
-    path = _MODULE_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_storage = _load_module("storage")
-_parser = _load_module("consolidation_parser")
-
-store_fact = _storage.store_fact
-store_rule = _storage.store_rule
-create_link = _storage.create_link
-confirm_memory = _storage.confirm_memory
-
-ConsolidationResult = _parser.ConsolidationResult
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +34,6 @@ async def execute_consolidation(
     butler_name: str,
     *,
     scope: str | None = None,
-    max_retries: int = 3,
 ) -> dict[str, Any]:
     """Apply parsed consolidation results to the database.
 
@@ -68,7 +42,7 @@ async def execute_consolidation(
     2. Updated facts: store via store_fact() (auto-supersedes), create derived_from links
     3. New rules: store via store_rule(), create derived_from links to source episodes
     4. Confirmations: call confirm_memory() for each referenced fact UUID
-    5. Mark all source episodes as consolidated or failed based on execution outcome
+    5. Mark all source episodes as consolidated=true
 
     Args:
         pool: asyncpg connection pool
@@ -77,7 +51,6 @@ async def execute_consolidation(
         source_episode_ids: UUIDs of episodes that were consolidated
         butler_name: Name of the butler that sourced these episodes
         scope: Scope for new facts/rules (defaults to butler_name)
-        max_retries: Maximum retry count before marking as dead_letter (default 3)
 
     Returns:
         Dict with stats: facts_created, facts_updated, rules_created,
@@ -109,9 +82,16 @@ async def execute_consolidation(
                 await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
             facts_created += 1
         except Exception as exc:
-            msg = f"Failed to store new fact ({fact.subject}/{fact.predicate}): {exc}"
-            logger.error(msg)
-            errors.append(msg)
+            # Log detailed error internally
+            logger.error(
+                "Failed to store new fact (%s/%s): %s",
+                fact.subject,
+                fact.predicate,
+                exc,
+                exc_info=True,
+            )
+            # Sanitize error message in return value
+            errors.append(f"Failed to store new fact ({fact.subject}/{fact.predicate})")
 
     # --- Updated facts ---
     for fact in parsed.updated_facts:
@@ -130,9 +110,10 @@ async def execute_consolidation(
                 await create_link(pool, "fact", new_fact_id, "episode", episode_id, "derived_from")
             facts_updated += 1
         except Exception as exc:
-            msg = f"Failed to update fact ({fact.target_id}): {exc}"
-            logger.error(msg)
-            errors.append(msg)
+            # Log detailed error internally
+            logger.error("Failed to update fact (%s): %s", fact.target_id, exc, exc_info=True)
+            # Sanitize error message in return value
+            errors.append(f"Failed to update fact ({fact.target_id})")
 
     # --- New rules ---
     for rule in parsed.new_rules:
@@ -149,9 +130,10 @@ async def execute_consolidation(
                 await create_link(pool, "rule", new_rule_id, "episode", episode_id, "derived_from")
             rules_created += 1
         except Exception as exc:
-            msg = f"Failed to store new rule: {exc}"
-            logger.error(msg)
-            errors.append(msg)
+            # Log detailed error internally
+            logger.error("Failed to store new rule: %s", exc, exc_info=True)
+            # Sanitize error message in return value
+            errors.append("Failed to store new rule")
 
     # --- Confirmations ---
     for confirmation_id in parsed.confirmations:
@@ -159,47 +141,25 @@ async def execute_consolidation(
             await confirm_memory(pool, "fact", uuid.UUID(confirmation_id))
             confirmations_made += 1
         except Exception as exc:
-            msg = f"Failed to confirm fact {confirmation_id}: {exc}"
-            logger.error(msg)
-            errors.append(msg)
+            # Log detailed error internally
+            logger.error("Failed to confirm fact %s: %s", confirmation_id, exc, exc_info=True)
+            # Sanitize error message in return value
+            errors.append(f"Failed to confirm fact {confirmation_id}")
 
-    # --- Mark source episodes based on outcome ---
+    # --- Mark source episodes as consolidated ---
     episodes_consolidated = 0
     if source_episode_ids:
         try:
-            if errors:
-                # If there were any errors, mark as failed and increment retry count
-                await pool.execute(
-                    """
-                    UPDATE episodes
-                    SET consolidation_status = CASE
-                            WHEN retry_count + 1 >= $2 THEN 'dead_letter'
-                            ELSE 'failed'
-                        END,
-                        retry_count = retry_count + 1,
-                        last_error = $3
-                    WHERE id = ANY($1)
-                    """,
-                    source_episode_ids,
-                    max_retries,
-                    "; ".join(errors[:5]),  # Store up to 5 error messages
-                )
-            else:
-                # Success: mark as consolidated
-                await pool.execute(
-                    """
-                    UPDATE episodes
-                    SET consolidation_status = 'consolidated',
-                        consolidated = true
-                    WHERE id = ANY($1)
-                    """,
-                    source_episode_ids,
-                )
-                episodes_consolidated = len(source_episode_ids)
+            await pool.execute(
+                "UPDATE episodes SET consolidated = true WHERE id = ANY($1)",
+                source_episode_ids,
+            )
+            episodes_consolidated = len(source_episode_ids)
         except Exception as exc:
-            msg = f"Failed to update episode consolidation status: {exc}"
-            logger.error(msg)
-            errors.append(msg)
+            # Log detailed error internally
+            logger.error("Failed to mark episodes as consolidated: %s", exc, exc_info=True)
+            # Sanitize error message in return value
+            errors.append("Failed to mark episodes as consolidated")
 
     return {
         "facts_created": facts_created,

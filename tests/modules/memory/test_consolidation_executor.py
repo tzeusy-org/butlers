@@ -382,7 +382,9 @@ class TestPartialFailureResilience:
         assert result["facts_created"] == 0
         assert result["rules_created"] == 1
         assert len(result["errors"]) == 1
-        assert "db error" in result["errors"][0]
+        # Error message should be sanitized (no internal details in return value)
+        assert "Failed to store new fact" in result["errors"][0]
+        assert "user/likes" in result["errors"][0]
 
         # Rule was still stored and linked
         mock_sr.assert_awaited_once()
@@ -444,7 +446,8 @@ class TestPartialFailureResilience:
 
         assert result["episodes_consolidated"] == 0
         assert len(result["errors"]) == 1
-        assert "connection lost" in result["errors"][0]
+        # Error message should be sanitized (no internal details in return value)
+        assert "Failed to mark episodes as consolidated" in result["errors"][0]
 
 
 # ---------------------------------------------------------------------------
