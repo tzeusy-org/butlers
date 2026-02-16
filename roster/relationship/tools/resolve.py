@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 from typing import Any
 
@@ -10,6 +11,28 @@ import asyncpg
 CONFIDENCE_HIGH = "high"
 CONFIDENCE_MEDIUM = "medium"
 CONFIDENCE_NONE = "none"
+
+# Relationship type weights for salience scoring
+RELATIONSHIP_WEIGHTS = {
+    "spouse": 50,
+    "partner": 50,
+    "parent": 30,
+    "child": 30,
+    "sibling": 30,
+    "close friend": 20,
+    "best friend": 20,
+    "friend": 10,
+    "colleague": 5,
+    "acquaintance": 2,
+}
+
+# Group type weights for salience scoring
+GROUP_TYPE_WEIGHTS = {
+    "couple": 15,
+    "family": 10,
+    "friends": 5,
+    "team": 3,
+}
 
 
 def _display_name_from_row(row: asyncpg.Record | dict[str, Any]) -> str:
@@ -81,11 +104,12 @@ async def contact_resolve(
     if len(exact_rows) > 1:
         # Multiple exact matches -- ambiguous, return as MEDIUM with context boosting
         candidates = _build_candidates(exact_rows, base_score=90)
+        candidates = await _compute_salience(pool, candidates)
         if context:
             candidates = await _boost_by_context(pool, candidates, context)
         candidates.sort(key=lambda c: c["score"], reverse=True)
-        # If context boosting yields a clear winner, return HIGH
-        if len(candidates) >= 2 and candidates[0]["score"] > candidates[1]["score"]:
+        # If context boosting yields a clear winner (≥30 point gap), return HIGH
+        if len(candidates) >= 2 and candidates[0]["score"] - candidates[1]["score"] >= 30:
             return {
                 "contact_id": candidates[0]["contact_id"],
                 "confidence": CONFIDENCE_HIGH,
@@ -148,13 +172,17 @@ async def contact_resolve(
     # Score partial matches
     candidates = _score_partial_matches(partial_rows, name, name_parts)
 
+    # Salience scoring (only when multiple candidates)
+    if len(candidates) >= 2:
+        candidates = await _compute_salience(pool, candidates)
+
     # Context boosting
     if context:
         candidates = await _boost_by_context(pool, candidates, context)
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
 
-    # If there's exactly one candidate, or one clearly leads, return it
+    # If there's exactly one candidate, return it with MEDIUM confidence
     if len(candidates) == 1:
         return {
             "contact_id": candidates[0]["contact_id"],
@@ -162,6 +190,15 @@ async def contact_resolve(
             "candidates": candidates,
         }
 
+    # If one candidate clearly leads by ≥30 points, return HIGH confidence with auto-selection
+    if len(candidates) >= 2 and candidates[0]["score"] - candidates[1]["score"] >= 30:
+        return {
+            "contact_id": candidates[0]["contact_id"],
+            "confidence": CONFIDENCE_HIGH,
+            "candidates": candidates,
+        }
+
+    # Multiple candidates without clear winner → MEDIUM confidence, no auto-selection
     return {
         "contact_id": None,
         "confidence": CONFIDENCE_MEDIUM,
@@ -221,6 +258,161 @@ def _score_partial_matches(
                 "score": score,
             }
         )
+
+    return candidates
+
+
+async def _compute_salience(
+    pool: asyncpg.Pool,
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Compute salience scores for candidates based on relationship data.
+
+    Only called when len(candidates) >= 2.
+
+    For each candidate, queries:
+    - relationships: type-to-user weight
+    - interactions: count in last 90 days + recency
+    - quick_facts + notes: row count (density)
+    - contacts.stay_in_touch_days: cadence importance
+    - group_members → groups.type: group type weight
+
+    Returns candidates with 'salience' field added and score updated.
+    """
+    # Extract all candidate IDs for batch queries
+    candidate_ids = [c["contact_id"] for c in candidates]
+
+    # Batch query 1: All contact data (stay_in_touch_days)
+    contact_data_rows = await pool.fetch(
+        "SELECT id, stay_in_touch_days FROM contacts WHERE id = ANY($1)",
+        candidate_ids,
+    )
+    contact_data = {row["id"]: row for row in contact_data_rows}
+
+    # Batch query 2: Relationship types
+    rel_rows = await pool.fetch(
+        """
+        SELECT DISTINCT ON (contact_id)
+            CASE
+                WHEN r.contact_id = ANY($1) THEN r.contact_id
+                ELSE r.related_contact_id
+            END as contact_id,
+            rt.forward_label
+        FROM relationships r
+        JOIN relationship_types rt ON r.relationship_type_id = rt.id
+        WHERE r.contact_id = ANY($1) OR r.related_contact_id = ANY($1)
+        ORDER BY contact_id, r.created_at DESC
+        """,
+        candidate_ids,
+    )
+    relationships = {row["contact_id"]: row["forward_label"] for row in rel_rows}
+
+    # Batch query 3: Interaction counts and recency (last 90 days)
+    interaction_rows = await pool.fetch(
+        """
+        SELECT
+            contact_id,
+            COUNT(*) FILTER (WHERE interaction_date >= NOW() - INTERVAL '90 days') as count_90d,
+            MAX(interaction_date) as most_recent
+        FROM interactions
+        WHERE contact_id = ANY($1)
+        GROUP BY contact_id
+        """,
+        candidate_ids,
+    )
+    interactions = {row["contact_id"]: row for row in interaction_rows}
+
+    # Batch query 4: Fact and note counts
+    fact_note_rows = await pool.fetch(
+        """
+        SELECT
+            contact_id,
+            SUM(CASE WHEN source = 'fact' THEN 1 ELSE 0 END) as fact_count,
+            SUM(CASE WHEN source = 'note' THEN 1 ELSE 0 END) as note_count
+        FROM (
+            SELECT contact_id, 'fact' as source FROM quick_facts WHERE contact_id = ANY($1)
+            UNION ALL
+            SELECT contact_id, 'note' as source FROM notes WHERE contact_id = ANY($1)
+        ) combined
+        GROUP BY contact_id
+        """,
+        candidate_ids,
+    )
+    fact_notes = {
+        row["contact_id"]: {"fact_count": row["fact_count"], "note_count": row["note_count"]}
+        for row in fact_note_rows
+    }
+
+    # Batch query 5: Group memberships
+    group_rows = await pool.fetch(
+        """
+        SELECT gm.contact_id, g.type
+        FROM group_members gm
+        JOIN groups g ON gm.group_id = g.id
+        WHERE gm.contact_id = ANY($1)
+        """,
+        candidate_ids,
+    )
+    groups = {}
+    for row in group_rows:
+        cid = row["contact_id"]
+        if cid not in groups:
+            groups[cid] = []
+        groups[cid].append(row["type"])
+
+    # Now compute salience for each candidate using the batched data
+    now = datetime.datetime.now(datetime.UTC)
+    for candidate in candidates:
+        cid = candidate["contact_id"]
+        salience = 0
+
+        # 1. Relationship type weight
+        if cid in relationships:
+            rel_type = relationships[cid]
+            salience += RELATIONSHIP_WEIGHTS.get(rel_type, 0)
+
+        # 2. Interaction frequency (last 90 days, +2 per, cap +20)
+        if cid in interactions:
+            interaction_count = interactions[cid]["count_90d"]
+            salience += min(interaction_count * 2, 20)
+
+            # 3. Interaction recency (<7d +15, <30d +10, <90d +5)
+            most_recent = interactions[cid]["most_recent"]
+            if most_recent:
+                delta = now - most_recent.replace(tzinfo=datetime.UTC)
+                if delta.days < 7:
+                    salience += 15
+                elif delta.days < 30:
+                    salience += 10
+                elif delta.days < 90:
+                    salience += 5
+
+        # 4. Fact & note density (+1 per, cap +10)
+        if cid in fact_notes:
+            density = min(
+                (fact_notes[cid]["fact_count"] or 0) + (fact_notes[cid]["note_count"] or 0), 10
+            )
+            salience += density
+
+        # 5. Stay-in-touch cadence
+        if cid in contact_data:
+            stay_in_touch_days = contact_data[cid]["stay_in_touch_days"]
+            if stay_in_touch_days:
+                if stay_in_touch_days <= 7:
+                    salience += 10
+                elif stay_in_touch_days <= 14:
+                    salience += 7
+                elif stay_in_touch_days <= 30:
+                    salience += 5
+
+        # 6. Group membership weight
+        if cid in groups:
+            for group_type in groups[cid]:
+                salience += GROUP_TYPE_WEIGHTS.get(group_type, 0)
+
+        # Store salience and add to score
+        candidate["salience"] = salience
+        candidate["score"] += salience
 
     return candidates
 

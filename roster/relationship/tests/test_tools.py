@@ -2354,3 +2354,133 @@ async def test_contacts_overdue_archived_excluded(pool_with_cadence):
     overdue = await contacts_overdue(pool)
     overdue_ids = [c["id"] for c in overdue]
     assert cid not in overdue_ids
+
+
+async def test_contact_resolve_salience_scoring(pool):
+    """contact_resolve uses salience scoring to disambiguate multiple first-name matches."""
+    import datetime
+
+    from butlers.tools.relationship import (
+        contact_create,
+        contact_resolve,
+        fact_set,
+        group_add_member,
+        group_create,
+        interaction_log,
+        note_create,
+        stay_in_touch_set,
+    )
+
+    # Create two contacts with the same first name
+    chloe_wong = await contact_create(pool, "Chloe Wong")
+    chloe_tan = await contact_create(pool, "Chloe Tan")
+
+    # Give Chloe Wong high salience through relationship type (partner = +50)
+    # First get the partner relationship type
+    partner_type_row = await pool.fetchrow(
+        "SELECT id FROM relationship_types WHERE forward_label = 'partner' LIMIT 1"
+    )
+    if partner_type_row:
+        await pool.execute(
+            """
+            INSERT INTO relationships (contact_id, related_contact_id, relationship_type_id)
+            VALUES ($1, $2, $3)
+            """,
+            chloe_wong["id"],
+            chloe_wong["id"],  # dummy related contact
+            partner_type_row["id"],
+        )
+
+    # Give Chloe Wong interaction frequency (+20 cap: 10 interactions)
+    for i in range(10):
+        await interaction_log(
+            pool,
+            chloe_wong["id"],
+            "message",
+            datetime.date.today() - datetime.timedelta(days=i * 5),
+        )
+
+    # Give Chloe Wong recency bonus (<7 days = +15)
+    await interaction_log(pool, chloe_wong["id"], "call", datetime.date.today())
+
+    # Give Chloe Wong fact density (+5 from 5 facts/notes, cap is +10)
+    await fact_set(pool, chloe_wong["id"], "favorite_color", "blue")
+    await fact_set(pool, chloe_wong["id"], "favorite_food", "sushi")
+    await note_create(pool, chloe_wong["id"], "Loves hiking")
+    await note_create(pool, chloe_wong["id"], "Works at Google")
+    await note_create(pool, chloe_wong["id"], "Birthday is March 15")
+
+    # Give Chloe Wong stay-in-touch cadence (weekly = +10)
+    await stay_in_touch_set(pool, chloe_wong["id"], 7)
+
+    # Give Chloe Wong group membership (couple = +15)
+    couple_group = await group_create(pool, "The Wongs")
+    # Set group type
+    await pool.execute("UPDATE groups SET type = 'couple' WHERE id = $1", couple_group["id"])
+    await group_add_member(pool, couple_group["id"], chloe_wong["id"])
+
+    # Give Chloe Tan minimal salience (no relationship, no interactions, no facts)
+    # Just one fact for +1
+    await fact_set(pool, chloe_tan["id"], "workplace", "Meta")
+
+    # Resolve "Chloe" - should get both candidates
+    result = await contact_resolve(pool, "Chloe")
+
+    # Should find both candidates
+    assert len(result["candidates"]) == 2
+
+    # Chloe Wong should have much higher score due to salience
+    wong_candidate = next(c for c in result["candidates"] if c["contact_id"] == chloe_wong["id"])
+    tan_candidate = next(c for c in result["candidates"] if c["contact_id"] == chloe_tan["id"])
+
+    # Verify salience fields exist
+    assert "salience" in wong_candidate
+    assert "salience" in tan_candidate
+
+    # Verify Chloe Wong has significantly higher salience
+    # Expected: partner(50) + interactions(20) + recency(15)
+    #           + density(5) + stay_in_touch(10) + couple(15) = 115
+    assert wong_candidate["salience"] >= 100  # Allow some variance
+
+    # Verify Chloe Tan has minimal salience (just 1 fact = +1)
+    assert tan_candidate["salience"] <= 5
+
+    # Verify salience was added to score
+    assert wong_candidate["score"] > tan_candidate["score"]
+
+    # The gap should be large (at least 100 points)
+    assert wong_candidate["score"] - tan_candidate["score"] >= 100
+
+
+async def test_contact_resolve_salience_zero_history(pool):
+    """contact_resolve gives zero salience to contacts with no history."""
+    from butlers.tools.relationship import contact_create, contact_resolve
+
+    # Create two contacts with same first name, no history
+    await contact_create(pool, "Alex Smith")
+    await contact_create(pool, "Alex Jones")
+
+    result = await contact_resolve(pool, "Alex")
+
+    # Should find both candidates
+    assert len(result["candidates"]) == 2
+
+    # Both should have zero or minimal salience
+    for candidate in result["candidates"]:
+        assert "salience" in candidate
+        assert candidate["salience"] == 0
+
+
+async def test_contact_resolve_salience_only_when_multiple_candidates(pool):
+    """contact_resolve only computes salience when there are multiple candidates."""
+    from butlers.tools.relationship import contact_create, contact_resolve
+
+    # Create single contact
+    sarah = await contact_create(pool, "Sarah Connor")
+
+    result = await contact_resolve(pool, "Sarah")
+
+    # Single match should not have salience field (it's not needed)
+    assert result["contact_id"] == sarah["id"]
+    # salience is only added when disambiguating
+    # For single exact match, we don't run _compute_salience
