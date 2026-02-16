@@ -54,6 +54,7 @@ from fastapi import FastAPI, Request
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict
 
+from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 
@@ -230,6 +231,10 @@ class GmailConnectorRuntime:
         self._watch_expiration: datetime | None = None
         self._notification_queue: asyncio.Queue[dict[str, Any]] | None = None
 
+        # Heartbeat
+        self._heartbeat: ConnectorHeartbeat | None = None
+        self._last_history_id: str | None = None
+
     async def get_health_status(self) -> HealthStatus:
         """Get current health status for Kubernetes probes."""
         uptime = time.time() - self._start_time
@@ -349,6 +354,51 @@ class GmailConnectorRuntime:
             },
         )
 
+    def _start_heartbeat(self) -> None:
+        """Initialize and start heartbeat background task."""
+        heartbeat_config = HeartbeatConfig.from_env(
+            connector_type=self._config.connector_provider,
+            endpoint_identity=self._config.connector_endpoint_identity,
+            version=None,  # Could be set from env or git sha
+        )
+
+        self._heartbeat = ConnectorHeartbeat(
+            config=heartbeat_config,
+            mcp_client=self._mcp_client,
+            metrics=self._metrics,
+            get_health_state=self._get_health_state,
+            get_checkpoint=self._get_checkpoint,
+        )
+
+        self._heartbeat.start()
+
+    def _get_health_state(self) -> tuple[str, str | None]:
+        """Determine current health state for heartbeat.
+
+        Returns:
+            Tuple of (state, error_message) where state is one of:
+            "healthy", "degraded", "error"
+        """
+        if self._source_api_ok is False:
+            return ("error", "Gmail API unreachable or authentication failed")
+
+        # Could add degraded state for high error rates
+        return ("healthy", None)
+
+    def _get_checkpoint(self) -> tuple[str | None, datetime | None]:
+        """Get current checkpoint state for heartbeat.
+
+        Returns:
+            Tuple of (cursor, updated_at)
+        """
+        cursor = self._last_history_id
+        updated_at = (
+            datetime.fromtimestamp(self._last_checkpoint_save, UTC)
+            if self._last_checkpoint_save is not None
+            else None
+        )
+        return (cursor, updated_at)
+
     async def start(self) -> None:
         """Start the Gmail connector runtime."""
         self._running = True
@@ -356,6 +406,9 @@ class GmailConnectorRuntime:
 
         # Start health server
         self._start_health_server()
+
+        # Start heartbeat
+        self._start_heartbeat()
 
         # Start Pub/Sub webhook server if enabled
         if self._config.gmail_pubsub_enabled:
@@ -390,6 +443,10 @@ class GmailConnectorRuntime:
     async def stop(self) -> None:
         """Stop the Gmail connector runtime."""
         self._running = False
+        # Stop heartbeat
+        if self._heartbeat is not None:
+            await self._heartbeat.stop()
+
         await self._mcp_client.aclose()
         if self._http_client:
             await self._http_client.aclose()
@@ -541,13 +598,21 @@ class GmailConnectorRuntime:
             raise RuntimeError(f"Cursor file not found: {self._config.connector_cursor_path}")
 
         cursor_data = json.loads(self._config.connector_cursor_path.read_text())
-        return GmailCursor.model_validate(cursor_data)
+        cursor = GmailCursor.model_validate(cursor_data)
+
+        # Track last history_id for heartbeat checkpoint
+        self._last_history_id = cursor.history_id
+
+        return cursor
 
     async def _save_cursor(self, cursor: GmailCursor) -> None:
         """Save cursor state to disk."""
         try:
             self._config.connector_cursor_path.parent.mkdir(parents=True, exist_ok=True)
             self._config.connector_cursor_path.write_text(cursor.model_dump_json(indent=2))
+
+            # Track last history_id for heartbeat checkpoint
+            self._last_history_id = cursor.history_id
 
             # Record successful checkpoint save
             self._last_checkpoint_save = time.time()

@@ -40,6 +40,7 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
+from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 
@@ -168,6 +169,9 @@ class TelegramBotConnector:
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
 
+        # Heartbeat
+        self._heartbeat: ConnectorHeartbeat | None = None
+
     @property
     def _telegram_api_base(self) -> str:
         return TELEGRAM_API_BASE.format(token=self._config.telegram_token)
@@ -240,6 +244,51 @@ class TelegramBotConnector:
             extra={"port": self._config.health_port},
         )
 
+    def _start_heartbeat(self) -> None:
+        """Initialize and start heartbeat background task."""
+        heartbeat_config = HeartbeatConfig.from_env(
+            connector_type=self._config.provider,
+            endpoint_identity=self._config.endpoint_identity,
+            version=None,  # Could be set from env or git sha
+        )
+
+        self._heartbeat = ConnectorHeartbeat(
+            config=heartbeat_config,
+            mcp_client=self._mcp_client,
+            metrics=self._metrics,
+            get_health_state=self._get_health_state,
+            get_checkpoint=self._get_checkpoint,
+        )
+
+        self._heartbeat.start()
+
+    def _get_health_state(self) -> tuple[str, str | None]:
+        """Determine current health state for heartbeat.
+
+        Returns:
+            Tuple of (state, error_message) where state is one of:
+            "healthy", "degraded", "error"
+        """
+        if self._source_api_ok is False:
+            return ("error", "Telegram API unreachable or authentication failed")
+
+        # Could add degraded state for high error rates
+        return ("healthy", None)
+
+    def _get_checkpoint(self) -> tuple[str | None, datetime | None]:
+        """Get current checkpoint state for heartbeat.
+
+        Returns:
+            Tuple of (cursor, updated_at)
+        """
+        cursor = str(self._last_update_id) if self._last_update_id is not None else None
+        updated_at = (
+            datetime.fromtimestamp(self._last_checkpoint_save, UTC)
+            if self._last_checkpoint_save is not None
+            else None
+        )
+        return (cursor, updated_at)
+
     async def start_polling(self) -> None:
         """Start long-polling loop for dev mode.
 
@@ -251,6 +300,9 @@ class TelegramBotConnector:
 
         # Start health server
         self._start_health_server()
+
+        # Start heartbeat
+        self._start_heartbeat()
 
         # Load checkpoint
         self._load_checkpoint()
@@ -306,6 +358,9 @@ class TelegramBotConnector:
         # Start health server
         self._start_health_server()
 
+        # Start heartbeat
+        self._start_heartbeat()
+
         await self._set_webhook(self._config.webhook_url)
         logger.info(
             "Registered Telegram webhook",
@@ -325,6 +380,11 @@ class TelegramBotConnector:
     async def stop(self) -> None:
         """Stop the connector gracefully."""
         self._running = False
+
+        # Stop heartbeat
+        if self._heartbeat is not None:
+            await self._heartbeat.stop()
+
         await self._mcp_client.aclose()
         await self._http_client.aclose()
 
