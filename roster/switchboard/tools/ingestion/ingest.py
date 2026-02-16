@@ -276,13 +276,30 @@ async def ingest_v1(
 
     normalized_text = envelope.payload.normalized_text
 
-    # 6. Ensure partition exists for received_at
+    # 6a. Serialize attachments if present
+    attachments_json = None
+    if envelope.payload.attachments:
+        attachments_json = json.dumps(
+            [
+                {
+                    "media_type": att.media_type,
+                    "storage_ref": att.storage_ref,
+                    "size_bytes": att.size_bytes,
+                    "filename": att.filename,
+                    "width": att.width,
+                    "height": att.height,
+                }
+                for att in envelope.payload.attachments
+            ]
+        )
+
+    # 7. Ensure partition exists for received_at
     await pool.execute(
         "SELECT switchboard_message_inbox_ensure_partition($1)",
         received_at,
     )
 
-    # 7. Insert into message_inbox lifecycle store
+    # 8. Insert into message_inbox lifecycle store
     try:
         await pool.execute(
             """
@@ -292,13 +309,14 @@ async def ingest_v1(
                 request_context,
                 raw_payload,
                 normalized_text,
+                attachments,
                 lifecycle_state,
                 schema_version,
                 processing_metadata,
                 created_at,
                 updated_at
             ) VALUES (
-                $1, $2, $3::jsonb, $4::jsonb, $5, 
+                $1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb,
                 'accepted', 'message_inbox.v2', '{}'::jsonb, $2, $2
             )
             """,
@@ -307,6 +325,7 @@ async def ingest_v1(
             json.dumps(request_context),
             json.dumps(raw_payload),
             normalized_text,
+            attachments_json,
         )
     except asyncpg.UniqueViolationError:
         # Race condition: another worker already inserted this dedupe_key
