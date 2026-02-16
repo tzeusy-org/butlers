@@ -146,6 +146,19 @@ class IngestSenderV1(BaseModel):
     identity: NonEmptyStr
 
 
+class IngestAttachment(BaseModel):
+    """Attachment metadata for canonical ingest payloads."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    media_type: NonEmptyStr
+    storage_ref: NonEmptyStr
+    size_bytes: int = Field(ge=0)
+    filename: NonEmptyStr | None = None
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
+
+
 class IngestPayloadV1(BaseModel):
     """Source payload for canonical ingest payloads."""
 
@@ -153,6 +166,7 @@ class IngestPayloadV1(BaseModel):
 
     raw: dict[str, Any]
     normalized_text: NonEmptyStr
+    attachments: tuple[IngestAttachment, ...] | None = None
 
 
 class IngestControlV1(BaseModel):
@@ -494,6 +508,7 @@ def parse_notify_request(payload: Mapping[str, Any]) -> NotifyRequestV1:
 
 
 __all__ = [
+    "IngestAttachment",
     "IngestControlV1",
     "IngestEnvelopeV1",
     "IngestEventV1",
