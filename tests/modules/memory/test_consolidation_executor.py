@@ -581,13 +581,13 @@ class TestRetryAndFailureHandling:
             patch.object(_exec_mod, "confirm_memory", new_callable=AsyncMock),
         ):
             # Current implementation doesn't support max_retries parameter yet
-            result = await execute_consolidation(
-                pool, engine, parsed, episode_ids, "test-butler"
-            )
+            result = await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler")
 
         # Current behavior: episodes marked consolidated even with errors
         # When source code is updated to support max_retries:
-        # await execute_consolidation(pool, engine, parsed, episode_ids, "test-butler", max_retries=2)
+        # await execute_consolidation(
+        #     pool, engine, parsed, episode_ids, "test-butler", max_retries=2
+        # )
         # call_args = pool.execute.call_args
         # assert call_args[0][2] == 2  # max_retries parameter
         assert result["episodes_consolidated"] == 1  # Current behavior
