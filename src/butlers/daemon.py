@@ -1532,6 +1532,8 @@ class ButlerDaemon:
 
         # Switchboard-only: ingest + route_to_butler tools
         if butler_name == "switchboard":
+            import importlib.util as _ilu
+
             from butlers.tools.switchboard.ingestion.ingest import ingest_v1
             from butlers.tools.switchboard.notification.deliver import (
                 deliver as _switchboard_deliver,
@@ -1539,9 +1541,22 @@ class ButlerDaemon:
             from butlers.tools.switchboard.routing.route import (
                 route as _switchboard_route,
             )
-            from roster.switchboard.tools.connector.heartbeat import (
-                heartbeat as _connector_heartbeat,
+
+            _hb_path = (
+                Path(__file__).resolve().parents[2]
+                / "roster"
+                / "switchboard"
+                / "tools"
+                / "connector"
+                / "heartbeat.py"
             )
+            _hb_spec = _ilu.spec_from_file_location(
+                "roster_switchboard_heartbeat", _hb_path
+            )
+            assert _hb_spec is not None and _hb_spec.loader is not None
+            _hb_mod = _ilu.module_from_spec(_hb_spec)
+            _hb_spec.loader.exec_module(_hb_mod)
+            _connector_heartbeat = _hb_mod.heartbeat
 
             pipeline = daemon._pipeline
 
