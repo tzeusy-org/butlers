@@ -16,8 +16,8 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE INDEX IF NOT EXISTS ix_message_inbox_thread_identity_received_at
-        ON message_inbox (source_thread_identity, received_at DESC)
-        WHERE source_thread_identity IS NOT NULL
+        ON message_inbox ((request_context ->> 'source_thread_identity'), received_at DESC)
+        WHERE request_context ->> 'source_thread_identity' IS NOT NULL
         """
     )
 
