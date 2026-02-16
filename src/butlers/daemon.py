@@ -1539,6 +1539,9 @@ class ButlerDaemon:
             from butlers.tools.switchboard.routing.route import (
                 route as _switchboard_route,
             )
+            from roster.switchboard.tools.connector.heartbeat import (
+                heartbeat as _connector_heartbeat,
+            )
 
             pipeline = daemon._pipeline
 
@@ -1733,6 +1736,29 @@ class ButlerDaemon:
                     source_butler=source_butler,
                     notify_request=notify_request,
                 )
+
+            @mcp.tool(name="connector.heartbeat")
+            @tool_span("connector.heartbeat", butler_name=butler_name)
+            async def connector_heartbeat(
+                schema_version: str,
+                connector: dict[str, Any],
+                status: dict[str, Any],
+                counters: dict[str, Any],
+                checkpoint: dict[str, Any] | None = None,
+                sent_at: str = "",
+            ) -> dict[str, Any]:
+                """Accept a connector heartbeat for liveness tracking and statistics."""
+                payload = {
+                    "schema_version": schema_version,
+                    "connector": connector,
+                    "status": status,
+                    "counters": counters,
+                    "sent_at": sent_at,
+                }
+                if checkpoint is not None:
+                    payload["checkpoint"] = checkpoint
+                result = await _connector_heartbeat(pool, payload)
+                return result.model_dump()
 
         @mcp.tool()
         async def tick() -> dict:
