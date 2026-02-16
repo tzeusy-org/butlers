@@ -304,11 +304,24 @@ def _build_routing_prompt(
     message: str,
     butlers: list[dict[str, Any]],
     conversation_history: str = "",
+    attachments: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the CC prompt for tool-based routing.
 
     Instructs the CC to call ``route_to_butler`` for each target butler
     and return a brief text summary of routing decisions.
+
+    Parameters
+    ----------
+    message:
+        The message text to route.
+    butlers:
+        List of available butlers with capabilities.
+    conversation_history:
+        Optional conversation history context.
+    attachments:
+        Optional list of attachment metadata dicts with media_type,
+        storage_ref, size_bytes, and optional filename.
     """
     from butlers.tools.switchboard.routing.classify import (
         _build_routing_guidance,
@@ -346,6 +359,38 @@ def _build_routing_prompt(
         f"{routing_guidance}\n\n"
         f"Available butlers:\n{butler_list}\n\n"
         f"User input JSON:\n{encoded_message}\n\n"
+    )
+
+    # Add attachment context if present
+    if attachments:
+        attachment_count = len(attachments)
+        attachment_details = []
+        for att in attachments:
+            media_type = att.get("media_type", "unknown")
+            size_bytes = att.get("size_bytes", 0)
+            size_kb = size_bytes / 1024
+            storage_ref = att.get("storage_ref", "")
+            filename = att.get("filename")
+
+            if filename:
+                detail = (
+                    f"  - {filename} ({media_type}, {size_kb:.1f}KB, storage_ref: {storage_ref})"
+                )
+            else:
+                detail = f"  - {media_type}, {size_kb:.1f}KB, storage_ref: {storage_ref}"
+
+            attachment_details.append(detail)
+
+        prompt_parts.append(
+            f"## Attachments\n\n"
+            f"This message includes {attachment_count} attachment(s):\n"
+            + "\n".join(attachment_details)
+            + "\n\n"
+            "You can call `get_attachment(storage_ref)` to retrieve and analyze "
+            "attachment content if needed for routing decisions.\n\n"
+        )
+
+    prompt_parts.append(
         "Instructions:\n"
         "1. Determine which butler(s) should handle this message.\n"
         "2. For each target, call `route_to_butler` with:\n"
@@ -1018,10 +1063,15 @@ class MessagePipeline:
                                     ),
                                 )
 
+                    # Extract attachments from tool_args if present
+                    attachments = args.get("attachments")
+                    if attachments and not isinstance(attachments, list):
+                        attachments = None
+
                     with tracer.start_as_current_span("butlers.switchboard.routing.build_prompt"):
                         butlers = await _load_available_butlers(self._pool)
                         routing_prompt = _build_routing_prompt(
-                            message_text, butlers, conversation_history
+                            message_text, butlers, conversation_history, attachments
                         )
 
                     # Set routing context for route_to_butler tool

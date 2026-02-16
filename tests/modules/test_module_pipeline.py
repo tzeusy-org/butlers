@@ -906,3 +906,138 @@ class TestIngressDeduplication:
         assert second.target_butler == "deduped"
         assert second.route_result["ingress_decision"] == "deduped"
         assert dispatch_call_count == 1
+
+
+"""Test attachment context in routing prompts."""
+
+
+def test_build_routing_prompt_without_attachments():
+    """Test that routing prompt works without attachments (backward compatibility)."""
+    butlers = [
+        {"name": "health", "description": "Health tracking", "capabilities": []},
+        {"name": "general", "description": "General assistant", "capabilities": []},
+    ]
+
+    prompt = _build_routing_prompt(
+        message="Track my medication",
+        butlers=butlers,
+        conversation_history="",
+        attachments=None,
+    )
+
+    assert "Track my medication" in prompt
+    assert "## Attachments" not in prompt
+    assert "get_attachment" not in prompt
+
+
+def test_build_routing_prompt_with_single_attachment():
+    """Test that routing prompt includes attachment context for single attachment."""
+    butlers = [
+        {"name": "health", "description": "Health tracking", "capabilities": []},
+        {"name": "general", "description": "General assistant", "capabilities": []},
+    ]
+
+    attachments = [
+        {
+            "media_type": "image/jpeg",
+            "storage_ref": "local://2026/02/16/test-photo.jpg",
+            "size_bytes": 245760,  # 240 KB
+            "filename": "blood-test.jpg",
+        }
+    ]
+
+    prompt = _build_routing_prompt(
+        message="Here are my blood test results",
+        butlers=butlers,
+        conversation_history="",
+        attachments=attachments,
+    )
+
+    assert "Here are my blood test results" in prompt
+    assert "## Attachments" in prompt
+    assert "This message includes 1 attachment(s):" in prompt
+    assert "blood-test.jpg" in prompt
+    assert "image/jpeg" in prompt
+    assert "240.0KB" in prompt
+    assert "local://2026/02/16/test-photo.jpg" in prompt
+    assert "get_attachment(storage_ref)" in prompt
+
+
+def test_build_routing_prompt_with_multiple_attachments():
+    """Test that routing prompt includes all attachments."""
+    butlers = [
+        {"name": "health", "description": "Health tracking", "capabilities": []},
+    ]
+
+    attachments = [
+        {
+            "media_type": "image/jpeg",
+            "storage_ref": "local://2026/02/16/photo1.jpg",
+            "size_bytes": 100000,
+            "filename": "xray.jpg",
+        },
+        {
+            "media_type": "application/pdf",
+            "storage_ref": "local://2026/02/16/report.pdf",
+            "size_bytes": 500000,
+            "filename": "lab-report.pdf",
+        },
+    ]
+
+    prompt = _build_routing_prompt(
+        message="Medical records",
+        butlers=butlers,
+        conversation_history="",
+        attachments=attachments,
+    )
+
+    assert "## Attachments" in prompt
+    assert "This message includes 2 attachment(s):" in prompt
+    assert "xray.jpg" in prompt
+    assert "lab-report.pdf" in prompt
+    assert "image/jpeg" in prompt
+    assert "application/pdf" in prompt
+
+
+def test_build_routing_prompt_with_attachment_no_filename():
+    """Test attachment context when filename is not provided."""
+    butlers = [{"name": "general", "description": "General assistant", "capabilities": []}]
+
+    attachments = [
+        {
+            "media_type": "image/png",
+            "storage_ref": "local://2026/02/16/unnamed.png",
+            "size_bytes": 50000,
+        }
+    ]
+
+    prompt = _build_routing_prompt(
+        message="Check this image",
+        butlers=butlers,
+        conversation_history="",
+        attachments=attachments,
+    )
+
+    assert "## Attachments" in prompt
+    assert "image/png" in prompt
+    assert "48.8KB" in prompt  # 50000 / 1024
+    assert "local://2026/02/16/unnamed.png" in prompt
+
+
+def test_build_routing_prompt_empty_attachments_list():
+    """Test that empty attachments list is treated as no attachments."""
+    butlers = [{"name": "general", "description": "General assistant", "capabilities": []}]
+
+    prompt = _build_routing_prompt(
+        message="Hello",
+        butlers=butlers,
+        conversation_history="",
+        attachments=[],
+    )
+
+    # Empty list should not show attachment section
+    assert "## Attachments" not in prompt
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
