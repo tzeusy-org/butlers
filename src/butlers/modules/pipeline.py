@@ -398,7 +398,7 @@ def _build_routing_prompt(
         "   - `prompt`: a self-contained sub-prompt for that butler\n"
         "   - `context`: optional additional context\n"
         "3. If the message spans multiple domains, call `route_to_butler` "
-        "once per domain with a focused sub-prompt.\n"
+        "once per domain with a focused sub-prompt, with the most relevant butler first.\n"
         "4. If unsure, route to `general`.\n"
         "5. After routing, respond with a brief text summary of your routing "
         "decisions (e.g., 'Routed to health for medication tracking').\n"
