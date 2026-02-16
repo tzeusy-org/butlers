@@ -287,35 +287,39 @@ class TelegramModule(Module):
 
         try:
             async with pool.acquire() as conn:
+                request_context = {
+                    "source_channel": "telegram",
+                    "source_endpoint_identity": "telegram:bot",
+                    "source_sender_identity": sender_id,
+                    "source_thread_identity": chat_id,
+                    "dedupe_key": dedupe_key,
+                    "dedupe_strategy": "telegram_update_id_endpoint",
+                }
+                raw_payload = {
+                    "content": message_text,
+                    "metadata": raw_metadata_payload,
+                }
                 row = await conn.fetchrow(
                     """
                     INSERT INTO message_inbox (
-                        source_channel,
-                        sender_id,
-                        raw_content,
-                        raw_metadata,
-                        source_thread_identity,
-                        source_endpoint_identity,
-                        source_sender_identity,
-                        dedupe_key,
-                        dedupe_strategy,
-                        dedupe_last_seen_at
+                        received_at,
+                        request_context,
+                        raw_payload,
+                        normalized_text,
+                        lifecycle_state,
+                        schema_version
                     ) VALUES (
-                        $1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, now()
+                        now(), $1::jsonb, $2::jsonb, $3,
+                        'accepted', 'message_inbox.v2'
                     )
-                    ON CONFLICT (dedupe_key) DO UPDATE
-                    SET dedupe_last_seen_at = EXCLUDED.dedupe_last_seen_at
+                    ON CONFLICT ((request_context ->> 'dedupe_key'), received_at)
+                    WHERE request_context ->> 'dedupe_key' IS NOT NULL
+                    DO UPDATE SET updated_at = now()
                     RETURNING id AS request_id, (xmax = 0) AS inserted
                     """,
-                    "telegram",
-                    sender_id,
+                    json.dumps(request_context),
+                    json.dumps(raw_payload),
                     message_text,
-                    json.dumps(raw_metadata_payload),
-                    chat_id,
-                    "telegram:bot",
-                    sender_id,
-                    dedupe_key,
-                    "telegram_update_id_endpoint",
                 )
         except Exception:
             logger.exception("Failed to insert Telegram message_inbox row")

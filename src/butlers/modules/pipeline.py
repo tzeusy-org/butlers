@@ -82,12 +82,12 @@ async def _load_realtime_history(
         time_window_messages = await conn.fetch(
             """
             SELECT
-                raw_content,
-                sender_id,
+                normalized_text AS raw_content,
+                request_context ->> 'source_sender_identity' AS sender_id,
                 received_at,
-                raw_metadata
+                raw_payload -> 'metadata' AS raw_metadata
             FROM message_inbox
-            WHERE source_thread_identity = $1
+            WHERE request_context ->> 'source_thread_identity' = $1
                 AND received_at >= $2
                 AND received_at < $3
             ORDER BY received_at ASC
@@ -101,12 +101,12 @@ async def _load_realtime_history(
         count_window_messages = await conn.fetch(
             """
             SELECT
-                raw_content,
-                sender_id,
+                normalized_text AS raw_content,
+                request_context ->> 'source_sender_identity' AS sender_id,
                 received_at,
-                raw_metadata
+                raw_payload -> 'metadata' AS raw_metadata
             FROM message_inbox
-            WHERE source_thread_identity = $1
+            WHERE request_context ->> 'source_thread_identity' = $1
                 AND received_at < $2
             ORDER BY received_at DESC
             LIMIT $3
@@ -161,12 +161,12 @@ async def _load_email_history(
         chain_messages = await conn.fetch(
             """
             SELECT
-                raw_content,
-                sender_id,
+                normalized_text AS raw_content,
+                request_context ->> 'source_sender_identity' AS sender_id,
                 received_at,
-                raw_metadata
+                raw_payload -> 'metadata' AS raw_metadata
             FROM message_inbox
-            WHERE source_thread_identity = $1
+            WHERE request_context ->> 'source_thread_identity' = $1
                 AND received_at < $2
             ORDER BY received_at ASC
             """,
@@ -760,40 +760,42 @@ class MessagePipeline:
         source_thread_identity = self._source_thread_identity(args)
         source_endpoint_identity = self._source_endpoint_identity(args, source_metadata)
 
+        request_context = {
+            "source_channel": source,
+            "source_endpoint_identity": source_endpoint_identity,
+            "source_sender_identity": source_sender_identity,
+            "source_thread_identity": source_thread_identity,
+            "idempotency_key": idempotency_key,
+            "dedupe_key": dedupe_key,
+            "dedupe_strategy": dedupe_strategy,
+        }
+        raw_payload = {
+            "content": message_text,
+            "metadata": raw_metadata_payload,
+        }
+
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO message_inbox (
-                    source_channel,
-                    sender_id,
-                    raw_content,
-                    raw_metadata,
                     received_at,
-                    source_endpoint_identity,
-                    source_sender_identity,
-                    source_thread_identity,
-                    idempotency_key,
-                    dedupe_key,
-                    dedupe_strategy,
-                    dedupe_last_seen_at
+                    request_context,
+                    raw_payload,
+                    normalized_text,
+                    lifecycle_state,
+                    schema_version
                 ) VALUES (
-                    $1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $5
+                    $1, $2::jsonb, $3::jsonb, $4, 'accepted', 'message_inbox.v2'
                 )
-                ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO UPDATE
-                SET dedupe_last_seen_at = EXCLUDED.dedupe_last_seen_at
+                ON CONFLICT ((request_context ->> 'dedupe_key'), received_at)
+                WHERE request_context ->> 'dedupe_key' IS NOT NULL
+                DO UPDATE SET updated_at = now()
                 RETURNING id AS request_id, (xmax = 0) AS inserted
                 """,
-                source,
-                source_sender_identity,
-                message_text,
-                json.dumps(raw_metadata_payload, default=str),
                 received_at,
-                source_endpoint_identity,
-                source_sender_identity,
-                source_thread_identity,
-                idempotency_key,
-                dedupe_key,
-                dedupe_strategy,
+                json.dumps(request_context, default=str),
+                json.dumps(raw_payload, default=str),
+                message_text,
             )
 
         if row is None:
