@@ -43,6 +43,36 @@ def _display_name_from_row(row: asyncpg.Record | dict[str, Any]) -> str:
     return full or nickname or first or "Unknown"
 
 
+def _generate_inferred_reason(candidate: dict[str, Any]) -> str:
+    """Generate a human-readable reason for why a candidate was inferred.
+
+    Analyzes the candidate's salience metadata to identify dominant signals
+    like relationship type and interaction frequency.
+    """
+    reasons = []
+
+    # Extract relationship type if present
+    relationship = candidate.get("_relationship_type")
+    if relationship:
+        reasons.append(relationship)
+
+    # Extract interaction frequency if present
+    interaction_count = candidate.get("_interaction_count", 0)
+    if interaction_count > 0:
+        if interaction_count >= 10:
+            reasons.append("very frequent contact")
+        elif interaction_count >= 5:
+            reasons.append("frequent contact")
+        else:
+            reasons.append("recent contact")
+
+    # Fallback to generic reason if no specific signals
+    if not reasons:
+        return "highest salience score"
+
+    return ", ".join(reasons)
+
+
 async def contact_resolve(
     pool: asyncpg.Pool,
     name: str,
@@ -61,12 +91,28 @@ async def contact_resolve(
         {
             "contact_id": uuid | None,
             "confidence": "high" | "medium" | "none",
-            "candidates": [{"contact_id": uuid, "name": str, "confidence": str, "score": int}]
+            "candidates": [
+                {
+                    "contact_id": uuid,
+                    "name": str,
+                    "confidence": str,
+                    "score": int,
+                    "salience": int
+                }
+            ],
+            "inferred": bool,
+            "inferred_reason": str | None
         }
     """
     name = name.strip()
     if not name:
-        return {"contact_id": None, "confidence": CONFIDENCE_NONE, "candidates": []}
+        return {
+            "contact_id": None,
+            "confidence": CONFIDENCE_NONE,
+            "candidates": [],
+            "inferred": False,
+            "inferred_reason": None,
+        }
 
     # Step 1: Exact match (case-insensitive, listed contacts only)
     exact_rows = await pool.fetch(
@@ -97,8 +143,11 @@ async def contact_resolve(
                     "name": _display_name_from_row(row),
                     "confidence": CONFIDENCE_HIGH,
                     "score": 100,
+                    "salience": 0,
                 }
             ],
+            "inferred": False,
+            "inferred_reason": None,
         }
 
     if len(exact_rows) > 1:
@@ -110,15 +159,21 @@ async def contact_resolve(
         candidates.sort(key=lambda c: c["score"], reverse=True)
         # If context boosting yields a clear winner (≥30 point gap), return HIGH
         if len(candidates) >= 2 and candidates[0]["score"] - candidates[1]["score"] >= 30:
+            winner = candidates[0]
+            inferred_reason = _generate_inferred_reason(winner)
             return {
-                "contact_id": candidates[0]["contact_id"],
+                "contact_id": winner["contact_id"],
                 "confidence": CONFIDENCE_HIGH,
                 "candidates": candidates,
+                "inferred": True,
+                "inferred_reason": inferred_reason,
             }
         return {
             "contact_id": None,
             "confidence": CONFIDENCE_MEDIUM,
             "candidates": candidates,
+            "inferred": False,
+            "inferred_reason": None,
         }
 
     # Step 2: Partial match -- first name, last name, or substring
@@ -167,7 +222,13 @@ async def contact_resolve(
         partial_rows = await pool.fetch(query, *params)
 
     if not partial_rows:
-        return {"contact_id": None, "confidence": CONFIDENCE_NONE, "candidates": []}
+        return {
+            "contact_id": None,
+            "confidence": CONFIDENCE_NONE,
+            "candidates": [],
+            "inferred": False,
+            "inferred_reason": None,
+        }
 
     # Score partial matches
     candidates = _score_partial_matches(partial_rows, name, name_parts)
@@ -188,14 +249,20 @@ async def contact_resolve(
             "contact_id": candidates[0]["contact_id"],
             "confidence": CONFIDENCE_MEDIUM,
             "candidates": candidates,
+            "inferred": False,
+            "inferred_reason": None,
         }
 
     # If one candidate clearly leads by ≥30 points, return HIGH confidence with auto-selection
     if len(candidates) >= 2 and candidates[0]["score"] - candidates[1]["score"] >= 30:
+        winner = candidates[0]
+        inferred_reason = _generate_inferred_reason(winner)
         return {
-            "contact_id": candidates[0]["contact_id"],
+            "contact_id": winner["contact_id"],
             "confidence": CONFIDENCE_HIGH,
             "candidates": candidates,
+            "inferred": True,
+            "inferred_reason": inferred_reason,
         }
 
     # Multiple candidates without clear winner → MEDIUM confidence, no auto-selection
@@ -203,6 +270,8 @@ async def contact_resolve(
         "contact_id": None,
         "confidence": CONFIDENCE_MEDIUM,
         "candidates": candidates,
+        "inferred": False,
+        "inferred_reason": None,
     }
 
 
@@ -214,6 +283,7 @@ def _build_candidates(rows: list[asyncpg.Record], base_score: int = 50) -> list[
             "name": _display_name_from_row(row),
             "confidence": CONFIDENCE_MEDIUM,
             "score": base_score,
+            "salience": 0,
         }
         for row in rows
     ]
@@ -256,6 +326,7 @@ def _score_partial_matches(
                 "name": contact_name,
                 "confidence": CONFIDENCE_MEDIUM,
                 "score": score,
+                "salience": 0,
             }
         )
 
@@ -370,11 +441,15 @@ async def _compute_salience(
         if cid in relationships:
             rel_type = relationships[cid]
             salience += RELATIONSHIP_WEIGHTS.get(rel_type, 0)
+            # Store for inferred_reason generation
+            candidate["_relationship_type"] = rel_type
 
         # 2. Interaction frequency (last 90 days, +2 per, cap +20)
         if cid in interactions:
             interaction_count = interactions[cid]["count_90d"]
             salience += min(interaction_count * 2, 20)
+            # Store for inferred_reason generation
+            candidate["_interaction_count"] = interaction_count
 
             # 3. Interaction recency (<7d +15, <30d +10, <90d +5)
             most_recent = interactions[cid]["most_recent"]

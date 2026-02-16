@@ -382,3 +382,227 @@ class TestContactResolveThresholds:
         # Gap = 28 points (<30) → MEDIUM confidence, no auto-selection
         assert result["confidence"] == CONFIDENCE_MEDIUM
         assert result["contact_id"] is None
+
+
+class TestInferredFieldsPresence:
+    """Tests for the new inferred and inferred_reason fields."""
+
+    async def test_inferred_fields_present_in_all_responses(self):
+        """All responses should include inferred and inferred_reason fields."""
+        pool = MagicMock()
+
+        # Test no match case
+        pool.fetch = AsyncMock(return_value=[])
+        result = await contact_resolve(pool, "Nonexistent")
+        assert "inferred" in result
+        assert "inferred_reason" in result
+        assert result["inferred"] is False
+        assert result["inferred_reason"] is None
+
+        # Test single exact match case
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": "uuid-1",
+                    "first_name": "John",
+                    "last_name": "Smith",
+                    "nickname": None,
+                    "company": None,
+                    "job_title": None,
+                    "metadata": {},
+                }
+            ]
+        )
+        result = await contact_resolve(pool, "John Smith")
+        assert "inferred" in result
+        assert "inferred_reason" in result
+        assert result["inferred"] is False
+        assert result["inferred_reason"] is None
+
+    async def test_candidates_include_salience_field(self):
+        """All candidates should include salience field."""
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": "uuid-1",
+                    "first_name": "John",
+                    "last_name": "Smith",
+                    "nickname": None,
+                    "company": None,
+                    "job_title": None,
+                    "metadata": {},
+                }
+            ]
+        )
+
+        result = await contact_resolve(pool, "John Smith")
+        assert len(result["candidates"]) == 1
+        assert "salience" in result["candidates"][0]
+        assert isinstance(result["candidates"][0]["salience"], int)
+
+    async def test_inferred_true_when_gap_30_or_more(self):
+        """When gap ≥30, inferred should be True with a reason."""
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            side_effect=[
+                # Exact match query returns 2 rows
+                [
+                    {
+                        "id": "uuid-1",
+                        "first_name": "John",
+                        "last_name": "Smith",
+                        "nickname": None,
+                        "company": None,
+                        "job_title": None,
+                        "metadata": {},
+                    },
+                    {
+                        "id": "uuid-2",
+                        "first_name": "John",
+                        "last_name": "Smith",
+                        "nickname": None,
+                        "company": None,
+                        "job_title": None,
+                        "metadata": {},
+                    },
+                ],
+                # contact_data query
+                [
+                    {"id": "uuid-1", "stay_in_touch_days": 7},
+                    {"id": "uuid-2", "stay_in_touch_days": None},
+                ],
+                # relationships query - +50 points to uuid-1
+                [{"contact_id": "uuid-1", "forward_label": "partner"}],
+                # interactions query - +20 points to uuid-1
+                [
+                    {
+                        "contact_id": "uuid-1",
+                        "count_90d": 15,  # +20 points (capped)
+                        "most_recent": None,
+                    }
+                ],
+                # fact_note query
+                [],
+                # groups query
+                [],
+            ]
+        )
+
+        result = await contact_resolve(pool, "John Smith")
+
+        # uuid-1: base 90 + stay_in_touch (10) + partner (50) + interactions (20) = 170
+        # uuid-2: base 90 + 0 = 90
+        # Gap = 80 points (≥30) → HIGH confidence, inferred=True
+        assert result["confidence"] == CONFIDENCE_HIGH
+        assert result["inferred"] is True
+        assert result["inferred_reason"] is not None
+        assert isinstance(result["inferred_reason"], str)
+        # Should mention relationship type
+        assert "partner" in result["inferred_reason"].lower()
+
+    async def test_inferred_false_when_gap_less_than_30(self):
+        """When gap <30, inferred should be False."""
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            side_effect=[
+                # Exact match query returns 2 rows
+                [
+                    {
+                        "id": "uuid-1",
+                        "first_name": "John",
+                        "last_name": "Smith",
+                        "nickname": None,
+                        "company": None,
+                        "job_title": None,
+                        "metadata": {},
+                    },
+                    {
+                        "id": "uuid-2",
+                        "first_name": "John",
+                        "last_name": "Smith",
+                        "nickname": None,
+                        "company": None,
+                        "job_title": None,
+                        "metadata": {},
+                    },
+                ],
+                # contact_data query
+                [],
+                # relationships query
+                [],
+                # interactions query
+                [],
+                # fact_note query
+                [],
+                # groups query
+                [],
+            ]
+        )
+
+        result = await contact_resolve(pool, "John Smith")
+
+        # Both have base 90 + salience (0) = 90
+        # Gap = 0 points (<30) → MEDIUM confidence, inferred=False
+        assert result["confidence"] == CONFIDENCE_MEDIUM
+        assert result["inferred"] is False
+        assert result["inferred_reason"] is None
+
+    async def test_inferred_reason_includes_interaction_frequency(self):
+        """inferred_reason should mention interaction frequency when significant."""
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            side_effect=[
+                # Exact match query returns 2 rows
+                [
+                    {
+                        "id": "uuid-1",
+                        "first_name": "John",
+                        "last_name": "Smith",
+                        "nickname": None,
+                        "company": None,
+                        "job_title": None,
+                        "metadata": {},
+                    },
+                    {
+                        "id": "uuid-2",
+                        "first_name": "John",
+                        "last_name": "Smith",
+                        "nickname": None,
+                        "company": None,
+                        "job_title": None,
+                        "metadata": {},
+                    },
+                ],
+                # contact_data query
+                [],
+                # relationships query
+                [],
+                # interactions query - give uuid-1 high interaction count
+                [
+                    {
+                        "contact_id": "uuid-1",
+                        "count_90d": 12,  # +20 points (capped)
+                        "most_recent": None,
+                    }
+                ],
+                # fact_note query - +10 points (capped)
+                [
+                    {"contact_id": "uuid-1", "fact_count": 5, "note_count": 5},
+                ],
+                # groups query
+                [],
+            ]
+        )
+
+        result = await contact_resolve(pool, "John Smith")
+
+        # uuid-1: base 90 + interactions (20) + facts/notes (10) = 120
+        # uuid-2: base 90 + 0 = 90
+        # Gap = 30 points (≥30) → HIGH confidence, inferred=True
+        assert result["confidence"] == CONFIDENCE_HIGH
+        assert result["inferred"] is True
+        assert result["inferred_reason"] is not None
+        # Should mention frequent contact
+        reason_lower = result["inferred_reason"].lower()
+        assert "frequent" in reason_lower or "contact" in reason_lower
