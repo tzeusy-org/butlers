@@ -7,8 +7,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "sw_013"
-down_revision = "sw_012"
+revision = "sw_013b"
+down_revision = "sw_013"
 depends_on = None
 
 
