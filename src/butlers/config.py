@@ -153,6 +153,7 @@ class ButlerConfig:
     shutdown_timeout_s: float = 30.0
     switchboard_url: str | None = None
     trusted_route_callers: tuple[str, ...] = DEFAULT_TRUSTED_ROUTE_CALLERS
+    blob_storage_dir: str = "data/blobs"
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -494,6 +495,10 @@ def load_config(config_dir: Path) -> ButlerConfig:
     else:
         trusted_route_callers = DEFAULT_TRUSTED_ROUTE_CALLERS
 
+    # --- [butler.storage] sub-section ---
+    storage_section = butler_section.get("storage", {})
+    blob_storage_dir = storage_section.get("blob_dir", "data/blobs")
+
     # --- [[butler.schedule]] array ---
     raw_schedules = butler_section.get("schedule", [])
     schedules: list[ScheduleConfig] = []
@@ -541,4 +546,5 @@ def load_config(config_dir: Path) -> ButlerConfig:
         shutdown_timeout_s=shutdown_timeout_s,
         switchboard_url=switchboard_url,
         trusted_route_callers=trusted_route_callers,
+        blob_storage_dir=blob_storage_dir,
     )

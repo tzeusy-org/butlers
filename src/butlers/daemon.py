@@ -85,6 +85,8 @@ from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.base import Module, ToolIODescriptor
 from butlers.modules.pipeline import MessagePipeline
 from butlers.modules.registry import ModuleRegistry, default_registry
+from butlers.storage import BlobNotFoundError, LocalBlobStore
+from butlers.tools.attachments import get_attachment as _get_attachment
 from butlers.tools.switchboard.routing.contracts import parse_notify_request, parse_route_envelope
 
 logger = logging.getLogger(__name__)
@@ -112,6 +114,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "top_sessions",
         "schedule_costs",
         "notify",
+        "get_attachment",
     }
 )
 
@@ -471,6 +474,7 @@ class ButlerDaemon:
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
         self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
+        self.blob_store: LocalBlobStore | None = None
 
     @property
     def _active_modules(self) -> list[Module]:
@@ -540,6 +544,11 @@ class ButlerDaemon:
             butler_name=self.config.name,
         )
         logger.info("Loaded config for butler: %s", self.config.name)
+
+        # 1c. Initialize blob storage
+        blob_storage_path = Path(self.config.blob_storage_dir)
+        self.blob_store = LocalBlobStore(blob_storage_path)
+        logger.info("Initialized blob storage at: %s", blob_storage_path)
 
         # 2. Initialize telemetry
         init_telemetry(f"butler.{self.config.name}")
@@ -2122,6 +2131,48 @@ class ButlerDaemon:
                 resolution, provider attempts, and terminal outcome.
                 """
                 return await messenger_delivery_trace(pool, request_id)
+
+        # Attachment retrieval tool
+        @mcp.tool()
+        @tool_span("get_attachment", butler_name=butler_name)
+        async def get_attachment(storage_ref: str) -> dict:
+            """Retrieve a media attachment for analysis.
+
+            Returns base64-encoded blob data suitable for Claude vision/PDF input.
+
+            Parameters
+            ----------
+            storage_ref:
+                Storage reference string (e.g., 'local://2026/02/16/abc123.jpg')
+
+            Returns
+            -------
+            dict
+                - storage_ref: The storage reference
+                - media_type: Inferred MIME type
+                - data_base64: Base64-encoded blob data
+                - size_bytes: Size of the blob in bytes
+            """
+            try:
+                return await _get_attachment(daemon.blob_store, storage_ref)
+            except BlobNotFoundError:
+                # Return structured error instead of raising
+                return {
+                    "error": f"Attachment not found: {storage_ref}",
+                    "status": "not_found",
+                }
+            except ValueError as exc:
+                # Invalid storage_ref or size limit exceeded
+                return {
+                    "error": str(exc),
+                    "status": "invalid",
+                }
+            except Exception as exc:
+                logger.exception("get_attachment failed for %s", storage_ref)
+                return {
+                    "error": f"Failed to retrieve attachment: {exc}",
+                    "status": "error",
+                }
 
     def _validate_module_configs(self) -> dict[str, Any]:
         """Validate each module's raw config dict against its config_schema.
