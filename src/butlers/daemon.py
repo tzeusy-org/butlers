@@ -559,8 +559,10 @@ class ButlerDaemon:
         for warning in secret_warnings:
             logger.warning(warning)
 
-        # 3. Initialize modules (topological order)
-        self._modules = self._registry.load_from_config(self.config.modules)
+        # 3. Initialize modules (topological order) — load_all() instantiates every
+        # registered module; [modules.*] config sections are optional settings,
+        # not gates that enable/disable modules.
+        self._modules = self._registry.load_all(self.config.modules)
 
         # 4. Validate module config schemas (non-fatal per-module).
         self._module_configs = self._validate_module_configs()
