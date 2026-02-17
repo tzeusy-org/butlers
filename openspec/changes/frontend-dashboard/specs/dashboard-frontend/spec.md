@@ -6,17 +6,27 @@ The dashboard frontend is a React 18 + TypeScript single-page application provid
 
 ### Requirement: App shell layout
 
-The application SHALL render a persistent shell layout consisting of three regions: a collapsible sidebar for navigation, a header bar, and a main content area. The header bar SHALL contain a dark mode toggle control. The sidebar and header SHALL remain visible across all routes, with only the main content area changing on navigation.
+The application SHALL render a persistent shell layout consisting of three regions: a collapsible sidebar for navigation, a header bar, and a main content area. The header bar SHALL contain a dark mode toggle control and breadcrumb trail. The sidebar and header SHALL remain visible across all routes, with only the main content area changing on navigation. The shell SHALL also include a global command palette accessible via `/` or `Ctrl/Cmd+K`, a keyboard shortcut help dialog accessible via `?` floating button, an error boundary around route content, and toast notifications for mutation feedback.
 
 #### Scenario: Shell layout renders all three regions
 
 - **WHEN** the application loads at any route
-- **THEN** the page SHALL display a sidebar on the left, a header bar at the top of the content area, and a main content region filling the remaining space
+- **THEN** the page SHALL display a sidebar on the left, a header bar at the top of the content area with breadcrumb trail, and a main content region filling the remaining space
 
-#### Scenario: Header contains dark mode toggle
+#### Scenario: Header contains theme toggle
 
 - **WHEN** the application shell renders
-- **THEN** the header bar SHALL contain an accessible toggle button for switching between light and dark mode
+- **THEN** the header bar SHALL contain an accessible toggle button for switching between light, dark, and system mode
+
+#### Scenario: Global command palette is accessible
+
+- **WHEN** the user presses `/` or `Ctrl/Cmd+K`
+- **THEN** the cmdk command palette dialog SHALL open with grouped search results and persisted recent searches
+
+#### Scenario: Keyboard shortcut help is accessible
+
+- **WHEN** the user presses `?`
+- **THEN** a floating dialog SHALL display all available keyboard shortcuts
 
 #### Scenario: Content area updates on navigation
 
@@ -24,22 +34,48 @@ The application SHALL render a persistent shell layout consisting of three regio
 - **THEN** the sidebar and header SHALL remain rendered without unmounting
 - **AND** only the main content area SHALL update to display the Sessions page
 
+#### Scenario: Error boundary wraps route content
+
+- **WHEN** a rendering error occurs in the main content area
+- **THEN** the error boundary SHALL catch the error and display a recovery UI
+- **AND** the sidebar and header SHALL remain fully functional
+
+#### Scenario: Toast notifications appear for mutations
+
+- **WHEN** a write operation completes (e.g., schedule creation, state update)
+- **THEN** a success or error toast notification SHALL appear with feedback to the user
+
 ---
 
 ### Requirement: Sidebar navigation
 
-The sidebar SHALL display the following navigation items in order: a Search trigger (Cmd+K), Overview, Timeline, a "Butlers" section header with one entry per discovered butler (each showing a colored status dot), Sessions, Traces, Notifications, and Costs. The Overview item SHALL display a badge indicating the count of active issues when one or more issues exist. The sidebar footer SHALL display today's estimated spend amount.
+The sidebar SHALL display the following navigation items in order: a Search trigger (`/` or `Cmd+K`), and then primary navigation entries. The Overview item SHALL display a badge indicating the count of active issues when one or more issues exist. The sidebar footer SHALL display today's estimated spend amount. The sidebar entries are organized as follows:
+
+**Primary Navigation (in order):**
+- Overview (`/`)
+- Butlers (`/butlers`)
+- Sessions (`/sessions`)
+- Traces (`/traces`)
+- Timeline (`/timeline`)
+- Notifications (`/notifications`)
+- Issues (`/issues`)
+- Audit Log (`/audit-log`)
+- Approvals (`/approvals`)
+- Contacts (`/contacts`)
+- Groups (`/groups`)
+- Health (`/health/measurements`)
+- Collections (`/collections`)
+- Connectors (`/connectors`)
+- Memory (`/memory`)
+- Entities (`/entities`)
+- Settings (`/settings`)
+
+Note: `Costs` (`/costs`) exists as a route but is not a sidebar item.
 
 #### Scenario: All navigation items are rendered in order
 
 - **WHEN** the sidebar renders
-- **THEN** it SHALL display navigation items in the following order: Search (Cmd+K), Overview, Timeline, Butlers section, Sessions, Traces, Notifications, Costs
-
-#### Scenario: Butlers section lists discovered butlers with status dots
-
-- **WHEN** the dashboard has discovered three butlers named "switchboard", "health", and "relationship"
-- **THEN** the Butlers section in the sidebar SHALL display three entries, one for each butler
-- **AND** each entry SHALL show the butler's name and a colored status dot (green for running, red for down, yellow for degraded)
+- **THEN** it SHALL display the following primary navigation entries: Overview, Butlers, Sessions, Traces, Timeline, Notifications, Issues, Audit Log, Approvals, Contacts, Groups, Health, Collections, Connectors, Memory, Entities, Settings
 
 #### Scenario: Overview badge shows active issue count
 
@@ -58,57 +94,116 @@ The sidebar SHALL display the following navigation items in order: a Search trig
 
 #### Scenario: Search trigger opens command palette
 
-- **WHEN** the user clicks the Search item in the sidebar or presses Cmd+K (Ctrl+K on non-Mac)
-- **THEN** the cmdk command palette dialog SHALL open
+- **WHEN** the user clicks the Search item in the sidebar or presses `/` or `Cmd+K` (Ctrl+K on non-Mac)
+- **THEN** the cmdk command palette dialog SHALL open with grouped search results
 
 ---
 
-### Requirement: Dark mode
+### Requirement: Theme toggle (light/dark/system)
 
-The application SHALL support light and dark color modes via Tailwind CSS dark mode classes. The user's selected mode SHALL be persisted to `localStorage` under a well-known key. On initial load, the application SHALL read the persisted preference; if no preference exists, it SHALL default to the system's `prefers-color-scheme` setting.
+The application SHALL support light, dark, and system color modes via Tailwind CSS dark mode classes. The user's selected mode SHALL be persisted to `localStorage` under a well-known key. On initial load, the application SHALL read the persisted preference; if no preference exists, it SHALL default to the system's `prefers-color-scheme` setting.
 
-#### Scenario: Toggle from light to dark mode
+#### Scenario: Toggle between light, dark, and system modes
 
-- **WHEN** the user clicks the dark mode toggle while in light mode
+- **WHEN** the user clicks the theme toggle in the header
+- **THEN** the application SHALL cycle through the three modes (light → dark → system → light)
+
+#### Scenario: Light mode is applied correctly
+
+- **WHEN** the user selects light mode
+- **THEN** the `<html>` element SHALL NOT receive the `dark` class
+- **AND** all shadcn/ui components SHALL render in their light variants
+- **AND** the preference "light" SHALL be written to `localStorage`
+
+#### Scenario: Dark mode is applied correctly
+
+- **WHEN** the user selects dark mode
 - **THEN** the `<html>` element SHALL receive the `dark` class
 - **AND** all shadcn/ui components SHALL render in their dark variants
 - **AND** the preference "dark" SHALL be written to `localStorage`
 
+#### Scenario: System mode respects OS preference
+
+- **WHEN** the user selects system mode
+- **AND** the operating system's `prefers-color-scheme` is "dark"
+- **THEN** the application SHALL render in dark mode
+- **AND** the preference "system" SHALL be written to `localStorage`
+
+#### Scenario: System mode follows OS changes
+
+- **WHEN** the user has selected system mode
+- **AND** the operating system's color scheme preference changes
+- **THEN** the application SHALL automatically adapt to the new OS preference
+
 #### Scenario: Preference is restored on reload
 
-- **WHEN** `localStorage` contains a dark mode preference of "dark"
+- **WHEN** `localStorage` contains a theme preference of "dark"
 - **AND** the application loads
 - **THEN** the application SHALL render in dark mode without a flash of light mode
 
-#### Scenario: System preference is used as default
+#### Scenario: System preference is used as fallback
 
-- **WHEN** no dark mode preference exists in `localStorage`
+- **WHEN** no theme preference exists in `localStorage`
 - **AND** the operating system's `prefers-color-scheme` is "dark"
 - **THEN** the application SHALL default to dark mode
+
+#### Scenario: Theme preference is manageable in Settings
+
+- **WHEN** the user navigates to `/settings`
+- **THEN** the Settings page SHALL display appearance controls for light/dark/system modes
+- **AND** the selection SHALL be backed by the persisted theme preference
 
 ---
 
 ### Requirement: React Router setup
 
-The application SHALL use React Router v7 with the following route structure:
+The application SHALL use React Router v7 with the following comprehensive route structure:
 
-| Path | Page |
-|------|------|
-| `/` | Overview |
-| `/timeline` | Timeline |
-| `/sessions` | Sessions list |
-| `/traces` | Traces list |
-| `/traces/:traceId` | Trace detail |
-| `/costs` | Costs |
-| `/notifications` | Notifications |
-| `/butlers/:name` | Butler detail (with tab support) |
+| Route | Surface | Notes |
+|------|---------|-------|
+| `/` | Overview dashboard | Topology + aggregate health + failed notifications + active issues |
+| `/butlers` | Butler list | Status cards for all registered butlers |
+| `/butlers/:name` | Butler detail | Multi-tab control and observability surface (tabs: Overview, Sessions, Config, Skills, Schedules, Trigger, State, CRM, Memory; conditionally: Health, Collections, Entities, Routing Log, Registry) |
+| `/sessions` | Session list | Cross-butler sessions with filters + drawer detail |
+| `/sessions/:id` | Session detail | Full metadata/prompt/result/error view |
+| `/traces` | Trace list | Distributed trace index |
+| `/traces/:traceId` | Trace detail | Metadata + span waterfall |
+| `/timeline` | Unified timeline | Cross-butler event stream with filters |
+| `/notifications` | Notifications center | Delivery stats + filtered feed |
+| `/issues` | Issues center | Active alerts and operator-dismissable issue list |
+| `/audit-log` | Audit log | Filterable operation history |
+| `/approvals` | Approvals queue | Pending action queue + filters + decision workflows |
+| `/approvals/rules` | Approval rules | Standing rules list/detail/revoke flows |
+| `/contacts` | Contacts list | Search/filter contacts with pagination |
+| `/contacts/:contactId` | Contact detail | Profile + tabs (Notes, Interactions, Gifts, Loans, Activity) |
+| `/groups` | Groups list | Relationship groups and membership metrics |
+| `/health/measurements` | Health measurements | Measurement trend visualization + filters |
+| `/health/medications` | Health medications | Medication cards + dose log/adherence |
+| `/health/conditions` | Health conditions | Paginated condition status table |
+| `/health/symptoms` | Health symptoms | Severity trend table with filters |
+| `/health/meals` | Health meals | Grouped-by-day meals table |
+| `/health/research` | Health research | Search/tag-filtered research notes |
+| `/collections` | General collections | Collection cards and entity counts |
+| `/entities` | General entities | Search/filter entity browser |
+| `/entities/:entityId` | Entity detail | Metadata + full JSON payload |
+| `/connectors` | Connectors overview | Connector cards + volume chart + fanout matrix + error log |
+| `/connectors/:connectorType/:endpointIdentity` | Connector detail | Full stats + timeseries + health history |
+| `/costs` | Costs and usage | Summary stats + chart + butler breakdown |
+| `/memory` | Memory system | Tier cards + browser (Facts/Rules/Episodes tabs) + activity timeline |
+| `/settings` | Settings | Theme preference, live-refresh defaults, search history controls |
 
-The butler detail page SHALL support tab navigation via query parameters (e.g., `?tab=sessions`) or nested routes for sub-views such as sessions, schedules, state, and domain-specific views. Navigating to an unknown route SHALL render a 404 page.
+The butler detail page (`/butlers/:name`) SHALL support tab navigation via query parameters (e.g., `?tab=sessions`). Tab URL semantics are defined as: active tab is controlled by `?tab=` query param, `overview` is default and removes the query param, and accepted deep-link values include all base tabs, health tabs (for health butler), general tabs (for general butler), and switchboard tabs (for switchboard butler). The memory browser surfaces Facts, Rules, and Episodes tabs on both `/memory` and the Butler Detail Memory tab, scoped to the butler when viewed from butler detail. Navigating to an unknown route SHALL render a 404 page.
 
 #### Scenario: Root route renders the Overview page
 
 - **WHEN** the user navigates to `/`
 - **THEN** the Overview page component SHALL be rendered in the main content area
+
+#### Scenario: Session detail route receives session ID param and butler context
+
+- **WHEN** the user navigates to `/sessions/abc-123`
+- **THEN** the Session detail page SHALL render with `sessionId` set to `"abc-123"`
+- **AND** supports optional `?butler=<name>` query param for scoped fetch with fallback to global fetch
 
 #### Scenario: Trace detail route receives traceId param
 
@@ -125,11 +220,104 @@ The butler detail page SHALL support tab navigation via query parameters (e.g., 
 
 - **WHEN** the user navigates to `/butlers/health` without a tab parameter
 - **THEN** the Butler detail page SHALL render with the default overview tab active
+- **AND** no `?tab=` query param SHALL be present in the URL
+
+#### Scenario: Butler detail tabs vary by butler type
+
+- **WHEN** the user navigates to `/butlers/health`
+- **THEN** the Health tab SHALL be available (in addition to base tabs)
+- **WHEN** the user navigates to `/butlers/general`
+- **THEN** Collections and Entities tabs SHALL be available (in addition to base tabs)
+- **WHEN** the user navigates to `/butlers/switchboard`
+- **THEN** Routing Log and Registry tabs SHALL be available (in addition to base tabs)
+
+#### Scenario: Memory browser is accessible from both /memory and Butler Detail
+
+- **WHEN** the user navigates to `/memory`
+- **THEN** the Memory page SHALL display Facts, Rules, and Episodes tabs with global scope
+- **WHEN** the user navigates to `/butlers/relationship?tab=memory`
+- **THEN** the Memory tab SHALL display Facts, Rules, and Episodes tabs scoped to the "relationship" butler
+
+#### Scenario: Contact detail page with sub-tabs
+
+- **WHEN** the user navigates to `/contacts/contact-123`
+- **THEN** the Contact detail page SHALL render with sub-tabs: Notes, Interactions, Gifts, Loans, Activity
+
+#### Scenario: Approvals routes support action queue and rules management
+
+- **WHEN** the user navigates to `/approvals`
+- **THEN** the approvals page SHALL display pending action queue + filters + metrics + decision workflows
+- **WHEN** the user navigates to `/approvals/rules`
+- **THEN** the approval rules page SHALL display standing rules list/detail/create/revoke flows
 
 #### Scenario: Unknown route renders 404 page
 
 - **WHEN** the user navigates to `/nonexistent-page`
 - **THEN** a 404 Not Found page SHALL be rendered with a link to navigate back to `/`
+
+---
+
+### Requirement: Keyboard shortcuts
+
+The application SHALL support the following keyboard shortcuts for enhanced navigation and interaction:
+
+**Command Palette and Search:**
+- `/` (forward slash) and `Ctrl/Cmd+K` open the command palette with grouped search results and recent-search persistence
+- `?` (question mark) opens the keyboard shortcut help dialog
+
+**Route Jump Shortcuts:**
+- `g` then `o` jumps to Overview (`/`)
+- `g` then `b` jumps to Butlers (`/butlers`)
+- `g` then `s` jumps to Sessions (`/sessions`)
+- `g` then `t` jumps to Traces (`/traces`)
+- `g` then `r` jumps to Timeline (`/timeline`)
+- `g` then `n` jumps to Notifications (`/notifications`)
+- `g` then `i` jumps to Issues (`/issues`)
+- `g` then `a` jumps to Approvals (`/approvals`)
+- `g` then `m` jumps to Memory (`/memory`)
+- `g` then `c` jumps to Contacts (`/contacts`)
+- `g` then `h` jumps to Health (`/health/measurements`)
+
+#### Scenario: Command palette opens with keyboard
+
+- **WHEN** the user presses `/` or `Ctrl/Cmd+K`
+- **THEN** the command palette dialog SHALL open
+- **AND** focus SHALL move to the search input
+
+#### Scenario: Shortcut help dialog opens with question mark
+
+- **WHEN** the user presses `?`
+- **THEN** a floating help dialog SHALL display all available keyboard shortcuts
+- **AND** the dialog SHALL be closeable via Escape or clicking outside
+
+#### Scenario: Route jump shortcuts navigate to correct page
+
+- **WHEN** the user presses `g` then `s` while on any page
+- **THEN** the application SHALL navigate to `/sessions`
+- **AND** the Sessions page SHALL render
+
+#### Scenario: Route jump shortcuts are only active when not typing
+
+- **WHEN** the user is typing in a text input field
+- **THEN** pressing `g` then `s` SHALL NOT trigger a route jump
+- **AND** the characters SHALL be entered into the input field instead
+
+#### Scenario: Command palette displays grouped search results
+
+- **WHEN** the command palette is open
+- **THEN** search results SHALL be organized into groups (e.g., "Butlers", "Recent", "Pages")
+- **AND** users SHALL be able to browse and select results within groups
+
+#### Scenario: Recent searches are persisted
+
+- **WHEN** the user searches for "health measurements" in the command palette
+- **THEN** the search query SHALL be persisted to `localStorage`
+- **AND** on next load, "health measurements" SHALL appear in the recent searches section of the command palette
+
+#### Scenario: Clear search history option in Settings
+
+- **WHEN** the user navigates to `/settings`
+- **THEN** a command palette maintenance action SHALL be available to clear locally stored recent searches
 
 ---
 
