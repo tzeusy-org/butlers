@@ -112,35 +112,118 @@ class ModuleRegistry:
                         f"which is not in the enabled module set"
                     )
 
-        # 4. Topological sort via Kahn's algorithm.
-        in_degree: dict[str, int] = {name: 0 for name in instances}
-        # Build adjacency: edge from dep -> dependent (dep must come first).
-        adjacency: dict[str, list[str]] = {name: [] for name in instances}
-        for name, instance in instances.items():
-            for dep in instance.dependencies:
-                adjacency[dep].append(name)
-                in_degree[name] += 1
+        # 4. Topological sort.
+        return _topological_sort(instances)
 
-        queue: deque[str] = deque()
-        for name, degree in in_degree.items():
-            if degree == 0:
-                queue.append(name)
+    def load_all(self, modules_config: dict[str, dict]) -> list[Module]:
+        """Instantiate and order ALL registered modules.
 
-        sorted_names: list[str] = []
-        while queue:
-            # Sort the current zero-degree batch for deterministic output.
-            batch = sorted(queue)
-            queue.clear()
-            for node in batch:
-                sorted_names.append(node)
-                for neighbour in adjacency[node]:
-                    in_degree[neighbour] -= 1
-                    if in_degree[neighbour] == 0:
-                        queue.append(neighbour)
+        Every registered module is loaded regardless of whether it appears in
+        *modules_config*.  Modules listed in *modules_config* receive their
+        explicit config dict; modules absent from *modules_config* receive an
+        empty ``{}`` dict (config validation downstream is non-fatal).
 
-        if len(sorted_names) != len(instances):
-            # Some modules remain with non-zero in-degree — cycle detected.
-            remaining = set(instances) - set(sorted_names)
-            raise ValueError(f"Circular dependency detected among modules: {sorted(remaining)}")
+        This is the preferred startup path as of butlers-949.  It ensures that
+        all modules are always present so that runtime enable/disable state can
+        be managed independently of the static ``butler.toml`` config.
 
-        return [instances[name] for name in sorted_names]
+        Parameters
+        ----------
+        modules_config:
+            Mapping of module name to per-module config dict, as parsed from
+            ``[modules.*]`` sections in ``butler.toml``.  Acts as an optional
+            config provider — its presence or absence no longer gates which
+            modules are loaded.
+
+        Returns
+        -------
+        list[Module]
+            All registered module instances in dependency order (dependencies
+            first).
+
+        Raises
+        ------
+        ValueError
+            If the dependency graph contains a cycle.
+        """
+        # Instantiate every registered module.
+        instances: dict[str, Module] = {name: cls() for name, cls in self._modules.items()}
+
+        # Log modules that have explicit config vs. those getting empty dict.
+        configured = set(modules_config) & set(instances)
+        unconfigured = set(instances) - set(modules_config)
+        if unconfigured:
+            logger.debug(
+                "load_all: %d module(s) loaded without explicit config (will use {}): %s",
+                len(unconfigured),
+                sorted(unconfigured),
+            )
+        if configured:
+            logger.debug(
+                "load_all: %d module(s) loaded with explicit config: %s",
+                len(configured),
+                sorted(configured),
+            )
+
+        # Topological sort across the full registered set.
+        return _topological_sort(instances)
+
+
+def _topological_sort(instances: dict[str, Module]) -> list[Module]:
+    """Return *instances* in dependency order using Kahn's algorithm.
+
+    Parameters
+    ----------
+    instances:
+        All module instances that should be sorted.  Every dependency name
+        declared by any instance must appear as a key in *instances*.
+
+    Returns
+    -------
+    list[Module]
+        Modules ordered so that each module's dependencies appear before it.
+
+    Raises
+    ------
+    ValueError
+        If a cycle is detected or a dependency is missing from *instances*.
+    """
+    # Validate all dependency references resolve within the instance set.
+    for name, instance in instances.items():
+        for dep in instance.dependencies:
+            if dep not in instances:
+                raise ValueError(
+                    f"Module '{name}' depends on '{dep}', which is not in the loaded module set"
+                )
+
+    in_degree: dict[str, int] = {name: 0 for name in instances}
+    # Build adjacency: edge from dep -> dependent (dep must come first).
+    adjacency: dict[str, list[str]] = {name: [] for name in instances}
+    for name, instance in instances.items():
+        for dep in instance.dependencies:
+            adjacency[dep].append(name)
+            in_degree[name] += 1
+
+    queue: deque[str] = deque()
+    for name, degree in in_degree.items():
+        if degree == 0:
+            queue.append(name)
+
+    sorted_names: list[str] = []
+    while queue:
+        # Sort the current zero-degree batch for deterministic output.
+        batch = sorted(queue)
+        queue.clear()
+        for node in batch:
+            sorted_names.append(node)
+            for neighbour in adjacency[node]:
+                in_degree[neighbour] -= 1
+                if in_degree[neighbour] == 0:
+                    queue.append(neighbour)
+
+    if len(sorted_names) != len(instances):
+        # Some modules remain with non-zero in-degree — cycle detected.
+        remaining = set(instances) - set(sorted_names)
+        raise ValueError(f"Circular dependency detected among modules: {sorted(remaining)}")
+
+    return [instances[name] for name in sorted_names]
