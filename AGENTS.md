@@ -297,8 +297,8 @@ make test-qg
 - Optional `calendar_id` overrides must be stripped/non-empty and must not mutate the module's default configured `calendar_id`.
 
 ### Calendar roster rollout contract
-- `roster/general/butler.toml`, `roster/health/butler.toml`, and `roster/relationship/butler.toml` must each declare `[modules.calendar]` with provider `google`, explicit dedicated subcalendar `calendar_id` values (not `primary`), and default conflict policy `suggest`.
-- `roster/general/CLAUDE.md`, `roster/health/CLAUDE.md`, and `roster/relationship/CLAUDE.md` must document calendar tool usage, dedicated subcalendar assumption, default conflict behavior (`suggest`), and that attendee invites are out of v1 scope.
+- `roster/general/butler.toml`, `roster/health/butler.toml`, and `roster/relationship/butler.toml` must each declare `[modules.calendar]` with provider `google`, explicit shared Butler calendar `calendar_id` values (not `primary`), and default conflict policy `suggest`.
+- `roster/general/CLAUDE.md`, `roster/health/CLAUDE.md`, and `roster/relationship/CLAUDE.md` must document calendar tool usage, shared Butler calendar assumption, default conflict behavior (`suggest`), and that attendee invites are out of v1 scope.
 
 ### Calendar conflict preflight contract
 - Calendar conflict policy is `suggest|fail|allow_overlap` at tool/config boundaries; legacy config values (`allow`, `reject`) normalize to `allow_overlap`, `fail`.

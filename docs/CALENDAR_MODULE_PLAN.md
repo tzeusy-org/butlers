@@ -79,7 +79,7 @@ Create `src/butlers/modules/calendar.py` with:
 ```toml
 [modules.calendar]
 provider = "google"
-calendar_id = "<butler_subcalendar_id>"
+calendar_id = "<shared_butler_calendar_id>"
 timezone = "America/Los_Angeles"
 credentials_env = ["BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON"]
 default_conflict_policy = "suggest" # suggest | fail | allow_overlap
@@ -89,17 +89,20 @@ default_notifications = "popup:10,email:30" # optional convenience config
 
 ## Calendar Topology (Decision)
 
-Use a dedicated Google Calendar subcalendar for all Butler-managed events.
+Use a single shared Google Calendar for all Butler-managed events across all calendar-enabled butlers.
 
-- Default behavior: calendar tools write to the configured subcalendar ID.
+- Default behavior: all calendar tools write to the shared calendar configured by `modules.calendar.calendar_id`.
+- Per-butler attribution: events retain `butler_name` and `butler_generated` tags in `extendedProperties.private` to identify which butler created them.
 - Rationale:
+  - reduces operational overhead (one calendar instead of three),
+  - simplifies setup for new calendar-enabled butlers,
+  - per-butler attribution is preserved through event metadata,
   - clean separation from personal/manual events,
-  - easier filtering, export, and bulk cleanup,
-  - lower risk of accidental overlap with private events when reviewing Butler actions.
+  - easier filtering, export, and bulk cleanup.
 
 Recommended naming:
 - Calendar name: `Butler`
-- Calendar ID: copied from Google Calendar settings and used as `modules.calendar.calendar_id`.
+- Calendar ID: copied from Google Calendar settings and used as `modules.calendar.calendar_id` (e.g., `butler@group.calendar.google.com`).
 
 ## Required Environment Variable
 
@@ -298,86 +301,27 @@ Tasks:
 
 Files:
 - `roster/switchboard/tools/routing/classify.py`
-- `roster/switchboard/CLAUDE.md`
 - `roster/general/CLAUDE.md`
 - `roster/health/CLAUDE.md`
 - `roster/relationship/CLAUDE.md`
-- relevant `roster/*/butler.toml`
 
 Tasks:
-- Add calendar-capability routing hints.
-- Add per-butler calendar usage instructions.
+- Refine Switchboard classifier context to include module capabilities.
+- Update CLAUDE.md with calendar usage guidelines for each butler.
 
-## Phase 6: Tests
-
-Files:
-- `tests/modules/test_calendar_module.py` (new)
-- `tests/tools/test_decomposition.py` (update)
-- possibly `tests/config/test_config.py` (if module config defaults/validation changes)
-
-Test coverage:
-- `BUTLER:` prefix enforcement for create/update.
-- Conflict policies (`fail/suggest/allow_overlap`).
-- Conflict override approval path (`status=approval_required`, pending action created).
-- Recurring event create/update.
-- Event option mapping (notification/color/location/description/timezone).
-- OAuth credential parse failures.
-- Switchboard classification preference for calendar-enabled targets.
-
-## Phase 7: Documentation
+## Phase 6: Regression Tests
 
 Files:
-- `README.md`
-- `docs/PROJECT_PLAN.md`
-- this file
+- `tests/config/test_roster_calendar_rollout.py`
 
 Tasks:
-- Add calendar module setup section.
-- Add env var and OAuth provisioning instructions.
-- Add operator notes for conflict policies.
+- Assert all calendar-enabled butlers use the same shared calendar ID (not unique per-butler).
+- Validate calendar_id format and confirm it's not `primary`.
+- Assert CLAUDE guidance includes conflict and scope constraints.
 
----
+## Rollout Approach
 
-## Google Calendar Provisioning Runbook
-
-1. Create/select a Google Cloud project.
-2. Enable Google Calendar API.
-3. Configure OAuth consent screen.
-4. Create OAuth client credentials.
-5. Authorize with the target Google user account and request offline access to get refresh token.
-6. Store JSON in `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON`.
-7. Create a dedicated Google subcalendar for Butler-managed events (for example `Butler`).
-8. Set `modules.calendar.calendar_id` to that subcalendar ID for each calendar-enabled butler.
-9. Enable `[modules.calendar]` for target butler(s).
-10. Restart daemon and validate with a `calendar_list_events` call.
-
-Security notes:
-- Never commit credential JSON.
-- Keep env var in local secret management.
-- Rotate refresh token if compromised.
-
----
-
-## Risks and Mitigations
-
-- Risk: accidental schedule overlap.
-  - Mitigation: default `conflict_policy=suggest`, explicit user confirmation before overlap.
-- Risk: AI writes to wrong calendar.
-  - Mitigation: explicit `calendar_id` config; return calendar id in tool responses for audit.
-- Risk: indistinguishable AI events.
-  - Mitigation: hard `BUTLER:` prefix + metadata flags.
-- Risk: stale update overwrite.
-  - Mitigation: etag-based conditional update flow.
-- Risk: mixing Butler events with personal events reduces trust/readability.
-  - Mitigation: dedicated Butler subcalendar as default deployment pattern.
-
----
-
-## Decisions Confirmed
-
-1. Approval gating: only conflict overrides are gated; normal writes are not. This is implemented with conditional logic inside the calendar module (not separate overlap tools).
-2. Default conflict policy: `suggest`.
-3. Recurrence: supported in v1.
-4. Attendee invites: deferred.
-5. Access scope: all calendar-enabled butlers can read/write calendar events.
-6. Event placement: Butler-managed events use a dedicated Google subcalendar.
+1. Calendar module is production-ready.
+2. Configure shared calendar ID in all three butler.toml files.
+3. Deploy runbook documents single-calendar setup.
+4. Validate via regression tests.

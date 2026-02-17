@@ -52,7 +52,7 @@ password_env = "BUTLER_EMAIL_PASSWORD"
 
 [modules.calendar]
 provider = "google"
-calendar_id = "butler-assistant@group.calendar.google.com"
+calendar_id = "butler@group.calendar.google.com"
 default_conflict_policy = "suggest"
 ```
 

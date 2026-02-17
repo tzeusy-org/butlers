@@ -56,7 +56,7 @@ The calendar module v1 MVP is complete and ready for production use. All impleme
 
 **Roster Enablement (butlers-2bq.10)**
 - Calendar module enabled for 3 butlers: general, health, relationship
-- Each butler configured with dedicated subcalendar ID
+- Each butler configured with shared Butler calendar ID
 - CLAUDE.md personality updates with calendar usage guidelines
 - Config structure:
   ```toml
@@ -120,7 +120,7 @@ The calendar module v1 MVP is complete and ready for production use. All impleme
 **Butler Personality Updates (butlers-2bq.10)**
 - CLAUDE.md files for general, health, and relationship butlers
 - Calendar usage guidelines:
-  - Write to dedicated subcalendar only (not primary)
+  - Write to shared Butler calendar only (not primary)
   - Default conflict behavior: suggest alternatives first
   - Overlap overrides require explicit user approval
   - Attendee invites out of scope for v1
