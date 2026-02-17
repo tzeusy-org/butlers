@@ -1,10 +1,127 @@
 # Dashboard Butler Detail
 
-Butler detail overview tab — the default view when navigating to `/butlers/:name`. Provides a quick snapshot of the butler's identity, health, and current activity. This spec covers the core content of the overview tab; other tabs (Config, Skills, Trigger, Sessions, Schedules, State, and domain-specific tabs) are defined in their respective specs.
+Butler detail page — the dashboard surface for a specific butler at `/butlers/:name`. Provides identity, status, observability, and configuration access through a multi-tab interface. This spec covers the tab structure, rendering logic, and URL semantics; individual tab contents are defined in their respective specs.
 
 ---
 
-## ADDED Requirements
+## Tab Structure
+
+### Always-Rendered Tabs
+
+The butler detail page MUST render these tabs for every butler:
+
+1. **Overview** — Quick snapshot of identity, health, activity, and error summary (see "Overview Tab" section below)
+2. **Sessions** — Cross-session history with filters and session detail drawer (see dashboard-sessions spec)
+3. **Config** — Butler configuration: `butler.toml`, `MANIFESTO.md`, `CLAUDE.md`, `AGENTS.md` (see dashboard-config spec)
+4. **Skills** — Available skills with descriptions and full SKILL.md content (see dashboard-skills spec)
+5. **Schedules** — Scheduled tasks with cron expression, prompt, source, enabled state, and mutations (create/edit/delete/toggle) (see dashboard-schedules spec)
+6. **Trigger** — Freeform prompt submission with skill-prefill support (see dashboard-trigger spec)
+7. **State** — Key-value store browser with prefix filter and mutations (create/set/delete) (see dashboard-state spec)
+8. **CRM** — Relationship/contact data (see dashboard-crm spec)
+9. **Memory** — Memory tier cards and memory browser with facts/rules/episodes tabs (see dashboard-memory spec)
+
+### Conditional Tabs
+
+Additional tabs appear only for specific butlers:
+
+- **Health** — Appears only when `name === "health"`. Health sub-routes and measurements (see dashboard-health spec)
+- **Collections** — Appears only when `name === "general"`. General data collections and counts (see dashboard-collections spec)
+- **Entities** — Appears only when `name === "general"`. General entity browser (see dashboard-entities spec)
+- **Routing Log** — Appears only when `name === "switchboard"`. Cross-butler routing history (see dashboard-routing-log spec)
+- **Registry** — Appears only when `name === "switchboard"`. Registered butlers and module state (see dashboard-registry spec)
+
+---
+
+## Conditional Rendering Rules
+
+The butler detail page SHALL conditionally render tabs according to these rules:
+
+| Tab | Always Rendered | Condition |
+| --- | --- | --- |
+| Overview | Yes | — |
+| Sessions | Yes | — |
+| Config | Yes | — |
+| Skills | Yes | — |
+| Schedules | Yes | — |
+| Trigger | Yes | — |
+| State | Yes | — |
+| CRM | Yes | — |
+| Memory | Yes | — |
+| Health | No | `name === "health"` |
+| Collections | No | `name === "general"` |
+| Entities | No | `name === "general"` |
+| Routing Log | No | `name === "switchboard"` |
+| Registry | No | `name === "switchboard"` |
+
+### Scenario: Health butler tab rendering
+
+- **WHEN** navigating to `/butlers/health`
+- **THEN** MUST render all 9 always-rendered tabs
+- **AND** MUST render the `Health` tab
+- **AND** MUST NOT render `Collections`, `Entities`, `Routing Log`, or `Registry` tabs
+
+### Scenario: General butler tab rendering
+
+- **WHEN** navigating to `/butlers/general`
+- **THEN** MUST render all 9 always-rendered tabs
+- **AND** MUST render `Collections` and `Entities` tabs
+- **AND** MUST NOT render `Health`, `Routing Log`, or `Registry` tabs
+
+### Scenario: Switchboard butler tab rendering
+
+- **WHEN** navigating to `/butlers/switchboard`
+- **THEN** MUST render all 9 always-rendered tabs
+- **AND** MUST render `Routing Log` and `Registry` tabs
+- **AND** MUST NOT render `Health`, `Collections`, or `Entities` tabs
+
+### Scenario: Regular butler tab rendering
+
+- **WHEN** navigating to `/butlers/relationship` or any other standard butler
+- **THEN** MUST render all 9 always-rendered tabs
+- **AND** MUST NOT render any conditional tabs
+
+---
+
+## Tab URL Semantics
+
+The active tab is controlled via the `?tab=` query parameter:
+
+- **Default behavior** — When no `?tab=` query param is present, the active tab defaults to `overview` and the URL does not include the query param.
+- **Tab navigation** — Clicking a tab updates the URL to include `?tab={tab-name}` (e.g., `/butlers/health?tab=schedules`).
+- **Overview exception** — When the active tab is `overview`, the URL remains `/butlers/:name` (no query param).
+- **Deep linking** — The page supports deep-link navigation via `?tab=` for all valid tabs (always-rendered + conditional for the given butler).
+- **Invalid tab handling** — If an invalid tab name is provided via `?tab=`, the page SHALL default to the overview tab.
+
+### Accepted Tab Values
+
+Tab names accepted in the `?tab=` query parameter:
+
+- **Always-rendered:** `overview`, `sessions`, `config`, `skills`, `schedules`, `trigger`, `state`, `crm`, `memory`
+- **Health butler:** `health`
+- **General butler:** `collections`, `entities`
+- **Switchboard butler:** `routing-log`, `registry`
+
+### Scenario: Deep link to schedules tab
+
+- **WHEN** a user navigates to `/butlers/health?tab=schedules`
+- **THEN** the page MUST render the Schedules tab as active
+- **AND** the URL MUST remain `/butlers/health?tab=schedules`
+
+### Scenario: Tab navigation updates URL
+
+- **WHEN** a user is viewing `/butlers/health` and clicks the `Sessions` tab
+- **THEN** the URL MUST update to `/butlers/health?tab=sessions`
+
+### Scenario: Clicking Overview clears query param
+
+- **WHEN** a user is viewing `/butlers/health?tab=schedules` and clicks the `Overview` tab
+- **THEN** the URL MUST update to `/butlers/health` (query param removed)
+
+---
+
+## Overview Tab
+
+Butler detail overview tab — the default view when navigating to `/butlers/:name`. Provides a quick snapshot of the butler's identity, health, and current activity.
 
 ### Requirement: Butler identity card
 
