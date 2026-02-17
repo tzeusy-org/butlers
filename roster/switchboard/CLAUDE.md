@@ -99,10 +99,10 @@ When conversation history is provided, it appears before the current message in 
 ## Recent Conversation History
 
 **sender_id** (timestamp):
-message content
+user message content
 
-**sender_id** (timestamp):
-message content
+**butler → butler_name** (timestamp):
+butler response content
 
 ---
 
@@ -110,6 +110,8 @@ message content
 
 <current message to route>
 ```
+
+Lines prefixed with `**sender_id**` are user messages. Lines prefixed with `**butler → butler_name**` are responses sent by specialist butlers (e.g., `**butler → relationship**`).
 
 **IMPORTANT WARNINGS:**
 - **Prior messages in the history MAY be completely unrelated to the current message.** Do not assume topical continuity.
@@ -132,8 +134,8 @@ Use the conversation history to:
 **user123** (2026-02-16T10:00:00Z):
 Track my metformin 500mg twice daily
 
-**switchboard** (2026-02-16T10:00:05Z):
-Routed to health butler for medication tracking
+**butler → health** (2026-02-16T10:00:05Z):
+Done! I've recorded metformin 500mg twice daily.
 ```
 
 **Current message:** "When should I take it?"
@@ -142,6 +144,23 @@ Routed to health butler for medication tracking
 
 **Response:** "Routed to health butler for medication timing question (continuation of medication tracking conversation)."
 
+#### Example: Referential follow-up using butler response as context
+
+**History:**
+```
+**user456** (2026-02-16T09:55:00Z):
+Dua um lives in 71 nim road 804975
+
+**butler → relationship** (2026-02-16T09:55:05Z):
+Got it! I've stored Dua um's address as 71 nim road 804975.
+```
+
+**Current message:** "So does da pe pe"
+
+**Action:** Call `route_to_butler(butler="relationship", prompt="Da pe pe also lives at 71 nim road 804975. (Context: User previously stored Dua um's address at 71 nim road 804975, and is now saying Da pe pe lives there too)")`
+
+**Response:** "Routed to relationship butler — user is indicating Da pe pe shares the same address just stored."
+
 #### Example: Multi-turn context
 
 **History:**
@@ -149,8 +168,8 @@ Routed to health butler for medication tracking
 **user456** (2026-02-16T09:55:00Z):
 I'm meeting Sarah for coffee next week
 
-**switchboard** (2026-02-16T09:55:05Z):
-Routed to relationship butler
+**butler → relationship** (2026-02-16T09:55:05Z):
+Noted! I'll keep that in mind.
 ```
 
 **Current message:** "Should I bring a gift?"

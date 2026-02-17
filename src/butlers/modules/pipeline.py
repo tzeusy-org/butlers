@@ -85,7 +85,8 @@ async def _load_realtime_history(
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
                 received_at,
-                raw_payload -> 'metadata' AS raw_metadata
+                raw_payload -> 'metadata' AS raw_metadata,
+                COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
             WHERE request_context ->> 'source_thread_identity' = $1
                 AND received_at >= $2
@@ -104,7 +105,8 @@ async def _load_realtime_history(
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
                 received_at,
-                raw_payload -> 'metadata' AS raw_metadata
+                raw_payload -> 'metadata' AS raw_metadata,
+                COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
             WHERE request_context ->> 'source_thread_identity' = $1
                 AND received_at < $2
@@ -164,7 +166,8 @@ async def _load_email_history(
                 normalized_text AS raw_content,
                 request_context ->> 'source_sender_identity' AS sender_id,
                 received_at,
-                raw_payload -> 'metadata' AS raw_metadata
+                raw_payload -> 'metadata' AS raw_metadata,
+                COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
             WHERE request_context ->> 'source_thread_identity' = $1
                 AND received_at < $2
@@ -203,6 +206,9 @@ async def _load_email_history(
 def _format_history_context(messages: list[dict[str, Any]]) -> str:
     """Format loaded history as context for CC prompt.
 
+    Distinguishes user messages (direction='inbound') from butler responses
+    (direction='outbound') using different header prefixes.
+
     Returns empty string if no messages.
     """
     if not messages:
@@ -212,11 +218,17 @@ def _format_history_context(messages: list[dict[str, Any]]) -> str:
 
     for msg in messages:
         sender = msg.get("sender_id", "unknown")
+        direction = msg.get("direction", "inbound")
         timestamp = msg.get("received_at")
         content = msg.get("raw_content", "")
 
         timestamp_str = timestamp.isoformat() if timestamp else "unknown"
-        formatted_lines.append(f"**{sender}** ({timestamp_str}):")
+        if direction == "outbound":
+            # Butler response: show as "butler → {origin_butler}"
+            formatted_lines.append(f"**butler \u2192 {sender}** ({timestamp_str}):")
+        else:
+            # User message: show sender identity
+            formatted_lines.append(f"**{sender}** ({timestamp_str}):")
         formatted_lines.append(content)
         formatted_lines.append("")
 

@@ -1233,3 +1233,187 @@ class TestCallButlerTool:
             {"message": "legacy"},
             raise_on_error=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# _write_outbound_message_inbox
+# ---------------------------------------------------------------------------
+
+
+def _make_uuid7() -> str:
+    """Generate a valid UUID v7 string for tests."""
+    import secrets
+    from datetime import UTC, datetime
+
+    timestamp_ms = int(datetime.now(UTC).timestamp() * 1000) & ((1 << 48) - 1)
+    rand_a = secrets.randbits(12)
+    rand_b = secrets.randbits(62)
+    value = timestamp_ms << 80
+    value |= 0x7 << 76
+    value |= rand_a << 64
+    value |= 0b10 << 62
+    value |= rand_b
+    import uuid as _uuid_mod
+
+    return str(_uuid_mod.UUID(int=value))
+
+
+class TestWriteOutboundMessageInbox:
+    """Unit tests for _write_outbound_message_inbox helper."""
+
+    async def test_skips_when_no_request_context(self) -> None:
+        """Skips write when notify_request has no request_context."""
+        from butlers.tools.switchboard import _write_outbound_message_inbox
+        from butlers.tools.switchboard.routing.contracts import (
+            NotifyRequestV1,
+        )
+
+        pool = AsyncMock()
+        notify_request = NotifyRequestV1.model_validate(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "relationship",
+                "delivery": {
+                    "intent": "send",
+                    "channel": "telegram",
+                    "message": "Got it!",
+                    "recipient": "user123",
+                },
+                # No request_context
+            }
+        )
+
+        await _write_outbound_message_inbox(
+            pool,
+            notify_request=notify_request,
+            delivered_at=datetime.now(UTC),
+        )
+
+        pool.execute.assert_not_awaited()
+
+    async def test_skips_when_no_thread_identity(self) -> None:
+        """Skips write when request_context has no source_thread_identity."""
+        from butlers.tools.switchboard import _write_outbound_message_inbox
+        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+
+        pool = AsyncMock()
+        notify_request = NotifyRequestV1.model_validate(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "health",
+                "delivery": {
+                    "intent": "send",
+                    "channel": "telegram",
+                    "message": "Medication recorded.",
+                    "recipient": "user456",
+                },
+                "request_context": {
+                    "request_id": _make_uuid7(),
+                    "source_channel": "telegram",
+                    "source_endpoint_identity": "telegram:bot",
+                    "source_sender_identity": "user456",
+                    # No source_thread_identity
+                },
+            }
+        )
+
+        await _write_outbound_message_inbox(
+            pool,
+            notify_request=notify_request,
+            delivered_at=datetime.now(UTC),
+        )
+
+        pool.execute.assert_not_awaited()
+
+    async def test_writes_outbound_row_when_thread_identity_present(self) -> None:
+        """Writes outbound row to message_inbox when source_thread_identity is available."""
+        from butlers.tools.switchboard import _write_outbound_message_inbox
+        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+
+        pool = AsyncMock()
+        delivered_at = datetime(2026, 2, 18, 10, 5, 0, tzinfo=UTC)
+
+        notify_request = NotifyRequestV1.model_validate(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "relationship",
+                "delivery": {
+                    "intent": "reply",
+                    "channel": "telegram",
+                    "message": "Got it! I've stored Dua um's address as 71 nim road 804975.",
+                },
+                "request_context": {
+                    "request_id": _make_uuid7(),
+                    "source_channel": "telegram",
+                    "source_endpoint_identity": "telegram:bot",
+                    "source_sender_identity": "user123",
+                    "source_thread_identity": "12345678:999",
+                },
+            }
+        )
+
+        await _write_outbound_message_inbox(
+            pool,
+            notify_request=notify_request,
+            delivered_at=delivered_at,
+        )
+
+        pool.execute.assert_awaited_once()
+        call_args = pool.execute.call_args
+        sql = call_args[0][0]
+
+        assert "INSERT INTO message_inbox" in sql
+        assert "direction" in sql
+        assert "'outbound'" in sql
+
+        # Verify the positional arguments
+        pos_args = call_args[0]
+        assert pos_args[1] == delivered_at  # received_at
+        # request_context JSON should include thread identity and origin_butler
+        import json as _json
+
+        req_ctx = _json.loads(pos_args[2])
+        assert req_ctx["source_thread_identity"] == "12345678:999"
+        assert req_ctx["source_sender_identity"] == "relationship"
+
+        raw_payload = _json.loads(pos_args[3])
+        expected_text = "Got it! I've stored Dua um's address as 71 nim road 804975."
+        assert raw_payload["content"] == expected_text
+        assert raw_payload["metadata"]["origin_butler"] == "relationship"
+
+        # Normalized text
+        assert pos_args[4] == "Got it! I've stored Dua um's address as 71 nim road 804975."
+
+    async def test_swallows_db_error_without_propagating(self) -> None:
+        """DB error during outbound write is logged but never propagates."""
+        from butlers.tools.switchboard import _write_outbound_message_inbox
+        from butlers.tools.switchboard.routing.contracts import NotifyRequestV1
+
+        pool = AsyncMock()
+        pool.execute.side_effect = Exception("DB connection lost")
+
+        notify_request = NotifyRequestV1.model_validate(
+            {
+                "schema_version": "notify.v1",
+                "origin_butler": "general",
+                "delivery": {
+                    "intent": "reply",
+                    "channel": "telegram",
+                    "message": "Sure, let me look into that.",
+                },
+                "request_context": {
+                    "request_id": _make_uuid7(),
+                    "source_channel": "telegram",
+                    "source_endpoint_identity": "telegram:bot",
+                    "source_sender_identity": "user789",
+                    "source_thread_identity": "99999:1234",
+                },
+            }
+        )
+
+        # Should not raise even though pool.execute raises
+        await _write_outbound_message_inbox(
+            pool,
+            notify_request=notify_request,
+            delivered_at=datetime.now(UTC),
+        )

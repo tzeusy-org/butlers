@@ -16,6 +16,7 @@ from butlers.tools.switchboard.ingestion.ingest import (
 from butlers.tools.switchboard.notification.deliver import (
     SUPPORTED_CHANNELS,
     _build_channel_args,
+    _write_outbound_message_inbox,
     deliver,
 )
 from butlers.tools.switchboard.notification.log import (
@@ -64,6 +65,7 @@ __all__ = [
     "RouteRequestContextV1",
     "SUPPORTED_CHANNELS",
     "_build_channel_args",
+    "_write_outbound_message_inbox",
     "_call_butler_tool",
     "_log_routing",
     "deliver",

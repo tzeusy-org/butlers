@@ -316,3 +316,151 @@ async def test_conversation_history_none_for_api(switchboard_dsn):
         assert result == ""
     finally:
         await pool.close()
+
+
+# ---------------------------------------------------------------------------
+# Outbound message inbox writes (direction column)
+# ---------------------------------------------------------------------------
+
+
+async def _insert_outbound_message(
+    pool: asyncpg.Pool,
+    *,
+    text: str,
+    origin_butler: str,
+    thread_identity: str,
+    received_at: datetime,
+    channel: str = "telegram",
+) -> None:
+    """Insert an outbound (direction='outbound') message_inbox row."""
+    import json
+
+    request_context = {
+        "source_channel": channel,
+        "source_sender_identity": origin_butler,
+        "source_thread_identity": thread_identity,
+        "source_endpoint_identity": f"butler:{origin_butler}",
+    }
+    raw_payload = {
+        "content": text,
+        "metadata": {"origin_butler": origin_butler},
+    }
+    await pool.execute(
+        """
+        INSERT INTO message_inbox (
+            received_at, request_context, raw_payload,
+            normalized_text, direction, lifecycle_state, schema_version
+        ) VALUES (
+            $1, $2::jsonb, $3::jsonb, $4, 'outbound', 'completed', 'message_inbox.v2'
+        )
+        """,
+        received_at,
+        json.dumps(request_context),
+        json.dumps(raw_payload),
+        text,
+    )
+
+
+async def test_realtime_history_includes_outbound_messages(switchboard_dsn):
+    """Outbound butler responses appear in _load_realtime_history results."""
+    pool = await asyncpg.create_pool(switchboard_dsn)
+    try:
+        now = datetime.now(UTC)
+        thread = f"chat:{uuid.uuid4().hex[:8]}"
+
+        await _insert_message(
+            pool,
+            text="Dua um lives in 71 nim road 804975",
+            sender="user42",
+            thread_identity=thread,
+            received_at=now - timedelta(minutes=5),
+        )
+        await _insert_outbound_message(
+            pool,
+            text="Got it! I've stored Dua um's address as 71 nim road 804975.",
+            origin_butler="relationship",
+            thread_identity=thread,
+            received_at=now - timedelta(minutes=4),
+        )
+
+        messages = await _load_realtime_history(pool, thread, now)
+
+        assert len(messages) == 2
+        # Inbound user message
+        assert messages[0]["raw_content"] == "Dua um lives in 71 nim road 804975"
+        assert messages[0]["direction"] == "inbound"
+        # Outbound butler response
+        assert "Got it!" in messages[1]["raw_content"]
+        assert messages[1]["direction"] == "outbound"
+        assert messages[1]["sender_id"] == "relationship"
+    finally:
+        await pool.close()
+
+
+async def test_realtime_history_formatted_shows_butler_arrow_prefix(switchboard_dsn):
+    """Formatted conversation history shows '**butler → X**' for outbound messages."""
+    from butlers.modules.pipeline import _format_history_context
+
+    pool = await asyncpg.create_pool(switchboard_dsn)
+    try:
+        now = datetime.now(UTC)
+        thread = f"chat:{uuid.uuid4().hex[:8]}"
+
+        await _insert_message(
+            pool,
+            text="So does da pe pe",
+            sender="user42",
+            thread_identity=thread,
+            received_at=now - timedelta(minutes=3),
+        )
+        await _insert_outbound_message(
+            pool,
+            text="Got it! I've stored da pe pe's address too.",
+            origin_butler="relationship",
+            thread_identity=thread,
+            received_at=now - timedelta(minutes=2),
+        )
+
+        messages = await _load_realtime_history(pool, thread, now)
+        result = _format_history_context(messages)
+
+        assert "**user42**" in result
+        assert "**butler → relationship**" in result
+        assert "So does da pe pe" in result
+        assert "da pe pe's address too" in result
+    finally:
+        await pool.close()
+
+
+async def test_email_history_includes_outbound_messages(switchboard_dsn):
+    """Outbound butler responses appear in _load_email_history results."""
+    pool = await asyncpg.create_pool(switchboard_dsn)
+    try:
+        now = datetime.now(UTC)
+        thread = f"email:{uuid.uuid4().hex[:8]}"
+
+        await _insert_message(
+            pool,
+            text="Can you remind me about Sarah's birthday?",
+            sender="alice@example.com",
+            thread_identity=thread,
+            received_at=now - timedelta(days=1),
+            channel="email",
+        )
+        await _insert_outbound_message(
+            pool,
+            text="Done! I've set a reminder for Sarah's birthday.",
+            origin_butler="relationship",
+            thread_identity=thread,
+            received_at=now - timedelta(hours=23),
+            channel="email",
+        )
+
+        messages = await _load_email_history(pool, thread, now)
+
+        assert len(messages) == 2
+        assert messages[0]["direction"] == "inbound"
+        assert messages[1]["direction"] == "outbound"
+        assert messages[1]["sender_id"] == "relationship"
+    finally:
+        await pool.close()

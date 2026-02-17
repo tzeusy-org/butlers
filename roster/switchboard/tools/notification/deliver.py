@@ -139,6 +139,71 @@ def _extract_notify_response(route_result: Any) -> dict[str, Any] | None:
     return None
 
 
+async def _write_outbound_message_inbox(
+    pool: asyncpg.Pool,
+    *,
+    notify_request: NotifyRequestV1,
+    delivered_at: datetime,
+) -> None:
+    """Write a delivered outbound message to message_inbox for conversation history.
+
+    Only writes rows when source_thread_identity is available (i.e., reply-intent
+    messages where the thread context is known). Send-intent messages without a
+    thread identity are skipped because they cannot be correlated with inbound history.
+
+    Errors are logged but never propagate — the delivery has already succeeded.
+    """
+    ctx = notify_request.request_context
+    if ctx is None or ctx.source_thread_identity is None:
+        return
+
+    thread_identity = ctx.source_thread_identity
+    channel = notify_request.delivery.channel
+    origin_butler = notify_request.origin_butler
+    message_text = notify_request.delivery.message
+
+    request_context_payload = {
+        "source_channel": channel,
+        "source_endpoint_identity": f"butler:{origin_butler}",
+        "source_sender_identity": origin_butler,
+        "source_thread_identity": thread_identity,
+    }
+    raw_payload = {
+        "content": message_text,
+        "metadata": {"origin_butler": origin_butler},
+    }
+
+    try:
+        await pool.execute(
+            """
+            INSERT INTO message_inbox (
+                received_at,
+                request_context,
+                raw_payload,
+                normalized_text,
+                direction,
+                lifecycle_state,
+                schema_version
+            ) VALUES (
+                $1, $2::jsonb, $3::jsonb, $4, 'outbound', 'completed', 'message_inbox.v2'
+            )
+            """,
+            delivered_at,
+            json.dumps(request_context_payload),
+            json.dumps(raw_payload),
+            message_text,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to write outbound message to message_inbox",
+            extra={
+                "origin_butler": origin_butler,
+                "channel": channel,
+                "thread_identity": thread_identity,
+            },
+        )
+
+
 async def _deliver_via_notify_request(
     pool: asyncpg.Pool,
     *,
@@ -231,6 +296,13 @@ async def _deliver_via_notify_request(
         metadata=log_metadata,
         status="sent",
         trace_id=current_trace_id,
+    )
+
+    # Write outbound row to message_inbox so it appears in conversation history.
+    await _write_outbound_message_inbox(
+        pool,
+        notify_request=notify_request,
+        delivered_at=datetime.now(UTC),
     )
 
     return {

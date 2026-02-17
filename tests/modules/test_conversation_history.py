@@ -484,3 +484,99 @@ class TestPipelineHistoryIntegration:
             mock_build_prompt.call_args[0][2]
             == "## Recent Conversation History\n\nPrevious message\n\n---\n"
         )
+
+
+# ---------------------------------------------------------------------------
+# Direction-aware _format_history_context
+# ---------------------------------------------------------------------------
+
+
+class TestFormatHistoryContextDirection:
+    """Verify direction-aware formatting in _format_history_context."""
+
+    def test_inbound_message_uses_sender_id_prefix(self):
+        """Inbound messages show '**sender_id** (timestamp):' prefix."""
+        messages = [
+            {
+                "sender_id": "user123",
+                "received_at": datetime(2026, 2, 16, 10, 0, 0, tzinfo=UTC),
+                "raw_content": "Hello",
+                "direction": "inbound",
+            }
+        ]
+        result = _format_history_context(messages)
+        assert "**user123** (2026-02-16T10:00:00+00:00):" in result
+        assert "butler →" not in result
+
+    def test_outbound_message_uses_butler_arrow_prefix(self):
+        """Outbound messages show '**butler → {sender_id}** (timestamp):' prefix."""
+        messages = [
+            {
+                "sender_id": "relationship",
+                "received_at": datetime(2026, 2, 16, 10, 0, 5, tzinfo=UTC),
+                "raw_content": "Got it! I've stored the address.",
+                "direction": "outbound",
+            }
+        ]
+        result = _format_history_context(messages)
+        assert "**butler → relationship** (2026-02-16T10:00:05+00:00):" in result
+        assert "Got it! I've stored the address." in result
+        # Should not use bare sender_id prefix for outbound
+        assert "**relationship** (2026-02-16T10:00:05+00:00):" not in result
+
+    def test_mixed_inbound_outbound_messages(self):
+        """Mixed conversation shows correct prefixes for each direction."""
+        messages = [
+            {
+                "sender_id": "user42",
+                "received_at": datetime(2026, 2, 16, 10, 0, 0, tzinfo=UTC),
+                "raw_content": "Dua um lives in 71 nim road 804975",
+                "direction": "inbound",
+            },
+            {
+                "sender_id": "relationship",
+                "received_at": datetime(2026, 2, 16, 10, 0, 5, tzinfo=UTC),
+                "raw_content": "Got it! I've stored Dua um's address as 71 nim road 804975.",
+                "direction": "outbound",
+            },
+        ]
+        result = _format_history_context(messages)
+
+        assert "**user42** (2026-02-16T10:00:00+00:00):" in result
+        assert "**butler → relationship** (2026-02-16T10:00:05+00:00):" in result
+        assert "Dua um lives in 71 nim road 804975" in result
+        assert "Got it! I've stored Dua um's address as 71 nim road 804975." in result
+        # Inbound appears before outbound
+        assert result.index("user42") < result.index("butler → relationship")
+
+    def test_missing_direction_defaults_to_inbound(self):
+        """Messages without direction field default to inbound formatting."""
+        messages = [
+            {
+                "sender_id": "legacy_user",
+                "received_at": datetime(2026, 2, 16, 10, 0, 0, tzinfo=UTC),
+                "raw_content": "Legacy message",
+                # No 'direction' key — backwards compatibility
+            }
+        ]
+        result = _format_history_context(messages)
+        assert "**legacy_user** (2026-02-16T10:00:00+00:00):" in result
+        assert "butler →" not in result
+
+    def test_history_sql_includes_direction_in_realtime_query(self):
+        """_load_realtime_history SQL includes COALESCE(direction, 'inbound') AS direction."""
+        import inspect
+
+        import butlers.modules.pipeline as pipeline_module
+
+        source = inspect.getsource(pipeline_module._load_realtime_history)
+        assert "COALESCE(direction, 'inbound') AS direction" in source
+
+    def test_history_sql_includes_direction_in_email_query(self):
+        """_load_email_history SQL includes COALESCE(direction, 'inbound') AS direction."""
+        import inspect
+
+        import butlers.modules.pipeline as pipeline_module
+
+        source = inspect.getsource(pipeline_module._load_email_history)
+        assert "COALESCE(direction, 'inbound') AS direction" in source
