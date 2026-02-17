@@ -2,11 +2,51 @@
 
 The Dashboard API is a FastAPI application that bridges the React frontend to the butler ecosystem. It provides REST endpoints for butler discovery, live operations (via MCP clients), and data browsing (via direct asyncpg reads). The API runs on port 8200 and serves as the single entry point for all dashboard interactions.
 
-The five butler daemons (Switchboard on 8100, General on 8101, Relationship on 8102, Health on 8103, Heartbeat on 8199) each have a dedicated PostgreSQL database and FastMCP SSE server. The dashboard API maintains connections to all of them.
+All butler daemons are discovered dynamically from the roster configuration directory and each has a dedicated PostgreSQL database and FastMCP SSE server. The dashboard API maintains connections to all discovered butlers.
 
 ---
 
 ## ADDED Requirements
+
+### Requirement: Butler API Router Auto-Discovery
+
+The dashboard API SHALL automatically discover and register butler-specific API routes from the roster configuration directory. Each butler MAY provide a `roster/{butler_name}/api/router.py` file exporting a module-level `router` variable (a FastAPI `APIRouter` instance).
+
+The discovery process SHALL scan all subdirectories of the configured `butlers_dir` for `api/router.py` files and dynamically load them via `src/butlers/api/router_discovery.py`. Butlers without an `api/` directory are silently skipped. Butlers with an `api/router.py` file that fails to load or does not export a valid `router` variable are logged as warnings and skipped, but do not prevent discovery of other butlers.
+
+Each discovered router SHALL be registered with the FastAPI app under its default prefix (typically `/api/butler/{butler_name}` or another convention defined by the butler). Router modules MAY optionally co-locate Pydantic request/response models in `roster/{butler_name}/api/models.py`.
+
+#### Scenario: Auto-discovery finds all valid routers
+- **WHEN** `discover_butler_routers()` is called and three butlers ("switchboard", "general", "relationship") have valid `api/router.py` files
+- **THEN** three router modules SHALL be discovered and loaded
+- **AND** each router's `router` variable SHALL be registered with the FastAPI app
+
+#### Scenario: Butlers without api/ are silently skipped
+- **WHEN** `discover_butler_routers()` is called and one butler ("health") has no `api/` subdirectory
+- **THEN** "health" SHALL be silently skipped
+- **AND** an info log entry SHALL record that "health" has no router
+
+#### Scenario: Invalid router exports are logged and skipped
+- **WHEN** `discover_butler_routers()` is called and one butler's `api/router.py` exports a non-router object or does not export a `router` variable at all
+- **THEN** that butler SHALL be skipped with a warning logged
+- **AND** discovery of other butlers SHALL continue normally
+
+#### Scenario: Router module loading errors are logged and skipped
+- **WHEN** `discover_butler_routers()` is called and one butler's `api/router.py` contains a syntax error or import failure
+- **THEN** that butler SHALL be skipped with a warning logged (including the exception details)
+- **AND** discovery of other butlers SHALL continue normally
+
+#### Scenario: Router modules can colocate models
+- **WHEN** a butler's `roster/{butler_name}/api/` directory contains both `router.py` and `models.py`
+- **THEN** the router module MAY import and use models from `models.py` for request/response schema validation
+- **AND** no `__init__.py` file is required in the `api/` directory
+
+#### Scenario: DB dependencies are auto-wired
+- **WHEN** a butler's router handlers declare FastAPI dependencies like `Depends(get_db_manager)` or `Depends(get_butler_pool("name"))`
+- **THEN** those dependencies SHALL be automatically wired by the app factory via `wire_db_dependencies()` 
+- **AND** the handlers SHALL receive the correct manager or pool instance at request time
+
+---
 
 ### Requirement: FastAPI App Factory
 
@@ -60,8 +100,8 @@ On shutdown, `DatabaseManager.shutdown()` SHALL close all connection pools.
 
 #### Scenario: Fan-out query across all butlers
 - **WHEN** `db_manager.fan_out("SELECT id, prompt, success FROM sessions ORDER BY created_at DESC LIMIT 10")` is called without specifying butler names
-- **THEN** the query SHALL execute concurrently against all five butler databases
-- **AND** the result SHALL be a dict with keys "switchboard", "general", "relationship", "health", "heartbeat" each mapping to their respective result rows
+- **THEN** the query SHALL execute concurrently across all discovered butler databases
+- **AND** the result SHALL be a dict with one key per butler mapping to their respective result rows
 
 #### Scenario: Fan-out query with subset of butlers
 - **WHEN** `db_manager.fan_out(query, butler_names=["health", "relationship"])` is called
@@ -130,9 +170,9 @@ The `discover_butlers(butlers_dir: Path)` function SHALL return a list of `Butle
 
 The discovery result SHALL include all butlers regardless of whether their daemons are currently running. Daemon availability is determined separately via the MCP client manager.
 
-#### Scenario: All five butlers discovered from config directories
-- **WHEN** `discover_butlers()` is called with a `butlers_dir` containing subdirectories "switchboard/", "general/", "relationship/", "health/", and "heartbeat/", each with a valid `butler.toml`
-- **THEN** the function SHALL return five `ButlerConfig` objects with names "switchboard", "general", "relationship", "health", and "heartbeat"
+#### Scenario: All discovered butlers are discovered from config directories
+- **WHEN** `discover_butlers()` is called with a `butlers_dir` containing subdirectories for all configured butlers, each with a valid `butler.toml`
+- **THEN** the function SHALL return `ButlerConfig` objects for all butlers
 - **AND** each config SHALL have the correct port, description, and db_name from its `butler.toml`
 
 #### Scenario: Invalid butler.toml is skipped
@@ -162,6 +202,8 @@ The dashboard API SHALL use FastAPI's dependency injection system to provide `Da
 
 A `get_db_manager()` dependency SHALL return the `DatabaseManager` instance attached to the app state. A `get_mcp_manager()` dependency SHALL return the `MCPClientManager` instance attached to the app state. A `get_butler_pool(butler_name: str)` dependency SHALL return the asyncpg pool for a specific butler, raising an HTTP 404 if the butler name is unknown. A `get_butler_configs()` dependency SHALL return the list of discovered `ButlerConfig` objects.
 
+The dashboard API SHALL provide a `wire_db_dependencies()` function that wires dependency injection for butler router modules. This function registers FastAPI dependencies that can be injected into butler-specific route handlers to provide access to the `DatabaseManager` and individual butler connection pools. The function SHALL be called during app factory initialization to ensure all discovered router modules can access database infrastructure.
+
 #### Scenario: Route handler receives DatabaseManager via dependency
 - **WHEN** a route handler declares a parameter `db: DatabaseManager = Depends(get_db_manager)`
 - **THEN** the handler SHALL receive the singleton `DatabaseManager` instance that was initialized at app startup
@@ -178,6 +220,11 @@ A `get_db_manager()` dependency SHALL return the `DatabaseManager` instance atta
 - **WHEN** a route handler calls `get_butler_pool("nonexistent")`
 - **THEN** an HTTP 404 response SHALL be raised with a message indicating the butler is not found
 
+#### Scenario: Butler router handlers can use wired dependencies
+- **WHEN** a butler's `roster/{butler_name}/api/router.py` contains a route handler that declares `Depends(get_db_manager)` or `Depends(get_butler_pool("butler_name"))`
+- **THEN** the handler SHALL receive the wired dependencies at request time
+- **AND** the handler MAY execute database queries using the provided pool or manager
+
 ---
 
 ### Requirement: Health Endpoint
@@ -192,17 +239,17 @@ The response MUST be JSON with the following structure:
 The endpoint MUST always return HTTP 200 -- even if all butlers are down and all databases are unreachable, the API itself is healthy if it can respond.
 
 #### Scenario: All systems healthy
-- **WHEN** `GET /api/health` is called and all five butler daemons are running and all databases are reachable
+- **WHEN** `GET /api/health` is called and all discovered butler daemons are running and all databases are reachable
 - **THEN** the response SHALL be HTTP 200 with `status: "ok"`
-- **AND** all five entries in `butlers` SHALL be `"up"`
-- **AND** all five entries in `databases` SHALL be `"connected"`
+- **AND** all butler entries in `butlers` SHALL be `"up"`
+- **AND** all butler entries in `databases` SHALL be `"connected"`
 
 #### Scenario: Some butlers down
-- **WHEN** `GET /api/health` is called and the health and heartbeat daemons are not running but their databases are reachable
+- **WHEN** `GET /api/health` is called and some butler daemons are not running but their databases are reachable
 - **THEN** the response SHALL be HTTP 200 with `status: "ok"`
-- **AND** `butlers.health` and `butlers.heartbeat` SHALL be `"down"`
-- **AND** `butlers.switchboard`, `butlers.general`, and `butlers.relationship` SHALL be `"up"`
-- **AND** all five entries in `databases` SHALL be `"connected"`
+- **AND** the down butler names in `butlers` SHALL be `"down"`
+- **AND** the reachable butler names in `butlers` SHALL be `"up"`
+- **AND** all butler entries in `databases` SHALL be `"connected"`
 
 #### Scenario: Health endpoint always returns 200
 - **WHEN** `GET /api/health` is called and all butlers are down and all databases are unreachable
