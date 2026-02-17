@@ -12,8 +12,8 @@ The dashboard API SHALL expose `GET /api/issues` which aggregates active system 
 
 1. **Unreachable butlers** — for each configured butler, attempt an MCP `status()` call. If the call fails or times out (>5s), emit an issue with `severity="critical"`, `type="unreachable"`.
 2. **Failing scheduled tasks** — query `scheduled_tasks` across all butler DBs for tasks where `consecutive_failures >= 3`. Emit an issue with `severity="warning"`, `type="failing_task"` for each.
-3. **Module dependency failures** — from the `status()` response, check per-module health indicators (per D13). If any module reports `error` status, emit an issue with `severity="warning"`, `type="module_error"`.
-4. **Cost anomalies (butler-level)** — for each butler, compute today's aggregate spend and compare to the butler's 7-day daily average (per D14). If today's spend > 2x the 7-day daily average, emit an issue with `severity="warning"`, `type="cost_anomaly"`.
+3. **Module dependency failures** — from the `status()` response, check per-module health indicators. If any module reports `error` status, emit an issue with `severity="warning"`, `type="module_error"`.
+4. **Cost anomalies (butler-level)** — for each butler, compute today's aggregate spend and compare to the butler's 7-day daily average. If today's spend > 2x the 7-day daily average, emit an issue with `severity="warning"`, `type="cost_anomaly"`.
 5. **Failed notification deliveries** — query the `notifications` table in the Switchboard DB for notifications with `status='failed'` in the last 24 hours. Emit an issue with `severity="warning"`, `type="notification_failure"` for each distinct `source_butler + channel` combination.
 
 The response SHALL be a JSON array of issue objects, each containing:
@@ -44,7 +44,7 @@ Issues SHALL be sorted by severity (critical first), then by butler name alphabe
 
 #### Scenario: Butler-level cost anomaly detected
 
-- **WHEN** the `health` butler's aggregate spend today is $4.50 and its 7-day daily average is $1.80 (ratio = 2.5x > 2x threshold per D14)
+- **WHEN** the `health` butler's aggregate spend today is $4.50 and its 7-day daily average is $1.80 (ratio = 2.5x > 2x threshold)
 - **THEN** the API MUST include an issue with `severity="warning"`, `type="cost_anomaly"`, `butler="health"`, and a description like "Health butler daily spend ($4.50) is 2.5x the 7-day average ($1.80)"
 - **AND** `link` MUST point to the costs page (e.g., `/costs`)
 
@@ -70,7 +70,7 @@ The graph MUST include:
 - **Butler nodes** — one node per configured butler, positioned around the Switchboard. Each butler node MUST display:
   - The butler name
   - A status badge (green dot = healthy/reachable, red dot = unreachable, yellow dot = degraded)
-  - Module health dots — small colored dots for each module (green = healthy, yellow = degraded, red = error), sourced from the `status()` MCP response per D13
+  - Module health dots — small colored dots for each module (green = healthy, yellow = degraded, red = error), sourced from the butler's `status()` MCP response
 - **Heartbeat edges** — dashed edges from the Heartbeat butler to all other butlers (except Switchboard), representing the heartbeat tick relationship.
 - **Active session pulse** — when a butler has an active CC session (`completed_at IS NULL`), its node MUST display a pulsing animation or glow effect.
 - **Edge labels** — edges between Switchboard and butlers MAY display the routing channel label (e.g., "telegram", "email") when derived from recent routing activity.
@@ -108,7 +108,7 @@ The stats bar MUST include:
 - **Healthy count** — count of butlers currently reachable (status() call succeeded)
 - **Sessions today** — count of sessions across all butlers with `started_at` on today's date
 - **Failed sessions** — count of sessions across all butlers with `success=false` and `started_at` on today's date
-- **Estimated cost today** — sum of estimated cost for all sessions today, computed from token usage and pricing config per D4
+- **Estimated cost today** — sum of estimated cost for all sessions today, computed from token usage (input + output token counts) and applied pricing configuration
 
 #### Scenario: Stats bar displays current metrics
 
@@ -144,6 +144,39 @@ The issues panel MUST:
 
 - **WHEN** the `GET /api/issues` endpoint returns an empty array
 - **THEN** the issues panel MUST display a positive status message (e.g., "All systems healthy")
+
+---
+
+### Requirement: Failed Notifications panel
+
+The overview page SHALL display a Failed Notifications panel providing a quick view of recent notification delivery failures.
+
+The panel MUST:
+- Query the `notifications` table in the Switchboard DB for notifications with `status='failed'` in the last 24 hours.
+- Group failures by `source_butler` and `channel` combination.
+- Display a count of failed notifications per butler-channel pair (e.g., "2 failed telegram notifications from health").
+- Provide a quick link to the full Notifications page (`/notifications`) for detailed investigation.
+- Display an empty state message when no failures have occurred in the last 24 hours (e.g., "No failed notifications").
+
+#### Scenario: Failed notifications from multiple butlers
+
+- **WHEN** the Switchboard's `notifications` table contains:
+  - 2 failed `email` notifications from `general` butler
+  - 3 failed `telegram` notifications from `relationship` butler
+- **THEN** the Failed Notifications panel MUST display:
+  - "2 failed email notifications from general"
+  - "3 failed telegram notifications from relationship"
+- **AND** the panel MUST include a link to `/notifications`
+
+#### Scenario: No failed notifications
+
+- **WHEN** the Switchboard's `notifications` table contains no failed notifications in the last 24 hours
+- **THEN** the Failed Notifications panel MUST display "No failed notifications in the last 24h"
+
+#### Scenario: Clicking link navigates to notifications page
+
+- **WHEN** the user clicks "View all notifications" in the Failed Notifications panel
+- **THEN** the browser MUST navigate to `/notifications`
 
 ---
 
