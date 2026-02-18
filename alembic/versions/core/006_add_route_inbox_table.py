@@ -1,7 +1,7 @@
 """add route_inbox table for async route dispatch (Section 4.4)
 
-Revision ID: core_005
-Revises: core_004
+Revision ID: core_006
+Revises: core_005
 Create Date: 2026-02-18 00:00:00.000000
 
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_005"
-down_revision = "core_004"
+revision = "core_006"
+down_revision = "core_005"
 branch_labels = None
 depends_on = None
 

@@ -113,4 +113,4 @@ def test_alembic_version_tracking(postgres_container):
         versions = [row[0] for row in result]
     engine.dispose()
 
-    assert "core_005" in versions, f"Expected revision 'core_005' (current head) in {versions}"
+    assert "core_006" in versions, f"Expected revision 'core_006' (current head) in {versions}"
