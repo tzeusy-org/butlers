@@ -398,6 +398,7 @@ class _SpanWrappingMCP:
         module_name: str | None = None,
         declared_tool_names: set[str] | None = None,
         filtered_tool_names: set[str] | None = None,
+        module_runtime_states: dict[str, ModuleRuntimeState] | None = None,
     ) -> None:
         self._mcp = mcp
         self._butler_name = butler_name
@@ -405,6 +406,9 @@ class _SpanWrappingMCP:
         self._declared_tool_names = declared_tool_names or set()
         self._filtered_tool_names = filtered_tool_names or set()
         self._registered_tool_names: set[str] = set()
+        # Shared reference to the daemon's live runtime states dict.
+        # Used for call-time module enabled/disabled gating.
+        self._module_runtime_states: dict[str, ModuleRuntimeState] | None = module_runtime_states
 
     def tool(self, *args, **kwargs):
         """Return a decorator that wraps the handler with tool_span."""
@@ -426,8 +430,23 @@ class _SpanWrappingMCP:
                     )
                 self._registered_tool_names.add(resolved_tool_name)
 
+            module_name_for_gate = self._module_name
+            runtime_states_ref = self._module_runtime_states
+
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                # Check module enabled state at call time to support live toggling.
+                if runtime_states_ref is not None:
+                    state = runtime_states_ref.get(module_name_for_gate)
+                    if state is not None and not state.enabled:
+                        return {
+                            "error": "module_disabled",
+                            "module": module_name_for_gate,
+                            "message": (
+                                f"The {module_name_for_gate} module is disabled. "
+                                "Enable it from the dashboard."
+                            ),
+                        }
                 with tool_span(resolved_tool_name, butler_name=self._butler_name):
                     return await fn(*args, **kwargs)
 
@@ -481,6 +500,8 @@ class ButlerDaemon:
         self._module_runtime_states: dict[str, ModuleRuntimeState] = {}
         self._module_configs: dict[str, Any] = {}
         self._gated_tool_originals: dict[str, Any] = {}
+        # Maps registered tool name → module name for gating and introspection.
+        self._tool_module_map: dict[str, str] = {}
         self._started_at: float | None = None
         self._accepting_connections = False
         self._server: uvicorn.Server | None = None
@@ -2392,9 +2413,13 @@ class ButlerDaemon:
                     module_name=mod.name,
                     declared_tool_names=declared_tool_names,
                     filtered_tool_names=filtered_egress,
+                    module_runtime_states=self._module_runtime_states,
                 )
                 validated_config = self._module_configs.get(mod.name)
                 await mod.register_tools(wrapped_mcp, validated_config, self.db)
+                # Record tool → module mapping for introspection and gating.
+                for tool_name in wrapped_mcp._registered_tool_names:
+                    self._tool_module_map[tool_name] = mod.name
                 missing_declared = wrapped_mcp.missing_declared_tool_names()
                 if missing_declared:
                     missing = ", ".join(sorted(missing_declared))
