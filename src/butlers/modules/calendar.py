@@ -350,22 +350,63 @@ def _coerce_zoneinfo(timezone: str) -> ZoneInfo | tzinfo:
         return UTC
 
 
-def _extract_google_attendees(payload: Any) -> list[str]:
+def _extract_google_attendees(payload: Any) -> list[AttendeeInfo]:
+    """Parse a Google Calendar attendees array into structured AttendeeInfo objects."""
     if not isinstance(payload, list):
         return []
 
-    attendees: list[str] = []
+    attendees: list[AttendeeInfo] = []
     for entry in payload:
         if isinstance(entry, dict):
             email = entry.get("email")
-            if isinstance(email, str):
-                normalized = email.strip()
-                if normalized:
-                    attendees.append(normalized)
+            if not isinstance(email, str):
+                continue
+            normalized_email = email.strip()
+            if not normalized_email:
+                continue
+
+            display_name_raw = entry.get("displayName")
+            display_name = None
+            if isinstance(display_name_raw, str) and (stripped := display_name_raw.strip()):
+                display_name = stripped
+
+            response_status_raw = entry.get("responseStatus")
+            response_status = AttendeeResponseStatus.needs_action
+            if isinstance(response_status_raw, str):
+                try:
+                    response_status = AttendeeResponseStatus(response_status_raw.strip())
+                except ValueError:
+                    pass
+
+            optional_raw = entry.get("optional")
+            optional = optional_raw is True
+
+            organizer_raw = entry.get("organizer")
+            organizer = organizer_raw is True
+
+            self_raw = entry.get("self")
+            self_ = self_raw is True
+
+            comment_raw = entry.get("comment")
+            comment = None
+            if isinstance(comment_raw, str) and (stripped := comment_raw.strip()):
+                comment = stripped
+
+            attendees.append(
+                AttendeeInfo(
+                    email=normalized_email,
+                    display_name=display_name,
+                    response_status=response_status,
+                    optional=optional,
+                    organizer=organizer,
+                    self_=self_,
+                    comment=comment,
+                )
+            )
         elif isinstance(entry, str):
-            normalized = entry.strip()
-            if normalized:
-                attendees.append(normalized)
+            normalized_email = entry.strip()
+            if normalized_email:
+                attendees.append(AttendeeInfo(email=normalized_email))
     return attendees
 
 
@@ -554,6 +595,23 @@ def _google_event_to_calendar_event(
         created_at=created_at,
         updated_at=updated_at,
     )
+
+
+def _attendee_info_list_to_google(attendees: list[AttendeeInfo]) -> list[dict[str, Any]]:
+    """Convert a list of AttendeeInfo objects to Google Calendar API attendee dicts.
+
+    Only writable fields are included: email, displayName, optional.
+    Response status is read-only from the butler's perspective.
+    """
+    result: list[dict[str, Any]] = []
+    for attendee in attendees:
+        entry: dict[str, Any] = {"email": attendee.email}
+        if attendee.display_name is not None:
+            entry["displayName"] = attendee.display_name
+        if attendee.optional:
+            entry["optional"] = True
+        result.append(entry)
+    return result
 
 
 def _build_google_event_body(payload: CalendarEventCreate) -> dict[str, Any]:
@@ -1127,6 +1185,37 @@ class EventVisibility(StrEnum):
     confidential = "confidential"
 
 
+class AttendeeResponseStatus(StrEnum):
+    """RSVP response status for a calendar event attendee (spec section 5.5)."""
+
+    needs_action = "needsAction"
+    accepted = "accepted"
+    declined = "declined"
+    tentative = "tentative"
+
+
+class SendUpdatesPolicy(StrEnum):
+    """Controls whether attendees receive notifications for event changes (spec section 5.7)."""
+
+    all = "all"
+    external_only = "externalOnly"
+    none = "none"
+
+
+class AttendeeInfo(BaseModel):
+    """Structured attendee representation with RSVP tracking (spec section 5.4)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    email: str
+    display_name: str | None = None
+    response_status: AttendeeResponseStatus = AttendeeResponseStatus.needs_action
+    optional: bool = False
+    organizer: bool = False
+    self_: bool = Field(default=False, alias="self")
+    comment: str | None = None
+
+
 class CalendarEvent(BaseModel):
     """Canonical event shape shared across provider implementations."""
 
@@ -1137,7 +1226,7 @@ class CalendarEvent(BaseModel):
     timezone: str
     description: str | None = None
     location: str | None = None
-    attendees: list[str] = Field(default_factory=list)
+    attendees: list[AttendeeInfo] = Field(default_factory=list)
     recurrence_rule: str | None = None
     color_id: str | None = None
     butler_generated: bool = False
@@ -1319,6 +1408,31 @@ class CalendarProvider(abc.ABC):
         - ``"all"`` — notify all attendees (sends cancellation emails).
         - ``"externalOnly"`` — notify only non-organizer-domain attendees.
         """
+        ...
+
+    @abc.abstractmethod
+    async def add_attendees(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        attendees: list[str],
+        optional: bool = False,
+        send_updates: str = "none",
+    ) -> CalendarEvent:
+        """Add attendees to an existing event, deduplicating by email."""
+        ...
+
+    @abc.abstractmethod
+    async def remove_attendees(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        attendees: list[str],
+        send_updates: str = "none",
+    ) -> CalendarEvent:
+        """Remove attendees from an existing event by email."""
         ...
 
     @abc.abstractmethod
@@ -1705,6 +1819,120 @@ class _GoogleProvider(CalendarProvider):
                 status_code=response.status_code,
                 message=_safe_google_error_message(response),
             )
+
+    async def add_attendees(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        attendees: list[str],
+        optional: bool = False,
+        send_updates: str = "none",
+    ) -> CalendarEvent:
+        """Add attendees to an event, deduplicating by email (case-insensitive).
+
+        Fetches the current event, merges the new attendees with existing ones
+        (preserving all existing attendee fields), then PATCHes the event.
+        """
+        normalized_event_id = event_id.strip()
+        if not normalized_event_id:
+            raise ValueError("event_id must be a non-empty string")
+
+        emails_to_add = [e.strip() for e in attendees if e.strip()]
+        if not emails_to_add:
+            raise ValueError("attendees must contain at least one non-empty email address")
+
+        existing = await self.get_event(calendar_id=calendar_id, event_id=normalized_event_id)
+        if existing is None:
+            raise CalendarRequestError(
+                status_code=404,
+                message=f"Event '{normalized_event_id}' not found",
+            )
+
+        # Deduplicate by email (case-insensitive), preserving existing attendees.
+        existing_emails_lower = {a.email.lower() for a in existing.attendees}
+        merged_attendees = list(existing.attendees)
+        for email in emails_to_add:
+            if email.lower() not in existing_emails_lower:
+                merged_attendees.append(
+                    AttendeeInfo(
+                        email=email,
+                        optional=optional,
+                    )
+                )
+                existing_emails_lower.add(email.lower())
+
+        google_attendees = _attendee_info_list_to_google(merged_attendees)
+        normalized_calendar_id = quote(calendar_id, safe="")
+        encoded_event_id = quote(normalized_event_id, safe="")
+        response_payload = await self._request_google_json(
+            "PATCH",
+            f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
+            params={"sendUpdates": send_updates},
+            json_body={"attendees": google_attendees},
+        )
+        event = _google_event_to_calendar_event(
+            response_payload,
+            fallback_timezone=self._config.timezone,
+        )
+        if event is None:
+            raise CalendarRequestError(
+                status_code=200,
+                message="Google Calendar returned a cancelled event after add_attendees",
+            )
+        return event
+
+    async def remove_attendees(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        attendees: list[str],
+        send_updates: str = "none",
+    ) -> CalendarEvent:
+        """Remove attendees from an event by email (case-insensitive).
+
+        Fetches the current event, filters out the specified email addresses,
+        then PATCHes the event.
+        """
+        normalized_event_id = event_id.strip()
+        if not normalized_event_id:
+            raise ValueError("event_id must be a non-empty string")
+
+        emails_to_remove_lower = {e.strip().lower() for e in attendees if e.strip()}
+        if not emails_to_remove_lower:
+            raise ValueError("attendees must contain at least one non-empty email address")
+
+        existing = await self.get_event(calendar_id=calendar_id, event_id=normalized_event_id)
+        if existing is None:
+            raise CalendarRequestError(
+                status_code=404,
+                message=f"Event '{normalized_event_id}' not found",
+            )
+
+        remaining_attendees = [
+            a for a in existing.attendees if a.email.lower() not in emails_to_remove_lower
+        ]
+
+        google_attendees = _attendee_info_list_to_google(remaining_attendees)
+        normalized_calendar_id = quote(calendar_id, safe="")
+        encoded_event_id = quote(normalized_event_id, safe="")
+        response_payload = await self._request_google_json(
+            "PATCH",
+            f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
+            params={"sendUpdates": send_updates},
+            json_body={"attendees": google_attendees},
+        )
+        event = _google_event_to_calendar_event(
+            response_payload,
+            fallback_timezone=self._config.timezone,
+        )
+        if event is None:
+            raise CalendarRequestError(
+                status_code=200,
+                message="Google Calendar returned a cancelled event after remove_attendees",
+            )
+        return event
 
     async def find_conflicts(
         self,
@@ -2170,7 +2398,9 @@ class CalendarModule(Module):
                         ),
                         location=location if location is not None else existing_event.location,
                         attendees=(
-                            attendees if attendees is not None else list(existing_event.attendees)
+                            attendees
+                            if attendees is not None
+                            else [a.email for a in existing_event.attendees]
                         ),
                         recurrence_rule=(
                             recurrence_rule
@@ -2333,6 +2563,113 @@ class CalendarModule(Module):
                 "provider": provider.name,
                 "calendar_id": resolved_calendar_id,
                 "event_id": normalized_event_id,
+            }
+
+        @mcp.tool()
+        async def calendar_add_attendees(
+            event_id: str,
+            attendees: list[str],
+            optional: bool = False,
+            calendar_id: str | None = None,
+            send_updates: SendUpdatesPolicy = SendUpdatesPolicy.none,
+        ) -> dict[str, Any]:
+            """Add attendees to an existing calendar event.
+
+            Attendees are added by email address with deduplication (existing
+            attendees are preserved). The optional flag applies to all newly
+            added attendees. The send_updates policy controls whether Google
+            sends notification emails to attendees.
+
+            Fail-closed: provider errors return a structured error dict.
+            """
+            normalized_event_id = event_id.strip()
+            if not normalized_event_id:
+                raise ValueError("event_id must be a non-empty string")
+
+            normalized_attendees = [e.strip() for e in attendees if e.strip()]
+            if not normalized_attendees:
+                raise ValueError("attendees must contain at least one non-empty email address")
+
+            provider = module._require_provider()
+            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            try:
+                event = await provider.add_attendees(
+                    calendar_id=resolved_calendar_id,
+                    event_id=normalized_event_id,
+                    attendees=normalized_attendees,
+                    optional=optional,
+                    send_updates=send_updates.value,
+                )
+            except CalendarAuthError as exc:
+                logger.error(
+                    "calendar_add_attendees failed (event_id=%s, calendar_id=%s): %s",
+                    normalized_event_id,
+                    resolved_calendar_id,
+                    exc,
+                    exc_info=True,
+                )
+                return _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id=resolved_calendar_id,
+                )
+            return {
+                "status": "updated",
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "event": module._event_to_payload(event),
+            }
+
+        @mcp.tool()
+        async def calendar_remove_attendees(
+            event_id: str,
+            attendees: list[str],
+            calendar_id: str | None = None,
+            send_updates: SendUpdatesPolicy = SendUpdatesPolicy.none,
+        ) -> dict[str, Any]:
+            """Remove attendees from an existing calendar event by email address.
+
+            Attendees whose email addresses match (case-insensitive) are removed.
+            The send_updates policy controls whether Google sends cancellation
+            notifications to removed attendees.
+
+            Fail-closed: provider errors return a structured error dict.
+            """
+            normalized_event_id = event_id.strip()
+            if not normalized_event_id:
+                raise ValueError("event_id must be a non-empty string")
+
+            normalized_attendees = [e.strip() for e in attendees if e.strip()]
+            if not normalized_attendees:
+                raise ValueError("attendees must contain at least one non-empty email address")
+
+            provider = module._require_provider()
+            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            try:
+                event = await provider.remove_attendees(
+                    calendar_id=resolved_calendar_id,
+                    event_id=normalized_event_id,
+                    attendees=normalized_attendees,
+                    send_updates=send_updates.value,
+                )
+            except CalendarAuthError as exc:
+                logger.error(
+                    "calendar_remove_attendees failed (event_id=%s, calendar_id=%s): %s",
+                    normalized_event_id,
+                    resolved_calendar_id,
+                    exc,
+                    exc_info=True,
+                )
+                return _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id=resolved_calendar_id,
+                )
+            return {
+                "status": "updated",
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "event": module._event_to_payload(event),
             }
 
     async def on_startup(self, config: Any, db: Any) -> None:
@@ -2577,6 +2914,19 @@ class CalendarModule(Module):
         return suggestions
 
     @staticmethod
+    def _attendee_to_payload(attendee: AttendeeInfo) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "email": attendee.email,
+            "display_name": attendee.display_name,
+            "response_status": attendee.response_status.value,
+            "optional": attendee.optional,
+            "organizer": attendee.organizer,
+            "self": attendee.self_,
+            "comment": attendee.comment,
+        }
+        return payload
+
+    @staticmethod
     def _event_to_payload(event: CalendarEvent) -> dict[str, Any]:
         return {
             "event_id": event.event_id,
@@ -2586,7 +2936,7 @@ class CalendarModule(Module):
             "timezone": event.timezone,
             "description": event.description,
             "location": event.location,
-            "attendees": list(event.attendees),
+            "attendees": [CalendarModule._attendee_to_payload(a) for a in event.attendees],
             "recurrence_rule": event.recurrence_rule,
             "color_id": event.color_id,
             "butler_generated": event.butler_generated,

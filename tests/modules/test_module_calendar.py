@@ -18,6 +18,7 @@ from butlers.modules.calendar import (
     GOOGLE_CALENDAR_API_BASE_URL,
     GOOGLE_CALENDAR_CREDENTIALS_ENV,
     GOOGLE_OAUTH_TOKEN_URL,
+    AttendeeInfo,
     CalendarConfig,
     CalendarCredentialError,
     CalendarEvent,
@@ -280,6 +281,27 @@ class _ProviderDouble(CalendarProvider):
     async def delete_event(self, *, calendar_id: str, event_id: str) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    async def add_attendees(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        attendees: list[str],
+        optional: bool = False,
+        send_updates: str = "none",
+    ) -> CalendarEvent:  # pragma: no cover
+        raise NotImplementedError
+
+    async def remove_attendees(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        attendees: list[str],
+        send_updates: str = "none",
+    ) -> CalendarEvent:  # pragma: no cover
+        raise NotImplementedError
+
     async def find_conflicts(self, *, calendar_id: str, candidate):
         self.find_conflict_calls.append({"calendar_id": calendar_id, "candidate": candidate})
         return list(self._conflicts)
@@ -300,7 +322,7 @@ class TestCalendarReadTools:
             timezone="UTC",
             description="Bring insurance card",
             location="Main Street Clinic",
-            attendees=["alex@example.com"],
+            attendees=[AttendeeInfo(email="alex@example.com")],
             recurrence_rule="RRULE:FREQ=WEEKLY",
             color_id="7",
         )
@@ -322,6 +344,15 @@ class TestCalendarReadTools:
             {"calendar_id": "primary", "start_at": None, "end_at": None, "limit": 50}
         ]
         assert provider.get_calls == [{"calendar_id": "primary", "event_id": "evt-123"}]
+        expected_attendee = {
+            "email": "alex@example.com",
+            "display_name": None,
+            "response_status": "needsAction",
+            "optional": False,
+            "organizer": False,
+            "self": False,
+            "comment": None,
+        }
         assert list_result == {
             "provider": "double",
             "calendar_id": "primary",
@@ -334,7 +365,7 @@ class TestCalendarReadTools:
                     "timezone": "UTC",
                     "description": "Bring insurance card",
                     "location": "Main Street Clinic",
-                    "attendees": ["alex@example.com"],
+                    "attendees": [expected_attendee],
                     "recurrence_rule": "RRULE:FREQ=WEEKLY",
                     "color_id": "7",
                     "butler_generated": False,
@@ -359,7 +390,7 @@ class TestCalendarReadTools:
                 "timezone": "UTC",
                 "description": "Bring insurance card",
                 "location": "Main Street Clinic",
-                "attendees": ["alex@example.com"],
+                "attendees": [expected_attendee],
                 "recurrence_rule": "RRULE:FREQ=WEEKLY",
                 "color_id": "7",
                 "butler_generated": False,
@@ -1317,7 +1348,8 @@ class TestGoogleReadOperations:
         events = await provider.list_events(calendar_id="primary", limit=25)
 
         assert [event.event_id for event in events] == ["evt-1", "evt-2"]
-        assert events[0].attendees == ["alice@example.com"]
+        assert len(events[0].attendees) == 1
+        assert events[0].attendees[0].email == "alice@example.com"
         assert events[0].recurrence_rule == "RRULE:FREQ=DAILY"
         assert events[0].color_id == "5"
         assert events[0].butler_generated is True

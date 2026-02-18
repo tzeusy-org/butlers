@@ -222,6 +222,27 @@ class _ErroringProvider(CalendarProvider):
     async def delete_event(self, *, calendar_id: str, event_id: str) -> None:
         raise NotImplementedError
 
+    async def add_attendees(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        attendees: list[str],
+        optional: bool = False,
+        send_updates: str = "none",
+    ) -> CalendarEvent:
+        raise NotImplementedError
+
+    async def remove_attendees(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        attendees: list[str],
+        send_updates: str = "none",
+    ) -> CalendarEvent:
+        raise NotImplementedError
+
     async def find_conflicts(self, *, calendar_id: str, candidate: Any) -> list[CalendarEvent]:
         if self._conflict_error is not None:
             raise self._conflict_error
