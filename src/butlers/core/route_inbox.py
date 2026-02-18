@@ -144,10 +144,14 @@ async def route_inbox_scan_unprocessed(
     grace_s: int = _DEFAULT_RECOVERY_GRACE_S,
     batch_size: int = _DEFAULT_RECOVERY_BATCH,
 ) -> list[dict[str, Any]]:
-    """Scan for route_inbox rows stuck in 'accepted' state.
+    """Scan for route_inbox rows stuck in 'accepted' or 'processing' state.
 
-    Returns rows older than *grace_s* seconds that have not been picked up
-    by the hot-path background task.  Used for crash recovery on startup.
+    Returns rows older than *grace_s* seconds that have not completed
+    processing.  Used for crash recovery on startup.
+
+    Both 'accepted' and 'processing' rows are included because a daemon crash
+    or graceful shutdown (which cancels in-flight background tasks) can leave
+    rows in 'processing' state with no task to complete them.
 
     Parameters
     ----------
@@ -168,12 +172,12 @@ async def route_inbox_scan_unprocessed(
             """
             SELECT id, received_at, route_envelope
             FROM route_inbox
-            WHERE lifecycle_state = $1
+            WHERE lifecycle_state = ANY($1)
               AND received_at < now() - ($2 * interval '1 second')
             ORDER BY received_at ASC
             LIMIT $3
             """,
-            STATE_ACCEPTED,
+            [STATE_ACCEPTED, STATE_PROCESSING],
             grace_s,
             batch_size,
         )

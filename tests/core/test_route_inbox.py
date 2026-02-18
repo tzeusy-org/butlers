@@ -248,15 +248,18 @@ class TestRouteInboxScanUnprocessed:
         assert 42 in call_args.args
         assert 7 in call_args.args
 
-    async def test_scan_filters_by_accepted_state(self) -> None:
-        """Scanner SQL filters by lifecycle_state = 'accepted'."""
+    async def test_scan_filters_by_accepted_and_processing_state(self) -> None:
+        """Scanner SQL filters by lifecycle_state IN ('accepted', 'processing')."""
         pool, conn = _make_pool()
         conn.fetch = AsyncMock(return_value=[])
 
         await route_inbox_scan_unprocessed(pool)
 
         call_args = conn.fetch.call_args
-        assert STATE_ACCEPTED in call_args.args
+        # First arg is the list of states to recover
+        states_arg = call_args.args[1]
+        assert STATE_ACCEPTED in states_arg
+        assert STATE_PROCESSING in states_arg
 
 
 # ---------------------------------------------------------------------------
