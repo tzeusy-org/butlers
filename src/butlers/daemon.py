@@ -1902,6 +1902,11 @@ class ButlerDaemon:
                             "butler": butler,
                             "error": str(result["error"]),
                         }
+                    # Pass through 'accepted' status from the target butler so that
+                    # telemetry can distinguish async-accepted routes from sync-ok routes.
+                    inner = result.get("result") if isinstance(result, dict) else None
+                    if isinstance(inner, dict) and inner.get("status") == "accepted":
+                        return {"status": "accepted", "butler": butler}
                     return {"status": "ok", "butler": butler}
                 except Exception as exc:
                     logger.warning(

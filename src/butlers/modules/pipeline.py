@@ -443,7 +443,7 @@ def _extract_routed_butlers(
     -------
     tuple
         (routed, acked, failed) — all butler names that were targeted,
-        those that succeeded, and those that failed.
+        those that succeeded (status 'ok' or 'accepted'), and those that failed.
     """
     routed: list[str] = []
     acked: list[str] = []
@@ -463,14 +463,14 @@ def _extract_routed_butlers(
 
         result = call.get("result")
         if isinstance(result, dict):
-            if result.get("status") == "ok":
+            if result.get("status") in ("ok", "accepted"):
                 acked.append(butler)
             else:
                 failed.append(butler)
         elif isinstance(result, str):
             try:
                 parsed = json.loads(result)
-                if isinstance(parsed, dict) and parsed.get("status") == "ok":
+                if isinstance(parsed, dict) and parsed.get("status") in ("ok", "accepted"):
                     acked.append(butler)
                 else:
                     failed.append(butler)

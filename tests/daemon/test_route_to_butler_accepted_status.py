@@ -1,0 +1,257 @@
+"""Tests for route_to_butler 'accepted' status passthrough.
+
+Verifies that when a target butler's route.execute returns {status: 'accepted'},
+the switchboard's route_to_butler tool passes through {status: 'accepted', butler: ...}
+instead of the generic {status: 'ok', butler: ...}.
+
+This ensures telemetry can distinguish async-accepted routes from sync-ok routes.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from butlers.daemon import ButlerDaemon
+
+pytestmark = pytest.mark.unit
+
+
+# ---------------------------------------------------------------------------
+# Helpers (mirrored from test_route_execute_authz.py)
+# ---------------------------------------------------------------------------
+
+
+def _toml_value(v: Any) -> str:
+    if isinstance(v, str):
+        return f'"{v}"'
+    if isinstance(v, list):
+        items = ", ".join(f'"{i}"' if isinstance(i, str) else str(i) for i in v)
+        return f"[{items}]"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
+def _make_switchboard_dir(tmp_path: Path) -> Path:
+    """Create a minimal switchboard butler directory."""
+    toml_lines = [
+        "[butler]",
+        'name = "switchboard"',
+        "port = 9100",
+        'description = "Routes messages"',
+        "",
+        "[butler.db]",
+        'name = "butler_switchboard"',
+        "",
+        "[[butler.schedule]]",
+        'name = "daily-check"',
+        'cron = "0 9 * * *"',
+        'prompt = "Do the daily check"',
+    ]
+    (tmp_path / "butler.toml").write_text("\n".join(toml_lines))
+    return tmp_path
+
+
+def _patch_infra():
+    """Return a dict of patches for all infrastructure dependencies."""
+    mock_pool = AsyncMock()
+
+    mock_db = MagicMock()
+    mock_db.provision = AsyncMock()
+    mock_db.connect = AsyncMock(return_value=mock_pool)
+    mock_db.close = AsyncMock()
+    mock_db.pool = mock_pool
+    mock_db.user = "postgres"
+    mock_db.password = "postgres"
+    mock_db.host = "localhost"
+    mock_db.port = 5432
+    mock_db.db_name = "butler_switchboard"
+
+    mock_spawner = MagicMock()
+    mock_spawner.stop_accepting = MagicMock()
+    mock_spawner.drain = AsyncMock()
+
+    mock_adapter = MagicMock()
+    mock_adapter.binary_name = "claude"
+    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+
+    return {
+        "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
+        "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
+        "validate_credentials": patch("butlers.daemon.validate_credentials"),
+        "validate_module_credentials": patch(
+            "butlers.daemon.validate_module_credentials", return_value={}
+        ),
+        "init_telemetry": patch("butlers.daemon.init_telemetry"),
+        "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
+        "FastMCP": patch("butlers.daemon.FastMCP"),
+        "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
+        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
+        "connect_switchboard": patch.object(
+            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
+        ),
+        "get_adapter": patch("butlers.daemon.get_adapter", return_value=mock_adapter_cls),
+        "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
+        "mock_db": mock_db,
+        "mock_pool": mock_pool,
+        "mock_spawner": mock_spawner,
+    }
+
+
+async def _start_switchboard_and_capture_route_to_butler(
+    butler_dir: Path,
+    patches: dict,
+    mock_route: AsyncMock | None = None,
+) -> tuple[ButlerDaemon, Any]:
+    """Boot a switchboard daemon and capture the route_to_butler handler.
+
+    Parameters
+    ----------
+    butler_dir:
+        Path to the butler config directory.
+    patches:
+        Infrastructure patches from _patch_infra().
+    mock_route:
+        Optional AsyncMock to replace the underlying ``route`` function.
+        This must be applied during daemon.start() so that the from-import
+        inside _register_tools picks up the mock.
+    """
+    route_to_butler_fn = None
+    mock_mcp = MagicMock()
+
+    def tool_decorator(*_decorator_args, **decorator_kwargs):
+        declared_name = decorator_kwargs.get("name")
+
+        def decorator(fn):
+            nonlocal route_to_butler_fn
+            resolved_name = declared_name or fn.__name__
+            if resolved_name == "route_to_butler":
+                route_to_butler_fn = fn
+            return fn
+
+        return decorator
+
+    mock_mcp.tool = tool_decorator
+
+    route_patch = (
+        patch("butlers.tools.switchboard.routing.route.route", new=mock_route)
+        if mock_route is not None
+        else patch("butlers.tools.switchboard.routing.route.route")
+    )
+
+    with (
+        patches["db_from_env"],
+        patches["run_migrations"],
+        patches["validate_credentials"],
+        patches["validate_module_credentials"],
+        patches["init_telemetry"],
+        patches["sync_schedules"],
+        patch("butlers.daemon.FastMCP", return_value=mock_mcp),
+        patches["Spawner"],
+        patches["get_adapter"],
+        patches["shutil_which"],
+        patches["start_mcp_server"],
+        patches["connect_switchboard"],
+        route_patch,
+    ):
+        daemon = ButlerDaemon(butler_dir)
+        await daemon.start()
+
+    return daemon, route_to_butler_fn
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+class TestRouteToButlerAcceptedStatusPassthrough:
+    """Verify that route_to_butler passes through 'accepted' from the target butler.
+
+    Implementation note: The ``_switchboard_route`` local in daemon.py is bound
+    via ``from ... import route`` inside ``_register_tools``. We supply the mock
+    DURING ``daemon.start()`` so the closure captures the mock. After start()
+    returns, the closure retains its reference to the mock regardless of the
+    patch context.
+    """
+
+    async def test_ok_status_returned_for_sync_success(self, tmp_path: Path) -> None:
+        """When target butler returns a non-accepted result, status is 'ok'."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        mock_route = AsyncMock(return_value={"result": {"status": "ok", "message": "processed"}})
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None, "route_to_butler not registered on switchboard"
+
+        result = await route_to_butler_fn(butler="health", prompt="track my meds")
+
+        assert result["status"] == "ok"
+        assert result["butler"] == "health"
+
+    async def test_accepted_status_passed_through(self, tmp_path: Path) -> None:
+        """When target butler returns {status: 'accepted'}, route_to_butler returns 'accepted'."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None, "route_to_butler not registered on switchboard"
+
+        result = await route_to_butler_fn(butler="health", prompt="track my meds")
+
+        assert result["status"] == "accepted"
+        assert result["butler"] == "health"
+
+    async def test_accepted_status_not_mapped_to_ok(self, tmp_path: Path) -> None:
+        """'accepted' must NOT be downgraded to 'ok' — they are distinct statuses."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        result = await route_to_butler_fn(butler="relationship", prompt="call Mom")
+
+        assert result["status"] != "ok"
+        assert result["status"] == "accepted"
+
+    async def test_error_result_still_returns_error_status(self, tmp_path: Path) -> None:
+        """Error responses from target butler are still mapped to 'error' status."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        mock_route = AsyncMock(return_value={"error": "Butler 'health' not found in registry"})
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        result = await route_to_butler_fn(butler="health", prompt="track my meds")
+
+        assert result["status"] == "error"
+        assert result["butler"] == "health"
+        assert "not found" in result["error"]
+
+    async def test_non_accepted_inner_status_returns_ok(self, tmp_path: Path) -> None:
+        """Inner result without a status key is treated as generic success ('ok')."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        # Inner result without a status key — should still be treated as ok
+        mock_route = AsyncMock(return_value={"result": {"message_id": "abc123"}})
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        result = await route_to_butler_fn(butler="general", prompt="hello")
+
+        assert result["status"] == "ok"
+        assert result["butler"] == "general"
