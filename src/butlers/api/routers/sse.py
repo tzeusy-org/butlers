@@ -74,8 +74,8 @@ async def sse_events(request: Request) -> StreamingResponse:
     Event types:
     - connected: Initial connection confirmation
     - butler_status: Butler status change (online/offline/error)
-    - session_start: A new CC session has started
-    - session_end: A CC session has completed
+    - session_start: A new runtime session has started
+    - session_end: A runtime session has completed
     - heartbeat: Periodic keepalive (comment, not a named event)
     """
     return StreamingResponse(

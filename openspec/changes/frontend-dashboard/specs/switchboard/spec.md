@@ -31,7 +31,7 @@ The Switchboard SHALL expose an MCP tool named `deliver` with the signature `del
 
 #### Scenario: Deliver captures source butler context
 
-- **WHEN** `deliver()` is called during a CC session spawned on behalf of the `health` butler (via `route()` or `notify()`)
+- **WHEN** `deliver()` is called during a runtime session spawned on behalf of the `health` butler (via `route()` or `notify()`)
 - **THEN** the `notifications` row's `source_butler` field MUST be set to `'health'`
 - **AND** the `session_id` field MUST be set to the current session's UUID if available
 - **AND** the `trace_id` field MUST be set to the current OpenTelemetry trace ID if available

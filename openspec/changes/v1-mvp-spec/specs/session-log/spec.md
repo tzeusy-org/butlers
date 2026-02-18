@@ -32,46 +32,46 @@ THEN the `sessions` table MUST exist with columns `id` (UUID PRIMARY KEY DEFAULT
 
 ---
 
-### Requirement: Session creation on CC spawn
+### Requirement: Session creation on runtime spawn
 
-A new session row SHALL be inserted into the `sessions` table when a CC instance is spawned, capturing the trigger source, prompt, and start time.
+A new session row SHALL be inserted into the `sessions` table when a runtime instance is spawned, capturing the trigger source, prompt, and start time.
 
-#### Scenario: CC instance is spawned by the scheduler
+#### Scenario: runtime instance is spawned by the scheduler
 
-WHEN the CC spawner creates a new CC instance triggered by a scheduled task named "daily-review"
+WHEN the LLM CLI spawner creates a new runtime instance triggered by a scheduled task named "daily-review"
 THEN a new row MUST be inserted into the `sessions` table with `trigger_source` set to `'schedule:daily-review'`, `prompt` set to the prompt given to CC, and `started_at` set to the current timestamp
 AND `result`, `success`, `error`, `duration_ms`, and `completed_at` MUST be NULL
 AND `tool_calls` MUST be `'[]'`
 
-#### Scenario: CC instance is spawned by the tick handler
+#### Scenario: runtime instance is spawned by the tick handler
 
-WHEN the CC spawner creates a new CC instance triggered by the tick handler
+WHEN the LLM CLI spawner creates a new runtime instance triggered by the tick handler
 THEN a new row MUST be inserted into the `sessions` table with `trigger_source` set to `'tick'`
 
-#### Scenario: CC instance is spawned by an external MCP call
+#### Scenario: runtime instance is spawned by an external MCP call
 
-WHEN the CC spawner creates a new CC instance triggered by an external MCP call
+WHEN the LLM CLI spawner creates a new runtime instance triggered by an external MCP call
 THEN a new row MUST be inserted into the `sessions` table with `trigger_source` set to `'external'`
 
-#### Scenario: CC instance is spawned by a direct trigger invocation
+#### Scenario: runtime instance is spawned by a direct trigger invocation
 
-WHEN the CC spawner creates a new CC instance triggered by a direct `trigger()` tool call
+WHEN the LLM CLI spawner creates a new runtime instance triggered by a direct `trigger()` tool call
 THEN a new row MUST be inserted into the `sessions` table with `trigger_source` set to `'trigger'`
 
 ---
 
 ### Requirement: Session update on CC completion
 
-The session row SHALL be updated when the CC instance completes, recording the result, tool calls, success status, duration, and completion time.
+The session row SHALL be updated when the runtime instance completes, recording the result, tool calls, success status, duration, and completion time.
 
 #### Scenario: CC completes successfully
 
-WHEN a CC instance finishes execution without error
+WHEN a runtime instance finishes execution without error
 THEN the corresponding session row MUST be updated with `result` set to CC's output, `tool_calls` set to the JSONB array of tool call records, `success` set to `true`, `completed_at` set to the current timestamp, and `duration_ms` set to the difference between `completed_at` and `started_at` in milliseconds
 
 #### Scenario: CC fails with an error
 
-WHEN a CC instance fails or raises an error during execution
+WHEN a runtime instance fails or raises an error during execution
 THEN the corresponding session row MUST be updated with `success` set to `false`, `error` set to the error message, `completed_at` set to the current timestamp, and `duration_ms` set to the difference between `completed_at` and `started_at` in milliseconds
 
 ---
@@ -82,28 +82,28 @@ The `duration_ms` column SHALL be computed as the difference between `completed_
 
 #### Scenario: CC completes after 3.5 seconds
 
-WHEN a CC instance starts at time T and completes at time T + 3500ms
+WHEN a runtime instance starts at time T and completes at time T + 3500ms
 THEN the session row MUST have `duration_ms` set to `3500`
 
 #### Scenario: CC fails after 1.2 seconds
 
-WHEN a CC instance starts at time T and fails at time T + 1200ms
+WHEN a runtime instance starts at time T and fails at time T + 1200ms
 THEN the session row MUST have `duration_ms` set to `1200`
 
 ---
 
 ### Requirement: tool_calls records MCP tool invocations
 
-The `tool_calls` column SHALL contain a JSONB array of objects recording each MCP tool call the CC instance made during the session.
+The `tool_calls` column SHALL contain a JSONB array of objects recording each MCP tool call the runtime instance made during the session.
 
 #### Scenario: CC makes multiple tool calls
 
-WHEN a CC instance calls `state_get("foo")` and then `state_set("bar", 42)` during a session
+WHEN a runtime instance calls `state_get("foo")` and then `state_set("bar", 42)` during a session
 THEN the session's `tool_calls` MUST be a JSONB array containing an object for each tool call, preserving the order in which calls were made
 
 #### Scenario: CC makes no tool calls
 
-WHEN a CC instance completes without making any MCP tool calls
+WHEN a runtime instance completes without making any MCP tool calls
 THEN the session's `tool_calls` MUST be `'[]'`
 
 ---

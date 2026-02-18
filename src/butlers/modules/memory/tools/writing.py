@@ -23,7 +23,7 @@ async def memory_store_episode(
     session_id: str | None = None,
     importance: float = 5.0,
 ) -> dict[str, Any]:
-    """Store a raw episode from a CC session.
+    """Store a raw episode from a runtime session.
 
     Delegates to the storage layer and returns an MCP-friendly dict with the
     new episode's ID and expiry timestamp.

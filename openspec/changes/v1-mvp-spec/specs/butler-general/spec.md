@@ -342,7 +342,7 @@ The General butler is purely reactive. It SHALL define no `[[butler.schedule]]` 
 
 WHEN the heartbeat butler calls `tick()` on the General butler,
 THEN the tick handler SHALL return with no tasks executed,
-AND no CC sessions SHALL be spawned.
+AND no runtime sessions SHALL be spawned.
 
 ---
 

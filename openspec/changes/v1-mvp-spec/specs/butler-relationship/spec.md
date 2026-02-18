@@ -1114,24 +1114,24 @@ THEN the return value MUST be a JSON array of objects (or an empty JSON array if
 
 ### Requirement: upcoming-dates-check scheduled task
 
-The `upcoming-dates-check` task SHALL run daily at 8:00 AM (`0 8 * * *`). When triggered, the CC instance SHALL check for important dates in the next 7 days and prepare reminder messages.
+The `upcoming-dates-check` task SHALL run daily at 8:00 AM (`0 8 * * *`). When triggered, the runtime instance SHALL check for important dates in the next 7 days and prepare reminder messages.
 
 #### Scenario: Scheduled task triggers CC with correct prompt
 
 WHEN the scheduler's `tick()` runs at or after 8:00 AM
 AND the `upcoming-dates-check` task is due
-THEN the scheduler SHALL dispatch the task's prompt to the CC spawner
-AND the CC instance SHALL have access to the `upcoming_dates`, `contact_get`, and `state_set` tools to check dates and store reminder messages
+THEN the scheduler SHALL dispatch the task's prompt to the LLM CLI spawner
+AND the runtime instance SHALL have access to the `upcoming_dates`, `contact_get`, and `state_set` tools to check dates and store reminder messages
 
 ---
 
 ### Requirement: relationship-maintenance scheduled task
 
-The `relationship-maintenance` task SHALL run weekly on Monday at 9:00 AM (`0 9 * * 1`). When triggered, the CC instance SHALL review contacts that have not been interacted with in 30+ days and suggest outreach.
+The `relationship-maintenance` task SHALL run weekly on Monday at 9:00 AM (`0 9 * * 1`). When triggered, the runtime instance SHALL review contacts that have not been interacted with in 30+ days and suggest outreach.
 
 #### Scenario: Scheduled task triggers CC with correct prompt
 
 WHEN the scheduler's `tick()` runs at or after 9:00 AM on a Monday
 AND the `relationship-maintenance` task is due
-THEN the scheduler SHALL dispatch the task's prompt to the CC spawner
-AND the CC instance SHALL have access to `contact_search`, `interaction_list`, and `upcoming_dates` tools to identify neglected contacts and provide context
+THEN the scheduler SHALL dispatch the task's prompt to the LLM CLI spawner
+AND the runtime instance SHALL have access to `contact_search`, `interaction_list`, and `upcoming_dates` tools to identify neglected contacts and provide context

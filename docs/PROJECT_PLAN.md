@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** An AI agent framework where each "butler" is a long-running MCP server daemon with core infrastructure (state, scheduler, CC spawner, session log) and opt-in modules (email, telegram, calendar, etc.). When triggered, a butler spawns an ephemeral Claude Code instance wired exclusively to itself. Claude Code is the universal executor — it reasons about what to do and uses whatever tools (MCP tools, bash, scripts) it needs.
+**Goal:** An AI agent framework where each "butler" is a long-running MCP server daemon with core infrastructure (state, scheduler, LLM CLI spawner, session log) and opt-in modules (email, telegram, calendar, etc.). When triggered, a butler spawns an ephemeral LLM CLI instance wired exclusively to itself. Claude Code is the universal executor — it reasons about what to do and uses whatever tools (MCP tools, bash, scripts) it needs.
 
-**Architecture:** Each butler is a persistent MCP server daemon with two layers of functionality: **core components** (state store, task scheduler, Claude Code spawner, session log) that every butler gets automatically, and **modules** (email, telegram, calendar, etc.) that are opt-in per butler. When triggered — by the scheduler, heartbeat, or an external MCP call — the butler spawns an ephemeral Claude Code instance via the CC SDK. That instance receives a locked-down MCP config pointing exclusively to the butler's own MCP server, plus the butler's CLAUDE.md and skills. Claude Code runs, calls tools as needed, and exits. A **Switchboard Butler** routes external MCP requests to the correct butler. A **Heartbeat Butler** periodically calls each butler's `tick` tool, triggering the scheduler. Each butler owns a dedicated PostgreSQL database (strict isolation). Butler definitions are git-based directories.
+**Architecture:** Each butler is a persistent MCP server daemon with two layers of functionality: **core components** (state store, task scheduler, LLM CLI spawner, session log) that every butler gets automatically, and **modules** (email, telegram, calendar, etc.) that are opt-in per butler. When triggered — by the scheduler, heartbeat, or an external MCP call — the butler spawns an ephemeral LLM CLI instance via the Claude Code SDK. That instance receives a locked-down MCP config pointing exclusively to the butler's own MCP server, plus the butler's CLAUDE.md and skills. Claude Code runs, calls tools as needed, and exits. A **Switchboard Butler** routes external MCP requests to the correct butler. A **Heartbeat Butler** periodically calls each butler's `tick` tool, triggering the scheduler. Each butler owns a dedicated PostgreSQL database (strict isolation). Butler definitions are git-based directories.
 
 **Tech Stack:** Python 3.12+, FastMCP (MCP server), Claude Code SDK (ephemeral runtimes), PostgreSQL (JSONB-heavy, one DB per butler), Docker, asyncio
 
@@ -41,7 +41,7 @@
                    │            │             │
               on trigger:  on trigger:   on trigger:
             ┌──────▼─────┐┌────▼───┐ ┌───────▼────┐
-            │Claude Code ││CC inst ││ │ CC inst    │
+            │Claude Code ││runtime ││ │ runtime    │
             │(ephemeral) ││        ││ │            │
             │locked-down ││        ││ │            │
             │MCP config  ││        ││ │            │
@@ -62,7 +62,7 @@
 
 ```
 1. Trigger arrives (external MCP call, scheduler due task, or heartbeat tick)
-2. Butler's CC Spawner:
+2. Butler's LLM CLI Spawner:
    a. Generates ephemeral MCP config → /tmp/butler_<name>_<uuid>/mcp.json
       { "mcpServers": { "<butler>": { "url": "http://localhost:<port>/sse" } } }
    b. Spawns Claude Code via SDK with:
@@ -84,9 +84,9 @@
 1. Heartbeat Butler calls tick() on Butler A every 10 min
 2. Butler A's scheduler checks DB for due tasks (next_run_at <= now())
 3. For each due task:
-   a. Calls CC Spawner with the task's prompt
-   b. CC instance has access to all butler tools + bash + skills
-   c. CC decides what to do, executes, returns
+   a. Calls LLM CLI Spawner with the task's prompt
+   b. runtime instance has access to all butler tools + bash + skills
+   c. Runtime instance decides what to do, executes, returns
    d. Scheduler updates task (last_run_at, next_run_at, status)
 4. Returns summary of executed tasks
 ```
@@ -104,9 +104,9 @@ These are the shared infrastructure every butler needs. They are built into the 
 | Component          | What it does                                                                                                   | MCP Tools it provides                                                    |
 | ------------------ | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | **State Store**    | Key-value JSONB persistence in butler's DB                                                                     | `state_get`, `state_set`, `state_delete`, `state_list`                   |
-| **Task Scheduler** | Cron-driven task dispatch. TOML for bootstrap, DB for runtime. Always dispatches prompts to CC.                | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete` |
-| **CC Spawner**     | Spawns locked-down Claude Code instances via SDK. Generates ephemeral MCP config pointing only to this butler. | `trigger` (spawn CC with a prompt)                                       |
-| **Session Log**    | Logs every CC invocation — prompt, tool calls, outcome, duration.                                              | `sessions_list`, `sessions_get`                                          |
+| **Task Scheduler** | Cron-driven task dispatch. TOML for bootstrap, DB for runtime. Always dispatches prompts to LLM CLI.                | `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete` |
+| **LLM CLI Spawner**     | Spawns locked-down LLM CLI instances via SDK. Generates ephemeral MCP config pointing only to this butler. | `trigger` (spawn a runtime instance with a prompt)                                       |
+| **Session Log**    | Logs every LLM CLI invocation — prompt, tool calls, outcome, duration.                                              | `sessions_list`, `sessions_get`                                          |
 | **Tick Handler**   | Entry point for heartbeat. Calls the scheduler, returns summary.                                               | `tick`                                                                   |
 | **Status**         | Butler identity, loaded modules, health, uptime.                                                               | `status`                                                                 |
 
@@ -116,7 +116,7 @@ These are the shared infrastructure every butler needs. They are built into the 
 Core Tools
 ├── status()                                → butler identity, modules, health
 ├── tick()                                  → trigger scheduler, return summary
-├── trigger(prompt, context?)               → spawn CC instance, return result
+├── trigger(prompt, context?)               → spawn runtime instance, return result
 ├── state_get(key)                          → JSONB value
 ├── state_set(key, value)                   → void
 ├── state_delete(key)                       → void
@@ -125,7 +125,7 @@ Core Tools
 ├── schedule_create(name, cron, prompt)     → task id
 ├── schedule_update(id, ...)               → void
 ├── schedule_delete(id)                     → void
-├── sessions_list(limit?, offset?)          → recent CC sessions
+├── sessions_list(limit?, offset?)          → recent runtime sessions
 └── sessions_get(id)                        → full session detail (tools called, outcome)
 ```
 
@@ -168,10 +168,10 @@ Modules only add tools. They never touch core infrastructure (scheduler, spawner
 butler-name/
 ├── CLAUDE.md            # Butler personality, instructions, constraints
 ├── AGENTS.md            # Agent-specific notes (populated at runtime)
-├── skills/              # Skills available to CC instances
+├── skills/              # Skills available to runtime instances
 │   ├── morning-briefing/
 │   │   ├── SKILL.md     # Prompt template / instructions
-│   │   └── run.py       # Script CC can invoke via bash
+│   │   └── run.py       # Script Runtime instance can invoke via bash
 │   └── inbox-triage/
 │       └── SKILL.md     # Prompt-only skill
 └── butler.toml          # Butler config: identity, schedule, modules
@@ -238,12 +238,12 @@ port = 8100
 | Concept              | Description                                                                                                                         |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | **Butler**           | A long-running MCP server daemon. Has core components (state, scheduler, spawner, sessions) + opt-in modules. Owns a dedicated DB.  |
-| **Core Component**   | Shared infrastructure built into every butler: state store, task scheduler, CC spawner, session log. Not opt-in.                    |
+| **Core Component**   | Shared infrastructure built into every butler: state store, task scheduler, LLM CLI spawner, session log. Not opt-in.                    |
 | **Module**           | A pluggable unit that adds domain-specific MCP tools to a butler. Many-to-many with butlers. Opt-in via butler.toml.                |
-| **Trigger**          | Spawning a CC instance with a prompt. Can be initiated by: scheduler, heartbeat tick, external MCP call.                            |
-| **CC Spawner**       | Generates a locked-down MCP config and spawns Claude Code via SDK. CC only sees this butler's tools.                                |
-| **Scheduler**        | Cron-driven. Checks for due tasks on `tick()`. Always dispatches prompts to CC Spawner. Tasks from TOML (bootstrap) + DB (runtime). |
-| **Skill**            | A directory in `skills/` with SKILL.md (prompt template) and optionally scripts. CC reads the skill and decides what to do.         |
+| **Trigger**          | Spawning a runtime instance with a prompt. Can be initiated by: scheduler, heartbeat tick, external MCP call.                            |
+| **LLM CLI Spawner**       | Generates a locked-down MCP config and spawns Claude Code via SDK. Runtime instance only sees this butler's tools.                                |
+| **Scheduler**        | Cron-driven. Checks for due tasks on `tick()`. Always dispatches prompts to LLM CLI Spawner. Tasks from TOML (bootstrap) + DB (runtime). |
+| **Skill**            | A directory in `skills/` with SKILL.md (prompt template) and optionally scripts. Runtime instance reads the skill and decides what to do.         |
 | **Switchboard**      | The hub butler that routes external MCP requests to the correct butler.                                                             |
 | **Heartbeat Butler** | Calls `tick()` on every registered butler every N minutes (default 10).                                                             |
 | **Butler DB**        | Each butler's dedicated PostgreSQL database — strict isolation, MCP-only access between butlers.                                    |
@@ -282,12 +282,12 @@ CREATE TABLE scheduled_tasks (
     enabled BOOLEAN NOT NULL DEFAULT true,
     last_run_at TIMESTAMPTZ,
     next_run_at TIMESTAMPTZ,
-    last_result JSONB,                   -- summary of last CC session
+    last_result JSONB,                   -- summary of last runtime session
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- CC session log
+-- runtime session log
 CREATE TABLE sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     trigger_source TEXT NOT NULL,         -- 'schedule:<task-name>', 'tick', 'external', 'trigger'
@@ -304,9 +304,9 @@ CREATE TABLE sessions (
 
 ---
 
-## CC Spawner: Locked-Down Claude Code Instances
+## LLM CLI Spawner: Locked-Down Claude Code Instances
 
-When the CC Spawner is invoked (via `trigger`, scheduler, or `tick`), it:
+When the LLM CLI Spawner is invoked (via `trigger`, scheduler, or `tick`), it:
 
 1. **Generates an ephemeral MCP config:**
 
@@ -338,7 +338,7 @@ result = await query(
 )
 ```
 
-3. **CC instance capabilities:**
+3. **runtime instance capabilities:**
    - Can call any MCP tool on the butler (core + modules)
    - Has built-in bash → can run skill scripts from `skills/`
    - Has file reading/writing within the butler's config dir
@@ -382,7 +382,7 @@ The MVP ships 4 butlers + the Heartbeat infrastructure butler:
 
 The **public-facing ingress**. Listens on Telegram (bot) and Email (IMAP/webhook), determines which butler should handle each message, and routes via MCP.
 
-**Role:** Not just an MCP router — it's the front door. When a Telegram message or email arrives, the Switchboard spawns CC to classify the request and route it.
+**Role:** Not just an MCP router — it's the front door. When a Telegram message or email arrives, the Switchboard spawns a runtime instance to classify the request and route it.
 
 **Modules:** `telegram`, `email`
 
@@ -394,10 +394,10 @@ The **public-facing ingress**. Listens on Telegram (bot) and Email (IMAP/webhook
 **Routing flow:**
 ```
 1. Telegram message arrives → telegram module receives it
-2. Switchboard triggers CC with: "Classify this message and route it:
+2. Switchboard triggers runtime instance with: "Classify this message and route it:
    Available butlers: [relationship, health, general]
    Message: {text}"
-3. CC decides: this is a health question → calls route("health", "trigger", {prompt: ...})
+3. Runtime instance decides: this is a health question → calls route("health", "trigger", {prompt: ...})
 4. Health butler handles it, returns result
 5. Switchboard sends response back via telegram module
 ```
@@ -885,7 +885,7 @@ CREATE INDEX idx_entities_data ON entities USING GIN(data);
 CREATE INDEX idx_entities_title ON entities(title);
 ```
 
-The General butler is intentionally schema-light. CC instances can store anything:
+The General butler is intentionally schema-light. runtime instances can store anything:
 ```json
 {"type": "recipe", "name": "Pasta Carbonara", "ingredients": [...], "source": "..."}
 {"type": "travel_idea", "destination": "Kyoto", "notes": "cherry blossom season", "budget": 3000}
@@ -923,17 +923,17 @@ Call tick() on each one. Log results.
 
 ## Observability: OpenTelemetry
 
-All inter-butler communication is instrumented with OpenTelemetry for distributed tracing. Trace context propagates from Switchboard → target butler → CC instance, giving end-to-end visibility for every request.
+All inter-butler communication is instrumented with OpenTelemetry for distributed tracing. Trace context propagates from Switchboard → target butler → runtime instance, giving end-to-end visibility for every request.
 
 ### Instrumentation Points
 
 ```
 Telegram message arrives
   └─ [Span: switchboard.receive] channel=telegram, chat_id=...
-      └─ [Span: switchboard.classify] → CC decides routing
+      └─ [Span: switchboard.classify] → Runtime instance decides routing
           └─ [Span: switchboard.route] target=health
               └─ [Span: health.trigger] prompt=...          ← trace context passed via MCP
-                  └─ [Span: health.cc_session] session_id=...
+                  └─ [Span: health.llm_session] session_id=...
                       ├─ [Span: health.tool.measurement_log]
                       ├─ [Span: health.tool.state_set]
                       └─ [Span: health.tool.sessions_log]
@@ -943,9 +943,9 @@ Telegram message arrives
 
 1. **Switchboard → Butler:** Trace context (`traceparent` header) is propagated via MCP tool call metadata. When the Switchboard calls `route()`, it includes the current trace context. The target butler extracts it and creates a child span.
 
-2. **Butler → CC Instance:** The CC spawner passes trace context via environment variable (`TRACEPARENT`) or MCP config metadata. The session log stores the `trace_id` for correlation.
+2. **Butler → Runtime Instance:** The LLM CLI spawner passes trace context via environment variable (`TRACEPARENT`) or MCP config metadata. The session log stores the `trace_id` for correlation.
 
-3. **CC → Butler MCP tools:** Each MCP tool call from CC back to the butler creates a child span under the CC session span.
+3. **Runtime Instance → Butler MCP tools:** Each MCP tool call from the runtime instance back to the butler creates a child span under the runtime session span.
 
 ### Core Instrumentation
 
@@ -967,10 +967,10 @@ def init_telemetry(service_name: str):
 
 **Every MCP tool handler is wrapped with a span:**
 ```python
-@self._mcp.tool(name="trigger", description="Spawn CC instance")
+@self._mcp.tool(name="trigger", description="Spawn runtime instance")
 async def trigger(prompt: str) -> dict:
     with tracer.start_as_current_span("butler.trigger", attributes={"butler.name": self.config.name}) as span:
-        # ... spawn CC ...
+        # ... spawn runtime instance ...
         span.set_attribute("cc.session_id", session_id)
         return result
 ```
@@ -1018,7 +1018,7 @@ Docker Compose includes the LGTM stack (Alloy/Tempo/Grafana) for local trace vis
 | Message received  | `switchboard.receive`  | `channel`, `source_id`        |
 | Routing decision  | `switchboard.classify` | `routed_to`                   |
 | Inter-butler call | `switchboard.route`    | `target`, `tool_name`         |
-| CC spawned        | `butler.cc_session`    | `session_id`, `prompt_length` |
+| Runtime spawned        | `butler.llm_session`    | `session_id`, `prompt_length` |
 | MCP tool called   | `butler.tool.<name>`   | tool-specific attributes      |
 | Scheduler tick    | `butler.tick`          | `tasks_due`, `tasks_run`      |
 | Heartbeat cycle   | `heartbeat.cycle`      | `butlers_ticked`, `failures`  |
@@ -1027,9 +1027,9 @@ Docker Compose includes the LGTM stack (Alloy/Tempo/Grafana) for local trace vis
 
 ## Testing Strategy
 
-### Principle: Mock the CC Executable
+### Principle: Mock the LLM CLI Executable
 
-Claude Code instances are the most expensive part of the system. **All unit tests mock the CC spawner.** The mock records what prompts were sent and what tools CC would have called, without invoking a real LLM.
+LLM CLI instances are the most expensive part of the system. **All unit tests mock the LLM CLI spawner.** The mock records what prompts were sent and what tools the runtime instance would have called, without invoking a real LLM.
 
 ### MockRuntime
 
@@ -1041,7 +1041,7 @@ from butlers.core.spawner import SpawnerResult
 
 @dataclass
 class MockSpawner:
-    """Mock CC spawner that records invocations and returns canned results."""
+    """Mock LLM CLI spawner that records invocations and returns canned results."""
 
     calls: list[dict] = field(default_factory=list)
     responses: dict[str, SpawnerResult] = field(default_factory=dict)
@@ -1070,7 +1070,7 @@ class MockSpawner:
 
 ### Test Layers
 
-| Layer                           | What                                     | DB                       | CC            | How                              |
+| Layer                           | What                                     | DB                       | LLM CLI            | How                              |
 | ------------------------------- | ---------------------------------------- | ------------------------ | ------------- | -------------------------------- |
 | **Unit: Config**                | Config loading, validation               | No                       | No            | `tmp_path` fixtures              |
 | **Unit: Modules**               | Module ABC, registry, tool registration  | No                       | No            | FastMCP in-memory                |
@@ -1078,7 +1078,7 @@ class MockSpawner:
 | **Unit: Butler-specific tools** | Relationship CRUD, Health tracking, etc. | Testcontainer PostgreSQL | No            | Test each tool function directly |
 | **Unit: Switchboard routing**   | Registry, route logic                    | Mock                     | `MockSpawner` | Test routing decisions           |
 | **Unit: Heartbeat**             | Tick cycle, butler enumeration           | Mock                     | No            | Mock MCP client                  |
-| **Integration**                 | Full butler startup, tool call, trigger  | Testcontainer PostgreSQL | `MockSpawner` | End-to-end with mocked CC        |
+| **Integration**                 | Full butler startup, tool call, trigger  | Testcontainer PostgreSQL | `MockSpawner` | End-to-end with mocked LLM CLI        |
 | **Integration: Tracing**        | Span creation, context propagation       | No                       | `MockSpawner` | InMemorySpanExporter             |
 
 ### DB Tests
@@ -1412,10 +1412,10 @@ Telemetry init, tracer setup, span wrappers for MCP tool handlers. InMemorySpanE
 DB connection layer, core schema migration on startup, state store tools live. Session log tools live.
 
 ### Milestone 4: Claude Code Spawner
-MockSpawner for tests. Real CC spawner via SDK. Locked-down MCP config generation. `trigger` tool wired. Session logging with trace context.
+MockSpawner for tests. Real LLM CLI spawner via SDK. Locked-down MCP config generation. `trigger` tool wired. Session logging with trace context.
 
 ### Milestone 5: Task Scheduler
-TOML → DB sync. Cron evaluation. `tick()` handler dispatches to CC spawner. Schedule CRUD tools. Tests with MockSpawner.
+TOML → DB sync. Cron evaluation. `tick()` handler dispatches to LLM CLI spawner. Schedule CRUD tools. Tests with MockSpawner.
 
 ### Milestone 6: Telegram + Email Modules
 Telegram bot listener (polling or webhook). Email listener (IMAP or webhook). Both register tools on the butler's MCP server. Tests with mocked APIs.
@@ -1517,7 +1517,7 @@ class SpawnerResult:
 
 @dataclass
 class MockSpawner:
-    """Mock CC spawner — records invocations, returns canned results."""
+    """Mock LLM CLI spawner — records invocations, returns canned results."""
 
     calls: list[dict] = field(default_factory=list)
     responses: dict[str, SpawnerResult] = field(default_factory=dict)
@@ -1649,8 +1649,8 @@ butlers/
 │   │   ├── __init__.py
 │   │   ├── state.py            # State store (KV persistence)
 │   │   ├── scheduler.py        # Task scheduler (cron, TOML sync, tick)
-│   │   ├── spawner.py          # CC Spawner (locked-down Claude Code instances)
-│   │   ├── sessions.py         # Session log (CC invocation tracking)
+│   │   ├── spawner.py          # LLM CLI Spawner (locked-down LLM CLI instances)
+│   │   ├── sessions.py         # Session log (LLM CLI invocation tracking)
 │   │   └── telemetry.py        # OpenTelemetry init + tracer
 │   ├── modules/                # Module system
 │   │   ├── __init__.py
@@ -1737,13 +1737,13 @@ butlers/
 | Cron expression library?                                | TBD     | `croniter` is the standard Python choice                                                                    |
 | How are new butler databases provisioned?               | Decided | Auto-provision on startup: `CREATE DATABASE IF NOT EXISTS`, then apply migrations. No separate init script. |
 | Auth/security between butlers on Docker network?        | TBD     | Not needed for v0.1                                                                                         |
-| Concurrent CC instances per butler?                     | TBD     | Serial initially, queue later                                                                               |
+| Concurrent runtime instances per butler?                     | TBD     | Serial initially, queue later                                                                               |
 | How do integration modules handle OAuth?                | TBD     | Out-of-band setup, credentials as env vars                                                                  |
-| CC instance timeout?                                    | TBD     | Configurable per-trigger, default ~5 min                                                                    |
-| Can CC instances create new scheduled tasks?            | Yes     | Via `schedule_create` MCP tool — CC can self-schedule follow-up work                                        |
-| How does CC know about skills?                          | TBD     | System prompt lists available skills, or CC reads `skills/` directory via bash                              |
+| runtime instance timeout?                                    | TBD     | Configurable per-trigger, default ~5 min                                                                    |
+| Can runtime instances create new scheduled tasks?            | Yes     | Via `schedule_create` MCP tool — Runtime instance can self-schedule follow-up work                                        |
+| How does the runtime instance know about skills?                          | TBD     | System prompt lists available skills, or Runtime instance reads `skills/` directory via bash                              |
 | Telegram: polling vs webhook?                           | TBD     | Polling simpler for dev, webhook for production                                                             |
 | How does Switchboard send responses back?               | TBD     | Likely stores in state, Telegram module polls or callback                                                   |
 | OTel sampling strategy?                                 | TBD     | Sample 100% in dev, configurable in prod                                                                    |
 | Butler-specific migrations: auto-apply or explicit?     | TBD     | Auto-apply on startup for simplicity                                                                        |
-| How to handle Switchboard routing when CC is unsure?    | TBD     | Default to General butler                                                                                   |
+| How to handle Switchboard routing when the runtime instance is unsure?    | TBD     | Default to General butler                                                                                   |

@@ -2,7 +2,7 @@
 
 The butler framework currently consists of five butler daemons (Switchboard, General, Relationship, Health, Heartbeat), each running as a FastMCP SSE server with a dedicated PostgreSQL database. The only visibility into the system is through CLI commands, direct database queries, and LGTM stack traces. There is no unified administrative interface.
 
-The existing codebase provides the data we need: `sessions` table logs every CC invocation, `scheduled_tasks` table tracks cron-driven tasks, `state` table holds KV data, and each domain butler has rich entity tables (contacts, measurements, collections, etc.). Butler status is available via the MCP `status()` tool. OpenTelemetry spans are exported to the LGTM stack (Grafana Tempo).
+The existing codebase provides the data we need: `sessions` table logs every runtime invocation, `scheduled_tasks` table tracks cron-driven tasks, `state` table holds KV data, and each domain butler has rich entity tables (contacts, measurements, collections, etc.). Butler status is available via the MCP `status()` tool. OpenTelemetry spans are exported to the LGTM stack (Grafana Tempo).
 
 The dashboard introduces two new codebases — a FastAPI backend (`src/butlers/api/`) and a React SPA (`frontend/`) — plus framework-level changes to support token tracking and cross-butler notifications.
 
@@ -19,7 +19,7 @@ The dashboard introduces two new codebases — a FastAPI backend (`src/butlers/a
 
 **Non-Goals:**
 
-- Real-time streaming of CC session output (polling/SSE for status updates is sufficient for v1)
+- Real-time streaming of runtime session output (polling/SSE for status updates is sufficient for v1)
 - Authentication/authorization (personal system, localhost-only for v1)
 - Replacing Grafana Tempo UI for deep trace analysis (the dashboard provides a simplified view)
 - Direct database writes from the dashboard API (all mutations go through MCP)
@@ -99,7 +99,7 @@ class DatabaseManager:
 
 **Decision:** Add a core `notify(channel, message, recipient?)` tool available to every butler's CC. The butler daemon holds an MCP client to the Switchboard and forwards notifications via a new `deliver()` tool. Notifications log to a `notifications` table in the Switchboard DB.
 
-**Rationale:** CC instances are locked down to their own butler's MCP server. They can't send Telegram messages directly — only the Switchboard has those modules. The `notify()` tool provides a clean, synchronous interface: CC calls `notify()`, it blocks until delivery succeeds or fails, CC can handle errors.
+**Rationale:** runtime instances are locked down to their own butler's MCP server. They can't send Telegram messages directly — only the Switchboard has those modules. The `notify()` tool provides a clean, synchronous interface: CC calls `notify()`, it blocks until delivery succeeds or fails, CC can handle errors.
 
 **Alternatives considered:**
 - Store notifications in butler's own state for later pickup: No delivery mechanism; requires polling.
@@ -115,7 +115,7 @@ class DatabaseManager:
 
 ### D6: Token Tracking — Spawner Captures from SDK Response
 
-**Decision:** Add `input_tokens`, `output_tokens`, `model`, `trace_id`, and `parent_session_id` columns to the `sessions` table. The CC spawner captures token usage from the Claude Code SDK response and stores it alongside the session record.
+**Decision:** Add `input_tokens`, `output_tokens`, `model`, `trace_id`, and `parent_session_id` columns to the `sessions` table. The LLM CLI spawner captures token usage from the Claude Code SDK response and stores it alongside the session record.
 
 **Rationale:** Token counts are the raw data for cost estimation, usage trends, and anomaly detection. The CC SDK response includes usage data. Storing at session creation time is the natural point.
 
@@ -252,4 +252,4 @@ class DatabaseManager:
 | How should the Switchboard connection be configured for `notify()`? | Each butler's `butler.toml` could have a `switchboard_url` field, or it could be derived from the Switchboard's butler.toml port. Config-based is simpler. |
 | Should the dashboard poll for status updates or use SSE? | Start with polling (TanStack Query's refetchInterval). Add SSE in M12 for real-time status indicators. |
 | Pricing config format and location? | Propose `pricing.toml` in the butlers config root, loaded by the dashboard API. Simple key-value: `model-id = {input = 0.000003, output = 0.000015}`. |
-| How does the dashboard detect active CC sessions? | Propose: spawner writes session record with `completed_at = NULL` before spawning, updates on completion. Dashboard queries for `completed_at IS NULL`. |
+| How does the dashboard detect active runtime sessions? | Propose: spawner writes session record with `completed_at = NULL` before spawning, updates on completion. Dashboard queries for `completed_at IS NULL`. |

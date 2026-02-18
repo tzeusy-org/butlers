@@ -64,11 +64,11 @@ The dashboard's Notifications view depends on a framework-level addition: a core
 
 ### The Problem
 
-Butler CC instances are locked down to their own MCP server. A Health butler CC that discovers "medication due in 30 min" has no way to send a Telegram message — only the Switchboard has the `telegram` module. The current spec hand-waves with "store in state for Switchboard delivery" but there's no actual delivery mechanism.
+Butler runtime instances are locked down to their own MCP server. A Health butler runtime instance that discovers "medication due in 30 min" has no way to send a Telegram message — only the Switchboard has the `telegram` module. The current spec hand-waves with "store in state for Switchboard delivery" but there's no actual delivery mechanism.
 
 ### The Solution: Core `notify()` Tool
 
-Every butler daemon holds an MCP client connection to the Switchboard. A new core tool, `notify()`, lets any CC instance send outbound messages:
+Every butler daemon holds an MCP client connection to the Switchboard. A new core tool, `notify()`, lets any runtime instance send outbound messages:
 
 ```
 Core Tools (addition)
@@ -77,20 +77,20 @@ Core Tools (addition)
 
 **Flow:**
 ```
-1. Health scheduler fires → CC spawns
-2. CC checks medications, finds Metformin due
-3. CC calls notify(channel="telegram", message="Time to take Metformin 500mg")
+1. Health scheduler fires → runtime instance spawns
+2. Runtime instance checks medications, finds Metformin due
+3. Runtime instance calls notify(channel="telegram", message="Time to take Metformin 500mg")
 4. Health butler daemon → MCP client → Switchboard.deliver("telegram", message)
 5. Switchboard's telegram module sends the message
 6. Switchboard logs the notification in its DB
-7. notify() returns delivery result to CC
+7. notify() returns delivery result to the runtime instance
 ```
 
 **Implementation notes:**
-- Synchronous from CC's perspective — `notify()` blocks until delivered (or fails)
+- Synchronous from the runtime instance's perspective — `notify()` blocks until delivered (or fails)
 - The Switchboard gets a new tool: `deliver(channel, message, recipient?, metadata?)` — distinct from `route()` which forwards tool calls to other butlers
 - Notification log lives in the Switchboard's DB (it's the delivery authority)
-- If Switchboard is unreachable, `notify()` returns an error — CC can store in state as fallback
+- If Switchboard is unreachable, `notify()` returns an error — Runtime instance can store in state as fallback
 - `channel` values: `telegram`, `email` (matches Switchboard's modules)
 - `recipient` is optional — defaults to the system owner (personal system, single user for v1)
 
@@ -107,7 +107,7 @@ CREATE TABLE notifications (
     metadata JSONB NOT NULL DEFAULT '{}', -- arbitrary context (medication_id, contact_id, etc.)
     status TEXT NOT NULL DEFAULT 'sent',  -- 'sent', 'failed', 'pending'
     error TEXT,                           -- error message if failed
-    session_id UUID,                      -- CC session that triggered this
+    session_id UUID,                      -- runtime session that triggered this
     trace_id TEXT,                        -- OTel trace ID
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -161,7 +161,7 @@ The landing page. At-a-glance system health. Answers: "Is everything OK? What ju
   - Switchboard node (center) with edges to each butler
   - Heartbeat node with dashed edges to all butlers
   - Each node shows: name, port, status badge (healthy/degraded/down), module count
-  - **Active session indicator**: Node pulses/glows when a CC instance is currently running
+  - **Active session indicator**: Node pulses/glows when a runtime instance is currently running
   - Click a node → navigate to butler detail
   - Edge labels: "MCP route", "tick"
   - Module dependency health: small colored dots per module on each node (green=connected, red=unreachable)
@@ -179,7 +179,7 @@ The landing page. At-a-glance system health. Answers: "Is everything OK? What ju
 - **Cost summary widget**: Today's spend, 7-day trend sparkline, top spender butler. Links to full cost view.
 
 - **Recent activity feed**: Last N events across all butlers — not just sessions but a **unified timeline** mixing:
-  - CC sessions (with success/fail, duration, token count)
+  - runtime sessions (with success/fail, duration, token count)
   - Scheduled task dispatches
   - Routing decisions (Switchboard)
   - Heartbeat ticks (collapsed — "Heartbeat: 5 butlers ticked")
@@ -195,7 +195,7 @@ Tabbed detail view for a single butler.
 
 #### 2a. Overview Tab
 - Butler identity: name, description, port, uptime
-- **Active session indicator**: "Currently running CC session" with elapsed time, or "Idle"
+- **Active session indicator**: "Currently running runtime session" with elapsed time, or "Idle"
 - Module badges with health status (e.g., `telegram ●` green, `email ●` red)
 - **Cost card**: Sessions today, tokens used today, estimated cost today, 7-day trend sparkline
 - Error summary: recent failures count, link to filtered session view
@@ -315,7 +315,7 @@ These tabs appear conditionally based on the butler's identity.
 
 ### 4. Cross-Butler Sessions (`/sessions`)
 
-Aggregate view of all CC sessions across all butlers.
+Aggregate view of all runtime sessions across all butlers.
 
 - Table: timestamp, butler, trigger source, prompt (truncated), duration, success/fail
 - Filters: butler, date range, trigger source, success/fail
@@ -336,7 +336,7 @@ Simplified distributed trace viewer for common use cases within the dashboard (c
      └── switchboard.classify                      [200ms]
          └── switchboard.route → health            [5ms]
              └── health.trigger                    [50ms]
-                 └── health.cc_session             [3200ms]
+                 └── health.llm_session             [3200ms]
                      ├── health.tool.measurement_log  [15ms]
                      ├── health.tool.state_set        [8ms]
                      └── health.tool.sessions_log     [12ms]
@@ -369,7 +369,7 @@ A command palette / search bar accessible from anywhere via `Cmd+K` (or `/`).
 A chronological "what happened?" view mixing all event types across all butlers. The system's activity log.
 
 **Event types (each with distinct icon and color):**
-- CC session started/completed (with success/fail, duration, cost)
+- runtime session started/completed (with success/fail, duration, cost)
 - Scheduled task dispatched
 - Routing decision (Switchboard: message arrived → routed to butler)
 - **Notification sent** (butler → Switchboard → telegram/email, with delivery status)
@@ -474,7 +474,7 @@ GET    /api/butlers/:name              → single butler detail + live status
 GET    /api/butlers/:name/config       → full butler.toml, CLAUDE.md, AGENTS.md content
 GET    /api/butlers/:name/skills       → list skills from skills/ directory with SKILL.md content
 GET    /api/butlers/:name/modules      → module list with dependency health status
-POST   /api/butlers/:name/trigger      → trigger CC with prompt {prompt: string}
+POST   /api/butlers/:name/trigger      → trigger runtime instance with prompt {prompt: string}
 POST   /api/butlers/:name/tick         → force scheduler tick
 ```
 
@@ -654,7 +654,7 @@ Browser → GET /api/butlers
 ```
 Browser → POST /api/butlers/health/trigger {prompt: "Log weight 75kg"}
   → API calls trigger(prompt) via MCP client on health butler
-  → Health butler spawns CC, CC runs, returns result
+  → Health butler spawns runtime instance, runtime instance runs, returns result
   → API returns session result to browser
 ```
 
@@ -681,8 +681,8 @@ Browser → GET /api/notifications?channel=telegram&from=2026-02-09
 ```
 Heartbeat ticks Health butler at 08:00
   → Health scheduler: medication-reminder-check is due
-  → CC spawns, checks medications table, finds Metformin due
-  → CC calls notify(channel="telegram", message="Time to take Metformin 500mg")
+  → runtime instance spawns, checks medications table, finds Metformin due
+  → Runtime instance calls notify(channel="telegram", message="Time to take Metformin 500mg")
   → Health daemon → MCP client → Switchboard.deliver("telegram", message)
   → Switchboard telegram module sends message
   → Switchboard logs to notifications table: {source: "health", channel: "telegram", status: "sent"}
@@ -865,7 +865,7 @@ ALTER TABLE sessions ADD COLUMN trace_id TEXT;                 -- OTel trace ID 
 ALTER TABLE sessions ADD COLUMN parent_session_id UUID;        -- for trace reconstruction
 ```
 
-The CC SDK returns token usage in its response. The spawner should capture and store this alongside the session record. `trace_id` enables cross-butler trace correlation.
+The Claude Code SDK returns token usage in its response. The spawner should capture and store this alongside the session record. `trace_id` enables cross-butler trace correlation.
 
 ### Switchboard — notifications table
 
@@ -922,7 +922,7 @@ The landing page with topology graph, stats, and issues panel.
   - Switchboard as center node
   - Each butler as a node with status badge
   - Heartbeat with dashed connections to all
-  - Active session indicator (pulsing node when CC running)
+  - Active session indicator (pulsing node when runtime instance running)
   - Module health dots on each node
   - Edge labels showing connection type
   - Click node → navigate to `/butlers/:name`
@@ -993,7 +993,7 @@ Understanding what the system costs.
 
 **Schema tasks:**
 - [ ] Add `input_tokens`, `output_tokens`, `model` columns to sessions table
-- [ ] Update CC spawner to capture token usage from SDK response and store in session record
+- [ ] Update LLM CLI spawner to capture token usage from SDK response and store in session record
 - [ ] Alembic migration for the new columns
 
 **API tasks:**
@@ -1249,13 +1249,13 @@ UX polish and groundwork for real-time updates.
 | Trace reconstruction fidelity?                   | Requires `trace_id` and `parent_session_id` on sessions table (added in M4/M5). Without these, traces are reconstructed heuristically from `trigger_source` timestamps — lossy.                                                                                                     |
 | Frontend build integration?                      | `butlers dashboard` in production should serve the built frontend. Need a build step that copies `frontend/dist/` to a location the API can serve.                                                                                                                                  |
 | How to handle butler DB schema differences?      | API router for each butler type (relationship, health, general) hardcodes the schema knowledge. If a new butler type is added, a new router is needed.                                                                                                                              |
-| Real-time: WebSocket vs SSE?                     | SSE is simpler for server-push status updates. WebSocket if we want bidirectional (e.g., streaming CC session output). Start with SSE.                                                                                                                                              |
-| Token usage from CC SDK?                         | Need to verify the Claude Code SDK exposes input/output token counts in its response. If not, we may need to instrument at the MCP tool level or parse usage from session transcripts.                                                                                              |
+| Real-time: WebSocket vs SSE?                     | SSE is simpler for server-push status updates. WebSocket if we want bidirectional (e.g., streaming runtime session output). Start with SSE.                                                                                                                                              |
+| Token usage from Claude Code SDK?                         | Need to verify the Claude Code SDK exposes input/output token counts in its response. If not, we may need to instrument at the MCP tool level or parse usage from session transcripts.                                                                                              |
 | Cost model pricing config?                       | Where does the per-model pricing live? Likely a simple YAML/TOML config file or env vars on the dashboard API. Needs to be updatable without redeployment.                                                                                                                          |
 | Module health checks — how?                      | Modules don't currently expose a `health()` method. We'd need to add an optional `health_check()` to the Module ABC, or the dashboard API probes externally (e.g., Telegram bot API ping, IMAP connect).                                                                            |
 | Global search performance?                       | Fan-out search across N butler DBs could be slow. Consider: background indexing, materialized views, or a lightweight search index (SQLite FTS) on the dashboard API side.                                                                                                          |
 | Timeline event sourcing?                         | The unified timeline aggregates events from multiple tables across multiple DBs. Some events (state changes, heartbeat ticks) aren't currently logged anywhere. May need a lightweight `events` table in each butler DB, or the dashboard API polls and caches.                     |
-| Active session detection?                        | How does the dashboard know a CC instance is currently running? Options: (1) spawner writes a "running" row to sessions table before spawning, updates on completion; (2) MCP status() tool reports active sessions; (3) SSE push from butler daemon.                               |
+| Active session detection?                        | How does the dashboard know a runtime instance is currently running? Options: (1) spawner writes a "running" row to sessions table before spawning, updates on completion; (2) MCP status() tool reports active sessions; (3) SSE push from butler daemon.                               |
 | Memory system dependency?                        | M11 is blocked on the memory plan finalizing and the `memories` table + MCP tools being implemented. Track this dependency explicitly.                                                                                                                                              |
 | Core `notify()` tool dependency?                 | M7 (Notifications) is blocked on the framework implementing the core `notify()` tool + Switchboard `deliver()` tool + `notifications` table. This is a framework-level change that should be added to `PROJECT_PLAN.md` as a new milestone or task under the Switchboard milestone. |
-| Notification delivery guarantees?                | What happens if Switchboard is down when a butler calls `notify()`? Options: (1) fail and let CC decide (store in state, retry later), (2) butler-local queue with retry, (3) accept message loss for v1. Recommend option 1 — simplest, CC can handle fallback.                    |
+| Notification delivery guarantees?                | What happens if Switchboard is down when a butler calls `notify()`? Options: (1) fail and let runtime instance decide (store in state, retry later), (2) butler-local queue with retry, (3) accept message loss for v1. Recommend option 1 — simplest, Runtime instance can handle fallback.                    |

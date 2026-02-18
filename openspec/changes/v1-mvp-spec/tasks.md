@@ -42,10 +42,10 @@
 
 ## 7. Session Log
 
-- [ ] 7.1 Create `src/butlers/core/sessions.py` — session creation on CC spawn, update on completion, sessions_list (paginated), sessions_get
+- [ ] 7.1 Create `src/butlers/core/sessions.py` — session creation on runtime spawn, update on completion, sessions_list (paginated), sessions_get
 - [ ] 7.2 Write `tests/test_core_sessions.py` — create, complete success, complete failure, duration_ms computation, trigger_source values, list pagination, get by id, append-only (no delete)
 
-## 8. CC Spawner
+## 8. LLM CLI Spawner
 
 - [ ] 8.1 Create `src/butlers/core/spawner.py` — SpawnerResult dataclass, CCSpawner class with ephemeral MCP config generation, CC SDK invocation, temp dir cleanup
 - [ ] 8.2 Implement credential passthrough — build explicit env dict with only declared vars (ANTHROPIC_API_KEY + butler.env + module credentials_env)
@@ -56,7 +56,7 @@
 
 ## 9. Task Scheduler
 
-- [ ] 9.1 Create `src/butlers/core/scheduler.py` — TOML-to-DB sync, cron evaluation (croniter), tick() handler, serial dispatch to CC spawner
+- [ ] 9.1 Create `src/butlers/core/scheduler.py` — TOML-to-DB sync, cron evaluation (croniter), tick() handler, serial dispatch to LLM CLI spawner
 - [ ] 9.2 Implement schedule CRUD MCP tools — schedule_list, schedule_create (validate cron), schedule_update, schedule_delete (reject toml-source deletion)
 - [ ] 9.3 Write `tests/test_core_scheduler.py` — TOML sync (first run, update, removal), tick dispatch, no-op tick, disabled tasks, error handling, next_run_at computation, CRUD operations
 
@@ -78,8 +78,8 @@
 
 ## 12. Butler Skills
 
-- [ ] 12.1 Implement CLAUDE.md reading in CC spawner — read file contents, pass as system_prompt, default fallback
-- [ ] 12.2 Ensure skills/ directory is accessible via CC cwd — CC spawner sets cwd to butler config dir
+- [ ] 12.1 Implement CLAUDE.md reading in LLM CLI spawner — read file contents, pass as system_prompt, default fallback
+- [ ] 12.2 Ensure skills/ directory is accessible via CC cwd — LLM CLI spawner sets cwd to butler config dir
 - [ ] 12.3 Write `tests/test_skills.py` — CLAUDE.md system prompt, missing CLAUDE.md fallback, AGENTS.md read/write, skill directory structure validation
 
 ## 13. Telegram Module
@@ -168,4 +168,4 @@
 - [ ] 22.1 Write integration test: full butler startup with testcontainer PostgreSQL + MockSpawner — config load → DB provision → Alembic migrations → tool registration → status()
 - [ ] 22.2 Write integration test: scheduler tick dispatches to MockSpawner and logs session
 - [ ] 22.3 Write integration test: switchboard route() forwards to target butler and returns result
-- [ ] 22.4 Write integration test: trace context propagates from switchboard.route → butler.trigger → CC session
+- [ ] 22.4 Write integration test: trace context propagates from switchboard.route → butler.trigger → runtime session

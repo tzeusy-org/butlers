@@ -112,7 +112,7 @@ async def store_episode(
     importance: float = 5.0,
     metadata: dict | None = None,
 ) -> uuid.UUID:
-    """Store a raw episode from a butler CC session.
+    """Store a raw episode from a butler runtime session.
 
     Generates both a semantic embedding and a full-text search vector for the
     content, then inserts a row into the ``episodes`` table.
@@ -122,7 +122,7 @@ async def store_episode(
         content: Raw episode text content.
         butler: Name of the source butler.
         embedding_engine: EmbeddingEngine instance for generating vectors.
-        session_id: Optional UUID of the source CC session.
+        session_id: Optional UUID of the source runtime session.
         importance: Importance rating (default 5.0).
         metadata: Optional JSONB metadata dict.
 

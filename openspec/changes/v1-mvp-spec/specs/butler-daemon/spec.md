@@ -180,7 +180,7 @@ The daemon SHALL register core MCP tools on the FastMCP server instance. These t
 
 - `status()` -- Returns butler identity (name, description), loaded modules, health status, and uptime.
 - `tick()` -- Entry point for the heartbeat. Triggers the scheduler to check for due tasks. Returns a summary of executed tasks.
-- `trigger(prompt, context?)` -- Spawns an ephemeral Claude Code instance with the given prompt. Returns the CC session result.
+- `trigger(prompt, context?)` -- Spawns an ephemeral LLM CLI instance with the given prompt. Returns the runtime session result.
 - `state_get(key)` -- Retrieves a JSONB value from the state store by key.
 - `state_set(key, value)` -- Sets a JSONB value in the state store.
 - `state_delete(key)` -- Deletes an entry from the state store by key.
@@ -189,8 +189,8 @@ The daemon SHALL register core MCP tools on the FastMCP server instance. These t
 - `schedule_create(name, cron, prompt)` -- Creates a new scheduled task. Returns the task ID.
 - `schedule_update(id, ...)` -- Updates an existing scheduled task.
 - `schedule_delete(id)` -- Deletes a scheduled task.
-- `sessions_list(limit?, offset?)` -- Lists recent CC sessions.
-- `sessions_get(id)` -- Retrieves full detail of a CC session including tool calls and outcome.
+- `sessions_list(limit?, offset?)` -- Lists recent runtime sessions.
+- `sessions_get(id)` -- Retrieves full detail of a runtime session including tool calls and outcome.
 
 #### Scenario: All core tools registered at startup
 
@@ -303,26 +303,26 @@ The daemon SHALL support graceful shutdown. When a shutdown signal is received (
 4. Close the database connection pool.
 5. Exit cleanly.
 
-The daemon MUST NOT terminate in-flight CC sessions abruptly unless the shutdown timeout is exceeded.
+The daemon MUST NOT terminate in-flight runtime sessions abruptly unless the shutdown timeout is exceeded.
 
 #### Scenario: Clean shutdown with no active sessions
 
-WHEN the daemon receives SIGTERM and no CC sessions are in progress,
+WHEN the daemon receives SIGTERM and no runtime sessions are in progress,
 THEN the daemon SHALL stop accepting new connections,
 AND call `on_shutdown()` on all modules in reverse order,
 AND close the database connection pool,
 AND exit with status code 0.
 
-#### Scenario: Shutdown waits for in-flight CC session
+#### Scenario: Shutdown waits for in-flight runtime session
 
-WHEN the daemon receives SIGTERM while a CC session is actively running,
+WHEN the daemon receives SIGTERM while a runtime session is actively running,
 THEN the daemon SHALL stop accepting new MCP connections,
-AND the daemon SHALL wait for the in-flight CC session to complete before calling module `on_shutdown()`,
+AND the daemon SHALL wait for the in-flight runtime session to complete before calling module `on_shutdown()`,
 AND after the session completes, the daemon SHALL proceed with the remaining shutdown steps.
 
 #### Scenario: Shutdown timeout forces exit
 
-WHEN the daemon receives SIGTERM while a CC session is running, and the session does not complete within the shutdown timeout,
+WHEN the daemon receives SIGTERM while a runtime session is running, and the session does not complete within the shutdown timeout,
 THEN the daemon SHALL log a warning about the timed-out session,
 AND proceed with module shutdown and database pool closure,
 AND exit.
@@ -340,7 +340,7 @@ The `Butler` class SHALL serve as the composition root that owns and wires toget
 
 - The parsed configuration (`ButlerConfig`).
 - The database connection pool.
-- Core component instances (state store, scheduler, CC spawner, session log).
+- Core component instances (state store, scheduler, LLM CLI spawner, session log).
 - Loaded and initialized module instances.
 - The FastMCP server instance.
 

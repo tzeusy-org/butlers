@@ -44,8 +44,8 @@ Heartbeat Butler (every 10 min)
     │              trigger_source: "heartbeat"
     │          })
     │           │
-    │           └─ Target butler spawns CC session
-    │               └─ CC executes task-specific tools
+    │           └─ Target butler spawns runtime session
+    │               └─ Runtime instance executes task-specific tools
     │
     └─ Update scheduled_tasks: next_due_at = compute_next(cron_expr)
 ```
@@ -190,11 +190,11 @@ externally-triggered sessions cannot run concurrently on the same butler:
 
 ```
 Timeline:
-  t=0   External trigger arrives → acquires lock → CC session starts
+  t=0   External trigger arrives → acquires lock → runtime session starts
   t=5   Scheduled task fires → blocks on lock
-  t=30  External CC session completes → lock released
-  t=30  Scheduled task acquires lock → CC session starts
-  t=60  Scheduled CC session completes
+  t=30  External runtime session completes → lock released
+  t=30  Scheduled task acquires lock → runtime session starts
+  t=60  Scheduled runtime session completes
 ```
 
 ### E2E Interleaving Tests

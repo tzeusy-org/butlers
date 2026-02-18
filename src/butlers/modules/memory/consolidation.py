@@ -41,8 +41,8 @@ async def run_consolidation(
     For each butler group with unconsolidated episodes:
     1. Fetch existing facts and rules for dedup context
     2. Build consolidation prompt via ``build_consolidation_prompt``
-    3. Spawn a CC instance with the consolidate skill
-    4. Parse CC output with ``parse_consolidation_output``
+    3. Spawn a runtime instance with the consolidate skill
+    4. Parse runtime output with ``parse_consolidation_output``
     5. Execute consolidation actions via ``execute_consolidation``
 
     Partial failures in one group do not block other groups from processing.
@@ -50,7 +50,7 @@ async def run_consolidation(
     Args:
         pool: asyncpg connection pool for the memory database.
         embedding_engine: EmbeddingEngine instance for storing new facts/rules.
-        cc_spawner: Optional CCSpawner instance for invoking Claude Code. If None,
+        cc_spawner: Optional CCSpawner instance for invoking the LLM CLI. If None,
             only episode grouping is performed (no actual consolidation).
 
     Returns:
@@ -128,7 +128,7 @@ async def run_consolidation(
                     butler_name=butler_name,
                 )
 
-                # 3. Spawn CC instance with consolidate skill
+                # 3. Spawn runtime instance with consolidate skill
                 logger.info(
                     "Spawning consolidation session for %s (%d episodes)",
                     butler_name,
@@ -140,12 +140,12 @@ async def run_consolidation(
                 )
 
                 if not result.success or result.output is None:
-                    error_msg = f"CC session failed for {butler_name}"
+                    error_msg = f"runtime session failed for {butler_name}"
                     logger.error("%s: %s", error_msg, result.error)
                     all_errors.append(error_msg)
                     continue
 
-                # 4. Parse CC output
+                # 4. Parse runtime output
                 parsed = parse_consolidation_output(result.output)
                 if parsed.parse_errors:
                     logger.warning("Parse errors for %s: %s", butler_name, parsed.parse_errors)

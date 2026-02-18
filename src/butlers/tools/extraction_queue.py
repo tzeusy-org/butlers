@@ -1,7 +1,7 @@
 """Extraction confirmation queue — holds low-confidence extractions for user review.
 
 Low/medium confidence signal extractions are queued here instead of being
-dispatched directly. The user (or a CC instance during a tick) can review
+dispatched directly. The user (or a runtime instance during a tick) can review
 pending items and confirm or dismiss them.
 
 Statuses: pending -> confirmed | dismissed | expired
@@ -279,7 +279,7 @@ async def extraction_queue_pending_count(pool: asyncpg.Pool) -> int:
     """Return the count of pending extractions.
 
     Useful for the Switchboard tick handler to surface pending count
-    so a CC instance can proactively ask the user about them.
+    so a runtime instance can proactively ask the user about them.
     """
     count = await pool.fetchval("SELECT COUNT(*) FROM extraction_queue WHERE status = 'pending'")
     return count

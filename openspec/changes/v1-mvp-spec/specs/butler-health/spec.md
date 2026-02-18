@@ -545,7 +545,7 @@ AND it MUST NOT raise an error.
 
 The `research_summarize` MCP tool SHALL accept an optional `condition_id` (UUID) or optional `tags` (JSONB array of strings) parameter to scope the research entries to summarize. It SHALL return a structured summary of the matching research entries, including the count of entries, the list of unique tags across all matches, and the titles of the included articles.
 
-This tool provides a quick overview of saved research. The actual summarization of content is intended to be performed by the CC instance using the returned data.
+This tool provides a quick overview of saved research. The actual summarization of content is intended to be performed by the runtime instance using the returned data.
 
 #### Scenario: Summarize all research for a condition
 
@@ -626,19 +626,19 @@ THEN the tool SHALL return an error indicating the period must be "week" or "mon
 
 The Health butler SHALL define a `medication-reminder-check` scheduled task that runs three times daily at 8:00 AM, 12:00 PM, and 8:00 PM. This task SHALL be defined in the butler's `butler.toml` as three separate `[[butler.schedule]]` entries (one per time) or as a single entry with a cron expression covering all three times.
 
-When triggered, the task prompt SHALL instruct the CC instance to check for active medications with scheduled times falling within the next 2 hours that have not yet had a dose logged for the current scheduled time. The CC instance SHALL use the butler's MCP tools (`medication_list`, `medication_history`) to identify medications due and report any that are missing a dose log.
+When triggered, the task prompt SHALL instruct the runtime instance to check for active medications with scheduled times falling within the next 2 hours that have not yet had a dose logged for the current scheduled time. The runtime instance SHALL use the butler's MCP tools (`medication_list`, `medication_history`) to identify medications due and report any that are missing a dose log.
 
 #### Scenario: Medication reminder at 8 AM
 
 WHEN the `medication-reminder-check` task fires at 8:00 AM,
-THEN the spawned CC instance SHALL check for active medications with schedule times between 08:00 and 10:00,
+THEN the spawned runtime instance SHALL check for active medications with schedule times between 08:00 and 10:00,
 AND for each such medication, it SHALL check whether a dose has been logged for today covering that time window,
 AND it SHALL report any medications that are due but not yet logged.
 
 #### Scenario: All medications already logged
 
 WHEN the `medication-reminder-check` task fires and all medications due within the next 2 hours already have a logged dose,
-THEN the CC instance SHALL report that no reminders are needed.
+THEN the runtime instance SHALL report that no reminders are needed.
 
 ---
 
@@ -646,7 +646,7 @@ THEN the CC instance SHALL report that no reminders are needed.
 
 The Health butler SHALL define a `weekly-health-summary` scheduled task that runs every Sunday at 9:00 AM. This task SHALL be defined in the butler's `butler.toml` as a `[[butler.schedule]]` entry with `cron = "0 9 * * 0"`.
 
-When triggered, the task prompt SHALL instruct the CC instance to generate a comprehensive weekly health summary using the butler's MCP tools. The summary SHALL include:
+When triggered, the task prompt SHALL instruct the runtime instance to generate a comprehensive weekly health summary using the butler's MCP tools. The summary SHALL include:
 
 - Weight trend over the past week (if weight measurements exist).
 - Medication adherence rates for each active medication over the past week.
@@ -656,13 +656,13 @@ When triggered, the task prompt SHALL instruct the CC instance to generate a com
 #### Scenario: Weekly summary with full data
 
 WHEN the `weekly-health-summary` task fires on Sunday at 9:00 AM,
-THEN the spawned CC instance SHALL use `trend_report(period="week")`, `health_summary`, and other tools as needed,
+THEN the spawned runtime instance SHALL use `trend_report(period="week")`, `health_summary`, and other tools as needed,
 AND it SHALL generate a summary covering weight trends, medication adherence, and symptom patterns for the past 7 days.
 
 #### Scenario: Weekly summary with no data
 
 WHEN the `weekly-health-summary` task fires and no health data has been logged in the past week,
-THEN the CC instance SHALL report that no data is available for the weekly summary.
+THEN the runtime instance SHALL report that no data is available for the weekly summary.
 
 ---
 

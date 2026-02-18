@@ -1,7 +1,7 @@
 """End-to-end tests for the butlers staging harness.
 
 These tests provision a complete butler ecosystem with real PostgreSQL,
-real Claude Code spawners, and actual LLM calls to validate multi-butler
+real LLM CLI spawners, and actual LLM calls to validate multi-butler
 flows, routing, classification, and integration behavior.
 
 E2E tests are excluded from CI and require:

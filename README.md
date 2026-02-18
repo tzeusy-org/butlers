@@ -16,7 +16,7 @@ Each butler runs as a persistent daemon with built-in infrastructure:
 
 - **State store** — remembers things between sessions (key-value JSONB)
 - **Task scheduler** — runs prompts on cron schedules (e.g., morning briefings, inbox triage)
-- **Claude Code spawner** — spins up ephemeral Claude Code instances to reason and act
+- **LLM CLI spawner** — spins up ephemeral LLM CLI instances to reason and act
 - **Session log** — tracks what happened and when
 
 On top of that, butlers gain capabilities through **modules** — pluggable integrations like email, Telegram, calendar, Slack, and GitHub. Mix and match modules to build the butler you need.
@@ -76,7 +76,7 @@ External Clients (MCP-compatible)
 Butler Butler Butler ──── each a persistent MCP server daemon
    │    │    │
    ▼    ▼    ▼
-Claude Code instances ── ephemeral, locked-down, reason + act
+LLM CLI instances ── ephemeral, locked-down, reason + act
 ```
 
 - Each butler owns a **dedicated PostgreSQL database** (strict isolation)
@@ -131,7 +131,7 @@ graph TB
             S6[6. Init modules<br/>topological sort]
             S7[7. Run module migrations]
             S8[8. Module on_startup]
-            S9[9. Create CC Spawner]
+            S9[9. Create LLM CLI Spawner]
             S10[10. Sync schedules]
             S11[11. Create FastMCP +<br/>register core tools]
             S12[12. Register module tools]
@@ -143,7 +143,7 @@ graph TB
             State[State Store<br/>KV JSONB]
             Scheduler[Scheduler<br/>croniter]
             Sessions[Session Log<br/>append-only]
-            Spawner[CC Spawner<br/>asyncio.Lock]
+            Spawner[LLM CLI Spawner<br/>asyncio.Lock]
         end
 
         subgraph Modules["Opt-in Modules"]
@@ -380,7 +380,7 @@ required = ["MY_CUSTOM_SECRET"]     # Startup fails if missing
 optional = ["MY_OPTIONAL_CONFIG"]   # Warns if missing, continues
 ```
 
-These are validated at startup by the credential checker and passed through to spawned Claude Code instances.
+These are validated at startup by the credential checker and passed through to spawned LLM CLI instances.
 
 ### Module Variables
 
@@ -393,7 +393,7 @@ Telegram and Email credentials are identity-scoped via `[modules.<channel>.user]
 | `modules.email.bot`     | `address_env`, `password_env`    | `BUTLER_EMAIL_ADDRESS`, `BUTLER_EMAIL_PASSWORD`        | Butler-owned mailbox credentials               |
 | `modules.email.user`    | `address_env`, `password_env`    | `USER_EMAIL_ADDRESS`, `USER_EMAIL_PASSWORD`            | Optional user mailbox credentials              |
 
-Enabled scopes with missing env vars are startup-blocking. Disabled scopes are not required. Declared credentials are forwarded to ephemeral Claude Code instances.
+Enabled scopes with missing env vars are startup-blocking. Disabled scopes are not required. Declared credentials are forwarded to ephemeral LLM CLI instances.
 
 ## Development
 

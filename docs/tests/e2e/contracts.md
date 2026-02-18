@@ -293,7 +293,7 @@ class SpawnerResult:
 | `duration_ms` | Always >= 0, measures wall-clock time of adapter call |
 | `success` | `True` iff adapter returned without exception and output is non-empty |
 | `error` | Set iff `success is False` |
-| `tool_calls` | List of `{name, arguments, result}` dicts from CC session |
+| `tool_calls` | List of `{name, arguments, result}` dicts from runtime session |
 | `model` | The model ID used (e.g., `claude-haiku-4-5-20251001`) |
 | `input_tokens` / `output_tokens` | Set when adapter reports usage, `None` otherwise |
 

@@ -23,7 +23,7 @@ The ButlerDaemon manages the lifecycle of a butler:
 On startup failure, already-initialized modules get on_shutdown() called.
 
 Graceful shutdown: (a) stops the MCP server, (b) stops accepting new triggers,
-(c) drains in-flight CC sessions up to a configurable timeout,
+(c) drains in-flight runtime sessions up to a configurable timeout,
 (d) cancels switchboard heartbeat, (e) closes Switchboard MCP client,
 (f) shuts down modules in reverse topological order, (g) closes DB pool.
 """
@@ -833,8 +833,8 @@ class ButlerDaemon:
         if self.spawner is None:
             return
 
-        # Shared dict reference — populated by pipeline before CC spawn,
-        # read by route_to_butler tool during CC session.
+        # Shared dict reference — populated by pipeline before runtime spawn,
+        # read by route_to_butler tool during runtime session.
         self._routing_session_ctx: dict[str, Any] = {}
 
         pipeline = MessagePipeline(
@@ -1267,7 +1267,7 @@ class ButlerDaemon:
                 # Prepare context with injected request_context
                 context_parts: list[str] = []
 
-                # Add request_context header for CC session
+                # Add request_context header for runtime session
                 request_ctx_json = json.dumps(route_context, ensure_ascii=False, indent=2)
                 context_parts.append(
                     "REQUEST CONTEXT (for reply targeting and audit traceability):"
@@ -1652,7 +1652,7 @@ class ButlerDaemon:
             pipeline = daemon._pipeline
 
             # Shared routing context dict — same dict reference as pipeline's.
-            # Safe because spawner lock serializes CC sessions.
+            # Safe because spawner lock serializes runtime sessions.
             _routing_session_ctx = getattr(daemon, "_routing_session_ctx", {})
 
             async def _process_ingested_message(
@@ -1753,7 +1753,7 @@ class ButlerDaemon:
             ) -> dict[str, Any]:
                 """Route a message to a specific butler.
 
-                Called by the CC instance during message classification to
+                Called by the runtime instance during message classification to
                 directly route a sub-message to the target butler.
 
                 Args:
@@ -2633,7 +2633,7 @@ class ButlerDaemon:
         """Graceful shutdown.
 
         1. Stop MCP server
-        2. Stop accepting new triggers and drain in-flight CC sessions
+        2. Stop accepting new triggers and drain in-flight runtime sessions
         3. Cancel switchboard heartbeat
         4. Close Switchboard MCP client
         5. Module on_shutdown in reverse topological order
@@ -2655,7 +2655,7 @@ class ButlerDaemon:
             self._server_task = None
             self._server = None
 
-        # 2. Stop accepting new triggers and drain in-flight CC sessions
+        # 2. Stop accepting new triggers and drain in-flight runtime sessions
         self._accepting_connections = False
         if self.spawner is not None:
             self.spawner.stop_accepting()

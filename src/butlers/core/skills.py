@@ -1,6 +1,6 @@
 """Butler skills infrastructure — helpers for CLAUDE.md, AGENTS.md, and skills directories.
 
-Provides utility functions the CC spawner uses to read system prompts,
+Provides utility functions the LLM CLI spawner uses to read system prompts,
 manage runtime agent notes, and locate skill directories within a butler's
 config directory.
 
@@ -8,8 +8,8 @@ Butler config directory layout::
 
     butler-name/
     ├── CLAUDE.md       # Butler personality/instructions (system prompt)
-    ├── AGENTS.md       # Runtime agent notes (read/write by CC instances)
-    ├── skills/         # Skills available to CC instances
+    ├── AGENTS.md       # Runtime agent notes (read/write by runtime instances)
+    ├── skills/         # Skills available to runtime instances
     │   └── <name>/
     │       └── SKILL.md
     └── butler.toml     # Identity, schedule, modules config
@@ -34,7 +34,7 @@ _INCLUDE_PATTERN = re.compile(r"^\s*<!--\s*@include\s+([\w/._-]+\.md)\s*-->\s*$"
 
 
 # ---------------------------------------------------------------------------
-# 9.1 — CLAUDE.md and skills directory for CC spawner
+# 9.1 — CLAUDE.md and skills directory for LLM CLI spawner
 # ---------------------------------------------------------------------------
 
 

@@ -248,13 +248,13 @@ AND the butler SHALL NOT halt shutdown due to a single module's `on_shutdown` fa
 
 ### Requirement: Tool Registration Isolation
 
-Modules SHALL only add MCP tools to the butler's FastMCP server via the `register_tools` method. Modules MUST NOT directly access or modify core infrastructure components (scheduler, CC spawner, state store internals).
+Modules SHALL only add MCP tools to the butler's FastMCP server via the `register_tools` method. Modules MUST NOT directly access or modify core infrastructure components (scheduler, LLM CLI spawner, state store internals).
 
 #### Scenario: Module registers MCP tools
 
 WHEN a module's `register_tools(mcp, config, db)` method is called
 THEN the module SHALL use the `mcp` FastMCP instance to register its domain-specific tools
-AND those tools SHALL be available to CC instances spawned by the butler.
+AND those tools SHALL be available to runtime instances spawned by the butler.
 
 #### Scenario: Module reads state via MCP tools
 

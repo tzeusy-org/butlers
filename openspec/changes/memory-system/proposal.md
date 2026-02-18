@@ -1,6 +1,6 @@
 ## Why
 
-Butlers currently have no durable memory that is consistently available at runtime. Each CC session starts from scratch, so user preferences, long-term facts, and learned behavior patterns are lost between sessions.
+Butlers currently have no durable memory that is consistently available at runtime. Each runtime session starts from scratch, so user preferences, long-term facts, and learned behavior patterns are lost between sessions.
 
 The previous service-centric design for memory conflicts with the platform's isolation model (`one DB per butler`) and creates unnecessary infrastructure coupling. Memory should be a common module that runs inside each relevant butler.
 
@@ -16,7 +16,7 @@ The previous service-centric design for memory conflicts with the platform's iso
 - **Local embeddings + hybrid retrieval** — MiniLM-L6 embeddings with vector + full-text retrieval fused via RRF.
 - **Confidence decay** — permanence-based decay rates with effective-confidence thresholds.
 - **Consolidation engine** — scheduled conversion of episodes into facts/rules with provenance links.
-- **Runtime context injection** — spawner calls `memory_context()` before CC spawn and injects memory block into system prompt.
+- **Runtime context injection** — spawner calls `memory_context()` before runtime spawn and injects memory block into system prompt.
 - **Session-to-episode pipeline** — daemon stores an episode after each completed session.
 - **Dashboard integration** — butler-scoped memory pages and tenant-wide `/memory` aggregation by API fanout.
 

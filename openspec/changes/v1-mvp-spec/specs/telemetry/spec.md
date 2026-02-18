@@ -1,13 +1,13 @@
 # Telemetry
 
-The telemetry capability provides distributed tracing across butlers and CC sessions using OpenTelemetry. Every butler daemon initializes a TracerProvider on startup via `init_telemetry(service_name)`, and all MCP tool handlers, CC sessions, scheduler ticks, and inter-butler calls are instrumented with spans. Trace context is propagated across butler boundaries (via `_trace_context` in MCP args) and into CC instances (via the `TRACEPARENT` environment variable). The LGTM stack (Alloy gateway, Tempo for traces, Grafana for visualization) is used for local dev trace visualization.
+The telemetry capability provides distributed tracing across butlers and runtime sessions using OpenTelemetry. Every butler daemon initializes a TracerProvider on startup via `init_telemetry(service_name)`, and all MCP tool handlers, runtime sessions, scheduler ticks, and inter-butler calls are instrumented with spans. Trace context is propagated across butler boundaries (via `_trace_context` in MCP args) and into runtime instances (via the `TRACEPARENT` environment variable). The LGTM stack (Alloy gateway, Tempo for traces, Grafana for visualization) is used for local dev trace visualization.
 
 ## Core Components
 
 - `init_telemetry(service_name)` — initializes the OTel `TracerProvider` with an OTLP exporter, sets the `service.name` resource attribute
 - `tracer = trace.get_tracer("butlers")` — shared tracer instance used by all instrumentation points
 - Span wrappers for every MCP tool handler
-- Trace context propagation across inter-butler MCP calls and CC sessions
+- Trace context propagation across inter-butler MCP calls and runtime sessions
 - LGTM stack (Alloy OTLP gateway, Tempo for traces, Grafana for visualization) for local dev trace visibility
 
 ## Instrumentation Points
@@ -17,7 +17,7 @@ The telemetry capability provides distributed tracing across butlers and CC sess
 | Message received | `switchboard.receive` | `channel`, `source_id` |
 | Routing decision | `switchboard.classify` | `routed_to` |
 | Inter-butler call | `switchboard.route` | `target`, `tool_name` |
-| CC spawned | `butler.cc_session` | `session_id`, `prompt_length` |
+| runtime spawned | `butler.cc_session` | `session_id`, `prompt_length` |
 | MCP tool called | `butler.tool.<name>` | tool-specific attributes |
 | Scheduler tick | `butler.tick` | `tasks_due`, `tasks_run` |
 | Heartbeat cycle | `heartbeat.cycle` | `butlers_ticked`, `failures` |
@@ -26,7 +26,7 @@ The telemetry capability provides distributed tracing across butlers and CC sess
 
 1. **Switchboard to Butler:** W3C traceparent passed via `_trace_context` in MCP tool call args. Target butler extracts it and creates a child span.
 2. **Butler to CC Instance:** Trace context passed via `TRACEPARENT` environment variable. Session log stores `trace_id` for correlation.
-3. **CC to Butler MCP tools:** Each MCP tool call from CC creates a child span under the CC session span.
+3. **CC to Butler MCP tools:** Each MCP tool call from CC creates a child span under the runtime session span.
 
 ## Local Dev Setup
 
@@ -70,7 +70,7 @@ All instrumentation points within a butler process SHALL use a single shared tra
 
 #### Scenario: Multiple components use the same tracer
 
-WHEN the CC Spawner, tick handler, and MCP tool handlers all create spans
+WHEN the LLM CLI Spawner, tick handler, and MCP tool handlers all create spans
 THEN they MUST all use the tracer returned by `trace.get_tracer("butlers")`
 AND all spans MUST share the same instrumentation scope name `"butlers"`
 
@@ -109,7 +109,7 @@ Every span created by the telemetry instrumentation SHALL include the `butler.na
 WHEN any MCP tool handler span is created on a butler named `relationship`
 THEN the span MUST have attribute `butler.name` set to `relationship`
 
-#### Scenario: CC session span includes butler.name
+#### Scenario: runtime session span includes butler.name
 
 WHEN a `butler.cc_session` span is created on a butler named `general`
 THEN the span MUST have attribute `butler.name` set to `general`
@@ -132,9 +132,9 @@ THEN the active span MUST record the exception via `span.record_exception()`
 AND the span status MUST be set to `ERROR`
 AND the span MUST include the exception message in its events
 
-#### Scenario: CC session fails
+#### Scenario: runtime session fails
 
-WHEN a CC instance fails with an SDK timeout error
+WHEN a runtime instance fails with an SDK timeout error
 THEN the `butler.cc_session` span MUST record the exception
 AND the span status MUST be set to `ERROR`
 
@@ -174,7 +174,7 @@ AND the span MUST have attribute `channel` set to `mcp`
 
 ### Requirement: Switchboard classify span
 
-When the Switchboard spawns a CC instance to classify a message, it SHALL create a `switchboard.classify` span as a child of the `switchboard.receive` span.
+When the Switchboard spawns a runtime instance to classify a message, it SHALL create a `switchboard.classify` span as a child of the `switchboard.receive` span.
 
 #### Scenario: Classification determines target butler
 
@@ -208,20 +208,20 @@ AND the full trace MUST show the hierarchy: `switchboard.receive` > `switchboard
 
 ---
 
-### Requirement: CC session span
+### Requirement: runtime session span
 
-When the CC Spawner spawns an ephemeral Claude Code instance, it SHALL create a `butler.cc_session` span that encompasses the entire CC execution.
+When the LLM CLI Spawner spawns an ephemeral LLM CLI instance, it SHALL create a `butler.cc_session` span that encompasses the entire CC execution.
 
-#### Scenario: CC session span is created with correct attributes
+#### Scenario: runtime session span is created with correct attributes
 
-WHEN the CC Spawner spawns a CC instance with session ID `abc-123` and a prompt of 150 characters
+WHEN the LLM CLI Spawner spawns a runtime instance with session ID `abc-123` and a prompt of 150 characters
 THEN a span named `butler.cc_session` MUST be created
 AND the span MUST have attribute `session_id` set to `abc-123`
 AND the span MUST have attribute `prompt_length` set to `150`
 
-#### Scenario: CC session span duration matches session duration
+#### Scenario: runtime session span duration matches session duration
 
-WHEN a CC instance runs for 8 seconds
+WHEN a runtime instance runs for 8 seconds
 THEN the `butler.cc_session` span's duration MUST reflect approximately 8 seconds
 
 ---
@@ -292,24 +292,24 @@ AND it MUST create a new root span (not a child span)
 
 ### Requirement: Trace context propagation from Butler to CC Instance
 
-When the CC Spawner spawns a Claude Code instance, it SHALL propagate trace context by setting the `TRACEPARENT` environment variable on the spawned process. The session log SHALL store the `trace_id` for correlation.
+When the LLM CLI Spawner spawns an LLM CLI instance, it SHALL propagate trace context by setting the `TRACEPARENT` environment variable on the spawned process. The session log SHALL store the `trace_id` for correlation.
 
 #### Scenario: TRACEPARENT is set for the CC process
 
-WHEN the CC Spawner spawns a CC instance within an active `butler.cc_session` span
+WHEN the LLM CLI Spawner spawns a runtime instance within an active `butler.cc_session` span
 THEN the `TRACEPARENT` environment variable MUST be set on the spawned CC process
 AND the value MUST conform to the W3C Trace Context format (`00-<trace_id>-<span_id>-<flags>`)
 
 #### Scenario: Session log records trace_id
 
-WHEN a CC session is logged in the `sessions` table and an active trace exists
+WHEN a runtime session is logged in the `sessions` table and an active trace exists
 THEN the session record MUST include the `trace_id` from the active span
 AND the `trace_id` MUST match the trace ID in the `TRACEPARENT` passed to the CC process
 
-#### Scenario: No active trace does not block CC spawn
+#### Scenario: No active trace does not block runtime spawn
 
-WHEN the CC Spawner is triggered without an active trace context
-THEN the CC instance MUST still be spawned successfully
+WHEN the LLM CLI Spawner is triggered without an active trace context
+THEN the runtime instance MUST still be spawned successfully
 AND no `TRACEPARENT` environment variable SHALL be set
 AND the session log's `trace_id` field MAY be null
 
@@ -317,18 +317,18 @@ AND the session log's `trace_id` field MAY be null
 
 ### Requirement: Trace context propagation from CC to Butler MCP tools
 
-When a CC instance calls an MCP tool on its owning butler, each tool call SHALL create a child span under the CC session span.
+When a runtime instance calls an MCP tool on its owning butler, each tool call SHALL create a child span under the runtime session span.
 
 #### Scenario: CC tool call creates a child span
 
-WHEN a CC instance spawned under a `butler.cc_session` span calls the `state_get` tool
+WHEN a runtime instance spawned under a `butler.cc_session` span calls the `state_get` tool
 THEN a span named `butler.tool.state_get` MUST be created
 AND the span MUST be a child of the `butler.cc_session` span
 AND both spans MUST share the same `trace_id`
 
 #### Scenario: Multiple CC tool calls produce sibling spans
 
-WHEN a CC instance calls `state_get` and then `state_set` during a single session
+WHEN a runtime instance calls `state_get` and then `state_set` during a single session
 THEN both `butler.tool.state_get` and `butler.tool.state_set` spans MUST be children of the same `butler.cc_session` span
 AND all three spans MUST share the same `trace_id`
 
@@ -336,11 +336,11 @@ AND all three spans MUST share the same `trace_id`
 
 ### Requirement: End-to-end trace hierarchy
 
-A complete message flow from the Switchboard through to a target butler's CC session and tool calls SHALL produce a single trace with the correct parent-child span hierarchy.
+A complete message flow from the Switchboard through to a target butler's runtime session and tool calls SHALL produce a single trace with the correct parent-child span hierarchy.
 
 #### Scenario: Full trace from message receipt to tool execution
 
-WHEN a Telegram message is received by the Switchboard, classified, routed to the `health` butler, and the `health` butler spawns a CC instance that calls `state_set`
+WHEN a Telegram message is received by the Switchboard, classified, routed to the `health` butler, and the `health` butler spawns a runtime instance that calls `state_set`
 THEN a single trace MUST exist containing the following span hierarchy:
 - `switchboard.receive` (root)
   - `switchboard.classify` (child of receive)

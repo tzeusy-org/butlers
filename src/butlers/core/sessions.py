@@ -1,7 +1,7 @@
-"""Session log for butler daemon — append-only record of CC spawner invocations.
+"""Session log for butler daemon — append-only record of LLM CLI spawner invocations.
 
-Each session represents one ephemeral Claude Code invocation. Sessions are
-created when a trigger fires and completed when the CC instance returns.
+Each session represents one ephemeral LLM CLI invocation. Sessions are
+created when a trigger fires and completed when the runtime instance returns.
 The session log is append-only: after creation the only mutation is
 ``session_complete``, which fills in the result fields and sets completed_at.
 """
@@ -64,7 +64,7 @@ async def session_create(
 
     Args:
         pool: asyncpg connection pool for the butler's database.
-        prompt: The prompt text sent to the CC instance.
+        prompt: The prompt text sent to the runtime instance.
         trigger_source: What caused this session. Must be one of:
             ``"tick"``, ``"external"``, ``"trigger"``, or ``"schedule:<task-name>"``.
         trace_id: Optional OpenTelemetry trace ID for correlation.
@@ -118,9 +118,9 @@ async def session_complete(
     Args:
         pool: asyncpg connection pool for the butler's database.
         session_id: UUID of the session to complete.
-        output: The textual output from the CC instance, or None on failure.
+        output: The textual output from the runtime instance, or None on failure.
         tool_calls: List of tool call records (serialised as JSONB).
-        duration_ms: Wall-clock duration of the CC invocation in milliseconds.
+        duration_ms: Wall-clock duration of the runtime invocation in milliseconds.
         success: Whether the session completed successfully.
         error: Error message if the session failed, None otherwise.
         cost: Optional cost/token usage dict (serialised as JSONB).
@@ -204,7 +204,7 @@ async def sessions_active(
     """Return all currently active (in-progress) sessions.
 
     A session is considered active when ``completed_at IS NULL`` — it has been
-    created by the spawner but the CC instance has not yet returned.
+    created by the spawner but the runtime instance has not yet returned.
 
     This is the primary mechanism for the dashboard to detect running sessions.
 

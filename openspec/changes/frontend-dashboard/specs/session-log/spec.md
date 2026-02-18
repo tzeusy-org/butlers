@@ -40,22 +40,22 @@ An Alembic migration in the core revision chain SHALL add the `input_tokens`, `o
 
 ### Requirement: Session update includes token data
 
-When a CC instance completes, the CC Spawner SHALL capture token usage data from the Claude Code SDK response and store it in the session record alongside the existing completion fields.
+When a runtime instance completes, the LLM CLI Spawner SHALL capture token usage data from the Claude Code SDK response and store it in the session record alongside the existing completion fields.
 
 #### Scenario: Successful CC completion captures token usage
 
-- **WHEN** a CC instance completes successfully and the SDK response includes token usage data
+- **WHEN** a runtime instance completes successfully and the SDK response includes token usage data
 - **THEN** the corresponding session row MUST be updated with `input_tokens` set to the input token count from the SDK response, `output_tokens` set to the output token count, and `model` set to the model ID used for the invocation
 
 #### Scenario: SDK response lacks token data
 
-- **WHEN** a CC instance completes and the SDK response does not include token usage data
+- **WHEN** a runtime instance completes and the SDK response does not include token usage data
 - **THEN** the corresponding session row MUST have `input_tokens`, `output_tokens`, and `model` set to NULL
 - **AND** the session MUST still be recorded with all other fields populated normally
 
 #### Scenario: Failed CC completion captures partial token data
 
-- **WHEN** a CC instance fails with an error but the SDK response includes partial token usage data
+- **WHEN** a runtime instance fails with an error but the SDK response includes partial token usage data
 - **THEN** the corresponding session row MUST store whatever token data is available (e.g., `input_tokens` may be set while `output_tokens` is NULL)
 - **AND** the `success`, `error`, and `duration_ms` fields MUST still be recorded as specified by the existing session update requirement
 
@@ -63,22 +63,22 @@ When a CC instance completes, the CC Spawner SHALL capture token usage data from
 
 ### Requirement: Active session detection
 
-Sessions with `completed_at` IS NULL SHALL indicate a currently running CC instance. This enables the dashboard to display live session status.
+Sessions with `completed_at` IS NULL SHALL indicate a currently running runtime instance. This enables the dashboard to display live session status.
 
-#### Scenario: CC instance is currently running
+#### Scenario: runtime instance is currently running
 
-- **WHEN** a CC instance has been spawned and has not yet completed
+- **WHEN** a runtime instance has been spawned and has not yet completed
 - **THEN** the corresponding session row MUST have `completed_at` set to NULL
 - **AND** a query for `SELECT * FROM sessions WHERE completed_at IS NULL` MUST return this session
 
-#### Scenario: CC instance completes
+#### Scenario: runtime instance completes
 
-- **WHEN** a previously running CC instance finishes (successfully or with error)
+- **WHEN** a previously running runtime instance finishes (successfully or with error)
 - **THEN** the corresponding session row MUST have `completed_at` set to a non-NULL timestamp
 - **AND** the session MUST no longer appear in queries filtering for `completed_at IS NULL`
 
 #### Scenario: Multiple butlers have active sessions
 
-- **WHEN** two different butlers each have a running CC instance
+- **WHEN** two different butlers each have a running runtime instance
 - **THEN** each butler's own `sessions` table MUST contain exactly one row with `completed_at IS NULL`
 - **AND** the dashboard API can detect active sessions by querying each butler's database independently

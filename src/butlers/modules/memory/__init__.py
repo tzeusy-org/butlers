@@ -114,7 +114,7 @@ class MemoryModule(Module):
             session_id: str | None = None,
             importance: float = 5.0,
         ) -> dict[str, Any]:
-            """Store a raw episode from a CC session."""
+            """Store a raw episode from a runtime session."""
             return await _writing.memory_store_episode(
                 module._get_pool(),
                 content,

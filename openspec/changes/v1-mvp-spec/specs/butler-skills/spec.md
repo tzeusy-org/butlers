@@ -14,7 +14,7 @@ Every butler's config directory SHALL follow a standard layout. The directory MU
 butler-name/
 ├── CLAUDE.md       # Butler personality/instructions (required for CC)
 ├── AGENTS.md       # Runtime agent notes (populated at runtime by CC)
-├── skills/         # Skills available to CC instances
+├── skills/         # Skills available to runtime instances
 │   ├── morning-briefing/
 │   │   ├── SKILL.md     # Prompt template / instructions
 │   │   └── run.py       # Script CC can invoke via bash
@@ -33,8 +33,8 @@ AND the directory SHALL contain a `butler.toml` file.
 
 #### Scenario: CC working directory is the butler config directory
 
-WHEN the CC Spawner spawns a CC instance for a butler,
-THEN the CC instance's working directory SHALL be the butler's config directory,
+WHEN the LLM CLI Spawner spawns a runtime instance for a butler,
+THEN the runtime instance's working directory SHALL be the butler's config directory,
 AND CC SHALL be able to read all files within the directory via file access,
 AND CC SHALL be able to list the `skills/` subdirectory via bash.
 
@@ -42,15 +42,15 @@ AND CC SHALL be able to list the `skills/` subdirectory via bash.
 
 ### Requirement: CLAUDE.md -- Butler personality
 
-Each butler's config directory MUST contain a `CLAUDE.md` file. The CC Spawner SHALL read this file and pass its contents as the `system_prompt` parameter to the Claude Code SDK when spawning a CC instance. CLAUDE.md defines the butler's identity, behavioral instructions, constraints, an overview of available tools, and guidance on when and how to use those tools.
+Each butler's config directory MUST contain a `CLAUDE.md` file. The LLM CLI Spawner SHALL read this file and pass its contents as the `system_prompt` parameter to the Claude Code SDK when spawning a runtime instance. CLAUDE.md defines the butler's identity, behavioral instructions, constraints, an overview of available tools, and guidance on when and how to use those tools.
 
 CLAUDE.md SHOULD list available skills so that CC knows what is available without needing to browse the filesystem. Each listed skill SHOULD include the skill name and a brief description of its purpose.
 
-If CLAUDE.md is missing or empty, the CC Spawner SHALL spawn CC with a minimal default system prompt that identifies the butler by name only, in the form: `"You are the <name> butler."`.
+If CLAUDE.md is missing or empty, the LLM CLI Spawner SHALL spawn CC with a minimal default system prompt that identifies the butler by name only, in the form: `"You are the <name> butler."`.
 
 #### Scenario: CLAUDE.md is passed as system prompt
 
-WHEN the CC Spawner spawns a CC instance for a butler whose `CLAUDE.md` contains the text "You are the Health butler. You track daily health metrics.",
+WHEN the LLM CLI Spawner spawns a runtime instance for a butler whose `CLAUDE.md` contains the text "You are the Health butler. You track daily health metrics.",
 THEN the `system_prompt` parameter passed to `claude_code_sdk.query` SHALL be "You are the Health butler. You track daily health metrics.".
 
 #### Scenario: CLAUDE.md lists available skills
@@ -60,15 +60,15 @@ THEN CC SHALL be able to identify those skills and their purpose from the system
 
 #### Scenario: Missing CLAUDE.md triggers default system prompt
 
-WHEN the CC Spawner attempts to read `CLAUDE.md` from a butler named "general" and the file does not exist,
-THEN the CC Spawner SHALL use the default system prompt "You are the general butler.",
-AND the CC instance SHALL still be spawned successfully.
+WHEN the LLM CLI Spawner attempts to read `CLAUDE.md` from a butler named "general" and the file does not exist,
+THEN the LLM CLI Spawner SHALL use the default system prompt "You are the general butler.",
+AND the runtime instance SHALL still be spawned successfully.
 
 #### Scenario: Empty CLAUDE.md triggers default system prompt
 
 WHEN a butler named "health" has a `CLAUDE.md` file that exists but is empty (zero bytes),
-THEN the CC Spawner SHALL use the default system prompt "You are the health butler.",
-AND the CC instance SHALL still be spawned successfully.
+THEN the LLM CLI Spawner SHALL use the default system prompt "You are the health butler.",
+AND the runtime instance SHALL still be spawned successfully.
 
 #### Scenario: CLAUDE.md contains tool usage guidance
 
@@ -79,33 +79,33 @@ THEN CC SHALL receive these instructions as part of its system prompt and follow
 
 ### Requirement: AGENTS.md -- Runtime notes
 
-Each butler's config directory MUST contain an `AGENTS.md` file. This file MAY be initially empty. CC instances can write to this file to persist notes, learnings, preferences, and patterns discovered across sessions.
+Each butler's config directory MUST contain an `AGENTS.md` file. This file MAY be initially empty. runtime instances can write to this file to persist notes, learnings, preferences, and patterns discovered across sessions.
 
 AGENTS.md SHALL NOT be passed as part of the `system_prompt` to the CC SDK. It is accessible to CC via file read within the working directory. CC is instructed via CLAUDE.md to consult and update AGENTS.md as needed.
 
-In v1, multiple CC sessions MAY write to AGENTS.md. Concurrent writes SHALL use last-write-wins semantics with no merge conflict handling.
+In v1, multiple runtime sessions MAY write to AGENTS.md. Concurrent writes SHALL use last-write-wins semantics with no merge conflict handling.
 
 #### Scenario: CC reads AGENTS.md from the working directory
 
-WHEN a CC instance is spawned for a butler whose `AGENTS.md` contains "User prefers metric units for health data",
+WHEN a runtime instance is spawned for a butler whose `AGENTS.md` contains "User prefers metric units for health data",
 THEN CC SHALL be able to read `AGENTS.md` via file read,
 AND CC SHALL see the content "User prefers metric units for health data".
 
 #### Scenario: CC writes to AGENTS.md to persist learnings
 
-WHEN a CC instance discovers that the user prefers morning briefings before 8am,
+WHEN a runtime instance discovers that the user prefers morning briefings before 8am,
 THEN CC SHALL be able to write to `AGENTS.md` to append this learning,
-AND subsequent CC sessions SHALL be able to read this note from the file.
+AND subsequent runtime sessions SHALL be able to read this note from the file.
 
 #### Scenario: AGENTS.md is not included in system prompt
 
-WHEN the CC Spawner reads the butler's `CLAUDE.md` and spawns a CC instance,
+WHEN the LLM CLI Spawner reads the butler's `CLAUDE.md` and spawns a runtime instance,
 THEN the `system_prompt` parameter SHALL contain only the contents of `CLAUDE.md`,
 AND the contents of `AGENTS.md` SHALL NOT be included in the `system_prompt`.
 
 #### Scenario: Last-write-wins on concurrent updates
 
-WHEN two CC sessions run sequentially and both write to `AGENTS.md`,
+WHEN two runtime sessions run sequentially and both write to `AGENTS.md`,
 THEN the file SHALL contain the content written by the session that wrote last,
 AND no merge conflict resolution SHALL be attempted.
 
@@ -206,9 +206,9 @@ AND CC SHALL not attempt to execute any skills.
 
 ### Requirement: Skill scripts
 
-Skill directories MAY contain executable scripts that CC can invoke via bash. Scripts run within the CC instance's bash environment with the butler's config directory as the working directory.
+Skill directories MAY contain executable scripts that CC can invoke via bash. Scripts run within the runtime instance's bash environment with the butler's config directory as the working directory.
 
-Scripts SHALL have access to environment variables passed through by the CC Spawner (including `TRACEPARENT` if set and any butler-specific environment variables).
+Scripts SHALL have access to environment variables passed through by the LLM CLI Spawner (including `TRACEPARENT` if set and any butler-specific environment variables).
 
 Scripts SHOULD be self-contained and limit dependencies to the Python standard library or dependencies that are explicitly documented in the skill's SKILL.md. If a script requires external packages, SKILL.md MUST document this requirement.
 
@@ -228,7 +228,7 @@ AND the script SHALL run with the butler's config directory as the working direc
 
 #### Scenario: Script accesses environment variables
 
-WHEN the CC Spawner has set environment variables including `TRACEPARENT` and butler-specific variables,
+WHEN the LLM CLI Spawner has set environment variables including `TRACEPARENT` and butler-specific variables,
 THEN a skill script executed by CC SHALL have access to those environment variables via `os.environ` (Python) or `$VAR` (shell).
 
 #### Scenario: Script output captured by CC
@@ -277,7 +277,7 @@ AND the file MUST NOT be empty (it SHALL contain the placeholder to guide the us
 
 WHEN `butlers init mybutler --port 8104` is invoked,
 THEN the directory `butlers/mybutler/` SHALL contain an `AGENTS.md` file,
-AND the file SHALL be empty or contain a minimal placeholder comment such as `<!-- Runtime notes populated by CC sessions -->`.
+AND the file SHALL be empty or contain a minimal placeholder comment such as `<!-- Runtime notes populated by runtime sessions -->`.
 
 #### Scenario: butlers init creates empty skills directory
 
@@ -289,7 +289,7 @@ AND the directory SHALL contain no skill subdirectories.
 
 WHEN `butlers init mybutler --port 8104` completes,
 THEN `butlers run --config butlers/mybutler` SHALL start the butler successfully,
-AND the CC Spawner SHALL use the default system prompt derived from the placeholder CLAUDE.md,
+AND the LLM CLI Spawner SHALL use the default system prompt derived from the placeholder CLAUDE.md,
 AND the empty `skills/` directory SHALL not cause any errors.
 
 #### Scenario: butlers init does not create sample skills

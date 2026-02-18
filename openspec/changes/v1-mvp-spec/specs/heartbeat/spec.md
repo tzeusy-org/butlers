@@ -1,6 +1,6 @@
 # Heartbeat Butler
 
-The Heartbeat butler is an infrastructure butler that calls `tick()` on every registered butler on a periodic cycle (default every 10 minutes). It has no modules — only core components. The heartbeat cycle is itself a scheduled task: when due, the scheduler dispatches a prompt to an ephemeral Claude Code instance, which queries the Switchboard for all registered butlers and calls `tick()` on each one via the Switchboard's `route()` tool.
+The Heartbeat butler is an infrastructure butler that calls `tick()` on every registered butler on a periodic cycle (default every 10 minutes). It has no modules — only core components. The heartbeat cycle is itself a scheduled task: when due, the scheduler dispatches a prompt to an ephemeral LLM CLI instance, which queries the Switchboard for all registered butlers and calls `tick()` on each one via the Switchboard's `route()` tool.
 
 ## Config
 
@@ -42,7 +42,7 @@ AND no module `register_tools()`, `migration_revisions()`, `on_startup()`, or `o
 
 ### Requirement: Heartbeat cycle is a scheduled task
 
-The heartbeat cycle SHALL be defined as a `[[butler.schedule]]` entry in `butler.toml` and dispatched to an ephemeral Claude Code instance by the task scheduler, just like any other scheduled task.
+The heartbeat cycle SHALL be defined as a `[[butler.schedule]]` entry in `butler.toml` and dispatched to an ephemeral LLM CLI instance by the task scheduler, just like any other scheduled task.
 
 #### Scenario: Scheduler syncs the heartbeat-cycle task on startup
 
@@ -53,18 +53,18 @@ AND the task's `source` MUST be `toml`
 #### Scenario: Scheduler dispatches the heartbeat-cycle prompt to CC
 
 WHEN `tick()` is called on the Heartbeat butler and the `heartbeat-cycle` task is due
-THEN the scheduler MUST dispatch the task's prompt to the CC Spawner
-AND the CC Spawner MUST spawn an ephemeral Claude Code instance with that prompt
+THEN the scheduler MUST dispatch the task's prompt to the LLM CLI Spawner
+AND the LLM CLI Spawner MUST spawn an ephemeral LLM CLI instance with that prompt
 
 ---
 
 ### Requirement: CC enumerates butlers via the Switchboard
 
-The ephemeral Claude Code instance spawned for the heartbeat cycle SHALL call `list_butlers()` on the Switchboard to discover all registered butlers before ticking them.
+The ephemeral LLM CLI instance spawned for the heartbeat cycle SHALL call `list_butlers()` on the Switchboard to discover all registered butlers before ticking them.
 
 #### Scenario: CC calls list_butlers() and receives the butler registry
 
-WHEN the heartbeat-cycle CC instance calls `list_butlers()` via the Switchboard
+WHEN the heartbeat-cycle runtime instance calls `list_butlers()` via the Switchboard
 THEN it MUST receive a list of all registered butlers, including each butler's name and endpoint
 AND the list MUST reflect the current state of the Switchboard's butler registry
 
@@ -72,17 +72,17 @@ AND the list MUST reflect the current state of the Switchboard's butler registry
 
 ### Requirement: CC ticks each butler via the Switchboard
 
-The ephemeral Claude Code instance SHALL call `tick()` on each registered butler by invoking the Switchboard's `route()` tool, targeting each butler in turn.
+The ephemeral LLM CLI instance SHALL call `tick()` on each registered butler by invoking the Switchboard's `route()` tool, targeting each butler in turn.
 
 #### Scenario: CC routes a tick to a registered butler
 
-WHEN the heartbeat-cycle CC instance calls `route(butler_name, "tick", {})` via the Switchboard for a given butler
+WHEN the heartbeat-cycle runtime instance calls `route(butler_name, "tick", {})` via the Switchboard for a given butler
 THEN the Switchboard MUST forward the `tick()` call to the target butler's MCP server
 AND the target butler's tick handler MUST execute (checking for due scheduled tasks)
 
 #### Scenario: All registered butlers are ticked in a single cycle
 
-WHEN the heartbeat-cycle CC instance has retrieved the list of registered butlers
+WHEN the heartbeat-cycle runtime instance has retrieved the list of registered butlers
 THEN it MUST call `tick()` on every butler in the list (except itself)
 AND each `tick()` call MUST be routed through the Switchboard's `route()` tool
 
@@ -94,16 +94,16 @@ The Heartbeat butler SHALL NOT be ticked by its own heartbeat cycle. This preven
 
 #### Scenario: Heartbeat butler is excluded from the tick list
 
-WHEN the heartbeat-cycle CC instance retrieves the list of registered butlers from `list_butlers()`
+WHEN the heartbeat-cycle runtime instance retrieves the list of registered butlers from `list_butlers()`
 THEN it MUST skip any butler with the name `heartbeat`
 AND it MUST NOT call `route("heartbeat", "tick", {})` during the heartbeat cycle
 
 #### Scenario: Heartbeat butler is registered but not self-ticked
 
 WHEN the Heartbeat butler is registered in the Switchboard's butler registry
-AND the heartbeat-cycle CC instance enumerates butlers
+AND the heartbeat-cycle runtime instance enumerates butlers
 THEN the Heartbeat butler MUST appear in the `list_butlers()` response (it is a valid registered butler)
-BUT the heartbeat-cycle CC instance MUST NOT invoke `tick()` on it
+BUT the heartbeat-cycle runtime instance MUST NOT invoke `tick()` on it
 
 ---
 
@@ -113,13 +113,13 @@ If a butler fails to respond to `tick()`, the error SHALL be logged but the cycl
 
 #### Scenario: One butler fails to respond to tick
 
-WHEN the heartbeat-cycle CC instance calls `tick()` on butler A and butler A returns an error or times out
+WHEN the heartbeat-cycle runtime instance calls `tick()` on butler A and butler A returns an error or times out
 THEN the error MUST be logged (including the butler name and the error detail)
-AND the CC instance MUST proceed to call `tick()` on the next butler in the list
+AND the runtime instance MUST proceed to call `tick()` on the next butler in the list
 
 #### Scenario: Multiple butlers fail during a single cycle
 
-WHEN the heartbeat-cycle CC instance calls `tick()` on butlers A, B, C, and D, and butlers B and D fail
+WHEN the heartbeat-cycle runtime instance calls `tick()` on butlers A, B, C, and D, and butlers B and D fail
 THEN butlers A and C MUST still be ticked successfully
 AND errors for butlers B and D MUST each be logged
 AND the cycle MUST complete (not abort early)
@@ -139,19 +139,19 @@ The results of each heartbeat cycle SHALL be logged via the session log, recordi
 
 #### Scenario: Successful cycle with no failures
 
-WHEN the heartbeat-cycle CC instance completes a cycle in which all butlers respond successfully
+WHEN the heartbeat-cycle runtime instance completes a cycle in which all butlers respond successfully
 THEN the session log entry MUST record the list of butlers that were ticked
 AND the session log entry MUST indicate success for each butler
 
 #### Scenario: Cycle with partial failures
 
-WHEN the heartbeat-cycle CC instance completes a cycle in which some butlers failed
+WHEN the heartbeat-cycle runtime instance completes a cycle in which some butlers failed
 THEN the session log entry MUST record which butlers succeeded and which failed
 AND each failure MUST include the butler name and the error detail
 
 #### Scenario: Session is logged with correct trigger source
 
-WHEN the heartbeat-cycle task is dispatched and the CC session completes
+WHEN the heartbeat-cycle task is dispatched and the runtime session completes
 THEN the session log entry's `trigger_source` MUST be `schedule:heartbeat-cycle`
 
 ---
@@ -186,18 +186,18 @@ AND no butler-specific Alembic version chain SHALL exist or be required for the 
 
 ---
 
-### Requirement: Heartbeat butler CC instance has Switchboard access
+### Requirement: Heartbeat butler runtime instance has Switchboard access
 
-The ephemeral Claude Code instance spawned for the heartbeat cycle MUST be able to call the Switchboard's MCP tools (`list_butlers`, `route`) in addition to the Heartbeat butler's own core tools.
+The ephemeral LLM CLI instance spawned for the heartbeat cycle MUST be able to call the Switchboard's MCP tools (`list_butlers`, `route`) in addition to the Heartbeat butler's own core tools.
 
 #### Scenario: CC MCP config includes the Switchboard endpoint
 
-WHEN the Heartbeat butler's CC Spawner generates the ephemeral MCP config for the heartbeat-cycle task
+WHEN the Heartbeat butler's LLM CLI Spawner generates the ephemeral MCP config for the heartbeat-cycle task
 THEN the generated MCP config MUST include the Switchboard's MCP server endpoint
-AND the CC instance MUST be able to call `list_butlers()` and `route()` on the Switchboard
+AND the runtime instance MUST be able to call `list_butlers()` and `route()` on the Switchboard
 
 #### Scenario: CC calls Switchboard tools during heartbeat cycle
 
-WHEN the heartbeat-cycle CC instance executes
+WHEN the heartbeat-cycle runtime instance executes
 THEN it MUST be able to invoke `list_butlers()` on the Switchboard to enumerate butlers
 AND it MUST be able to invoke `route(butler_name, "tick", {})` on the Switchboard to tick each butler

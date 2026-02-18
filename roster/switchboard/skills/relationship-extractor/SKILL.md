@@ -1,6 +1,6 @@
 ---
 name: relationship-extractor
-description: Extract structured relationship data from incoming messages. Teaches the Switchboard's CC instance how to identify contacts, interactions, life events, dates, facts, sentiments, gifts, and loans — and produce structured JSON that maps directly to Relationship butler tools.
+description: Extract structured relationship data from incoming messages. Teaches the Switchboard's runtime instance how to identify contacts, interactions, life events, dates, facts, sentiments, gifts, and loans — and produce structured JSON that maps directly to Relationship butler tools.
 ---
 
 # Relationship Extractor
@@ -8,7 +8,7 @@ description: Extract structured relationship data from incoming messages. Teache
 ## Purpose
 
 When the Switchboard classifies an incoming message as relationship-relevant,
-this skill tells the CC instance **what to look for** and **how to structure
+this skill tells the runtime instance **what to look for** and **how to structure
 the extraction** so the Relationship butler can act on it immediately.
 
 You are not calling tools yourself. You are producing structured JSON

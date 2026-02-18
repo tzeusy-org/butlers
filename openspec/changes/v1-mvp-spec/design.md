@@ -1,6 +1,6 @@
 ## Context
 
-Butlers is a greenfield AI agent framework. Each butler is a long-running FastMCP server daemon backed by its own PostgreSQL database. Butlers share a common core (state store, scheduler, CC spawner, session log) and gain domain-specific capabilities through opt-in modules. When triggered, a butler spawns an ephemeral Claude Code instance locked down to only that butler's MCP tools.
+Butlers is a greenfield AI agent framework. Each butler is a long-running FastMCP server daemon backed by its own PostgreSQL database. Butlers share a common core (state store, scheduler, LLM CLI spawner, session log) and gain domain-specific capabilities through opt-in modules. When triggered, a butler spawns an ephemeral LLM CLI instance locked down to only that butler's MCP tools.
 
 The v1 MVP ships 5 butlers (Switchboard, Heartbeat, Relationship, Health, General), a module system (Telegram, Email), two deployment modes, and OpenTelemetry instrumentation.
 
@@ -14,14 +14,14 @@ The codebase is Python 3.12+, uses `uv` for package management, `ruff` for linti
 - Core components (state, scheduler, spawner, sessions) work identically across all butlers
 - Modules are truly pluggable: add/remove via config without touching core code
 - Each butler is fully isolated at the database level — no shared tables
-- CC instances are locked down: they can only call their owning butler's MCP tools
+- runtime instances are locked down: they can only call their owning butler's MCP tools
 - Single codebase supports both dev mode (single process) and production mode (one container per butler)
 - End-to-end tracing from message ingress through routing to CC execution
 
 **Non-Goals:**
 
 - Authentication/authorization between butlers (v1 trusts the Docker network)
-- Concurrent CC instances per butler (serial dispatch; queuing is a future enhancement)
+- Concurrent runtime instances per butler (serial dispatch; queuing is a future enhancement)
 - OAuth flow management for integration modules (credentials provided as env vars, set up out-of-band)
 - Web UI or dashboard (CLI + telemetry tracing via LGTM stack only)
 - Butler hot-reload (restart required for config changes)
@@ -69,15 +69,15 @@ The codebase is Python 3.12+, uses `uv` for package management, `ruff` for linti
 
 **Rationale:** This constraint keeps modules isolated and composable. If a module needs state persistence, it uses the state store MCP tools (same as CC would). This prevents tight coupling between modules and core internals.
 
-### D7: CC spawner generates ephemeral MCP config files
+### D7: LLM CLI spawner generates ephemeral MCP config files
 
-**Choice:** Each CC invocation gets a freshly generated MCP config JSON written to a temp directory, pointing only to the owning butler's MCP endpoint.
+**Choice:** Each runtime invocation gets a freshly generated MCP config JSON written to a temp directory, pointing only to the owning butler's MCP endpoint.
 
 **Rationale:** This is the lock-down mechanism. By controlling the MCP config, we ensure CC can only call tools on the butler that spawned it. The temp directory is cleaned up after the session completes. The CC SDK's `mcp_config` option accepts a file path, making this straightforward.
 
 ### D8: SSE transport for inter-butler MCP communication
 
-**Choice:** Use SSE (Server-Sent Events) transport for MCP communication between butlers and from CC instances back to butlers.
+**Choice:** Use SSE (Server-Sent Events) transport for MCP communication between butlers and from runtime instances back to butlers.
 
 **Rationale:** SSE is the standard MCP transport for HTTP-based servers, supported natively by FastMCP. It works identically whether butlers are in the same process (dev mode) or separate containers (production). Streamable HTTP is newer but less battle-tested in the MCP ecosystem.
 
@@ -128,7 +128,7 @@ At startup, the daemon runs `alembic upgrade head` programmatically (via `alembi
 
 **[No auth between butlers on Docker network]** → Acceptable for v1 (private deployment). Mitigated by Docker network isolation. Future: add mTLS or API key auth.
 
-**[CC spawner depends on Claude Code CLI being installed]** → Mitigated by including Node.js + claude-code in the Docker image. Dev mode requires local Claude Code installation — documented in setup instructions.
+**[LLM CLI spawner depends on Claude Code CLI being installed]** → Mitigated by including Node.js + claude-code in the Docker image. Dev mode requires local Claude Code installation — documented in setup instructions.
 
 **[Database auto-provisioning requires superuser-like privileges]** → The `butlers` PostgreSQL user needs `CREATEDB` privilege. Documented in setup. For managed PostgreSQL (RDS, etc.), databases must be pre-created.
 

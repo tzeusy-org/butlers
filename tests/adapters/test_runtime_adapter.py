@@ -448,7 +448,7 @@ async def test_claude_code_adapter_passes_stderr_options_when_butler_name_set(tm
     stderr_log = tmp_path / "butlers" / "test-butler_cc_stderr.log"
     assert stderr_log.exists()
     content = stderr_log.read_text()
-    assert "CC session start:" in content
+    assert "runtime session start:" in content
 
 
 async def test_claude_code_adapter_no_stderr_without_butler_name():

@@ -47,7 +47,7 @@ _TRANSIENT_DOCKER_TEARDOWN_ERROR_MARKERS = (
 
 @dataclass
 class SpawnerResult:
-    """Represents the result of a Claude Code spawner invocation."""
+    """Represents the result of a LLM CLI spawner invocation."""
 
     output: str | None = None
     success: bool = False
@@ -57,7 +57,7 @@ class SpawnerResult:
 
 
 class MockSpawner:
-    """A mock CC spawner that returns configurable results and records invocations."""
+    """A mock LLM CLI spawner that returns configurable results and records invocations."""
 
     def __init__(self, default_result: SpawnerResult | None = None) -> None:
         self.default_result = default_result or SpawnerResult()
@@ -69,7 +69,7 @@ class MockSpawner:
         self._results.append(result)
 
     async def spawn(self, **kwargs) -> SpawnerResult:
-        """Simulate spawning a Claude Code instance."""
+        """Simulate spawning an LLM CLI instance."""
         self.invocations.append(kwargs)
         if self._results:
             return self._results.pop(0)

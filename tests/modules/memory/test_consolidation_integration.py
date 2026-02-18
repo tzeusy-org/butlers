@@ -150,7 +150,7 @@ class TestEndToEndConsolidation:
     """Integration tests for the complete consolidation pipeline."""
 
     async def test_successful_end_to_end_consolidation_with_valid_json(self) -> None:
-        """Test successful end-to-end consolidation with mocked CC spawner producing valid JSON."""
+        """Test successful consolidation with mocked LLM CLI spawner producing valid JSON."""
         from unittest.mock import patch
 
         episodes = [
@@ -244,7 +244,7 @@ class TestEndToEndConsolidation:
         assert any("alpha" in err for err in result["errors"])
 
     async def test_cc_spawner_failure_captured_in_errors(self) -> None:
-        """Test that CC spawner failures are captured and don't crash the pipeline."""
+        """Test that LLM CLI spawner failures are captured and don't crash the pipeline."""
         episodes = [_episode_row(butler="test-butler")]
 
         pool = AsyncMock()
@@ -257,7 +257,7 @@ class TestEndToEndConsolidation:
 
         assert result["groups_consolidated"] == 0
         assert len(result["errors"]) > 0
-        assert any("CC session failed" in err for err in result["errors"])
+        assert any("runtime session failed" in err for err in result["errors"])
 
     async def test_multiple_butler_groups_all_succeed(self) -> None:
         """Test that multiple butler groups can all be processed successfully."""

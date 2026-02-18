@@ -1,4 +1,4 @@
-"""Tests for POST /api/butlers/{name}/trigger — trigger CC session.
+"""Tests for POST /api/butlers/{name}/trigger — trigger runtime session.
 
 Verifies trigger endpoint sends prompt via MCP call_tool("trigger", ...),
 returns structured TriggerResponse, and handles error cases (404, 503).

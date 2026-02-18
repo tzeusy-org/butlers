@@ -13,7 +13,7 @@ For each butler with memory module enabled, the runtime SHALL run consolidation 
 #### Scenario: No unconsolidated episodes
 - **WHEN** the consolidation task fires
 - **AND** no pending episodes exist
-- **THEN** no CC instances SHALL be spawned
+- **THEN** no runtime instances SHALL be spawned
 
 ### Requirement: Consolidation terminal states and retries
 
@@ -30,22 +30,22 @@ Every episode entering consolidation SHALL eventually reach exactly one terminal
 
 ### Requirement: Consolidation spawns CC with extraction prompt
 
-For each butler group, consolidation SHALL spawn a CC instance with a prompt that includes: the unconsolidated episodes, existing active facts (scoped to the butler), and existing active rules (scoped to the butler). The prompt SHALL instruct extraction of new facts (with permanence classification), updated facts (supersession), new rules, and confirmations of existing facts.
+For each butler group, consolidation SHALL spawn a runtime instance with a prompt that includes: the unconsolidated episodes, existing active facts (scoped to the butler), and existing active rules (scoped to the butler). The prompt SHALL instruct extraction of new facts (with permanence classification), updated facts (supersession), new rules, and confirmations of existing facts.
 
 #### Scenario: CC extracts new fact from episodes
 - **WHEN** consolidation processes episodes containing "User mentioned they are lactose intolerant"
 - **AND** no existing fact covers this information
-- **THEN** the CC output SHALL include a new fact with `subject='user'`, `predicate='dietary_restriction'`, `content='Lactose intolerant'`, and `permanence='stable'`
+- **THEN** the runtime output SHALL include a new fact with `subject='user'`, `predicate='dietary_restriction'`, `content='Lactose intolerant'`, and `permanence='stable'`
 
 #### Scenario: CC identifies fact to supersede
 - **WHEN** consolidation processes episodes containing "User now prefers tea over coffee"
 - **AND** an existing fact states "User's preferred drink is coffee"
-- **THEN** the CC output SHALL include an updated fact that supersedes the existing one
+- **THEN** the runtime output SHALL include an updated fact that supersedes the existing one
 
 #### Scenario: CC confirms existing facts
 - **WHEN** consolidation processes episodes where the user references their known name
 - **AND** a fact already stores the user's name
-- **THEN** the CC output SHALL include a confirmation of the existing fact's ID
+- **THEN** the runtime output SHALL include a confirmation of the existing fact's ID
 
 ### Requirement: Consolidation creates provenance links
 

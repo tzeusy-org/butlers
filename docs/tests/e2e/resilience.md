@@ -49,7 +49,7 @@ degradation behaviors, and validation strategies for resilience E2E tests.
 | LLM timeout | Set very low timeout on adapter | Spawner returns timeout error, session logged |
 | Classification parse failure | LLM returns non-JSON | `classify_message()` falls back to `general` butler |
 | Empty classification | LLM returns `[]` | Fallback to `general` with original text |
-| Tool call to nonexistent tool | LLM hallucinates a tool name | MCP server returns `ToolNotFoundError`, CC retries |
+| Tool call to nonexistent tool | LLM hallucinates a tool name | MCP server returns `ToolNotFoundError`, runtime retries |
 
 ### Layer 5: Cross-Butler Failures
 
@@ -62,12 +62,12 @@ degradation behaviors, and validation strategies for resilience E2E tests.
 
 ## Serial Dispatch Lock Contention
 
-The spawner enforces a serial dispatch lock — one CC session at a time per
+The spawner enforces a serial dispatch lock — one runtime session at a time per
 butler. This is a critical concurrency boundary:
 
 ### What the Lock Protects
 
-- Database connection pool is sized for a single CC session's tool calls
+- Database connection pool is sized for a single runtime session's tool calls
 - Butler's MCP tool state is not designed for concurrent access
 - Session logging assumes sequential session IDs
 
@@ -77,7 +77,7 @@ butler. This is a critical concurrency boundary:
 |----------|-------------------|
 | Two concurrent `trigger()` calls | Second caller blocks on `asyncio.Lock`, executes after first completes |
 | `trigger()` while tick is running | Tick's trigger blocks until the external trigger's session completes |
-| Lock holder crashes (CC session hangs) | Lock held indefinitely until timeout; subsequent callers blocked |
+| Lock holder crashes (runtime session hangs) | Lock held indefinitely until timeout; subsequent callers blocked |
 | Lock holder times out | `asyncio.wait_for()` on the lock, timeout releases and logs error |
 
 ### Test Approach
@@ -176,7 +176,7 @@ successfully, and verify that other modules' tools are registered and functional
 ### Runtime Tool Failure Isolation
 
 If a module's MCP tool raises an exception during invocation, the exception is
-caught by the FastMCP framework and returned as a tool error to the CC session.
+caught by the FastMCP framework and returned as a tool error to the runtime session.
 The butler daemon itself is unaffected:
 
 **Test:** Call a module tool that raises, then call a core tool on the same
@@ -198,7 +198,7 @@ are unaffected.
 | Layer | Timeout | Configurable? | Default |
 |-------|---------|---------------|---------|
 | MCP tool call (client side) | `asyncio.wait_for()` | Yes (per route call) | 120s |
-| Spawner CC session | Adapter timeout | Yes (butler.toml) | 120s |
+| Spawner runtime session | Adapter timeout | Yes (butler.toml) | 120s |
 | Database query | asyncpg statement timeout | Yes (pool config) | 30s |
 | Classification LLM call | Spawner timeout | Yes | 120s |
 | Ecosystem bootstrap | Fixture-level timeout | Yes (pytest timeout) | 300s |
@@ -210,7 +210,7 @@ When a timeout fires at one layer, it must propagate cleanly:
 1. Spawner timeout → session logged with `error="timeout"`, lock released
 2. Route timeout → `routing_log` entry with `status="timeout"`, dispatch
    continues to next subrequest
-3. DB timeout → tool returns error to CC, CC may retry or report failure
+3. DB timeout → tool returns error to the runtime instance, which may retry or report failure
 4. Classification timeout → fallback to `general` butler
 
 **Test:** Set an artificially low timeout on the spawner, trigger a prompt that

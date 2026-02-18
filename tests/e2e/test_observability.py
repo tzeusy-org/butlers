@@ -197,7 +197,7 @@ async def test_session_duration_accuracy(
     """Verify duration_ms is within 20% of wall-clock time.
 
     This validates that the session logging accurately captures the real
-    execution time of the CC instance.
+    execution time of the runtime instance.
     """
     health_daemon = butler_ecosystem.butlers["health"]
     assert health_daemon.spawner is not None, "Health spawner must be initialized"

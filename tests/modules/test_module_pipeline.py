@@ -508,7 +508,7 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_cc_spawn_failure_returns_general(self, mock_load):
-        """When CC spawn fails entirely, pipeline returns general with error."""
+        """When runtime spawn fails entirely, pipeline returns general with error."""
 
         async def failing_dispatch(**kwargs):
             raise RuntimeError("spawner broke")
@@ -530,7 +530,7 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_routing_context_set_before_and_cleared_after_spawn(self, mock_load):
-        """Routing context is populated before CC spawn and cleared after."""
+        """Routing context is populated before runtime spawn and cleared after."""
         ctx: dict[str, Any] = {}
         captured_ctx_during_spawn: dict[str, Any] = {}
 
@@ -567,7 +567,7 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_routing_context_cleared_even_on_error(self, mock_load):
-        """Routing context is cleared even when CC spawn fails."""
+        """Routing context is cleared even when runtime spawn fails."""
         ctx: dict[str, Any] = {}
 
         async def failing_dispatch(**kwargs):

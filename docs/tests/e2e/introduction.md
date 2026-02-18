@@ -9,7 +9,7 @@ Haiku — in a temporary, disposable environment.
 
 The harness validates that the complete user-facing message lifecycle works
 end-to-end: external input arrives at the switchboard, gets classified by an LLM,
-routes to the correct specialist butler, the butler spawns a Claude Code instance
+routes to the correct specialist butler, the butler spawns an LLM CLI instance
 that calls domain tools, data is persisted to the database, and a response is
 generated.
 
@@ -183,7 +183,7 @@ that holds the environment open indefinitely for interactive testing sessions.
 | FastMCP SSE servers | All butlers accept MCP tool calls on real ports | Real HTTP servers |
 | Switchboard classification | LLM classifies messages to correct butler | Real Haiku LLM |
 | Message routing | Switchboard dispatches to target butler via MCP | Real MCP client calls |
-| Butler tool execution | Spawner invokes Claude Code, CC calls domain tools | Real Haiku LLM |
+| Butler tool execution | Spawner invokes Claude Code, Runtime instance calls domain tools | Real Haiku LLM |
 | Database persistence | Tools write to PostgreSQL (measurements, contacts, etc.) | Real DB queries |
 | Session logging | Sessions table records prompt, tool_calls, duration | Real DB rows |
 | Module degradation | Modules without creds (telegram, email) fail gracefully | Real daemon behavior |

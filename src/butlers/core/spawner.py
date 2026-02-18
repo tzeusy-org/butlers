@@ -280,7 +280,7 @@ class Spawner:
             Optional text to prepend to the prompt. If provided and non-empty,
             this will be prepended to the prompt with two newlines separating them.
         max_turns:
-            Maximum number of turns for the CC session. Defaults to 20.
+            Maximum number of turns for the runtime session. Defaults to 20.
         parent_context:
             Optional OpenTelemetry context for trace propagation. When provided,
             the spawned session's span will be a child of the parent trace.
@@ -341,7 +341,7 @@ class Spawner:
         logger.info("Spawner stopped accepting new triggers")
 
     async def drain(self, timeout: float = 30.0) -> None:
-        """Wait for in-flight CC sessions to complete, up to *timeout* seconds.
+        """Wait for in-flight runtime sessions to complete, up to *timeout* seconds.
 
         If sessions are still running after the timeout, they are cancelled.
 
@@ -379,7 +379,7 @@ class Spawner:
 
     @property
     def in_flight_count(self) -> int:
-        """Return the number of currently in-flight CC sessions."""
+        """Return the number of currently in-flight runtime sessions."""
         return len(self._in_flight)
 
     async def _run(

@@ -52,13 +52,13 @@ is:
          │
          ▼
 5. Target butler's trigger() tool
-   → Spawner acquires serial dispatch lock (one CC session at a time)
+   → Spawner acquires serial dispatch lock (one runtime session at a time)
    → Generates locked-down MCP config pointing exclusively at this butler
    → Reads CLAUDE.md system prompt from roster/{butler}/CLAUDE.md
    → Optionally appends memory context (if memory module active)
    → Builds restricted env dict (only declared credentials, ANTHROPIC_API_KEY)
    → Invokes ClaudeCodeAdapter with Haiku model
-   → CC instance calls domain tools (measurement_log, contact_add, etc.)
+   → Runtime instance calls domain tools (measurement_log, contact_add, etc.)
    → Domain tools execute SQL against the butler's own database
    → Session recorded: session_create() before invocation, session_complete() after
          │
@@ -66,7 +66,7 @@ is:
 6. Response aggregation (if multi-butler dispatch)
    → aggregate_responses() combines results from multiple butlers
    → Conflict arbitration by priority / butler name
-   → Optional CC synthesis for multi-butler responses
+   → Optional LLM synthesis for multi-butler responses
    → Fallback: concatenation if synthesis unavailable
          │
          ▼
@@ -348,8 +348,8 @@ Mock Telegram IngestEnvelopeV1
     → ingest_v1() persists to message_inbox
     → classify_message() LLM classifies to correct butler
     → dispatch_decomposed() routes via MCP
-    → target butler trigger() spawns CC
-    → CC calls domain tools
+    → target butler trigger() spawns runtime instance
+    → runtime instance calls domain tools
     → domain tools write to DB
     → test queries both switchboard DB (routing_log) and target DB (domain table)
 ```
@@ -544,7 +544,7 @@ No changes to `conftest.py` or the ecosystem bootstrap are needed.
 | Serial dispatch lock | | | | X | | X |
 | MCP config generation | | | | X | | X |
 | System prompt loading | | | | X | | X |
-| CC invocation (Haiku) | | | | X | | X |
+| LLM CLI invocation (Haiku) | | | | X | | X |
 | Domain tool execution | | | | X | X | X |
 | Database side effects | | | | X | X | X |
 | Session logging | | | | X | | X |

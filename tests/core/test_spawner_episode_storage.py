@@ -1,4 +1,4 @@
-"""Tests for module-local episode storage after CC session completion."""
+"""Tests for module-local episode storage after runtime session completion."""
 
 from __future__ import annotations
 

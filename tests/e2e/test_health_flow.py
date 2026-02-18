@@ -101,7 +101,7 @@ async def test_medication_tracking_via_spawner(
     3. Assert tool_calls contains medication_add or medication_log_dose
     4. Query medications table to verify persistence
 
-    Uses live Claude Code spawner with real LLM calls.
+    Uses live LLM CLI spawner with real LLM calls.
     """
     health_daemon = butler_ecosystem.butlers["health"]
     assert health_daemon.spawner is not None, "Health spawner must be initialized"

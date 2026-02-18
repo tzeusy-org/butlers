@@ -26,10 +26,10 @@ Creating a butler involves these files (in recommended order):
 
 1. **butler.toml** — Identity and configuration (required)
 2. **MANIFESTO.md** — Public-facing identity document (required)
-3. **CLAUDE.md** — System prompt for spawned CC instances (required)
+3. **CLAUDE.md** — System prompt for spawned runtime instances (required)
 4. **tools.py** — MCP tool implementations (required)
 5. **migrations/** — Alembic database schema (if butler needs persistence)
-6. **skills/** — Skill definitions for CC instances (optional, add later)
+6. **skills/** — Skill definitions for runtime instances (optional, add later)
 7. **tests/** — Integration tests (required)
 
 ## Step 1: Create the Directory
@@ -99,7 +99,7 @@ The manifesto defines the butler's identity, purpose, and value proposition. It'
 
 ## Step 4: CLAUDE.md
 
-The system prompt for ephemeral Claude Code instances spawned by this butler. Keep it concise — CC instances get this as context for every interaction.
+The system prompt for ephemeral LLM CLI instances spawned by this butler. Keep it concise — runtime instances get this as context for every interaction.
 
 **Structure:**
 
@@ -119,7 +119,7 @@ You are the <Name> butler — <one-sentence role description>.
 ```
 
 **Rules:**
-- Under 50 lines. CC instances also get the skill files for detailed knowledge.
+- Under 50 lines. runtime instances also get the skill files for detailed knowledge.
 - List every tool from tools.py with a brief description.
 - Include behavioral guidelines (how to handle ambiguity, proactive behaviors, data conventions).
 - Use imperative tone, not conversational.

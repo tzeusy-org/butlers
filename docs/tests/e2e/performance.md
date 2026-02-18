@@ -92,11 +92,11 @@ asyncio.run(main())
 ### The Bottleneck
 
 The spawner's serial dispatch lock is the primary throughput bottleneck. Each
-butler can only run one CC session at a time. Under load, incoming triggers
+butler can only run one runtime session at a time. Under load, incoming triggers
 queue on the lock:
 
 ```
-t=0    Trigger A → acquires lock → CC session starts (~30s)
+t=0    Trigger A → acquires lock → runtime session starts (~30s)
 t=1    Trigger B → blocks on lock
 t=5    Trigger C → blocks on lock
 t=30   Trigger A completes → lock released → Trigger B acquires
@@ -166,16 +166,16 @@ Each butler's asyncpg pool is configured with `min_pool_size` and
 to queue on the pool:
 
 ```
-CC session starts → tool_1 → acquires conn → executes SQL → releases conn
+Runtime session starts → tool_1 → acquires conn → executes SQL → releases conn
                   → tool_2 → acquires conn → executes SQL → releases conn
                   → tool_3 → acquires conn → ...
 ```
 
-With serial dispatch, only one CC session runs at a time, so pool saturation
+With serial dispatch, only one runtime session runs at a time, so pool saturation
 is unlikely during normal operation. It becomes relevant when:
 
 1. A tool holds a connection for a long time (complex query)
-2. Multiple tools fire concurrently within one CC session
+2. Multiple tools fire concurrently within one runtime session
 3. Background tasks (scheduler, heartbeat) share the pool
 
 ### E2E Pool Tests
@@ -343,7 +343,7 @@ load, memory grows with:
 
 - Cached MCP clients (one per unique endpoint)
 - asyncpg connection pool (up to `max_pool_size` connections)
-- In-flight CC session state
+- In-flight runtime session state
 - Accumulated session logs and routing logs
 
 ### E2E Resource Tests

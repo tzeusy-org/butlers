@@ -24,14 +24,14 @@ Every butler database has exactly six tables that form the shared infrastructure
 |---|---|---|
 | `log` | Audit trail — everything in/out | Recent-first, filter by category/level |
 | `state` | Key-value JSONB store | Point lookups by key, prefix scans |
-| `sessions` | CC invocation history | Recent-first, lookup by ID |
+| `sessions` | runtime invocation history | Recent-first, lookup by ID |
 | `scheduled_tasks` | Recurring cron-driven prompts | Query enabled + due tasks |
 | `memories` | Tiered memory (Eden/Mid-Term/Long-Term) | Search by tier, tag, recency |
 | `pending_actions` | One-off deferred work + approval queue | Query pending + due items |
 
 ### 1. `log` — Audit Trail
 
-The single audit trail for everything flowing in and out of the butler — CC sessions, tool calls, inbound triggers, outbound actions, errors, module events. This is the most important core table.
+The single audit trail for everything flowing in and out of the butler — runtime sessions, tool calls, inbound triggers, outbound actions, errors, module events. This is the most important core table.
 
 ```sql
 CREATE TABLE log (
@@ -41,7 +41,7 @@ CREATE TABLE log (
     category TEXT NOT NULL,                     -- 'session', 'tool_call', 'trigger', 'module:<name>', 'scheduler', 'error', etc.
     summary TEXT NOT NULL,                      -- human-readable one-liner
     detail JSONB NOT NULL DEFAULT '{}',         -- structured payload (request, response, metadata, whatever fits)
-    session_id UUID,                            -- FK to sessions(id) if this log entry belongs to a CC session, NULL otherwise
+    session_id UUID,                            -- FK to sessions(id) if this log entry belongs to a runtime session, NULL otherwise
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -54,7 +54,7 @@ CREATE INDEX idx_log_category ON log (category, ts DESC);
 -- Filter by level (e.g., "show me errors in the last hour")
 CREATE INDEX idx_log_level_ts ON log (level, ts DESC) WHERE level IN ('warn', 'error');
 
--- Look up logs for a specific CC session
+-- Look up logs for a specific runtime session
 CREATE INDEX idx_log_session_id ON log (session_id) WHERE session_id IS NOT NULL;
 
 -- Search inside the JSONB detail payload
@@ -67,7 +67,7 @@ Log generously. Storage is cheap; missing audit data is not recoverable.
 
 | category | When to log | What goes in `detail` |
 |---|---|---|
-| `session` | CC session starts/completes | `{prompt, trigger_source, duration_ms, success, tool_count}` |
+| `session` | runtime session starts/completes | `{prompt, trigger_source, duration_ms, success, tool_count}` |
 | `tool_call` | Every MCP tool invocation | `{tool, args, result_summary, duration_ms}` |
 | `trigger` | Inbound trigger arrives | `{source, prompt, caller}` |
 | `scheduler` | Scheduled task fires | `{task_name, cron, next_run_at}` |
@@ -125,7 +125,7 @@ Keys should be namespaced with colons: `module:email:last_check`, `scheduler:las
 
 ### 3. `sessions` — CC Invocation History
 
-Every Claude Code invocation spawned by this butler is recorded here. The `log` table references sessions via `session_id` FK.
+Every LLM CLI invocation spawned by this butler is recorded here. The `log` table references sessions via `session_id` FK.
 
 ```sql
 CREATE TABLE sessions (
@@ -165,7 +165,7 @@ CREATE TABLE scheduled_tasks (
     enabled BOOLEAN NOT NULL DEFAULT true,
     last_run_at TIMESTAMPTZ,
     next_run_at TIMESTAMPTZ,
-    last_result JSONB,                          -- summary of last CC session
+    last_result JSONB,                          -- summary of last runtime session
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -215,7 +215,7 @@ One-off actions that need to happen in the future or require human approval befo
 
 - **Deferred actions** — "send this email tomorrow at 9am." One-shot, carries a specific payload.
 - **Human-in-the-loop approvals** — CC wants to do something that requires user sign-off. `due_at=NULL` means "wait for approval."
-- **Follow-ups** — "If I don't hear back by Friday, remind me." Fires a CC session with context when due.
+- **Follow-ups** — "If I don't hear back by Friday, remind me." Fires a runtime session with context when due.
 
 The scheduler's `tick()` checks this table alongside `scheduled_tasks` for due items.
 

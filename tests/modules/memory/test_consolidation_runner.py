@@ -249,7 +249,7 @@ class TestRunConsolidation:
         assert "alpha" in result["errors"][0]
 
     async def test_cc_failure_is_reported_in_errors(self) -> None:
-        """When CC session fails, error is captured in stats (sanitized)."""
+        """When runtime session fails, error is captured in stats (sanitized)."""
         episodes = [_episode_row(butler="test-butler")]
         pool = AsyncMock()
         pool.fetch = AsyncMock(side_effect=[episodes, [], []])
@@ -270,7 +270,7 @@ class TestRunConsolidation:
         assert len(result["errors"]) > 0
         # Error message should be sanitized (no internal details in return value)
         assert "test-butler" in result["errors"][0]
-        assert "CC session failed" in result["errors"][0]
+        assert "runtime session failed" in result["errors"][0]
 
     async def test_episodes_marked_consolidated_only_after_success(self) -> None:
         """Episodes are marked consolidated=true only after execute_consolidation."""

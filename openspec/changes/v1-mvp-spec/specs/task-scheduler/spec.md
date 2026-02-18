@@ -1,6 +1,6 @@
 # Task Scheduler
 
-The task scheduler is a core component present in every butler. It manages scheduled tasks backed by a PostgreSQL table and dispatches prompts to the CC spawner on a cron-driven cadence. Tasks can originate from the butler's `butler.toml` configuration (TOML-source) or be created at runtime via MCP tools (DB-source).
+The task scheduler is a core component present in every butler. It manages scheduled tasks backed by a PostgreSQL table and dispatches prompts to the LLM CLI spawner on a cron-driven cadence. Tasks can originate from the butler's `butler.toml` configuration (TOML-source) or be created at runtime via MCP tools (DB-source).
 
 The scheduler exposes four MCP tools (`schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`) and a `tick()` entry point called by the Heartbeat butler.
 
@@ -185,16 +185,16 @@ AND the row SHALL remain in the database.
 WHEN `schedule_delete` is called with an `id` that does not exist in the database
 THEN the tool SHALL return a not-found error.
 
-### Requirement: tick() dispatches due tasks to CC spawner
+### Requirement: tick() dispatches due tasks to LLM CLI spawner
 
 The `tick()` handler SHALL query the `scheduled_tasks` table for all tasks where `enabled=true` AND `next_run_at <= now()`. These are "due tasks."
 
-For each due task, the scheduler SHALL dispatch the task's `prompt` to the CC spawner. Due tasks SHALL be processed serially -- the scheduler MUST NOT dispatch multiple prompts concurrently within a single tick.
+For each due task, the scheduler SHALL dispatch the task's `prompt` to the LLM CLI spawner. Due tasks SHALL be processed serially -- the scheduler MUST NOT dispatch multiple prompts concurrently within a single tick.
 
 After each dispatch completes (success or failure), the scheduler SHALL update the task row:
 - `last_run_at` SHALL be set to the current time.
 - `next_run_at` SHALL be recomputed using `croniter.get_next()` from the current time.
-- `last_result` SHALL be set to a JSONB object containing the outcome. On success, this MUST include the CC session result. On failure, this MUST include the error message.
+- `last_result` SHALL be set to a JSONB object containing the outcome. On success, this MUST include the runtime session result. On failure, this MUST include the error message.
 - `updated_at` SHALL be set to the current time.
 
 If no tasks are due, `tick()` SHALL return without dispatching anything.
@@ -203,16 +203,16 @@ If no tasks are due, `tick()` SHALL return without dispatching anything.
 
 WHEN `tick()` is called
 AND one task has `enabled=true` and `next_run_at` in the past
-THEN the scheduler SHALL dispatch that task's prompt to the CC spawner
+THEN the scheduler SHALL dispatch that task's prompt to the LLM CLI spawner
 AND `last_run_at` SHALL be set to approximately now
 AND `next_run_at` SHALL be advanced to the next occurrence per the cron expression
-AND `last_result` SHALL contain the CC session outcome.
+AND `last_result` SHALL contain the runtime session outcome.
 
 #### Scenario: Multiple due tasks processed serially
 
 WHEN `tick()` is called
 AND three tasks are due (next_run_at <= now, enabled=true)
-THEN the scheduler SHALL dispatch each task's prompt to the CC spawner one at a time
+THEN the scheduler SHALL dispatch each task's prompt to the LLM CLI spawner one at a time
 AND each task's `last_run_at`, `next_run_at`, and `last_result` SHALL be updated after its dispatch completes
 AND the second task SHALL NOT begin dispatching until the first task's dispatch has completed.
 
@@ -220,7 +220,7 @@ AND the second task SHALL NOT begin dispatching until the first task's dispatch 
 
 WHEN `tick()` is called
 AND no tasks have `enabled=true` AND `next_run_at <= now()`
-THEN the scheduler SHALL not dispatch any prompts to the CC spawner.
+THEN the scheduler SHALL not dispatch any prompts to the LLM CLI spawner.
 
 #### Scenario: Disabled tasks are skipped
 
@@ -228,10 +228,10 @@ WHEN `tick()` is called
 AND a task has `enabled=false` and `next_run_at` in the past
 THEN that task SHALL NOT be dispatched.
 
-#### Scenario: CC spawner returns an error
+#### Scenario: LLM CLI spawner returns an error
 
 WHEN `tick()` is called
-AND a due task's prompt dispatch to the CC spawner fails with an error
+AND a due task's prompt dispatch to the LLM CLI spawner fails with an error
 THEN `last_result` SHALL contain the error information
 AND `last_run_at` SHALL still be updated
 AND `next_run_at` SHALL still be advanced to the next cron occurrence

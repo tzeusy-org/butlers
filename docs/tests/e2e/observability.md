@@ -39,7 +39,7 @@ Switchboard (trace_id=abc, span_id=001)
 
 ### TRACEPARENT Injection
 
-The spawner injects trace context into the CC instance's environment:
+The spawner injects trace context into the runtime instance's environment:
 
 ```python
 # src/butlers/core/telemetry.py
@@ -179,7 +179,7 @@ that session logs contain all diagnostic fields needed for post-mortem analysis:
 | `session_id` | UUID | Non-null, unique |
 | `butler_name` | TEXT | Matches the butler that ran the session |
 | `trigger_source` | TEXT | `external`, `heartbeat`, `scheduled`, or `test` |
-| `prompt` | TEXT | The full prompt sent to the CC instance |
+| `prompt` | TEXT | The full prompt sent to the runtime instance |
 | `model` | TEXT | Model ID (e.g., `claude-haiku-4-5-20251001`) |
 | `status` | TEXT | `running`, `completed`, or `error` |
 | `created_at` | TIMESTAMPTZ | Non-null |

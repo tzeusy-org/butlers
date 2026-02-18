@@ -3,8 +3,8 @@
 ## Overview
 
 Every butler has a core KV state store backed by a `state` table with JSONB
-values. This is the primary mechanism for butlers to persist data across CC
-sessions — a CC instance writes state, terminates, and the next CC instance
+values. This is the primary mechanism for butlers to persist data across runtime
+sessions — a runtime instance writes state, terminates, and the next runtime instance
 reads it back. State E2E tests validate persistence, isolation, JSONB fidelity,
 and concurrent access behavior.
 
@@ -33,10 +33,10 @@ CREATE TABLE state (
 ### Usage Pattern
 
 ```python
-# CC session 1: Write state
+# Runtime session 1: Write state
 await client.call_tool("state_set", {"key": "user_prefs", "value": {"theme": "dark"}})
 
-# CC session 2 (later): Read state back
+# Runtime session 2 (later): Read state back
 result = await client.call_tool("state_get", {"key": "user_prefs"})
 # → {"theme": "dark"}
 ```
@@ -44,7 +44,7 @@ result = await client.call_tool("state_get", {"key": "user_prefs"})
 ## Cross-Session Persistence
 
 The primary purpose of the state store is cross-session memory. E2E tests must
-validate that state written by one CC session is readable by the next.
+validate that state written by one runtime session is readable by the next.
 
 ### E2E Cross-Session Tests
 
@@ -197,7 +197,7 @@ result = await client.call_tool("state_list", {"prefix": "health:"})
 
 ## Concurrent State Access
 
-CC sessions are serialized per butler (serial dispatch lock), but state tools
+Runtime sessions are serialized per butler (serial dispatch lock), but state tools
 can be called concurrently from the MCP client during a session (multiple tool
 calls in flight). The state store must handle this correctly.
 
@@ -237,28 +237,28 @@ async def test_concurrent_state_writes(butler_ecosystem):
 
 ## State Store as Session Memory
 
-A common pattern is for CC sessions to use the state store as working memory:
+A common pattern is for runtime sessions to use the state store as working memory:
 
-1. CC reads `state_get("conversation-context")` at session start
-2. CC does work, calls domain tools
-3. CC writes `state_set("conversation-context", updated_context)` at session end
-4. Next CC session reads the updated context
+1. Runtime instance reads `state_get("conversation-context")` at session start
+2. Runtime instance does work, calls domain tools
+3. Runtime instance writes `state_set("conversation-context", updated_context)` at session end
+4. Next runtime session reads the updated context
 
 ### E2E Session Memory Pattern Test
 
 ```python
 async def test_state_as_session_memory(butler_ecosystem):
-    """State store should serve as persistent memory between CC sessions."""
+    """State store should serve as persistent memory between runtime sessions."""
     health = butler_ecosystem["health"]
 
-    # Session 1: CC writes context
+    # Session 1: Runtime instance writes context
     result1 = await health.spawner.trigger(
         prompt="Remember that my weight goal is 75kg. Store this in state.",
         trigger_source="test",
     )
     assert result1.success
 
-    # Session 2: CC reads context
+    # Session 2: Runtime instance reads context
     result2 = await health.spawner.trigger(
         prompt="What is my weight goal? Check the state store.",
         trigger_source="test",

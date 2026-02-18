@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Butlers is an AI agent framework where each "butler" is a long-running MCP server daemon with core infrastructure (state store, scheduler, CC spawner, session log) and opt-in modules (email, telegram, calendar, etc.). When triggered, a butler spawns an ephemeral Claude Code instance wired exclusively to itself via a locked-down MCP config.
+Butlers is an AI agent framework where each "butler" is a long-running MCP server daemon with core infrastructure (state store, scheduler, LLM CLI spawner, session log) and opt-in modules (email, telegram, calendar, etc.). When triggered, a butler spawns an ephemeral LLM CLI instance wired exclusively to itself via a locked-down MCP config.
 
 **Tech stack:** Python 3.12+, FastMCP, Claude Code SDK, PostgreSQL (JSONB-heavy, one DB per butler), Docker, asyncio
 
@@ -44,13 +44,13 @@ uv run pytest tests/ --ignore=tests/test_db.py --ignore=tests/test_migrations.py
 
 Every butler has **core components** (always present) and **modules** (opt-in per butler):
 
-- **Core:** State store (KV JSONB), task scheduler (cron-driven), CC spawner (ephemeral Claude Code via SDK), session log, tick handler, status
+- **Core:** State store (KV JSONB), task scheduler (cron-driven), LLM CLI spawner (ephemeral LLM CLI via SDK), session log, tick handler, status
 - **Modules:** Pluggable units adding domain-specific MCP tools (email, telegram, calendar, etc.). Implement the `Module` abstract base class with `register_tools()`, `migrations()`, `on_startup()`, `on_shutdown()`.
 
 ### Trigger Flow
 
 1. Trigger arrives (external MCP call, scheduler due task, or heartbeat tick)
-2. CC Spawner generates ephemeral MCP config → spawns Claude Code via SDK
+2. LLM CLI Spawner generates ephemeral MCP config → spawns LLM CLI via SDK
 3. Claude Code calls butler's MCP tools, runs skill scripts, returns
 4. Butler logs the session
 
@@ -73,7 +73,7 @@ roster/butler-name/
 ├── api/            # Dashboard API routes (optional)
 │   ├── router.py   # FastAPI router (exports module-level 'router' variable)
 │   └── models.py   # Pydantic models for request/response schemas
-├── skills/         # Skills available to CC instances (SKILL.md + optional scripts)
+├── skills/         # Skills available to runtime instances (SKILL.md + optional scripts)
 └── butler.toml     # Identity, schedule, modules config
 ```
 

@@ -62,7 +62,7 @@ The hosting butler MCP server SHALL expose a `memory_search(query, types?, scope
 
 ### Requirement: memory_recall tool
 
-The hosting butler MCP server SHALL expose a `memory_recall(topic, scope?, limit?)` tool when memory module is enabled that performs composite-scored retrieval of facts and rules (not episodes). This is the primary tool CC instances SHALL use. The tool SHALL bump reference counts on returned results.
+The hosting butler MCP server SHALL expose a `memory_recall(topic, scope?, limit?)` tool when memory module is enabled that performs composite-scored retrieval of facts and rules (not episodes). This is the primary tool runtime instances SHALL use. The tool SHALL bump reference counts on returned results.
 
 #### Scenario: Recall returns composite-scored results
 - **WHEN** `memory_recall(topic="user dietary needs", scope="health")` is called

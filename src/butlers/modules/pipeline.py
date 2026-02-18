@@ -484,7 +484,7 @@ class MessagePipeline:
         asyncpg Pool connected to the switchboard butler's database
         (where butler_registry and routing_log tables live).
     dispatch_fn:
-        Async callable used by ``classify_message`` to spawn a CC instance.
+        Async callable used by ``classify_message`` to spawn a runtime instance.
         Typically ``spawner.trigger``.
     source_butler:
         Name of the butler that owns this pipeline (used in routing logs).
@@ -522,7 +522,7 @@ class MessagePipeline:
         request_context: dict[str, Any] | None = None,
         request_id: str = "unknown",
     ) -> None:
-        """Populate the shared routing context dict before CC spawn."""
+        """Populate the shared routing context dict before runtime spawn."""
         if self._routing_ctx is None:
             return
         self._routing_ctx["source_metadata"] = source_metadata
@@ -530,7 +530,7 @@ class MessagePipeline:
         self._routing_ctx["request_id"] = request_id
 
     def _clear_routing_context(self) -> None:
-        """Clear the shared routing context dict after CC spawn."""
+        """Clear the shared routing context dict after runtime spawn."""
         if self._routing_ctx is None:
             return
         self._routing_ctx.clear()
@@ -1238,7 +1238,7 @@ class MessagePipeline:
                                 "acked": acked,
                                 "failed": failed,
                             },
-                            response_summary=cc_output[:500] if cc_output else "No CC output",
+                            response_summary=cc_output[:500] if cc_output else "No runtime output",
                             lifecycle_state=lifecycle_state,
                             classified_at=completed_at,
                             classification_duration_ms=spawn_latency_ms,

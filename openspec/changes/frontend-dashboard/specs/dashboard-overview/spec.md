@@ -72,7 +72,7 @@ The graph MUST include:
   - A status badge (green dot = healthy/reachable, red dot = unreachable, yellow dot = degraded)
   - Module health dots — small colored dots for each module (green = healthy, yellow = degraded, red = error), sourced from the butler's `status()` MCP response
 - **Heartbeat edges** — dashed edges from the Heartbeat butler to all other butlers (except Switchboard), representing the heartbeat tick relationship.
-- **Active session pulse** — when a butler has an active CC session (`completed_at IS NULL`), its node MUST display a pulsing animation or glow effect.
+- **Active session pulse** — when a butler has an active runtime session (`completed_at IS NULL`), its node MUST display a pulsing animation or glow effect.
 - **Edge labels** — edges between Switchboard and butlers MAY display the routing channel label (e.g., "telegram", "email") when derived from recent routing activity.
 - **Click-to-navigate** — clicking a butler node MUST navigate to `/butlers/:name`.
 
@@ -84,7 +84,7 @@ The graph MUST include:
 
 #### Scenario: Butler with active session shows pulse
 
-- **WHEN** the `health` butler has an active CC session (a session record with `completed_at IS NULL`)
+- **WHEN** the `health` butler has an active runtime session (a session record with `completed_at IS NULL`)
 - **THEN** the `health` node in the topology graph MUST display a pulsing animation
 
 #### Scenario: Clicking a butler node navigates to detail

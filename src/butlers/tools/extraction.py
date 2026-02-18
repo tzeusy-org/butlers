@@ -6,7 +6,7 @@ never adds latency to the user-facing response.
 
 Flow:
 1. Build a unified extraction prompt from registered ExtractorSchemas
-2. Spawn a single CC instance with the unified prompt
+2. Spawn a single runtime instance with the unified prompt
 3. Parse structured JSON extractions (type, confidence, tool, target_butler)
 4. Gate by confidence — only HIGH-confidence extractions auto-dispatch
 5. Dispatch each group to the appropriate butler via route()
@@ -150,7 +150,7 @@ def build_extraction_prompt(
 ) -> str:
     """Build a unified extraction prompt from registered schemas.
 
-    The prompt instructs the CC instance to analyze the message and
+    The prompt instructs the runtime instance to analyze the message and
     return a JSON array of extractions covering all registered butler
     signal types.
     """
@@ -369,7 +369,7 @@ async def extract_signals(
     message:
         The incoming message to analyze.
     dispatch_fn:
-        Callable to spawn a CC instance. Signature:
+        Callable to spawn a runtime instance. Signature:
         ``async (prompt: str, trigger_source: str) -> SpawnerResult``.
     extractor_schemas:
         List of ExtractorSchemas defining what signals each butler
@@ -399,7 +399,7 @@ async def extract_signals(
     try:
         result = await dispatch_fn(prompt=prompt, trigger_source="extraction")
     except Exception:
-        logger.exception("Extraction CC invocation failed — returning empty")
+        logger.exception("Extraction runtime invocation failed — returning empty")
         return []
 
     # Parse response

@@ -161,7 +161,7 @@ def extract_trace_context(trace_context_dict: dict[str, str]) -> Context:
 def get_traceparent_env() -> dict[str, str]:
     """Return a dict ``{"TRACEPARENT": "..."}`` for the current trace context.
 
-    Suitable for passing as environment variables to spawned CC instances so
+    Suitable for passing as environment variables to spawned runtime instances so
     they can continue the same trace.
 
     If there is no active valid span, returns an empty dict.

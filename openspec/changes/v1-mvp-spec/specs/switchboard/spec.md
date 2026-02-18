@@ -1,6 +1,6 @@
 # Switchboard Butler
 
-The Switchboard is the public-facing ingress butler for the Butlers framework. It listens on Telegram (bot) and Email (IMAP/webhook), classifies incoming messages using an ephemeral Claude Code instance, and routes them to the correct specialist butler(s) via MCP. When a message spans multiple butler domains, the CC instance decomposes it into sub-messages and dispatches each sequentially. It owns the butler registry and serves as the single entry point for all external communication.
+The Switchboard is the public-facing ingress butler for the Butlers framework. It listens on Telegram (bot) and Email (IMAP/webhook), classifies incoming messages using an ephemeral LLM CLI instance, and routes them to the correct specialist butler(s) via MCP. When a message spans multiple butler domains, the runtime instance decomposes it into sub-messages and dispatches each sequentially. It owns the butler registry and serves as the single entry point for all external communication.
 
 **Modules:** `telegram`, `email`
 
@@ -198,26 +198,26 @@ THEN a row MUST still be inserted into `routing_log` recording the attempted rou
 
 ---
 
-### Requirement: Message classification via CC spawner
+### Requirement: Message classification via LLM CLI spawner
 
-When a message arrives via the Telegram or Email module, the Switchboard SHALL spawn an ephemeral Claude Code instance to classify the message and determine which butler should handle it.
+When a message arrives via the Telegram or Email module, the Switchboard SHALL spawn an ephemeral LLM CLI instance to classify the message and determine which butler should handle it.
 
 #### Scenario: Telegram message triggers classification
 
 WHEN a Telegram message is received by the Switchboard's Telegram module
-THEN the Switchboard MUST spawn a CC instance via the CC spawner
-AND the CC instance MUST receive a classification prompt containing the list of available butlers (from `list_butlers()`) and the message text
+THEN the Switchboard MUST spawn a runtime instance via the LLM CLI spawner
+AND the runtime instance MUST receive a classification prompt containing the list of available butlers (from `list_butlers()`) and the message text
 AND the classification prompt MUST follow the format: "Classify this message and route it. Available butlers: [{butler list with descriptions}]. Message: {text}"
 
 #### Scenario: Email message triggers classification
 
 WHEN an email is received by the Switchboard's Email module
-THEN the Switchboard MUST spawn a CC instance via the CC spawner
-AND the CC instance MUST receive a classification prompt containing the list of available butlers and the email content (subject and body)
+THEN the Switchboard MUST spawn a runtime instance via the LLM CLI spawner
+AND the runtime instance MUST receive a classification prompt containing the list of available butlers and the email content (subject and body)
 
 #### Scenario: CC decides the target butler and routes
 
-WHEN the CC instance determines that a message should be handled by the `health` butler
+WHEN the runtime instance determines that a message should be handled by the `health` butler
 THEN CC MUST call `route("health", "trigger", {"prompt": <constructed prompt>})` via the Switchboard's MCP tools
 AND the Switchboard MUST forward the call to the `health` butler
 
@@ -225,13 +225,13 @@ AND the Switchboard MUST forward the call to the `health` butler
 
 ### Requirement: Default routing to General butler when uncertain
 
-When the CC instance is uncertain which specialist butler should handle a message, it SHALL default to routing to the General butler.
+When the runtime instance is uncertain which specialist butler should handle a message, it SHALL default to routing to the General butler.
 
 #### Scenario: Ambiguous message is routed to General
 
 WHEN a message arrives that does not clearly match any specialist butler's domain
-AND the CC instance cannot determine the correct target with confidence
-THEN the CC instance MUST route the message to the `general` butler via `route("general", "trigger", {"prompt": ...})`
+AND the runtime instance cannot determine the correct target with confidence
+THEN the runtime instance MUST route the message to the `general` butler via `route("general", "trigger", {"prompt": ...})`
 
 #### Scenario: Classification prompt instructs default behavior
 
@@ -377,7 +377,7 @@ AND it MUST call `route()` once for each sub-message with the appropriate butler
 
 #### Scenario: Classification prompt includes decomposition instructions
 
-WHEN the Switchboard constructs the classification prompt for the CC instance
+WHEN the Switchboard constructs the classification prompt for the runtime instance
 THEN the prompt MUST instruct CC that a single user message MAY contain multiple intents for different butlers
 AND the prompt MUST instruct CC to identify all distinct intents and route each to the appropriate butler via separate `route()` calls
 AND the prompt MUST instruct CC that each `route()` call's prompt argument SHALL contain only the sub-intent relevant to that butler, not the entire original message
@@ -385,46 +385,46 @@ AND the prompt MUST instruct CC that each `route()` call's prompt argument SHALL
 #### Scenario: Single-domain message produces one route call (no regression)
 
 WHEN a message arrives with content "Log my weight at 75kg"
-AND the CC instance determines that only the `health` butler is relevant
-THEN the CC instance MUST call `route()` exactly once, targeting the `health` butler
+AND the runtime instance determines that only the `health` butler is relevant
+THEN the runtime instance MUST call `route()` exactly once, targeting the `health` butler
 AND the behavior MUST be identical to the existing single-target classification flow
 
 ---
 
 ### Requirement: Sequential fan-out dispatch of decomposed sub-messages
 
-When the CC instance decomposes a message into multiple sub-messages, it SHALL dispatch each `route()` call sequentially (one at a time), consistent with the framework's serial CC dispatch constraint. The CC instance itself orchestrates the fan-out by making multiple `route()` tool calls within a single CC session.
+When the runtime instance decomposes a message into multiple sub-messages, it SHALL dispatch each `route()` call sequentially (one at a time), consistent with the framework's serial CC dispatch constraint. The runtime instance itself orchestrates the fan-out by making multiple `route()` tool calls within a single runtime session.
 
 #### Scenario: Two sub-messages are dispatched sequentially
 
 WHEN a message is decomposed into sub-messages targeting the `relationship` and `health` butlers
-THEN the CC instance MUST call `route("relationship", "trigger", ...)` first
+THEN the runtime instance MUST call `route("relationship", "trigger", ...)` first
 AND it MUST wait for the response before calling `route("health", "trigger", ...)`
-AND both calls MUST occur within the same CC session (no additional CC spawns)
+AND both calls MUST occur within the same runtime session (no additional runtime spawns)
 
 #### Scenario: Fan-out respects serial dispatch constraint
 
 WHEN a message is decomposed into N sub-messages targeting N distinct butlers
-THEN the CC instance MUST issue exactly N sequential `route()` calls
+THEN the runtime instance MUST issue exactly N sequential `route()` calls
 AND at no point SHALL more than one `route()` call be in-flight simultaneously
-AND the total number of CC instances spawned for the original message MUST be exactly one (the classification instance)
+AND the total number of runtime instances spawned for the original message MUST be exactly one (the classification instance)
 
 #### Scenario: Order of dispatch follows message order
 
 WHEN a message is decomposed into multiple sub-messages
-THEN the CC instance SHOULD dispatch `route()` calls in the order the sub-intents appear in the original message
+THEN the runtime instance SHOULD dispatch `route()` calls in the order the sub-intents appear in the original message
 
 ---
 
 ### Requirement: Response aggregation for multi-butler replies
 
-When the CC instance has dispatched multiple `route()` calls for a decomposed message, it SHALL aggregate the responses from all targeted butlers into a single coherent reply before returning. The aggregated reply is then delivered to the user via the originating channel.
+When the runtime instance has dispatched multiple `route()` calls for a decomposed message, it SHALL aggregate the responses from all targeted butlers into a single coherent reply before returning. The aggregated reply is then delivered to the user via the originating channel.
 
 #### Scenario: Successful multi-butler response aggregation
 
 WHEN a message is decomposed into sub-messages targeting `relationship` and `health`
 AND both `route()` calls return successful responses
-THEN the CC instance MUST combine the responses into a single aggregated reply
+THEN the runtime instance MUST combine the responses into a single aggregated reply
 AND the aggregated reply MUST clearly attribute each part of the response to the relevant domain or butler
 AND the Switchboard MUST deliver the aggregated reply to the user via the originating channel (Telegram or Email)
 
@@ -432,7 +432,7 @@ AND the Switchboard MUST deliver the aggregated reply to the user via the origin
 
 WHEN a message is decomposed into sub-messages targeting `relationship` and `health`
 AND the `route()` call to `relationship` succeeds but the `route()` call to `health` fails (butler unreachable or returns an error)
-THEN the CC instance MUST still aggregate a response
+THEN the runtime instance MUST still aggregate a response
 AND the aggregated reply MUST include the successful response from `relationship`
 AND the aggregated reply MUST inform the user that the `health`-related part of their request could not be processed, along with a brief reason
 AND the Switchboard MUST deliver this partial aggregated reply to the user
@@ -440,7 +440,7 @@ AND the Switchboard MUST deliver this partial aggregated reply to the user
 #### Scenario: All sub-routes fail
 
 WHEN a message is decomposed into multiple sub-messages and all `route()` calls fail
-THEN the CC instance MUST return a reply informing the user that none of the requested actions could be processed
+THEN the runtime instance MUST return a reply informing the user that none of the requested actions could be processed
 AND the reply MUST include a summary of which actions failed and why
 AND the Switchboard MUST deliver this error reply to the user via the originating channel
 
@@ -493,12 +493,12 @@ AND an index MUST exist on `group_id` for efficient group lookups
 
 ### Requirement: Backward compatibility with single-target classification
 
-The message decomposition flow SHALL be fully backward compatible with existing single-target classification. When a message maps to exactly one butler, the behavior MUST be identical to the pre-decomposition flow: one CC session, one `route()` call, one `routing_log` entry (with `group_id` NULL), one response delivered to the user.
+The message decomposition flow SHALL be fully backward compatible with existing single-target classification. When a message maps to exactly one butler, the behavior MUST be identical to the pre-decomposition flow: one runtime session, one `route()` call, one `routing_log` entry (with `group_id` NULL), one response delivered to the user.
 
 #### Scenario: Single-target message flow is unchanged
 
 WHEN a message arrives with content "What's on my calendar today?"
-AND the CC instance determines that only the `general` butler is relevant
+AND the runtime instance determines that only the `general` butler is relevant
 THEN exactly one `route()` call MUST be made to the `general` butler
 AND exactly one `routing_log` entry MUST be created with `group_id` set to NULL
 AND the response MUST be delivered directly to the user without aggregation logic
@@ -506,8 +506,8 @@ AND the response MUST be delivered directly to the user without aggregation logi
 #### Scenario: Default-to-General still works for ambiguous messages
 
 WHEN a message arrives that does not clearly match any specialist butler
-AND the CC instance cannot determine the correct target with confidence
-THEN the CC instance MUST route the message to the `general` butler as a single-target route (not a decomposition)
+AND the runtime instance cannot determine the correct target with confidence
+THEN the runtime instance MUST route the message to the `general` butler as a single-target route (not a decomposition)
 AND `group_id` in the `routing_log` MUST be NULL
 
 #### Scenario: Existing routing log queries are not broken

@@ -434,7 +434,7 @@ async def trigger_butler(
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[TriggerResponse]:
-    """Trigger a CC session on the named butler with the provided prompt.
+    """Trigger a runtime session on the named butler with the provided prompt.
 
     Sends the prompt to the butler's MCP ``trigger`` tool and returns
     the session result.  Returns 503 if the butler is unreachable or

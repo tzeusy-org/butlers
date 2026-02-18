@@ -14,7 +14,7 @@ name = "butler_<butler-name>"   # Required. Database name. Convention: butler_ p
 [[butler.schedule]]             # Optional. Repeatable section for cron tasks.
 name = "<task-name>"            # Kebab-case identifier for the scheduled task.
 cron = "<cron-expression>"      # Standard 5-field cron expression.
-prompt = """<prompt>"""         # Prompt sent to the CC instance when triggered.
+prompt = """<prompt>"""         # Prompt sent to the runtime instance when triggered.
 
 [modules.<module-name>]         # Optional. Module configuration.
 mode = "polling"                # Module-specific settings.

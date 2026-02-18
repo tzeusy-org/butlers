@@ -1,4 +1,4 @@
-"""Shared tool for serving media attachments to CC instances.
+"""Shared tool for serving media attachments to runtime instances.
 
 Provides get_attachment() for retrieving ingested blobs (images, PDFs, etc.)
 as base64-encoded data suitable for Claude vision/PDF input.

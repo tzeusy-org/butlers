@@ -2,7 +2,7 @@
 
 ## Overview
 
-Each butler spawns ephemeral Claude Code instances that execute arbitrary tool
+Each butler spawns ephemeral LLM CLI instances that execute arbitrary tool
 calls. The security model ensures that these instances operate within strict
 boundaries: they can only access their own butler's MCP tools, their own
 database, and a declared set of environment variables. Security E2E tests
@@ -12,7 +12,7 @@ validate these isolation boundaries under real execution conditions.
 
 ### The `_build_env` Contract
 
-When the spawner invokes a CC instance, it constructs an explicit environment
+When the spawner invokes a runtime instance, it constructs an explicit environment
 dictionary. Only declared variables are included — no undeclared environment
 variables leak through:
 
@@ -52,26 +52,26 @@ def _build_env(config: ButlerConfig, module_credentials_env=None) -> dict[str, s
 
 | Threat | Mitigation |
 |--------|-----------|
-| CC instance reads host's `SSH_AUTH_SOCK` | Not in declared vars → not in env |
-| CC instance reads another butler's credentials | Each butler declares only its own vars |
-| CC instance reads `DATABASE_URL` for wrong DB | DB connection is MCP-mediated, not env-mediated |
-| CC instance reads CI/CD tokens | `GITHUB_TOKEN`, `CI` etc. not declared |
+| Runtime instance reads host's `SSH_AUTH_SOCK` | Not in declared vars → not in env |
+| Runtime instance reads another butler's credentials | Each butler declares only its own vars |
+| Runtime instance reads `DATABASE_URL` for wrong DB | DB connection is MCP-mediated, not env-mediated |
+| Runtime instance reads CI/CD tokens | `GITHUB_TOKEN`, `CI` etc. not declared |
 | Module credential leak to wrong butler | Module credentials scoped to butler's enabled modules |
 
 ### E2E Credential Isolation Tests
 
 | Test | What It Validates |
 |------|-------------------|
-| Env allowlist | Set a canary env var (`TEST_CANARY=secret`), trigger a butler, verify CC instance cannot access it |
-| Cross-butler credential isolation | Health butler's CC instance cannot access relationship butler's credentials |
-| ANTHROPIC_API_KEY always present | Trigger a butler, verify CC instance has API key (otherwise LLM calls fail) |
+| Env allowlist | Set a canary env var (`TEST_CANARY=secret`), trigger a butler, verify runtime instance cannot access it |
+| Cross-butler credential isolation | Health butler's runtime instance cannot access relationship butler's credentials |
+| ANTHROPIC_API_KEY always present | Trigger a butler, verify runtime instance has API key (otherwise LLM calls fail) |
 | Module credential scoping | Telegram credentials only available to butlers with telegram module enabled |
 
 ### Testing Env Isolation
 
 ```python
 async def test_env_isolation(butler_ecosystem, monkeypatch):
-    """CC instance should not see undeclared env vars."""
+    """Runtime instance should not see undeclared env vars."""
     monkeypatch.setenv("TEST_SECRET_CANARY", "should-not-leak")
 
     health = butler_ecosystem["health"]
@@ -89,7 +89,7 @@ async def test_env_isolation(butler_ecosystem, monkeypatch):
 
 ### Single-Butler Scope
 
-When the spawner generates the MCP config for a CC instance, it points
+When the spawner generates the MCP config for a runtime instance, it points
 exclusively at the butler that owns the spawner:
 
 ```python
@@ -103,25 +103,25 @@ exclusively at the butler that owns the spawner:
 }
 ```
 
-The CC instance can only call tools registered on its own butler's FastMCP
+The runtime instance can only call tools registered on its own butler's FastMCP
 server. It cannot discover or call tools on other butlers.
 
 ### What This Prevents
 
 | Threat | Mitigation |
 |--------|-----------|
-| CC instance calls tools on another butler | MCP config only contains own butler's endpoint |
-| CC instance discovers switchboard tools | Switchboard endpoint not in config |
-| CC instance routes messages directly | No `route()` tool available on non-switchboard butlers |
-| CC instance modifies butler registry | Registry tools only on switchboard |
+| Runtime instance calls tools on another butler | MCP config only contains own butler's endpoint |
+| Runtime instance discovers switchboard tools | Switchboard endpoint not in config |
+| Runtime instance routes messages directly | No `route()` tool available on non-switchboard butlers |
+| Runtime instance modifies butler registry | Registry tools only on switchboard |
 
 ### E2E MCP Lockdown Tests
 
 | Test | What It Validates |
 |------|-------------------|
-| Tool list scoped | Health butler's CC instance can list tools → only health tools appear |
-| Cross-butler call fails | Health butler's CC instance tries to call a relationship tool → error |
-| Switchboard tools hidden | Non-switchboard CC instance has no `classify_message` or `route` tools |
+| Tool list scoped | Health butler's runtime instance can list tools → only health tools appear |
+| Cross-butler call fails | Health butler's runtime instance tries to call a relationship tool → error |
+| Switchboard tools hidden | Non-switchboard runtime instance has no `classify_message` or `route` tools |
 
 ## Database Isolation
 
@@ -275,7 +275,7 @@ approval_mode = "always"  # or "conditional"
 
 | Test | What It Validates |
 |------|-------------------|
-| Gated tool blocked without approval | CC calls `contact_delete` → call held, not executed |
+| Gated tool blocked without approval | Runtime calls `contact_delete` → call held, not executed |
 | Gated tool proceeds with approval | Approval granted → tool executes, row deleted |
 | Non-gated tools unaffected | `measurement_log` executes immediately, no approval check |
 | Approval timeout | Approval not granted within timeout → tool call rejected |
@@ -284,11 +284,11 @@ approval_mode = "always"  # or "conditional"
 
 | Threat | Layer | Mitigation | E2E Testable? |
 |--------|-------|-----------|---------------|
-| CC reads host env | Spawner | `_build_env` allowlist | Yes |
-| CC calls wrong butler's tools | MCP config | Single-butler MCP config | Yes |
-| CC writes to wrong DB | Database | Per-butler connection pool | Yes |
+| Runtime reads host env | Spawner | `_build_env` allowlist | Yes |
+| Runtime calls wrong butler's tools | MCP config | Single-butler MCP config | Yes |
+| Runtime writes to wrong DB | Database | Per-butler connection pool | Yes |
 | Credential leakage in logs | Logging | Redaction, arg sensitivity | Yes |
 | Butler-to-butler backdoor | Architecture | Switchboard-only routing | Yes |
 | Unauthorized tool execution | Approvals | Approval gates | Yes |
 | Secret in config file | Startup | `detect_secrets()` scan | Yes |
-| API key theft via prompt injection | CC runtime | Env isolation + model guardrails | Partially |
+| API key theft via prompt injection | LLM CLI runtime | Env isolation + model guardrails | Partially |

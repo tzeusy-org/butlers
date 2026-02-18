@@ -104,7 +104,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 stderr_path = stderr_dir / f"{self._butler_name}_cc_stderr.log"
                 stderr_file = open(stderr_path, "a", buffering=1)  # noqa: SIM115
                 ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-                stderr_file.write(f"\n--- CC session start: {ts} ---\n")
+                stderr_file.write(f"\n--- runtime session start: {ts} ---\n")
                 stderr_file.flush()
                 stderr_kwargs = {
                     "debug_stderr": stderr_file,

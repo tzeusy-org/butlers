@@ -4,7 +4,7 @@
 
 _Updated: 2026-02-09 by claude-opus-4-6_
 
-Every butler DB has three core tables: `state` (KV JSONB), `scheduled_tasks` (cron-driven), `sessions` (CC invocation log). Migrations use Alembic with multiple version chains in `alembic/versions/` — a `core` chain (applied to every butler) and per-butler chains (e.g., `relationship`, `health`). Modules contribute their own Alembic branch via `migration_revisions()`. The runtime runs `alembic.command.upgrade` programmatically at startup.
+Every butler DB has three core tables: `state` (KV JSONB), `scheduled_tasks` (cron-driven), `sessions` (runtime invocation log). Migrations use Alembic with multiple version chains in `alembic/versions/` — a `core` chain (applied to every butler) and per-butler chains (e.g., `relationship`, `health`). Modules contribute their own Alembic branch via `migration_revisions()`. The runtime runs `alembic.command.upgrade` programmatically at startup.
 
 ## v1 MVP is complete; post-v1 work underway
 
@@ -34,7 +34,7 @@ The v1 MVP spec has 15 capabilities: `butler-daemon`, `module-system`, `state-st
 
 _Added: 2026-02-09 by claude-opus-4-6_
 
-FastMCP for MCP servers. asyncpg (no ORM). croniter for cron. Click for CLI. SSE transport for inter-butler MCP. Ephemeral MCP configs lock down CC instances. Alembic for migrations (raw SQL via op.execute, multi-chain). OTel + LGTM stack (Alloy/Tempo/Grafana) for observability. Serial CC dispatch in v1. No auth between butlers in v1.
+FastMCP for MCP servers. asyncpg (no ORM). croniter for cron. Click for CLI. SSE transport for inter-butler MCP. Ephemeral MCP configs lock down runtime instances. Alembic for migrations (raw SQL via op.execute, multi-chain). OTel + LGTM stack (Alloy/Tempo/Grafana) for observability. Serial CC dispatch in v1. No auth between butlers in v1.
 
 ## Beads backlog structure
 

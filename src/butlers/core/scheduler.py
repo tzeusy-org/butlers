@@ -2,7 +2,7 @@
 
 On startup, syncs [[butler.schedule]] entries from TOML config to the
 scheduled_tasks table. At each tick(), evaluates cron expressions via
-croniter and dispatches due task prompts to the CC spawner serially.
+croniter and dispatches due task prompts to the LLM CLI spawner serially.
 """
 
 from __future__ import annotations
@@ -211,7 +211,7 @@ async def schedule_create(pool: asyncpg.Pool, name: str, cron: str, prompt: str)
         pool: asyncpg connection pool.
         name: Human-readable task name.
         cron: Cron expression (5-field).
-        prompt: Prompt text for the CC instance.
+        prompt: Prompt text for the runtime instance.
 
     Returns:
         The new task's UUID.

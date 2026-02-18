@@ -18,7 +18,7 @@ pytestmark = [
 
 @dataclass
 class FakeSpawnerResult:
-    """Fake CC spawner result for testing."""
+    """Fake LLM CLI spawner result for testing."""
 
     result: str | None = None
     tool_calls: list[dict] = field(default_factory=list)
@@ -82,7 +82,7 @@ def _make_failing_dispatch_fn():
     """Create a mock dispatch_fn that raises."""
 
     async def dispatch(**kwargs):
-        raise RuntimeError("CC invocation failed")
+        raise RuntimeError("runtime invocation failed")
 
     return dispatch
 
@@ -579,7 +579,7 @@ class TestExtractSignals:
         assert dispatched_butlers == {"relationship", "health"}
 
     async def test_cc_failure_returns_empty(self, pool):
-        """If CC invocation fails, return empty list."""
+        """If runtime invocation fails, return empty list."""
         from butlers.tools.extraction import extract_signals
 
         result = await extract_signals(

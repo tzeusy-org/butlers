@@ -31,7 +31,7 @@ The butler framework provides no visibility into system state, health, costs, or
 - `dashboard-health`: Health butler domain views. Measurement charts (weight, BP, HR over time), medication tracking with adherence stats, condition cards, symptom log with severity, meal timeline, and research notes browser.
 - `dashboard-general`: General butler domain views. Collection listing, entity browsing with collection/tag filtering and full-text search, JSON tree viewer for entity data.
 - `dashboard-switchboard`: Switchboard-specific views. Routing log table (timestamp, source, routed-to, prompt summary) and butler registry snapshot.
-- `core-notify`: Framework-level core tool enabling any butler's CC instance to send outbound messages through the Switchboard. Adds `notify(channel, message, recipient?)` as a core MCP tool, Switchboard `deliver()` tool, and `notifications` table in the Switchboard database.
+- `core-notify`: Framework-level core tool enabling any butler's runtime instance to send outbound messages through the Switchboard. Adds `notify(channel, message, recipient?)` as a core MCP tool, Switchboard `deliver()` tool, and `notifications` table in the Switchboard database.
 - `dashboard-overview`: Overview page with topology graph (React Flow), aggregate stats bar (total butlers, healthy count, sessions today, cost), issues aggregation panel (unreachable butlers, failing tasks, module errors, cost anomalies, failed notifications), cost summary widget (today's spend, 7-day sparkline, top spender), and recent activity feed with heartbeat tick collapsing.
 - `dashboard-butler-detail`: Butler detail overview tab with identity card (name, MANIFESTO.md description, port, uptime), module health badges (per D13), active session indicator (elapsed time or idle), and error summary (failed sessions in last 24h).
 - `dashboard-audit`: Audit log tracking all dashboard-initiated write operations (trigger, schedule CRUD, state CRUD). Stores timestamp, butler, operation type, user context (IP/user-agent), request summary, and result. Paginated API with filtering. Frontend audit log table.
@@ -39,7 +39,7 @@ The butler framework provides no visibility into system state, health, costs, or
 
 ### Modified Capabilities
 
-- `session-log`: Add `input_tokens`, `output_tokens`, `model`, `trace_id`, and `parent_session_id` columns. CC spawner must capture token usage from SDK response and store alongside session records.
+- `session-log`: Add `input_tokens`, `output_tokens`, `model`, `trace_id`, and `parent_session_id` columns. LLM CLI spawner must capture token usage from SDK response and store alongside session records.
 - `cc-spawner`: Update to capture and persist token usage (input/output tokens, model) from Claude Code SDK response into the session record.
 - `switchboard`: Add `deliver(channel, message, recipient?, metadata?)` tool for notification routing, and `notifications` table for delivery logging.
 - `cli-and-deployment`: Add `butlers dashboard` CLI command and Docker Compose services for dashboard-api and frontend.

@@ -231,7 +231,7 @@ Despite module failures, each butler retains full functionality for:
 - **Roster-defined domain tools:** Tools defined in `roster/{butler}/tools/`
   register directly on the FastMCP server and use the butler's database. They
   are not gated by module initialization.
-- **Spawner and trigger:** The CC spawner works independently of modules. It
+- **Spawner and trigger:** The LLM CLI spawner works independently of modules. It
   generates an MCP config, invokes the runtime adapter, and records the session.
 
 ### Module Status Verification

@@ -73,7 +73,7 @@ def build_consolidation_prompt(
     existing_rules: list[dict],
     butler_name: str,
 ) -> str:
-    """Build the full consolidation prompt for a CC session.
+    """Build the full consolidation prompt for a runtime session.
 
     Reads the SKILL.md template and appends contextual sections containing
     the episodes to process, existing facts and rules for dedup reference,
@@ -86,7 +86,7 @@ def build_consolidation_prompt(
         butler_name: Name of the butler requesting consolidation.
 
     Returns:
-        The complete prompt string ready for a CC instance.
+        The complete prompt string ready for a runtime instance.
     """
     template = _SKILL_MD_PATH.read_text(encoding="utf-8")
 

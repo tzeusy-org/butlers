@@ -1,6 +1,6 @@
 ## ADDED Requirements
 
-### Requirement: Episodes table stores raw observations from CC sessions
+### Requirement: Episodes table stores raw observations from runtime sessions
 
 The system SHALL store episodes in a PostgreSQL table with columns: `id` (UUID PK), `tenant_id` (TEXT), `butler` (TEXT, source butler name), `session_id` (UUID, nullable), `content` (TEXT), `embedding` (vector(384)), `search_vector` (tsvector), `importance` (FLOAT, default 5.0), `reference_count` (INT, default 0), `consolidated` (BOOLEAN compatibility projection), `consolidation_status` (TEXT), `consolidation_attempts` (INT), `last_consolidation_error` (TEXT, nullable), `next_consolidation_retry_at` (TIMESTAMPTZ, nullable), `created_at` (TIMESTAMPTZ), `last_referenced_at` (TIMESTAMPTZ), `expires_at` (TIMESTAMPTZ, default now + 7 days), `metadata` (JSONB).
 

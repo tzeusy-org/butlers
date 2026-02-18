@@ -187,13 +187,13 @@ class Issue(BaseModel):
 
 
 class TriggerRequest(BaseModel):
-    """Request body for triggering a CC session on a butler."""
+    """Request body for triggering a runtime session on a butler."""
 
     prompt: str
 
 
 class TriggerResponse(BaseModel):
-    """Response from triggering a CC session."""
+    """Response from triggering a runtime session."""
 
     session_id: str | None = None
     success: bool

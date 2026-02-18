@@ -175,15 +175,15 @@ Each badge MUST display the module name as a label next to the dot.
 
 ### Requirement: Active session indicator
 
-The butler detail overview tab SHALL display an active session indicator showing whether the butler is currently running a CC session.
+The butler detail overview tab SHALL display an active session indicator showing whether the butler is currently running a runtime session.
 
-- **When active:** Display "Currently running CC session" with the elapsed time since `started_at`, updating every second. Derived from querying the butler's `sessions` table for a row where `completed_at IS NULL`.
+- **When active:** Display "Currently running runtime session" with the elapsed time since `started_at`, updating every second. Derived from querying the butler's `sessions` table for a row where `completed_at IS NULL`.
 - **When idle:** Display "Idle" with the time since the last completed session (e.g., "Last session 15 minutes ago").
 
 #### Scenario: Butler has an active session
 
 - **WHEN** the `health` butler's `sessions` table contains a row with `completed_at IS NULL` and `started_at = 2 minutes ago`
-- **THEN** the indicator MUST display "Currently running CC session" with "2m elapsed" (updating live)
+- **THEN** the indicator MUST display "Currently running runtime session" with "2m elapsed" (updating live)
 
 #### Scenario: Butler is idle
 

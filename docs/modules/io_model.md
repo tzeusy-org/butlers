@@ -365,12 +365,12 @@ bot_email_send_message = { expiry_hours = 48, risk_tier = "medium" }
 
 ## 8. Credential Forwarding
 
-When a butler spawns an ephemeral Claude Code instance:
+When a butler spawns an ephemeral LLM CLI instance:
 
 1. Module declares required env vars via `credentials_env` property
 2. Startup credential checker validates all required vars are present
 3. MCP config generator includes all module credentials in the Claude Code environment
-4. Claude Code instance can invoke both user and bot tools with appropriate credentials
+4. LLM CLI instance can invoke both user and bot tools with appropriate credentials
 
 **Example credential declaration:**
 

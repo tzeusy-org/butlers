@@ -1,4 +1,4 @@
-"""Tests for graceful shutdown with CC session draining.
+"""Tests for graceful shutdown with runtime session draining.
 
 Covers:
 - Normal shutdown with session draining

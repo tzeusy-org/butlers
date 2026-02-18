@@ -63,7 +63,7 @@ the tool executes without approval.
 ## Approval Lifecycle
 
 ```
-CC calls gated tool
+Runtime calls gated tool
         │
         ▼
 ┌───────────────────┐
@@ -100,7 +100,7 @@ CC calls gated tool
 │ Tool     │         │          │
 │ executes │         │ Error    │
 │          │         │ returned │
-│          │         │ to CC    │
+│          │         │ to caller│
 └──────────┘         └──────────┘
 ```
 
@@ -110,27 +110,27 @@ CC calls gated tool
 
 | Test | Setup | Action | Expected Outcome |
 |------|-------|--------|------------------|
-| Gated tool blocked | `contact_delete` configured as `always` | CC calls `contact_delete` | Call held, not executed, approval row created |
-| Non-gated tool passes | `measurement_log` not in gated list | CC calls `measurement_log` | Executes immediately, no approval row |
-| Conditional gate — sensitive args | `email_send` conditional, `recipient` sensitive | CC calls `email_send(recipient="user@example.com")` | Gated (sensitive arg present) |
-| Conditional gate — no sensitive args | Same config | CC calls `email_send(recipient="")` | Not gated (sensitive arg empty) |
+| Gated tool blocked | `contact_delete` configured as `always` | Runtime instance calls `contact_delete` | Call held, not executed, approval row created |
+| Non-gated tool passes | `measurement_log` not in gated list | Runtime instance calls `measurement_log` | Executes immediately, no approval row |
+| Conditional gate — sensitive args | `email_send` conditional, `recipient` sensitive | Runtime instance calls `email_send(recipient="user@example.com")` | Gated (sensitive arg present) |
+| Conditional gate — no sensitive args | Same config | Runtime instance calls `email_send(recipient="")` | Not gated (sensitive arg empty) |
 
 ### Approval Decision
 
 | Test | Setup | Action | Expected Outcome |
 |------|-------|--------|------------------|
-| Approval granted | Gated tool held | External approval decision: `approved` | Tool executes, result returned to CC |
-| Approval denied | Gated tool held | External approval decision: `denied` | Error returned to CC, tool not executed |
-| Approval timeout | Gated tool held | No decision within timeout | Error returned to CC, approval row marked `expired` |
+| Approval granted | Gated tool held | External approval decision: `approved` | Tool executes, result returned to runtime |
+| Approval denied | Gated tool held | External approval decision: `denied` | Error returned to runtime, tool not executed |
+| Approval timeout | Gated tool held | No decision within timeout | Error returned to runtime, approval row marked `expired` |
 
-### Gate Interaction with CC Session
+### Gate Interaction with Runtime Session
 
 | Test | What It Validates |
 |------|-------------------|
-| CC waits for approval | CC session blocks on gated tool, does not terminate prematurely |
-| CC handles denial | CC receives denial error and continues (may try alternative action) |
-| CC handles timeout | CC receives timeout error and reports failure |
-| Multiple gated tools in one session | CC calls two gated tools → both held, both need approval |
+| Runtime waits for approval | Runtime session blocks on gated tool, does not terminate prematurely |
+| Runtime handles denial | Runtime receives denial error and continues (may try alternative action) |
+| Runtime handles timeout | Runtime receives timeout error and reports failure |
+| Multiple gated tools in one session | Runtime calls two gated tools → both held, both need approval |
 
 ## Testing the Approval Flow
 
@@ -251,8 +251,8 @@ approvals (
 |------|-------------------|
 | Approval row created | After gated tool call, `approvals` table has matching row |
 | Status transitions | pending → approved, pending → denied, pending → expired |
-| Tool args recorded | Approval row's `tool_args` matches what CC passed |
-| Session linkage | Approval row's `session_id` matches the CC session |
+| Tool args recorded | Approval row's `tool_args` matches what runtime passed |
+| Session linkage | Approval row's `session_id` matches the runtime session |
 | Timestamps accurate | `requested_at` before `decided_at` |
 | Decided-by recorded | `decided_by` field identifies the approver |
 
@@ -260,7 +260,7 @@ approvals (
 
 ### Gated Tool in Heartbeat Trigger
 
-When a heartbeat tick triggers a butler and the CC session calls a gated tool,
+When a heartbeat tick triggers a butler and the runtime session calls a gated tool,
 the approval request must still be created. Heartbeat triggers are not exempt
 from approval gates.
 
@@ -269,10 +269,10 @@ tick, verify approval request is created.
 
 ### Multiple Gates in Sequence
 
-A single CC session may call multiple gated tools:
+A single runtime session may call multiple gated tools:
 
 ```
-CC session:
+Runtime session:
   1. state_get("medication-list") → immediate (not gated)
   2. medication_stop("metformin") → HELD (gated, always)
   3. (blocked until #2 approved)

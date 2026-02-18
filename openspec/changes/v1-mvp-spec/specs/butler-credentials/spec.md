@@ -1,6 +1,6 @@
 # Butler Credentials
 
-Per-butler credential and environment variable management for the Butlers AI agent framework. Each butler declares the environment variables it requires in `butler.toml`, modules reference credentials via `credentials_env` in their config sections, and the CC Spawner passes through only explicitly declared variables to ephemeral Claude Code instances. Actual secret values MUST never appear in config files -- only references to environment variable names.
+Per-butler credential and environment variable management for the Butlers AI agent framework. Each butler declares the environment variables it requires in `butler.toml`, modules reference credentials via `credentials_env` in their config sections, and the LLM CLI Spawner passes through only explicitly declared variables to ephemeral LLM CLI instances. Actual secret values MUST never appear in config files -- only references to environment variable names.
 
 ---
 
@@ -147,56 +147,56 @@ AND no runtime enforcement SHALL prevent butler A from reading `SECRET_B` via `o
 
 ---
 
-### Requirement: CC instance credential passthrough
+### Requirement: runtime instance credential passthrough
 
-When the CC Spawner spawns an ephemeral Claude Code instance, it MUST pass through a specific, restricted set of environment variables to the CC process. CC instances MUST NOT receive the full host environment -- only explicitly declared variables SHALL be passed through. This is the credential lock-down mechanism for CC instances.
+When the LLM CLI Spawner spawns an ephemeral LLM CLI instance, it MUST pass through a specific, restricted set of environment variables to the CC process. runtime instances MUST NOT receive the full host environment -- only explicitly declared variables SHALL be passed through. This is the credential lock-down mechanism for runtime instances.
 
-The CC Spawner SHALL pass through the following env vars to each spawned CC process:
+The LLM CLI Spawner SHALL pass through the following env vars to each spawned CC process:
 
 1. `ANTHROPIC_API_KEY` -- always required for CC to function.
 2. All env vars listed in the butler's `[butler.env].required` list.
 3. All env vars listed in the butler's `[butler.env].optional` list that are present in the environment.
 4. All env vars referenced by `credentials_env` in any enabled module's config.
 
-The CC Spawner SHALL construct an explicit environment dict containing only these variables and pass it to the CC process. No other host environment variables SHALL be forwarded to the CC instance.
+The LLM CLI Spawner SHALL construct an explicit environment dict containing only these variables and pass it to the CC process. No other host environment variables SHALL be forwarded to the runtime instance.
 
-#### Scenario: CC instance receives only declared env vars
+#### Scenario: runtime instance receives only declared env vars
 
 WHEN a butler declares `[butler.env].required = ["ANTHROPIC_API_KEY", "CUSTOM_TOKEN"]`
 AND the host environment contains `ANTHROPIC_API_KEY`, `CUSTOM_TOKEN`, `HOME`, `PATH`, `AWS_SECRET_KEY`, and `DATABASE_URL`
-THEN the spawned CC instance SHALL receive `ANTHROPIC_API_KEY` and `CUSTOM_TOKEN`
-AND the CC instance MUST NOT receive `HOME`, `PATH`, `AWS_SECRET_KEY`, or `DATABASE_URL`.
+THEN the spawned runtime instance SHALL receive `ANTHROPIC_API_KEY` and `CUSTOM_TOKEN`
+AND the runtime instance MUST NOT receive `HOME`, `PATH`, `AWS_SECRET_KEY`, or `DATABASE_URL`.
 
-#### Scenario: CC instance receives module credentials
+#### Scenario: runtime instance receives module credentials
 
 WHEN a butler has `[modules.email]` with `credentials_env = "GMAIL_CREDS"`
 AND `GMAIL_CREDS` is set in the host environment
-THEN the spawned CC instance SHALL receive `GMAIL_CREDS` in its environment.
+THEN the spawned runtime instance SHALL receive `GMAIL_CREDS` in its environment.
 
-#### Scenario: CC instance receives ANTHROPIC_API_KEY
+#### Scenario: runtime instance receives ANTHROPIC_API_KEY
 
-WHEN the CC Spawner spawns a CC instance for any butler
-THEN the CC instance's environment MUST contain `ANTHROPIC_API_KEY`
+WHEN the LLM CLI Spawner spawns a runtime instance for any butler
+THEN the runtime instance's environment MUST contain `ANTHROPIC_API_KEY`
 AND the value MUST match the host environment's `ANTHROPIC_API_KEY`.
 
-#### Scenario: CC instance does not receive optional env vars that are missing
+#### Scenario: runtime instance does not receive optional env vars that are missing
 
 WHEN a butler declares `[butler.env].optional = ["SENTRY_DSN"]`
 AND `SENTRY_DSN` is not set in the host environment
-THEN the spawned CC instance's environment SHALL NOT contain `SENTRY_DSN`.
+THEN the spawned runtime instance's environment SHALL NOT contain `SENTRY_DSN`.
 
-#### Scenario: CC instance receives optional env vars that are present
+#### Scenario: runtime instance receives optional env vars that are present
 
 WHEN a butler declares `[butler.env].optional = ["SENTRY_DSN"]`
 AND `SENTRY_DSN` is set in the host environment
-THEN the spawned CC instance SHALL receive `SENTRY_DSN` in its environment.
+THEN the spawned runtime instance SHALL receive `SENTRY_DSN` in its environment.
 
 #### Scenario: Full environment is not leaked to CC
 
 WHEN the host environment contains 50 environment variables
 AND the butler declares 3 required vars, 1 optional var, and 1 module credentials_env var
-THEN the CC instance SHALL receive at most 5 environment variables (plus `TRACEPARENT` if an active trace exists)
-AND the remaining 45+ host variables MUST NOT be present in the CC instance's environment.
+THEN the runtime instance SHALL receive at most 5 environment variables (plus `TRACEPARENT` if an active trace exists)
+AND the remaining 45+ host variables MUST NOT be present in the runtime instance's environment.
 
 ---
 
@@ -204,7 +204,7 @@ AND the remaining 45+ host variables MUST NOT be present in the CC instance's en
 
 On butler startup, the daemon MUST perform credential and environment variable validation as part of its startup sequence. This validation MUST occur after config loading and before database provisioning. The validation MUST follow this order:
 
-1. Check that `ANTHROPIC_API_KEY` exists in the environment -- fail if missing. This variable is always required because every butler uses the CC Spawner, which needs it.
+1. Check that `ANTHROPIC_API_KEY` exists in the environment -- fail if missing. This variable is always required because every butler uses the LLM CLI Spawner, which needs it.
 2. Check all `[butler.env].required` vars exist -- fail if any are missing.
 3. Check all `[butler.env].optional` vars -- log a warning for each that is missing.
 4. Check all enabled module `credentials_env` vars exist -- fail if any are missing.
@@ -223,7 +223,7 @@ THEN the butler SHALL pass credential validation and proceed to database provisi
 
 WHEN `ANTHROPIC_API_KEY` is not set in the environment
 THEN the butler MUST refuse to start
-AND the error message MUST state that `ANTHROPIC_API_KEY` is required for the CC Spawner.
+AND the error message MUST state that `ANTHROPIC_API_KEY` is required for the LLM CLI Spawner.
 
 #### Scenario: Multiple missing vars reported at once
 
@@ -232,7 +232,7 @@ AND `[butler.env].required` includes `CUSTOM_SECRET` which is also missing
 AND `[modules.email]` declares `credentials_env = "GMAIL_CREDS"` which is also missing
 THEN the butler MUST refuse to start
 AND the error message MUST list all three missing variables: `ANTHROPIC_API_KEY`, `CUSTOM_SECRET`, and `GMAIL_CREDS`
-AND the error message MUST indicate which component requires each variable (CC Spawner, butler env, email module).
+AND the error message MUST indicate which component requires each variable (LLM CLI Spawner, butler env, email module).
 
 #### Scenario: Error messages name specific components
 

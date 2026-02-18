@@ -754,13 +754,13 @@ class TestTraceContextPropagation:
             parent_trace_id = parent_span.get_span_context().trace_id
             parent_span_id = parent_span.get_span_context().span_id
 
-            # Step 2: Inject trace context (simulates passing to CC spawner)
+            # Step 2: Inject trace context (simulates passing to LLM CLI spawner)
             ctx_dict = inject_trace_context()
 
             # Step 3: Also get env var format
             env = get_traceparent_env()
 
-        # Step 4: Extract context (simulates CC instance receiving context)
+        # Step 4: Extract context (simulates runtime instance receiving context)
         extracted_ctx = extract_trace_context(ctx_dict)
 
         # Step 5: Create a child span in the extracted context

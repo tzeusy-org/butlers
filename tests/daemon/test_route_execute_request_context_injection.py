@@ -1,7 +1,7 @@
-"""Test request_context injection into CC session context.
+"""Test request_context injection into runtime session context.
 
 Verifies that:
-- CC sessions spawned from route.execute receive request_context data
+- Runtime sessions spawned from route.execute receive request_context data
 - request_context includes all routing metadata fields
 - Non-route triggers (tick, schedule) are unaffected
 - Both dict and string input.context values are preserved
@@ -162,7 +162,7 @@ def _route_request_context(
 
 
 class TestRouteExecuteRequestContextInjection:
-    """Verify that request_context is injected into CC session context."""
+    """Verify that request_context is injected into runtime session context."""
 
     async def test_request_context_injected_into_spawner_context(self, tmp_path: Path) -> None:
         """Request context is prepended to spawner context for routes."""
