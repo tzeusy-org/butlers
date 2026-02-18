@@ -409,3 +409,22 @@ def test_route_envelope_with_conversation_history_and_context():
     parsed = parse_route_envelope(envelope)
     assert parsed.input.context == "Extra context"
     assert parsed.input.conversation_history == "**user** (2026-02-16T10:00:00Z):\nPrevious message"
+
+
+@pytest.mark.unit
+def test_route_input_with_empty_string_conversation_history():
+    """RouteInputV1 accepts and stores an empty string for conversation_history."""
+    model = RouteInputV1(prompt="Follow up", conversation_history="")
+    assert model.conversation_history == ""
+
+
+@pytest.mark.unit
+def test_route_envelope_with_empty_string_conversation_history_parses():
+    """RouteEnvelopeV1 parses correctly when input includes an empty conversation_history."""
+    envelope = _build_valid_route_envelope(
+        prompt="When should I take it?",
+        conversation_history="",
+    )
+    parsed = parse_route_envelope(envelope)
+    assert parsed.input.conversation_history == ""
+    assert parsed.input.prompt == "When should I take it?"

@@ -543,7 +543,7 @@ class TestRouteExecuteConversationHistoryInjection:
         assert context_arg is not None
         assert "CONVERSATION HISTORY" not in context_arg
 
-    async def test_empty_conversation_history_omits_section(self, tmp_path: Path) -> None:
+    async def test_none_conversation_history_omits_section(self, tmp_path: Path) -> None:
         """When conversation_history is None, CONVERSATION HISTORY section is omitted."""
         patches = _patch_infra()
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
@@ -561,6 +561,31 @@ class TestRouteExecuteConversationHistoryInjection:
             schema_version="route.v1",
             request_context=_route_request_context(source_channel="telegram"),
             input={"prompt": "Do something.", "conversation_history": None},
+        )
+
+        assert result["status"] == "ok"
+        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
+        assert context_arg is not None
+        assert "CONVERSATION HISTORY" not in context_arg
+
+    async def test_empty_string_conversation_history_omits_section(self, tmp_path: Path) -> None:
+        """When conversation_history is an empty string, CONVERSATION HISTORY section is omitted."""
+        patches = _patch_infra()
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        mock_trigger_result = MagicMock()
+        mock_trigger_result.output = "ok"
+        mock_trigger_result.success = True
+        mock_trigger_result.error = None
+        mock_trigger_result.duration_ms = 10
+        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(source_channel="telegram"),
+            input={"prompt": "Do something.", "conversation_history": ""},
         )
 
         assert result["status"] == "ok"
