@@ -366,11 +366,9 @@ def _extract_google_attendees(payload: Any) -> list[AttendeeInfo]:
                 continue
 
             display_name_raw = entry.get("displayName")
-            display_name = (
-                display_name_raw.strip()
-                if isinstance(display_name_raw, str) and display_name_raw.strip()
-                else None
-            )
+            display_name = None
+            if isinstance(display_name_raw, str) and (stripped := display_name_raw.strip()):
+                display_name = stripped
 
             response_status_raw = entry.get("responseStatus")
             response_status = AttendeeResponseStatus.needs_action
@@ -390,11 +388,9 @@ def _extract_google_attendees(payload: Any) -> list[AttendeeInfo]:
             self_ = self_raw is True
 
             comment_raw = entry.get("comment")
-            comment = (
-                comment_raw.strip()
-                if isinstance(comment_raw, str) and comment_raw.strip()
-                else None
-            )
+            comment = None
+            if isinstance(comment_raw, str) and (stripped := comment_raw.strip()):
+                comment = stripped
 
             attendees.append(
                 AttendeeInfo(

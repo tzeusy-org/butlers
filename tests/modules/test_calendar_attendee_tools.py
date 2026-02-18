@@ -298,7 +298,7 @@ class TestCalendarAddAttendeesTool:
         return provider
 
     @pytest.fixture
-    def module_and_tools(self, mock_provider):
+    async def module_and_tools(self, mock_provider):
         """Set up CalendarModule with registered tools."""
         module = _make_module_with_mock_provider(mock_provider)
 
@@ -312,11 +312,7 @@ class TestCalendarAddAttendeesTool:
 
                 return decorator
 
-        import asyncio
-
-        asyncio.get_event_loop().run_until_complete(
-            module.register_tools(FakeMcp(), module._config, MagicMock())
-        )
+        await module.register_tools(FakeMcp(), module._config, MagicMock())
         return module, tools, mock_provider
 
     async def test_add_attendees_calls_provider(self, module_and_tools):
@@ -446,7 +442,7 @@ class TestCalendarRemoveAttendeesTool:
         return provider
 
     @pytest.fixture
-    def module_and_tools(self, mock_provider):
+    async def module_and_tools(self, mock_provider):
         module = _make_module_with_mock_provider(mock_provider)
 
         tools = {}
@@ -459,11 +455,7 @@ class TestCalendarRemoveAttendeesTool:
 
                 return decorator
 
-        import asyncio
-
-        asyncio.get_event_loop().run_until_complete(
-            module.register_tools(FakeMcp(), module._config, MagicMock())
-        )
+        await module.register_tools(FakeMcp(), module._config, MagicMock())
         return module, tools, mock_provider
 
     async def test_remove_attendees_calls_provider(self, module_and_tools):
@@ -616,12 +608,15 @@ class TestGoogleProviderAddAttendees:
         patch_resp.json.return_value = patch_response_payload
 
         call_count = 0
+        patch_body_captured: dict = {}
 
         async def fake_request(method, url, **kwargs):
             nonlocal call_count
             call_count += 1
             if method == "GET":
                 return get_resp
+            # Capture the PATCH body to verify deduplication
+            patch_body_captured.update(kwargs.get("json", {}))
             return patch_resp
 
         mock_http.request = fake_request
@@ -634,8 +629,15 @@ class TestGoogleProviderAddAttendees:
             attendees=["existing@example.com"],  # already present
         )
 
-        # PATCH should be called with only 1 attendee (no duplication)
+        # 1 GET + 1 PATCH should be made
+        assert call_count == 2
         assert event.event_id == "evt-1"
+        # PATCH body should contain exactly 1 attendee (no duplication)
+        assert len(patch_body_captured.get("attendees", [])) == 1
+        assert patch_body_captured["attendees"][0]["email"] == "existing@example.com"
+        # Returned event should reflect the single-attendee response
+        assert len(event.attendees) == 1
+        assert event.attendees[0].email == "existing@example.com"
 
     async def test_add_attendees_event_not_found_raises(self, google_provider_and_http):
         provider, mock_http = google_provider_and_http
