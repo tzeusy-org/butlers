@@ -3,6 +3,9 @@ name = "messenger"
 port = 8104
 description = "Outbound delivery execution plane for Telegram and Email"
 
+[butler.runtime]
+max_concurrent_sessions = 2
+
 [butler.db]
 name = "butler_messenger"
 

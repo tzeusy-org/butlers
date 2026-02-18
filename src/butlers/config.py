@@ -55,10 +55,16 @@ class RuntimeConfig:
     Controls which LLM runtime and model the butler uses. The model string
     is opaque to the framework — no validation beyond non-empty. Each runtime
     defines its own valid model IDs.
+
+    max_concurrent_sessions controls how many LLM CLI sessions may run
+    simultaneously for this butler. Default of 1 preserves serial (lock-like)
+    behaviour for unaudited butlers; set higher only for butlers explicitly
+    designed for concurrency.
     """
 
     type: str = "claude-code"
     model: str | None = DEFAULT_MODEL
+    max_concurrent_sessions: int = 1
 
 
 @dataclass
@@ -241,17 +247,21 @@ def _parse_runtime(butler_section: dict) -> RuntimeConfig:
     Returns a RuntimeConfig using the dataclass default model (Haiku) if the
     section or field is absent. Empty-string model values fall through to the
     default.
+
+    max_concurrent_sessions defaults to 1 when absent — preserves serial
+    (lock-like) behaviour for existing butler configs.
     """
     runtime_section = butler_section.get("runtime", {})
     model = runtime_section.get("model")
+    max_concurrent_sessions = int(runtime_section.get("max_concurrent_sessions", 1))
 
     # Normalise empty/whitespace string → use default
     if isinstance(model, str) and not model.strip():
         model = None
 
     if model is not None:
-        return RuntimeConfig(model=model)
-    return RuntimeConfig()
+        return RuntimeConfig(model=model, max_concurrent_sessions=max_concurrent_sessions)
+    return RuntimeConfig(max_concurrent_sessions=max_concurrent_sessions)
 
 
 def parse_approval_config(raw: dict[str, Any] | None) -> ApprovalConfig | None:
@@ -555,9 +565,13 @@ def load_config(config_dir: Path) -> ButlerConfig:
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
 
-    # Parse model from [butler.runtime] sub-section
+    # Parse model and concurrency limit from [butler.runtime] sub-section
     butler_runtime = _parse_runtime(butler_section)
-    runtime = RuntimeConfig(type=runtime_type, model=butler_runtime.model)
+    runtime = RuntimeConfig(
+        type=runtime_type,
+        model=butler_runtime.model,
+        max_concurrent_sessions=butler_runtime.max_concurrent_sessions,
+    )
 
     return ButlerConfig(
         name=name,

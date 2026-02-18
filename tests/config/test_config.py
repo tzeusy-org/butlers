@@ -1246,3 +1246,96 @@ queue_capacity = 50
         assert cfg.buffer.scanner_interval_s == 30
         assert cfg.buffer.scanner_grace_s == 10
         assert cfg.buffer.scanner_batch_size == 50
+
+
+# ---------------------------------------------------------------------------
+# RuntimeConfig max_concurrent_sessions tests
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeConfigMaxConcurrentSessions:
+    """Tests for max_concurrent_sessions field in RuntimeConfig."""
+
+    def test_default_is_one(self):
+        """RuntimeConfig.max_concurrent_sessions defaults to 1."""
+        rc = RuntimeConfig()
+        assert rc.max_concurrent_sessions == 1
+
+    def test_explicit_value_stored(self):
+        """RuntimeConfig accepts an explicit max_concurrent_sessions value."""
+        rc = RuntimeConfig(max_concurrent_sessions=5)
+        assert rc.max_concurrent_sessions == 5
+
+    def test_butler_config_defaults_to_one(self):
+        """ButlerConfig.runtime.max_concurrent_sessions defaults to 1."""
+        cfg = ButlerConfig(name="test", port=9000)
+        assert cfg.runtime.max_concurrent_sessions == 1
+
+    def test_missing_field_defaults_to_one(self, tmp_path: Path):
+        """Existing configs without max_concurrent_sessions default to 1 (backwards-compat)."""
+        toml = """\
+[butler]
+name = "legacybot"
+port = 7050
+"""
+        (tmp_path / "butler.toml").write_text(toml)
+        cfg = load_config(tmp_path)
+        assert cfg.runtime.max_concurrent_sessions == 1
+
+    def test_runtime_section_without_field_defaults_to_one(self, tmp_path: Path):
+        """[butler.runtime] section present but without max_concurrent_sessions defaults to 1."""
+        toml = """\
+[butler]
+name = "nofield"
+port = 7051
+
+[butler.runtime]
+model = "claude-haiku-4-5-20251001"
+"""
+        (tmp_path / "butler.toml").write_text(toml)
+        cfg = load_config(tmp_path)
+        assert cfg.runtime.max_concurrent_sessions == 1
+
+    def test_explicit_value_parsed_from_toml(self, tmp_path: Path):
+        """max_concurrent_sessions is parsed from [butler.runtime] in butler.toml."""
+        toml = """\
+[butler]
+name = "concurrentbot"
+port = 7052
+
+[butler.runtime]
+max_concurrent_sessions = 4
+"""
+        (tmp_path / "butler.toml").write_text(toml)
+        cfg = load_config(tmp_path)
+        assert cfg.runtime.max_concurrent_sessions == 4
+
+    def test_value_with_model_parsed(self, tmp_path: Path):
+        """max_concurrent_sessions is parsed alongside model field."""
+        toml = """\
+[butler]
+name = "fullruntimebot"
+port = 7053
+
+[butler.runtime]
+model = "claude-opus-4-20250514"
+max_concurrent_sessions = 3
+"""
+        (tmp_path / "butler.toml").write_text(toml)
+        cfg = load_config(tmp_path)
+        assert cfg.runtime.model == "claude-opus-4-20250514"
+        assert cfg.runtime.max_concurrent_sessions == 3
+
+    def test_switchboard_roster_has_max_concurrent_sessions_3(self):
+        """Switchboard butler.toml sets max_concurrent_sessions = 3."""
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        switchboard_config_dir = repo_root / "roster" / "switchboard"
+        cfg = load_config(switchboard_config_dir)
+        assert cfg.runtime.max_concurrent_sessions == 3
+
+    def test_messenger_roster_has_max_concurrent_sessions_2(self):
+        """Messenger butler.toml sets max_concurrent_sessions = 2."""
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        messenger_config_dir = repo_root / "roster" / "messenger"
+        cfg = load_config(messenger_config_dir)
+        assert cfg.runtime.max_concurrent_sessions == 2
