@@ -441,3 +441,129 @@ class TestRouteExecuteRequestContextInjection:
         assert result["status"] == "ok"
         context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
         assert "INTERACTIVE DATA SOURCE" not in context_arg
+
+
+class TestRouteExecuteConversationHistoryInjection:
+    """Verify that conversation_history from route.v1 input is injected into context."""
+
+    async def test_conversation_history_injected_into_spawner_context(self, tmp_path: Path) -> None:
+        """Conversation history forwarded via input.conversation_history appears in context."""
+        patches = _patch_infra()
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        mock_trigger_result = MagicMock()
+        mock_trigger_result.output = "ok"
+        mock_trigger_result.success = True
+        mock_trigger_result.error = None
+        mock_trigger_result.duration_ms = 10
+        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+
+        history_text = (
+            "**user123** (2026-02-16T10:00:00Z):\n"
+            "Track my metformin 500mg twice daily\n\n"
+            "**butler -> health** (2026-02-16T10:00:05Z):\n"
+            "Done! I've recorded metformin 500mg twice daily."
+        )
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(source_channel="telegram"),
+            input={"prompt": "When should I take it?", "conversation_history": history_text},
+        )
+
+        assert result["status"] == "ok"
+        daemon.spawner.trigger.assert_awaited_once()
+
+        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
+        assert context_arg is not None
+        assert "CONVERSATION HISTORY" in context_arg
+        assert "metformin 500mg" in context_arg
+        assert "user123" in context_arg
+
+    async def test_conversation_history_appears_before_input_context(self, tmp_path: Path) -> None:
+        """Conversation history is prepended before INPUT CONTEXT in the context string."""
+        patches = _patch_infra()
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        mock_trigger_result = MagicMock()
+        mock_trigger_result.output = "ok"
+        mock_trigger_result.success = True
+        mock_trigger_result.error = None
+        mock_trigger_result.duration_ms = 10
+        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+
+        history_text = "**user1** (2026-02-16T10:00:00Z):\nHello"
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(source_channel="telegram"),
+            input={
+                "prompt": "Reply.",
+                "context": "Extra context here",
+                "conversation_history": history_text,
+            },
+        )
+
+        assert result["status"] == "ok"
+        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
+        assert context_arg is not None
+
+        history_pos = context_arg.find("CONVERSATION HISTORY")
+        input_ctx_pos = context_arg.find("INPUT CONTEXT")
+        assert history_pos != -1, "CONVERSATION HISTORY not in context"
+        assert input_ctx_pos != -1, "INPUT CONTEXT not in context"
+        assert history_pos < input_ctx_pos, "CONVERSATION HISTORY must come before INPUT CONTEXT"
+
+    async def test_no_conversation_history_omits_section(self, tmp_path: Path) -> None:
+        """When conversation_history is absent, CONVERSATION HISTORY section is not injected."""
+        patches = _patch_infra()
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        mock_trigger_result = MagicMock()
+        mock_trigger_result.output = "ok"
+        mock_trigger_result.success = True
+        mock_trigger_result.error = None
+        mock_trigger_result.duration_ms = 10
+        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(source_channel="mcp"),
+            input={"prompt": "Do something."},
+        )
+
+        assert result["status"] == "ok"
+        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
+        assert context_arg is not None
+        assert "CONVERSATION HISTORY" not in context_arg
+
+    async def test_empty_conversation_history_omits_section(self, tmp_path: Path) -> None:
+        """When conversation_history is None, CONVERSATION HISTORY section is omitted."""
+        patches = _patch_infra()
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        mock_trigger_result = MagicMock()
+        mock_trigger_result.output = "ok"
+        mock_trigger_result.success = True
+        mock_trigger_result.error = None
+        mock_trigger_result.duration_ms = 10
+        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(source_channel="telegram"),
+            input={"prompt": "Do something.", "conversation_history": None},
+        )
+
+        assert result["status"] == "ok"
+        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
+        assert context_arg is not None
+        assert "CONVERSATION HISTORY" not in context_arg

@@ -23,7 +23,7 @@ def _load_butler_toml(butler_name: str) -> dict:
 def test_calendar_enabled_butlers_share_single_calendar_id() -> None:
     """Calendar-enabled roster butlers should share a single Butler calendar."""
     calendar_ids = set()
-    
+
     for butler_name in CALENDAR_ENABLED_BUTLERS:
         modules = _load_butler_toml(butler_name).get("modules", {})
         calendar = modules.get("calendar")
@@ -36,13 +36,13 @@ def test_calendar_enabled_butlers_share_single_calendar_id() -> None:
         assert isinstance(calendar_id, str) and calendar_id.strip()
         assert calendar_id != "primary"
         assert "@group.calendar.google.com" in calendar_id
-        
+
         # All butlers should use the shared calendar ID
         assert calendar_id == SHARED_BUTLER_CALENDAR_ID, (
             f"{butler_name} calendar_id='{calendar_id}', expected '{SHARED_BUTLER_CALENDAR_ID}'"
         )
         calendar_ids.add(calendar_id)
-    
+
     # Verify all butlers are using the same calendar
     n = len(calendar_ids)
     assert n == 1, f"Expected 1 shared calendar, found {n}: {calendar_ids}"
