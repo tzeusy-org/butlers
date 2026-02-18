@@ -19,6 +19,7 @@ import pytest
 from butlers.modules.calendar import (
     BUTLER_GENERATED_PRIVATE_KEY,
     BUTLER_NAME_PRIVATE_KEY,
+    AttendeeResponseStatus,
     _coerce_expires_in_seconds,
     _coerce_zoneinfo,
     _extract_google_attendees,
@@ -223,20 +224,72 @@ class TestTimezoneCoercion:
 
 
 class TestGoogleAttendeesExtraction:
-    """Test attendee list extraction and normalization."""
+    """Test attendee list extraction into structured AttendeeInfo objects."""
 
-    def test_extract_from_dict_with_email_field(self):
+    def test_extract_from_dict_with_email_only(self):
         payload = [
             {"email": "alice@example.com"},
             {"email": "bob@example.com"},
         ]
         attendees = _extract_google_attendees(payload)
-        assert attendees == ["alice@example.com", "bob@example.com"]
+        assert len(attendees) == 2
+        assert attendees[0].email == "alice@example.com"
+        assert attendees[1].email == "bob@example.com"
+        # Defaults
+        assert attendees[0].display_name is None
+        assert attendees[0].response_status == AttendeeResponseStatus.needs_action
+        assert attendees[0].optional is False
+        assert attendees[0].organizer is False
+        assert attendees[0].self_ is False
+        assert attendees[0].comment is None
+
+    def test_extract_rich_attendee_fields(self):
+        payload = [
+            {
+                "email": "alice@example.com",
+                "displayName": "Alice Smith",
+                "responseStatus": "accepted",
+                "optional": True,
+                "organizer": False,
+                "self": True,
+                "comment": "Looking forward to it!",
+            }
+        ]
+        attendees = _extract_google_attendees(payload)
+        assert len(attendees) == 1
+        a = attendees[0]
+        assert a.email == "alice@example.com"
+        assert a.display_name == "Alice Smith"
+        assert a.response_status == AttendeeResponseStatus.accepted
+        assert a.optional is True
+        assert a.organizer is False
+        assert a.self_ is True
+        assert a.comment == "Looking forward to it!"
+
+    def test_extract_all_response_statuses(self):
+        payload = [
+            {"email": "a@example.com", "responseStatus": "needsAction"},
+            {"email": "b@example.com", "responseStatus": "accepted"},
+            {"email": "c@example.com", "responseStatus": "declined"},
+            {"email": "d@example.com", "responseStatus": "tentative"},
+        ]
+        attendees = _extract_google_attendees(payload)
+        assert attendees[0].response_status == AttendeeResponseStatus.needs_action
+        assert attendees[1].response_status == AttendeeResponseStatus.accepted
+        assert attendees[2].response_status == AttendeeResponseStatus.declined
+        assert attendees[3].response_status == AttendeeResponseStatus.tentative
+
+    def test_extract_unknown_response_status_defaults_to_needs_action(self):
+        payload = [{"email": "a@example.com", "responseStatus": "unknown_status"}]
+        attendees = _extract_google_attendees(payload)
+        assert attendees[0].response_status == AttendeeResponseStatus.needs_action
 
     def test_extract_from_plain_strings(self):
         payload = ["alice@example.com", "bob@example.com"]
         attendees = _extract_google_attendees(payload)
-        assert attendees == ["alice@example.com", "bob@example.com"]
+        assert len(attendees) == 2
+        assert attendees[0].email == "alice@example.com"
+        assert attendees[1].email == "bob@example.com"
 
     def test_extract_strips_whitespace(self):
         payload = [
@@ -244,7 +297,8 @@ class TestGoogleAttendeesExtraction:
             "  bob@example.com  ",
         ]
         attendees = _extract_google_attendees(payload)
-        assert attendees == ["alice@example.com", "bob@example.com"]
+        assert attendees[0].email == "alice@example.com"
+        assert attendees[1].email == "bob@example.com"
 
     def test_extract_skips_empty_emails(self):
         payload = [
@@ -255,7 +309,8 @@ class TestGoogleAttendeesExtraction:
             "   ",
         ]
         attendees = _extract_google_attendees(payload)
-        assert attendees == ["alice@example.com"]
+        assert len(attendees) == 1
+        assert attendees[0].email == "alice@example.com"
 
     def test_extract_skips_dict_without_email(self):
         payload = [
@@ -263,12 +318,18 @@ class TestGoogleAttendeesExtraction:
             {"name": "Bob"},
         ]
         attendees = _extract_google_attendees(payload)
-        assert attendees == ["alice@example.com"]
+        assert len(attendees) == 1
+        assert attendees[0].email == "alice@example.com"
 
     def test_extract_returns_empty_for_non_list(self):
         assert _extract_google_attendees(None) == []
         assert _extract_google_attendees("not-a-list") == []
         assert _extract_google_attendees({"email": "alice@example.com"}) == []
+
+    def test_extract_organizer_flag(self):
+        payload = [{"email": "organizer@example.com", "organizer": True}]
+        attendees = _extract_google_attendees(payload)
+        assert attendees[0].organizer is True
 
 
 class TestGoogleRecurrenceExtraction:

@@ -32,6 +32,7 @@ from butlers.modules.calendar import (
     GOOGLE_CALENDAR_API_BASE_URL,
     GOOGLE_CALENDAR_CREDENTIALS_ENV,
     GOOGLE_OAUTH_TOKEN_URL,
+    AttendeeResponseStatus,
     CalendarConfig,
     CalendarEvent,
     CalendarEventCreate,
@@ -556,7 +557,9 @@ class TestGoogleProviderCreateEvent:
         assert result.description == "Team planning session"
         assert result.location == "Room A"
         assert result.color_id == "5"
-        assert result.attendees == ["alice@example.com"]
+        assert len(result.attendees) == 1
+        assert result.attendees[0].email == "alice@example.com"
+        assert result.attendees[0].response_status == AttendeeResponseStatus.needs_action
         assert result.butler_generated is True
         assert result.butler_name == "general"
 
