@@ -145,6 +145,7 @@ class TestCalendarProviderInterface:
             "update_event",
             "delete_event",
             "find_conflicts",
+            "sync_incremental",
             "shutdown",
         }
         assert expected.issubset(abstract_methods)
@@ -305,6 +306,15 @@ class _ProviderDouble(CalendarProvider):
     async def find_conflicts(self, *, calendar_id: str, candidate):
         self.find_conflict_calls.append({"calendar_id": calendar_id, "candidate": candidate})
         return list(self._conflicts)
+
+    async def sync_incremental(
+        self,
+        *,
+        calendar_id: str,
+        sync_token: str | None,
+        full_sync_window_days: int = 30,
+    ) -> tuple[list, list[str], str]:
+        return [], [], "token-stub"
 
     async def shutdown(self) -> None:
         return None

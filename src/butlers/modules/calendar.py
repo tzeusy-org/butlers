@@ -23,6 +23,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from butlers.core.state import state_get as _state_get
+from butlers.core.state import state_set as _state_set
 from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
@@ -54,6 +56,14 @@ RATE_LIMIT_RETRY_STATUS_CODES = {429, 503}
 RATE_LIMIT_MAX_RETRIES = 3
 RATE_LIMIT_BASE_BACKOFF_SECONDS = 1.0
 
+# Sync state store key prefix (spec section 10.2).
+# Format: calendar::sync::{calendar_id}
+SYNC_STATE_KEY_PREFIX = "calendar::sync::"
+# Default full sync window in days when no sync token exists (spec section 12.5).
+DEFAULT_SYNC_WINDOW_DAYS = 30
+# Default sync interval in minutes (spec section 12.5).
+DEFAULT_SYNC_INTERVAL_MINUTES = 5
+
 CalendarConflictPolicy = Literal["suggest", "fail", "allow_overlap"]
 
 
@@ -76,6 +86,10 @@ class CalendarRequestError(CalendarAuthError):
         self.status_code = status_code
         self.message = message
         super().__init__(f"Google Calendar API request failed ({status_code}): {message}")
+
+
+class CalendarSyncTokenExpiredError(CalendarAuthError):
+    """Raised when a sync token is expired or invalid; caller should do a full sync."""
 
 
 class _GoogleOAuthCredentials(BaseModel):
@@ -852,6 +866,30 @@ class CalendarNotificationDefaults(BaseModel):
     color_id: str | None = None
 
 
+class CalendarSyncConfig(BaseModel):
+    """Polling sync configuration (spec section 12.5)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    interval_minutes: int = Field(default=DEFAULT_SYNC_INTERVAL_MINUTES, ge=1)
+    full_sync_window_days: int = Field(default=DEFAULT_SYNC_WINDOW_DAYS, ge=1)
+
+
+class CalendarSyncState(BaseModel):
+    """Per-calendar sync state persisted in the KV store (spec section 10.2).
+
+    Stored under the key ``calendar::sync::{calendar_id}``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    sync_token: str | None = None
+    last_sync_at: str | None = None  # ISO-8601 UTC timestamp
+    last_sync_error: str | None = None
+    pending_changes_count: int = 0
+
+
 class CalendarConfig(BaseModel):
     """Configuration for the Calendar module."""
 
@@ -862,6 +900,7 @@ class CalendarConfig(BaseModel):
     event_defaults: CalendarNotificationDefaults = Field(
         default_factory=CalendarNotificationDefaults
     )
+    sync: CalendarSyncConfig = Field(default_factory=CalendarSyncConfig)
 
     @field_validator("provider")
     @classmethod
@@ -1446,6 +1485,32 @@ class CalendarProvider(abc.ABC):
         ...
 
     @abc.abstractmethod
+    async def sync_incremental(
+        self,
+        *,
+        calendar_id: str,
+        sync_token: str | None,
+        full_sync_window_days: int = DEFAULT_SYNC_WINDOW_DAYS,
+    ) -> tuple[list[CalendarEvent], list[str], str]:
+        """Fetch incremental changes since the given sync token.
+
+        When ``sync_token`` is ``None`` a full sync is performed over the last
+        ``full_sync_window_days`` days.
+
+        Returns:
+            A 3-tuple of:
+            - ``updated_events``: list of new/updated CalendarEvent objects.
+            - ``cancelled_event_ids``: list of event_id strings that were cancelled.
+            - ``next_sync_token``: opaque token to pass on the next call.
+
+        Raises:
+            ``CalendarSyncTokenExpiredError`` when the provider reports the
+            sync token is no longer valid.  The caller should retry with
+            ``sync_token=None`` to perform a full sync.
+        """
+        ...
+
+    @abc.abstractmethod
     async def shutdown(self) -> None:
         """Release provider resources."""
         ...
@@ -2014,6 +2079,114 @@ class _GoogleProvider(CalendarProvider):
             )
         return conflicts
 
+    async def sync_incremental(
+        self,
+        *,
+        calendar_id: str,
+        sync_token: str | None,
+        full_sync_window_days: int = DEFAULT_SYNC_WINDOW_DAYS,
+    ) -> tuple[list[CalendarEvent], list[str], str]:
+        """Fetch incremental changes using Google's syncToken / nextSyncToken flow.
+
+        Performs a full sync when ``sync_token`` is ``None`` (first run or
+        after token invalidation).  Returns updated events, cancelled IDs, and
+        the token to use on the next call.
+
+        Raises:
+            CalendarSyncTokenExpiredError: When Google returns 410 Gone,
+                indicating the sync token is no longer valid.
+        """
+        normalized_calendar_id = quote(calendar_id, safe="")
+        params: dict[str, Any] = {
+            "showDeleted": True,
+            "singleEvents": False,
+        }
+
+        if sync_token is not None:
+            params["syncToken"] = sync_token
+        else:
+            # Full sync: restrict to a time window to avoid fetching all history.
+            now = datetime.now(UTC)
+            window_start = now - timedelta(days=full_sync_window_days)
+            params["timeMin"] = _google_rfc3339(window_start)
+
+        updated_events: list[CalendarEvent] = []
+        cancelled_event_ids: list[str] = []
+        next_page_token: str | None = None
+        next_sync_token: str | None = None
+
+        while True:
+            if next_page_token is not None:
+                params["pageToken"] = next_page_token
+            elif "pageToken" in params:
+                del params["pageToken"]
+
+            response = await self._request_with_bearer(
+                method="GET",
+                path=f"/calendars/{normalized_calendar_id}/events",
+                params=params,
+            )
+
+            # 410 Gone means the sync token is expired; caller must do full re-sync.
+            if response.status_code == 410:
+                raise CalendarSyncTokenExpiredError(
+                    f"Sync token expired for calendar '{calendar_id}'; full re-sync required"
+                )
+
+            if response.status_code < 200 or response.status_code >= 300:
+                raise CalendarRequestError(
+                    status_code=response.status_code,
+                    message=_safe_google_error_message(response),
+                )
+
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise CalendarAuthError(
+                    "Google Calendar sync response returned invalid JSON"
+                ) from exc
+
+            if not isinstance(payload, dict):
+                raise CalendarAuthError(
+                    "Google Calendar sync response has unexpected payload shape"
+                )
+
+            items = payload.get("items")
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    item_status = item.get("status")
+                    event_id_raw = item.get("id")
+                    if not isinstance(event_id_raw, str) or not event_id_raw.strip():
+                        continue
+                    if isinstance(item_status, str) and item_status.lower() == "cancelled":
+                        cancelled_event_ids.append(event_id_raw.strip())
+                    else:
+                        event = _google_event_to_calendar_event(
+                            item,
+                            fallback_timezone=self._config.timezone,
+                        )
+                        if event is not None:
+                            updated_events.append(event)
+
+            next_page_token = payload.get("nextPageToken") if isinstance(payload, dict) else None
+            candidate_sync_token = (
+                payload.get("nextSyncToken") if isinstance(payload, dict) else None
+            )
+            if isinstance(candidate_sync_token, str) and candidate_sync_token.strip():
+                next_sync_token = candidate_sync_token.strip()
+
+            if next_page_token is None:
+                break
+
+        if next_sync_token is None:
+            raise CalendarAuthError(
+                f"Google Calendar sync response for '{calendar_id}' did not return nextSyncToken"
+            )
+
+        return updated_events, cancelled_event_ids, next_sync_token
+
     async def shutdown(self) -> None:
         if self._owns_http_client:
             await self._http_client.aclose()
@@ -2031,6 +2204,12 @@ class CalendarModule(Module):
         self._provider: CalendarProvider | None = None
         self._butler_name: str = DEFAULT_BUTLER_NAME
         self._approval_enqueuer: ApprovalEnqueuer | None = None
+        self._db: Any = None
+        self._sync_task: asyncio.Task[None] | None = None
+        # In-memory sync state cache (calendar_id → CalendarSyncState).
+        self._sync_states: dict[str, CalendarSyncState] = {}
+        # Event set to trigger immediate sync (for calendar_force_sync tool).
+        self._force_sync_event: asyncio.Event = asyncio.Event()
 
     @property
     def name(self) -> str:
@@ -2072,6 +2251,7 @@ class CalendarModule(Module):
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         self._config = self._coerce_config(config)
         self._butler_name = self._resolve_butler_name(db)
+        self._db = db
         module = self
 
         @mcp.tool()
@@ -2672,8 +2852,104 @@ class CalendarModule(Module):
                 "event": module._event_to_payload(event),
             }
 
+        @mcp.tool()
+        async def calendar_sync_status(
+            calendar_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Return sync state for the configured calendar (spec section 13.5).
+
+            Returns the last sync time, whether the sync token is valid,
+            pending changes count, and any last sync error.
+
+            Fail-open: returns state with ``sync_enabled=False`` when sync
+            is not configured rather than raising.
+            """
+            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            cfg = module._require_config()
+            provider = module._require_provider()
+
+            if not cfg.sync.enabled:
+                return {
+                    "status": "ok",
+                    "sync_enabled": False,
+                    "provider": provider.name,
+                    "calendar_id": resolved_calendar_id,
+                    "last_sync_at": None,
+                    "sync_token_valid": False,
+                    "pending_changes_count": 0,
+                    "last_sync_error": None,
+                }
+
+            # Use cached in-memory state when available; fall back to KV store.
+            sync_state = module._sync_states.get(resolved_calendar_id)
+            if sync_state is None:
+                try:
+                    sync_state = await module._load_sync_state(resolved_calendar_id)
+                except Exception as exc:
+                    logger.warning(
+                        "calendar_sync_status: failed to load state for '%s': %s",
+                        resolved_calendar_id,
+                        exc,
+                    )
+                    sync_state = CalendarSyncState()
+
+            return {
+                "status": "ok",
+                "sync_enabled": True,
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "last_sync_at": sync_state.last_sync_at,
+                "sync_token_valid": sync_state.sync_token is not None,
+                "pending_changes_count": sync_state.pending_changes_count,
+                "last_sync_error": sync_state.last_sync_error,
+            }
+
+        @mcp.tool()
+        async def calendar_force_sync(
+            calendar_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Trigger an immediate sync outside the normal polling schedule (spec section 13.5).
+
+            If sync is not enabled in config, performs a one-off incremental sync
+            and returns the result immediately.  If the background poller is
+            running, signals it to execute immediately.
+
+            Fail-closed: returns a structured error dict on provider failure.
+            """
+            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            cfg = module._require_config()
+            provider = module._require_provider()
+
+            if cfg.sync.enabled and module._sync_task is not None:
+                # Signal the background poller to sync immediately.
+                module._force_sync_event.set()
+                return {
+                    "status": "sync_triggered",
+                    "provider": provider.name,
+                    "calendar_id": resolved_calendar_id,
+                    "message": (
+                        "Immediate sync has been triggered; check calendar_sync_status for results."
+                    ),
+                }
+
+            # Sync not running as background task: run a one-off sync inline.
+            # _sync_calendar swallows provider errors (fail-open, spec section 4.4).
+            # Any error is captured in the sync state's last_sync_error field.
+            await module._sync_calendar(resolved_calendar_id)
+
+            sync_state = module._sync_states.get(resolved_calendar_id, CalendarSyncState())
+            return {
+                "status": "sync_completed",
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "last_sync_at": sync_state.last_sync_at,
+                "pending_changes_count": sync_state.pending_changes_count,
+                "last_sync_error": sync_state.last_sync_error,
+            }
+
     async def on_startup(self, config: Any, db: Any) -> None:
         self._config = self._coerce_config(config)
+        self._db = db
 
         provider_cls = self._PROVIDER_CLASSES.get(self._config.provider)
         if provider_cls is None:
@@ -2685,10 +2961,161 @@ class CalendarModule(Module):
 
         self._provider = provider_cls(self._config)
 
+        if self._config.sync.enabled:
+            self._sync_task = asyncio.create_task(
+                self._run_sync_poller(), name="calendar-sync-poller"
+            )
+            logger.info(
+                "Calendar sync poller started (interval=%dm, calendar_id=%s)",
+                self._config.sync.interval_minutes,
+                self._config.calendar_id,
+            )
+
     async def on_shutdown(self) -> None:
+        if self._sync_task is not None and not self._sync_task.done():
+            self._sync_task.cancel()
+            try:
+                await self._sync_task
+            except asyncio.CancelledError:
+                pass
+        self._sync_task = None
+
         if self._provider is not None:
             await self._provider.shutdown()
         self._provider = None
+
+    # ------------------------------------------------------------------
+    # Sync infrastructure
+    # ------------------------------------------------------------------
+
+    def _sync_state_key(self, calendar_id: str) -> str:
+        """Return the KV state store key for the given calendar's sync state."""
+        return f"{SYNC_STATE_KEY_PREFIX}{calendar_id}"
+
+    async def _load_sync_state(self, calendar_id: str) -> CalendarSyncState:
+        """Load sync state from the KV store, returning a default if not found."""
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return CalendarSyncState()
+        key = self._sync_state_key(calendar_id)
+        raw = await _state_get(pool, key)
+        if not isinstance(raw, dict):
+            return CalendarSyncState()
+        return CalendarSyncState(**raw)
+
+    async def _save_sync_state(self, calendar_id: str, state: CalendarSyncState) -> None:
+        """Persist sync state to the KV store."""
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            logger.warning("Cannot persist sync state: database pool not available")
+            return
+        key = self._sync_state_key(calendar_id)
+        await _state_set(pool, key, state.model_dump())
+
+    async def _sync_calendar(self, calendar_id: str) -> None:
+        """Run one incremental sync cycle for ``calendar_id``.
+
+        Loads the saved sync token, calls the provider's sync endpoint, handles
+        token expiration (falls back to full sync), and persists the new token.
+        Errors are logged and swallowed so the poller stays alive.
+        """
+        provider = self._provider
+        if provider is None:
+            return
+
+        config = self._require_config()
+        sync_state = await self._load_sync_state(calendar_id)
+
+        try:
+            updated_events, cancelled_ids, next_token = await provider.sync_incremental(
+                calendar_id=calendar_id,
+                sync_token=sync_state.sync_token,
+                full_sync_window_days=config.sync.full_sync_window_days,
+            )
+        except CalendarSyncTokenExpiredError:
+            logger.warning(
+                "Sync token expired for calendar '%s'; performing full re-sync", calendar_id
+            )
+            try:
+                updated_events, cancelled_ids, next_token = await provider.sync_incremental(
+                    calendar_id=calendar_id,
+                    sync_token=None,
+                    full_sync_window_days=config.sync.full_sync_window_days,
+                )
+            except CalendarAuthError as exc:
+                logger.error(
+                    "Full re-sync failed for calendar '%s': %s",
+                    calendar_id,
+                    exc,
+                    exc_info=True,
+                )
+                sync_state.last_sync_error = str(exc)[:200]
+                self._sync_states[calendar_id] = sync_state
+                await self._save_sync_state(calendar_id, sync_state)
+                return
+        except CalendarAuthError as exc:
+            logger.error(
+                "Incremental sync failed for calendar '%s': %s",
+                calendar_id,
+                exc,
+                exc_info=True,
+            )
+            sync_state.last_sync_error = str(exc)[:200]
+            self._sync_states[calendar_id] = sync_state
+            await self._save_sync_state(calendar_id, sync_state)
+            return
+
+        pending_count = len(updated_events) + len(cancelled_ids)
+        now_iso = datetime.now(UTC).isoformat()
+        new_state = CalendarSyncState(
+            sync_token=next_token,
+            last_sync_at=now_iso,
+            last_sync_error=None,
+            pending_changes_count=pending_count,
+        )
+        self._sync_states[calendar_id] = new_state
+        await self._save_sync_state(calendar_id, new_state)
+
+        logger.info(
+            "Calendar sync completed (calendar_id=%s, updated=%d, cancelled=%d)",
+            calendar_id,
+            len(updated_events),
+            len(cancelled_ids),
+        )
+
+    async def _run_sync_poller(self) -> None:
+        """Background task: poll for calendar changes at the configured interval.
+
+        The poller also listens for a ``_force_sync_event`` to trigger
+        immediate syncs (used by the ``calendar_force_sync`` MCP tool).
+        """
+        config = self._require_config()
+        interval_seconds = config.sync.interval_minutes * 60
+
+        logger.debug("Calendar sync poller loop started (interval=%ds)", interval_seconds)
+        while True:
+            try:
+                # Run sync for the primary calendar.
+                await self._sync_calendar(config.calendar_id)
+            except Exception as exc:
+                logger.error("Calendar sync poller error: %s", exc, exc_info=True)
+
+            # Wait for the configured interval OR for an immediate-sync request.
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._force_sync_event.wait()),
+                    timeout=interval_seconds,
+                )
+                # Force sync was requested; reset the event and loop immediately.
+                self._force_sync_event.clear()
+                logger.debug("Calendar sync poller: immediate sync triggered via force_sync")
+            except TimeoutError:
+                # Normal timer expiry; loop and sync again.
+                pass
+
+    # ------------------------------------------------------------------
+    # Provider / config accessors
+    # ------------------------------------------------------------------
 
     def _require_provider(self) -> CalendarProvider:
         if self._provider is None:
