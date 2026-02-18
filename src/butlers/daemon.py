@@ -41,7 +41,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qs
 
 import asyncpg
@@ -219,6 +219,20 @@ class ModuleStartupStatus:
     status: str  # "active", "failed", "cascade_failed"
     phase: str | None = None  # "credentials", "config", "migration", "startup", "tools"
     error: str | None = None
+
+
+_MODULE_ENABLED_KEY_PREFIX = "module::"
+_MODULE_ENABLED_KEY_SUFFIX = "::enabled"
+
+
+@dataclass
+class ModuleRuntimeState:
+    """Combined health and enabled state for a module at runtime."""
+
+    health: Literal["active", "failed", "cascade_failed"]
+    enabled: bool
+    failure_phase: str | None = None
+    failure_error: str | None = None
 
 
 _ROUTE_ERROR_RETRYABLE: dict[str, bool] = {
@@ -464,6 +478,7 @@ class ButlerDaemon:
         self.spawner: Spawner | None = None
         self._modules: list[Module] = []
         self._module_statuses: dict[str, ModuleStartupStatus] = {}
+        self._module_runtime_states: dict[str, ModuleRuntimeState] = {}
         self._module_configs: dict[str, Any] = {}
         self._gated_tool_originals: dict[str, Any] = {}
         self._started_at: float | None = None
@@ -519,6 +534,79 @@ class ButlerDaemon:
                             dep,
                         )
                         break
+
+    async def _init_module_runtime_states(self, pool: asyncpg.Pool) -> None:
+        """Initialise ``_module_runtime_states`` from startup results + state store.
+
+        For each module:
+        - health is derived from ``_module_statuses`` (active / failed / cascade_failed).
+        - enabled is read from the state store (key ``module::{name}::enabled``).
+          If no stored value exists, healthy modules default to ``True``.
+          Failed/cascade_failed modules default to ``False`` and cannot be enabled.
+        """
+        for mod in self._modules:
+            startup = self._module_statuses.get(mod.name)
+            health = startup.status if startup else "active"
+            is_unavailable = health in ("failed", "cascade_failed")
+
+            # Look up sticky state from previous runs
+            key = f"{_MODULE_ENABLED_KEY_PREFIX}{mod.name}{_MODULE_ENABLED_KEY_SUFFIX}"
+            stored_value = await _state_get(pool, key)
+
+            if is_unavailable:
+                # Failed modules are always disabled; persist that to store
+                enabled = False
+                await _state_set(pool, key, False)
+            elif stored_value is None:
+                # First boot — healthy modules start enabled
+                enabled = True
+                await _state_set(pool, key, True)
+            else:
+                # Honor the sticky toggle from a previous run
+                enabled = bool(stored_value)
+
+            self._module_runtime_states[mod.name] = ModuleRuntimeState(
+                health=health,
+                enabled=enabled,
+                failure_phase=startup.phase if startup else None,
+                failure_error=startup.error if startup else None,
+            )
+
+    def get_module_states(self) -> dict[str, ModuleRuntimeState]:
+        """Return a snapshot of all module runtime states (health + enabled).
+
+        Returns a dict keyed by module name.  Each value is a
+        :class:`ModuleRuntimeState` with ``health``, ``enabled``,
+        ``failure_phase``, and ``failure_error``.
+        """
+        return dict(self._module_runtime_states)
+
+    async def set_module_enabled(self, name: str, enabled: bool) -> bool:
+        """Toggle the runtime enabled flag for a module.
+
+        Persists the change to the KV state store for cross-restart stickiness.
+
+        Returns ``True`` on success.  Raises ``ValueError`` if the module does
+        not exist or is unavailable (failed / cascade_failed) — unavailable
+        modules cannot be re-enabled at runtime.
+        """
+        state = self._module_runtime_states.get(name)
+        if state is None:
+            raise ValueError(f"Unknown module: {name!r}")
+
+        if state.health in ("failed", "cascade_failed"):
+            raise ValueError(
+                f"Module {name!r} is unavailable (health={state.health!r}) and cannot be toggled"
+            )
+
+        state.enabled = enabled
+        if not self.db or not self.db.pool:
+            raise RuntimeError("Cannot set module state: database not connected.")
+        pool = self.db.pool
+        key = f"{_MODULE_ENABLED_KEY_PREFIX}{name}{_MODULE_ENABLED_KEY_SUFFIX}"
+        await _state_set(pool, key, enabled)
+        logger.info("Module %r enabled=%s (persisted to state store)", name, enabled)
+        return True
 
     async def start(self) -> None:
         """Execute the full startup sequence.
@@ -706,6 +794,9 @@ class ButlerDaemon:
         for mod in self._modules:
             if mod.name not in self._module_statuses:
                 self._module_statuses[mod.name] = ModuleStartupStatus(status="active")
+
+        # 13d. Initialize module runtime states (enabled/disabled) from state store
+        await self._init_module_runtime_states(pool)
 
         # 14. Start FastMCP SSE server on configured port
         await self._start_mcp_server()
