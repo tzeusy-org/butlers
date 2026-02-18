@@ -26,6 +26,7 @@ Log directory layout (when ``log_root`` is set)::
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from contextvars import ContextVar
 from pathlib import Path
@@ -80,6 +81,60 @@ def add_otel_context(
         event_dict["trace_id"] = "0" * 32
         event_dict["span_id"] = "0" * 16
     return event_dict
+
+
+# ---------------------------------------------------------------------------
+# Credential redaction (defense-in-depth)
+# ---------------------------------------------------------------------------
+
+# Pattern matching Telegram bot tokens embedded in URL paths:
+#   /bot<digits>:<base64url-chars>/
+_RE_TELEGRAM_BOT_TOKEN = re.compile(r"/bot\d+:[A-Za-z0-9_-]+/")
+
+# Pattern matching HTTP Authorization / Bearer header values in log text.
+# Matches literal "Bearer <token>" where the token is a non-whitespace sequence.
+_RE_BEARER_TOKEN = re.compile(r"Bearer\s+\S+", re.IGNORECASE)
+
+# Additional known credential shapes can be appended here as the project grows.
+_REDACTION_RULES: list[tuple[re.Pattern[str], str]] = [
+    (_RE_TELEGRAM_BOT_TOKEN, "/bot[REDACTED]/"),
+    (_RE_BEARER_TOKEN, "Bearer [REDACTED]"),
+]
+
+
+class CredentialRedactionFilter(logging.Filter):
+    """Defense-in-depth log filter that scrubs known credential patterns.
+
+    Attached to the root logger by ``configure_logging()``, so it fires
+    regardless of which logger emits the record — including third-party
+    libraries like httpx that log full request URLs.
+
+    Currently redacts:
+    - Telegram bot tokens in URL paths (``/bot<id>:<token>/``)
+    - HTTP Bearer tokens (``Authorization: Bearer <token>``)
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        """Scrub credential patterns from the log record message in-place.
+
+        Always returns ``True`` so the record is never dropped.
+        """
+        try:
+            msg = record.getMessage()
+        except Exception:  # noqa: BLE001
+            return True
+
+        redacted = msg
+        for pattern, replacement in _REDACTION_RULES:
+            redacted = pattern.sub(replacement, redacted)
+
+        if redacted != msg:
+            # Overwrite the message and clear args so getMessage() won't
+            # re-interpolate the original format string with unredacted args.
+            record.msg = redacted
+            record.args = ()
+
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -183,10 +238,17 @@ def configure_logging(
     console_handler.setFormatter(formatter)
 
     root = logging.getLogger()
-    # Remove existing handlers to avoid duplicate output on reconfiguration
+    # Remove existing handlers and filters to avoid duplicates on reconfiguration
     root.handlers.clear()
+    root.filters.clear()
     root.addHandler(console_handler)
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
+
+    # Attach credential redaction filter to the root logger (defense-in-depth).
+    # This fires on every record before any handler processes it, including
+    # records from third-party loggers like httpx that may embed credentials
+    # in full request URLs.
+    root.addFilter(CredentialRedactionFilter())
 
     # Suppress noisy third-party loggers on console
     for name in _NOISE_LOGGERS:

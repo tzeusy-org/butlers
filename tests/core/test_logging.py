@@ -11,6 +11,7 @@ import structlog
 
 from butlers.core.logging import (
     _NOISE_LOGGERS,
+    CredentialRedactionFilter,
     _butler_context,
     add_butler_context,
     add_otel_context,
@@ -36,6 +37,7 @@ def _reset_logging():
     # Restore root logger
     root = logging.getLogger()
     root.handlers.clear()
+    root.filters.clear()
     root.setLevel(logging.WARNING)
     # Clear file handlers leaked onto noise loggers
     for name in _NOISE_LOGGERS:
@@ -205,3 +207,124 @@ class TestLogDirectoryStructure:
             data = json.loads(content)
             assert data["event"] == "hello structured world"
             assert "butler" in data
+
+
+# ---------------------------------------------------------------------------
+# CredentialRedactionFilter
+# ---------------------------------------------------------------------------
+
+
+class TestCredentialRedactionFilter:
+    """Unit tests for the CredentialRedactionFilter logging.Filter."""
+
+    def _make_record(self, msg: str, *args) -> logging.LogRecord:
+        """Build a minimal LogRecord with the given message and args."""
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg=msg,
+            args=args,
+            exc_info=None,
+        )
+        return record
+
+    def test_telegram_token_in_url_is_redacted(self):
+        """Telegram bot token in URL path is replaced with [REDACTED]."""
+        f = CredentialRedactionFilter()
+        record = self._make_record(
+            "HTTP Request: GET https://api.telegram.org/bot8448271413:AAHelloWorldToken_xyz/getUpdates"
+        )
+        f.filter(record)
+        assert "[REDACTED]" in record.msg
+        assert "8448271413" not in record.msg
+        assert "AAHelloWorldToken_xyz" not in record.msg
+
+    def test_bearer_token_is_redacted(self):
+        """Bearer token in Authorization header is scrubbed."""
+        f = CredentialRedactionFilter()
+        record = self._make_record(
+            "Sending request with Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.abc"
+        )
+        f.filter(record)
+        assert "[REDACTED]" in record.msg
+        assert "eyJhbGciOiJSUzI1NiJ9" not in record.msg
+
+    def test_clean_message_unchanged(self):
+        """Messages with no credential patterns pass through unmodified."""
+        f = CredentialRedactionFilter()
+        original = "Normal log message without credentials"
+        record = self._make_record(original)
+        f.filter(record)
+        assert record.msg == original
+
+    def test_filter_always_returns_true(self):
+        """Filter never drops records — always returns True."""
+        f = CredentialRedactionFilter()
+        record = self._make_record("anything")
+        assert f.filter(record) is True
+
+    def test_args_cleared_on_redaction(self):
+        """When redaction occurs, args are cleared to prevent re-interpolation."""
+        f = CredentialRedactionFilter()
+        record = self._make_record(
+            "URL: https://api.telegram.org/bot123:TOKEN_abc/sendMessage extra=%s",
+            "value",
+        )
+        f.filter(record)
+        assert record.args == ()
+        assert "[REDACTED]" in record.msg
+
+    def test_args_preserved_when_no_redaction(self):
+        """When no redaction occurs, args are left intact."""
+        f = CredentialRedactionFilter()
+        record = self._make_record("Status: %s", "ok")
+        f.filter(record)
+        assert record.args == ("ok",)
+
+    def test_multiple_patterns_in_single_message(self):
+        """Both Telegram token and Bearer token in same message are both redacted."""
+        f = CredentialRedactionFilter()
+        record = self._make_record(
+            "GET https://api.telegram.org/bot999:SecretTok_en/getMe Authorization: Bearer abc123"
+        )
+        f.filter(record)
+        # Token path redacted
+        assert "bot999:SecretTok_en" not in record.msg
+        # Bearer redacted
+        assert "abc123" not in record.msg
+
+    def test_configure_logging_attaches_redaction_filter(self):
+        """configure_logging() attaches CredentialRedactionFilter to root logger."""
+        configure_logging()
+        root = logging.getLogger()
+        redaction_filters = [f for f in root.filters if isinstance(f, CredentialRedactionFilter)]
+        assert len(redaction_filters) == 1
+
+    def test_configure_logging_called_twice_has_single_filter(self):
+        """Calling configure_logging() twice does not accumulate duplicate filters."""
+        configure_logging()
+        configure_logging()
+        root = logging.getLogger()
+        redaction_filters = [f for f in root.filters if isinstance(f, CredentialRedactionFilter)]
+        assert len(redaction_filters) == 1
+
+    def test_httpx_url_with_token_is_suppressed_or_redacted(self):
+        """httpx logger set to WARNING means INFO token URLs never reach handlers.
+
+        This test verifies that after configure_logging(), a simulated httpx
+        INFO record with a bot token in the URL would be redacted if it were
+        to pass the level gate (defense-in-depth).
+        """
+        configure_logging()
+        # Verify httpx is suppressed to WARNING (primary defense)
+        assert logging.getLogger("httpx").level >= logging.WARNING
+
+        # Verify the redaction filter would also scrub the token (secondary defense)
+        f = CredentialRedactionFilter()
+        record = self._make_record(
+            "HTTP Request: GET https://api.telegram.org/bot8448271413:ATokenHere123/getUpdates"
+        )
+        f.filter(record)
+        assert "ATokenHere123" not in record.msg

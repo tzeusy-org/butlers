@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any
 
 from butlers.connectors.mcp_client import CachedMCPClient
+from butlers.core.logging import configure_logging
 
 # Telethon is marked as optional dependency - handle import gracefully
 try:
@@ -544,10 +545,7 @@ class TelegramUserClientConnector:
 
 async def run_telegram_user_client_connector() -> None:
     """CLI entry point for running Telegram user-client connector."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    configure_logging(level="INFO", butler_name="telegram-user-client")
 
     config = TelegramUserClientConnectorConfig.from_env()
     connector = TelegramUserClientConnector(config)

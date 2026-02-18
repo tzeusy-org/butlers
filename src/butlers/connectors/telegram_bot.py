@@ -43,6 +43,7 @@ from pydantic import BaseModel
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.core.logging import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -747,10 +748,7 @@ class TelegramBotConnector:
 
 async def run_telegram_bot_connector() -> None:
     """CLI entry point for running Telegram bot connector."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    configure_logging(level="INFO", butler_name="telegram-bot")
 
     config = TelegramBotConnectorConfig.from_env()
     connector = TelegramBotConnector(config)

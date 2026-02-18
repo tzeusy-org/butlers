@@ -57,6 +57,7 @@ from pydantic import BaseModel, ConfigDict
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.core.logging import configure_logging
 from butlers.storage.blobs import BlobStore
 
 logger = logging.getLogger(__name__)
@@ -1167,10 +1168,7 @@ class GmailConnectorRuntime:
 
 async def run_gmail_connector() -> None:
     """Run the Gmail connector runtime (async entrypoint)."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    configure_logging(level="INFO", butler_name="gmail")
 
     try:
         config = GmailConnectorConfig.from_env()
