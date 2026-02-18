@@ -619,6 +619,87 @@ def _build_google_event_body(payload: CalendarEventCreate) -> dict[str, Any]:
     return body
 
 
+def _build_google_event_patch_body(
+    patch: CalendarEventUpdate,
+    *,
+    existing_start_at: datetime | None = None,
+    existing_end_at: datetime | None = None,
+    existing_timezone: str | None = None,
+) -> dict[str, Any]:
+    """Translate a CalendarEventUpdate patch into a partial Google Calendar API event body.
+
+    Only fields that are explicitly set (non-None) are included in the body so
+    that unchanged fields are not overwritten on the server (true partial-update
+    semantics as required by the PATCH endpoint).
+
+    ``existing_start_at``, ``existing_end_at``, and ``existing_timezone`` are
+    supplied by the provider when only the timezone changes (no time boundary
+    update) so that the start/end can be re-emitted with the new timezone.
+    """
+    body: dict[str, Any] = {}
+
+    # Title / summary
+    if patch.title is not None:
+        body["summary"] = patch.title
+
+    # Optional text fields
+    if patch.description is not None:
+        body["description"] = patch.description
+    if patch.location is not None:
+        body["location"] = patch.location
+
+    # Timezone and time boundaries — handle together so that timezone is applied
+    # consistently to both start and end.
+    timezone = patch.timezone
+
+    if patch.start_at is not None or patch.end_at is not None or timezone is not None:
+        # Resolve effective start/end datetimes.
+        start_dt = patch.start_at if patch.start_at is not None else existing_start_at
+        end_dt = patch.end_at if patch.end_at is not None else existing_end_at
+        effective_tz = timezone if timezone is not None else existing_timezone
+
+        if start_dt is not None:
+            if effective_tz is not None:
+                tz = ZoneInfo(effective_tz)
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=tz)
+                else:
+                    start_dt = start_dt.astimezone(tz)
+                body["start"] = {"dateTime": start_dt.isoformat(), "timeZone": effective_tz}
+            else:
+                body["start"] = {"dateTime": _google_rfc3339(start_dt)}
+
+        if end_dt is not None:
+            if effective_tz is not None:
+                tz = ZoneInfo(effective_tz)
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=tz)
+                else:
+                    end_dt = end_dt.astimezone(tz)
+                body["end"] = {"dateTime": end_dt.isoformat(), "timeZone": effective_tz}
+            else:
+                body["end"] = {"dateTime": _google_rfc3339(end_dt)}
+
+    # Attendees
+    if patch.attendees is not None:
+        body["attendees"] = [{"email": email} for email in patch.attendees]
+
+    # Recurrence rules
+    if patch.recurrence_rule is not None:
+        body["recurrence"] = [patch.recurrence_rule]
+
+    # Color
+    if patch.color_id is not None:
+        body["colorId"] = patch.color_id
+
+    # Extended properties (butler-generated metadata + custom private_metadata).
+    # Only included when private_metadata is explicitly provided.
+    if patch.private_metadata is not None:
+        body["extendedProperties"] = {"private": patch.private_metadata}
+
+    return body
+
+
 class CalendarConflictDefaults(BaseModel):
     """Default behavior for overlapping event handling."""
 
@@ -1079,6 +1160,8 @@ class CalendarEventUpdate(BaseModel):
     recurrence_scope: Literal["series"] = "series"
     color_id: str | None = None
     private_metadata: dict[str, str] | None = None
+    # Etag from the existing event for optimistic concurrency (sent as If-Match header).
+    etag: str | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -1202,12 +1285,14 @@ class _GoogleProvider(CalendarProvider):
         *,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         response = await self._request_with_bearer(
             method=method,
             path=path,
             params=params,
             json_body=json_body,
+            extra_headers=extra_headers,
         )
 
         if response.status_code < 200 or response.status_code >= 300:
@@ -1237,6 +1322,7 @@ class _GoogleProvider(CalendarProvider):
         path: str,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         normalized_path = path if path.startswith("/") else f"/{path}"
         url = f"{GOOGLE_CALENDAR_API_BASE_URL}{normalized_path}"
@@ -1246,6 +1332,7 @@ class _GoogleProvider(CalendarProvider):
             url=url,
             params=params,
             json_body=json_body,
+            extra_headers=extra_headers,
             force_refresh=False,
         )
 
@@ -1255,6 +1342,7 @@ class _GoogleProvider(CalendarProvider):
                 url=url,
                 params=params,
                 json_body=json_body,
+                extra_headers=extra_headers,
                 force_refresh=True,
             )
         return response
@@ -1266,10 +1354,13 @@ class _GoogleProvider(CalendarProvider):
         url: str,
         params: dict[str, Any] | None,
         json_body: dict[str, Any] | None,
+        extra_headers: dict[str, str] | None,
         force_refresh: bool,
     ) -> httpx.Response:
         access_token = await self._oauth.get_access_token(force_refresh=force_refresh)
-        headers = {"Authorization": f"Bearer {access_token}"}
+        headers: dict[str, str] = {"Authorization": f"Bearer {access_token}"}
+        if extra_headers:
+            headers.update(extra_headers)
         try:
             return await self._http_client.request(
                 method,
@@ -1384,7 +1475,81 @@ class _GoogleProvider(CalendarProvider):
         event_id: str,
         patch: CalendarEventUpdate,
     ) -> CalendarEvent:
-        raise NotImplementedError("Google calendar provider is not implemented yet")
+        normalized_event_id = event_id.strip()
+        if not normalized_event_id:
+            raise ValueError("event_id must be a non-empty string")
+
+        normalized_calendar_id = quote(calendar_id, safe="")
+        encoded_event_id = quote(normalized_event_id, safe="")
+
+        # When only the timezone changes (no time boundaries supplied), we need
+        # the existing start/end datetimes to re-emit them with the new timezone.
+        # Fetch the current event to obtain both the etag (for optimistic
+        # concurrency) and the existing time boundaries (for timezone-only
+        # updates).
+        existing_start_at: datetime | None = None
+        existing_end_at: datetime | None = None
+        existing_timezone: str | None = None
+
+        needs_existing_times = (
+            patch.timezone is not None and patch.start_at is None and patch.end_at is None
+        )
+        if needs_existing_times and patch.etag is None:
+            # Fetch the current event to get both etag and existing boundaries.
+            existing = await self.get_event(
+                calendar_id=calendar_id,
+                event_id=normalized_event_id,
+            )
+            if existing is None:
+                raise CalendarRequestError(
+                    status_code=404,
+                    message=f"Event '{normalized_event_id}' not found",
+                )
+            existing_start_at = existing.start_at
+            existing_end_at = existing.end_at
+            existing_timezone = existing.timezone
+        elif needs_existing_times and patch.etag is not None:
+            # The caller already provided the etag; we still need the existing
+            # time boundaries to apply the timezone-only update.
+            existing = await self.get_event(
+                calendar_id=calendar_id,
+                event_id=normalized_event_id,
+            )
+            if existing is not None:
+                existing_start_at = existing.start_at
+                existing_end_at = existing.end_at
+                existing_timezone = existing.timezone
+
+        body = _build_google_event_patch_body(
+            patch,
+            existing_start_at=existing_start_at,
+            existing_end_at=existing_end_at,
+            existing_timezone=existing_timezone,
+        )
+
+        # Build extra headers for optimistic concurrency using the etag.
+        extra_headers: dict[str, str] | None = None
+        if patch.etag is not None:
+            extra_headers = {"If-Match": patch.etag}
+
+        response_payload = await self._request_google_json(
+            "PATCH",
+            f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
+            json_body=body,
+            extra_headers=extra_headers,
+        )
+
+        fallback_tz = patch.timezone or self._config.timezone
+        event = _google_event_to_calendar_event(
+            response_payload,
+            fallback_timezone=fallback_tz,
+        )
+        if event is None:
+            raise CalendarRequestError(
+                status_code=200,
+                message="Google Calendar returned a cancelled event after update",
+            )
+        return event
 
     async def delete_event(self, *, calendar_id: str, event_id: str) -> None:
         raise NotImplementedError("Google calendar provider is not implemented yet")
@@ -1811,6 +1976,7 @@ class CalendarModule(Module):
                 recurrence_scope=recurrence_scope,
                 color_id=color_id,
                 private_metadata=private_metadata,
+                etag=existing_event.etag,
             )
             event = await provider.update_event(
                 calendar_id=resolved_calendar_id,
