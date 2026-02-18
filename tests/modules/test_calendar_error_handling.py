@@ -126,18 +126,36 @@ class TestBuildStructuredError:
         result = _build_structured_error(exc, provider="google", calendar_id="primary")
         assert len(result["error"]) == 200
 
-    def test_error_message_does_not_include_credential_values(self):
-        # Simulate an exception whose message might include a credential.
+    def test_error_message_does_not_include_long_credential_values(self):
+        # Simulate an exception whose message might include a long credential.
         # The builder should pass through sanitized form; the 200-char limit
-        # provides an additional guard. Credentials in exception messages should
-        # not be present in the first place (the OAuth layer is responsible),
-        # but we verify the helper does not expand the message.
+        # provides an additional guard for long credentials.
         fake_token = "ya29.supersecrettoken" + "x" * 200
         exc = CalendarAuthError(f"Auth failed: {fake_token}")
         result = _build_structured_error(exc, provider="google", calendar_id="primary")
         # The result is truncated to 200 chars; the raw fake_token is 220+ chars,
         # so the sanitized message will be truncated and cannot include the full token.
         assert len(result["error"]) <= 200
+
+    def test_error_message_does_not_include_short_credential_values(self):
+        # Short credentials (< 200 chars) would NOT be caught by truncation alone.
+        # The redaction step must explicitly remove them from the error message.
+        import json as json_module
+
+        short_token = "ya29.short20chars!"  # 18 chars — well under 200-char truncation limit
+        creds_json = json_module.dumps(
+            {
+                "client_id": "client-id-123",
+                "client_secret": short_token,
+                "refresh_token": "rt-abc",
+            }
+        )
+        exc = CalendarAuthError(f"Auth failed: token={short_token}")
+        with patch.dict("os.environ", {"BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": creds_json}):
+            result = _build_structured_error(exc, provider="google", calendar_id="primary")
+        # The short credential value must be redacted, not present in the error output.
+        assert short_token not in result["error"]
+        assert "[REDACTED]" in result["error"]
 
     def test_error_type_for_credential_error(self):
         exc = CalendarCredentialError("missing JSON")
@@ -327,6 +345,33 @@ class TestFailOpenReadTools:
         assert result["event"] is None
         assert result["error_type"] == "CalendarRequestError"
 
+    async def test_get_event_returns_not_found_for_404_request_error(self):
+        """A 404 CalendarRequestError returns distinct 'not_found' status (not 'error')."""
+        error = CalendarRequestError(status_code=404, message="Not Found")
+        provider = _ErroringProvider(get_error=error)
+        _, mcp = await self._setup_module_with_provider(provider)
+
+        result = await mcp.tools["calendar_get_event"](event_id="evt-missing")
+
+        assert result["status"] == "not_found"
+        assert result["event"] is None
+        assert result["provider"] == "erroring"
+        assert result["calendar_id"] == "primary"
+        # not_found must NOT include error/error_type keys (it's not a transient failure)
+        assert "error_type" not in result
+
+    async def test_get_event_non_404_request_error_returns_error_status(self):
+        """Non-404 CalendarRequestError still returns 'error' status (not 'not_found')."""
+        error = CalendarRequestError(status_code=503, message="Service Unavailable")
+        provider = _ErroringProvider(get_error=error)
+        _, mcp = await self._setup_module_with_provider(provider)
+
+        result = await mcp.tools["calendar_get_event"](event_id="evt-123")
+
+        assert result["status"] == "error"
+        assert result["event"] is None
+        assert result["error_type"] == "CalendarRequestError"
+
     async def test_get_event_success_returns_event(self):
         event = _make_sample_event()
         provider = _ErroringProvider(event=event)
@@ -506,11 +551,18 @@ class TestRateLimitRetry:
         resp.json.return_value = {"access_token": "access-token-123", "expires_in": 3600}
         return resp
 
-    def _make_http_response(self, status_code: int, body: dict | None = None) -> MagicMock:
+    def _make_http_response(
+        self,
+        status_code: int,
+        body: dict | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> MagicMock:
         resp = MagicMock(spec=httpx.Response)
         resp.status_code = status_code
         resp.json.return_value = body or {}
         resp.text = ""
+        # Use a plain dict (not MagicMock) so headers.get() returns None for missing keys.
+        resp.headers = headers or {}
         return resp
 
     async def test_rate_limit_constants_are_consistent(self):
@@ -709,6 +761,144 @@ class TestRateLimitRetry:
 
         mock_sleep.assert_not_awaited()
         assert response.status_code == 403
+
+    async def test_retry_after_header_used_as_backoff_on_429(self):
+        """Retry-After header value overrides exponential backoff for 429 responses."""
+        import json as json_module
+
+        from butlers.modules.calendar import _GoogleProvider
+
+        token_resp = self._make_token_response()
+        ok_resp = self._make_http_response(200, {"items": []})
+
+        # Build a 429 response with a Retry-After header
+        rate_limit_resp = MagicMock(spec=httpx.Response)
+        rate_limit_resp.status_code = 429
+        rate_limit_resp.json.return_value = {}
+        rate_limit_resp.text = ""
+        rate_limit_resp.headers = {"Retry-After": "30"}
+
+        mock_http = MagicMock(spec=httpx.AsyncClient)
+        mock_http.post = AsyncMock(side_effect=[token_resp])
+        mock_http.request = AsyncMock(side_effect=[rate_limit_resp, ok_resp])
+
+        config = CalendarConfig(provider="google", calendar_id="primary")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json_module.dumps(
+                    self._make_credentials_dict()
+                )
+            },
+        ):
+            provider = _GoogleProvider(config, http_client=mock_http)
+
+        sleep_calls: list[float] = []
+
+        async def capture_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with patch("butlers.modules.calendar.asyncio.sleep", side_effect=capture_sleep):
+            response = await provider._request_with_bearer(
+                method="GET",
+                path="/calendars/primary/events",
+            )
+
+        assert response.status_code == 200
+        assert len(sleep_calls) == 1
+        # Should use Retry-After value (30), not exponential backoff (1.0)
+        assert sleep_calls[0] == 30.0
+
+    async def test_retry_after_header_missing_falls_back_to_exponential_backoff(self):
+        """When Retry-After header is absent on 429, exponential backoff is used."""
+        import json as json_module
+
+        from butlers.modules.calendar import _GoogleProvider
+
+        token_resp = self._make_token_response()
+        rate_limit_resp = self._make_http_response(429)  # No Retry-After header
+        ok_resp = self._make_http_response(200, {"items": []})
+
+        mock_http = MagicMock(spec=httpx.AsyncClient)
+        mock_http.post = AsyncMock(side_effect=[token_resp])
+        mock_http.request = AsyncMock(side_effect=[rate_limit_resp, ok_resp])
+
+        config = CalendarConfig(provider="google", calendar_id="primary")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json_module.dumps(
+                    self._make_credentials_dict()
+                )
+            },
+        ):
+            provider = _GoogleProvider(config, http_client=mock_http)
+
+        sleep_calls: list[float] = []
+
+        async def capture_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with patch("butlers.modules.calendar.asyncio.sleep", side_effect=capture_sleep):
+            response = await provider._request_with_bearer(
+                method="GET",
+                path="/calendars/primary/events",
+            )
+
+        assert response.status_code == 200
+        assert len(sleep_calls) == 1
+        # Should use exponential backoff (1.0 * 2^0 = 1.0 for first retry)
+        assert sleep_calls[0] == RATE_LIMIT_BASE_BACKOFF_SECONDS * (2**0)
+
+    async def test_retry_after_header_not_used_for_503(self):
+        """Retry-After header is only honoured for 429; 503 uses exponential backoff."""
+        import json as json_module
+
+        from butlers.modules.calendar import _GoogleProvider
+
+        token_resp = self._make_token_response()
+        ok_resp = self._make_http_response(200, {"items": []})
+
+        # 503 response WITH Retry-After header — should NOT be used
+        unavailable_resp = MagicMock(spec=httpx.Response)
+        unavailable_resp.status_code = 503
+        unavailable_resp.json.return_value = {}
+        unavailable_resp.text = ""
+        unavailable_resp.headers = {"Retry-After": "60"}
+
+        mock_http = MagicMock(spec=httpx.AsyncClient)
+        mock_http.post = AsyncMock(side_effect=[token_resp])
+        mock_http.request = AsyncMock(side_effect=[unavailable_resp, ok_resp])
+
+        config = CalendarConfig(provider="google", calendar_id="primary")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json_module.dumps(
+                    self._make_credentials_dict()
+                )
+            },
+        ):
+            provider = _GoogleProvider(config, http_client=mock_http)
+
+        sleep_calls: list[float] = []
+
+        async def capture_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        with patch("butlers.modules.calendar.asyncio.sleep", side_effect=capture_sleep):
+            response = await provider._request_with_bearer(
+                method="GET",
+                path="/calendars/primary/events",
+            )
+
+        assert response.status_code == 200
+        assert len(sleep_calls) == 1
+        # Should use exponential backoff (1.0 * 2^0 = 1.0), not the Retry-After header (60)
+        assert sleep_calls[0] == RATE_LIMIT_BASE_BACKOFF_SECONDS * (2**0)
 
 
 # ============================================================================

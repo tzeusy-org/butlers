@@ -268,6 +268,40 @@ def _safe_google_error_message(response: httpx.Response) -> str:
     return "Request failed without an error payload"
 
 
+def _redact_credential_values(message: str) -> str:
+    """Redact known credential values from an error message (spec section 15.3).
+
+    Reads credential JSON from the environment and replaces any credential field
+    values found in the message with ``[REDACTED]``.  This guards against
+    transitive leakage when a credential value appears in an exception message,
+    regardless of the credential length.
+    """
+    raw_creds = os.environ.get(GOOGLE_CALENDAR_CREDENTIALS_ENV, "")
+    if not raw_creds:
+        return message
+    try:
+        payload = json.loads(raw_creds)
+    except (ValueError, TypeError):
+        return message
+    if not isinstance(payload, dict):
+        return message
+
+    # Collect all string values recursively (handles nested "installed"/"web" objects).
+    values_to_redact: list[str] = []
+    for v in payload.values():
+        if isinstance(v, str) and v.strip():
+            values_to_redact.append(v.strip())
+        elif isinstance(v, dict):
+            for nested_v in v.values():
+                if isinstance(nested_v, str) and nested_v.strip():
+                    values_to_redact.append(nested_v.strip())
+
+    result = message
+    for secret in values_to_redact:
+        result = result.replace(secret, "[REDACTED]")
+    return result
+
+
 def _build_structured_error(
     exc: Exception,
     *,
@@ -280,8 +314,10 @@ def _build_structured_error(
     """
     error_type = type(exc).__name__
     raw_message = str(exc)
-    # Sanitize: truncate to 200 chars, normalize whitespace (spec section 15.3).
-    sanitized = " ".join(raw_message.split())[:200]
+    # Redact credential values before truncation (spec section 15.3).
+    redacted = _redact_credential_values(raw_message)
+    # Normalize whitespace and truncate to 200 chars.
+    sanitized = " ".join(redacted.split())[:200]
     return {
         "status": "error",
         "error": sanitized,
@@ -1375,12 +1411,21 @@ class _GoogleProvider(CalendarProvider):
                 force_refresh=True,
             )
 
-        # Rate-limit retry: exponential backoff on 429/503 (spec section 14.2).
+        # Rate-limit retry: honour Retry-After header on 429, exponential backoff on 503
+        # (spec section 14.2).
         retry = 0
         while (
             response.status_code in RATE_LIMIT_RETRY_STATUS_CODES and retry < RATE_LIMIT_MAX_RETRIES
         ):
             backoff = RATE_LIMIT_BASE_BACKOFF_SECONDS * (2**retry)
+            # For 429 responses, respect the Retry-After header when present.
+            if response.status_code == 429:
+                retry_after_header = response.headers.get("Retry-After")
+                if retry_after_header is not None:
+                    try:
+                        backoff = float(retry_after_header)
+                    except ValueError:
+                        pass
             logger.warning(
                 "Calendar API rate-limited (status=%d), retrying in %.1fs (attempt %d/%d)",
                 response.status_code,
@@ -1767,6 +1812,7 @@ class CalendarModule(Module):
                     "calendar_list_events failed (calendar_id=%s): %s",
                     resolved_calendar_id,
                     exc,
+                    exc_info=True,
                 )
                 error_dict = _build_structured_error(
                     exc,
@@ -1802,12 +1848,35 @@ class CalendarModule(Module):
                     calendar_id=resolved_calendar_id,
                     event_id=normalized_event_id,
                 )
+            except CalendarRequestError as exc:
+                if exc.status_code == 404:
+                    return {
+                        "status": "not_found",
+                        "provider": provider.name,
+                        "calendar_id": resolved_calendar_id,
+                        "event": None,
+                    }
+                logger.warning(
+                    "calendar_get_event failed (event_id=%s, calendar_id=%s): %s",
+                    normalized_event_id,
+                    resolved_calendar_id,
+                    exc,
+                    exc_info=True,
+                )
+                error_dict = _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id=resolved_calendar_id,
+                )
+                error_dict["event"] = None
+                return error_dict
             except CalendarAuthError as exc:
                 logger.warning(
                     "calendar_get_event failed (event_id=%s, calendar_id=%s): %s",
                     normalized_event_id,
                     resolved_calendar_id,
                     exc,
+                    exc_info=True,
                 )
                 error_dict = _build_structured_error(
                     exc,
@@ -1883,6 +1952,7 @@ class CalendarModule(Module):
                     "calendar_create_event failed during conflict check (calendar_id=%s): %s",
                     resolved_calendar_id,
                     exc,
+                    exc_info=True,
                 )
                 return _build_structured_error(
                     exc,
@@ -1938,6 +2008,7 @@ class CalendarModule(Module):
                     "calendar_create_event provider write failed (calendar_id=%s): %s",
                     resolved_calendar_id,
                     exc,
+                    exc_info=True,
                 )
                 return _build_structured_error(
                     exc,
@@ -1997,6 +2068,7 @@ class CalendarModule(Module):
                     normalized_event_id,
                     resolved_calendar_id,
                     exc,
+                    exc_info=True,
                 )
                 return _build_structured_error(
                     exc,
@@ -2062,6 +2134,7 @@ class CalendarModule(Module):
                         normalized_event_id,
                         resolved_calendar_id,
                         exc,
+                        exc_info=True,
                     )
                     return _build_structured_error(
                         exc,
@@ -2130,6 +2203,7 @@ class CalendarModule(Module):
                     normalized_event_id,
                     resolved_calendar_id,
                     exc,
+                    exc_info=True,
                 )
                 return _build_structured_error(
                     exc,
