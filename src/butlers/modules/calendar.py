@@ -376,7 +376,7 @@ def _extract_google_attendees(payload: Any) -> list[AttendeeInfo]:
             response_status = AttendeeResponseStatus.needs_action
             if isinstance(response_status_raw, str):
                 try:
-                    response_status = AttendeeResponseStatus(response_status_raw.strip().lower())
+                    response_status = AttendeeResponseStatus(response_status_raw.strip())
                 except ValueError:
                     pass
 
