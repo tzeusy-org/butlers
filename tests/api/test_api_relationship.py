@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -67,6 +68,13 @@ def _app_with_mock_db(
     mock_db.pool = MagicMock(return_value=mock_pool)
 
     app = create_app(cors_origins=["*"])
+
+    # Suppress lifespan so wire_db_dependencies() doesn't overwrite our mock.
+    @asynccontextmanager
+    async def _null_lifespan(_app):
+        yield
+
+    app.router.lifespan_context = _null_lifespan
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     if include_mock_pool:
@@ -94,52 +102,24 @@ def test_list_contacts_empty():
 def test_list_contacts_returns_contacts_with_labels():
     """GET /contacts returns contacts with aggregated labels."""
     cid = uuid4()
-    app = _app_with_mock_db(
-        fetchval_result=1,
-        fetch_rows=[
-            {
-                "id": cid,
-                "full_name": "Alice Smith",
-                "nickname": "Ali",
-                "email": "alice@example.com",
-                "phone": "555-1234",
-                "last_interaction_at": datetime(2025, 1, 15, tzinfo=UTC),
-            }
-        ],
-    )
+    contact_row = {
+        "id": cid,
+        "full_name": "Alice Smith",
+        "nickname": "Ali",
+        "email": "alice@example.com",
+        "phone": "555-1234",
+        "last_interaction_at": datetime(2025, 1, 15, tzinfo=UTC),
+    }
+    label_rows = [{"contact_id": cid, "id": uuid4(), "name": "Friend", "color": "blue"}]
+
     app, mock_db, mock_pool = _app_with_mock_db(
         fetchval_result=1,
-        fetch_rows=[
-            {
-                "id": cid,
-                "full_name": "Alice Smith",
-                "nickname": "Ali",
-                "email": "alice@example.com",
-                "phone": "555-1234",
-                "last_interaction_at": datetime(2025, 1, 15, tzinfo=UTC),
-            }
-        ],
+        fetch_rows=[contact_row],
         include_mock_pool=True,
     )
 
-    label_rows = [{"contact_id": cid, "id": uuid4(), "name": "Friend", "color": "blue"}]
-    # mock_pool already has fetch(), but we need to handle the second call
-    fetch_calls = [
-        AsyncMock(
-            return_value=[
-                {
-                    "id": cid,
-                    "full_name": "Alice Smith",
-                    "nickname": "Ali",
-                    "email": "alice@example.com",
-                    "phone": "555-1234",
-                    "last_interaction_at": datetime(2025, 1, 15, tzinfo=UTC),
-                }
-            ]
-        ),
-        AsyncMock(return_value=label_rows),
-    ]
-    mock_pool.fetch = AsyncMock(side_effect=fetch_calls)
+    # pool.fetch is called twice: first for contacts, then for labels
+    mock_pool.fetch = AsyncMock(side_effect=[[contact_row], label_rows])
 
     with TestClient(app=app) as client:
         resp = client.get("/api/relationship/contacts")
