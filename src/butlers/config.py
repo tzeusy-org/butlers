@@ -137,6 +137,22 @@ class ApprovalConfig:
 
 
 @dataclass
+class BufferConfig:
+    """Durable buffer configuration from [buffer] section.
+
+    Controls the in-memory queue, worker pool, and cold-path scanner for the
+    durable message buffer. All fields have sensible defaults so existing
+    butler.toml files without a [buffer] section remain fully compatible.
+    """
+
+    queue_capacity: int = 100
+    worker_count: int = 1
+    scanner_interval_s: int = 30
+    scanner_grace_s: int = 10
+    scanner_batch_size: int = 50
+
+
+@dataclass
 class ButlerConfig:
     """Parsed and validated butler configuration."""
 
@@ -154,6 +170,7 @@ class ButlerConfig:
     switchboard_url: str | None = None
     trusted_route_callers: tuple[str, ...] = DEFAULT_TRUSTED_ROUTE_CALLERS
     blob_storage_dir: str = "data/blobs"
+    buffer: BufferConfig = field(default_factory=BufferConfig)
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -499,6 +516,16 @@ def load_config(config_dir: Path) -> ButlerConfig:
     storage_section = butler_section.get("storage", {})
     blob_storage_dir = storage_section.get("blob_dir", "data/blobs")
 
+    # --- [buffer] top-level section ---
+    buffer_section = data.get("buffer", {})
+    buffer_config = BufferConfig(
+        queue_capacity=int(buffer_section.get("queue_capacity", 100)),
+        worker_count=int(buffer_section.get("worker_count", 1)),
+        scanner_interval_s=int(buffer_section.get("scanner_interval_s", 30)),
+        scanner_grace_s=int(buffer_section.get("scanner_grace_s", 10)),
+        scanner_batch_size=int(buffer_section.get("scanner_batch_size", 50)),
+    )
+
     # --- [[butler.schedule]] array ---
     raw_schedules = butler_section.get("schedule", [])
     schedules: list[ScheduleConfig] = []
@@ -547,4 +574,5 @@ def load_config(config_dir: Path) -> ButlerConfig:
         switchboard_url=switchboard_url,
         trusted_route_callers=trusted_route_callers,
         blob_storage_dir=blob_storage_dir,
+        buffer=buffer_config,
     )

@@ -10,6 +10,7 @@ from butlers.config import (
     DEFAULT_APPROVAL_RULE_PRECEDENCE,
     ApprovalConfig,
     ApprovalRiskTier,
+    BufferConfig,
     ButlerConfig,
     ConfigError,
     GatedToolConfig,
@@ -1145,3 +1146,103 @@ log_root = "${LOG_DIR}"
         cfg = ButlerConfig(name="test", port=9000)
         assert isinstance(cfg.logging, LoggingConfig)
         assert cfg.logging.level == "INFO"
+
+
+# ---------------------------------------------------------------------------
+# BufferConfig tests
+# ---------------------------------------------------------------------------
+
+
+class TestBufferConfig:
+    """Tests for [buffer] section parsing and BufferConfig dataclass."""
+
+    def test_buffer_config_dataclass_defaults(self):
+        """BufferConfig defaults are all present and correct."""
+        bc = BufferConfig()
+        assert bc.queue_capacity == 100
+        assert bc.worker_count == 1
+        assert bc.scanner_interval_s == 30
+        assert bc.scanner_grace_s == 10
+        assert bc.scanner_batch_size == 50
+
+    def test_butler_config_includes_buffer_with_defaults(self):
+        """ButlerConfig has a buffer field that defaults to BufferConfig()."""
+        cfg = ButlerConfig(name="test", port=9000)
+        assert isinstance(cfg.buffer, BufferConfig)
+        assert cfg.buffer.queue_capacity == 100
+        assert cfg.buffer.worker_count == 1
+        assert cfg.buffer.scanner_interval_s == 30
+        assert cfg.buffer.scanner_grace_s == 10
+        assert cfg.buffer.scanner_batch_size == 50
+
+    def test_missing_buffer_section_uses_defaults(self, tmp_path: Path):
+        """Configs without [buffer] section are backwards-compatible and use defaults."""
+        toml = """\
+[butler]
+name = "nobufer"
+port = 9100
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+
+        assert isinstance(cfg.buffer, BufferConfig)
+        assert cfg.buffer.queue_capacity == 100
+        assert cfg.buffer.worker_count == 1
+        assert cfg.buffer.scanner_interval_s == 30
+        assert cfg.buffer.scanner_grace_s == 10
+        assert cfg.buffer.scanner_batch_size == 50
+
+    def test_buffer_section_all_fields_parsed(self, tmp_path: Path):
+        """Explicit [buffer] section with all fields is parsed correctly."""
+        toml = """\
+[butler]
+name = "bufbot"
+port = 9101
+
+[buffer]
+queue_capacity = 200
+worker_count = 4
+scanner_interval_s = 60
+scanner_grace_s = 20
+scanner_batch_size = 100
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+
+        assert cfg.buffer.queue_capacity == 200
+        assert cfg.buffer.worker_count == 4
+        assert cfg.buffer.scanner_interval_s == 60
+        assert cfg.buffer.scanner_grace_s == 20
+        assert cfg.buffer.scanner_batch_size == 100
+
+    def test_buffer_section_partial_fields_use_defaults(self, tmp_path: Path):
+        """Partial [buffer] section fills remaining fields from defaults."""
+        toml = """\
+[butler]
+name = "partialbot"
+port = 9102
+
+[buffer]
+queue_capacity = 50
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+
+        assert cfg.buffer.queue_capacity == 50
+        assert cfg.buffer.worker_count == 1
+        assert cfg.buffer.scanner_interval_s == 30
+        assert cfg.buffer.scanner_grace_s == 10
+        assert cfg.buffer.scanner_batch_size == 50
+
+    def test_switchboard_butler_toml_has_explicit_buffer_section(self):
+        """Switchboard butler.toml has an explicit [buffer] section with all defaults."""
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        switchboard_config_dir = repo_root / "roster" / "switchboard"
+        cfg = load_config(switchboard_config_dir)
+
+        assert isinstance(cfg.buffer, BufferConfig)
+        assert cfg.buffer.queue_capacity == 100
+        assert cfg.buffer.worker_count == 1
+        assert cfg.buffer.scanner_interval_s == 30
+        assert cfg.buffer.scanner_grace_s == 10
+        assert cfg.buffer.scanner_batch_size == 50

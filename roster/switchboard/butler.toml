@@ -3,6 +3,13 @@ name = "switchboard"
 port = 8100
 description = "Routes incoming messages to specialist butlers"
 
+[buffer]
+queue_capacity = 100
+worker_count = 1
+scanner_interval_s = 30
+scanner_grace_s = 10
+scanner_batch_size = 50
+
 [butler.db]
 name = "butler_switchboard"
 
