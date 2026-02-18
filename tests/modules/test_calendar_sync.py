@@ -282,29 +282,29 @@ class TestCalendarSyncState:
         assert state.sync_token is None
         assert state.last_sync_at is None
         assert state.last_sync_error is None
-        assert state.pending_changes_count == 0
+        assert state.last_batch_change_count == 0
 
     def test_with_values(self):
         state = CalendarSyncState(
             sync_token="tok-abc",
             last_sync_at="2026-03-01T10:00:00+00:00",
             last_sync_error=None,
-            pending_changes_count=5,
+            last_batch_change_count=5,
         )
         assert state.sync_token == "tok-abc"
-        assert state.pending_changes_count == 5
+        assert state.last_batch_change_count == 5
 
     def test_model_dump_roundtrip(self):
         state = CalendarSyncState(
             sync_token="tok-123",
             last_sync_at="2026-03-01T10:00:00+00:00",
-            pending_changes_count=3,
+            last_batch_change_count=3,
         )
         dumped = state.model_dump()
         restored = CalendarSyncState(**dumped)
         assert restored.sync_token == state.sync_token
         assert restored.last_sync_at == state.last_sync_at
-        assert restored.pending_changes_count == state.pending_changes_count
+        assert restored.last_batch_change_count == state.last_batch_change_count
 
     def test_extra_fields_ignored(self):
         # extra="ignore" should silently discard unknown fields.
@@ -332,7 +332,7 @@ class TestCalendarModuleSyncStatePersistence:
         existing = CalendarSyncState(
             sync_token="existing-token",
             last_sync_at="2026-02-01T08:00:00+00:00",
-            pending_changes_count=2,
+            last_batch_change_count=2,
         )
         store = {key: existing.model_dump()}
         mod = CalendarModule()
@@ -341,7 +341,7 @@ class TestCalendarModuleSyncStatePersistence:
         state = await mod._load_sync_state(calendar_id)
         assert state.sync_token == "existing-token"
         assert state.last_sync_at == "2026-02-01T08:00:00+00:00"
-        assert state.pending_changes_count == 2
+        assert state.last_batch_change_count == 2
 
     async def test_save_sync_state_persists_to_kv(self):
         store: dict[str, Any] = {}
@@ -615,8 +615,8 @@ class TestCalendarModuleSyncCalendar:
         state = mod._sync_states.get("primary")
         assert state is not None
         assert state.sync_token == "tok-new"
-        # pending_changes_count = updated + cancelled.
-        assert state.pending_changes_count == 2
+        # last_batch_change_count = updated + cancelled.
+        assert state.last_batch_change_count == 2
         assert state.last_sync_error is None
 
     async def test_token_expiry_triggers_full_resync(self):
@@ -832,7 +832,7 @@ class TestCalendarSyncStatusTool:
         state = CalendarSyncState(
             sync_token="cached-token",
             last_sync_at="2026-03-01T10:00:00+00:00",
-            pending_changes_count=7,
+            last_batch_change_count=7,
         )
         mod, mcp = self._make_module(sync_enabled=True, sync_state=state)
         await mod.register_tools(
@@ -845,7 +845,7 @@ class TestCalendarSyncStatusTool:
         assert result["sync_enabled"] is True
         assert result["sync_token_valid"] is True
         assert result["last_sync_at"] == "2026-03-01T10:00:00+00:00"
-        assert result["pending_changes_count"] == 7
+        assert result["last_batch_change_count"] == 7
         assert result["status"] == "ok"
 
     async def test_returns_state_from_kv_when_no_cache(self):
@@ -853,7 +853,7 @@ class TestCalendarSyncStatusTool:
         stored = CalendarSyncState(
             sync_token="kv-token",
             last_sync_at="2026-02-28T08:00:00+00:00",
-            pending_changes_count=3,
+            last_batch_change_count=3,
         )
         store = {key: stored.model_dump()}
         mod, mcp = self._make_module(sync_enabled=True, state_store=store)
@@ -865,7 +865,7 @@ class TestCalendarSyncStatusTool:
 
         result = await mcp.tools["calendar_sync_status"]()
         assert result["sync_token_valid"] is True
-        assert result["pending_changes_count"] == 3
+        assert result["last_batch_change_count"] == 3
 
     async def test_token_valid_false_when_no_token(self):
         mod, mcp = self._make_module(sync_enabled=True)

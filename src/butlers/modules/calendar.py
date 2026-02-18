@@ -887,7 +887,7 @@ class CalendarSyncState(BaseModel):
     sync_token: str | None = None
     last_sync_at: str | None = None  # ISO-8601 UTC timestamp
     last_sync_error: str | None = None
-    pending_changes_count: int = 0
+    last_batch_change_count: int = 0
 
 
 class CalendarConfig(BaseModel):
@@ -2876,7 +2876,7 @@ class CalendarModule(Module):
                     "calendar_id": resolved_calendar_id,
                     "last_sync_at": None,
                     "sync_token_valid": False,
-                    "pending_changes_count": 0,
+                    "last_batch_change_count": 0,
                     "last_sync_error": None,
                 }
 
@@ -2900,7 +2900,7 @@ class CalendarModule(Module):
                 "calendar_id": resolved_calendar_id,
                 "last_sync_at": sync_state.last_sync_at,
                 "sync_token_valid": sync_state.sync_token is not None,
-                "pending_changes_count": sync_state.pending_changes_count,
+                "last_batch_change_count": sync_state.last_batch_change_count,
                 "last_sync_error": sync_state.last_sync_error,
             }
 
@@ -2914,7 +2914,7 @@ class CalendarModule(Module):
             and returns the result immediately.  If the background poller is
             running, signals it to execute immediately.
 
-            Fail-closed: returns a structured error dict on provider failure.
+            Fail-open: provider errors are recorded in last_sync_error rather than raised.
             """
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
             cfg = module._require_config()
@@ -2943,7 +2943,7 @@ class CalendarModule(Module):
                 "provider": provider.name,
                 "calendar_id": resolved_calendar_id,
                 "last_sync_at": sync_state.last_sync_at,
-                "pending_changes_count": sync_state.pending_changes_count,
+                "last_batch_change_count": sync_state.last_batch_change_count,
                 "last_sync_error": sync_state.last_sync_error,
             }
 
@@ -3024,7 +3024,7 @@ class CalendarModule(Module):
             return
 
         config = self._require_config()
-        sync_state = await self._load_sync_state(calendar_id)
+        sync_state = self._sync_states.get(calendar_id) or await self._load_sync_state(calendar_id)
 
         try:
             updated_events, cancelled_ids, next_token = await provider.sync_incremental(
@@ -3071,7 +3071,7 @@ class CalendarModule(Module):
             sync_token=next_token,
             last_sync_at=now_iso,
             last_sync_error=None,
-            pending_changes_count=pending_count,
+            last_batch_change_count=pending_count,
         )
         self._sync_states[calendar_id] = new_state
         await self._save_sync_state(calendar_id, new_state)
@@ -3103,7 +3103,7 @@ class CalendarModule(Module):
             # Wait for the configured interval OR for an immediate-sync request.
             try:
                 await asyncio.wait_for(
-                    asyncio.shield(self._force_sync_event.wait()),
+                    self._force_sync_event.wait(),
                     timeout=interval_seconds,
                 )
                 # Force sync was requested; reset the event and loop immediately.
