@@ -163,6 +163,27 @@ class _SyncCapableProviderDouble(CalendarProvider):
     async def find_conflicts(self, *, calendar_id: str, candidate: Any) -> list[CalendarEvent]:
         return []
 
+    async def add_attendees(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        attendees: list[str],
+        optional: bool = False,
+        send_updates: str = "none",
+    ) -> CalendarEvent:
+        raise NotImplementedError
+
+    async def remove_attendees(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        attendees: list[str],
+        send_updates: str = "none",
+    ) -> CalendarEvent:
+        raise NotImplementedError
+
     async def sync_incremental(
         self,
         *,
