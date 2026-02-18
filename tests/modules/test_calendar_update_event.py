@@ -405,6 +405,7 @@ class TestGoogleProviderUpdateEvent:
             start_dt="2026-03-01T10:00:00-05:00",
             end_dt="2026-03-01T11:00:00-05:00",
             timezone="America/New_York",
+            etag='"existing-etag"',
         )
         updated_event_payload = _make_google_event_payload(
             event_id="event-tz",
@@ -426,7 +427,7 @@ class TestGoogleProviderUpdateEvent:
             patch=patch,
         )
 
-        # get_event should have been called to get existing boundaries
+        # get_event should have been called exactly once to get existing boundaries + etag.
         google_provider.get_event.assert_awaited_once()
 
         # The PATCH body should contain start/end with new timezone
@@ -437,6 +438,78 @@ class TestGoogleProviderUpdateEvent:
         assert body["start"]["timeZone"] == "Europe/London"
         assert body["end"]["timeZone"] == "Europe/London"
         assert isinstance(result, CalendarEvent)
+
+    async def test_update_event_timezone_change_uses_fetched_etag_as_if_match(
+        self, google_provider
+    ):
+        """Timezone-only update uses etag from fetched event as If-Match header."""
+        existing_event_payload = _make_google_event_payload(
+            event_id="event-tz",
+            start_dt="2026-03-01T10:00:00-05:00",
+            end_dt="2026-03-01T11:00:00-05:00",
+            timezone="America/New_York",
+            etag='"fetched-etag-value"',
+        )
+        updated_event_payload = _make_google_event_payload(event_id="event-tz")
+        google_provider.get_event = AsyncMock(
+            return_value=_make_calendar_event_from_payload(existing_event_payload)
+        )
+        google_provider._request_google_json = AsyncMock(return_value=updated_event_payload)
+
+        # No etag provided by caller — provider should use the fetched etag.
+        patch = CalendarEventUpdate(timezone="Europe/London")
+        await google_provider.update_event(
+            calendar_id="test@example.com",
+            event_id="event-tz",
+            patch=patch,
+        )
+
+        call_args = google_provider._request_google_json.call_args
+        extra_headers = call_args.kwargs.get("extra_headers")
+        assert extra_headers is not None
+        assert extra_headers.get("If-Match") == '"fetched-etag-value"'
+
+    async def test_update_event_timezone_change_caller_etag_takes_precedence(self, google_provider):
+        """When caller supplies etag and timezone, caller etag is used (not fetched etag)."""
+        existing_event_payload = _make_google_event_payload(
+            event_id="event-tz",
+            start_dt="2026-03-01T10:00:00-05:00",
+            end_dt="2026-03-01T11:00:00-05:00",
+            timezone="America/New_York",
+            etag='"server-etag"',
+        )
+        updated_event_payload = _make_google_event_payload(event_id="event-tz")
+        google_provider.get_event = AsyncMock(
+            return_value=_make_calendar_event_from_payload(existing_event_payload)
+        )
+        google_provider._request_google_json = AsyncMock(return_value=updated_event_payload)
+
+        # Caller supplies their own etag.
+        patch = CalendarEventUpdate(timezone="Europe/London", etag='"caller-etag"')
+        await google_provider.update_event(
+            calendar_id="test@example.com",
+            event_id="event-tz",
+            patch=patch,
+        )
+
+        call_args = google_provider._request_google_json.call_args
+        extra_headers = call_args.kwargs.get("extra_headers")
+        assert extra_headers is not None
+        # Caller etag takes precedence.
+        assert extra_headers.get("If-Match") == '"caller-etag"'
+
+    async def test_update_event_timezone_change_event_not_found_raises_404(self, google_provider):
+        """Timezone-only update raises CalendarRequestError(404) when event not found."""
+        google_provider.get_event = AsyncMock(return_value=None)
+
+        patch = CalendarEventUpdate(timezone="Europe/London")
+        with pytest.raises(CalendarRequestError) as exc_info:
+            await google_provider.update_event(
+                calendar_id="test@example.com",
+                event_id="missing-event",
+                patch=patch,
+            )
+        assert exc_info.value.status_code == 404
 
     async def test_update_event_time_change_sends_both_boundaries(self, google_provider):
         """Updating start_at and end_at sends both in the PATCH body."""

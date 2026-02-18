@@ -1484,18 +1484,20 @@ class _GoogleProvider(CalendarProvider):
 
         # When only the timezone changes (no time boundaries supplied), we need
         # the existing start/end datetimes to re-emit them with the new timezone.
-        # Fetch the current event to obtain both the etag (for optimistic
-        # concurrency) and the existing time boundaries (for timezone-only
-        # updates).
+        # Fetch the current event to obtain existing time boundaries (and the etag
+        # when none was supplied by the caller) for optimistic concurrency.
         existing_start_at: datetime | None = None
         existing_end_at: datetime | None = None
         existing_timezone: str | None = None
+        fetched_etag: str | None = None
 
         needs_existing_times = (
             patch.timezone is not None and patch.start_at is None and patch.end_at is None
         )
-        if needs_existing_times and patch.etag is None:
-            # Fetch the current event to get both etag and existing boundaries.
+        if needs_existing_times:
+            # Fetch the current event to get both the existing boundaries and
+            # (if the caller did not supply one) the etag for optimistic
+            # concurrency.  Always raise 404 consistently if the event is gone.
             existing = await self.get_event(
                 calendar_id=calendar_id,
                 event_id=normalized_event_id,
@@ -1508,17 +1510,7 @@ class _GoogleProvider(CalendarProvider):
             existing_start_at = existing.start_at
             existing_end_at = existing.end_at
             existing_timezone = existing.timezone
-        elif needs_existing_times and patch.etag is not None:
-            # The caller already provided the etag; we still need the existing
-            # time boundaries to apply the timezone-only update.
-            existing = await self.get_event(
-                calendar_id=calendar_id,
-                event_id=normalized_event_id,
-            )
-            if existing is not None:
-                existing_start_at = existing.start_at
-                existing_end_at = existing.end_at
-                existing_timezone = existing.timezone
+            fetched_etag = existing.etag
 
         body = _build_google_event_patch_body(
             patch,
@@ -1528,9 +1520,11 @@ class _GoogleProvider(CalendarProvider):
         )
 
         # Build extra headers for optimistic concurrency using the etag.
+        # Prefer the caller-supplied etag; fall back to the one fetched above.
+        resolved_etag = patch.etag or fetched_etag
         extra_headers: dict[str, str] | None = None
-        if patch.etag is not None:
-            extra_headers = {"If-Match": patch.etag}
+        if resolved_etag is not None:
+            extra_headers = {"If-Match": resolved_etag}
 
         response_payload = await self._request_google_json(
             "PATCH",
