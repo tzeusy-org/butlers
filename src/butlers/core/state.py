@@ -15,6 +15,30 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 
+class CASConflictError(Exception):
+    """Raised by state_compare_and_set when the expected version does not match.
+
+    Attributes:
+        key: The state key involved in the conflict.
+        expected_version: The version the caller expected.
+        actual_version: The version found in the database (or None if key absent).
+    """
+
+    def __init__(
+        self,
+        key: str,
+        expected_version: int,
+        actual_version: int | None,
+    ) -> None:
+        self.key = key
+        self.expected_version = expected_version
+        self.actual_version = actual_version
+        super().__init__(
+            f"CAS conflict on key {key!r}: expected version {expected_version}, "
+            f"got {actual_version!r}"
+        )
+
+
 async def state_get(pool: asyncpg.Pool, key: str) -> Any | None:
     """Return the JSONB value for *key*, or ``None`` if the key does not exist."""
     row = await pool.fetchval(
@@ -31,23 +55,85 @@ async def state_get(pool: asyncpg.Pool, key: str) -> Any | None:
     return row
 
 
-async def state_set(pool: asyncpg.Pool, key: str, value: Any) -> None:
+async def state_set(pool: asyncpg.Pool, key: str, value: Any) -> int:
     """Upsert *key* with *value* (any JSON-serialisable type).
 
-    If the key already exists its value and ``updated_at`` timestamp are
-    updated; otherwise a new row is inserted.
+    If the key already exists its value, ``updated_at`` timestamp, and
+    ``version`` are updated; otherwise a new row is inserted with version=1.
+
+    Returns:
+        The new version number for the row after the upsert.
     """
     json_value = json.dumps(value)
-    await pool.execute(
+    new_version: int = await pool.fetchval(
         """
-        INSERT INTO state (key, value, updated_at)
-        VALUES ($1, $2::jsonb, now())
+        INSERT INTO state (key, value, updated_at, version)
+        VALUES ($1, $2::jsonb, now(), 1)
         ON CONFLICT (key) DO UPDATE
             SET value = EXCLUDED.value,
-                updated_at = now()
+                updated_at = now(),
+                version = state.version + 1
+        RETURNING version
         """,
         key,
         json_value,
+    )
+    return new_version
+
+
+async def state_compare_and_set(
+    pool: asyncpg.Pool,
+    key: str,
+    expected_version: int,
+    new_value: Any,
+) -> int:
+    """Conditionally update *key* only if the current version matches *expected_version*.
+
+    This provides safe concurrent KV writes. Two sessions that read the same
+    key, modify it, and write back will have exactly one succeed: the second
+    write will see a higher version and raise :exc:`CASConflictError`.
+
+    Args:
+        pool: asyncpg connection pool.
+        key: The state key to update.
+        expected_version: The version the caller read the key at. The update
+            only proceeds if the stored version equals this value.
+        new_value: The new JSON-serialisable value to store.
+
+    Returns:
+        The new version number after a successful update.
+
+    Raises:
+        CASConflictError: If the stored version does not match *expected_version*,
+            or the key does not exist.
+    """
+    json_value = json.dumps(new_value)
+    row = await pool.fetchrow(
+        """
+        UPDATE state
+        SET value = $3::jsonb,
+            updated_at = now(),
+            version = version + 1
+        WHERE key = $1 AND version = $2
+        RETURNING version
+        """,
+        key,
+        expected_version,
+        json_value,
+    )
+    if row is not None:
+        return row["version"]
+
+    # The update matched nothing. Determine whether it's a missing key or a
+    # version mismatch so we can surface a helpful error.
+    actual = await pool.fetchval(
+        "SELECT version FROM state WHERE key = $1",
+        key,
+    )
+    raise CASConflictError(
+        key=key,
+        expected_version=expected_version,
+        actual_version=actual,
     )
 
 
