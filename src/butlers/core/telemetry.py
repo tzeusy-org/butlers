@@ -101,7 +101,12 @@ class tool_span:
         from butlers.core.logging import set_butler_context
 
         tracer = trace.get_tracer(_TRACER_NAME)
-        self._span = tracer.start_span(self._span_name)
+        # Use the active session context as parent when available.  This
+        # ensures tool spans started in HTTP handler tasks (which don't
+        # inherit contextvars) still parent to the butler.llm_session span.
+        # When _active_session_context is None, start_span falls back to
+        # the current contextvars context (unchanged default behavior).
+        self._span = tracer.start_span(self._span_name, context=_active_session_context)
         self._span.set_attribute("butler.name", self._butler_name)
         self._token = trace.context_api.attach(trace.set_span_in_context(self._span))
         # Ensure butler context is correct for multi-butler mode
@@ -127,6 +132,41 @@ class tool_span:
                 return await func(*args, **kwargs)
 
         return _wrapper
+
+
+# ---------------------------------------------------------------------------
+# Active session context (cross-MCP-boundary trace propagation)
+# ---------------------------------------------------------------------------
+#
+# When a butler spawns a Claude Code runtime, the runtime calls MCP tools
+# back via HTTP.  These HTTP-dispatched tool handlers run in separate async
+# tasks (created by uvicorn/FastMCP), so they do NOT inherit the spawner's
+# contextvars-based OTel context.  Each tool_span would therefore create a
+# root span with a new trace ID instead of being a child of the session span.
+#
+# Fix: the Spawner stores the active session's OTel Context here before
+# invoking the runtime, and tool_span reads it back.  The Spawner's
+# asyncio.Lock guarantees serial dispatch, so a plain module-level variable
+# is safe (no concurrent sessions per butler).
+
+_active_session_context: Context | None = None
+
+
+def set_active_session_context(ctx: Context) -> None:
+    """Store the OTel context of the active LLM session for tool_span to use."""
+    global _active_session_context
+    _active_session_context = ctx
+
+
+def get_active_session_context() -> Context | None:
+    """Return the active session's OTel context, or None if no session is running."""
+    return _active_session_context
+
+
+def clear_active_session_context() -> None:
+    """Clear the stored session context (called when the session ends)."""
+    global _active_session_context
+    _active_session_context = None
 
 
 # ---------------------------------------------------------------------------

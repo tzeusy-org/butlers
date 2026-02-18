@@ -8,9 +8,12 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from butlers.core.telemetry import (
+    clear_active_session_context,
     extract_trace_context,
+    get_active_session_context,
     get_traceparent_env,
     inject_trace_context,
+    set_active_session_context,
     tool_span,
 )
 
@@ -35,6 +38,14 @@ def otel_provider():
     yield exporter
     provider.shutdown()
     _reset_otel_global_state()
+
+
+@pytest.fixture(autouse=True)
+def _clean_session_context():
+    """Reset the active session context between tests."""
+    clear_active_session_context()
+    yield
+    clear_active_session_context()
 
 
 # ---------------------------------------------------------------------------
@@ -183,3 +194,97 @@ class TestGetTraceparentEnv:
         env = get_traceparent_env()
         assert isinstance(env, dict)
         # Without a valid active span, TRACEPARENT should not be present
+
+
+# ---------------------------------------------------------------------------
+# Active session context tests (cross-MCP-boundary trace propagation)
+# ---------------------------------------------------------------------------
+
+
+class TestActiveSessionContext:
+    """Verify tool_span uses the active session context as parent."""
+
+    def test_tool_span_uses_session_context_as_parent(self, otel_provider):
+        """tool_span parents to the session span even from a different async task."""
+        tracer = trace.get_tracer("test")
+
+        # Simulate the spawner: start a session span and publish its context
+        session_span = tracer.start_span("butler.llm_session")
+        session_ctx = trace.set_span_in_context(session_span)
+        token = trace.context_api.attach(session_ctx)
+        set_active_session_context(trace.context_api.get_current())
+
+        # Detach from contextvars to simulate a separate HTTP handler task
+        trace.context_api.detach(token)
+
+        # tool_span should still parent to the session span via the
+        # module-level _active_session_context
+        with tool_span("state_get", butler_name="switchboard"):
+            pass
+
+        session_span.end()
+
+        spans = otel_provider.get_finished_spans()
+        tool = next(s for s in spans if s.name == "butler.tool.state_get")
+        session = next(s for s in spans if s.name == "butler.llm_session")
+
+        # Same trace ID
+        assert tool.context.trace_id == session.context.trace_id
+        # tool_span is a child of the session span
+        assert tool.parent.span_id == session.context.span_id
+
+    def test_tool_span_creates_root_when_no_session_context(self, otel_provider):
+        """Without an active session context, tool_span creates a root span."""
+        # No set_active_session_context called — default behavior
+        with tool_span("state_get", butler_name="switchboard"):
+            pass
+
+        spans = otel_provider.get_finished_spans()
+        assert len(spans) == 1
+        # Root span has no parent
+        assert spans[0].parent is None
+
+    def test_nested_tool_spans_share_trace_id(self, otel_provider):
+        """Sequential tool calls both parent to the same session span."""
+        tracer = trace.get_tracer("test")
+
+        session_span = tracer.start_span("butler.llm_session")
+        session_ctx = trace.set_span_in_context(session_span)
+        token = trace.context_api.attach(session_ctx)
+        set_active_session_context(trace.context_api.get_current())
+        trace.context_api.detach(token)
+
+        with tool_span("state_get", butler_name="switchboard"):
+            pass
+        with tool_span("notify", butler_name="switchboard"):
+            pass
+
+        session_span.end()
+
+        spans = otel_provider.get_finished_spans()
+        tool_get = next(s for s in spans if s.name == "butler.tool.state_get")
+        tool_notify = next(s for s in spans if s.name == "butler.tool.notify")
+        session = next(s for s in spans if s.name == "butler.llm_session")
+
+        # Both tools share the session's trace ID
+        assert tool_get.context.trace_id == session.context.trace_id
+        assert tool_notify.context.trace_id == session.context.trace_id
+        # Both are direct children of the session span
+        assert tool_get.parent.span_id == session.context.span_id
+        assert tool_notify.parent.span_id == session.context.span_id
+
+    def test_set_get_clear_lifecycle(self):
+        """Basic storage lifecycle: set → get → clear → get returns None."""
+        assert get_active_session_context() is None
+
+        tracer = trace.get_tracer("test")
+        span = tracer.start_span("session")
+        ctx = trace.set_span_in_context(span)
+
+        set_active_session_context(ctx)
+        assert get_active_session_context() is ctx
+
+        clear_active_session_context()
+        assert get_active_session_context() is None
+
+        span.end()

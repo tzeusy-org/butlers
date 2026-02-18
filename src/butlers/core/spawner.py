@@ -30,7 +30,11 @@ from butlers.core.audit import write_audit_entry
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.sessions import session_complete, session_create
 from butlers.core.skills import read_system_prompt
-from butlers.core.telemetry import get_traceparent_env
+from butlers.core.telemetry import (
+    clear_active_session_context,
+    get_traceparent_env,
+    set_active_session_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -408,8 +412,9 @@ class Spawner:
         span.set_attribute("butler.name", self._config.name)
         span.set_attribute("prompt_length", len(final_prompt))
 
-        # Attach span to context
+        # Attach span to context and publish for cross-task tool_span use
         token = trace.context_api.attach(trace.set_span_in_context(span))
+        set_active_session_context(trace.context_api.get_current())
         t0 = time.monotonic()
 
         try:
@@ -574,6 +579,9 @@ class Spawner:
             return spawner_result
 
         finally:
+            # Clear session context before ending span so tool handlers
+            # arriving after this point don't attach to a finished span.
+            clear_active_session_context()
             # End span and detach context
             span.end()
             trace.context_api.detach(token)
