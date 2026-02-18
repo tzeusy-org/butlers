@@ -509,6 +509,7 @@ class ButlerDaemon:
         self._switchboard_heartbeat_task: asyncio.Task | None = None
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
+        self._buffer: Any = None  # DurableBuffer instance (switchboard only)
         self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
         self.blob_store: LocalBlobStore | None = None
 
@@ -822,6 +823,10 @@ class ButlerDaemon:
         # 14. Start FastMCP SSE server on configured port
         await self._start_mcp_server()
 
+        # 14b. Start durable buffer workers and scanner (switchboard only)
+        if self._buffer is not None:
+            await self._buffer.start()
+
         # 15. Launch switchboard heartbeat (non-switchboard butlers only)
         if self.config.switchboard_url is not None:
             self._switchboard_heartbeat_task = asyncio.create_task(
@@ -848,6 +853,9 @@ class ButlerDaemon:
 
         Only the switchboard butler classifies and routes inbound channel
         messages. Other butlers skip pipeline wiring entirely.
+
+        Also creates and starts the DurableBuffer that replaces the unbounded
+        asyncio.create_task() dispatch with a bounded in-memory queue.
         """
         if self.config.name != "switchboard":
             return
@@ -866,6 +874,56 @@ class ButlerDaemon:
             routing_session_ctx=self._routing_session_ctx,
         )
         self._pipeline = pipeline
+
+        # Build the process function that wraps pipeline.process()
+        async def _buffer_process(ref: Any) -> None:
+            from butlers.core.buffer import _MessageRef
+
+            if not isinstance(ref, _MessageRef):
+                return
+            channel = ref.source.get("channel", "unknown")
+            endpoint_identity = ref.source.get("endpoint_identity", "unknown")
+            request_context = {
+                "request_id": ref.request_id,
+                "received_at": ref.event.get("observed_at", ""),
+                "source_channel": channel,
+                "source_endpoint_identity": f"{channel}:{endpoint_identity}",
+                "source_sender_identity": ref.sender.get("identity", "unknown"),
+                "source_thread_identity": ref.event.get("external_thread_id"),
+                "trace_context": {},
+            }
+            try:
+                await pipeline.process(
+                    message_text=ref.message_text,
+                    tool_name="bot_switchboard_handle_message",
+                    tool_args={
+                        "source": channel,
+                        "source_channel": channel,
+                        "source_identity": endpoint_identity,
+                        "source_endpoint_identity": f"{channel}:{endpoint_identity}",
+                        "sender_identity": ref.sender.get("identity", "unknown"),
+                        "external_event_id": ref.event.get("external_event_id", ""),
+                        "external_thread_id": ref.event.get("external_thread_id"),
+                        "source_tool": "ingest",
+                        "request_id": ref.request_id,
+                        "request_context": request_context,
+                    },
+                    message_inbox_id=ref.message_inbox_id,
+                )
+            except Exception:
+                logger.exception(
+                    "DurableBuffer: pipeline processing failed for request_id=%s",
+                    ref.request_id,
+                )
+
+        # Create and start the durable buffer
+        from butlers.core.buffer import DurableBuffer
+
+        self._buffer = DurableBuffer(
+            config=self.config.buffer,
+            pool=pool,
+            process_fn=_buffer_process,
+        )
 
         wired_modules: list[str] = []
         for mod in self._active_modules:
@@ -1677,6 +1735,9 @@ class ButlerDaemon:
             _connector_heartbeat = _hb_mod.heartbeat
 
             pipeline = daemon._pipeline
+            # DurableBuffer instance created by _wire_pipelines (may be None if
+            # pipeline wiring was skipped, e.g. in tests).
+            buffer = daemon._buffer
 
             # Shared routing context dict — same dict reference as pipeline's.
             # Safe because spawner lock serializes runtime sessions.
@@ -1752,22 +1813,34 @@ class ButlerDaemon:
                 except ValueError as exc:
                     return {"status": "error", "error": str(exc)}
 
-                # Fire-and-forget: route the accepted message via the pipeline
+                # Route accepted message via durable buffer (bounded queue)
+                # or fall back to direct create_task if buffer is unavailable.
                 if not result.duplicate and pipeline is not None:
                     normalized_text = payload.get("normalized_text", "")
                     if normalized_text:
-                        asyncio.create_task(
-                            _process_ingested_message(
-                                pipeline=pipeline,
+                        if buffer is not None:
+                            buffer.enqueue(
                                 request_id=str(result.request_id),
+                                message_inbox_id=result.request_id,
                                 message_text=normalized_text,
                                 source=source,
                                 event=event,
                                 sender=sender,
-                                message_inbox_id=result.request_id,
-                            ),
-                            name=f"ingest-route-{result.request_id}",
-                        )
+                            )
+                        else:
+                            # Fallback: unbounded create_task (buffer not wired)
+                            asyncio.create_task(
+                                _process_ingested_message(
+                                    pipeline=pipeline,
+                                    request_id=str(result.request_id),
+                                    message_text=normalized_text,
+                                    source=source,
+                                    event=event,
+                                    sender=sender,
+                                    message_inbox_id=result.request_id,
+                                ),
+                                name=f"ingest-route-{result.request_id}",
+                            )
 
                 return result.model_dump(mode="json")
 
@@ -2722,11 +2795,12 @@ class ButlerDaemon:
         """Graceful shutdown.
 
         1. Stop MCP server
-        2. Stop accepting new triggers and drain in-flight runtime sessions
-        3. Cancel switchboard heartbeat
-        4. Close Switchboard MCP client
-        5. Module on_shutdown in reverse topological order
-        6. Close DB pool
+        2. Stop durable buffer (drain queue, cancel workers)
+        3. Stop accepting new triggers and drain in-flight runtime sessions
+        4. Cancel switchboard heartbeat
+        5. Close Switchboard MCP client
+        6. Module on_shutdown in reverse topological order
+        7. Close DB pool
         """
         logger.info(
             "Shutting down butler: %s",
@@ -2744,14 +2818,20 @@ class ButlerDaemon:
             self._server_task = None
             self._server = None
 
-        # 2. Stop accepting new triggers and drain in-flight runtime sessions
+        # 2. Stop durable buffer — drain remaining queue then cancel workers/scanner
+        if self._buffer is not None:
+            shutdown_timeout = self.config.shutdown_timeout_s if self.config else 30.0
+            await self._buffer.stop(drain_timeout_s=shutdown_timeout)
+            self._buffer = None
+
+        # 3. Stop accepting new triggers and drain in-flight runtime sessions
         self._accepting_connections = False
         if self.spawner is not None:
             self.spawner.stop_accepting()
             timeout = self.config.shutdown_timeout_s if self.config else 30.0
             await self.spawner.drain(timeout=timeout)
 
-        # 3. Cancel switchboard heartbeat
+        # 4. Cancel switchboard heartbeat
         if self._switchboard_heartbeat_task is not None:
             self._switchboard_heartbeat_task.cancel()
             try:
@@ -2760,10 +2840,10 @@ class ButlerDaemon:
                 pass
             self._switchboard_heartbeat_task = None
 
-        # 4. Close Switchboard MCP client
+        # 5. Close Switchboard MCP client
         await self._disconnect_switchboard()
 
-        # 5. Module shutdown in reverse topological order (active modules only)
+        # 6. Module shutdown in reverse topological order (active modules only)
         active_set = {m.name for m in self._active_modules}
         for mod in reversed(self._modules):
             if mod.name not in active_set:
@@ -2773,12 +2853,12 @@ class ButlerDaemon:
             except Exception:
                 logger.exception("Error during shutdown of module: %s", mod.name)
 
-        # 6. Close audit DB pool (if separate from main DB)
+        # 7. Close audit DB pool (if separate from main DB)
         if self._audit_db is not None:
             await self._audit_db.close()
             self._audit_db = None
 
-        # 7. Close DB pool
+        # 8. Close DB pool
         if self.db:
             await self.db.close()
 
