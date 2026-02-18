@@ -1439,6 +1439,7 @@ class _GoogleProvider(CalendarProvider):
                 url=url,
                 params=params,
                 json_body=json_body,
+                extra_headers=extra_headers,
                 force_refresh=False,
             )
             retry += 1
