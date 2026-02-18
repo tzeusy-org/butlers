@@ -192,8 +192,12 @@ def _make_config(
     env_optional: list[str] | None = None,
     modules: dict[str, dict] | None = None,
     model: str | None | object = _SENTINEL,
+    max_concurrent_sessions: int = 1,
 ) -> ButlerConfig:
-    runtime = RuntimeConfig(model=model) if model is not _SENTINEL else RuntimeConfig()
+    if model is not _SENTINEL:
+        runtime = RuntimeConfig(model=model, max_concurrent_sessions=max_concurrent_sessions)
+    else:
+        runtime = RuntimeConfig(max_concurrent_sessions=max_concurrent_sessions)
     return ButlerConfig(
         name=name,
         port=port,
@@ -432,12 +436,12 @@ class TestCredentialPassthrough:
 
 
 # ---------------------------------------------------------------------------
-# 8.5: Serial dispatch with asyncio lock
+# 8.5: Concurrency dispatch with asyncio semaphore (n=1 → serial)
 # ---------------------------------------------------------------------------
 
 
 class TestSerialDispatch:
-    """asyncio.Lock ensures only one runtime instance runs at a time."""
+    """asyncio.Semaphore(n) controls concurrency; n=1 gives serial dispatch."""
 
     async def test_concurrent_triggers_are_serialized(self, tmp_path: Path):
         config_dir = tmp_path / "config"
@@ -469,7 +473,7 @@ class TestSerialDispatch:
             assert execution_log[i + 1][0] == "end"
             assert execution_log[i][1] == execution_log[i + 1][1]
 
-    async def test_lock_released_on_error(self, tmp_path: Path):
+    async def test_semaphore_released_on_error(self, tmp_path: Path):
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -489,13 +493,13 @@ class TestSerialDispatch:
         result1 = await spawner.trigger("first", "tick")
         assert result1.error is not None
 
-        # Lock should be released — second call should work
+        # Semaphore slot should be released — second call should work
         result2 = await spawner.trigger("second", "tick")
         assert result2.error is None
         assert result2.output == "second call works"
 
-    async def test_trigger_source_rejected_while_lock_held(self, tmp_path: Path):
-        """trigger-source calls fail fast when a session is already in flight."""
+    async def test_trigger_source_rejected_while_semaphore_full(self, tmp_path: Path):
+        """trigger-source calls fail fast when all semaphore slots are occupied."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -507,16 +511,204 @@ class TestSerialDispatch:
             runtime=adapter,
         )
 
-        await spawner._lock.acquire()
+        # Acquire the sole semaphore slot to simulate a session in flight
+        await spawner._session_semaphore.acquire()
         try:
             result = await spawner.trigger("nested", "trigger")
         finally:
-            spawner._lock.release()
+            spawner._session_semaphore.release()
 
         assert result.success is False
         assert result.error is not None
         assert "cannot be called while another session is in flight" in result.error
         assert adapter.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Semaphore concurrency pool tests
+# ---------------------------------------------------------------------------
+
+
+class TestSemaphoreConcurrencyPool:
+    """asyncio.Semaphore(n) allows n concurrent sessions; self-trigger guard
+    only rejects when all slots are occupied."""
+
+    async def test_n1_produces_serial_dispatch(self, tmp_path: Path):
+        """n=1 (default) serializes invocations — identical to Lock behaviour."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(max_concurrent_sessions=1)
+
+        adapter = TrackingMockAdapter()
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        results = await asyncio.gather(
+            spawner.trigger("A", "tick"),
+            spawner.trigger("B", "tick"),
+        )
+
+        assert all(r.error is None for r in results)
+        # Verify serial execution: start/end pairs are interleaved (non-overlapping)
+        log = adapter.execution_log
+        assert len(log) == 4
+        assert log[0] == ("start", "A") or log[0] == ("start", "B")
+        # whichever starts first must end before the other starts
+        assert log[1][0] == "end"
+        assert log[2][0] == "start"
+        assert log[3][0] == "end"
+        assert log[1][1] == log[0][1]  # same prompt started and ended
+        assert log[3][1] == log[2][1]
+
+    async def test_n3_allows_three_concurrent_sessions(self, tmp_path: Path):
+        """n=3 allows 3 triggers to run concurrently (all start before any end)."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(max_concurrent_sessions=3)
+
+        started: list[str] = []
+        finished: list[str] = []
+        ready = asyncio.Event()
+
+        class ConcurrentTrackingAdapter(MockAdapter):
+            async def invoke(
+                self,
+                prompt,
+                system_prompt,
+                mcp_servers,
+                env,
+                max_turns=20,
+                model=None,
+                cwd=None,
+                timeout=None,
+            ):
+                started.append(prompt)
+                if len(started) == 3:
+                    ready.set()
+                # Wait until all 3 have started to prove true concurrency
+                await asyncio.wait_for(ready.wait(), timeout=2.0)
+                finished.append(prompt)
+                return f"done-{prompt}", [], None
+
+        adapter = ConcurrentTrackingAdapter()
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        results = await asyncio.gather(
+            spawner.trigger("X", "tick"),
+            spawner.trigger("Y", "tick"),
+            spawner.trigger("Z", "tick"),
+        )
+
+        assert all(r.error is None for r in results)
+        # All 3 started before any finished (true concurrent execution)
+        assert len(started) == 3
+        assert len(finished) == 3
+
+    async def test_self_trigger_rejected_when_n1_semaphore_full(self, tmp_path: Path):
+        """With n=1, trigger-source rejected when the single slot is taken."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(max_concurrent_sessions=1)
+
+        adapter = MockAdapter(result_text="should not run", capture=True)
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        await spawner._session_semaphore.acquire()
+        try:
+            result = await spawner.trigger("nested", "trigger")
+        finally:
+            spawner._session_semaphore.release()
+
+        assert result.success is False
+        assert "cannot be called while another session is in flight" in result.error
+        assert adapter.calls == []
+
+    async def test_self_trigger_allowed_when_n3_has_free_slot(self, tmp_path: Path):
+        """With n=3, trigger-source is allowed when only 2 of 3 slots are taken."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(max_concurrent_sessions=3)
+
+        adapter = MockAdapter(result_text="allowed", capture=True)
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        # Occupy 2 of 3 slots — one slot is still free
+        await spawner._session_semaphore.acquire()
+        await spawner._session_semaphore.acquire()
+        try:
+            result = await spawner.trigger("self-trigger-ok", "trigger")
+        finally:
+            spawner._session_semaphore.release()
+            spawner._session_semaphore.release()
+
+        # Should succeed: one slot was free so the guard should NOT reject
+        assert result.success is True
+        assert result.error is None
+
+    async def test_self_trigger_rejected_when_n3_all_slots_full(self, tmp_path: Path):
+        """With n=3, trigger-source rejected when all 3 slots are occupied."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(max_concurrent_sessions=3)
+
+        adapter = MockAdapter(result_text="should not run", capture=True)
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        # Occupy all 3 slots
+        await spawner._session_semaphore.acquire()
+        await spawner._session_semaphore.acquire()
+        await spawner._session_semaphore.acquire()
+        try:
+            result = await spawner.trigger("nested", "trigger")
+        finally:
+            spawner._session_semaphore.release()
+            spawner._session_semaphore.release()
+            spawner._session_semaphore.release()
+
+        assert result.success is False
+        assert "cannot be called while another session is in flight" in result.error
+        assert adapter.calls == []
+
+    async def test_drain_handles_multiple_concurrent_sessions(self, tmp_path: Path):
+        """drain() waits for all concurrent in-flight sessions to complete."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(max_concurrent_sessions=3)
+
+        # Adapter with a delay to keep sessions in-flight during drain
+        adapter = MockAdapter(result_text="done", delay=0.05)
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        # Launch 3 concurrent sessions (don't await them yet)
+        tasks = [
+            asyncio.create_task(spawner.trigger("A", "tick")),
+            asyncio.create_task(spawner.trigger("B", "tick")),
+            asyncio.create_task(spawner.trigger("C", "tick")),
+        ]
+
+        # Give tasks a moment to start
+        await asyncio.sleep(0.01)
+
+        # Drain with generous timeout — should wait for all to complete
+        spawner.stop_accepting()
+        await spawner.drain(timeout=5.0)
+
+        # All tasks should be done
+        assert all(t.done() for t in tasks)
+        results = [t.result() for t in tasks]
+        assert all(r.error is None for r in results)
+        assert spawner.in_flight_count == 0
+
+    async def test_semaphore_slot_count_matches_max_concurrent_sessions(self, tmp_path: Path):
+        """Spawner initialises semaphore with the configured concurrency limit."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+
+        for n in (1, 3, 5):
+            config = _make_config(max_concurrent_sessions=n)
+            spawner = Spawner(config=config, config_dir=config_dir, runtime=MockAdapter())
+            assert spawner._session_semaphore._value == n, (
+                f"Expected semaphore value {n}, got {spawner._session_semaphore._value}"
+            )
 
 
 # ---------------------------------------------------------------------------
