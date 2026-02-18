@@ -188,12 +188,24 @@ def _patch_infra():
     mock_db.port = 5432
     mock_db.db_name = "butler_test"
 
+    # Separate mock for the audit DB (butler_switchboard) so that its close()
+    # does not interfere with call-order assertions on the main DB's close().
+    mock_audit_db = MagicMock()
+    mock_audit_db.connect = AsyncMock()
+    mock_audit_db.close = AsyncMock()
+    mock_audit_db.pool = AsyncMock()
+
+    def _db_from_env_factory(db_name: str) -> MagicMock:
+        if db_name == "butler_switchboard":
+            return mock_audit_db
+        return mock_db
+
     mock_spawner = MagicMock()
     mock_spawner.stop_accepting = MagicMock()
     mock_spawner.drain = AsyncMock()
 
     return {
-        "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
+        "db_from_env": patch("butlers.daemon.Database.from_env", side_effect=_db_from_env_factory),
         "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
         "validate_credentials": patch("butlers.daemon.validate_credentials"),
         "validate_module_credentials": patch(
@@ -205,7 +217,14 @@ def _patch_infra():
         "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
         "get_adapter": patch(
             "butlers.daemon.get_adapter",
-            return_value=type("MockAdapter", (), {"binary_name": "claude"}),
+            return_value=type(
+                "MockAdapter",
+                (),
+                {
+                    "binary_name": "claude",
+                    "__init__": lambda self, **kwargs: None,
+                },
+            ),
         ),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
@@ -213,6 +232,7 @@ def _patch_infra():
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
         "mock_db": mock_db,
+        "mock_audit_db": mock_audit_db,
         "mock_pool": mock_pool,
         "mock_spawner": mock_spawner,
     }
