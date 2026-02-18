@@ -15,6 +15,7 @@ import logging
 import os
 from collections.abc import Callable, Coroutine
 from datetime import UTC, date, datetime, timedelta, tzinfo
+from enum import StrEnum
 from typing import Any, Literal
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -383,13 +384,56 @@ def _parse_google_event_boundary(
     raise ValueError("Google Calendar event is missing start/end dateTime or date values")
 
 
+def _parse_google_event_status(value: Any) -> EventStatus | None:
+    """Parse a Google Calendar event status string into an EventStatus enum value."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    try:
+        return EventStatus(normalized)
+    except ValueError:
+        return None
+
+
+def _parse_google_event_visibility(value: Any) -> EventVisibility | None:
+    """Parse a Google Calendar event visibility string into an EventVisibility enum value."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    try:
+        return EventVisibility(normalized)
+    except ValueError:
+        return None
+
+
+def _extract_google_organizer(payload: Any) -> str | None:
+    """Extract the organizer email from a Google Calendar event payload."""
+    if not isinstance(payload, dict):
+        return None
+    email = payload.get("email")
+    if isinstance(email, str):
+        normalized = email.strip()
+        return normalized or None
+    return None
+
+
+def _parse_google_rfc3339_optional(value: Any) -> datetime | None:
+    """Parse an optional RFC 3339 datetime string, returning None on failure."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return _parse_google_datetime(value.strip())
+    except ValueError:
+        return None
+
+
 def _google_event_to_calendar_event(
     payload: dict[str, Any],
     *,
     fallback_timezone: str,
 ) -> CalendarEvent | None:
-    status = payload.get("status")
-    if isinstance(status, str) and status.lower() == "cancelled":
+    status_raw = payload.get("status")
+    if isinstance(status_raw, str) and status_raw.lower() == "cancelled":
         return None
 
     event_id_raw = payload.get("id")
@@ -416,6 +460,15 @@ def _google_event_to_calendar_event(
     butler_generated, butler_name = _extract_google_private_metadata(
         payload.get("extendedProperties")
     )
+
+    # Parse extended fields per spec section 5.1.
+    event_status = _parse_google_event_status(status_raw)
+    visibility = _parse_google_event_visibility(payload.get("visibility"))
+    organizer = _extract_google_organizer(payload.get("organizer"))
+    etag = _normalize_optional_text(payload.get("etag"))
+    created_at = _parse_google_rfc3339_optional(payload.get("created"))
+    updated_at = _parse_google_rfc3339_optional(payload.get("updated"))
+
     return CalendarEvent(
         event_id=event_id,
         title=title,
@@ -429,6 +482,12 @@ def _google_event_to_calendar_event(
         color_id=_normalize_optional_text(payload.get("colorId")),
         butler_generated=butler_generated,
         butler_name=butler_name,
+        status=event_status,
+        organizer=organizer,
+        visibility=visibility,
+        etag=etag,
+        created_at=created_at,
+        updated_at=updated_at,
     )
 
 
@@ -777,6 +836,23 @@ def _ensure_valid_timezone(value: str) -> None:
         raise ValueError(f"timezone must be a valid IANA timezone: {value}") from exc
 
 
+class EventStatus(StrEnum):
+    """Event lifecycle states as tracked by the provider (spec section 5.3)."""
+
+    confirmed = "confirmed"
+    tentative = "tentative"
+    cancelled = "cancelled"
+
+
+class EventVisibility(StrEnum):
+    """Event visibility levels (spec section 5.6)."""
+
+    default = "default"
+    public = "public"
+    private = "private"
+    confidential = "confidential"
+
+
 class CalendarEvent(BaseModel):
     """Canonical event shape shared across provider implementations."""
 
@@ -792,6 +868,13 @@ class CalendarEvent(BaseModel):
     color_id: str | None = None
     butler_generated: bool = False
     butler_name: str | None = None
+    # Extended fields from spec section 5.1
+    status: EventStatus | None = None
+    organizer: str | None = None
+    visibility: EventVisibility | None = None
+    etag: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class CalendarEventCreate(BaseModel):
@@ -1806,4 +1889,10 @@ class CalendarModule(Module):
             "color_id": event.color_id,
             "butler_generated": event.butler_generated,
             "butler_name": event.butler_name,
+            "status": event.status.value if event.status is not None else None,
+            "organizer": event.organizer,
+            "visibility": event.visibility.value if event.visibility is not None else None,
+            "etag": event.etag,
+            "created_at": event.created_at.isoformat() if event.created_at is not None else None,
+            "updated_at": event.updated_at.isoformat() if event.updated_at is not None else None,
         }

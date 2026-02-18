@@ -25,12 +25,18 @@ from butlers.modules.calendar import (
     CalendarModule,
     CalendarProvider,
     CalendarRequestError,
+    EventStatus,
+    EventVisibility,
+    _extract_google_organizer,
     _google_event_to_calendar_event,
     _GoogleOAuthClient,
     _GoogleOAuthCredentials,
     _GoogleProvider,
     _parse_google_datetime,
     _parse_google_event_boundary,
+    _parse_google_event_status,
+    _parse_google_event_visibility,
+    _parse_google_rfc3339_optional,
     normalize_event_payload,
 )
 
@@ -333,6 +339,12 @@ class TestCalendarReadTools:
                     "color_id": "7",
                     "butler_generated": False,
                     "butler_name": None,
+                    "status": None,
+                    "organizer": None,
+                    "visibility": None,
+                    "etag": None,
+                    "created_at": None,
+                    "updated_at": None,
                 }
             ],
         }
@@ -352,6 +364,12 @@ class TestCalendarReadTools:
                 "color_id": "7",
                 "butler_generated": False,
                 "butler_name": None,
+                "status": None,
+                "organizer": None,
+                "visibility": None,
+                "etag": None,
+                "created_at": None,
+                "updated_at": None,
             },
         }
 
@@ -2004,3 +2022,524 @@ class TestCalendarOverlapApprovalGate:
 
         mod.set_approval_enqueuer(_noop)
         assert mod.approvals_enabled is True
+
+
+# ============================================================================
+# CalendarEvent Extended Field Tests (spec section 5.1)
+# ============================================================================
+
+
+class TestCalendarEventExtendedFields:
+    """Verify CalendarEvent model includes all spec section 5.1 extended fields."""
+
+    def test_calendar_event_has_optional_extended_fields(self):
+        """CalendarEvent can be created without extended fields (all default to None)."""
+        event = CalendarEvent(
+            event_id="evt-basic",
+            title="Basic Event",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+        )
+        assert event.status is None
+        assert event.organizer is None
+        assert event.visibility is None
+        assert event.etag is None
+        assert event.created_at is None
+        assert event.updated_at is None
+
+    def test_calendar_event_accepts_all_extended_fields(self):
+        """CalendarEvent can be constructed with all extended fields set."""
+        event = CalendarEvent(
+            event_id="evt-full",
+            title="Full Event",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            status=EventStatus.confirmed,
+            organizer="organizer@example.com",
+            visibility=EventVisibility.private,
+            etag='"v1234567890"',
+            created_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 2, 15, 10, 0, tzinfo=UTC),
+        )
+        assert event.status == EventStatus.confirmed
+        assert event.organizer == "organizer@example.com"
+        assert event.visibility == EventVisibility.private
+        assert event.etag == '"v1234567890"'
+        assert event.created_at == datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+        assert event.updated_at == datetime(2026, 2, 15, 10, 0, tzinfo=UTC)
+
+    def test_event_status_enum_values(self):
+        """EventStatus enum has all spec-required values."""
+        assert EventStatus.confirmed.value == "confirmed"
+        assert EventStatus.tentative.value == "tentative"
+        assert EventStatus.cancelled.value == "cancelled"
+
+    def test_event_visibility_enum_values(self):
+        """EventVisibility enum has all spec-required values."""
+        assert EventVisibility.default.value == "default"
+        assert EventVisibility.public.value == "public"
+        assert EventVisibility.private.value == "private"
+        assert EventVisibility.confidential.value == "confidential"
+
+
+# ============================================================================
+# Google Payload Parsing Helper Tests (new field parsers)
+# ============================================================================
+
+
+class TestGoogleExtendedFieldParsers:
+    """Verify parsing helpers for the new CalendarEvent fields."""
+
+    def test_parse_google_event_status_confirmed(self):
+        assert _parse_google_event_status("confirmed") == EventStatus.confirmed
+
+    def test_parse_google_event_status_tentative(self):
+        assert _parse_google_event_status("tentative") == EventStatus.tentative
+
+    def test_parse_google_event_status_cancelled_parses_correctly(self):
+        # Cancelled events are filtered out upstream; parsing still returns the enum.
+        assert _parse_google_event_status("cancelled") == EventStatus.cancelled
+
+    def test_parse_google_event_status_is_case_insensitive(self):
+        assert _parse_google_event_status("CONFIRMED") == EventStatus.confirmed
+        assert _parse_google_event_status("Tentative") == EventStatus.tentative
+
+    def test_parse_google_event_status_unknown_returns_none(self):
+        assert _parse_google_event_status("unknown_status") is None
+
+    def test_parse_google_event_status_non_string_returns_none(self):
+        assert _parse_google_event_status(None) is None
+        assert _parse_google_event_status(123) is None
+        assert _parse_google_event_status({}) is None
+
+    def test_parse_google_event_visibility_default(self):
+        assert _parse_google_event_visibility("default") == EventVisibility.default
+
+    def test_parse_google_event_visibility_public(self):
+        assert _parse_google_event_visibility("public") == EventVisibility.public
+
+    def test_parse_google_event_visibility_private(self):
+        assert _parse_google_event_visibility("private") == EventVisibility.private
+
+    def test_parse_google_event_visibility_confidential(self):
+        assert _parse_google_event_visibility("confidential") == EventVisibility.confidential
+
+    def test_parse_google_event_visibility_is_case_insensitive(self):
+        assert _parse_google_event_visibility("PUBLIC") == EventVisibility.public
+
+    def test_parse_google_event_visibility_unknown_returns_none(self):
+        assert _parse_google_event_visibility("restricted") is None
+
+    def test_parse_google_event_visibility_non_string_returns_none(self):
+        assert _parse_google_event_visibility(None) is None
+        assert _parse_google_event_visibility(42) is None
+
+    def test_extract_google_organizer_from_dict_with_email(self):
+        result = _extract_google_organizer({"email": "organizer@example.com"})
+        assert result == "organizer@example.com"
+
+    def test_extract_google_organizer_strips_whitespace(self):
+        result = _extract_google_organizer({"email": "  organizer@example.com  "})
+        assert result == "organizer@example.com"
+
+    def test_extract_google_organizer_empty_email_returns_none(self):
+        assert _extract_google_organizer({"email": ""}) is None
+        assert _extract_google_organizer({"email": "   "}) is None
+
+    def test_extract_google_organizer_missing_email_returns_none(self):
+        assert _extract_google_organizer({"displayName": "Alice"}) is None
+
+    def test_extract_google_organizer_non_dict_returns_none(self):
+        assert _extract_google_organizer(None) is None
+        assert _extract_google_organizer("organizer@example.com") is None
+        assert _extract_google_organizer(123) is None
+
+    def test_parse_google_rfc3339_optional_valid_datetime(self):
+        result = _parse_google_rfc3339_optional("2026-01-15T09:00:00Z")
+        assert result is not None
+        assert result.year == 2026
+        assert result.tzinfo is not None
+
+    def test_parse_google_rfc3339_optional_none_returns_none(self):
+        assert _parse_google_rfc3339_optional(None) is None
+
+    def test_parse_google_rfc3339_optional_empty_string_returns_none(self):
+        assert _parse_google_rfc3339_optional("") is None
+        assert _parse_google_rfc3339_optional("   ") is None
+
+    def test_parse_google_rfc3339_optional_invalid_returns_none(self):
+        assert _parse_google_rfc3339_optional("not-a-date") is None
+
+    def test_parse_google_rfc3339_optional_non_string_returns_none(self):
+        assert _parse_google_rfc3339_optional(123) is None
+
+
+# ============================================================================
+# Google Event Payload Parsing with Extended Fields
+# ============================================================================
+
+
+class TestGoogleEventToCalendarEventExtendedFields:
+    """Verify _google_event_to_calendar_event populates extended fields correctly."""
+
+    def _minimal_payload(self) -> dict:
+        """Return a minimal valid Google Calendar event payload."""
+        return {
+            "id": "evt-test",
+            "summary": "Test Event",
+            "start": {"dateTime": "2026-03-01T10:00:00Z"},
+            "end": {"dateTime": "2026-03-01T11:00:00Z"},
+        }
+
+    def test_parses_status_confirmed(self):
+        payload = {**self._minimal_payload(), "status": "confirmed"}
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.status == EventStatus.confirmed
+
+    def test_parses_status_tentative(self):
+        payload = {**self._minimal_payload(), "status": "tentative"}
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.status == EventStatus.tentative
+
+    def test_cancelled_status_returns_none(self):
+        """Events with status=cancelled are filtered out by the existing logic."""
+        payload = {**self._minimal_payload(), "status": "cancelled"}
+        result = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert result is None
+
+    def test_missing_status_defaults_to_none(self):
+        event = _google_event_to_calendar_event(self._minimal_payload(), fallback_timezone="UTC")
+        assert event is not None
+        assert event.status is None
+
+    def test_parses_visibility_public(self):
+        payload = {**self._minimal_payload(), "visibility": "public"}
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.visibility == EventVisibility.public
+
+    def test_parses_visibility_private(self):
+        payload = {**self._minimal_payload(), "visibility": "private"}
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.visibility == EventVisibility.private
+
+    def test_parses_visibility_confidential(self):
+        payload = {**self._minimal_payload(), "visibility": "confidential"}
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.visibility == EventVisibility.confidential
+
+    def test_parses_visibility_default(self):
+        payload = {**self._minimal_payload(), "visibility": "default"}
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.visibility == EventVisibility.default
+
+    def test_missing_visibility_defaults_to_none(self):
+        event = _google_event_to_calendar_event(self._minimal_payload(), fallback_timezone="UTC")
+        assert event is not None
+        assert event.visibility is None
+
+    def test_parses_organizer_email(self):
+        payload = {**self._minimal_payload(), "organizer": {"email": "owner@example.com"}}
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.organizer == "owner@example.com"
+
+    def test_missing_organizer_defaults_to_none(self):
+        event = _google_event_to_calendar_event(self._minimal_payload(), fallback_timezone="UTC")
+        assert event is not None
+        assert event.organizer is None
+
+    def test_parses_etag(self):
+        payload = {**self._minimal_payload(), "etag": '"v1234567890"'}
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.etag == '"v1234567890"'
+
+    def test_missing_etag_defaults_to_none(self):
+        event = _google_event_to_calendar_event(self._minimal_payload(), fallback_timezone="UTC")
+        assert event is not None
+        assert event.etag is None
+
+    def test_parses_created_at(self):
+        payload = {**self._minimal_payload(), "created": "2026-01-01T09:00:00Z"}
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.created_at is not None
+        assert event.created_at.year == 2026
+        assert event.created_at.month == 1
+
+    def test_parses_updated_at(self):
+        payload = {**self._minimal_payload(), "updated": "2026-02-15T10:30:00Z"}
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.updated_at is not None
+        assert event.updated_at.year == 2026
+        assert event.updated_at.month == 2
+        assert event.updated_at.day == 15
+
+    def test_missing_created_at_defaults_to_none(self):
+        event = _google_event_to_calendar_event(self._minimal_payload(), fallback_timezone="UTC")
+        assert event is not None
+        assert event.created_at is None
+
+    def test_missing_updated_at_defaults_to_none(self):
+        event = _google_event_to_calendar_event(self._minimal_payload(), fallback_timezone="UTC")
+        assert event is not None
+        assert event.updated_at is None
+
+    def test_all_extended_fields_populated_together(self):
+        """All extended fields parsed together from a complete payload."""
+        payload = {
+            "id": "evt-full",
+            "summary": "Full Event",
+            "status": "tentative",
+            "visibility": "private",
+            "organizer": {"email": "boss@example.com", "displayName": "Boss"},
+            "etag": '"xyz123"',
+            "created": "2026-01-10T08:00:00Z",
+            "updated": "2026-02-20T14:30:00Z",
+            "start": {"dateTime": "2026-03-01T10:00:00Z"},
+            "end": {"dateTime": "2026-03-01T11:00:00Z"},
+        }
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        assert event.status == EventStatus.tentative
+        assert event.visibility == EventVisibility.private
+        assert event.organizer == "boss@example.com"
+        assert event.etag == '"xyz123"'
+        assert event.created_at is not None
+        assert event.created_at.day == 10
+        assert event.updated_at is not None
+        assert event.updated_at.day == 20
+
+
+# ============================================================================
+# _event_to_payload serialization with extended fields
+# ============================================================================
+
+
+class TestEventToPayloadExtendedFields:
+    """Verify _event_to_payload serializes extended fields correctly."""
+
+    def test_payload_includes_extended_fields_as_none_when_unset(self):
+        event = CalendarEvent(
+            event_id="evt-1",
+            title="Basic",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+        )
+        payload = CalendarModule._event_to_payload(event)
+        assert payload["status"] is None
+        assert payload["organizer"] is None
+        assert payload["visibility"] is None
+        assert payload["etag"] is None
+        assert payload["created_at"] is None
+        assert payload["updated_at"] is None
+
+    def test_payload_serializes_status_as_string(self):
+        event = CalendarEvent(
+            event_id="evt-2",
+            title="Confirmed",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            status=EventStatus.tentative,
+        )
+        payload = CalendarModule._event_to_payload(event)
+        assert payload["status"] == "tentative"
+
+    def test_payload_serializes_visibility_as_string(self):
+        event = CalendarEvent(
+            event_id="evt-3",
+            title="Private",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            visibility=EventVisibility.confidential,
+        )
+        payload = CalendarModule._event_to_payload(event)
+        assert payload["visibility"] == "confidential"
+
+    def test_payload_serializes_created_at_as_iso_string(self):
+        created = datetime(2026, 1, 5, 8, 0, tzinfo=UTC)
+        event = CalendarEvent(
+            event_id="evt-4",
+            title="With Timestamps",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            created_at=created,
+        )
+        payload = CalendarModule._event_to_payload(event)
+        assert payload["created_at"] == created.isoformat()
+
+    def test_payload_serializes_updated_at_as_iso_string(self):
+        updated = datetime(2026, 2, 20, 14, 30, tzinfo=UTC)
+        event = CalendarEvent(
+            event_id="evt-5",
+            title="Updated",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            updated_at=updated,
+        )
+        payload = CalendarModule._event_to_payload(event)
+        assert payload["updated_at"] == updated.isoformat()
+
+    def test_payload_serializes_all_extended_fields(self):
+        """All extended fields appear in the payload with correct values."""
+        created = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        updated = datetime(2026, 2, 1, 12, 0, tzinfo=UTC)
+        event = CalendarEvent(
+            event_id="evt-full",
+            title="Full",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            timezone="UTC",
+            status=EventStatus.confirmed,
+            organizer="alice@example.com",
+            visibility=EventVisibility.public,
+            etag='"etag-value"',
+            created_at=created,
+            updated_at=updated,
+        )
+        payload = CalendarModule._event_to_payload(event)
+        assert payload["status"] == "confirmed"
+        assert payload["organizer"] == "alice@example.com"
+        assert payload["visibility"] == "public"
+        assert payload["etag"] == '"etag-value"'
+        assert payload["created_at"] == created.isoformat()
+        assert payload["updated_at"] == updated.isoformat()
+
+
+# ============================================================================
+# Google Provider Read Operations with Extended Fields
+# ============================================================================
+
+
+class TestGoogleReadOperationsExtendedFields:
+    """Verify Google provider read operations parse and populate extended fields."""
+
+    async def test_list_events_includes_extended_fields_from_google_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv(
+            GOOGLE_CALENDAR_CREDENTIALS_ENV,
+            json.dumps(
+                {
+                    "client_id": "client-id",
+                    "client_secret": "client-secret",
+                    "refresh_token": "refresh-token",
+                }
+            ),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.return_value = _mock_response(
+            status_code=200,
+            url=GOOGLE_OAUTH_TOKEN_URL,
+            method="POST",
+            json_body={"access_token": "access-token", "expires_in": 3600},
+        )
+        mock_client.request.return_value = _mock_response(
+            status_code=200,
+            url=f"{GOOGLE_CALENDAR_API_BASE_URL}/calendars/primary/events",
+            method="GET",
+            json_body={
+                "items": [
+                    {
+                        "id": "evt-ext",
+                        "summary": "Extended Fields Event",
+                        "status": "tentative",
+                        "visibility": "private",
+                        "organizer": {"email": "owner@example.com"},
+                        "etag": '"abc123"',
+                        "created": "2026-01-15T08:00:00Z",
+                        "updated": "2026-02-20T10:00:00Z",
+                        "start": {"dateTime": "2026-03-01T10:00:00Z"},
+                        "end": {"dateTime": "2026-03-01T11:00:00Z"},
+                    }
+                ]
+            },
+        )
+
+        provider = _GoogleProvider(
+            config=CalendarConfig(provider="google", calendar_id="primary", timezone="UTC"),
+            http_client=mock_client,
+        )
+
+        events = await provider.list_events(calendar_id="primary", limit=10)
+
+        assert len(events) == 1
+        event = events[0]
+        assert event.status == EventStatus.tentative
+        assert event.visibility == EventVisibility.private
+        assert event.organizer == "owner@example.com"
+        assert event.etag == '"abc123"'
+        assert event.created_at is not None
+        assert event.created_at.year == 2026
+        assert event.created_at.month == 1
+        assert event.updated_at is not None
+        assert event.updated_at.month == 2
+
+    async def test_get_event_includes_extended_fields_from_google_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv(
+            GOOGLE_CALENDAR_CREDENTIALS_ENV,
+            json.dumps(
+                {
+                    "client_id": "client-id",
+                    "client_secret": "client-secret",
+                    "refresh_token": "refresh-token",
+                }
+            ),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post.return_value = _mock_response(
+            status_code=200,
+            url=GOOGLE_OAUTH_TOKEN_URL,
+            method="POST",
+            json_body={"access_token": "access-token", "expires_in": 3600},
+        )
+        mock_client.request.return_value = _mock_response(
+            status_code=200,
+            url=f"{GOOGLE_CALENDAR_API_BASE_URL}/calendars/primary/events/evt-ext",
+            method="GET",
+            json_body={
+                "id": "evt-ext",
+                "summary": "Single Event",
+                "status": "confirmed",
+                "visibility": "public",
+                "organizer": {"email": "organizer@example.com"},
+                "etag": '"etag-single"',
+                "created": "2026-01-20T09:00:00Z",
+                "updated": "2026-02-25T11:00:00Z",
+                "start": {"dateTime": "2026-03-05T14:00:00Z"},
+                "end": {"dateTime": "2026-03-05T15:00:00Z"},
+            },
+        )
+
+        provider = _GoogleProvider(
+            config=CalendarConfig(provider="google", calendar_id="primary", timezone="UTC"),
+            http_client=mock_client,
+        )
+
+        event = await provider.get_event(calendar_id="primary", event_id="evt-ext")
+
+        assert event is not None
+        assert event.status == EventStatus.confirmed
+        assert event.visibility == EventVisibility.public
+        assert event.organizer == "organizer@example.com"
+        assert event.etag == '"etag-single"'
+        assert event.created_at is not None
+        assert event.created_at.day == 20
+        assert event.updated_at is not None
+        assert event.updated_at.day == 25
