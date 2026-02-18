@@ -35,6 +35,7 @@ from butlers.api.routers.butlers import router as butlers_router
 from butlers.api.routers.costs import router as costs_router
 from butlers.api.routers.issues import router as issues_router
 from butlers.api.routers.memory import router as memory_router
+from butlers.api.routers.modules import router as modules_router
 from butlers.api.routers.notifications import (
     butler_notifications_router,
 )
@@ -149,6 +150,7 @@ def create_app(
     app.include_router(sessions_router)
     app.include_router(butler_sessions_router)
     app.include_router(schedules_router)
+    app.include_router(modules_router)
     app.include_router(state_router)
     app.include_router(traces_router)
     app.include_router(timeline_router)

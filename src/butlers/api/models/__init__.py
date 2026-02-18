@@ -297,6 +297,10 @@ from butlers.api.models.memory import (  # noqa: E402
 from butlers.api.models.memory import (  # noqa: E402
     Rule as MemoryRule,
 )
+from butlers.api.models.modules import (  # noqa: E402
+    ModuleRuntimeStateResponse,
+    ModuleSetEnabledRequest,
+)
 from butlers.api.models.notification import NotificationStats, NotificationSummary  # noqa: E402
 from butlers.api.models.search import SearchResponse, SearchResult  # noqa: E402
 from butlers.api.models.session import SessionDetail  # noqa: E402
@@ -341,6 +345,8 @@ __all__ = [
     "HealthResponse",
     "Issue",
     "ModuleInfo",
+    "ModuleRuntimeStateResponse",
+    "ModuleSetEnabledRequest",
     "ModuleStatus",
     "NotificationStats",
     "NotificationSummary",
