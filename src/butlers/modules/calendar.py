@@ -48,6 +48,12 @@ LEGACY_CONFLICT_POLICY_ALIASES = {
 VALID_CONFLICT_POLICIES = {"suggest", "fail", "allow_overlap"}
 DEFAULT_CONFLICT_SUGGESTION_COUNT = 3
 
+# Rate-limit retry configuration (spec section 14.2, 15).
+# Retry on 429 Too Many Requests and 503 Service Unavailable with exponential backoff.
+RATE_LIMIT_RETRY_STATUS_CODES = {429, 503}
+RATE_LIMIT_MAX_RETRIES = 3
+RATE_LIMIT_BASE_BACKOFF_SECONDS = 1.0
+
 CalendarConflictPolicy = Literal["suggest", "fail", "allow_overlap"]
 
 
@@ -260,6 +266,29 @@ def _safe_google_error_message(response: httpx.Response) -> str:
     if raw_text:
         return " ".join(raw_text.split())[:200]
     return "Request failed without an error payload"
+
+
+def _build_structured_error(
+    exc: Exception,
+    *,
+    provider: str,
+    calendar_id: str,
+) -> dict[str, Any]:
+    """Build a structured error dict per spec section 15.2.
+
+    Sanitizes error messages to prevent credential leakage.
+    """
+    error_type = type(exc).__name__
+    raw_message = str(exc)
+    # Sanitize: truncate to 200 chars, normalize whitespace (spec section 15.3).
+    sanitized = " ".join(raw_message.split())[:200]
+    return {
+        "status": "error",
+        "error": sanitized,
+        "error_type": error_type,
+        "provider": provider,
+        "calendar_id": calendar_id,
+    }
 
 
 def _google_rfc3339(value: datetime) -> str:
@@ -1345,6 +1374,30 @@ class _GoogleProvider(CalendarProvider):
                 extra_headers=extra_headers,
                 force_refresh=True,
             )
+
+        # Rate-limit retry: exponential backoff on 429/503 (spec section 14.2).
+        retry = 0
+        while (
+            response.status_code in RATE_LIMIT_RETRY_STATUS_CODES and retry < RATE_LIMIT_MAX_RETRIES
+        ):
+            backoff = RATE_LIMIT_BASE_BACKOFF_SECONDS * (2**retry)
+            logger.warning(
+                "Calendar API rate-limited (status=%d), retrying in %.1fs (attempt %d/%d)",
+                response.status_code,
+                backoff,
+                retry + 1,
+                RATE_LIMIT_MAX_RETRIES,
+            )
+            await asyncio.sleep(backoff)
+            response = await self._request_once(
+                method=method,
+                url=url,
+                params=params,
+                json_body=json_body,
+                force_refresh=False,
+            )
+            retry += 1
+
         return response
 
     async def _request_once(
@@ -1695,15 +1748,33 @@ class CalendarModule(Module):
             end_at: datetime | None = None,
             limit: int = 50,
         ) -> dict[str, Any]:
-            """List calendar events using the configured provider."""
+            """List calendar events using the configured provider.
+
+            Fail-open: returns empty events list with error metadata on provider failure
+            rather than raising (spec section 4.4 / 15.2).
+            """
             provider = module._require_provider()
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
-            events = await provider.list_events(
-                calendar_id=resolved_calendar_id,
-                start_at=start_at,
-                end_at=end_at,
-                limit=limit,
-            )
+            try:
+                events = await provider.list_events(
+                    calendar_id=resolved_calendar_id,
+                    start_at=start_at,
+                    end_at=end_at,
+                    limit=limit,
+                )
+            except CalendarAuthError as exc:
+                logger.warning(
+                    "calendar_list_events failed (calendar_id=%s): %s",
+                    resolved_calendar_id,
+                    exc,
+                )
+                error_dict = _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id=resolved_calendar_id,
+                )
+                error_dict["events"] = []
+                return error_dict
             return {
                 "provider": provider.name,
                 "calendar_id": resolved_calendar_id,
@@ -1715,17 +1786,36 @@ class CalendarModule(Module):
             event_id: str,
             calendar_id: str | None = None,
         ) -> dict[str, Any]:
-            """Get a single calendar event by id using the configured provider."""
+            """Get a single calendar event by id using the configured provider.
+
+            Fail-open: returns null event with error metadata on provider failure
+            rather than raising (spec section 4.4 / 15.2).
+            """
             normalized_event_id = event_id.strip()
             if not normalized_event_id:
                 raise ValueError("event_id must be a non-empty string")
 
             provider = module._require_provider()
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
-            event = await provider.get_event(
-                calendar_id=resolved_calendar_id,
-                event_id=normalized_event_id,
-            )
+            try:
+                event = await provider.get_event(
+                    calendar_id=resolved_calendar_id,
+                    event_id=normalized_event_id,
+                )
+            except CalendarAuthError as exc:
+                logger.warning(
+                    "calendar_get_event failed (event_id=%s, calendar_id=%s): %s",
+                    normalized_event_id,
+                    resolved_calendar_id,
+                    exc,
+                )
+                error_dict = _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id=resolved_calendar_id,
+                )
+                error_dict["event"] = None
+                return error_dict
             return {
                 "provider": provider.name,
                 "calendar_id": resolved_calendar_id,
@@ -1755,36 +1845,50 @@ class CalendarModule(Module):
 
             For all-day events, pass date objects (not datetime) for start_at and
             end_at, or set all_day=True with date-only values.
+            Fail-closed: provider errors return a structured error dict rather than
+            silently dropping the mutation (spec section 4.4 / 15.2).
             """
             provider = module._require_provider()
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
             resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
 
-            create_payload = CalendarEventCreate(
-                title=module._ensure_butler_title(title),
-                start_at=start_at,
-                end_at=end_at,
-                all_day=all_day,
-                timezone=timezone,
-                description=description,
-                location=location,
-                attendees=attendees or [],
-                recurrence_rule=recurrence_rule,
-                notification=notification,
-                status=status,
-                visibility=visibility,
-                notes=notes,
-                color_id=color_id,
-                private_metadata=module._build_butler_private_metadata(
-                    butler_name=module._butler_name
-                ),
-            )
-            conflict_result = await module._check_conflicts(
-                provider=provider,
-                calendar_id=resolved_calendar_id,
-                candidate=create_payload,
-                conflict_policy=resolved_conflict_policy,
-            )
+            try:
+                create_payload = CalendarEventCreate(
+                    title=module._ensure_butler_title(title),
+                    start_at=start_at,
+                    end_at=end_at,
+                    all_day=all_day,
+                    timezone=timezone,
+                    description=description,
+                    location=location,
+                    attendees=attendees or [],
+                    recurrence_rule=recurrence_rule,
+                    notification=notification,
+                    status=status,
+                    visibility=visibility,
+                    notes=notes,
+                    color_id=color_id,
+                    private_metadata=module._build_butler_private_metadata(
+                        butler_name=module._butler_name
+                    ),
+                )
+                conflict_result = await module._check_conflicts(
+                    provider=provider,
+                    calendar_id=resolved_calendar_id,
+                    candidate=create_payload,
+                    conflict_policy=resolved_conflict_policy,
+                )
+            except CalendarAuthError as exc:
+                logger.error(
+                    "calendar_create_event failed during conflict check (calendar_id=%s): %s",
+                    resolved_calendar_id,
+                    exc,
+                )
+                return _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id=resolved_calendar_id,
+                )
             if conflict_result["status"] == "conflict":
                 return {
                     "status": "conflict",
@@ -1824,10 +1928,22 @@ class CalendarModule(Module):
                 if approval_result is not None:
                     return approval_result
 
-            event = await provider.create_event(
-                calendar_id=resolved_calendar_id,
-                payload=create_payload,
-            )
+            try:
+                event = await provider.create_event(
+                    calendar_id=resolved_calendar_id,
+                    payload=create_payload,
+                )
+            except CalendarAuthError as exc:
+                logger.error(
+                    "calendar_create_event provider write failed (calendar_id=%s): %s",
+                    resolved_calendar_id,
+                    exc,
+                )
+                return _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id=resolved_calendar_id,
+                )
             result: dict[str, Any] = {
                 "status": "created",
                 "provider": provider.name,
@@ -1859,6 +1975,8 @@ class CalendarModule(Module):
             """Update an event and preserve Butler tags for Butler-generated entries.
 
             Recurrence updates are series-scoped in v1.
+            Fail-closed: provider errors return a structured error dict rather than
+            silently dropping the mutation (spec section 4.4 / 15.2).
             """
             normalized_event_id = event_id.strip()
             if not normalized_event_id:
@@ -1867,10 +1985,24 @@ class CalendarModule(Module):
             provider = module._require_provider()
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
             resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
-            existing_event = await provider.get_event(
-                calendar_id=resolved_calendar_id,
-                event_id=normalized_event_id,
-            )
+            try:
+                existing_event = await provider.get_event(
+                    calendar_id=resolved_calendar_id,
+                    event_id=normalized_event_id,
+                )
+            except CalendarAuthError as exc:
+                logger.error(
+                    "calendar_update_event failed fetching existing event "
+                    "(event_id=%s, calendar_id=%s): %s",
+                    normalized_event_id,
+                    resolved_calendar_id,
+                    exc,
+                )
+                return _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id=resolved_calendar_id,
+                )
             if existing_event is None:
                 raise ValueError(f"event_id '{normalized_event_id}' was not found")
 
@@ -1895,33 +2027,47 @@ class CalendarModule(Module):
                 start_at=start_at,
                 end_at=end_at,
             ):
-                candidate = CalendarEventCreate(
-                    title=update_title or existing_event.title,
-                    start_at=start_at if start_at is not None else existing_event.start_at,
-                    end_at=end_at if end_at is not None else existing_event.end_at,
-                    timezone=timezone or existing_event.timezone,
-                    description=(
-                        description if description is not None else existing_event.description
-                    ),
-                    location=location if location is not None else existing_event.location,
-                    attendees=(
-                        attendees if attendees is not None else list(existing_event.attendees)
-                    ),
-                    recurrence_rule=(
-                        recurrence_rule
-                        if recurrence_rule is not None
-                        else existing_event.recurrence_rule
-                    ),
-                    color_id=color_id if color_id is not None else existing_event.color_id,
-                )
-                conflict_result = await module._check_conflicts(
-                    provider=provider,
-                    calendar_id=resolved_calendar_id,
-                    candidate=candidate,
-                    conflict_policy=resolved_conflict_policy,
-                    ignore_start_at=existing_event.start_at,
-                    ignore_end_at=existing_event.end_at,
-                )
+                try:
+                    candidate = CalendarEventCreate(
+                        title=update_title or existing_event.title,
+                        start_at=start_at if start_at is not None else existing_event.start_at,
+                        end_at=end_at if end_at is not None else existing_event.end_at,
+                        timezone=timezone or existing_event.timezone,
+                        description=(
+                            description if description is not None else existing_event.description
+                        ),
+                        location=location if location is not None else existing_event.location,
+                        attendees=(
+                            attendees if attendees is not None else list(existing_event.attendees)
+                        ),
+                        recurrence_rule=(
+                            recurrence_rule
+                            if recurrence_rule is not None
+                            else existing_event.recurrence_rule
+                        ),
+                        color_id=color_id if color_id is not None else existing_event.color_id,
+                    )
+                    conflict_result = await module._check_conflicts(
+                        provider=provider,
+                        calendar_id=resolved_calendar_id,
+                        candidate=candidate,
+                        conflict_policy=resolved_conflict_policy,
+                        ignore_start_at=existing_event.start_at,
+                        ignore_end_at=existing_event.end_at,
+                    )
+                except CalendarAuthError as exc:
+                    logger.error(
+                        "calendar_update_event failed during conflict check "
+                        "(event_id=%s, calendar_id=%s): %s",
+                        normalized_event_id,
+                        resolved_calendar_id,
+                        exc,
+                    )
+                    return _build_structured_error(
+                        exc,
+                        provider=provider.name,
+                        calendar_id=resolved_calendar_id,
+                    )
                 if conflict_result["status"] == "conflict":
                     return {
                         "status": "conflict",
@@ -1972,11 +2118,24 @@ class CalendarModule(Module):
                 private_metadata=private_metadata,
                 etag=existing_event.etag,
             )
-            event = await provider.update_event(
-                calendar_id=resolved_calendar_id,
-                event_id=normalized_event_id,
-                patch=update_patch,
-            )
+            try:
+                event = await provider.update_event(
+                    calendar_id=resolved_calendar_id,
+                    event_id=normalized_event_id,
+                    patch=update_patch,
+                )
+            except CalendarAuthError as exc:
+                logger.error(
+                    "calendar_update_event provider write failed (event_id=%s, calendar_id=%s): %s",
+                    normalized_event_id,
+                    resolved_calendar_id,
+                    exc,
+                )
+                return _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id=resolved_calendar_id,
+                )
             result = {
                 "status": "updated",
                 "provider": provider.name,
