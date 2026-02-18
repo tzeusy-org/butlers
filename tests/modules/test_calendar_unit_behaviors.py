@@ -7,13 +7,16 @@ Covers:
 - Conflict policy handling (suggest, fail, allow_overlap)
 - Approval-required flow for overlap overrides
 - Recurring event validation and timezone requirements
+- Mixed date/datetime boundary type validation (PR #173 review feedback)
+- find_conflicts type coercion before comparison (PR #173 review feedback)
+- MCP tool new fields: notification, status, visibility, notes, all_day (PR #173 review feedback)
 """
 
 from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -23,14 +26,17 @@ from pydantic import ValidationError
 from butlers.modules.calendar import (
     BUTLER_GENERATED_PRIVATE_KEY,
     BUTLER_NAME_PRIVATE_KEY,
+    GOOGLE_CALENDAR_CREDENTIALS_ENV,
     CalendarConfig,
     CalendarCredentialError,
     CalendarEventCreate,
     CalendarEventPayloadInput,
+    CalendarNotificationInput,
     CalendarTokenRefreshError,
     _extract_google_private_metadata,
     _GoogleOAuthClient,
     _GoogleOAuthCredentials,
+    _GoogleProvider,
     _normalize_recurrence,
     normalize_event_payload,
 )
@@ -690,6 +696,220 @@ class TestConflictPolicyHandling:
 #
 # These behaviors require full module + approval-enqueuer integration and are
 # not suitable for unit testing in isolation.
+
+
+# ============================================================================
+# Mixed date/datetime boundary type validation tests (PR #173 review feedback)
+# ============================================================================
+
+
+class TestCalendarEventCreateBoundaryTypeConsistency:
+    """Test that start_at and end_at must both be date or both be datetime."""
+
+    def test_both_date_objects_accepted(self):
+        from datetime import date
+
+        event = CalendarEventCreate(
+            title="All Day",
+            start_at=date(2026, 3, 1),
+            end_at=date(2026, 3, 2),
+        )
+        assert event.start_at == date(2026, 3, 1)
+        assert event.end_at == date(2026, 3, 2)
+
+    def test_both_datetime_objects_accepted(self):
+        event = CalendarEventCreate(
+            title="Timed",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+        )
+        assert isinstance(event.start_at, datetime)
+        assert isinstance(event.end_at, datetime)
+
+    def test_date_start_datetime_end_raises_validation_error(self):
+        from datetime import date
+
+        with pytest.raises(
+            ValidationError,
+            match="start_at and end_at must be the same type",
+        ):
+            CalendarEventCreate(
+                title="Mixed Types",
+                start_at=date(2026, 3, 1),
+                end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            )
+
+    def test_datetime_start_date_end_raises_validation_error(self):
+        from datetime import date
+
+        with pytest.raises(
+            ValidationError,
+            match="start_at and end_at must be the same type",
+        ):
+            CalendarEventCreate(
+                title="Mixed Types Reversed",
+                start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+                end_at=date(2026, 3, 2),
+            )
+
+
+# ============================================================================
+# find_conflicts safe comparison tests (PR #173 review feedback)
+# ============================================================================
+
+
+def _make_mock_http_client() -> MagicMock:
+    """Build a mock httpx.AsyncClient pre-wired with a valid OAuth token response."""
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    token_response = MagicMock()
+    token_response.status_code = 200
+    token_response.json.return_value = {"access_token": "access-token", "expires_in": 3600}
+    mock_client.post = AsyncMock(return_value=token_response)
+    return mock_client
+
+
+class TestFindConflictsBoundaryCoercion:
+    """Test that find_conflicts coerces types before comparing boundaries."""
+
+    @pytest.fixture
+    def google_provider(self, monkeypatch):
+        """Build a _GoogleProvider with mocked credentials and HTTP client."""
+        monkeypatch.setenv(
+            GOOGLE_CALENDAR_CREDENTIALS_ENV,
+            json.dumps(
+                {
+                    "client_id": "client-id",
+                    "client_secret": "client-secret",
+                    "refresh_token": "refresh-token",
+                }
+            ),
+        )
+        config = CalendarConfig(
+            provider="google",
+            calendar_id="test@example.com",
+            timezone="America/New_York",
+        )
+        return _GoogleProvider(config=config, http_client=_make_mock_http_client())
+
+    async def test_find_conflicts_date_boundaries_do_not_raise_type_error(self, google_provider):
+        """date boundaries should be coerced to datetime before comparison — no TypeError."""
+        candidate = CalendarEventCreate(
+            title="All Day Event",
+            start_at=date(2026, 3, 1),
+            end_at=date(2026, 3, 2),
+        )
+
+        # Patch the HTTP request so we don't need real credentials
+        google_provider._request_google_json = AsyncMock(
+            return_value={
+                "calendars": {
+                    "test@example.com": {
+                        "busy": [],
+                    }
+                }
+            }
+        )
+
+        # Should not raise TypeError — just returns empty list
+        result = await google_provider.find_conflicts(
+            calendar_id="test@example.com",
+            candidate=candidate,
+        )
+        assert result == []
+
+    async def test_find_conflicts_end_before_start_raises_value_error(self, google_provider):
+        """Reversed date-only boundaries should raise ValueError, not TypeError."""
+        candidate = CalendarEventCreate(
+            title="Invalid",
+            start_at=date(2026, 3, 2),
+            end_at=date(2026, 3, 1),
+        )
+
+        with pytest.raises(ValueError, match="candidate.end_at must be after candidate.start_at"):
+            await google_provider.find_conflicts(
+                calendar_id="test@example.com",
+                candidate=candidate,
+            )
+
+
+# ============================================================================
+# MCP tool new field tests (PR #173 review feedback)
+# ============================================================================
+
+
+class TestCalendarCreateEventToolNewFields:
+    """Test that the MCP tool accepts and passes new CalendarEventCreate fields."""
+
+    def test_calendar_event_create_accepts_notification_field(self):
+        event = CalendarEventCreate(
+            title="Event with Notification",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            notification=CalendarNotificationInput(enabled=True, minutes_before=15),
+        )
+        assert event.notification is not None
+
+    def test_calendar_event_create_accepts_notification_bool(self):
+        event = CalendarEventCreate(
+            title="Event",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            notification=True,
+        )
+        assert event.notification is True
+
+    def test_calendar_event_create_accepts_status_field(self):
+        event = CalendarEventCreate(
+            title="Tentative Event",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            status="tentative",
+        )
+        assert event.status == "tentative"
+
+    def test_calendar_event_create_accepts_visibility_field(self):
+        event = CalendarEventCreate(
+            title="Private Event",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            visibility="private",
+        )
+        assert event.visibility == "private"
+
+    def test_calendar_event_create_accepts_notes_field(self):
+        event = CalendarEventCreate(
+            title="Event with Notes",
+            start_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+            end_at=datetime(2026, 3, 1, 11, 0, tzinfo=UTC),
+            notes="Some internal notes",
+        )
+        assert event.notes == "Some internal notes"
+
+    def test_calendar_event_create_accepts_all_day_field(self):
+        event = CalendarEventCreate(
+            title="All Day Event",
+            start_at=date(2026, 3, 1),
+            end_at=date(2026, 3, 2),
+            all_day=True,
+        )
+        assert event.all_day is True
+
+    def test_calendar_event_create_all_new_fields_together(self):
+        event = CalendarEventCreate(
+            title="Full Featured Event",
+            start_at=date(2026, 3, 1),
+            end_at=date(2026, 3, 2),
+            all_day=True,
+            notification=CalendarNotificationInput(enabled=True, minutes_before=30),
+            status="confirmed",
+            visibility="public",
+            notes="These are my notes",
+        )
+        assert event.all_day is True
+        assert event.status == "confirmed"
+        assert event.visibility == "public"
+        assert event.notes == "These are my notes"
+        assert event.notification is not None
 
 
 if __name__ == "__main__":
