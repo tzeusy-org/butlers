@@ -1,6 +1,6 @@
 # LLM CLI Spawner (Delta)
 
-Delta spec for the `cc-spawner` capability. Updates session logging to capture token usage and model information from the Claude Code SDK response.
+Delta spec for the `llm-cli-spawner` capability. Updates session logging to capture token usage and model information from the Claude Code SDK response.
 
 ---
 

@@ -28,7 +28,7 @@ Design decision D12 uses Alembic for all database migrations. Structure: `alembi
 
 _Added: 2026-02-09 by claude-opus-4-6_
 
-The v1 MVP spec has 15 capabilities: `butler-daemon`, `module-system`, `state-store`, `task-scheduler`, `cc-spawner`, `session-log`, `switchboard`, `heartbeat`, `butler-relationship`, `butler-health`, `butler-general`, `cli-and-deployment`, `telemetry`, `butler-credentials`, `butler-skills`. Each has a `spec.md` at `openspec/changes/v1-mvp-spec/specs/<name>/spec.md`.
+The v1 MVP spec has 15 capabilities: `butler-daemon`, `module-system`, `state-store`, `task-scheduler`, `llm-cli-spawner`, `session-log`, `switchboard`, `heartbeat`, `butler-relationship`, `butler-health`, `butler-general`, `cli-and-deployment`, `telemetry`, `butler-credentials`, `butler-skills`. Each has a `spec.md` at `openspec/changes/v1-mvp-spec/specs/<name>/spec.md`.
 
 ## Key design decisions (from design.md)
 

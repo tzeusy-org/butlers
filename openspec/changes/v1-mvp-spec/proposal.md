@@ -25,7 +25,7 @@ The Butlers framework has a detailed project plan but no formal specifications. 
 - `module-system`: Module abstract base class, registry with topological dependency sort, tool registration via `register_tools()`, Alembic migrations, startup/shutdown hooks. How opt-in capabilities plug into a butler.
 - `state-store`: Key-value JSONB persistence in each butler's PostgreSQL database. Core MCP tools: `state_get`, `state_set`, `state_delete`, `state_list`.
 - `task-scheduler`: Cron-driven task dispatch. TOML bootstrap tasks synced to DB on startup, runtime task creation via MCP tools. `tick()` entry point checks for due tasks and dispatches prompts to LLM CLI spawner. Tools: `schedule_list`, `schedule_create`, `schedule_update`, `schedule_delete`.
-- `cc-spawner`: Ephemeral LLM CLI instance management via the CC SDK. Generates locked-down MCP configs, spawns CC with constrained tool access, logs sessions. Tools: `trigger`. Includes MockSpawner for testing.
+- `llm-cli-spawner`: Ephemeral LLM CLI instance management via the CC SDK. Generates locked-down MCP configs, spawns CC with constrained tool access, logs sessions. Tools: `trigger`. Includes MockSpawner for testing.
 - `session-log`: Logs every runtime invocation — prompt, tool calls, outcome, duration, trace ID. Tools: `sessions_list`, `sessions_get`.
 - `switchboard`: Public ingress butler with butler registry, message classification, and inter-butler routing via MCP. Tools: `route`, `list_butlers`, `discover`. Owns Telegram and Email module integration for message intake.
 - `heartbeat`: Infrastructure butler that calls `tick()` on every registered butler on a 10-minute cycle. Enumerates butlers from Switchboard, logs results.
