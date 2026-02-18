@@ -311,8 +311,16 @@ class Spawner:
         # Prevent self-trigger deadlocks: an in-flight trigger-sourced session can
         # invoke the trigger tool again via MCP. Waiting on the semaphore here
         # when all slots are occupied would deadlock the runtime call graph.
-        # We only reject when every concurrency slot is taken (_value == 0).
+        # We only reject when every concurrency slot is taken.
         # With n > 1 a free slot may still be available, so we allow the call.
+        #
+        # Implementation note: we access asyncio.Semaphore._value (a CPython
+        # internal) because the public locked() method returns True even when
+        # there are waiters but _value > 0 — i.e. free slots still exist. Using
+        # locked() would over-reject when concurrent sessions are waiting but a
+        # slot is genuinely available. _value has been stable across CPython
+        # releases and the access is intentional. Alternatively, track a
+        # separate counter if this ever becomes fragile.
         if trigger_source == "trigger" and self._session_semaphore._value == 0:
             error_msg = (
                 "Runtime invocation rejected: trigger tool cannot be called while "

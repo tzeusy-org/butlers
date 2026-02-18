@@ -473,7 +473,7 @@ class TestSerialDispatch:
             assert execution_log[i + 1][0] == "end"
             assert execution_log[i][1] == execution_log[i + 1][1]
 
-    async def test_lock_released_on_error(self, tmp_path: Path):
+    async def test_semaphore_released_on_error(self, tmp_path: Path):
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
@@ -493,7 +493,7 @@ class TestSerialDispatch:
         result1 = await spawner.trigger("first", "tick")
         assert result1.error is not None
 
-        # Lock should be released — second call should work
+        # Semaphore slot should be released — second call should work
         result2 = await spawner.trigger("second", "tick")
         assert result2.error is None
         assert result2.output == "second call works"
