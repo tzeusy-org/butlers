@@ -599,21 +599,18 @@ def _build_google_event_body(payload: CalendarEventCreate) -> dict[str, Any]:
         # CalendarNotificationInput object (or CalendarNormalizedNotification)
         notif_enabled = getattr(notification, "enabled", True)
         minutes_before = getattr(notification, "minutes_before", None)
-        if notif_enabled:
-            if minutes_before is not None:
-                body["reminders"] = {
-                    "useDefault": False,
-                    "overrides": [{"method": "popup", "minutes": minutes_before}],
-                }
-            else:
-                body["reminders"] = {"useDefault": True}
-        else:
+        if not notif_enabled:
             body["reminders"] = {"useDefault": False, "overrides": []}
+        elif minutes_before is not None:
+            body["reminders"] = {
+                "useDefault": False,
+                "overrides": [{"method": "popup", "minutes": minutes_before}],
+            }
+        else:
+            body["reminders"] = {"useDefault": True}
 
     # Extended properties (butler-generated metadata + custom private_metadata)
-    private_props: dict[str, str] = {}
-    if payload.private_metadata:
-        private_props.update(payload.private_metadata)
+    private_props = payload.private_metadata.copy()
     if payload.notes is not None:
         private_props["notes"] = payload.notes
     if private_props:
