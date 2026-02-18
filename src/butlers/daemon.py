@@ -83,7 +83,7 @@ from butlers.db import Database
 from butlers.migrations import has_butler_chain, run_migrations
 from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.base import Module, ToolIODescriptor
-from butlers.modules.pipeline import MessagePipeline
+from butlers.modules.pipeline import MessagePipeline, _routing_ctx_var
 from butlers.modules.registry import ModuleRegistry, default_registry
 from butlers.storage import BlobNotFoundError, LocalBlobStore
 from butlers.tools.attachments import get_attachment as _get_attachment
@@ -862,16 +862,11 @@ class ButlerDaemon:
         if self.spawner is None:
             return
 
-        # Shared dict reference — populated by pipeline before runtime spawn,
-        # read by route_to_butler tool during runtime session.
-        self._routing_session_ctx: dict[str, Any] = {}
-
         pipeline = MessagePipeline(
             switchboard_pool=pool,
             dispatch_fn=self.spawner.trigger,
             source_butler="switchboard",
             enable_ingress_dedupe=True,
-            routing_session_ctx=self._routing_session_ctx,
         )
         self._pipeline = pipeline
 
@@ -1739,10 +1734,6 @@ class ButlerDaemon:
             # pipeline wiring was skipped, e.g. in tests).
             buffer = daemon._buffer
 
-            # Shared routing context dict — same dict reference as pipeline's.
-            # Safe because spawner lock serializes runtime sessions.
-            _routing_session_ctx = getattr(daemon, "_routing_session_ctx", {})
-
             async def _process_ingested_message(
                 pipeline: MessagePipeline,
                 request_id: str,
@@ -1861,10 +1852,11 @@ class ButlerDaemon:
                     prompt: Self-contained prompt for the target butler.
                     context: Optional additional context for the target butler.
                 """
-                source_metadata = _routing_session_ctx.get("source_metadata", {})
-                request_context = _routing_session_ctx.get("request_context")
-                request_id = _routing_session_ctx.get("request_id", "unknown")
-                conversation_history = _routing_session_ctx.get("conversation_history")
+                _routing_ctx = _routing_ctx_var.get() or {}
+                source_metadata = _routing_ctx.get("source_metadata", {})
+                request_context = _routing_ctx.get("request_context")
+                request_id = _routing_ctx.get("request_id", "unknown")
+                conversation_history = _routing_ctx.get("conversation_history")
 
                 _input: dict[str, Any] = {"prompt": prompt, "context": context}
                 if conversation_history:

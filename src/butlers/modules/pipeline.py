@@ -6,6 +6,7 @@ to the switchboard's ``classify_message()`` and ``route()`` functions.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import logging
@@ -24,6 +25,13 @@ from butlers.tools.switchboard.routing.telemetry import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Per-task routing context for concurrent pipeline sessions.
+# Each asyncio task (pipeline.process() call) sets its own isolated copy,
+# preventing cross-contamination when max_concurrent_sessions > 1.
+_routing_ctx_var: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "_routing_ctx_var", default=None
+)
 
 
 # ---------------------------------------------------------------------------
@@ -505,7 +513,6 @@ class MessagePipeline:
         classify_fn: Callable[..., Coroutine] | None = None,
         route_fn: Callable[..., Coroutine] | None = None,
         enable_ingress_dedupe: bool = False,
-        routing_session_ctx: dict[str, Any] | None = None,
     ) -> None:
         self._pool = switchboard_pool
         self._dispatch_fn = dispatch_fn
@@ -513,7 +520,6 @@ class MessagePipeline:
         self._classify_fn = classify_fn
         self._route_fn = route_fn
         self._enable_ingress_dedupe = enable_ingress_dedupe
-        self._routing_ctx = routing_session_ctx
 
     def _set_routing_context(
         self,
@@ -523,19 +529,23 @@ class MessagePipeline:
         request_id: str = "unknown",
         conversation_history: str | None = None,
     ) -> None:
-        """Populate the shared routing context dict before runtime spawn."""
-        if self._routing_ctx is None:
-            return
-        self._routing_ctx["source_metadata"] = source_metadata
-        self._routing_ctx["request_context"] = request_context
-        self._routing_ctx["request_id"] = request_id
-        self._routing_ctx["conversation_history"] = conversation_history
+        """Populate the per-task routing context via ContextVar before runtime spawn.
+
+        Each asyncio task gets its own isolated context, preventing
+        cross-contamination between concurrent pipeline.process() calls.
+        """
+        _routing_ctx_var.set(
+            {
+                "source_metadata": source_metadata,
+                "request_context": request_context,
+                "request_id": request_id,
+                "conversation_history": conversation_history,
+            }
+        )
 
     def _clear_routing_context(self) -> None:
-        """Clear the shared routing context dict after runtime spawn."""
-        if self._routing_ctx is None:
-            return
-        self._routing_ctx.clear()
+        """Clear the per-task routing context via ContextVar after runtime spawn."""
+        _routing_ctx_var.set(None)
 
     @staticmethod
     def _default_identity_for_tool(tool_name: str) -> str:

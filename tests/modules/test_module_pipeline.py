@@ -12,6 +12,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -27,6 +28,7 @@ from butlers.modules.pipeline import (
     RoutingResult,
     _build_routing_prompt,
     _extract_routed_butlers,
+    _routing_ctx_var,
 )
 
 pytestmark = pytest.mark.unit
@@ -295,35 +297,36 @@ class TestBuildRoutingPrompt:
 
 
 class TestRoutingContextLifecycle:
-    """Verify shared routing context set/clear behavior."""
+    """Verify per-task routing context (ContextVar) set/clear behavior."""
 
-    def test_set_populates_dict(self):
-        ctx: dict[str, Any] = {}
+    def test_set_populates_context_var(self):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
-            routing_session_ctx=ctx,
         )
         pipeline._set_routing_context(
             source_metadata={"channel": "telegram"},
             request_context={"request_id": "abc"},
             request_id="req-1",
         )
+        ctx = _routing_ctx_var.get()
+        assert ctx is not None
         assert ctx["source_metadata"] == {"channel": "telegram"}
         assert ctx["request_context"] == {"request_id": "abc"}
         assert ctx["request_id"] == "req-1"
+        # Cleanup
+        _routing_ctx_var.set(None)
 
-    def test_clear_empties_dict(self):
-        ctx: dict[str, Any] = {"source_metadata": {"channel": "telegram"}}
+    def test_clear_sets_context_var_to_none(self):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
-            routing_session_ctx=ctx,
         )
+        _routing_ctx_var.set({"source_metadata": {"channel": "telegram"}})
         pipeline._clear_routing_context()
-        assert ctx == {}
+        assert _routing_ctx_var.get() is None
 
-    def test_set_noop_when_no_ctx(self):
+    def test_set_does_not_raise(self):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -333,21 +336,22 @@ class TestRoutingContextLifecycle:
             source_metadata={"channel": "telegram"},
             request_id="req-1",
         )
+        # Cleanup
+        _routing_ctx_var.set(None)
 
-    def test_clear_noop_when_no_ctx(self):
+    def test_clear_does_not_raise_when_already_none(self):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
         )
+        _routing_ctx_var.set(None)
         # Should not raise
         pipeline._clear_routing_context()
 
     def test_set_stores_conversation_history(self):
-        ctx: dict[str, Any] = {}
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
-            routing_session_ctx=ctx,
         )
         history = "**user** (2026-02-16T10:00:00Z):\nHello"
         pipeline._set_routing_context(
@@ -355,20 +359,26 @@ class TestRoutingContextLifecycle:
             request_id="req-1",
             conversation_history=history,
         )
+        ctx = _routing_ctx_var.get()
+        assert ctx is not None
         assert ctx["conversation_history"] == history
+        # Cleanup
+        _routing_ctx_var.set(None)
 
     def test_set_stores_none_conversation_history_when_absent(self):
-        ctx: dict[str, Any] = {}
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
-            routing_session_ctx=ctx,
         )
         pipeline._set_routing_context(
             source_metadata={"channel": "telegram"},
             request_id="req-1",
         )
+        ctx = _routing_ctx_var.get()
+        assert ctx is not None
         assert ctx["conversation_history"] is None
+        # Cleanup
+        _routing_ctx_var.set(None)
 
 
 # ---------------------------------------------------------------------------
@@ -558,12 +568,12 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_routing_context_set_before_and_cleared_after_spawn(self, mock_load):
-        """Routing context is populated before runtime spawn and cleared after."""
-        ctx: dict[str, Any] = {}
-        captured_ctx_during_spawn: dict[str, Any] = {}
+        """Routing context is populated in ContextVar before runtime spawn and cleared after."""
+        captured_ctx_during_spawn: dict[str, Any] | None = None
 
         async def mock_dispatch(**kwargs):
-            captured_ctx_during_spawn.update(ctx)
+            nonlocal captured_ctx_during_spawn
+            captured_ctx_during_spawn = _routing_ctx_var.get()
             return FakeSpawnerResult(
                 output="Routed to general.",
                 tool_calls=[
@@ -578,16 +588,16 @@ class TestMessagePipelineProcess:
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=mock_dispatch,
-            routing_session_ctx=ctx,
         )
 
         await pipeline.process("hello")
 
         # Context was populated during spawn
+        assert captured_ctx_during_spawn is not None
         assert "source_metadata" in captured_ctx_during_spawn
         assert "request_id" in captured_ctx_during_spawn
         # Context is cleared after spawn
-        assert ctx == {}
+        assert _routing_ctx_var.get() is None
 
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
@@ -595,8 +605,7 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_routing_context_cleared_even_on_error(self, mock_load):
-        """Routing context is cleared even when runtime spawn fails."""
-        ctx: dict[str, Any] = {}
+        """Routing context ContextVar is reset even when runtime spawn fails."""
 
         async def failing_dispatch(**kwargs):
             raise RuntimeError("spawn failed")
@@ -604,12 +613,79 @@ class TestMessagePipelineProcess:
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=failing_dispatch,
-            routing_session_ctx=ctx,
         )
 
         await pipeline.process("test")
 
-        assert ctx == {}
+        assert _routing_ctx_var.get() is None
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_concurrent_sessions_get_isolated_routing_context(self, mock_load):
+        """Concurrent pipeline.process() calls each see their own isolated request_id."""
+        # Two sessions with different request_ids running concurrently.
+        # Each session captures its own ContextVar snapshot during dispatch.
+        # Acceptance criteria: each session reads its own request_id, not the other's.
+
+        captured: dict[str, str] = {}
+        barrier = asyncio.Event()
+
+        async def dispatch_session_a(**kwargs):
+            # Wait until session B has also set its context, then read ours
+            barrier.set()
+            await asyncio.sleep(0)  # yield so B can run
+            captured["a"] = (_routing_ctx_var.get() or {}).get("request_id", "")
+            return FakeSpawnerResult(
+                output="ok",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "health", "prompt": "session-a"},
+                        "result": {"status": "ok", "butler": "health"},
+                    }
+                ],
+            )
+
+        async def dispatch_session_b(**kwargs):
+            await barrier.wait()  # wait until A has started
+            captured["b"] = (_routing_ctx_var.get() or {}).get("request_id", "")
+            return FakeSpawnerResult(
+                output="ok",
+                tool_calls=[
+                    {
+                        "name": "route_to_butler",
+                        "args": {"butler": "relationship", "prompt": "session-b"},
+                        "result": {"status": "ok", "butler": "relationship"},
+                    }
+                ],
+            )
+
+        pipeline_a = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=dispatch_session_a,
+        )
+        pipeline_b = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=dispatch_session_b,
+        )
+
+        task_a = asyncio.create_task(
+            pipeline_a.process("session-a message", tool_args={"request_id": "req-aaa"})
+        )
+        task_b = asyncio.create_task(
+            pipeline_b.process("session-b message", tool_args={"request_id": "req-bbb"})
+        )
+        await asyncio.gather(task_a, task_b)
+
+        # Each task's ContextVar copy was independent — no cross-contamination
+        assert captured["a"] != captured["b"], (
+            f"Context leaked between tasks: a={captured['a']!r}, b={captured['b']!r}"
+        )
+        # ContextVar is cleared after each session
+        assert _routing_ctx_var.get() is None
 
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
