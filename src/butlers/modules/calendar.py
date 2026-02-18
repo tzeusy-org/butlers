@@ -1005,10 +1005,6 @@ class CalendarEvent(BaseModel):
     updated_at: datetime | None = None
 
 
-EventStatus = Literal["confirmed", "tentative", "cancelled"]
-EventVisibility = Literal["default", "public", "private", "confidential"]
-
-
 class CalendarEventCreate(BaseModel):
     """Payload for creating a calendar event."""
 
