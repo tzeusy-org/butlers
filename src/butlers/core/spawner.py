@@ -402,9 +402,9 @@ class Spawner:
         # Read the configured model (defaults to Haiku if not overridden)
         model = self._config.runtime.model
 
-        # Get tracer and start butler.cc_session span with parent context
+        # Get tracer and start butler.llm_session span with parent context
         tracer = trace.get_tracer("butlers")
-        span = tracer.start_span("butler.cc_session", context=parent_context)
+        span = tracer.start_span("butler.llm_session", context=parent_context)
         span.set_attribute("butler.name", self._config.name)
         span.set_attribute("prompt_length", len(final_prompt))
 
