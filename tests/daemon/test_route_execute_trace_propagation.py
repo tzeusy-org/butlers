@@ -8,6 +8,8 @@ Verifies that:
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -118,6 +120,9 @@ def _patch_infra():
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
+        "recover_route_inbox": patch.object(
+            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
+        ),
         "get_adapter": patch("butlers.daemon.get_adapter", return_value=mock_adapter_cls),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
         "mock_db": mock_db,
@@ -157,6 +162,7 @@ async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],
+        patches["recover_route_inbox"],
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()
@@ -182,6 +188,28 @@ def _route_request_context(
     if source_thread_identity is not None:
         ctx["source_thread_identity"] = source_thread_identity
     return ctx
+
+
+@pytest.fixture(autouse=True)
+def _mock_route_inbox(monkeypatch):
+    """Patch route_inbox DB calls so tests don't need a real DB pool."""
+    fake_inbox_id = uuid.uuid4()
+    monkeypatch.setattr(
+        "butlers.daemon.route_inbox_insert",
+        AsyncMock(return_value=fake_inbox_id),
+    )
+    monkeypatch.setattr(
+        "butlers.daemon.route_inbox_mark_processing",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "butlers.daemon.route_inbox_mark_processed",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "butlers.daemon.route_inbox_mark_errored",
+        AsyncMock(),
+    )
 
 
 class TestRouteExecuteTracePropagation:
@@ -218,7 +246,10 @@ class TestRouteExecuteTracePropagation:
             trace_context=trace_context,
         )
 
-        assert result["status"] == "ok"
+        assert result["status"] == "accepted"
+
+        # Background task runs asynchronously; wait briefly for it to complete
+        await asyncio.sleep(0.05)
         daemon.spawner.trigger.assert_awaited_once()
 
         # Verify route.execute created a span under the switchboard's trace
@@ -252,7 +283,10 @@ class TestRouteExecuteTracePropagation:
             input={"prompt": "Run health check."},
         )
 
-        assert result["status"] == "ok"
+        assert result["status"] == "accepted"
+
+        # Background task runs asynchronously; wait briefly for it to complete
+        await asyncio.sleep(0.05)
         daemon.spawner.trigger.assert_awaited_once()
 
         # Verify parent_context is None

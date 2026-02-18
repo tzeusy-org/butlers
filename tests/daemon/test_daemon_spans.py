@@ -175,6 +175,9 @@ def _patch_infra():
         ),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
+        "recover_route_inbox": patch.object(
+            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
+        ),
         "mock_db": mock_db,
         "mock_pool": mock_pool,
         "mock_spawner": mock_spawner,
@@ -229,6 +232,7 @@ class TestCoreToolSpans:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -505,6 +509,7 @@ class TestModuleToolSpans:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()

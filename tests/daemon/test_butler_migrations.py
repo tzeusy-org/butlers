@@ -391,6 +391,9 @@ def _patch_infra():
         "get_adapter": patch("butlers.daemon.get_adapter", return_value=mock_adapter_cls),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
+        "recover_route_inbox": patch.object(
+            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
+        ),
         "mock_db": mock_db,
         "mock_pool": mock_pool,
     }
@@ -421,6 +424,7 @@ class TestButlerSpecificMigrationInDaemon:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["recover_route_inbox"],
         ):
             mock_has_chain.return_value = True
 
@@ -456,6 +460,7 @@ class TestButlerSpecificMigrationInDaemon:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["recover_route_inbox"],
         ):
             mock_has_chain.return_value = False
 
@@ -487,6 +492,7 @@ class TestButlerSpecificMigrationInDaemon:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["recover_route_inbox"],
         ):
             mock_has_chain.return_value = False
 
@@ -514,6 +520,7 @@ class TestButlerSpecificMigrationInDaemon:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
+            patches["recover_route_inbox"],
         ):
             mock_has_chain.return_value = True
 
