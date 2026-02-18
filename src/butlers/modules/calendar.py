@@ -1045,6 +1045,17 @@ class CalendarEventCreate(BaseModel):
         return _normalize_recurrence_rule(value)
 
     @model_validator(mode="after")
+    def _validate_boundary_types_consistent(self) -> CalendarEventCreate:
+        start_is_datetime = isinstance(self.start_at, datetime)
+        end_is_datetime = isinstance(self.end_at, datetime)
+        if start_is_datetime != end_is_datetime:
+            raise ValueError(
+                "start_at and end_at must be the same type: "
+                "both date or both datetime (mixed date/datetime is not allowed)"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_recurrence_timezone(self) -> CalendarEventCreate:
         if self.recurrence_rule is not None and self.timezone is None:
             if isinstance(self.start_at, datetime) and _is_naive_datetime(self.start_at):
@@ -1388,10 +1399,10 @@ class _GoogleProvider(CalendarProvider):
         calendar_id: str,
         candidate: CalendarEventCreate,
     ) -> list[CalendarEvent]:
-        if candidate.end_at <= candidate.start_at:
-            raise ValueError("candidate.end_at must be after candidate.start_at")
-
-        # Coerce date/datetime boundaries to datetime for freeBusy API
+        # Coerce date/datetime boundaries to datetime for freeBusy API.
+        # Do this before the guard comparison to avoid TypeError when one boundary
+        # is a date and the other is a datetime (Python 3 does not allow cross-type
+        # comparisons between date and datetime).
         timezone_str = candidate.timezone or self._config.timezone
         tz = _coerce_zoneinfo(timezone_str)
         start_at = candidate.start_at
@@ -1400,6 +1411,9 @@ class _GoogleProvider(CalendarProvider):
             start_at = datetime(start_at.year, start_at.month, start_at.day, tzinfo=tz)
         if isinstance(end_at, date) and not isinstance(end_at, datetime):
             end_at = datetime(end_at.year, end_at.month, end_at.day, tzinfo=tz)
+
+        if end_at <= start_at:
+            raise ValueError("candidate.end_at must be after candidate.start_at")
 
         payload = await self._request_google_json(
             "POST",
@@ -1566,18 +1580,27 @@ class CalendarModule(Module):
         @mcp.tool()
         async def calendar_create_event(
             title: str,
-            start_at: datetime,
-            end_at: datetime,
+            start_at: date | datetime,
+            end_at: date | datetime,
+            all_day: bool | None = None,
             timezone: str | None = None,
             description: str | None = None,
             location: str | None = None,
             attendees: list[str] | None = None,
             recurrence_rule: str | None = None,
+            notification: CalendarNotificationInput | bool | int | None = None,
+            status: EventStatus | None = None,
+            visibility: EventVisibility | None = None,
+            notes: str | None = None,
             color_id: str | None = None,
             calendar_id: str | None = None,
             conflict_policy: CalendarConflictPolicy | None = None,
         ) -> dict[str, Any]:
-            """Create an event and mark it as Butler-generated."""
+            """Create an event and mark it as Butler-generated.
+
+            For all-day events, pass date objects (not datetime) for start_at and
+            end_at, or set all_day=True with date-only values.
+            """
             provider = module._require_provider()
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
             resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
@@ -1586,11 +1609,16 @@ class CalendarModule(Module):
                 title=module._ensure_butler_title(title),
                 start_at=start_at,
                 end_at=end_at,
+                all_day=all_day,
                 timezone=timezone,
                 description=description,
                 location=location,
                 attendees=attendees or [],
                 recurrence_rule=recurrence_rule,
+                notification=notification,
+                status=status,
+                visibility=visibility,
+                notes=notes,
                 color_id=color_id,
                 private_metadata=module._build_butler_private_metadata(
                     butler_name=module._butler_name
@@ -1620,11 +1648,16 @@ class CalendarModule(Module):
                         "title": title,
                         "start_at": start_at.isoformat(),
                         "end_at": end_at.isoformat(),
+                        "all_day": all_day,
                         "timezone": timezone,
                         "description": description,
                         "location": location,
                         "attendees": attendees or [],
                         "recurrence_rule": recurrence_rule,
+                        "notification": notification,
+                        "status": status,
+                        "visibility": visibility,
+                        "notes": notes,
                         "color_id": color_id,
                         "calendar_id": calendar_id,
                         "conflict_policy": resolved_conflict_policy,
