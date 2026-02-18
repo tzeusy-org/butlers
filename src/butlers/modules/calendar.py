@@ -491,6 +491,137 @@ def _google_event_to_calendar_event(
     )
 
 
+def _build_google_event_body(payload: CalendarEventCreate) -> dict[str, Any]:
+    """Translate a CalendarEventCreate payload into a Google Calendar API event body."""
+    body: dict[str, Any] = {}
+
+    # Title / summary
+    body["summary"] = payload.title
+
+    # Optional text fields
+    if payload.description is not None:
+        body["description"] = payload.description
+    if payload.location is not None:
+        body["location"] = payload.location
+
+    # Event status (default confirmed)
+    if payload.status is not None:
+        body["status"] = payload.status
+    else:
+        body["status"] = "confirmed"
+
+    # Timezone for boundary construction
+    timezone = payload.timezone
+
+    # Start/end boundaries — all-day uses "date", timed uses "dateTime"
+    # Infer all-day when payload.all_day is None: use date-only boundaries as signal.
+    is_all_day = payload.all_day
+    if is_all_day is None:
+        is_all_day = _is_date_only(payload.start_at) and _is_date_only(payload.end_at)
+
+    if is_all_day:
+        # All-day boundaries are date objects (stored as date in CalendarEventCreate)
+        start_val = payload.start_at
+        end_val = payload.end_at
+        start_date_str = (
+            start_val.date().isoformat()
+            if isinstance(start_val, datetime)
+            else start_val.isoformat()
+        )
+        end_date_str = (
+            end_val.date().isoformat() if isinstance(end_val, datetime) else end_val.isoformat()
+        )
+        body["start"] = {"date": start_date_str}
+        body["end"] = {"date": end_date_str}
+    else:
+        # Timed event
+        start_dt = payload.start_at
+        end_dt = payload.end_at
+        if not isinstance(start_dt, datetime) or not isinstance(end_dt, datetime):
+            raise ValueError("timed events require datetime start_at and end_at values")
+
+        if timezone is not None:
+            # Normalize to the specified timezone
+            tz = ZoneInfo(timezone)
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=tz)
+            else:
+                start_dt = start_dt.astimezone(tz)
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=tz)
+            else:
+                end_dt = end_dt.astimezone(tz)
+            body["start"] = {
+                "dateTime": start_dt.isoformat(),
+                "timeZone": timezone,
+            }
+            body["end"] = {
+                "dateTime": end_dt.isoformat(),
+                "timeZone": timezone,
+            }
+        else:
+            # No explicit timezone: serialize as-is
+            body["start"] = {"dateTime": _google_rfc3339(start_dt)}
+            body["end"] = {"dateTime": _google_rfc3339(end_dt)}
+
+    # Attendees
+    if payload.attendees:
+        body["attendees"] = [{"email": email} for email in payload.attendees]
+
+    # Recurrence rules
+    if payload.recurrence_rule is not None:
+        body["recurrence"] = [payload.recurrence_rule]
+
+    # Color
+    if payload.color_id is not None:
+        body["colorId"] = payload.color_id
+
+    # Visibility
+    if payload.visibility is not None:
+        body["visibility"] = payload.visibility
+
+    # Reminders / notifications
+    notification = payload.notification
+    if notification is None:
+        # Use provider default (Google Calendar's own defaults)
+        body["reminders"] = {"useDefault": True}
+    elif isinstance(notification, bool):
+        if notification:
+            body["reminders"] = {"useDefault": True}
+        else:
+            body["reminders"] = {"useDefault": False, "overrides": []}
+    elif isinstance(notification, int):
+        body["reminders"] = {
+            "useDefault": False,
+            "overrides": [{"method": "popup", "minutes": notification}],
+        }
+    else:
+        # CalendarNotificationInput object (or CalendarNormalizedNotification)
+        notif_enabled = getattr(notification, "enabled", True)
+        minutes_before = getattr(notification, "minutes_before", None)
+        if notif_enabled:
+            if minutes_before is not None:
+                body["reminders"] = {
+                    "useDefault": False,
+                    "overrides": [{"method": "popup", "minutes": minutes_before}],
+                }
+            else:
+                body["reminders"] = {"useDefault": True}
+        else:
+            body["reminders"] = {"useDefault": False, "overrides": []}
+
+    # Extended properties (butler-generated metadata + custom private_metadata)
+    private_props: dict[str, str] = {}
+    if payload.private_metadata:
+        private_props.update(payload.private_metadata)
+    if payload.notes is not None:
+        private_props["notes"] = payload.notes
+    if private_props:
+        body["extendedProperties"] = {"private": private_props}
+
+    return body
+
+
 class CalendarConflictDefaults(BaseModel):
     """Default behavior for overlapping event handling."""
 
@@ -877,18 +1008,27 @@ class CalendarEvent(BaseModel):
     updated_at: datetime | None = None
 
 
+EventStatus = Literal["confirmed", "tentative", "cancelled"]
+EventVisibility = Literal["default", "public", "private", "confidential"]
+
+
 class CalendarEventCreate(BaseModel):
     """Payload for creating a calendar event."""
 
     title: str
-    start_at: datetime
-    end_at: datetime
+    start_at: date | datetime
+    end_at: date | datetime
+    all_day: bool | None = None
     timezone: str | None = None
     description: str | None = None
     location: str | None = None
     attendees: list[str] = Field(default_factory=list)
     recurrence_rule: str | None = None
+    notification: CalendarNotificationInput | bool | int | None = None
     color_id: str | None = None
+    status: EventStatus | None = None
+    visibility: EventVisibility | None = None
+    notes: str | None = None
     private_metadata: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("timezone")
@@ -910,7 +1050,11 @@ class CalendarEventCreate(BaseModel):
     @model_validator(mode="after")
     def _validate_recurrence_timezone(self) -> CalendarEventCreate:
         if self.recurrence_rule is not None and self.timezone is None:
-            if _is_naive_datetime(self.start_at) or _is_naive_datetime(self.end_at):
+            if isinstance(self.start_at, datetime) and _is_naive_datetime(self.start_at):
+                raise ValueError(
+                    "timezone is required when recurrence_rule is set for naive datetime boundaries"
+                )
+            if isinstance(self.end_at, datetime) and _is_naive_datetime(self.end_at):
                 raise ValueError(
                     "timezone is required when recurrence_rule is set for naive datetime boundaries"
                 )
@@ -1211,7 +1355,23 @@ class _GoogleProvider(CalendarProvider):
         calendar_id: str,
         payload: CalendarEventCreate,
     ) -> CalendarEvent:
-        raise NotImplementedError("Google calendar provider is not implemented yet")
+        normalized_calendar_id = quote(calendar_id, safe="")
+        body = _build_google_event_body(payload)
+        response_payload = await self._request_google_json(
+            "POST",
+            f"/calendars/{normalized_calendar_id}/events",
+            json_body=body,
+        )
+        event = _google_event_to_calendar_event(
+            response_payload,
+            fallback_timezone=payload.timezone or self._config.timezone,
+        )
+        if event is None:
+            raise CalendarRequestError(
+                status_code=200,
+                message="Google Calendar returned a cancelled event after create",
+            )
+        return event
 
     async def update_event(
         self,
@@ -1234,13 +1394,23 @@ class _GoogleProvider(CalendarProvider):
         if candidate.end_at <= candidate.start_at:
             raise ValueError("candidate.end_at must be after candidate.start_at")
 
+        # Coerce date/datetime boundaries to datetime for freeBusy API
+        timezone_str = candidate.timezone or self._config.timezone
+        tz = _coerce_zoneinfo(timezone_str)
+        start_at = candidate.start_at
+        end_at = candidate.end_at
+        if isinstance(start_at, date) and not isinstance(start_at, datetime):
+            start_at = datetime(start_at.year, start_at.month, start_at.day, tzinfo=tz)
+        if isinstance(end_at, date) and not isinstance(end_at, datetime):
+            end_at = datetime(end_at.year, end_at.month, end_at.day, tzinfo=tz)
+
         payload = await self._request_google_json(
             "POST",
             "/freeBusy",
             json_body={
-                "timeMin": _google_rfc3339(candidate.start_at),
-                "timeMax": _google_rfc3339(candidate.end_at),
-                "timeZone": candidate.timezone or self._config.timezone,
+                "timeMin": _google_rfc3339(start_at),
+                "timeMax": _google_rfc3339(end_at),
+                "timeZone": timezone_str,
                 "items": [{"id": calendar_id}],
             },
         )
