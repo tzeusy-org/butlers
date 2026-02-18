@@ -282,6 +282,7 @@ class RouteInputV1(BaseModel):
 
     prompt: NonEmptyStr
     context: NonEmptyStr | dict[str, Any] | None = None
+    conversation_history: str | None = None
 
 
 class RouteSubrequestV1(BaseModel):

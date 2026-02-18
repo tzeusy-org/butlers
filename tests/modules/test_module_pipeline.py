@@ -342,6 +342,34 @@ class TestRoutingContextLifecycle:
         # Should not raise
         pipeline._clear_routing_context()
 
+    def test_set_stores_conversation_history(self):
+        ctx: dict[str, Any] = {}
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            routing_session_ctx=ctx,
+        )
+        history = "**user** (2026-02-16T10:00:00Z):\nHello"
+        pipeline._set_routing_context(
+            source_metadata={"channel": "telegram"},
+            request_id="req-1",
+            conversation_history=history,
+        )
+        assert ctx["conversation_history"] == history
+
+    def test_set_stores_none_conversation_history_when_absent(self):
+        ctx: dict[str, Any] = {}
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=AsyncMock(),
+            routing_session_ctx=ctx,
+        )
+        pipeline._set_routing_context(
+            source_metadata={"channel": "telegram"},
+            request_id="req-1",
+        )
+        assert ctx["conversation_history"] is None
+
 
 # ---------------------------------------------------------------------------
 # MessagePipeline.process — tool-based routing

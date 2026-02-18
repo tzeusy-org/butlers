@@ -521,6 +521,7 @@ class MessagePipeline:
         source_metadata: dict[str, str],
         request_context: dict[str, Any] | None = None,
         request_id: str = "unknown",
+        conversation_history: str | None = None,
     ) -> None:
         """Populate the shared routing context dict before runtime spawn."""
         if self._routing_ctx is None:
@@ -528,6 +529,7 @@ class MessagePipeline:
         self._routing_ctx["source_metadata"] = source_metadata
         self._routing_ctx["request_context"] = request_context
         self._routing_ctx["request_id"] = request_id
+        self._routing_ctx["conversation_history"] = conversation_history
 
     def _clear_routing_context(self) -> None:
         """Clear the shared routing context dict after runtime spawn."""
@@ -1093,6 +1095,7 @@ class MessagePipeline:
                         source_metadata=source_metadata,
                         request_context=request_context,
                         request_id=request_id,
+                        conversation_history=conversation_history or None,
                     )
 
                     # Spawn CC — it calls route_to_butler tool(s) directly

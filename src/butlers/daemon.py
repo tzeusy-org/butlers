@@ -1310,6 +1310,12 @@ class ButlerDaemon:
                         "- Pass the request_context from above as the request_context parameter"
                     )
 
+                # Add conversation history if forwarded from switchboard
+                if parsed_route.input.conversation_history:
+                    context_parts.append(
+                        f"\nCONVERSATION HISTORY:\n{parsed_route.input.conversation_history}"
+                    )
+
                 # Add original input.context if present
                 if isinstance(parsed_route.input.context, dict):
                     input_ctx_json = json.dumps(
@@ -1785,6 +1791,11 @@ class ButlerDaemon:
                 source_metadata = _routing_session_ctx.get("source_metadata", {})
                 request_context = _routing_session_ctx.get("request_context")
                 request_id = _routing_session_ctx.get("request_id", "unknown")
+                conversation_history = _routing_session_ctx.get("conversation_history")
+
+                _input: dict[str, Any] = {"prompt": prompt, "context": context}
+                if conversation_history:
+                    _input["conversation_history"] = conversation_history
 
                 envelope: dict[str, Any] = {
                     "schema_version": "route.v1",
@@ -1801,7 +1812,7 @@ class ButlerDaemon:
                         ),
                         "trace_context": {},
                     },
-                    "input": {"prompt": prompt, "context": context},
+                    "input": _input,
                     "target": {"butler": butler, "tool": "route.execute"},
                     "source_metadata": source_metadata,
                     "__switchboard_route_context": {

@@ -8,7 +8,11 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+from butlers.tools.switchboard.routing.contracts import (
+    RouteInputV1,
+    parse_ingest_envelope,
+    parse_route_envelope,
+)
 
 
 def _build_valid_ingest_envelope(
@@ -305,3 +309,122 @@ def test_existing_tests_still_pass():
     assert parsed.source.channel == "telegram"
     assert parsed.payload.normalized_text == "Log weight 80kg"
     assert parsed.payload.attachments is None  # Default value
+
+
+# ---------------------------------------------------------------------------
+# RouteInputV1 conversation_history Field Tests
+# ---------------------------------------------------------------------------
+
+
+_VALID_UUID7 = "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b"
+
+
+def _build_valid_route_envelope(
+    *,
+    prompt: str = "Do health check",
+    context: str | None = None,
+    conversation_history: str | None = None,
+    schema_version: str = "route.v1",
+    source_channel: str = "telegram",
+    request_id: str | None = None,
+) -> dict:
+    """Build a well-formed RouteEnvelopeV1 dict for testing."""
+    if request_id is None:
+        request_id = _VALID_UUID7
+
+    input_payload: dict = {"prompt": prompt}
+    if context is not None:
+        input_payload["context"] = context
+    if conversation_history is not None:
+        input_payload["conversation_history"] = conversation_history
+
+    return {
+        "schema_version": schema_version,
+        "request_context": {
+            "request_id": request_id,
+            "received_at": datetime.now(UTC).isoformat(),
+            "source_channel": source_channel,
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": "user123",
+        },
+        "input": input_payload,
+    }
+
+
+@pytest.mark.unit
+def test_route_input_without_conversation_history():
+    """RouteInputV1 accepts input without conversation_history (backwards compatible)."""
+    model = RouteInputV1(prompt="Do health check")
+    assert model.conversation_history is None
+
+
+@pytest.mark.unit
+def test_route_input_with_conversation_history():
+    """RouteInputV1 accepts and stores conversation_history field."""
+    history = "**user1** (2026-02-16T10:00:00Z):\nHello"
+    model = RouteInputV1(prompt="Follow up", conversation_history=history)
+    assert model.conversation_history == history
+
+
+@pytest.mark.unit
+def test_route_input_conversation_history_none_explicit():
+    """RouteInputV1 accepts explicit None for conversation_history."""
+    model = RouteInputV1(prompt="Do health check", conversation_history=None)
+    assert model.conversation_history is None
+
+
+@pytest.mark.unit
+def test_route_envelope_without_conversation_history_parses():
+    """RouteEnvelopeV1 parses correctly when input has no conversation_history."""
+    envelope = _build_valid_route_envelope(prompt="Check vitals")
+    parsed = parse_route_envelope(envelope)
+    assert parsed.input.conversation_history is None
+    assert parsed.input.prompt == "Check vitals"
+
+
+@pytest.mark.unit
+def test_route_envelope_with_conversation_history_parses():
+    """RouteEnvelopeV1 parses correctly when input includes conversation_history."""
+    history = (
+        "**user123** (2026-02-16T10:00:00Z):\nTrack my metformin 500mg\n\n"
+        "**butler -> health** (2026-02-16T10:00:05Z):\nDone! Recorded."
+    )
+    envelope = _build_valid_route_envelope(
+        prompt="When should I take it?",
+        conversation_history=history,
+    )
+    parsed = parse_route_envelope(envelope)
+    assert parsed.input.conversation_history == history
+    assert parsed.input.prompt == "When should I take it?"
+
+
+@pytest.mark.unit
+def test_route_envelope_with_conversation_history_and_context():
+    """RouteEnvelopeV1 parses when input has both context and conversation_history."""
+    envelope = _build_valid_route_envelope(
+        prompt="Continue check",
+        context="Extra context",
+        conversation_history="**user** (2026-02-16T10:00:00Z):\nPrevious message",
+    )
+    parsed = parse_route_envelope(envelope)
+    assert parsed.input.context == "Extra context"
+    assert parsed.input.conversation_history == "**user** (2026-02-16T10:00:00Z):\nPrevious message"
+
+
+@pytest.mark.unit
+def test_route_input_with_empty_string_conversation_history():
+    """RouteInputV1 accepts and stores an empty string for conversation_history."""
+    model = RouteInputV1(prompt="Follow up", conversation_history="")
+    assert model.conversation_history == ""
+
+
+@pytest.mark.unit
+def test_route_envelope_with_empty_string_conversation_history_parses():
+    """RouteEnvelopeV1 parses correctly when input includes an empty conversation_history."""
+    envelope = _build_valid_route_envelope(
+        prompt="When should I take it?",
+        conversation_history="",
+    )
+    parsed = parse_route_envelope(envelope)
+    assert parsed.input.conversation_history == ""
+    assert parsed.input.prompt == "When should I take it?"
