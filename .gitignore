@@ -120,3 +120,9 @@ pgdata/
 .worktrees/parallel-agents/butlers-940.4/
 .worktrees/parallel-agents/butlers-946/
 .worktrees/parallel-agents/butlers-941.2/
+.worktrees/parallel-agents/butlers-953.7/
+.worktrees/parallel-agents/butlers-953.2/
+# bd worktree
+.worktrees/parallel-agents/butlers-960/
+# bd worktree
+.worktrees/parallel-agents/butlers-953.2-fix/

@@ -23,4 +23,23 @@ name = "memory-episode-cleanup"
 cron = "0 4 * * *"
 prompt = "Run memory episode cleanup to delete expired episodes and enforce capacity limits."
 
+[[butler.schedule]]
+name = "eod-tomorrow-prep"
+cron = "0 15 * * *"
+prompt = """
+End-of-day briefing: review tomorrow's calendar and send a preparation summary.
+
+Steps:
+1. Determine tomorrow's date (SGT, UTC+8).
+2. Use calendar_list_events to fetch all events for tomorrow (00:00 to 23:59 SGT).
+3. For each event, note: title, time, duration, location, description/notes.
+4. Compose a structured message with:
+   - A timeline of tomorrow's events in chronological order (times in SGT)
+   - For each event: any preparation needed (documents to review, travel time, items to bring)
+   - Gaps between events (highlight free blocks)
+   - A short "heads-up" section for anything unusual (early starts, back-to-back meetings, travel)
+5. If there are no events, send a simple "No events scheduled for tomorrow" note.
+6. Send the summary via notify(channel="telegram", intent="reply").
+"""
+
 [modules.memory]
