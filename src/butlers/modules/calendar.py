@@ -1305,8 +1305,20 @@ class CalendarProvider(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def delete_event(self, *, calendar_id: str, event_id: str) -> None:
-        """Delete (or cancel) an event."""
+    async def delete_event(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        send_updates: str | None = None,
+    ) -> None:
+        """Delete (or cancel) an event.
+
+        ``send_updates`` controls attendee notification:
+        - ``None`` / ``"none"`` — no notifications (default for butler-managed events).
+        - ``"all"`` — notify all attendees (sends cancellation emails).
+        - ``"externalOnly"`` — notify only non-organizer-domain attendees.
+        """
         ...
 
     @abc.abstractmethod
@@ -1644,8 +1656,55 @@ class _GoogleProvider(CalendarProvider):
             )
         return event
 
-    async def delete_event(self, *, calendar_id: str, event_id: str) -> None:
-        raise NotImplementedError("Google calendar provider is not implemented yet")
+    async def delete_event(
+        self,
+        *,
+        calendar_id: str,
+        event_id: str,
+        send_updates: str | None = None,
+    ) -> None:
+        """Delete a Google Calendar event.
+
+        Sends a DELETE request to the Google Calendar API.  A 404 response is
+        treated as success (the event was already deleted).  For events with
+        attendees, pass ``send_updates="all"`` to send cancellation
+        notifications; the default (``None`` / ``"none"``) suppresses emails.
+
+        For recurring events, v1 always operates on the full series: the
+        ``event_id`` must be the base recurring-event ID, not an instance ID.
+        """
+        normalized_event_id = event_id.strip()
+        if not normalized_event_id:
+            raise ValueError("event_id must be a non-empty string")
+
+        normalized_calendar_id = quote(calendar_id, safe="")
+        encoded_event_id = quote(normalized_event_id, safe="")
+
+        params: dict[str, Any] | None = None
+        if send_updates is not None:
+            normalized_send_updates = send_updates.strip()
+            if normalized_send_updates:
+                params = {"sendUpdates": normalized_send_updates}
+
+        response = await self._request_with_bearer(
+            method="DELETE",
+            path=f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
+            params=params,
+        )
+
+        # 404 means the event was already deleted — treat as success.
+        if response.status_code == 404:
+            logger.debug(
+                "delete_event: event '%s' not found (already deleted); treating as success",
+                normalized_event_id,
+            )
+            return
+
+        if response.status_code < 200 or response.status_code >= 300:
+            raise CalendarRequestError(
+                status_code=response.status_code,
+                message=_safe_google_error_message(response),
+            )
 
     async def find_conflicts(
         self,
@@ -2222,6 +2281,59 @@ class CalendarModule(Module):
                 result["conflicts"] = conflict_result["conflicts"]
                 result["suggested_slots"] = []
             return result
+
+        @mcp.tool()
+        async def calendar_delete_event(
+            event_id: str,
+            calendar_id: str | None = None,
+            recurrence_scope: Literal["series"] = "series",
+            send_updates: str | None = None,
+        ) -> dict[str, Any]:
+            """Delete or cancel a calendar event.
+
+            For events with attendees, pass send_updates="all" to send
+            cancellation notifications.  By default (send_updates=None),
+            no notification emails are sent.
+
+            Recurring events: v1 supports series-scoped deletion only
+            (recurrence_scope="series").  Pass the base recurring-event ID,
+            not an individual occurrence ID.
+
+            Returns status="deleted" on success, or status="not_found" when
+            the event did not exist (already deleted — treated as success).
+            """
+            normalized_event_id = event_id.strip()
+            if not normalized_event_id:
+                raise ValueError("event_id must be a non-empty string")
+
+            provider = module._require_provider()
+            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+
+            # Fetch the event first to confirm existence and capture metadata.
+            # 404 from the provider is treated as success (idempotent delete).
+            existing_event = await provider.get_event(
+                calendar_id=resolved_calendar_id,
+                event_id=normalized_event_id,
+            )
+            if existing_event is None:
+                return {
+                    "status": "not_found",
+                    "provider": provider.name,
+                    "calendar_id": resolved_calendar_id,
+                    "event_id": normalized_event_id,
+                }
+
+            await provider.delete_event(
+                calendar_id=resolved_calendar_id,
+                event_id=normalized_event_id,
+                send_updates=send_updates,
+            )
+            return {
+                "status": "deleted",
+                "provider": provider.name,
+                "calendar_id": resolved_calendar_id,
+                "event_id": normalized_event_id,
+            }
 
     async def on_startup(self, config: Any, db: Any) -> None:
         self._config = self._coerce_config(config)
