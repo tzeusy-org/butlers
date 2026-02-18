@@ -248,6 +248,15 @@ class _ErroringProvider(CalendarProvider):
             raise self._conflict_error
         return []
 
+    async def sync_incremental(
+        self,
+        *,
+        calendar_id: str,
+        sync_token: str | None,
+        full_sync_window_days: int = 30,
+    ) -> tuple[list[CalendarEvent], list[str], str]:
+        raise NotImplementedError
+
     async def shutdown(self) -> None:
         return None
 
