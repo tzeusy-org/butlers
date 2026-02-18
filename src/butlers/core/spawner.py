@@ -196,8 +196,11 @@ async def store_session_episode(
 class Spawner:
     """Core component that invokes ephemeral AI runtime instances for a butler.
 
-    Each butler has exactly one Spawner. An asyncio.Lock ensures serial
-    dispatch — only one runtime instance runs at a time per butler.
+    Each butler has exactly one Spawner. An asyncio.Semaphore with a configurable
+    concurrency limit controls dispatch — at most ``max_concurrent_sessions``
+    runtime instances may run simultaneously per butler. When
+    ``max_concurrent_sessions`` is 1 (the default), behaviour is identical to
+    the previous asyncio.Lock-based implementation (serial dispatch).
 
     Parameters
     ----------
@@ -236,7 +239,7 @@ class Spawner:
         self._pool = pool
         self._module_credentials_env = module_credentials_env
         self._audit_pool = audit_pool
-        self._lock = asyncio.Lock()
+        self._session_semaphore = asyncio.Semaphore(config.runtime.max_concurrent_sessions)
         self._accepting = True
         self._in_flight: set[asyncio.Task] = set()
         self._in_flight_event = asyncio.Event()
@@ -270,8 +273,8 @@ class Spawner:
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
-        Acquires a per-butler lock to ensure serial dispatch, generates the
-        MCP config, invokes the runtime via the adapter, and logs the session.
+        Acquires a slot in the per-butler concurrency pool (semaphore), generates
+        the MCP config, invokes the runtime via the adapter, and logs the session.
 
         Parameters
         ----------
@@ -306,9 +309,11 @@ class Spawner:
             raise RuntimeError("Spawner is shutting down; not accepting new triggers")
 
         # Prevent self-trigger deadlocks: an in-flight trigger-sourced session can
-        # invoke the trigger tool again via MCP. Waiting on the same lock here
-        # would deadlock the runtime call graph.
-        if trigger_source == "trigger" and self._lock.locked():
+        # invoke the trigger tool again via MCP. Waiting on the semaphore here
+        # when all slots are occupied would deadlock the runtime call graph.
+        # We only reject when every concurrency slot is taken (_value == 0).
+        # With n > 1 a free slot may still be available, so we allow the call.
+        if trigger_source == "trigger" and self._session_semaphore._value == 0:
             error_msg = (
                 "Runtime invocation rejected: trigger tool cannot be called while "
                 "another session is in flight"
@@ -325,7 +330,7 @@ class Spawner:
         if task is not None:
             self._in_flight.add(task)
         try:
-            async with self._lock:
+            async with self._session_semaphore:
                 return await self._run(
                     prompt, trigger_source, context, max_turns, parent_context, request_id
                 )
