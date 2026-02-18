@@ -258,6 +258,66 @@ class TestExtractRoutedButlers:
         assert acked == ["health"]
         assert failed == ["general"]
 
+    def test_accepted_status_is_acked(self):
+        """'accepted' status must be treated as a success, not a failure."""
+        tool_calls = [
+            {
+                "name": "route_to_butler",
+                "args": {"butler": "health", "prompt": "track meds"},
+                "result": {"status": "accepted", "butler": "health"},
+            }
+        ]
+        routed, acked, failed = _extract_routed_butlers(tool_calls)
+        assert routed == ["health"]
+        assert acked == ["health"]
+        assert failed == []
+
+    def test_accepted_status_string_json_is_acked(self):
+        """'accepted' status in JSON-encoded string result is treated as success."""
+        tool_calls = [
+            {
+                "name": "route_to_butler",
+                "args": {"butler": "health", "prompt": "x"},
+                "result": '{"status": "accepted", "butler": "health"}',
+            }
+        ]
+        routed, acked, failed = _extract_routed_butlers(tool_calls)
+        assert acked == ["health"]
+        assert failed == []
+
+    def test_mixed_ok_and_accepted_both_acked(self):
+        """Both 'ok' and 'accepted' status values count as successful routes."""
+        tool_calls = [
+            {
+                "name": "route_to_butler",
+                "args": {"butler": "health", "prompt": "track"},
+                "result": {"status": "ok", "butler": "health"},
+            },
+            {
+                "name": "route_to_butler",
+                "args": {"butler": "relationship", "prompt": "remind"},
+                "result": {"status": "accepted", "butler": "relationship"},
+            },
+        ]
+        routed, acked, failed = _extract_routed_butlers(tool_calls)
+        assert routed == ["health", "relationship"]
+        assert acked == ["health", "relationship"]
+        assert failed == []
+
+    def test_accepted_mcp_namespaced(self):
+        """'accepted' status works with MCP-namespaced route_to_butler tool name."""
+        tool_calls = [
+            {
+                "name": "mcp__switchboard__route_to_butler",
+                "input": {"butler": "health", "prompt": "x"},
+                "result": {"status": "accepted", "butler": "health"},
+            }
+        ]
+        routed, acked, failed = _extract_routed_butlers(tool_calls)
+        assert routed == ["health"]
+        assert acked == ["health"]
+        assert failed == []
+
 
 # ---------------------------------------------------------------------------
 # _build_routing_prompt
