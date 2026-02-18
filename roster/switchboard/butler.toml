@@ -3,6 +3,9 @@ name = "switchboard"
 port = 8100
 description = "Routes incoming messages to specialist butlers"
 
+[butler.runtime]
+max_concurrent_sessions = 3
+
 [buffer]
 queue_capacity = 100
 worker_count = 1
