@@ -139,7 +139,7 @@ The port range `40100–40199` is chosen because:
 
 1. **Above the privileged range.** No `sudo` or `CAP_NET_BIND_SERVICE` required.
 2. **Below common development ports.** Does not conflict with typical dev server
-   ports (3000, 40173, 8000, 8080, 40200, 9000).
+   ports (3000, 5173, 8000, 8080, 8200, 9000).
 3. **Contiguous and predictable.** Butlers are numbered sequentially from 40100.
 4. **Dashboard lives at 40200.** The dashboard API runs at 40200, cleanly separated
    from the butler MCP port range.
