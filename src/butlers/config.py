@@ -159,6 +159,17 @@ class BufferConfig:
 
 
 @dataclass
+class SchedulerConfig:
+    """Scheduler loop configuration from [butler.scheduler] section.
+
+    Controls the internal asyncio scheduler loop that calls tick() periodically
+    to dispatch due cron tasks without relying on external heartbeat calls.
+    """
+
+    tick_interval_seconds: int = 60
+
+
+@dataclass
 class ButlerConfig:
     """Parsed and validated butler configuration."""
 
@@ -177,6 +188,7 @@ class ButlerConfig:
     trusted_route_callers: tuple[str, ...] = DEFAULT_TRUSTED_ROUTE_CALLERS
     blob_storage_dir: str = "data/blobs"
     buffer: BufferConfig = field(default_factory=BufferConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
 
 
 def resolve_env_vars(value: Any) -> Any:
@@ -526,6 +538,17 @@ def load_config(config_dir: Path) -> ButlerConfig:
     storage_section = butler_section.get("storage", {})
     blob_storage_dir = storage_section.get("blob_dir", "data/blobs")
 
+    # --- [butler.scheduler] sub-section ---
+    scheduler_section = butler_section.get("scheduler", {})
+    raw_tick_interval = scheduler_section.get("tick_interval_seconds", 60)
+    tick_interval_seconds = int(raw_tick_interval)
+    if tick_interval_seconds <= 0:
+        raise ConfigError(
+            f"Invalid butler.scheduler.tick_interval_seconds: {tick_interval_seconds!r}. "
+            "Must be a positive integer."
+        )
+    scheduler_config = SchedulerConfig(tick_interval_seconds=tick_interval_seconds)
+
     # --- [buffer] top-level section ---
     buffer_section = data.get("buffer", {})
     buffer_config = BufferConfig(
@@ -589,4 +612,5 @@ def load_config(config_dir: Path) -> ButlerConfig:
         trusted_route_callers=trusted_route_callers,
         blob_storage_dir=blob_storage_dir,
         buffer=buffer_config,
+        scheduler=scheduler_config,
     )
