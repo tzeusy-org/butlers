@@ -36,7 +36,7 @@
 # Tailscale Serve:
 #   Google OAuth requires HTTPS for non-localhost redirect URIs. This script
 #   verifies that tailscale serve is running and forwarding to the dashboard
-#   port (8200). If not running, it attempts to start it automatically.
+#   port (40200). If not running, it attempts to start it automatically.
 #
 #   Prerequisites:
 #     - tailscale CLI installed and available on PATH
@@ -111,7 +111,7 @@ fi
 # Google OAuth requires HTTPS for non-localhost redirect URIs. Verify that
 # tailscale serve is running and routing:
 #   - dashboard UI path -> Vite frontend port (configurable; default 40173)
-#   - API path          -> dashboard API port (8200)
+#   - API path          -> dashboard API port (40200)
 # If not running, attempt to start it. If tailscale is unavailable or
 # unauthenticated, print actionable instructions and exit.
 
@@ -129,7 +129,7 @@ _normalize_path_prefix() {
   echo "$p"
 }
 
-DASHBOARD_PORT=8200
+DASHBOARD_PORT=40200
 FRONTEND_PORT="${FRONTEND_PORT:-40173}"
 TAILSCALE_HTTPS_PORT="${TAILSCALE_HTTPS_PORT:-443}"
 # Backward-compat: TAILSCALE_PATH_PREFIX still maps to dashboard path if set.

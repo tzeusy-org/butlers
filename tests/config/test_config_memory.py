@@ -25,7 +25,7 @@ def test_load_config_parses_modules_memory_section(tmp_path: Path) -> None:
     toml = """\
 [butler]
 name = "membot"
-port = 8200
+port = 40200
 
 [modules.memory]
 
@@ -59,7 +59,7 @@ def test_load_config_without_modules_memory_keeps_module_disabled(tmp_path: Path
     toml = """\
 [butler]
 name = "nomembot"
-port = 8201
+port = 40201
 """
     cfg = load_config(_write_toml(tmp_path, toml))
     assert "memory" not in cfg.modules

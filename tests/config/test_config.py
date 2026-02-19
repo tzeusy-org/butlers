@@ -30,7 +30,7 @@ pytestmark = pytest.mark.unit
 FULL_TOML = """\
 [butler]
 name = "jarvis"
-port = 8100
+port = 40100
 description = "Personal assistant butler"
 
 [butler.db]
@@ -98,7 +98,7 @@ def test_load_full_config(tmp_path: Path):
 
     assert isinstance(cfg, ButlerConfig)
     assert cfg.name == "jarvis"
-    assert cfg.port == 8100
+    assert cfg.port == 40100
     assert cfg.description == "Personal assistant butler"
     assert cfg.db_name == "jarvis_db"
 
@@ -498,7 +498,7 @@ class TestApprovalConfig:
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 8200
+port = 40200
 
 [modules.approvals]
 enabled = true
@@ -517,7 +517,7 @@ enabled = true
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 8200
+port = 40200
 
 [modules.approvals]
 enabled = true
@@ -549,7 +549,7 @@ calendar_invite = {}
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 8200
+port = 40200
 
 [modules.approvals]
 enabled = false
@@ -565,7 +565,7 @@ enabled = false
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 8200
+port = 40200
 
 [modules.approvals]
 enabled = true
@@ -585,7 +585,7 @@ enabled = true
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 8200
+port = 40200
 
 [modules.approvals]
 enabled = true
@@ -602,7 +602,7 @@ default_expiry_hours = 48
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 8200
+port = 40200
 
 [modules.approvals]
 enabled = true
@@ -623,7 +623,7 @@ high_risk_action = {expiry_hours = 1}
         toml = """\
 [butler]
 name = "approvalsbot"
-port = 8200
+port = 40200
 
 [modules.approvals]
 enabled = true
@@ -650,7 +650,7 @@ calendar_invite = {}
         toml = """\
 [butler]
 name = "noapprovalsbot"
-port = 8200
+port = 40200
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
@@ -877,7 +877,7 @@ class TestSwitchboardUrlConfig:
         toml = """\
 [butler]
 name = "general"
-port = 8101
+port = 40101
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
@@ -893,7 +893,7 @@ class TestMessengerConfigValidation:
         toml = """\
 [butler]
 name = "messenger"
-port = 8104
+port = 40104
 """
         config_dir = _write_toml(tmp_path, toml)
 
@@ -905,7 +905,7 @@ port = 8104
         toml = """\
 [butler]
 name = "messenger"
-port = 8104
+port = 40104
 
 [modules.telegram]
 mode = "polling"
@@ -921,7 +921,7 @@ mode = "polling"
         toml = """\
 [butler]
 name = "messenger"
-port = 8104
+port = 40104
 
 [modules.email]
 """
@@ -936,7 +936,7 @@ port = 8104
         toml = """\
 [butler]
 name = "messenger"
-port = 8104
+port = 40104
 
 [modules.telegram]
 
@@ -958,7 +958,7 @@ enabled = false
         toml = """\
 [butler]
 name = "general"
-port = 8101
+port = 40101
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
@@ -970,7 +970,7 @@ port = 8101
         toml = """\
 [butler]
 name = "switchboard"
-port = 8100
+port = 40100
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
@@ -982,7 +982,7 @@ port = 8100
         toml = """\
 [butler]
 name = "health"
-port = 8103
+port = 40103
 
 [butler.switchboard]
 url = "http://switchboard.internal:9000/sse"
@@ -997,7 +997,7 @@ url = "http://switchboard.internal:9000/sse"
         toml = """\
 [butler]
 name = "switchboard"
-port = 8100
+port = 40100
 
 [butler.switchboard]
 url = "http://other-switchboard:40100/sse"
@@ -1013,7 +1013,7 @@ url = "http://other-switchboard:40100/sse"
         toml = """\
 [butler]
 name = "health"
-port = 8103
+port = 40103
 
 [butler.switchboard]
 url = "http://${SWITCHBOARD_HOST}:40100/sse"
@@ -1033,7 +1033,7 @@ url = "http://${SWITCHBOARD_HOST}:40100/sse"
         toml = """\
 [butler]
 name = "health"
-port = 8103
+port = 40103
 
 [butler.switchboard]
 """

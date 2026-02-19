@@ -42,8 +42,8 @@ def _make_mock_client(*, connected: bool = True) -> MagicMock:
 def _make_configs() -> list[ButlerConnectionInfo]:
     """Return a small set of butler configs for testing."""
     return [
-        ButlerConnectionInfo(name="switchboard", port=8100, description="Routes messages"),
-        ButlerConnectionInfo(name="general", port=8101, description="Catch-all assistant"),
+        ButlerConnectionInfo(name="switchboard", port=40100, description="Routes messages"),
+        ButlerConnectionInfo(name="general", port=40101, description="Catch-all assistant"),
     ]
 
 
@@ -95,7 +95,7 @@ class TestProbeButler:
 
     async def test_probe_timeout(self):
         """Timed-out butler returns status='down'."""
-        info = ButlerConnectionInfo(name="slow", port=8200)
+        info = ButlerConnectionInfo(name="slow", port=40200)
 
         mgr = MagicMock(spec=MCPClientManager)
 

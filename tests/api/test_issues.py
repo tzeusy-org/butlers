@@ -43,8 +43,8 @@ def _make_mock_client(*, connected: bool = True) -> MagicMock:
 def _make_configs() -> list[ButlerConnectionInfo]:
     """Return a small set of butler configs for testing."""
     return [
-        ButlerConnectionInfo(name="switchboard", port=8100, description="Routes messages"),
-        ButlerConnectionInfo(name="general", port=8101, description="Catch-all assistant"),
+        ButlerConnectionInfo(name="switchboard", port=40100, description="Routes messages"),
+        ButlerConnectionInfo(name="general", port=40101, description="Catch-all assistant"),
     ]
 
 
@@ -94,7 +94,7 @@ class TestCheckButlerReachability:
 
     async def test_timeout_returns_critical_issue(self):
         """Timed-out butler generates a critical issue."""
-        info = ButlerConnectionInfo(name="slow", port=8200)
+        info = ButlerConnectionInfo(name="slow", port=40200)
 
         mgr = MagicMock(spec=MCPClientManager)
 
@@ -201,7 +201,7 @@ class TestListIssuesEndpoint:
 
     async def test_timeout_generates_critical_issue(self):
         """Timed-out butler generates a critical issue in the endpoint."""
-        configs = [ButlerConnectionInfo(name="slow", port=8200)]
+        configs = [ButlerConnectionInfo(name="slow", port=40200)]
 
         mgr = MagicMock(spec=MCPClientManager)
 
@@ -264,9 +264,9 @@ class TestListIssuesEndpoint:
         # Since only reachability checks exist (all critical), we verify
         # alphabetical sub-sort within the same severity.
         configs = [
-            ButlerConnectionInfo(name="zeta", port=8100),
-            ButlerConnectionInfo(name="alpha", port=8101),
-            ButlerConnectionInfo(name="mid", port=8102),
+            ButlerConnectionInfo(name="zeta", port=40100),
+            ButlerConnectionInfo(name="alpha", port=40101),
+            ButlerConnectionInfo(name="mid", port=40102),
         ]
 
         mgr = MagicMock(spec=MCPClientManager)

@@ -652,7 +652,7 @@ class TestDaemonIntegration:
             [
                 "[butler]",
                 'name = "switchboard"',
-                "port = 8100",
+                "port = 40100",
                 "",
                 "[butler.db]",
                 'name = "butler_switchboard"',
@@ -761,7 +761,7 @@ class TestDaemonIntegration:
                 [
                     "[butler]",
                     'name = "health"',
-                    "port = 8200",
+                    "port = 40200",
                     "[butler.db]",
                     'name = "butler_health"',
                 ]

@@ -64,7 +64,7 @@ class TestViteProxyConfig:
         """vite.config.ts must exist in the frontend directory."""
         assert VITE_CONFIG_PATH.is_file(), f"Missing {VITE_CONFIG_PATH}"
 
-    def test_proxy_targets_port_8200(self):
+    def test_proxy_targets_port_40200(self):
         """The /api proxy target must point to localhost:40200."""
         content = VITE_CONFIG_PATH.read_text()
         # Match the proxy target URL — expect http://localhost:40200

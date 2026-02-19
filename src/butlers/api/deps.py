@@ -68,7 +68,7 @@ class MCPClientManager:
     Usage::
 
         mgr = MCPClientManager()
-        mgr.register("switchboard", ButlerConnectionInfo("switchboard", 8100))
+        mgr.register("switchboard", ButlerConnectionInfo("switchboard", 40100))
         client = await mgr.get_client("switchboard")
         tools = await client.list_tools()
         await mgr.close()

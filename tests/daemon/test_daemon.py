@@ -1950,7 +1950,7 @@ class TestMessagePipelineWiring:
             tmp_path,
             modules={"telegram": {}, "email": {}},
             butler_name="switchboard",
-            port=8100,
+            port=40100,
             db_name="butler_switchboard",
         )
         registry = _make_registry(TelegramModule, EmailModule)
@@ -2153,7 +2153,7 @@ class TestSwitchboardClientConnection:
         toml = """\
 [butler]
 name = "switchboard"
-port = 8100
+port = 40100
 
 [butler.db]
 name = "butler_switchboard"
@@ -2304,7 +2304,7 @@ name = "butler_switchboard"
         toml = """\
 [butler]
 name = "health"
-port = 8103
+port = 40103
 
 [butler.db]
 name = "butler_health"
@@ -3403,7 +3403,7 @@ class TestSwitchboardHeartbeat:
         toml = """\
 [butler]
 name = "switchboard"
-port = 8100
+port = 40100
 
 [butler.db]
 name = "butler_switchboard"

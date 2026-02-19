@@ -22,7 +22,7 @@ pytestmark = pytest.mark.unit
 def _make_roster(
     tmp_path: Path,
     name: str = "general",
-    port: int = 8101,
+    port: int = 40101,
     *,
     claude_md: str | None = "# Claude instructions\n",
     agents_md: str | None = None,
@@ -71,7 +71,7 @@ def _create_test_app(
 class TestGetButlerConfig:
     async def test_returns_404_for_unknown_butler(self, tmp_path: Path):
         """Unknown butler name returns 404."""
-        configs = [ButlerConnectionInfo("general", 8101)]
+        configs = [ButlerConnectionInfo("general", 40101)]
         app = _create_test_app(tmp_path, configs)
 
         async with httpx.AsyncClient(
@@ -83,8 +83,8 @@ class TestGetButlerConfig:
 
     async def test_returns_config_for_known_butler(self, tmp_path: Path):
         """Known butler returns parsed butler.toml and markdown files."""
-        _make_roster(tmp_path, "general", 8101)
-        configs = [ButlerConnectionInfo("general", 8101)]
+        _make_roster(tmp_path, "general", 40101)
+        configs = [ButlerConnectionInfo("general", 40101)]
         app = _create_test_app(tmp_path, configs)
 
         async with httpx.AsyncClient(
@@ -97,7 +97,7 @@ class TestGetButlerConfig:
 
         # butler.toml parsed as dict
         assert data["butler_toml"]["butler"]["name"] == "general"
-        assert data["butler_toml"]["butler"]["port"] == 8101
+        assert data["butler_toml"]["butler"]["port"] == 40101
 
         # Markdown files present
         assert data["claude_md"] == "# Claude instructions\n"
@@ -108,12 +108,12 @@ class TestGetButlerConfig:
         _make_roster(
             tmp_path,
             "general",
-            8101,
+            40101,
             claude_md="# Claude\n",
             agents_md="# Agents notes\n",
             manifesto_md="# Manifesto\n",
         )
-        configs = [ButlerConnectionInfo("general", 8101)]
+        configs = [ButlerConnectionInfo("general", 40101)]
         app = _create_test_app(tmp_path, configs)
 
         async with httpx.AsyncClient(
@@ -132,12 +132,12 @@ class TestGetButlerConfig:
         _make_roster(
             tmp_path,
             "general",
-            8101,
+            40101,
             claude_md=None,
             agents_md=None,
             manifesto_md=None,
         )
-        configs = [ButlerConnectionInfo("general", 8101)]
+        configs = [ButlerConnectionInfo("general", 40101)]
         app = _create_test_app(tmp_path, configs)
 
         async with httpx.AsyncClient(
@@ -158,8 +158,8 @@ class TestGetButlerConfig:
 
     async def test_response_wrapped_in_api_response(self, tmp_path: Path):
         """Response follows the standard ApiResponse envelope."""
-        _make_roster(tmp_path, "general", 8101)
-        configs = [ButlerConnectionInfo("general", 8101)]
+        _make_roster(tmp_path, "general", 40101)
+        configs = [ButlerConnectionInfo("general", 40101)]
         app = _create_test_app(tmp_path, configs)
 
         async with httpx.AsyncClient(
@@ -190,12 +190,12 @@ class TestGetButlerConfig:
         _make_roster(
             tmp_path,
             "general",
-            8101,
+            40101,
             claude_md="# Instructions\n",
             agents_md=None,
             manifesto_md="# Purpose\n",
         )
-        configs = [ButlerConnectionInfo("general", 8101)]
+        configs = [ButlerConnectionInfo("general", 40101)]
         app = _create_test_app(tmp_path, configs)
 
         async with httpx.AsyncClient(
@@ -214,7 +214,7 @@ class TestGetButlerConfig:
         butler_dir = tmp_path / "switchboard"
         butler_dir.mkdir(parents=True, exist_ok=True)
         (butler_dir / "butler.toml").write_text(
-            '[butler]\nname = "switchboard"\nport = 8100\n'
+            '[butler]\nname = "switchboard"\nport = 40100\n'
             'description = "Router"\n'
             '[butler.db]\nname = "butler_switchboard"\n'
             "[runtime]\n"
@@ -227,7 +227,7 @@ class TestGetButlerConfig:
             '[modules.email.bot]\naddress_env = "BUTLER_EMAIL_ADDRESS"\n'
             'password_env = "BUTLER_EMAIL_PASSWORD"\n'
         )
-        configs = [ButlerConnectionInfo("switchboard", 8100)]
+        configs = [ButlerConnectionInfo("switchboard", 40100)]
         app = _create_test_app(tmp_path, configs)
 
         async with httpx.AsyncClient(

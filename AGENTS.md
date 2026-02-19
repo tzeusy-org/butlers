@@ -492,7 +492,7 @@ make test-qg
 - Track holistic fix in `butlers-978`, including both decorator state isolation and concurrent-session `_active_session_context` parent-lineage hardening.
 
 ### Dev bootstrap tailscale+pipefail guardrail
-- `dev.sh::_tailscale_serve_check` should prefer modern Tailscale CLI syntax (`tailscale serve --yes --bg --https=443 http://localhost:8200`) with legacy positional fallback (`https:443 ...`) for older CLI versions.
+- `dev.sh::_tailscale_serve_check` should prefer modern Tailscale CLI syntax (`tailscale serve --yes --bg --https=443 http://localhost:40200`) with legacy positional fallback (`https:443 ...`) for older CLI versions.
 - `dev.sh` split routing defaults are `TAILSCALE_DASHBOARD_PATH_PREFIX=/butlers` (Vite frontend) and `TAILSCALE_API_PATH_PREFIX=/butlers-api` (dashboard API); non-root path routing uses `tailscale serve --set-path <prefix> ...`.
 - Dashboard mapping should proxy to `http://localhost:${FRONTEND_PORT}${TAILSCALE_DASHBOARD_PATH_PREFIX}` (not bare frontend root) so prefix paths are preserved end-to-end and Vite `--base` assets avoid redirect loops under tailscale path routing.
 - Frontend dev port is configurable via `FRONTEND_PORT` (default `40173`) and should be kept aligned with tailscale dashboard target and the Vite startup command (`--port ... --strictPort`).

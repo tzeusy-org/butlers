@@ -141,7 +141,7 @@ async def butler_ecosystem(
     ecosystem = ButlerEcosystem(postgres_container=postgres_container)
 
     # Port offset so e2e tests don't collide with production daemons or
-    # infrastructure (8100→19100).  9100 is taken by Prometheus node_exporter.
+    # infrastructure (40100→51100).  9100 is taken by Prometheus node_exporter.
     E2E_PORT_OFFSET = 11000
 
     # Connection params from testcontainer
