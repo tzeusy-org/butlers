@@ -481,3 +481,8 @@ make test-qg
 - `dev.sh` connectors window runs three connector processes: Telegram bot, Telegram user-client, and Gmail.
 - Each connector pane may source a local-only env file under `secrets/connectors/` (`telegram_bot`, `telegram_user_client`, `gmail`) using `set -a` so values only affect that pane process.
 - Connector identity/cursor env overrides should be per-connector (`TELEGRAM_BOT_CONNECTOR_*`, `TELEGRAM_USER_CONNECTOR_*`, `GMAIL_CONNECTOR_*`) to avoid shared `CONNECTOR_ENDPOINT_IDENTITY` / `CONNECTOR_CURSOR_PATH` collisions.
+
+### Telemetry span concurrency guardrail
+- `src/butlers/core/telemetry.py::tool_span` decorator usage is unsafe if per-invocation span/token state is stored on the decorator instance (`self._span`, `self._token`): concurrent calls to one decorated async handler can trigger OpenTelemetry `Failed to detach context` / `Token ... created in a different Context`.
+- Repro pattern: concurrent `await asyncio.gather(...)` calls to a single `@tool_span(...)`-decorated function fail; per-call context-manager usage (`with tool_span(...)`) does not.
+- Track holistic fix in `butlers-978`, including both decorator state isolation and concurrent-session `_active_session_context` parent-lineage hardening.

@@ -143,21 +143,17 @@ pgdata/
 .worktrees/parallel-agents/butlers-964-bug/
 .worktrees/parallel-agents/butlers-967/
 .worktrees/parallel-agents/review-970/
-# bd worktree
 .worktrees/parallel-agents/review-972/
-# bd worktree
 .worktrees/parallel-agents/butlers-962.1/
-# bd worktree
 .worktrees/parallel-agents/butlers-962.2/
-# bd worktree
 .worktrees/parallel-agents/butlers-962.3/
-# bd worktree
 .worktrees/parallel-agents/butlers-962.4/
-# bd worktree
 .worktrees/parallel-agents/butlers-962.5/
-# bd worktree
 .worktrees/parallel-agents/butlers-973.1/
-# bd worktree
 .worktrees/parallel-agents/butlers-973.2/
-# bd worktree
 .worktrees/parallel-agents/butlers-973.6/
+.worktrees/parallel-agents/butlers-977-review/
+# bd worktree
+.worktrees/parallel-agents/butlers-976.3/
+# bd worktree
+.worktrees/parallel-agents/butlers-976.4/
