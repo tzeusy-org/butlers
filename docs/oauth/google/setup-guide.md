@@ -84,12 +84,23 @@ You must enable both Gmail API and Google Calendar API for Butlers to function w
 
 **NEVER commit OAuth credentials to git.** Credentials must be managed via environment variables or a secret manager.
 
-For **local development**, create a `.env` file (add to `.gitignore`):
+For **local development**, use the dashboard OAuth flow (recommended) or set the
+client ID and secret env vars for the OAuth bootstrap:
 
 ```bash
 # .env (add to .gitignore)
-BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON='{"client_id":"<YOUR_CLIENT_ID>","client_secret":"<YOUR_CLIENT_SECRET>","refresh_token":"<YOUR_REFRESH_TOKEN>"}'
+# App config for OAuth bootstrap (always required):
+GOOGLE_OAUTH_CLIENT_ID=<YOUR_CLIENT_ID>
+GOOGLE_OAUTH_CLIENT_SECRET=<YOUR_CLIENT_SECRET>
+
+# After completing the OAuth flow via the dashboard, the refresh token is stored
+# in the butler's database automatically. No env var needed for the refresh token.
 ```
+
+> **Legacy (deprecated):** `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON` is deprecated and
+> will be removed in a future release. Use the dashboard OAuth flow to store credentials
+> in the database, or set `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` and
+> complete the dashboard OAuth flow to obtain the refresh token.
 
 For **production**, use:
 - Kubernetes secrets (if deployed)
@@ -169,20 +180,25 @@ This opens a browser for authentication and prints the full credential JSON.
 
 ### Step 2.2: Verify Refresh Token Works
 
-Once you have the refresh token, verify it works by adding it to `.env`:
+Once you have the refresh token, use the dashboard to store it in the database.
+The dashboard OAuth flow (`/api/oauth/google/start`) handles this automatically.
+
+Alternatively, for manual testing, store credentials via the API:
 
 ```bash
-BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON='{"client_id":"<YOUR_CLIENT_ID>","client_secret":"<YOUR_CLIENT_SECRET>","refresh_token":"<YOUR_REFRESH_TOKEN>"}'
-```
+# Store credentials via the OAuth callback (handled automatically by the dashboard)
+# Or test directly by verifying the calendar module starts without errors:
 
-Then test:
-
-```bash
-# Start a Butlers instance with the calendar module enabled
+GOOGLE_OAUTH_CLIENT_ID=<YOUR_CLIENT_ID> \
+GOOGLE_OAUTH_CLIENT_SECRET=<YOUR_CLIENT_SECRET> \
+DATABASE_URL=postgres://butlers:butlers@localhost:5432/butlers \
 uv run src/butlers/main.py --config-path roster/sample-butler
 ```
 
 If the credential is valid, the calendar module initializes without errors.
+
+> **Deprecated:** The `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON` env var is deprecated.
+> Use the dashboard OAuth flow and DB-stored credentials instead.
 
 ---
 

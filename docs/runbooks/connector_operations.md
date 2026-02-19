@@ -112,10 +112,19 @@ export CONNECTOR_ENDPOINT_IDENTITY="gmail:user:your-email@gmail.com"
 export CONNECTOR_CURSOR_PATH="/path/to/gmail_cursor.json"
 export CONNECTOR_MAX_INFLIGHT="8"
 
-# Gmail OAuth credentials
-export GMAIL_CLIENT_ID="your-client-id"
-export GMAIL_CLIENT_SECRET="your-client-secret"
-export GMAIL_REFRESH_TOKEN="your-refresh-token"
+# Gmail OAuth credentials (DB-first resolution recommended)
+# Option 1: DB-first (recommended) — set DATABASE_URL and complete the dashboard OAuth flow
+export DATABASE_URL="postgres://butlers:butlers@localhost:5432/butlers"
+export CONNECTOR_BUTLER_DB_NAME="butlers"  # optional, default: butlers
+# App config (always required for OAuth bootstrap):
+export GOOGLE_OAUTH_CLIENT_ID="your-client-id"
+export GOOGLE_OAUTH_CLIENT_SECRET="your-client-secret"
+# After completing the dashboard OAuth flow, no refresh token env var is needed.
+
+# Option 2: Legacy env vars (deprecated, backward-compatible)
+# export GMAIL_CLIENT_ID="your-client-id"  # deprecated alias
+# export GMAIL_CLIENT_SECRET="your-client-secret"  # deprecated alias
+# export GMAIL_REFRESH_TOKEN="your-refresh-token"  # deprecated
 
 # Optional: watch renewal and polling intervals
 export GMAIL_WATCH_RENEW_INTERVAL_S="86400"  # 1 day
@@ -501,9 +510,13 @@ ERROR: Failed to fetch history changes: 401 Unauthorized
 | `CONNECTOR_ENDPOINT_IDENTITY` | Yes | - | Mailbox identity (e.g., `gmail:user:email@example.com`) |
 | `CONNECTOR_CURSOR_PATH` | Yes | - | Checkpoint file path |
 | `CONNECTOR_MAX_INFLIGHT` | No | `8` | Max concurrent ingest submissions |
-| `GMAIL_CLIENT_ID` | Yes | - | OAuth client ID |
-| `GMAIL_CLIENT_SECRET` | Yes | - | OAuth client secret |
-| `GMAIL_REFRESH_TOKEN` | Yes | - | OAuth refresh token |
+| `GOOGLE_OAUTH_CLIENT_ID` | Yes | - | OAuth client ID (app config for bootstrap) |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | Yes | - | OAuth client secret (app config for bootstrap) |
+| `DATABASE_URL` | No | - | DB URL for DB-first credential resolution |
+| `CONNECTOR_BUTLER_DB_NAME` | No | `butlers` | Butler DB name for DB-first lookup |
+| `GMAIL_CLIENT_ID` | No | - | **Deprecated** alias for `GOOGLE_OAUTH_CLIENT_ID` |
+| `GMAIL_CLIENT_SECRET` | No | - | **Deprecated** alias for `GOOGLE_OAUTH_CLIENT_SECRET` |
+| `GMAIL_REFRESH_TOKEN` | No | - | **Deprecated**; use DB-stored credentials |
 | `GMAIL_WATCH_RENEW_INTERVAL_S` | No | `86400` | Watch renewal interval (seconds) |
 | `GMAIL_POLL_INTERVAL_S` | No | `60` | History polling interval (seconds) |
 

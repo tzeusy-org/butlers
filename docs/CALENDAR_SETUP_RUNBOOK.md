@@ -2,10 +2,16 @@
 
 This runbook documents the production setup for Google Calendar in Butlers v1.
 
+> **Deprecation Notice:** The `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON` env var is
+> deprecated. Use the dashboard OAuth flow to store credentials in the database and
+> set `DATABASE_URL` + `GOOGLE_OAUTH_CLIENT_ID` + `GOOGLE_OAUTH_CLIENT_SECRET` for
+> the credential bootstrap. See `docs/oauth/google/setup-guide.md` for details.
+
 ## Scope
 
 - Provider: Google Calendar
-- Credentials env var: `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON`
+- Credentials: stored in butler database (DB-first) with env-var fallback
+- Legacy env var (deprecated): `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON`
 - Event placement: shared Butler calendar (not `primary`)
 - Default conflict posture: `suggest`
 - Deferred scope: attendee invites/sending invitations
@@ -26,9 +32,23 @@ Required credential fields:
 - `client_secret`
 - `refresh_token`
 
-## 2. Set Required Butler Credential Env Var
+## 2. Configure Google OAuth Credentials
 
-Set `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON` to a JSON object containing the OAuth fields:
+**Recommended: Dashboard OAuth flow (DB-first)**
+
+1. Set the app config env vars (required for the OAuth bootstrap):
+   ```bash
+   export GOOGLE_OAUTH_CLIENT_ID=your-client-id.apps.googleusercontent.com
+   export GOOGLE_OAUTH_CLIENT_SECRET=your-client-secret
+   export DATABASE_URL=postgres://butlers:butlers@localhost:5432/butlers
+   ```
+
+2. Start the butler and visit `http://localhost:8200/oauth/google/start` to complete the OAuth flow.
+   The refresh token is stored in the database automatically.
+
+**Legacy: Environment variable (deprecated, backward-compatible)**
+
+If you cannot use the dashboard flow, set `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON`:
 
 ```bash
 export BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON='{
@@ -37,6 +57,9 @@ export BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON='{
   "refresh_token": "your-refresh-token"
 }'
 ```
+
+> **Note:** This env var is deprecated. It will continue to work as a fallback but will
+> be removed in a future release. Migrate to the DB-first flow when possible.
 
 The daemon validates this env var at startup for calendar-enabled butlers.
 

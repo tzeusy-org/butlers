@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -1144,20 +1144,31 @@ class TestGoogleCredentialParsing:
         assert creds.refresh_token == "installed-refresh-token"
 
 
+def _make_test_credentials() -> _GoogleOAuthCredentials:
+    """Return a valid _GoogleOAuthCredentials instance for testing."""
+    return _GoogleOAuthCredentials(
+        client_id="test-client-id",
+        client_secret="test-client-secret",
+        refresh_token="test-refresh-token",
+    )
+
+
 class TestGoogleProviderInitialization:
     """Verify provider init does not leak resources on credential failures."""
 
-    def test_invalid_credentials_do_not_create_owned_http_client(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.setenv(GOOGLE_CALENDAR_CREDENTIALS_ENV, "{not-valid-json")
-        async_client_ctor = Mock()
-        monkeypatch.setattr("butlers.modules.calendar.httpx.AsyncClient", async_client_ctor)
+    def test_valid_credentials_creates_provider(self):
+        """_GoogleProvider initialises successfully when valid credentials are passed."""
+        creds = _make_test_credentials()
+        provider = _GoogleProvider(
+            config=CalendarConfig(provider="google", calendar_id="primary"),
+            credentials=creds,
+        )
+        assert provider is not None
 
-        with pytest.raises(CalendarCredentialError):
-            _GoogleProvider(config=CalendarConfig(provider="google", calendar_id="primary"))
-
-        async_client_ctor.assert_not_called()
+    def test_invalid_credentials_raise_on_construction(self, monkeypatch: pytest.MonkeyPatch):
+        """Passing invalid credential values raises a validation error."""
+        with pytest.raises(Exception):
+            _GoogleOAuthCredentials(client_id="", client_secret="s", refresh_token="r")
 
 
 def _mock_response(
@@ -1213,17 +1224,7 @@ class TestGoogleOAuthClient:
 class TestGoogleRequestHelper:
     """Verify bearer-token request wiring and safe non-2xx errors."""
 
-    async def test_request_helper_injects_bearer_token(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "client_id": "client-id",
-                    "client_secret": "client-secret",
-                    "refresh_token": "refresh-token",
-                }
-            ),
-        )
+    async def test_request_helper_injects_bearer_token(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response(
             status_code=200,
@@ -1240,6 +1241,7 @@ class TestGoogleRequestHelper:
 
         provider = _GoogleProvider(
             config=CalendarConfig(provider="google", calendar_id="primary"),
+            credentials=_make_test_credentials(),
             http_client=mock_client,
         )
         result = await provider._request_google_json("GET", "/calendars/primary/events")
@@ -1248,17 +1250,7 @@ class TestGoogleRequestHelper:
         request_kwargs = mock_client.request.call_args.kwargs
         assert request_kwargs["headers"]["Authorization"] == "Bearer access-token"
 
-    async def test_request_helper_surfaces_non_2xx_safely(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "client_id": "client-id",
-                    "client_secret": "client-secret",
-                    "refresh_token": "refresh-token",
-                }
-            ),
-        )
+    async def test_request_helper_surfaces_non_2xx_safely(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response(
             status_code=200,
@@ -1282,6 +1274,7 @@ class TestGoogleRequestHelper:
 
         provider = _GoogleProvider(
             config=CalendarConfig(provider="google", calendar_id="primary"),
+            credentials=_make_test_credentials(),
             http_client=mock_client,
         )
 
@@ -1297,19 +1290,7 @@ class TestGoogleRequestHelper:
 class TestGoogleReadOperations:
     """Verify Google provider list/get read behavior."""
 
-    async def test_list_events_maps_google_payload_to_calendar_events(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "client_id": "client-id",
-                    "client_secret": "client-secret",
-                    "refresh_token": "refresh-token",
-                }
-            ),
-        )
+    async def test_list_events_maps_google_payload_to_calendar_events(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response(
             status_code=200,
@@ -1352,6 +1333,7 @@ class TestGoogleReadOperations:
 
         provider = _GoogleProvider(
             config=CalendarConfig(provider="google", calendar_id="primary", timezone="UTC"),
+            credentials=_make_test_credentials(),
             http_client=mock_client,
         )
 
@@ -1372,17 +1354,7 @@ class TestGoogleReadOperations:
         assert request_kwargs["params"]["singleEvents"] is True
         assert request_kwargs["params"]["showDeleted"] is False
 
-    async def test_get_event_returns_none_on_404(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "client_id": "client-id",
-                    "client_secret": "client-secret",
-                    "refresh_token": "refresh-token",
-                }
-            ),
-        )
+    async def test_get_event_returns_none_on_404(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response(
             status_code=200,
@@ -1399,6 +1371,7 @@ class TestGoogleReadOperations:
 
         provider = _GoogleProvider(
             config=CalendarConfig(provider="google", calendar_id="primary", timezone="UTC"),
+            credentials=_make_test_credentials(),
             http_client=mock_client,
         )
 
@@ -2470,19 +2443,7 @@ class TestEventToPayloadExtendedFields:
 class TestGoogleReadOperationsExtendedFields:
     """Verify Google provider read operations parse and populate extended fields."""
 
-    async def test_list_events_includes_extended_fields_from_google_payload(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "client_id": "client-id",
-                    "client_secret": "client-secret",
-                    "refresh_token": "refresh-token",
-                }
-            ),
-        )
+    async def test_list_events_includes_extended_fields_from_google_payload(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response(
             status_code=200,
@@ -2514,6 +2475,7 @@ class TestGoogleReadOperationsExtendedFields:
 
         provider = _GoogleProvider(
             config=CalendarConfig(provider="google", calendar_id="primary", timezone="UTC"),
+            credentials=_make_test_credentials(),
             http_client=mock_client,
         )
 
@@ -2531,19 +2493,7 @@ class TestGoogleReadOperationsExtendedFields:
         assert event.updated_at is not None
         assert event.updated_at.month == 2
 
-    async def test_get_event_includes_extended_fields_from_google_payload(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "client_id": "client-id",
-                    "client_secret": "client-secret",
-                    "refresh_token": "refresh-token",
-                }
-            ),
-        )
+    async def test_get_event_includes_extended_fields_from_google_payload(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response(
             status_code=200,
@@ -2571,6 +2521,7 @@ class TestGoogleReadOperationsExtendedFields:
 
         provider = _GoogleProvider(
             config=CalendarConfig(provider="google", calendar_id="primary", timezone="UTC"),
+            credentials=_make_test_credentials(),
             http_client=mock_client,
         )
 

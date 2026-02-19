@@ -455,3 +455,59 @@ class TestStoreAndLoadRoundTrip:
         result = await load_google_credentials(conn)
         assert result is not None
         assert result.scope is None
+
+
+# ---------------------------------------------------------------------------
+# CalendarModule.on_startup DB-first credential path
+# ---------------------------------------------------------------------------
+
+
+class TestCalendarModuleOnStartupDbFirst:
+    """Verify CalendarModule.on_startup resolves credentials from DB when pool available."""
+
+    async def test_on_startup_uses_db_credentials_when_pool_available(self) -> None:
+        """CalendarModule resolves Google credentials from DB during on_startup."""
+        from butlers.modules.calendar import CalendarModule
+
+        conn_creds = {
+            "client_id": _SHARED_CREDS["client_id"],
+            "client_secret": _SHARED_CREDS["client_secret"],
+            "refresh_token": _SHARED_CREDS["refresh_token"],
+        }
+        # Build a mock DB with a pool that serves the stored credentials
+        db_creds_conn = _make_db_conn_with_creds(conn_creds)
+
+        pool = MagicMock()
+        pool.acquire = MagicMock()
+        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=db_creds_conn)
+        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        # Also make fetchrow accessible on pool directly (asyncpg pool supports direct calls)
+        pool.fetchrow = db_creds_conn.fetchrow
+
+        db = MagicMock()
+        db.pool = pool
+
+        mod = CalendarModule()
+        # on_startup should succeed with DB credentials (no env vars needed)
+        with mock.patch.dict("os.environ", {}, clear=True):
+            await mod.on_startup({"provider": "google", "calendar_id": "primary"}, db=db)
+
+        provider = getattr(mod, "_provider")
+        assert provider is not None
+        assert provider.name == "google"
+        # Verify the credentials on the OAuth client
+        assert provider._oauth._credentials.client_id == _SHARED_CREDS["client_id"]
+        assert provider._oauth._credentials.refresh_token == _SHARED_CREDS["refresh_token"]
+
+    async def test_on_startup_falls_back_to_env_when_db_pool_is_none(self) -> None:
+        """CalendarModule falls back to env vars when db=None (no pool)."""
+        from butlers.modules.calendar import CalendarModule
+
+        mod = CalendarModule()
+        with mock.patch.dict("os.environ", _CALENDAR_ENV, clear=True):
+            await mod.on_startup({"provider": "google", "calendar_id": "primary"}, db=None)
+
+        provider = getattr(mod, "_provider")
+        assert provider is not None
+        assert provider._oauth._credentials.client_id == _SHARED_CREDS["client_id"]

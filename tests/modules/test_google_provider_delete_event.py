@@ -26,10 +26,10 @@ import pytest
 
 from butlers.modules.calendar import (
     GOOGLE_CALENDAR_API_BASE_URL,
-    GOOGLE_CALENDAR_CREDENTIALS_ENV,
     CalendarConfig,
     CalendarEvent,
     CalendarRequestError,
+    _GoogleOAuthCredentials,
     _GoogleProvider,
 )
 
@@ -76,18 +76,21 @@ def _make_mock_http_client() -> MagicMock:
 
 
 def _make_provider(
-    monkeypatch: pytest.MonkeyPatch,
     mock_client: MagicMock,
     *,
     config: CalendarConfig | None = None,
 ) -> _GoogleProvider:
-    monkeypatch.setenv(GOOGLE_CALENDAR_CREDENTIALS_ENV, _make_credentials_json())
     cfg = config or CalendarConfig(
         provider="google",
         calendar_id="primary",
         timezone="UTC",
     )
-    return _GoogleProvider(config=cfg, http_client=mock_client)
+    credentials = _GoogleOAuthCredentials(
+        client_id="client-id",
+        client_secret="client-secret",
+        refresh_token="refresh-token",
+    )
+    return _GoogleProvider(config=cfg, credentials=credentials, http_client=mock_client)
 
 
 def _make_calendar_event(
@@ -104,14 +107,20 @@ def _make_calendar_event(
 
 
 @pytest.fixture
-def google_provider(monkeypatch):
-    monkeypatch.setenv(GOOGLE_CALENDAR_CREDENTIALS_ENV, _make_credentials_json())
+def google_provider():
     config = CalendarConfig(
         provider="google",
         calendar_id="test@example.com",
         timezone="UTC",
     )
-    return _GoogleProvider(config=config, http_client=_make_mock_http_client())
+    credentials = _GoogleOAuthCredentials(
+        client_id="client-id",
+        client_secret="client-secret",
+        refresh_token="refresh-token",
+    )
+    return _GoogleProvider(
+        config=config, credentials=credentials, http_client=_make_mock_http_client()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +131,7 @@ def google_provider(monkeypatch):
 class TestGoogleProviderDeleteEvent:
     """Tests for _GoogleProvider.delete_event() with mocked HTTP."""
 
-    async def test_delete_sends_correct_delete_request(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_delete_sends_correct_delete_request(self):
         """delete_event issues a DELETE to the correct Google Calendar endpoint."""
         mock_client = _make_mock_http_client()
         mock_client.request = AsyncMock(
@@ -132,7 +141,7 @@ class TestGoogleProviderDeleteEvent:
                 method="DELETE",
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         await provider.delete_event(calendar_id="primary", event_id="evt-1")
 
@@ -151,7 +160,7 @@ class TestGoogleProviderDeleteEvent:
                 text="",
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         # Should not raise
         await provider.delete_event(calendar_id="primary", event_id="evt-1")
@@ -167,7 +176,7 @@ class TestGoogleProviderDeleteEvent:
                 json_body={"error": {"message": "Not Found"}},
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         # Should not raise — 404 is success
         await provider.delete_event(calendar_id="primary", event_id="missing")
@@ -185,7 +194,7 @@ class TestGoogleProviderDeleteEvent:
                 json_body={"error": {"message": "Insufficient permissions"}},
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         with pytest.raises(CalendarRequestError) as exc_info:
             await provider.delete_event(calendar_id="primary", event_id="evt-1")
@@ -204,7 +213,7 @@ class TestGoogleProviderDeleteEvent:
                 json_body={"error": {"message": "Backend error"}},
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         with pytest.raises(CalendarRequestError) as exc_info:
             await provider.delete_event(calendar_id="primary", event_id="evt-1")
@@ -223,7 +232,7 @@ class TestGoogleProviderDeleteEvent:
                 method="DELETE",
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         await provider.delete_event(
             calendar_id="primary",
@@ -248,7 +257,7 @@ class TestGoogleProviderDeleteEvent:
                 method="DELETE",
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         await provider.delete_event(
             calendar_id="primary",
@@ -261,7 +270,7 @@ class TestGoogleProviderDeleteEvent:
         # Either no params at all, or sendUpdates not in params
         assert params is None or "sendUpdates" not in params
 
-    async def test_delete_with_send_updates_external_only(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_delete_with_send_updates_external_only(self):
         """send_updates='externalOnly' is forwarded as sendUpdates query parameter."""
         mock_client = _make_mock_http_client()
         mock_client.request = AsyncMock(
@@ -271,7 +280,7 @@ class TestGoogleProviderDeleteEvent:
                 method="DELETE",
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         await provider.delete_event(
             calendar_id="primary",
@@ -296,7 +305,7 @@ class TestGoogleProviderDeleteEvent:
                 method="DELETE",
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         await provider.delete_event(calendar_id="primary", event_id="evt-1")
 
@@ -318,7 +327,7 @@ class TestGoogleProviderDeleteEvent:
                 method="DELETE",
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         await provider.delete_event(
             calendar_id="butler@group.calendar.google.com",
@@ -343,7 +352,7 @@ class TestGoogleProviderDeleteEvent:
                 method="DELETE",
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         await provider.delete_event(
             calendar_id="primary",
@@ -354,15 +363,15 @@ class TestGoogleProviderDeleteEvent:
         url = call_args.args[1]
         assert "evt%2Fwith%2Fslashes" in url
 
-    async def test_delete_empty_event_id_raises_value_error(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_delete_empty_event_id_raises_value_error(self):
         """Empty or whitespace-only event_id raises ValueError immediately."""
         mock_client = _make_mock_http_client()
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         with pytest.raises(ValueError, match="event_id must be a non-empty string"):
             await provider.delete_event(calendar_id="primary", event_id="   ")
 
-    async def test_delete_default_send_updates_is_none(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_delete_default_send_updates_is_none(self):
         """Default send_updates=None means no sendUpdates query param is sent."""
         mock_client = _make_mock_http_client()
         mock_client.request = AsyncMock(
@@ -372,7 +381,7 @@ class TestGoogleProviderDeleteEvent:
                 method="DELETE",
             )
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         # Call without send_updates — default is None
         await provider.delete_event(calendar_id="primary", event_id="evt-1")

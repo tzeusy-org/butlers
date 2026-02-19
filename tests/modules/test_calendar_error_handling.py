@@ -34,6 +34,7 @@ from butlers.modules.calendar import (
     CalendarRequestError,
     CalendarTokenRefreshError,
     _build_structured_error,
+    _GoogleOAuthCredentials,
 )
 
 pytestmark = pytest.mark.unit
@@ -602,7 +603,6 @@ class TestRateLimitRetry:
 
     async def test_request_retries_on_429_up_to_max(self):
         """Provider retries exactly MAX_RETRIES times on rate-limit then gives up."""
-        import json as json_module
 
         from butlers.modules.calendar import _GoogleProvider
 
@@ -620,15 +620,11 @@ class TestRateLimitRetry:
 
         config = CalendarConfig(provider="google", calendar_id="primary")
 
-        with patch.dict(
-            "os.environ",
-            {
-                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json_module.dumps(
-                    self._make_credentials_dict()
-                )
-            },
-        ):
-            provider = _GoogleProvider(config, http_client=mock_http)
+        provider = _GoogleProvider(
+            config,
+            credentials=_GoogleOAuthCredentials(**self._make_credentials_dict()),
+            http_client=mock_http,
+        )
 
         with patch("butlers.modules.calendar.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             response = await provider._request_with_bearer(
@@ -643,7 +639,6 @@ class TestRateLimitRetry:
 
     async def test_request_retries_on_503(self):
         """Provider retries on 503 Service Unavailable."""
-        import json as json_module
 
         from butlers.modules.calendar import _GoogleProvider
 
@@ -657,15 +652,11 @@ class TestRateLimitRetry:
 
         config = CalendarConfig(provider="google", calendar_id="primary")
 
-        with patch.dict(
-            "os.environ",
-            {
-                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json_module.dumps(
-                    self._make_credentials_dict()
-                )
-            },
-        ):
-            provider = _GoogleProvider(config, http_client=mock_http)
+        provider = _GoogleProvider(
+            config,
+            credentials=_GoogleOAuthCredentials(**self._make_credentials_dict()),
+            http_client=mock_http,
+        )
 
         with patch("butlers.modules.calendar.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             response = await provider._request_with_bearer(
@@ -678,7 +669,6 @@ class TestRateLimitRetry:
 
     async def test_request_stops_retrying_after_max_retries(self):
         """Provider stops retrying after RATE_LIMIT_MAX_RETRIES even if still rate-limited."""
-        import json as json_module
 
         from butlers.modules.calendar import _GoogleProvider
 
@@ -692,15 +682,11 @@ class TestRateLimitRetry:
 
         config = CalendarConfig(provider="google", calendar_id="primary")
 
-        with patch.dict(
-            "os.environ",
-            {
-                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json_module.dumps(
-                    self._make_credentials_dict()
-                )
-            },
-        ):
-            provider = _GoogleProvider(config, http_client=mock_http)
+        provider = _GoogleProvider(
+            config,
+            credentials=_GoogleOAuthCredentials(**self._make_credentials_dict()),
+            http_client=mock_http,
+        )
 
         with patch("butlers.modules.calendar.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             response = await provider._request_with_bearer(
@@ -715,7 +701,6 @@ class TestRateLimitRetry:
 
     async def test_retry_backoff_is_exponential(self):
         """Backoff values increase exponentially: 1s, 2s, 4s for MAX_RETRIES=3."""
-        import json as json_module
 
         from butlers.modules.calendar import _GoogleProvider
 
@@ -731,15 +716,11 @@ class TestRateLimitRetry:
 
         config = CalendarConfig(provider="google", calendar_id="primary")
 
-        with patch.dict(
-            "os.environ",
-            {
-                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json_module.dumps(
-                    self._make_credentials_dict()
-                )
-            },
-        ):
-            provider = _GoogleProvider(config, http_client=mock_http)
+        provider = _GoogleProvider(
+            config,
+            credentials=_GoogleOAuthCredentials(**self._make_credentials_dict()),
+            http_client=mock_http,
+        )
 
         sleep_calls: list[float] = []
 
@@ -760,7 +741,6 @@ class TestRateLimitRetry:
 
     async def test_non_rate_limit_status_codes_do_not_trigger_retry(self):
         """Only 429 and 503 trigger retry; other errors are returned immediately."""
-        import json as json_module
 
         from butlers.modules.calendar import _GoogleProvider
 
@@ -773,15 +753,11 @@ class TestRateLimitRetry:
 
         config = CalendarConfig(provider="google", calendar_id="primary")
 
-        with patch.dict(
-            "os.environ",
-            {
-                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json_module.dumps(
-                    self._make_credentials_dict()
-                )
-            },
-        ):
-            provider = _GoogleProvider(config, http_client=mock_http)
+        provider = _GoogleProvider(
+            config,
+            credentials=_GoogleOAuthCredentials(**self._make_credentials_dict()),
+            http_client=mock_http,
+        )
 
         with patch("butlers.modules.calendar.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             response = await provider._request_with_bearer(
@@ -794,7 +770,6 @@ class TestRateLimitRetry:
 
     async def test_retry_after_header_used_as_backoff_on_429(self):
         """Retry-After header value overrides exponential backoff for 429 responses."""
-        import json as json_module
 
         from butlers.modules.calendar import _GoogleProvider
 
@@ -814,15 +789,11 @@ class TestRateLimitRetry:
 
         config = CalendarConfig(provider="google", calendar_id="primary")
 
-        with patch.dict(
-            "os.environ",
-            {
-                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json_module.dumps(
-                    self._make_credentials_dict()
-                )
-            },
-        ):
-            provider = _GoogleProvider(config, http_client=mock_http)
+        provider = _GoogleProvider(
+            config,
+            credentials=_GoogleOAuthCredentials(**self._make_credentials_dict()),
+            http_client=mock_http,
+        )
 
         sleep_calls: list[float] = []
 
@@ -842,7 +813,6 @@ class TestRateLimitRetry:
 
     async def test_retry_after_header_missing_falls_back_to_exponential_backoff(self):
         """When Retry-After header is absent on 429, exponential backoff is used."""
-        import json as json_module
 
         from butlers.modules.calendar import _GoogleProvider
 
@@ -856,15 +826,11 @@ class TestRateLimitRetry:
 
         config = CalendarConfig(provider="google", calendar_id="primary")
 
-        with patch.dict(
-            "os.environ",
-            {
-                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json_module.dumps(
-                    self._make_credentials_dict()
-                )
-            },
-        ):
-            provider = _GoogleProvider(config, http_client=mock_http)
+        provider = _GoogleProvider(
+            config,
+            credentials=_GoogleOAuthCredentials(**self._make_credentials_dict()),
+            http_client=mock_http,
+        )
 
         sleep_calls: list[float] = []
 
@@ -884,7 +850,6 @@ class TestRateLimitRetry:
 
     async def test_retry_after_header_not_used_for_503(self):
         """Retry-After header is only honoured for 429; 503 uses exponential backoff."""
-        import json as json_module
 
         from butlers.modules.calendar import _GoogleProvider
 
@@ -904,15 +869,11 @@ class TestRateLimitRetry:
 
         config = CalendarConfig(provider="google", calendar_id="primary")
 
-        with patch.dict(
-            "os.environ",
-            {
-                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json_module.dumps(
-                    self._make_credentials_dict()
-                )
-            },
-        ):
-            provider = _GoogleProvider(config, http_client=mock_http)
+        provider = _GoogleProvider(
+            config,
+            credentials=_GoogleOAuthCredentials(**self._make_credentials_dict()),
+            http_client=mock_http,
+        )
 
         sleep_calls: list[float] = []
 
