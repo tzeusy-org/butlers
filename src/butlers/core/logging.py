@@ -28,11 +28,16 @@ from __future__ import annotations
 import logging
 import re
 import sys
+import warnings
 from contextvars import ContextVar
 from pathlib import Path
 
 import structlog
 from opentelemetry import trace
+
+# Suppress websockets deprecation warnings emitted by uvicorn's legacy WS handler.
+warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets\.legacy")
+warnings.filterwarnings("ignore", message=r"websockets\.server\.WebSocketServerProtocol")
 
 # ---------------------------------------------------------------------------
 # Butler context (asyncio-safe via ContextVar)
