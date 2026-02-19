@@ -530,3 +530,7 @@ make test-qg
 ### Scheduler native-dispatch contract
 - `ButlerDaemon._dispatch_scheduled_task()` is the scheduler dispatch hook used by both the background scheduler loop and MCP `tick` tool; deterministic schedules can bypass runtime/LLM calls here.
 - Switchboard `schedule:eligibility-sweep` is natively dispatched via the roster job loader (`_load_switchboard_eligibility_sweep_job`) and executes against the switchboard DB pool directly; non-native schedules still fall back to `spawner.trigger`.
+
+### State API JSON-shape contract
+- `src/butlers/api/models/state.py::StateEntry.value` is currently constrained to `dict[str, Any]`; scalar/array/null JSON rows in `state.value` can trigger response-model validation failures on `/api/butlers/{name}/state`.
+- Keep list/get state endpoint value-shape contracts aligned with the full JSON domain accepted by the underlying state storage.
