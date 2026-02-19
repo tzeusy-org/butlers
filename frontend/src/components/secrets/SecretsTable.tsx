@@ -1,13 +1,14 @@
 /**
  * SecretsTable — generic table for listing and managing butler secrets.
  *
- * Groups secrets by category and renders them in a table with edit/delete
- * actions. Values are masked by default with a reveal toggle per row.
+ * Builds rows from a union of known templates plus resolved API metadata.
+ * Rows render explicit local, inherited, and missing states.
  */
 
 import { useState } from "react";
 
 import type { SecretEntry } from "@/api/types.ts";
+import { buildSecretRows, type SecretDisplayRow, type SecretRowState } from "@/lib/secrets-rows";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -35,6 +36,11 @@ import { useDeleteSecret } from "@/hooks/use-secrets";
 // ---------------------------------------------------------------------------
 
 const CATEGORY_ORDER = ["core", "telegram", "email", "google", "gemini", "general"];
+interface SecretPrefill {
+  key: string;
+  category: string;
+  description: string | null;
+}
 
 function getCategoryLabel(category: string): string {
   const labels: Record<string, string> = {
@@ -48,10 +54,18 @@ function getCategoryLabel(category: string): string {
   return labels[category] ?? category.charAt(0).toUpperCase() + category.slice(1);
 }
 
-function groupByCategory(secrets: SecretEntry[]): [string, SecretEntry[]][] {
-  const groups: Record<string, SecretEntry[]> = {};
+function normalizeSource(source: string): string {
+  return source.trim().toLowerCase();
+}
+
+function isSharedSource(source: string): boolean {
+  return normalizeSource(source).includes("shared");
+}
+
+function groupByCategory(secrets: SecretDisplayRow[]): [string, SecretDisplayRow[]][] {
+  const groups: Record<string, SecretDisplayRow[]> = {};
   for (const secret of secrets) {
-    const cat = secret.category ?? "general";
+    const cat = secret.category || "general";
     if (!groups[cat]) groups[cat] = [];
     groups[cat].push(secret);
   }
@@ -71,10 +85,26 @@ function groupByCategory(secrets: SecretEntry[]): [string, SecretEntry[]][] {
 // Source badge
 // ---------------------------------------------------------------------------
 
-function SourceBadge({ source }: { source: string }) {
+function SourceBadge({ source, rowState }: { source: string; rowState: SecretRowState }) {
+  if (rowState === "missing") {
+    return (
+      <Badge variant="outline" className="text-xs">
+        null
+      </Badge>
+    );
+  }
+
+  const normalized = normalizeSource(source);
+  let label = source;
+  if (rowState === "local") {
+    label = "local";
+  } else if (isSharedSource(normalized)) {
+    label = "shared";
+  }
+
   return (
-    <Badge variant={source === "database" ? "default" : "secondary"} className="text-xs">
-      {source}
+    <Badge variant={rowState === "local" ? "default" : "secondary"} className="text-xs">
+      {label}
     </Badge>
   );
 }
@@ -83,10 +113,19 @@ function SourceBadge({ source }: { source: string }) {
 // Status badge
 // ---------------------------------------------------------------------------
 
-function StatusBadge({ isSet }: { isSet: boolean }) {
+function StatusBadge({ rowState, source }: { rowState: SecretRowState; source: string }) {
+  let label: string;
+  if (rowState === "local") {
+    label = "Local configured";
+  } else if (rowState === "inherited") {
+    label = isSharedSource(source) ? "Inherited from shared" : `Inherited from ${source}`;
+  } else {
+    label = "Missing (null)";
+  }
+
   return (
-    <Badge variant={isSet ? "default" : "outline"} className="text-xs">
-      {isSet ? "Configured" : "Missing"}
+    <Badge variant={rowState === "missing" ? "outline" : "default"} className="text-xs">
+      {label}
     </Badge>
   );
 }
@@ -95,11 +134,19 @@ function StatusBadge({ isSet }: { isSet: boolean }) {
 // Masked value cell with reveal toggle
 // ---------------------------------------------------------------------------
 
-function MaskedValue({ isSet }: { isSet: boolean }) {
+function MaskedValue({ rowState }: { rowState: SecretRowState }) {
   const [revealed, setRevealed] = useState(false);
 
-  if (!isSet) {
-    return <span className="text-muted-foreground text-xs italic">not set</span>;
+  if (rowState === "missing") {
+    return <span className="text-muted-foreground text-xs italic">null</span>;
+  }
+
+  if (rowState === "inherited") {
+    return (
+      <span className="font-mono text-sm text-muted-foreground">
+        •••••••• (inherited)
+      </span>
+    );
   }
 
   return (
@@ -262,18 +309,25 @@ function SecretRow({
   secret,
   butlerName,
   onEdit,
+  onCreateOverride,
 }: {
-  secret: SecretEntry;
+  secret: SecretDisplayRow;
   butlerName: string;
   onEdit: (secret: SecretEntry) => void;
+  onCreateOverride: (prefill: SecretPrefill) => void;
 }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  const updatedAt = new Date(secret.updated_at).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  const updatedAt = secret.updatedAt
+    ? new Date(secret.updatedAt).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    })
+    : "N/A";
+
+  const localSecret = secret.rowState === "local" ? secret.apiSecret : null;
+  const canEditLocal = localSecret !== null;
 
   return (
     <>
@@ -283,44 +337,66 @@ function SecretRow({
           {secret.description ?? <span className="italic">No description</span>}
         </TableCell>
         <TableCell>
-          <StatusBadge isSet={secret.is_set} />
+          <StatusBadge rowState={secret.rowState} source={secret.source} />
         </TableCell>
         <TableCell>
-          <SourceBadge source={secret.source} />
+          <SourceBadge source={secret.source} rowState={secret.rowState} />
         </TableCell>
         <TableCell className="text-sm text-muted-foreground">{updatedAt}</TableCell>
         <TableCell>
-          <MaskedValue isSet={secret.is_set} />
+          <MaskedValue rowState={secret.rowState} />
         </TableCell>
         <TableCell>
-          <div className="flex items-center gap-1">
+          {canEditLocal ? (
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
+                onClick={() => {
+                  if (localSecret) {
+                    onEdit(localSecret);
+                  }
+                }}
+                title="Edit secret"
+              >
+                <EditIcon />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                onClick={() => setDeleteOpen(true)}
+                title="Delete secret"
+              >
+                <TrashIcon />
+              </Button>
+            </div>
+          ) : (
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
-              className="h-7 w-7 p-0"
-              onClick={() => onEdit(secret)}
-              title="Edit secret"
+              className="h-7 px-2 text-xs"
+              aria-label={secret.rowState === "inherited" ? `Override ${secret.key}` : `Set ${secret.key}`}
+              onClick={() => onCreateOverride({
+                key: secret.key,
+                category: secret.category,
+                description: secret.description,
+              })}
             >
-              <EditIcon />
+              {secret.rowState === "inherited" ? "Override" : "Set value"}
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0 text-destructive hover:text-destructive"
-              onClick={() => setDeleteOpen(true)}
-              title="Delete secret"
-            >
-              <TrashIcon />
-            </Button>
-          </div>
+          )}
         </TableCell>
       </TableRow>
-      <DeleteSecretDialog
-        butlerName={butlerName}
-        secretKey={secret.key}
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
-      />
+      {canEditLocal ? (
+        <DeleteSecretDialog
+          butlerName={butlerName}
+          secretKey={secret.key}
+          open={deleteOpen}
+          onOpenChange={setDeleteOpen}
+        />
+      ) : null}
     </>
   );
 }
@@ -334,11 +410,13 @@ function CategoryGroupRows({
   secrets,
   butlerName,
   onEdit,
+  onCreateOverride,
 }: {
   category: string;
-  secrets: SecretEntry[];
+  secrets: SecretDisplayRow[];
   butlerName: string;
   onEdit: (secret: SecretEntry) => void;
+  onCreateOverride: (prefill: SecretPrefill) => void;
 }) {
   return (
     <>
@@ -355,6 +433,7 @@ function CategoryGroupRows({
           secret={secret}
           butlerName={butlerName}
           onEdit={onEdit}
+          onCreateOverride={onCreateOverride}
         />
       ))}
     </>
@@ -371,6 +450,7 @@ interface SecretsTableProps {
   isLoading: boolean;
   isError: boolean;
   onEdit: (secret: SecretEntry) => void;
+  onCreateOverride: (prefill: SecretPrefill) => void;
 }
 
 export function SecretsTable({
@@ -379,6 +459,7 @@ export function SecretsTable({
   isLoading,
   isError,
   onEdit,
+  onCreateOverride,
 }: SecretsTableProps) {
   if (isLoading) {
     return (
@@ -398,11 +479,13 @@ export function SecretsTable({
     );
   }
 
-  if (secrets.length === 0) {
+  const rows = buildSecretRows(secrets);
+
+  if (rows.length === 0) {
     return (
       <EmptyState
-        title="No secrets configured"
-        description="Add your first secret using the button above. Secrets are stored securely in the database and never echoed back."
+        title="No secrets available"
+        description="No secret templates or configured values were found."
         icon={
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -423,7 +506,7 @@ export function SecretsTable({
     );
   }
 
-  const groups = groupByCategory(secrets);
+  const groups = groupByCategory(rows);
 
   return (
     <Table>
@@ -446,6 +529,7 @@ export function SecretsTable({
             secrets={categorySecrets}
             butlerName={butlerName}
             onEdit={onEdit}
+            onCreateOverride={onCreateOverride}
           />
         ))}
       </TableBody>

@@ -403,11 +403,18 @@ function GoogleOAuthSection() {
 // ---------------------------------------------------------------------------
 
 function GenericSecretsSection() {
+  interface SecretPrefill {
+    key: string;
+    category: string;
+    description: string | null;
+  }
+
   const { data: butlersResponse, isLoading: butlersLoading } = useButlers();
   const butlerNames = butlersResponse?.data?.map((b) => b.name) ?? [];
 
   const [selectedButler, setSelectedButler] = useState<string>("");
   const [addModalOpen, setAddModalOpen] = useState(false);
+  const [addPrefill, setAddPrefill] = useState<SecretPrefill | null>(null);
   const [editSecret, setEditSecret] = useState<SecretEntry | null>(null);
 
   // Pick first butler by default once loaded
@@ -420,6 +427,11 @@ function GenericSecretsSection() {
     setEditSecret(secret);
   }
 
+  function handleCreateOverride(prefill: SecretPrefill) {
+    setAddPrefill(prefill);
+    setAddModalOpen(true);
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -427,8 +439,8 @@ function GenericSecretsSection() {
           <div>
             <CardTitle>Secrets</CardTitle>
             <CardDescription>
-              All secrets stored in the database, grouped by category.
-              Values are masked — use the reveal toggle to confirm presence.
+              Known secret requirements plus resolved values, grouped by category.
+              Add missing keys or create local overrides for inherited keys.
             </CardDescription>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -454,7 +466,10 @@ function GenericSecretsSection() {
             ) : null}
             <Button
               size="sm"
-              onClick={() => setAddModalOpen(true)}
+              onClick={() => {
+                setAddPrefill(null);
+                setAddModalOpen(true);
+              }}
               disabled={!activeButler}
             >
               Add Secret
@@ -474,6 +489,7 @@ function GenericSecretsSection() {
             isLoading={isLoading}
             isError={isError}
             onEdit={handleEdit}
+            onCreateOverride={handleCreateOverride}
           />
         )}
       </CardContent>
@@ -481,8 +497,12 @@ function GenericSecretsSection() {
       {/* Add modal */}
       <SecretFormModal
         butlerName={activeButler}
+        prefill={addPrefill}
         open={addModalOpen}
-        onOpenChange={setAddModalOpen}
+        onOpenChange={(open) => {
+          setAddModalOpen(open);
+          if (!open) setAddPrefill(null);
+        }}
       />
 
       {/* Edit modal */}
@@ -509,7 +529,7 @@ export default function SecretsPage() {
         <h1 className="text-3xl font-bold tracking-tight">Secrets</h1>
         <p className="text-muted-foreground mt-1">
           Manage secrets and OAuth credentials stored in the database.
-          Secret values are never displayed — only presence indicators are shown.
+          Suggested keys, inherited sources, and local overrides are shown without exposing values.
         </p>
       </div>
 

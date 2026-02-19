@@ -27,42 +27,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  categoryFromKey,
+  SECRET_CATEGORIES,
+  SECRET_TEMPLATES,
+} from "@/lib/secret-templates";
 import { useUpsertSecret } from "@/hooks/use-secrets";
-
-// ---------------------------------------------------------------------------
-// Known secret templates for suggestions
-// ---------------------------------------------------------------------------
-
-export interface SecretTemplate {
-  key: string;
-  description: string;
-  category: string;
-}
-
-const SECRET_TEMPLATES: SecretTemplate[] = [
-  { key: "ANTHROPIC_API_KEY", description: "Anthropic Claude API key", category: "core" },
-  { key: "BUTLER_TELEGRAM_TOKEN", description: "Telegram bot token", category: "telegram" },
-  { key: "BUTLER_TELEGRAM_CHAT_ID", description: "Telegram chat ID", category: "telegram" },
-  { key: "BUTLER_EMAIL_ADDRESS", description: "Butler email address", category: "email" },
-  { key: "BUTLER_EMAIL_PASSWORD", description: "Email account password or app password", category: "email" },
-  { key: "BUTLER_EMAIL_SMTP_HOST", description: "SMTP server hostname", category: "email" },
-  { key: "BUTLER_EMAIL_IMAP_HOST", description: "IMAP server hostname", category: "email" },
-  { key: "GOOGLE_CLIENT_ID", description: "Google OAuth client ID", category: "google" },
-  { key: "GOOGLE_CLIENT_SECRET", description: "Google OAuth client secret", category: "google" },
-  { key: "GEMINI_API_KEY", description: "Google Gemini API key", category: "gemini" },
-];
-
-const CATEGORIES = ["core", "telegram", "email", "google", "gemini", "general"] as const;
-
-function categoryFromKey(key: string): string {
-  const upper = key.toUpperCase();
-  if (upper.includes("TELEGRAM")) return "telegram";
-  if (upper.includes("EMAIL") || upper.includes("SMTP") || upper.includes("IMAP")) return "email";
-  if (upper.includes("GOOGLE") || upper.includes("GOOGLE_CLIENT")) return "google";
-  if (upper.includes("GEMINI")) return "gemini";
-  if (upper.includes("ANTHROPIC") || upper.includes("DATABASE_URL") || upper.includes("SECRET_KEY")) return "core";
-  return "general";
-}
 
 // ---------------------------------------------------------------------------
 // Internal form state type
@@ -75,13 +45,31 @@ interface FormState {
   description: string;
 }
 
-function makeInitialState(editSecret: SecretEntry | null | undefined): FormState {
+interface PrefillSecret {
+  key?: string;
+  category?: string;
+  description?: string | null;
+}
+
+function makeInitialState(
+  editSecret: SecretEntry | null | undefined,
+  prefill: PrefillSecret | null | undefined,
+): FormState {
   if (editSecret) {
     return {
       key: editSecret.key,
       value: "",
       category: editSecret.category ?? "general",
       description: editSecret.description ?? "",
+    };
+  }
+  if (prefill) {
+    const initialKey = prefill.key ?? "";
+    return {
+      key: initialKey,
+      value: "",
+      category: prefill.category ?? categoryFromKey(initialKey),
+      description: prefill.description ?? "",
     };
   }
   return { key: "", value: "", category: "general", description: "" };
@@ -95,6 +83,8 @@ interface SecretFormModalProps {
   butlerName: string;
   /** When provided, the modal is in edit mode (key is locked). */
   editSecret?: SecretEntry | null;
+  /** Optional initial values for create mode. */
+  prefill?: PrefillSecret | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -102,15 +92,16 @@ interface SecretFormModalProps {
 export function SecretFormModal({
   butlerName,
   editSecret,
+  prefill,
   open,
   onOpenChange,
 }: SecretFormModalProps) {
   const isEditing = !!editSecret;
 
   // Reset form state each time the modal opens by keying on `open + editSecret.key`
-  const formKey = open ? (editSecret?.key ?? "__new__") : "__closed__";
+  const formKey = open ? `${editSecret?.key ?? "__new__"}:${prefill?.key ?? ""}` : "__closed__";
 
-  const [form, setForm] = useState<FormState>(() => makeInitialState(editSecret));
+  const [form, setForm] = useState<FormState>(() => makeInitialState(editSecret, prefill));
   const [prevFormKey, setPrevFormKey] = useState(formKey);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -118,7 +109,7 @@ export function SecretFormModal({
   // Reset state when modal opens for a different secret (avoid useEffect/setState cascade)
   if (formKey !== prevFormKey) {
     setPrevFormKey(formKey);
-    setForm(makeInitialState(editSecret));
+    setForm(makeInitialState(editSecret, prefill));
     setError(null);
     setSuccess(false);
   }
@@ -257,7 +248,7 @@ export function SecretFormModal({
                 <SelectValue placeholder="Select category" />
               </SelectTrigger>
               <SelectContent>
-                {CATEGORIES.map((cat) => (
+                {SECRET_CATEGORIES.map((cat) => (
                   <SelectItem key={cat} value={cat}>
                     {cat.charAt(0).toUpperCase() + cat.slice(1)}
                   </SelectItem>
