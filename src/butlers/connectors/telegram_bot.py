@@ -18,7 +18,7 @@ Environment Variables (from docs/connectors/telegram_bot.md):
     CONNECTOR_POLL_INTERVAL_S: Poll interval in seconds (required for polling)
     CONNECTOR_MAX_INFLIGHT: Max concurrent ingest submissions (optional, default 8)
     CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 40081)
-    BUTLER_TELEGRAM_TOKEN: Telegram bot token (required)
+    BUTLER_TELEGRAM_TOKEN: Telegram bot token (required; resolved from DB first, then env)
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Thread
@@ -44,6 +44,8 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
+from butlers.credential_store import CredentialStore
+from butlers.db import db_params_from_env
 
 logger = logging.getLogger(__name__)
 
@@ -803,11 +805,80 @@ class TelegramBotConnector:
             )
 
 
+async def _resolve_telegram_bot_token_from_db() -> str | None:
+    """Attempt DB-first credential resolution for the Telegram bot connector.
+
+    Creates a short-lived asyncpg pool, resolves ``BUTLER_TELEGRAM_TOKEN``
+    from the ``butler_secrets`` table via :class:`~butlers.credential_store.CredentialStore`,
+    and closes the pool before returning.
+
+    Returns ``None`` if:
+    - No DB connection parameters are configured (env vars absent).
+    - The DB is reachable but the secret has not been stored yet.
+
+    In both cases the caller should fall back to env-var resolution.
+    """
+    import asyncpg
+
+    db_params = db_params_from_env()
+    db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers")
+
+    try:
+        pool = await asyncpg.create_pool(
+            host=db_params["host"],
+            port=db_params["port"],
+            user=db_params["user"],
+            password=db_params["password"],
+            database=db_name,
+            ssl=db_params.get("ssl"),  # type: ignore[arg-type]
+            min_size=1,
+            max_size=2,
+            command_timeout=5,
+        )
+    except Exception as exc:
+        logger.debug(
+            "DB connection failed during Telegram bot credential resolution (non-fatal): %s", exc
+        )
+        return None
+
+    try:
+        store = CredentialStore(pool)
+        token = await store.resolve("BUTLER_TELEGRAM_TOKEN", env_fallback=False)
+        if token:
+            logger.info(
+                "Telegram bot connector: resolved BUTLER_TELEGRAM_TOKEN from database (db=%s)",
+                db_name,
+            )
+        return token
+    except Exception as exc:
+        logger.debug("Telegram bot connector: DB credential lookup failed (non-fatal): %s", exc)
+        return None
+    finally:
+        await pool.close()
+
+
 async def run_telegram_bot_connector() -> None:
-    """CLI entry point for running Telegram bot connector."""
+    """CLI entry point for running Telegram bot connector.
+
+    Credential resolution order:
+    1. Database (if DATABASE_URL or POSTGRES_* env vars are configured).
+    2. Environment variable BUTLER_TELEGRAM_TOKEN (backward-compatible fallback).
+    """
     configure_logging(level="INFO", butler_name="telegram-bot")
 
+    # Step 1: Try DB-first credential resolution.
+    db_token: str | None = None
+    if os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_HOST"):
+        db_token = await _resolve_telegram_bot_token_from_db()
+
+    # Step 2: Load config from env vars.
     config = TelegramBotConnectorConfig.from_env()
+
+    # Step 3: Override with DB-resolved token if available.
+    if db_token is not None:
+        config = replace(config, telegram_token=db_token)
+        logger.debug("Telegram bot connector: config updated with DB-resolved token")
+
     connector = TelegramBotConnector(config)
 
     # Determine mode based on config

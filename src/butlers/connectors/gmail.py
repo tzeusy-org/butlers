@@ -62,6 +62,7 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
+from butlers.credential_store import CredentialStore
 from butlers.db import db_params_from_env
 from butlers.google_credentials import (
     MissingGoogleCredentialsError,
@@ -1226,16 +1227,20 @@ class GmailConnectorRuntime:
             self._metrics.record_ingest_submission(status=status, latency=latency)
 
 
-async def _resolve_gmail_credentials_from_db() -> tuple[str, str, str] | None:
+async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
     """Attempt DB-first credential resolution for the Gmail connector.
 
     Connects to the butler's PostgreSQL database (if DATABASE_URL or POSTGRES_*
-    env vars are set), looks up credentials via ``resolve_google_credentials``,
-    and returns ``(client_id, client_secret, refresh_token)`` on success.
+    env vars are set), looks up Google OAuth credentials via
+    ``resolve_google_credentials`` and the Pub/Sub webhook token via
+    :class:`~butlers.credential_store.CredentialStore`.
+
+    Returns a dict with keys ``client_id``, ``client_secret``,
+    ``refresh_token``, and optionally ``pubsub_webhook_token`` on success.
 
     Returns ``None`` if:
     - No DB connection parameters are configured (env vars absent).
-    - The DB is reachable but no credentials have been stored yet.
+    - The DB is reachable but no Google OAuth credentials have been stored yet.
 
     In both cases the caller should fall back to env-var resolution.
     """
@@ -1270,7 +1275,23 @@ async def _resolve_gmail_credentials_from_db() -> tuple[str, str, str] | None:
         async with pool.acquire() as conn:
             creds = await resolve_google_credentials(conn, caller="gmail-connector")
         logger.info("Gmail connector: resolved Google credentials from database (db=%s)", db_name)
-        return creds.client_id, creds.client_secret, creds.refresh_token
+
+        # Also try to resolve the Pub/Sub webhook token via CredentialStore.
+        store = CredentialStore(pool)
+        pubsub_token = await store.resolve("GMAIL_PUBSUB_WEBHOOK_TOKEN", env_fallback=False)
+
+        result: dict[str, str] = {
+            "client_id": creds.client_id,
+            "client_secret": creds.client_secret,
+            "refresh_token": creds.refresh_token,
+        }
+        if pubsub_token:
+            result["pubsub_webhook_token"] = pubsub_token
+            logger.info(
+                "Gmail connector: resolved GMAIL_PUBSUB_WEBHOOK_TOKEN from database (db=%s)",
+                db_name,
+            )
+        return result
     except MissingGoogleCredentialsError:
         logger.debug(
             "Gmail connector: no credentials in DB (db=%s), falling back to env vars", db_name
@@ -1290,43 +1311,81 @@ async def run_gmail_connector() -> None:
     1. Database (if DATABASE_URL or POSTGRES_* env vars are configured).
     2. Environment variables (GOOGLE_OAUTH_CLIENT_ID/SECRET + GOOGLE_REFRESH_TOKEN,
        or legacy GMAIL_* aliases).
+
+    DB-resolved credentials are applied directly to the config object without
+    injecting into ``os.environ``.
     """
     configure_logging(level="INFO", butler_name="gmail")
 
     # Step 1: Try DB-first credential resolution.
-    db_creds = await _resolve_gmail_credentials_from_db()
+    db_creds: dict[str, str] | None = await _resolve_gmail_credentials_from_db()
 
+    # Step 2: Load config from env vars.
+    env_config_ok = True
+    config: GmailConnectorConfig | None = None
     try:
         config = GmailConnectorConfig.from_env()
     except Exception as exc:
         if db_creds is None:
             logger.error("Failed to load connector config: %s", exc)
             raise
-        # Config failed due to missing credential env vars, but we have DB credentials.
-        # Inject them into the environment and retry.
+        # Config failed due to missing credential env vars, but DB creds are available.
+        # We will build the config directly below without touching os.environ.
+        env_config_ok = False
         logger.info(
-            "Gmail connector: injecting DB-resolved credentials into config (env vars absent)"
+            "Gmail connector: env-var config load failed (%s); "
+            "will build from DB-resolved credentials.",
+            exc,
         )
-        os.environ["GOOGLE_OAUTH_CLIENT_ID"] = db_creds[0]
-        os.environ["GOOGLE_OAUTH_CLIENT_SECRET"] = db_creds[1]
-        os.environ["GOOGLE_REFRESH_TOKEN"] = db_creds[2]
-        try:
-            config = GmailConnectorConfig.from_env()
-        except Exception as exc2:
-            logger.error("Failed to load connector config after DB credential injection: %s", exc2)
-            raise
 
-    # Step 2: If DB creds were found, override whatever was in env vars.
-    if db_creds is not None:
-        config = config.model_copy(
-            update={
-                "gmail_client_id": db_creds[0],
-                "gmail_client_secret": db_creds[1],
-                "gmail_refresh_token": db_creds[2],
-            }
-        )
+    if not env_config_ok:
+        # Build the config directly using DB credentials — no os.environ injection.
+        assert db_creds is not None  # type narrowing: cannot be None here (checked above)
+        try:
+            cursor_path_str = os.environ.get("CONNECTOR_CURSOR_PATH")
+            if not cursor_path_str:
+                raise ValueError("CONNECTOR_CURSOR_PATH is required")
+            config = GmailConnectorConfig(
+                switchboard_mcp_url=os.environ["SWITCHBOARD_MCP_URL"],
+                connector_provider=os.environ.get("CONNECTOR_PROVIDER", "gmail"),
+                connector_channel=os.environ.get("CONNECTOR_CHANNEL", "email"),
+                connector_endpoint_identity=os.environ["CONNECTOR_ENDPOINT_IDENTITY"],
+                connector_cursor_path=Path(cursor_path_str),
+                connector_max_inflight=int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8")),
+                connector_health_port=int(os.environ.get("CONNECTOR_HEALTH_PORT", "40082")),
+                gmail_client_id=db_creds["client_id"],
+                gmail_client_secret=db_creds["client_secret"],
+                gmail_refresh_token=db_creds["refresh_token"],
+                gmail_watch_renew_interval_s=int(
+                    os.environ.get("GMAIL_WATCH_RENEW_INTERVAL_S", "86400")
+                ),
+                gmail_poll_interval_s=int(os.environ.get("GMAIL_POLL_INTERVAL_S", "60")),
+                gmail_pubsub_enabled=os.environ.get("GMAIL_PUBSUB_ENABLED", "false").lower()
+                in ("true", "1", "yes"),
+                gmail_pubsub_topic=os.environ.get("GMAIL_PUBSUB_TOPIC"),
+                gmail_pubsub_webhook_port=int(os.environ.get("GMAIL_PUBSUB_WEBHOOK_PORT", "40083")),
+                gmail_pubsub_webhook_path=os.environ.get(
+                    "GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook"
+                ),
+                gmail_pubsub_webhook_token=db_creds.get("pubsub_webhook_token")
+                or os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN"),
+            )
+        except Exception as exc2:
+            logger.error("Failed to build connector config from DB credentials: %s", exc2)
+            raise
+    elif db_creds is not None and config is not None:
+        # Step 3: Env config loaded fine — override with DB-resolved credentials.
+        update: dict[str, str | None] = {
+            "gmail_client_id": db_creds["client_id"],
+            "gmail_client_secret": db_creds["client_secret"],
+            "gmail_refresh_token": db_creds["refresh_token"],
+        }
+        if "pubsub_webhook_token" in db_creds:
+            update["gmail_pubsub_webhook_token"] = db_creds["pubsub_webhook_token"]
+        config = config.model_copy(update=update)
         logger.debug("Gmail connector: config updated with DB-resolved credentials")
 
+    assert config is not None  # always set by this point
     connector = GmailConnectorRuntime(config)
     await connector.start()
 

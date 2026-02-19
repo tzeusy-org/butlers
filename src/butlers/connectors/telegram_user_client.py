@@ -24,9 +24,10 @@ Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - CONNECTOR_CURSOR_PATH (required; stores last processed update/message ID)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_BACKFILL_WINDOW_H (optional, bounded startup replay in hours)
-- TELEGRAM_API_ID (required; from my.telegram.org)
-- TELEGRAM_API_HASH (required; from my.telegram.org)
-- TELEGRAM_USER_SESSION (required; session string or encrypted file path)
+- TELEGRAM_API_ID (required; resolved from DB first, then env; from my.telegram.org)
+- TELEGRAM_API_HASH (required; resolved from DB first, then env; from my.telegram.org)
+- TELEGRAM_USER_SESSION (required; resolved from DB first, then env; session string or
+  encrypted file path)
 
 Security requirements:
 - Never commit credentials or session artifacts to version control
@@ -43,13 +44,15 @@ import html
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.core.logging import configure_logging
+from butlers.credential_store import CredentialStore
+from butlers.db import db_params_from_env
 
 # Telethon is marked as optional dependency - handle import gracefully
 try:
@@ -543,11 +546,121 @@ class TelegramUserClientConnector:
             )
 
 
+async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
+    """Attempt DB-first credential resolution for the Telegram user-client connector.
+
+    Creates a short-lived asyncpg pool, resolves ``TELEGRAM_API_ID``,
+    ``TELEGRAM_API_HASH``, and ``TELEGRAM_USER_SESSION`` from the
+    ``butler_secrets`` table via :class:`~butlers.credential_store.CredentialStore`,
+    and closes the pool before returning.
+
+    Returns a dict with keys ``TELEGRAM_API_ID``, ``TELEGRAM_API_HASH``,
+    ``TELEGRAM_USER_SESSION`` if all three are found in the DB, or ``None`` if:
+    - No DB connection parameters are configured.
+    - The DB is reachable but one or more secrets have not been stored yet.
+
+    In both cases the caller should fall back to env-var resolution.
+    """
+    import asyncpg
+
+    db_params = db_params_from_env()
+    db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers")
+
+    try:
+        pool = await asyncpg.create_pool(
+            host=db_params["host"],
+            port=db_params["port"],
+            user=db_params["user"],
+            password=db_params["password"],
+            database=db_name,
+            ssl=db_params.get("ssl"),  # type: ignore[arg-type]
+            min_size=1,
+            max_size=2,
+            command_timeout=5,
+        )
+    except Exception as exc:
+        logger.debug(
+            "DB connection failed during Telegram user-client credential resolution "
+            "(non-fatal): %s",
+            exc,
+        )
+        return None
+
+    try:
+        store = CredentialStore(pool)
+        api_id = await store.resolve("TELEGRAM_API_ID", env_fallback=False)
+        api_hash = await store.resolve("TELEGRAM_API_HASH", env_fallback=False)
+        user_session = await store.resolve("TELEGRAM_USER_SESSION", env_fallback=False)
+
+        if api_id and api_hash and user_session:
+            logger.info(
+                "Telegram user-client connector: resolved credentials from database (db=%s)",
+                db_name,
+            )
+            return {
+                "TELEGRAM_API_ID": api_id,
+                "TELEGRAM_API_HASH": api_hash,
+                "TELEGRAM_USER_SESSION": user_session,
+            }
+
+        missing = [
+            k
+            for k, v in [
+                ("TELEGRAM_API_ID", api_id),
+                ("TELEGRAM_API_HASH", api_hash),
+                ("TELEGRAM_USER_SESSION", user_session),
+            ]
+            if not v
+        ]
+        logger.debug(
+            "Telegram user-client connector: secrets not found in DB (db=%s): %s",
+            db_name,
+            missing,
+        )
+        return None
+    except Exception as exc:
+        logger.debug(
+            "Telegram user-client connector: DB credential lookup failed (non-fatal): %s", exc
+        )
+        return None
+    finally:
+        await pool.close()
+
+
 async def run_telegram_user_client_connector() -> None:
-    """CLI entry point for running Telegram user-client connector."""
+    """CLI entry point for running Telegram user-client connector.
+
+    Credential resolution order:
+    1. Database (if DATABASE_URL or POSTGRES_* env vars are configured).
+    2. Environment variables TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_USER_SESSION
+       (backward-compatible fallback).
+    """
     configure_logging(level="INFO", butler_name="telegram-user-client")
 
+    # Step 1: Try DB-first credential resolution.
+    db_creds: dict[str, str] | None = None
+    if os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_HOST"):
+        db_creds = await _resolve_telegram_user_credentials_from_db()
+
+    # Step 2: Load config from env vars.
     config = TelegramUserClientConnectorConfig.from_env()
+
+    # Step 3: Override with DB-resolved credentials if available.
+    if db_creds is not None:
+        try:
+            api_id = int(db_creds["TELEGRAM_API_ID"])
+        except ValueError as exc:
+            logger.error("Telegram user-client connector: invalid TELEGRAM_API_ID from DB: %s", exc)
+            api_id = config.telegram_api_id
+
+        config = replace(
+            config,
+            telegram_api_id=api_id,
+            telegram_api_hash=db_creds["TELEGRAM_API_HASH"],
+            telegram_user_session=db_creds["TELEGRAM_USER_SESSION"],
+        )
+        logger.debug("Telegram user-client connector: config updated with DB-resolved credentials")
+
     connector = TelegramUserClientConnector(config)
 
     try:

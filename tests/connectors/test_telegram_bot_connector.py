@@ -14,6 +14,7 @@ import pytest
 from butlers.connectors.telegram_bot import (
     TelegramBotConnector,
     TelegramBotConnectorConfig,
+    _resolve_telegram_bot_token_from_db,
 )
 
 
@@ -712,3 +713,73 @@ async def test_process_update_handles_submission_error(
     ):
         # Should not raise, just log error
         await connector._process_update(sample_telegram_update)
+
+
+class TestResolveTelegramBotTokenFromDb:
+    """Tests for _resolve_telegram_bot_token_from_db — DB-first credential resolution."""
+
+    async def test_returns_none_when_db_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns None gracefully when DB connection fails."""
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+
+        async def fake_create_pool(**kwargs):
+            raise OSError("Connection refused")
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_telegram_bot_token_from_db()
+        assert result is None
+
+    async def test_returns_none_when_secret_not_in_db(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Returns None when DB is accessible but secret is not stored."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow.return_value = None  # No secret stored
+
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_pool.close = AsyncMock()
+
+        async def fake_create_pool(**kwargs):
+            return mock_pool
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_telegram_bot_token_from_db()
+        assert result is None
+
+    async def test_returns_token_when_stored_in_db(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns the token string when found in butler_secrets table."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+        monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", "butler_test")
+
+        # The CredentialStore.load method does: conn.fetchrow(SELECT secret_value ...)
+        mock_row = MagicMock()
+        mock_row.__getitem__ = lambda self, key: "db-bot-token-abc123"
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow.return_value = mock_row
+
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_pool.close = AsyncMock()
+
+        async def fake_create_pool(**kwargs):
+            return mock_pool
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_telegram_bot_token_from_db()
+        assert result == "db-bot-token-abc123"
