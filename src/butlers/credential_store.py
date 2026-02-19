@@ -32,7 +32,10 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +113,7 @@ class CredentialStore:
         concurrent tool invocations are safe.
     """
 
-    def __init__(self, pool: Any) -> None:
+    def __init__(self, pool: asyncpg.Pool) -> None:
         self.pool = pool
 
     # ------------------------------------------------------------------
@@ -326,22 +329,16 @@ class CredentialStore:
             Metadata for each stored secret, ordered by
             ``(category, secret_key)``.  Raw values are never included.
         """
+        base_query = f"""
+            SELECT secret_key, category, description, is_sensitive,
+                   created_at, updated_at, expires_at
+            FROM {_TABLE}
+        """
         if category is not None:
-            query = f"""
-                SELECT secret_key, category, description, is_sensitive,
-                       created_at, updated_at, expires_at
-                FROM {_TABLE}
-                WHERE category = $1
-                ORDER BY category, secret_key
-            """
+            query = f"{base_query} WHERE category = $1 ORDER BY category, secret_key"
             params: tuple[Any, ...] = (category,)
         else:
-            query = f"""
-                SELECT secret_key, category, description, is_sensitive,
-                       created_at, updated_at, expires_at
-                FROM {_TABLE}
-                ORDER BY category, secret_key
-            """
+            query = f"{base_query} ORDER BY category, secret_key"
             params = ()
 
         async with self.pool.acquire() as conn:
