@@ -4,6 +4,178 @@
 
 This runbook covers day-to-day operations, troubleshooting, and maintenance for Google OAuth tokens in production Butlers deployments. It complements `setup-guide.md` with operational procedures.
 
+## Section 0: Verification Checklist
+
+Use this checklist after initial OAuth setup or after any credential rotation.
+Two paths are covered: **Local Development (Tailscale HTTPS)** and **Production**.
+
+---
+
+### 0.1: Local Development Verification (Tailscale HTTPS)
+
+Prerequisites:
+- Tailscale installed and authenticated (`tailscale up`)
+- Butlers dev environment running (`./dev.sh`)
+- Google Cloud Console redirect URI includes your Tailscale HTTPS URL
+
+#### Checklist
+
+- [ ] **Tailscale is serving the backend**
+  ```bash
+  tailscale serve status
+  # Expected: https://<your-name>.ts.net/ → http://localhost:8200
+  ```
+
+- [ ] **Backend API is reachable via HTTPS**
+  ```bash
+  curl -s https://<your-tailscale-name>.ts.net/api/health | jq .
+  # Expected: {"status": "ok", ...}
+  ```
+
+- [ ] **OAuth status shows not_configured or connected**
+  ```bash
+  curl -s https://<your-tailscale-name>.ts.net/api/oauth/status | jq .google.state
+  # Expected: "not_configured" (before bootstrap) or "connected" (after)
+  ```
+
+- [ ] **OAuth start redirects to Google**
+  ```bash
+  curl -s -o /dev/null -w "%{http_code}"     https://<your-tailscale-name>.ts.net/api/oauth/google/start
+  # Expected: 302
+  curl -s "https://<your-tailscale-name>.ts.net/api/oauth/google/start?redirect=false" | jq .authorization_url
+  # Expected: a URL starting with "https://accounts.google.com/..."
+  ```
+
+- [ ] **Complete the OAuth flow manually**
+  1. Open `https://<your-tailscale-name>.ts.net/api/oauth/google/start` in a browser
+  2. Authenticate with Google and grant permissions
+  3. Verify you are redirected back and see a success message
+
+- [ ] **OAuth status shows connected after bootstrap**
+  ```bash
+  curl -s https://<your-tailscale-name>.ts.net/api/oauth/status | jq .google
+  # Expected: {"state": "connected", "connected": true, "scopes_granted": [...]}
+  ```
+
+- [ ] **Credentials persist across restarts**
+  ```bash
+  # Restart the backend
+  # Then check status again — should still show "connected"
+  curl -s https://<your-tailscale-name>.ts.net/api/oauth/status | jq .google.state
+  # Expected: "connected"
+  ```
+
+- [ ] **Startup guard passes for Gmail connector**
+  ```bash
+  # In a new terminal, source credentials and run the guard directly:
+  GOOGLE_REFRESH_TOKEN=<your-token> uv run python -c "
+  from butlers.startup_guard import require_google_credentials_or_exit
+  require_google_credentials_or_exit(caller='test')
+  print('Guard passed — credentials are present')
+  "
+  # Expected: "Guard passed — credentials are present"
+  ```
+
+- [ ] **Gmail connector starts without credential error**
+  ```bash
+  # Check the connector pane in tmux for absence of STARTUP BLOCKED error
+  # Expected: no "STARTUP BLOCKED" banner; connector begins polling
+  ```
+
+- [ ] **dev.sh pre-flight passes**
+  ```bash
+  ./dev.sh --skip-oauth-check  # Only if needed for debugging
+  # Without --skip-oauth-check, the script should show no WARNING banner
+  ```
+
+---
+
+### 0.2: Production Verification Checklist
+
+Prerequisites:
+- Production domain with valid HTTPS certificate
+- Google Cloud Console redirect URI includes the production URL
+- `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` set
+
+#### Checklist
+
+- [ ] **Backend health check passes**
+  ```bash
+  curl -s https://<prod-domain>/api/health | jq .status
+  # Expected: "ok"
+  ```
+
+- [ ] **OAuth status endpoint returns 200**
+  ```bash
+  curl -s -o /dev/null -w "%{http_code}" https://<prod-domain>/api/oauth/status
+  # Expected: 200
+  ```
+
+- [ ] **Status reflects current state accurately**
+  ```bash
+  curl -s https://<prod-domain>/api/oauth/status | jq .google
+  # Expected: either {"state": "connected", "connected": true, ...}
+  # or {"state": "not_configured", "connected": false, ...}
+  ```
+
+- [ ] **OAuth start endpoint is reachable**
+  ```bash
+  curl -s "https://<prod-domain>/api/oauth/google/start?redirect=false" | jq .authorization_url
+  # Expected: a Google authorization URL (not a 503 error)
+  ```
+
+- [ ] **Callback URI is registered in Google Cloud Console**
+  - Navigate to Google Cloud Console → APIs & Services → Credentials
+  - Confirm `https://<prod-domain>/api/oauth/google/callback` is listed as an authorized redirect URI
+
+- [ ] **Run the OAuth flow end-to-end in a browser**
+  1. Open `https://<prod-domain>/api/oauth/google/start`
+  2. Complete authentication with Google
+  3. Verify redirect back to dashboard succeeds
+  4. Confirm status shows `connected`
+
+- [ ] **Credentials are stored in DB (not only in env vars)**
+  ```bash
+  # Connect to the production DB and check the oauth credentials table:
+  psql $PG_DSN -c "SELECT credential_key, credentials->>'client_id', updated_at FROM google_oauth_credentials;"
+  # Expected: one row with credential_key='google' and a recent updated_at
+  ```
+
+- [ ] **Scopes include both Gmail and Calendar**
+  ```bash
+  curl -s https://<prod-domain>/api/oauth/status | jq '.google.scopes_granted[]'
+  # Expected: includes both gmail and calendar scopes
+  ```
+
+- [ ] **Re-bootstrap does not break existing credentials**
+  - Run the OAuth flow again (re-authenticate)
+  - Verify that the status still shows `connected` and scopes are unchanged
+
+- [ ] **Startup guard logs for connectors show no errors**
+  ```bash
+  # Check production logs for absence of "STARTUP BLOCKED"
+  # and presence of "Google credentials resolved" or similar OK indicator
+  journalctl -u butlers-gmail-connector --no-pager | grep -E "STARTUP|credential|oauth" | tail -20
+  ```
+
+---
+
+### 0.3: Verification Failure Triage
+
+| Symptom | Likely cause | Action |
+|---------|-------------|--------|
+| `GET /api/oauth/google/start` returns 503 | `GOOGLE_OAUTH_CLIENT_ID` not set | Set env var and restart |
+| `GET /api/oauth/status` shows `not_configured` | No credentials bootstrapped | Run OAuth flow via dashboard |
+| OAuth callback returns `invalid_state` | State token expired (>10 min) | Re-initiate from `/start` |
+| OAuth callback returns `no_refresh_token` | Access type not `offline` | Check `prompt=consent` in start URL |
+| Gmail connector shows `STARTUP BLOCKED` | Startup guard failed | Check that env vars or DB credentials are set |
+| Status shows `expired` | Refresh token revoked or inactive >6 months | Re-run OAuth flow |
+| Status shows `missing_scope` | Token lacks required scopes | Re-run OAuth with all scopes |
+| Status shows `redirect_uri_mismatch` | Redirect URI not in Google Console | Add URI to Google Cloud Console |
+| `psql` shows no row in `google_oauth_credentials` | OAuth flow never completed (DB store path) | Run callback flow with DB manager wired |
+
+---
+
 ---
 
 ## Section 1: Daily Operations
