@@ -37,6 +37,7 @@ Security notes:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import secrets
@@ -254,6 +255,9 @@ async def oauth_google_callback(
         logger.warning("Google OAuth provider error: %s", error)
         if error_description:
             logger.debug("Google OAuth provider error_description: %s", error_description)
+        # Consume the state token if provided to prevent reuse after a denied/cancelled flow.
+        if state:
+            _validate_and_consume_state(state)
         error_payload = OAuthCallbackError(
             error_code="provider_error",
             message=_sanitize_provider_error(error),
@@ -417,7 +421,7 @@ async def _exchange_code_for_tokens(
 
     try:
         return response.json()
-    except Exception as exc:
+    except json.JSONDecodeError as exc:
         raise _TokenExchangeError(f"Invalid JSON in token response: {exc}") from exc
 
 

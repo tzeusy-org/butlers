@@ -213,6 +213,27 @@ class TestOAuthGoogleStart:
 
         assert resp.status_code == 503
 
+    async def test_callback_provider_error_consumes_state(self):
+        """Provider error with a valid state token consumes the state (one-time-use)."""
+        app = _make_app()
+        state = _generate_state()
+        _store_state(state)
+
+        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                # Provider returns error with the state token included
+                resp = await client.get(
+                    "/api/oauth/google/callback",
+                    params={"error": "access_denied", "state": state},
+                )
+
+        assert resp.status_code == 400
+        # State must be consumed — cannot be replayed
+        assert _validate_and_consume_state(state) is False
+
     async def test_start_uses_default_scopes(self):
         """Authorization URL includes Gmail and Calendar scopes by default."""
         app = _make_app()
