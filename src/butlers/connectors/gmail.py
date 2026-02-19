@@ -58,6 +58,7 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
+from butlers.startup_guard import require_google_credentials_or_exit
 from butlers.storage.blobs import BlobStore
 
 logger = logging.getLogger(__name__)
@@ -1182,6 +1183,7 @@ async def run_gmail_connector() -> None:
 
 def main() -> None:
     """CLI entrypoint for Gmail connector."""
+    require_google_credentials_or_exit(caller="gmail-connector")
     asyncio.run(run_gmail_connector())
 
 
