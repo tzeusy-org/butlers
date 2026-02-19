@@ -294,3 +294,128 @@ Required query support:
   - `limit`
   - `tool_name`
   - `active_only`
+
+## OAuth Domain Contract
+
+Endpoints for initiating the Google OAuth authorization flow and surfacing
+credential connectivity state in the dashboard.
+
+### Bootstrap Flow
+
+- `GET /api/oauth/google/start` — begin Google OAuth authorization
+  - Query params:
+    - `redirect` (bool, default `true`): if `true` returns a `302` redirect to Google;
+      if `false` returns `OAuthStartResponse` JSON for programmatic callers.
+  - Success (redirect=true): `302` → Google authorization URL
+  - Success (redirect=false): `200 OAuthStartResponse`
+  - Error: `503` when server-side credentials are not configured
+
+- `GET /api/oauth/google/callback` — handle Google callback after user authorization
+  - Query params (injected by Google): `code`, `state`, `error`, `error_description`
+  - Success (no `OAUTH_DASHBOARD_URL`): `200 OAuthCallbackSuccess`
+  - Success (with `OAUTH_DASHBOARD_URL`): `302` → `{OAUTH_DASHBOARD_URL}?oauth_success=true`
+  - Error (no dashboard URL): `400 OAuthCallbackError`
+  - Error (with `OAUTH_DASHBOARD_URL`): `302` → `{OAUTH_DASHBOARD_URL}?oauth_error={error_code}`
+
+### Credential Status Surface
+
+- `GET /api/oauth/status` → `OAuthStatusResponse`
+
+Always returns HTTP 200. Errors and non-connected states are encoded in
+the payload, not in the HTTP status code. This makes the endpoint safe to
+poll from the dashboard without special error handling.
+
+#### `OAuthStatusResponse`
+
+```typescript
+interface OAuthStatusResponse {
+  google: OAuthCredentialStatus;
+}
+```
+
+#### `OAuthCredentialStatus`
+
+```typescript
+interface OAuthCredentialStatus {
+  provider: string;                  // "google"
+  state: OAuthCredentialState;       // machine-readable state enum
+  connected: boolean;                // true iff state === "connected"
+  scopes_granted: string[] | null;   // OAuth scopes present on the credential
+  remediation: string | null;        // actionable guidance when connected=false
+  detail: string | null;             // technical detail for operator debugging
+}
+```
+
+#### `OAuthCredentialState` enum
+
+| Value | Meaning | Frontend UX |
+|-------|---------|-------------|
+| `connected` | Credentials present, validated, scopes sufficient | Show green badge |
+| `not_configured` | No client credentials or no refresh token | Show "Connect Google" button |
+| `expired` | Refresh token revoked or expired | Show "Reconnect Google" button |
+| `missing_scope` | Token valid but lacks required permissions | Show "Re-authorize Google" button |
+| `redirect_uri_mismatch` | Client credentials or redirect URI invalid | Show "Check Configuration" alert |
+| `unapproved_tester` | App in testing mode, account not added as tester | Show tester setup guidance |
+| `unknown_error` | Unclassified error | Show error banner with `remediation` text |
+
+#### `OAuthCallbackSuccess`
+
+```typescript
+interface OAuthCallbackSuccess {
+  success: true;
+  message: string;
+  provider: string;       // "google"
+  scope: string | null;   // space-separated scopes granted
+}
+```
+
+#### `OAuthCallbackError`
+
+```typescript
+interface OAuthCallbackError {
+  success: false;
+  error_code: string;   // machine-readable error identifier
+  message: string;      // human-readable actionable message
+  provider: string;     // "google"
+}
+```
+
+#### Error codes for `OAuthCallbackError`
+
+| `error_code` | Cause |
+|--------------|-------|
+| `provider_error` | Google returned an error (e.g. user denied consent) |
+| `missing_code` | Authorization code absent from callback |
+| `missing_state` | CSRF state token absent — possible replay attack |
+| `invalid_state` | State token invalid or expired |
+| `token_exchange_failed` | Failed to exchange authorization code for tokens |
+| `no_refresh_token` | Token exchange succeeded but Google did not return a refresh token |
+
+#### Dashboard Integration Example
+
+```typescript
+// Poll status on page load and after OAuth redirect
+const checkOAuthStatus = async () => {
+  const resp = await fetch('/api/oauth/status');
+  const { google } = await resp.json();
+
+  if (google.connected) {
+    showConnectedBadge();
+  } else if (google.state === 'not_configured') {
+    showConnectButton({ onClick: () => window.location.href = '/api/oauth/google/start' });
+  } else {
+    showRemediationAlert(google.remediation);
+  }
+};
+
+// Handle callback result (check URL params after redirect back from Google)
+const params = new URLSearchParams(window.location.search);
+if (params.has('oauth_success')) {
+  // Re-check status to confirm connected state
+  await checkOAuthStatus();
+  showSuccessBanner();
+} else if (params.has('oauth_error')) {
+  const errorCode = params.get('oauth_error');
+  showErrorBanner(`OAuth failed: ${errorCode}`);
+}
+```

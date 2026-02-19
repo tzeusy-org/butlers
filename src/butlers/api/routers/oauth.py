@@ -18,6 +18,11 @@ The bootstrap flow:
      - Redirects to the dashboard URL on success (if OAUTH_DASHBOARD_URL is set),
        or returns a JSON success payload.
 
+  3. GET /api/oauth/status
+     - Reports whether Google credentials are present and usable.
+     - Returns a machine-readable state (OAuthCredentialState) plus actionable
+       remediation guidance for the dashboard UX.
+
 Environment variables:
   GOOGLE_OAUTH_CLIENT_ID     — OAuth client ID (required)
   GOOGLE_OAUTH_CLIENT_SECRET — OAuth client secret (required)
@@ -27,12 +32,15 @@ Environment variables:
                                (default: Gmail + Calendar read/write)
   OAUTH_DASHBOARD_URL        — Where to redirect after a successful bootstrap
                                (default: not set; returns JSON payload instead)
+  GMAIL_REFRESH_TOKEN        — Stored refresh token (set after bootstrap)
+  GOOGLE_REFRESH_TOKEN       — Alternative env var for the stored refresh token
 
 Security notes:
   - State tokens are one-time-use: consumed on first callback validation.
   - State store entries expire after 10 minutes.
   - Client secrets are never echoed back in responses.
   - Error messages are sanitized to avoid leaking OAuth provider details.
+  - The status endpoint never returns raw token values.
 """
 
 from __future__ import annotations
@@ -49,7 +57,14 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from butlers.api.models.oauth import OAuthCallbackError, OAuthCallbackSuccess, OAuthStartResponse
+from butlers.api.models.oauth import (
+    OAuthCallbackError,
+    OAuthCallbackSuccess,
+    OAuthCredentialState,
+    OAuthCredentialStatus,
+    OAuthStartResponse,
+    OAuthStatusResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +76,20 @@ router = APIRouter(prefix="/api/oauth", tags=["oauth"])
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 
 _DEFAULT_REDIRECT_URI = "http://localhost:8200/api/oauth/google/callback"
 _DEFAULT_SCOPES = " ".join(
     [
         "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/calendar",
+    ]
+)
+
+# Required scopes for full butler functionality.
+_REQUIRED_SCOPES = frozenset(
+    [
         "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/calendar",
     ]
@@ -161,6 +185,19 @@ def _get_dashboard_url() -> str | None:
     """Read OAUTH_DASHBOARD_URL; returns None if not set."""
     val = os.environ.get("OAUTH_DASHBOARD_URL", "").strip()
     return val or None
+
+
+def _get_stored_refresh_token() -> str | None:
+    """Read the stored Google refresh token from environment.
+
+    Checks GMAIL_REFRESH_TOKEN first, then GOOGLE_REFRESH_TOKEN.
+    Returns None if neither is set.
+    """
+    for var in ("GMAIL_REFRESH_TOKEN", "GOOGLE_REFRESH_TOKEN"):
+        val = os.environ.get(var, "").strip()
+        if val:
+            return val
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +397,273 @@ async def oauth_google_callback(
         )
 
     return JSONResponse(content=success_payload.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# Status endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/status",
+    response_model=OAuthStatusResponse,
+    summary="Get OAuth credential status",
+    description=(
+        "Returns the connectivity state of all OAuth credential sets. "
+        "Use this endpoint to determine whether Google credentials are configured "
+        "and to surface actionable remediation guidance in the dashboard UX."
+    ),
+)
+async def oauth_status() -> OAuthStatusResponse:
+    """Report the current state of Google OAuth credentials.
+
+    Checks whether the stored refresh token environment variables are set and,
+    when possible, probes Google's token-info endpoint to validate scope coverage.
+
+    This endpoint is designed for dashboard polling (e.g. after completing the
+    OAuth bootstrap flow) and for surfacing connection status badges in the UI.
+
+    Returns
+    -------
+    OAuthStatusResponse
+        Aggregated status for all OAuth providers (Google only in v1).
+    """
+    google_status = await _check_google_credential_status()
+    return OAuthStatusResponse(google=google_status)
+
+
+async def _check_google_credential_status() -> OAuthCredentialStatus:
+    """Derive the operational status of the stored Google credentials.
+
+    Performs the following checks in order:
+
+    1. Whether GOOGLE_OAUTH_CLIENT_ID / CLIENT_SECRET are configured (not_configured).
+    2. Whether a refresh token is stored in env (not_configured).
+    3. Probe the token-info endpoint by attempting to refresh an access token and
+       then introspecting the resulting scopes (missing_scope, expired, etc.).
+
+    Returns
+    -------
+    OAuthCredentialStatus
+        Structured status including state, connected flag, and remediation text.
+    """
+    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+    refresh_token = _get_stored_refresh_token()
+
+    # --- Check 1: client credentials not configured ---
+    if not client_id or not client_secret:
+        return OAuthCredentialStatus(
+            state=OAuthCredentialState.not_configured,
+            connected=False,
+            remediation=(
+                "Google OAuth client credentials are not configured. "
+                "Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET, "
+                "then click 'Connect Google' to start the authorization flow."
+            ),
+            detail="GOOGLE_OAUTH_CLIENT_ID or GOOGLE_OAUTH_CLIENT_SECRET is missing.",
+        )
+
+    # --- Check 2: no refresh token stored ---
+    if not refresh_token:
+        return OAuthCredentialStatus(
+            state=OAuthCredentialState.not_configured,
+            connected=False,
+            remediation=(
+                "Google credentials have not been connected yet. "
+                "Click 'Connect Google' to start the OAuth authorization flow."
+            ),
+            detail="No refresh token found in GMAIL_REFRESH_TOKEN or GOOGLE_REFRESH_TOKEN.",
+        )
+
+    # --- Check 3: probe Google to validate the refresh token ---
+    return await _probe_google_token(
+        client_id=client_id,
+        client_secret=client_secret,
+        refresh_token=refresh_token,
+    )
+
+
+async def _probe_google_token(
+    *,
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+) -> OAuthCredentialStatus:
+    """Attempt to refresh an access token and introspect the resulting scopes.
+
+    This makes a real HTTP call to Google's token endpoint. On failure the
+    error is classified into a specific ``OAuthCredentialState`` with an
+    actionable ``remediation`` message for the dashboard.
+
+    Parameters
+    ----------
+    client_id:
+        Google OAuth client ID.
+    client_secret:
+        Google OAuth client secret.
+    refresh_token:
+        Stored refresh token to validate.
+
+    Returns
+    -------
+    OAuthCredentialStatus
+        Derived status based on the token probe result.
+    """
+    payload = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http_client:
+            response = await http_client.post(GOOGLE_TOKEN_URL, data=payload)
+    except httpx.TransportError as exc:
+        logger.warning("OAuth status probe: network error contacting Google: %s", exc)
+        return OAuthCredentialStatus(
+            state=OAuthCredentialState.unknown_error,
+            connected=False,
+            remediation=(
+                "Unable to reach Google's authorization server. "
+                "Check your network connectivity and try again."
+            ),
+            detail=f"Network error: {exc}",
+        )
+
+    if response.status_code != 200:
+        return _classify_token_refresh_error(response)
+
+    try:
+        token_data = response.json()
+    except json.JSONDecodeError as exc:
+        logger.warning("OAuth status probe: invalid JSON from Google token endpoint: %s", exc)
+        return OAuthCredentialStatus(
+            state=OAuthCredentialState.unknown_error,
+            connected=False,
+            remediation=("Received an unexpected response from Google. Please try again later."),
+            detail=f"JSON decode error: {exc}",
+        )
+
+    # --- Token refresh succeeded — check scopes ---
+    granted_scope_str = token_data.get("scope", "")
+    granted_scopes = [s for s in granted_scope_str.split() if s]
+    granted_scope_set = set(granted_scopes)
+
+    missing = _REQUIRED_SCOPES - granted_scope_set
+    if missing:
+        return OAuthCredentialStatus(
+            state=OAuthCredentialState.missing_scope,
+            connected=False,
+            scopes_granted=granted_scopes,
+            remediation=(
+                "Your Google credentials are missing required permissions. "
+                "Re-run the OAuth flow and ensure you grant access to Gmail and Calendar. "
+                "If prompted, click 'Allow' for all requested permissions."
+            ),
+            detail=f"Missing required scopes: {', '.join(sorted(missing))}",
+        )
+
+    return OAuthCredentialStatus(
+        state=OAuthCredentialState.connected,
+        connected=True,
+        scopes_granted=granted_scopes,
+        remediation=None,
+        detail=None,
+    )
+
+
+def _classify_token_refresh_error(response: httpx.Response) -> OAuthCredentialStatus:
+    """Map a failed token-refresh HTTP response to an OAuthCredentialStatus.
+
+    Interprets Google's error codes (from the JSON body where available)
+    and returns a structured status with actionable remediation text.
+
+    Parameters
+    ----------
+    response:
+        The failed HTTP response from Google's token endpoint.
+
+    Returns
+    -------
+    OAuthCredentialStatus
+        Classified status with remediation guidance.
+    """
+    error_code: str | None = None
+    error_description: str | None = None
+
+    try:
+        body = response.json()
+        error_code = body.get("error")
+        error_description = body.get("error_description")
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    logger.warning(
+        "OAuth status probe: token refresh failed HTTP %d error=%s",
+        response.status_code,
+        error_code,
+    )
+
+    # invalid_grant — token revoked, expired, or never valid
+    if error_code == "invalid_grant":
+        return OAuthCredentialStatus(
+            state=OAuthCredentialState.expired,
+            connected=False,
+            remediation=(
+                "Your Google authorization has expired or been revoked. "
+                "Click 'Connect Google' to re-run the OAuth flow and obtain a new token."
+            ),
+            detail=(
+                f"Google error: invalid_grant — {error_description or 'token revoked or expired'}"
+            ),
+        )
+
+    # invalid_client — client ID/secret mismatch or redirect URI mismatch
+    if error_code == "invalid_client":
+        # Heuristic: redirect URI mismatch often surfaces as invalid_client
+        return OAuthCredentialStatus(
+            state=OAuthCredentialState.redirect_uri_mismatch,
+            connected=False,
+            remediation=(
+                "OAuth client credentials are invalid or the redirect URI does not match "
+                "the one registered in the Google Cloud Console. "
+                "Verify GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and "
+                "GOOGLE_OAUTH_REDIRECT_URI, then re-run the OAuth flow."
+            ),
+            detail=(
+                f"Google error: invalid_client — "
+                f"{error_description or 'client credentials invalid'}"
+            ),
+        )
+
+    # access_denied — typically the tester approval case
+    if error_code == "access_denied":
+        return OAuthCredentialStatus(
+            state=OAuthCredentialState.unapproved_tester,
+            connected=False,
+            remediation=(
+                "Access was denied. If your Google OAuth app is in testing mode, "
+                "add your Google account as an approved tester in the Google Cloud Console "
+                "under OAuth consent screen > Test users, then retry the OAuth flow."
+            ),
+            detail=f"Google error: access_denied — {error_description or 'tester not approved'}",
+        )
+
+    # Catch-all for other Google errors
+    return OAuthCredentialStatus(
+        state=OAuthCredentialState.unknown_error,
+        connected=False,
+        remediation=(
+            "An unexpected error occurred while validating your Google credentials. "
+            "Check the server logs for details and try re-running the OAuth flow."
+        ),
+        detail=(
+            f"Google HTTP {response.status_code}: {error_code} — "
+            f"{error_description or 'no description'}"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
