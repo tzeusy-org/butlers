@@ -456,7 +456,7 @@ class TestGmailPubSubConfig:
 
         assert config.gmail_pubsub_enabled is True
         assert config.gmail_pubsub_topic == "projects/my-project/topics/gmail-push"
-        assert config.gmail_pubsub_webhook_port == 40081
+        assert config.gmail_pubsub_webhook_port == 40083
         assert config.gmail_pubsub_webhook_path == "/gmail/webhook"
 
     def test_pubsub_config_enabled_without_topic_fails(

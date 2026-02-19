@@ -12,12 +12,11 @@ Usage:
     uv run python scripts/staging.py
 
 Ports (from roster/*/butler.toml):
-    - Switchboard: http://localhost:40100/sse
-    - Health:      http://localhost:40101/sse
-    - General:     http://localhost:40102/sse
-    - Heartbeat:   http://localhost:40103/sse
-    - Relationship: http://localhost:40104/sse
-    - Messenger:   http://localhost:40105/sse
+    - Switchboard:  http://localhost:40100/sse
+    - General:      http://localhost:40101/sse
+    - Relationship: http://localhost:40102/sse
+    - Health:       http://localhost:40103/sse
+    - Messenger:    http://localhost:40104/sse
 
 Example k6 script (save as load-test.js):
     import http from 'k6/http';
