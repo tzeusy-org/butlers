@@ -780,9 +780,17 @@ class ButlerDaemon:
 
         # 8b. Create CredentialStore and validate module credentials (non-fatal per-module).
         # DB pool is now available so DB-stored credentials are visible to resolve().
+        # Only validate credentials for modules that haven't already failed (e.g. from
+        # migration errors), to avoid redundant DB queries and overwriting earlier failure
+        # statuses with spurious credential failures.
         credential_store = CredentialStore(pool)
+        active_module_creds_for_validation = {
+            k: v
+            for k, v in module_creds.items()
+            if k.split(".")[0] not in self._module_statuses
+        }
         module_cred_failures = await validate_module_credentials_async(
-            module_creds, credential_store
+            active_module_creds_for_validation, credential_store
         )
         for mod_key, missing_vars in module_cred_failures.items():
             # mod_key may be "modname" or "modname.scope" — map to root module.
