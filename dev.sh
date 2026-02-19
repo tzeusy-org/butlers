@@ -36,7 +36,7 @@
 # Tailscale Serve:
 #   Google OAuth requires HTTPS for non-localhost redirect URIs. This script
 #   verifies that tailscale serve is running and forwarding to the dashboard
-#   port (40200). If not running, it attempts to start it automatically.
+#   port (8200). If not running, it attempts to start it automatically.
 #
 #   Prerequisites:
 #     - tailscale CLI installed and available on PATH
@@ -109,33 +109,61 @@ fi
 
 # ── Layer 0: Tailscale serve pre-flight check ──────────────────────────────────────
 # Google OAuth requires HTTPS for non-localhost redirect URIs. Verify that
-# tailscale serve is running and pointing to the dashboard port (40200).
+# tailscale serve is running and routing:
+#   - dashboard UI path -> Vite frontend port (configurable; default 40173)
+#   - API path          -> dashboard API port (8200)
 # If not running, attempt to start it. If tailscale is unavailable or
 # unauthenticated, print actionable instructions and exit.
 
-DASHBOARD_PORT=40200
+_normalize_path_prefix() {
+  local p="${1:-/}"
+  if [ -z "$p" ]; then
+    p="/"
+  fi
+  if [ "${p#/}" = "$p" ]; then
+    p="/${p}"
+  fi
+  if [ "$p" != "/" ]; then
+    p="${p%/}"
+  fi
+  echo "$p"
+}
+
+DASHBOARD_PORT=8200
+FRONTEND_PORT="${FRONTEND_PORT:-40173}"
 TAILSCALE_HTTPS_PORT="${TAILSCALE_HTTPS_PORT:-443}"
-TAILSCALE_PATH_PREFIX="${TAILSCALE_PATH_PREFIX:-/butlers}"
-LOCAL_DASHBOARD_URL="http://localhost:${DASHBOARD_PORT}"
+# Backward-compat: TAILSCALE_PATH_PREFIX still maps to dashboard path if set.
+TAILSCALE_DASHBOARD_PATH_PREFIX_RAW="${TAILSCALE_DASHBOARD_PATH_PREFIX:-${TAILSCALE_PATH_PREFIX:-/butlers}}"
+TAILSCALE_API_PATH_PREFIX_RAW="${TAILSCALE_API_PATH_PREFIX:-/butlers-api}"
+TAILSCALE_DASHBOARD_PATH_PREFIX="$(_normalize_path_prefix "$TAILSCALE_DASHBOARD_PATH_PREFIX_RAW")"
+TAILSCALE_API_PATH_PREFIX="$(_normalize_path_prefix "$TAILSCALE_API_PATH_PREFIX_RAW")"
+if [ "${TAILSCALE_DASHBOARD_PATH_PREFIX}" = "/" ]; then
+  FRONTEND_BASE_PATH="/"
+  FRONTEND_PROXY_TARGET="http://localhost:${FRONTEND_PORT}"
+else
+  FRONTEND_BASE_PATH="${TAILSCALE_DASHBOARD_PATH_PREFIX}/"
+  # Preserve dashboard prefix end-to-end through tailscale path proxying.
+  FRONTEND_PROXY_TARGET="http://localhost:${FRONTEND_PORT}${TAILSCALE_DASHBOARD_PATH_PREFIX}"
+fi
+if [ "${TAILSCALE_API_PATH_PREFIX}" = "/" ]; then
+  FRONTEND_API_BASE_PATH="/api"
+else
+  FRONTEND_API_BASE_PATH="${TAILSCALE_API_PATH_PREFIX}/api"
+fi
+LOCAL_DASHBOARD_URL="http://localhost:${FRONTEND_PORT}${FRONTEND_BASE_PATH}"
+LOCAL_API_BASE_URL="http://localhost:${DASHBOARD_PORT}/api"
 OAUTH_BROWSER_URL="${LOCAL_DASHBOARD_URL}"
-OAUTH_CALLBACK_URL="${LOCAL_DASHBOARD_URL}/api/oauth/google/callback"
+OAUTH_API_BASE_URL="${LOCAL_API_BASE_URL}"
+OAUTH_CALLBACK_URL="${LOCAL_API_BASE_URL}/oauth/google/callback"
 POSTGRES_PORT=54320
 POSTGRES_HOST=127.0.0.1
 POSTGRES_USER=butlers
 POSTGRES_DB_DEFAULT=butler_general
 
-# Normalize serve path prefix:
-# - empty -> /
-# - always starts with /
-# - trim trailing / except root
-if [ -z "${TAILSCALE_PATH_PREFIX}" ]; then
-  TAILSCALE_PATH_PREFIX="/"
-fi
-if [ "${TAILSCALE_PATH_PREFIX#/}" = "${TAILSCALE_PATH_PREFIX}" ]; then
-  TAILSCALE_PATH_PREFIX="/${TAILSCALE_PATH_PREFIX}"
-fi
-if [ "${TAILSCALE_PATH_PREFIX}" != "/" ]; then
-  TAILSCALE_PATH_PREFIX="${TAILSCALE_PATH_PREFIX%/}"
+if [ "${TAILSCALE_DASHBOARD_PATH_PREFIX}" = "${TAILSCALE_API_PATH_PREFIX}" ]; then
+  echo "Error: TAILSCALE_DASHBOARD_PATH_PREFIX and TAILSCALE_API_PATH_PREFIX must be different paths" >&2
+  echo "  current values: ${TAILSCALE_DASHBOARD_PATH_PREFIX} and ${TAILSCALE_API_PATH_PREFIX}" >&2
+  exit 1
 fi
 
 # Configurable OAuth gate timeout. 0 = infinite (default).
@@ -144,28 +172,36 @@ OAUTH_GATE_TIMEOUT="${OAUTH_GATE_TIMEOUT:-0}"
 OAUTH_POLL_INTERVAL=5
 
 _tailscale_serve_check() {
-  local proxy_target
-  proxy_target="http://localhost:${DASHBOARD_PORT}"
+  local dashboard_target api_target
+  dashboard_target="${FRONTEND_PROXY_TARGET}"
+  api_target="http://localhost:${DASHBOARD_PORT}"
 
-  _set_oauth_urls_for_tailnet_host_port_path() {
+  _set_oauth_urls_for_tailnet_host_port_paths() {
     local ts_host="$1"
     local https_port="$2"
-    local path_prefix="$3"
-    local path_base=""
+    local dashboard_path_prefix="$3"
+    local api_path_prefix="$4"
+    local dashboard_path_base=""
+    local api_path_base=""
     if [ -z "$ts_host" ]; then
       return 0
     fi
 
-    if [ "$path_prefix" != "/" ]; then
-      path_base="$path_prefix"
+    if [ "$dashboard_path_prefix" != "/" ]; then
+      dashboard_path_base="$dashboard_path_prefix"
+    fi
+    if [ "$api_path_prefix" != "/" ]; then
+      api_path_base="$api_path_prefix"
     fi
 
     if [ "${https_port}" = "443" ]; then
-      OAUTH_BROWSER_URL="https://${ts_host}${path_base}/"
-      OAUTH_CALLBACK_URL="https://${ts_host}${path_base}/api/oauth/google/callback"
+      OAUTH_BROWSER_URL="https://${ts_host}${dashboard_path_base}/"
+      OAUTH_API_BASE_URL="https://${ts_host}${api_path_base}/api"
+      OAUTH_CALLBACK_URL="https://${ts_host}${api_path_base}/api/oauth/google/callback"
     else
-      OAUTH_BROWSER_URL="https://${ts_host}:${https_port}${path_base}/"
-      OAUTH_CALLBACK_URL="https://${ts_host}:${https_port}${path_base}/api/oauth/google/callback"
+      OAUTH_BROWSER_URL="https://${ts_host}:${https_port}${dashboard_path_base}/"
+      OAUTH_API_BASE_URL="https://${ts_host}:${https_port}${api_path_base}/api"
+      OAUTH_CALLBACK_URL="https://${ts_host}:${https_port}${api_path_base}/api/oauth/google/callback"
     fi
   }
 
@@ -204,6 +240,43 @@ if not ports:
 
 print(" ".join(sorted(ports, key=int)))
 PY
+  }
+
+  _port_present_in_list() {
+    local ports="$1"
+    local wanted="$2"
+    local p
+    for p in $ports; do
+      if [ "$p" = "$wanted" ]; then
+        return 0
+      fi
+    done
+    return 1
+  }
+
+  _run_serve_mapping() {
+    local path_prefix="$1"
+    local target="$2"
+    local cmd_output=""
+    local rc=0
+
+    if [ "$path_prefix" = "/" ]; then
+      cmd_output=$(tailscale serve --yes --bg --https="${TAILSCALE_HTTPS_PORT}" "$target" 2>&1) || rc=$?
+    else
+      cmd_output=$(tailscale serve --yes --bg --https="${TAILSCALE_HTTPS_PORT}" --set-path "$path_prefix" "$target" 2>&1) || rc=$?
+    fi
+
+    if [ "$rc" -ne 0 ] && echo "$cmd_output" | grep -Eqi "(invalid argument format|unknown flag|usage)"; then
+      rc=0
+      if [ "$path_prefix" = "/" ]; then
+        cmd_output=$(tailscale serve "https:${TAILSCALE_HTTPS_PORT}" "$target" 2>&1) || rc=$?
+      else
+        cmd_output=$(tailscale serve "https:${TAILSCALE_HTTPS_PORT}" "$path_prefix" "$target" 2>&1) || rc=$?
+      fi
+    fi
+
+    echo "$cmd_output"
+    return "$rc"
   }
 
   # Check tailscale CLI is available
@@ -252,67 +325,88 @@ PY
     return 1
   fi
 
-  # Check if tailscale serve is already running with the requested HTTPS port.
-  local serve_status serve_status_json serve_ports desired_port_present
-  serve_status=$(tailscale serve status 2>/dev/null) || serve_status=""
+  # Check if tailscale serve is already running with both required mappings.
+  local serve_status_json
+  local dashboard_ports api_ports
+  local dashboard_ready=false
+  local api_ready=false
+  serve_status_json="{}"
   serve_status_json=$(tailscale serve status --json 2>/dev/null) || serve_status_json="{}"
-  serve_ports=$(_get_serve_target_ports_for_path "$proxy_target" "$TAILSCALE_PATH_PREFIX" "$serve_status_json" 2>/dev/null || true)
-  desired_port_present=false
-  for p in $serve_ports; do
-    if [ "$p" = "$TAILSCALE_HTTPS_PORT" ]; then
-      desired_port_present=true
-      break
-    fi
-  done
+  dashboard_ports=$(_get_serve_target_ports_for_path "$dashboard_target" "$TAILSCALE_DASHBOARD_PATH_PREFIX" "$serve_status_json" 2>/dev/null || true)
+  api_ports=$(_get_serve_target_ports_for_path "$api_target" "$TAILSCALE_API_PATH_PREFIX" "$serve_status_json" 2>/dev/null || true)
+  if _port_present_in_list "$dashboard_ports" "$TAILSCALE_HTTPS_PORT"; then
+    dashboard_ready=true
+  fi
+  if _port_present_in_list "$api_ports" "$TAILSCALE_HTTPS_PORT"; then
+    api_ready=true
+  fi
 
-  if [ "$desired_port_present" = "true" ]; then
+  if [ "$dashboard_ready" = "true" ] && [ "$api_ready" = "true" ]; then
     local ts_hostname
     ts_hostname=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || echo "")
-    _set_oauth_urls_for_tailnet_host_port_path "$ts_hostname" "$TAILSCALE_HTTPS_PORT" "$TAILSCALE_PATH_PREFIX"
-    echo "Tailscale serve: already running (forwarding to localhost:${DASHBOARD_PORT} on path ${TAILSCALE_PATH_PREFIX})"
-    echo "Tailscale URL: ${OAUTH_BROWSER_URL}"
+    _set_oauth_urls_for_tailnet_host_port_paths "$ts_hostname" "$TAILSCALE_HTTPS_PORT" "$TAILSCALE_DASHBOARD_PATH_PREFIX" "$TAILSCALE_API_PATH_PREFIX"
+    echo "Tailscale serve: already running (dashboard ${TAILSCALE_DASHBOARD_PATH_PREFIX} -> :${FRONTEND_PORT}, api ${TAILSCALE_API_PATH_PREFIX} -> :${DASHBOARD_PORT})"
+    echo "Tailscale dashboard URL: ${OAUTH_BROWSER_URL}"
+    echo "Tailscale API base URL: ${OAUTH_API_BASE_URL}"
     return 0
   fi
 
-  if [ -n "$serve_ports" ]; then
-    echo "Tailscale serve: existing mapping for localhost:${DASHBOARD_PORT} on path ${TAILSCALE_PATH_PREFIX} found on HTTPS ports [${serve_ports}], adding port ${TAILSCALE_HTTPS_PORT}..."
+  if [ "$dashboard_ready" = "false" ] && [ -n "$dashboard_ports" ]; then
+    echo "Tailscale serve: existing dashboard mapping found on HTTPS ports [${dashboard_ports}], adding port ${TAILSCALE_HTTPS_PORT}..."
+  fi
+  if [ "$api_ready" = "false" ] && [ -n "$api_ports" ]; then
+    echo "Tailscale serve: existing API mapping found on HTTPS ports [${api_ports}], adding port ${TAILSCALE_HTTPS_PORT}..."
   fi
 
-  # Not yet serving — attempt to start it
-  # Newer tailscale versions (>=1.9x) use --https/--bg syntax while
-  # older versions accept the legacy positional https:443 form.
+  # Not fully configured yet — attempt to (re)apply missing mappings.
   local start_output=""
   local start_rc=0
-  echo "Tailscale serve: not active for path ${TAILSCALE_PATH_PREFIX} on HTTPS port ${TAILSCALE_HTTPS_PORT}, starting..."
-  if [ "$TAILSCALE_PATH_PREFIX" = "/" ]; then
-    start_output=$(tailscale serve --yes --bg --https="${TAILSCALE_HTTPS_PORT}" "http://localhost:${DASHBOARD_PORT}" 2>&1) || start_rc=$?
-  else
-    start_output=$(tailscale serve --yes --bg --https="${TAILSCALE_HTTPS_PORT}" --set-path "${TAILSCALE_PATH_PREFIX}" "http://localhost:${DASHBOARD_PORT}" 2>&1) || start_rc=$?
-  fi
-  if [ "$start_rc" -ne 0 ] && echo "$start_output" | grep -Eqi "(invalid argument format|unknown flag|usage)"; then
-    if [ "$TAILSCALE_PATH_PREFIX" = "/" ]; then
-      start_output=$(tailscale serve "https:${TAILSCALE_HTTPS_PORT}" "http://localhost:${DASHBOARD_PORT}" 2>&1) || start_rc=$?
-    else
-      start_output=$(tailscale serve "https:${TAILSCALE_HTTPS_PORT}" "${TAILSCALE_PATH_PREFIX}" "http://localhost:${DASHBOARD_PORT}" 2>&1) || start_rc=$?
+  echo "Tailscale serve: ensuring dashboard (${TAILSCALE_DASHBOARD_PATH_PREFIX}) and API (${TAILSCALE_API_PATH_PREFIX}) mappings on HTTPS port ${TAILSCALE_HTTPS_PORT}..."
+
+  if [ "$dashboard_ready" = "false" ]; then
+    local dashboard_cmd_output=""
+    if ! dashboard_cmd_output=$(_run_serve_mapping "$TAILSCALE_DASHBOARD_PATH_PREFIX" "$dashboard_target"); then
+      start_rc=1
+    fi
+    if [ -n "$dashboard_cmd_output" ]; then
+      start_output="${start_output}
+[dashboard ${TAILSCALE_DASHBOARD_PATH_PREFIX} -> ${dashboard_target}]
+${dashboard_cmd_output}"
     fi
   fi
 
+  if [ "$api_ready" = "false" ]; then
+    local api_cmd_output=""
+    if ! api_cmd_output=$(_run_serve_mapping "$TAILSCALE_API_PATH_PREFIX" "$api_target"); then
+      start_rc=1
+    fi
+    if [ -n "$api_cmd_output" ]; then
+      start_output="${start_output}
+[api ${TAILSCALE_API_PATH_PREFIX} -> ${api_target}]
+${api_cmd_output}"
+    fi
+  fi
+
+  # Verify both mappings after attempting to apply.
   if [ "$start_rc" -eq 0 ]; then
-    # Verify it started correctly
     serve_status_json=$(tailscale serve status --json 2>/dev/null) || serve_status_json="{}"
-    serve_ports=$(_get_serve_target_ports_for_path "$proxy_target" "$TAILSCALE_PATH_PREFIX" "$serve_status_json" 2>/dev/null || true)
-    desired_port_present=false
-    for p in $serve_ports; do
-      if [ "$p" = "$TAILSCALE_HTTPS_PORT" ]; then
-        desired_port_present=true
-        break
-      fi
-    done
-    if [ "$desired_port_present" = "true" ]; then
+    dashboard_ports=$(_get_serve_target_ports_for_path "$dashboard_target" "$TAILSCALE_DASHBOARD_PATH_PREFIX" "$serve_status_json" 2>/dev/null || true)
+    api_ports=$(_get_serve_target_ports_for_path "$api_target" "$TAILSCALE_API_PATH_PREFIX" "$serve_status_json" 2>/dev/null || true)
+    dashboard_ready=false
+    api_ready=false
+    if _port_present_in_list "$dashboard_ports" "$TAILSCALE_HTTPS_PORT"; then
+      dashboard_ready=true
+    fi
+    if _port_present_in_list "$api_ports" "$TAILSCALE_HTTPS_PORT"; then
+      api_ready=true
+    fi
+    if [ "$dashboard_ready" = "true" ] && [ "$api_ready" = "true" ]; then
       local ts_hostname
       ts_hostname=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','<your-name>.ts.net').rstrip('.'))" 2>/dev/null || echo "<your-name>.ts.net")
-      _set_oauth_urls_for_tailnet_host_port_path "$ts_hostname" "$TAILSCALE_HTTPS_PORT" "$TAILSCALE_PATH_PREFIX"
-      echo "Tailscale serve: started — ${OAUTH_BROWSER_URL} → http://localhost:${DASHBOARD_PORT} (path ${TAILSCALE_PATH_PREFIX})"
+      _set_oauth_urls_for_tailnet_host_port_paths "$ts_hostname" "$TAILSCALE_HTTPS_PORT" "$TAILSCALE_DASHBOARD_PATH_PREFIX" "$TAILSCALE_API_PATH_PREFIX"
+      echo "Tailscale serve: ready"
+      echo "  Dashboard URL: ${OAUTH_BROWSER_URL} -> ${dashboard_target}"
+      echo "  API base URL: ${OAUTH_API_BASE_URL} -> ${api_target}"
       echo ""
       echo "  HTTPS callback URL: ${OAUTH_CALLBACK_URL}"
       echo "  Add this URI to your Google Cloud Console OAuth credentials."
@@ -327,7 +421,9 @@ PY
   echo "  ERROR: Failed to start tailscale serve" >&2
   echo "======================================================================" >&2
   echo "" >&2
-  echo "  Could not start tailscale serve for http://localhost:${DASHBOARD_PORT}" >&2
+  echo "  Could not configure required mappings:" >&2
+  echo "    dashboard ${TAILSCALE_DASHBOARD_PATH_PREFIX} -> ${dashboard_target}" >&2
+  echo "    api       ${TAILSCALE_API_PATH_PREFIX} -> ${api_target}" >&2
   if [ -n "$start_output" ]; then
     echo "" >&2
     echo "  tailscale output:" >&2
@@ -341,16 +437,15 @@ PY
   fi
   echo "" >&2
   echo "  To start manually:" >&2
-  if [ "$TAILSCALE_PATH_PREFIX" = "/" ]; then
-    echo "    tailscale serve --yes --bg --https=${TAILSCALE_HTTPS_PORT} http://localhost:${DASHBOARD_PORT}" >&2
+  if [ "$TAILSCALE_DASHBOARD_PATH_PREFIX" = "/" ]; then
+    echo "    tailscale serve --yes --bg --https=${TAILSCALE_HTTPS_PORT} ${dashboard_target}" >&2
   else
-    echo "    tailscale serve --yes --bg --https=${TAILSCALE_HTTPS_PORT} --set-path ${TAILSCALE_PATH_PREFIX} http://localhost:${DASHBOARD_PORT}" >&2
+    echo "    tailscale serve --yes --bg --https=${TAILSCALE_HTTPS_PORT} --set-path ${TAILSCALE_DASHBOARD_PATH_PREFIX} ${dashboard_target}" >&2
   fi
-  echo "    # (older tailscale CLI fallback)" >&2
-  if [ "$TAILSCALE_PATH_PREFIX" = "/" ]; then
-    echo "    tailscale serve https:${TAILSCALE_HTTPS_PORT} http://localhost:${DASHBOARD_PORT}" >&2
+  if [ "$TAILSCALE_API_PATH_PREFIX" = "/" ]; then
+    echo "    tailscale serve --yes --bg --https=${TAILSCALE_HTTPS_PORT} ${api_target}" >&2
   else
-    echo "    tailscale serve https:${TAILSCALE_HTTPS_PORT} ${TAILSCALE_PATH_PREFIX} http://localhost:${DASHBOARD_PORT}" >&2
+    echo "    tailscale serve --yes --bg --https=${TAILSCALE_HTTPS_PORT} --set-path ${TAILSCALE_API_PATH_PREFIX} ${api_target}" >&2
   fi
   echo "    tailscale serve status" >&2
   echo "" >&2
@@ -662,7 +757,7 @@ tmux send-keys -t "$PANE_DASHBOARD" \
 # Brief wait for shell init in the split pane
 sleep 0.3
 tmux send-keys -t "$PANE_FRONTEND" \
-  "npm install && npm run dev -- --host 0.0.0.0" Enter
+  "npm install && VITE_API_URL=${FRONTEND_API_BASE_PATH} npm run dev -- --host 0.0.0.0 --port ${FRONTEND_PORT} --strictPort --base ${FRONTEND_BASE_PATH}" Enter
 
 # ── Layer 1b: connectors window (telegram + frontend) ─────────────────────
 # Telegram connectors and frontend start without waiting for OAuth.

@@ -277,6 +277,7 @@ make test-qg
 - Keyboard quick-nav includes `g` sequences: `o,b,s,t,r,n,i,a,m,c,h`.
 - Butler detail tab validation must include health-only tabs so `?tab=health` deep-links resolve on `/butlers/health`.
 - `/settings` now provides browser-local controls for theme, default live-refresh behavior (used by Sessions/Timeline), and clearing command-palette recent-search history.
+- Frontend router must set `createBrowserRouter(..., { basename: import.meta.env.BASE_URL })` (sanitized) so `dev.sh` subpath deployments (`--base /butlers/`) behave consistently for direct loads and in-app links (for example `/butlers/secrets`), while root-origin paths like `/secrets` correctly 404 under split Tailscale path mapping.
 
 ### Quality-gate command contract
 - `make test-qg` is the default full-scope pytest gate and runs with xdist parallelization (`-n auto`).
@@ -492,6 +493,8 @@ make test-qg
 
 ### Dev bootstrap tailscale+pipefail guardrail
 - `dev.sh::_tailscale_serve_check` should prefer modern Tailscale CLI syntax (`tailscale serve --yes --bg --https=443 http://localhost:8200`) with legacy positional fallback (`https:443 ...`) for older CLI versions.
-- `dev.sh` now defaults `TAILSCALE_PATH_PREFIX` to `/butlers`; non-root path routing must use `tailscale serve --set-path <prefix> ...` (modern CLI) and OAuth/browser URLs should include that prefix.
+- `dev.sh` split routing defaults are `TAILSCALE_DASHBOARD_PATH_PREFIX=/butlers` (Vite frontend) and `TAILSCALE_API_PATH_PREFIX=/butlers-api` (dashboard API); non-root path routing uses `tailscale serve --set-path <prefix> ...`.
+- Dashboard mapping should proxy to `http://localhost:${FRONTEND_PORT}${TAILSCALE_DASHBOARD_PATH_PREFIX}` (not bare frontend root) so prefix paths are preserved end-to-end and Vite `--base` assets avoid redirect loops under tailscale path routing.
+- Frontend dev port is configurable via `FRONTEND_PORT` (default `40173`) and should be kept aligned with tailscale dashboard target and the Vite startup command (`--port ... --strictPort`).
 - Do not discard `tailscale serve` stderr in `dev.sh`; surfaced output is needed to diagnose operator/permission failures (for example `Access denied: serve config denied` and `sudo tailscale set --operator=$USER` remediation).
 - In `dev.sh` with `set -o pipefail`, avoid `grep ... | wc -l || echo 0` inside command substitutions; on no-match this can produce `0\n0` and break integer comparisons.
