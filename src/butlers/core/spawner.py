@@ -37,6 +37,7 @@ from butlers.core.telemetry import (
     get_traceparent_env,
     set_active_session_context,
 )
+from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -70,34 +71,46 @@ def _compose_system_prompt(base_system_prompt: str, memory_context: str | None) 
     return f"{base_system_prompt}\n\n{memory_context}"
 
 
-def _build_env(
+async def _build_env(
     config: ButlerConfig,
     module_credentials_env: dict[str, list[str]] | None = None,
+    credential_store: CredentialStore | None = None,
 ) -> dict[str, str]:
     """Build an explicit env dict for the runtime instance.
 
     Only declared variables are included — no undeclared env vars leak through.
     Always includes ANTHROPIC_API_KEY, plus butler-level required/optional
     vars and module credential vars.
+
+    When *credential_store* is provided, credentials are resolved DB-first
+    with automatic env-var fallback via ``CredentialStore.resolve()``.
+    When no store is provided (e.g. in unit tests without a DB pool),
+    resolution falls back directly to ``os.environ``.
     """
     env: dict[str, str] = {}
 
-    # Always include ANTHROPIC_API_KEY
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    async def _resolve(key: str) -> str | None:
+        """Resolve a credential key: DB-first when store available, else env."""
+        if credential_store is not None:
+            return await credential_store.resolve(key)
+        return os.environ.get(key) or None
+
+    # Always include ANTHROPIC_API_KEY (DB-first, env fallback)
+    api_key = await _resolve("ANTHROPIC_API_KEY")
     if api_key:
         env["ANTHROPIC_API_KEY"] = api_key
 
     # Butler-level required + optional env vars
     for var in config.env_required + config.env_optional:
-        value = os.environ.get(var)
+        value = await _resolve(var)
         if value is not None:
             env[var] = value
 
-    # Module credentials
+    # Module credentials (DB-first passthrough to spawned instances)
     if module_credentials_env:
         for _module_name, cred_vars in module_credentials_env.items():
             for var in cred_vars:
-                value = os.environ.get(var)
+                value = await _resolve(var)
                 if value is not None:
                     env[var] = value
 
@@ -224,6 +237,12 @@ class Spawner:
     audit_pool:
         Optional asyncpg pool pointed at the switchboard database for writing
         daemon-side audit log entries.
+    credential_store:
+        Optional CredentialStore instance for DB-first credential resolution.
+        When provided, credentials are resolved from the database before
+        falling back to environment variables. When None, credentials are
+        resolved exclusively from environment variables (for backwards
+        compatibility and unit tests without a DB pool).
     """
 
     def __init__(
@@ -235,12 +254,14 @@ class Spawner:
         runtime: RuntimeAdapter | None = None,
         sdk_query: Any = None,
         audit_pool: asyncpg.Pool | None = None,
+        credential_store: CredentialStore | None = None,
     ) -> None:
         self._config = config
         self._config_dir = config_dir
         self._pool = pool
         self._module_credentials_env = module_credentials_env
         self._audit_pool = audit_pool
+        self._credential_store = credential_store
         self._session_semaphore = asyncio.Semaphore(config.runtime.max_concurrent_sessions)
         self._accepting = True
         self._in_flight: set[asyncio.Task] = set()
@@ -482,7 +503,9 @@ class Spawner:
             system_prompt = _compose_system_prompt(system_prompt, memory_ctx)
 
             # Build credential env
-            env = _build_env(self._config, self._module_credentials_env)
+            env = await _build_env(
+                self._config, self._module_credentials_env, self._credential_store
+            )
 
             # Build MCP server config for the adapter
             mcp_servers: dict[str, Any] = {

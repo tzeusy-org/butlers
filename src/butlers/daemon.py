@@ -850,6 +850,7 @@ class ButlerDaemon:
             module_credentials_env=active_module_creds,
             runtime=runtime,
             audit_pool=audit_pool,
+            credential_store=credential_store,
         )
 
         # 10b. Wire message classification pipeline for switchboard modules
