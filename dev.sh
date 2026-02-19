@@ -95,7 +95,7 @@ _pipe_pane_to_log() {
   local pane_id="$1"
   local log_file="$2"
   tmux pipe-pane -o -t "$pane_id" \
-    "perl -pe 'BEGIN{\\$|=1}; s/\\e\\[[0-9;?]*[ -\\/]*[@-~]//g; s/\\e\\][^\\a]*(?:\\a|\\e\\\\)//g; s/\\r//g; s/[\\x00-\\x08\\x0B-\\x1F\\x7F]//g' >> '$log_file'"
+    "perl -pe 'BEGIN{\$|=1}; s/\\e\\[[0-9;?]*[ -\\/]*[@-~]//g; s/\\e\\][^\\a]*(?:\\a|\\e\\\\)//g; s/\\r//g; s/[\\x00-\\x08\\x0B-\\x1F\\x7F]//g' >> '$log_file'"
 }
 
 # ── Source shared env files (same as ENV_LOADER, before preflight check) ──
@@ -860,6 +860,9 @@ PANE_GMAIL=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -h -c "$PROJECT_DIR" -P -
 _pipe_pane_to_log "$PANE_TELEGRAM_BOT" "${LOGS_RUN_DIR}/connectors/telegram_bot.log"
 _pipe_pane_to_log "$PANE_TELEGRAM_USER" "${LOGS_RUN_DIR}/connectors/telegram_user_client.log"
 _pipe_pane_to_log "$PANE_GMAIL" "${LOGS_RUN_DIR}/connectors/gmail.log"
+# Give newly split panes a moment to finish shell init before send-keys.
+# Without this, tmux can occasionally drop early keystrokes on fast reruns.
+sleep 0.3
 
 tmux send-keys -t "$PANE_TELEGRAM_BOT" \
   "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} CONNECTOR_CURSOR_PATH=\${TELEGRAM_BOT_CONNECTOR_CURSOR_PATH:-\${CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_bot_checkpoint.json}} uv run python -m butlers.connectors.telegram_bot" Enter
