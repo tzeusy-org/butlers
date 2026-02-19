@@ -38,3 +38,16 @@ class RegistryEntry(BaseModel):
     route_contract_max: int = 1
     eligibility_updated_at: str | None = None
     registered_at: str
+
+
+class HeartbeatRequest(BaseModel):
+    """Request body for the POST /api/heartbeat endpoint."""
+
+    butler_name: str
+
+
+class HeartbeatResponse(BaseModel):
+    """Response body for the POST /api/heartbeat endpoint."""
+
+    status: str
+    eligibility_state: str
