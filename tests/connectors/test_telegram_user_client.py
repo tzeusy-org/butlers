@@ -14,6 +14,7 @@ from butlers.connectors.telegram_user_client import (
     TELETHON_AVAILABLE,
     TelegramUserClientConnector,
     TelegramUserClientConnectorConfig,
+    _resolve_telegram_user_credentials_from_db,
 )
 
 # Skip all tests if Telethon is not available
@@ -440,3 +441,92 @@ class TestTelegramUserClientConnectorUnit:
             )
             with pytest.raises(RuntimeError, match="Telethon is not installed"):
                 TelegramUserClientConnector(config)
+
+
+class TestResolveTelegramUserCredentialsFromDb:
+    """Tests for _resolve_telegram_user_credentials_from_db."""
+
+    async def test_returns_none_when_db_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns None gracefully when DB connection fails."""
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+
+        async def fake_create_pool(**kwargs):
+            raise OSError("Connection refused")
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_telegram_user_credentials_from_db()
+        assert result is None
+
+    async def test_returns_none_when_secrets_partially_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Returns None when some secrets are missing from DB."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+
+        # Return a row for TELEGRAM_API_ID, but None for others
+        row_for_api_id = MagicMock()
+        row_for_api_id.__getitem__ = lambda self, key: "12345"
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow.side_effect = [
+            row_for_api_id,  # TELEGRAM_API_ID
+            None,  # TELEGRAM_API_HASH — missing
+            None,  # TELEGRAM_USER_SESSION — missing
+        ]
+
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_pool.close = AsyncMock()
+
+        async def fake_create_pool(**kwargs):
+            return mock_pool
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_telegram_user_credentials_from_db()
+        assert result is None
+
+    async def test_returns_all_credentials_when_stored_in_db(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Returns all three credentials when found in butler_secrets table."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+        monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", "butler_test")
+
+        # CredentialStore.load calls conn.fetchrow for each key
+        def make_row(value: str) -> MagicMock:
+            row = MagicMock()
+            row.__getitem__ = lambda self, key: value
+            return row
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow.side_effect = [
+            make_row("12345"),  # TELEGRAM_API_ID
+            make_row("test-api-hash"),  # TELEGRAM_API_HASH
+            make_row("test-session"),  # TELEGRAM_USER_SESSION
+        ]
+
+        mock_pool = MagicMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_pool.close = AsyncMock()
+
+        async def fake_create_pool(**kwargs):
+            return mock_pool
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_telegram_user_credentials_from_db()
+        assert result is not None
+        assert result["TELEGRAM_API_ID"] == "12345"
+        assert result["TELEGRAM_API_HASH"] == "test-api-hash"
+        assert result["TELEGRAM_USER_SESSION"] == "test-session"

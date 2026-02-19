@@ -1381,10 +1381,94 @@ class TestResolveGmailCredentialsFromDb:
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
         result = await _resolve_gmail_credentials_from_db()
         assert result is not None
-        client_id, client_secret, refresh_token = result
-        assert client_id == "db-client-id"
-        assert client_secret == "db-client-secret"
-        assert refresh_token == "db-refresh-token"
+        assert result["client_id"] == "db-client-id"
+        assert result["client_secret"] == "db-client-secret"
+        assert result["refresh_token"] == "db-refresh-token"
+
+    async def test_resolves_pubsub_webhook_token_from_db(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Returns pubsub_webhook_token in result dict when stored in butler_secrets."""
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock
+
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+        monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", "butler_test")
+
+        stored_payload = {
+            "client_id": "db-client-id",
+            "client_secret": "db-client-secret",
+            "refresh_token": "db-refresh-token",
+        }
+        oauth_record = MagicMock()
+        oauth_record.__getitem__ = lambda self, key: stored_payload
+
+        # Second fetchrow call is from CredentialStore for GMAIL_PUBSUB_WEBHOOK_TOKEN
+        pubsub_row = MagicMock()
+        pubsub_row.__getitem__ = lambda self, key: "db-pubsub-token"
+
+        mock_conn = AsyncMock()
+        # First call: google_oauth_credentials table lookup
+        # Second call: butler_secrets table lookup via CredentialStore
+        mock_conn.fetchrow.side_effect = [oauth_record, pubsub_row]
+
+        @asynccontextmanager
+        async def fake_acquire():
+            yield mock_conn
+
+        mock_pool = MagicMock()
+        mock_pool.acquire = fake_acquire
+        mock_pool.close = AsyncMock()
+
+        async def fake_create_pool(**kwargs):
+            return mock_pool
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_gmail_credentials_from_db()
+        assert result is not None
+        assert result["client_id"] == "db-client-id"
+        assert result["pubsub_webhook_token"] == "db-pubsub-token"
+
+    async def test_result_has_no_pubsub_token_when_not_stored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pubsub_webhook_token key absent from result when not stored in DB."""
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock
+
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+
+        stored_payload = {
+            "client_id": "db-client-id",
+            "client_secret": "db-client-secret",
+            "refresh_token": "db-refresh-token",
+        }
+        oauth_record = MagicMock()
+        oauth_record.__getitem__ = lambda self, key: stored_payload
+
+        mock_conn = AsyncMock()
+        # First call: oauth lookup (returns record), second call: pubsub token (not found)
+        mock_conn.fetchrow.side_effect = [oauth_record, None]
+
+        @asynccontextmanager
+        async def fake_acquire():
+            yield mock_conn
+
+        mock_pool = MagicMock()
+        mock_pool.acquire = fake_acquire
+        mock_pool.close = AsyncMock()
+
+        async def fake_create_pool(**kwargs):
+            return mock_pool
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_gmail_credentials_from_db()
+        assert result is not None
+        assert "pubsub_webhook_token" not in result
 
 
 class TestGmailConnectorConfigDeprecationWarnings:
