@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 
 class OAuthStartResponse(BaseModel):
@@ -95,8 +95,11 @@ class OAuthCredentialStatus(BaseModel):
     state: OAuthCredentialState
     """Machine-readable connectivity state."""
 
-    connected: bool
-    """Convenience boolean: ``True`` iff ``state == OAuthCredentialState.connected``."""
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def connected(self) -> bool:
+        """Convenience boolean: ``True`` iff ``state == OAuthCredentialState.connected``."""
+        return self.state == OAuthCredentialState.connected
 
     scopes_granted: list[str] | None = None
     """List of OAuth scopes present on the stored credential, when known."""

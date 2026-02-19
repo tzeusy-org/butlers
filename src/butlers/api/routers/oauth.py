@@ -455,7 +455,6 @@ async def _check_google_credential_status() -> OAuthCredentialStatus:
     if not client_id or not client_secret:
         return OAuthCredentialStatus(
             state=OAuthCredentialState.not_configured,
-            connected=False,
             remediation=(
                 "Google OAuth client credentials are not configured. "
                 "Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET, "
@@ -468,7 +467,6 @@ async def _check_google_credential_status() -> OAuthCredentialStatus:
     if not refresh_token:
         return OAuthCredentialStatus(
             state=OAuthCredentialState.not_configured,
-            connected=False,
             remediation=(
                 "Google credentials have not been connected yet. "
                 "Click 'Connect Google' to start the OAuth authorization flow."
@@ -524,7 +522,6 @@ async def _probe_google_token(
         logger.warning("OAuth status probe: network error contacting Google: %s", exc)
         return OAuthCredentialStatus(
             state=OAuthCredentialState.unknown_error,
-            connected=False,
             remediation=(
                 "Unable to reach Google's authorization server. "
                 "Check your network connectivity and try again."
@@ -541,13 +538,24 @@ async def _probe_google_token(
         logger.warning("OAuth status probe: invalid JSON from Google token endpoint: %s", exc)
         return OAuthCredentialStatus(
             state=OAuthCredentialState.unknown_error,
-            connected=False,
             remediation=("Received an unexpected response from Google. Please try again later."),
             detail=f"JSON decode error: {exc}",
         )
 
     # --- Token refresh succeeded — check scopes ---
-    granted_scope_str = token_data.get("scope", "")
+    # Google may omit the `scope` field on refresh responses when scopes are unchanged.
+    # When absent, we cannot verify scope coverage so we treat the token as connected
+    # rather than incorrectly flagging healthy credentials as missing_scope.
+    granted_scope_str = token_data.get("scope")
+    if granted_scope_str is None:
+        # Scope field absent — assume token is valid; cannot verify scope coverage.
+        return OAuthCredentialStatus(
+            state=OAuthCredentialState.connected,
+            scopes_granted=None,
+            remediation=None,
+            detail=None,
+        )
+
     granted_scopes = [s for s in granted_scope_str.split() if s]
     granted_scope_set = set(granted_scopes)
 
@@ -555,7 +563,6 @@ async def _probe_google_token(
     if missing:
         return OAuthCredentialStatus(
             state=OAuthCredentialState.missing_scope,
-            connected=False,
             scopes_granted=granted_scopes,
             remediation=(
                 "Your Google credentials are missing required permissions. "
@@ -567,7 +574,6 @@ async def _probe_google_token(
 
     return OAuthCredentialStatus(
         state=OAuthCredentialState.connected,
-        connected=True,
         scopes_granted=granted_scopes,
         remediation=None,
         detail=None,
@@ -595,9 +601,10 @@ def _classify_token_refresh_error(response: httpx.Response) -> OAuthCredentialSt
 
     try:
         body = response.json()
-        error_code = body.get("error")
-        error_description = body.get("error_description")
-    except (json.JSONDecodeError, AttributeError):
+        if isinstance(body, dict):
+            error_code = body.get("error")
+            error_description = body.get("error_description")
+    except json.JSONDecodeError:
         pass
 
     logger.warning(
@@ -610,7 +617,6 @@ def _classify_token_refresh_error(response: httpx.Response) -> OAuthCredentialSt
     if error_code == "invalid_grant":
         return OAuthCredentialStatus(
             state=OAuthCredentialState.expired,
-            connected=False,
             remediation=(
                 "Your Google authorization has expired or been revoked. "
                 "Click 'Connect Google' to re-run the OAuth flow and obtain a new token."
@@ -625,7 +631,6 @@ def _classify_token_refresh_error(response: httpx.Response) -> OAuthCredentialSt
         # Heuristic: redirect URI mismatch often surfaces as invalid_client
         return OAuthCredentialStatus(
             state=OAuthCredentialState.redirect_uri_mismatch,
-            connected=False,
             remediation=(
                 "OAuth client credentials are invalid or the redirect URI does not match "
                 "the one registered in the Google Cloud Console. "
@@ -642,7 +647,6 @@ def _classify_token_refresh_error(response: httpx.Response) -> OAuthCredentialSt
     if error_code == "access_denied":
         return OAuthCredentialStatus(
             state=OAuthCredentialState.unapproved_tester,
-            connected=False,
             remediation=(
                 "Access was denied. If your Google OAuth app is in testing mode, "
                 "add your Google account as an approved tester in the Google Cloud Console "
@@ -654,7 +658,6 @@ def _classify_token_refresh_error(response: httpx.Response) -> OAuthCredentialSt
     # Catch-all for other Google errors
     return OAuthCredentialStatus(
         state=OAuthCredentialState.unknown_error,
-        connected=False,
         remediation=(
             "An unexpected error occurred while validating your Google credentials. "
             "Check the server logs for details and try re-running the OAuth flow."

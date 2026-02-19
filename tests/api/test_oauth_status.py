@@ -69,7 +69,6 @@ def _make_app():
 def _connected_status() -> OAuthCredentialStatus:
     return OAuthCredentialStatus(
         state=OAuthCredentialState.connected,
-        connected=True,
         scopes_granted=_FULL_SCOPE_LIST,
     )
 
@@ -77,7 +76,6 @@ def _connected_status() -> OAuthCredentialStatus:
 def _status(state: OAuthCredentialState, **kwargs) -> OAuthCredentialStatus:
     return OAuthCredentialStatus(
         state=state,
-        connected=(state == OAuthCredentialState.connected),
         remediation=kwargs.get("remediation", "Please reconnect."),
         detail=kwargs.get("detail"),
         scopes_granted=kwargs.get("scopes_granted"),
@@ -583,6 +581,27 @@ class TestProbeGoogleToken:
         assert result.state == OAuthCredentialState.missing_scope
         assert result.connected is False
         assert result.scopes_granted is not None
+
+    async def test_probe_connected_when_scope_absent(self):
+        """Scope field absent from refresh response → connected (not missing_scope).
+
+        Google may omit `scope` in refresh responses when scopes are unchanged.
+        The probe must treat this as connected rather than flagging missing_scope.
+        """
+        mock_class = _make_mock_http_client(
+            _mock_response(body={"access_token": "tok"})  # no "scope" key
+        )
+        with patch(_HTTPX_CLIENT_PATCH, mock_class):
+            result = await _probe_google_token(
+                client_id="test-id",
+                client_secret="test-secret",
+                refresh_token="some-token",
+            )
+
+        assert result.state == OAuthCredentialState.connected
+        assert result.connected is True
+        # scopes_granted is None when scope field is absent
+        assert result.scopes_granted is None
 
 
 # ---------------------------------------------------------------------------
