@@ -40,7 +40,7 @@ class MinimalModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         pass
 
     async def on_shutdown(self) -> None:
@@ -68,7 +68,7 @@ class ModuleWithDeps(Module):
     def migration_revisions(self) -> str | None:
         return "with_deps_branch"
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         pass
 
     async def on_shutdown(self) -> None:
@@ -96,7 +96,7 @@ class ModuleWithIODescriptors(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         pass
 
     async def on_shutdown(self) -> None:
@@ -137,7 +137,7 @@ class MissingNameModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         pass
 
     async def on_shutdown(self) -> None:
@@ -162,7 +162,7 @@ class MissingRegisterToolsModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         pass
 
     async def on_shutdown(self) -> None:

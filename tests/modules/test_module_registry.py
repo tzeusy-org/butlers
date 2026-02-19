@@ -54,7 +54,7 @@ def _make_module(
         def migration_revisions(self) -> str | None:
             return _migration_label
 
-        async def on_startup(self, config: Any, db: Any) -> None:
+        async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
             pass
 
         async def on_shutdown(self) -> None:

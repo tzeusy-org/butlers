@@ -59,7 +59,7 @@ class StubModuleOk(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         self.started = True
 
     async def on_shutdown(self) -> None:
@@ -91,7 +91,7 @@ class StubModuleFailing(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         raise RuntimeError("Module startup failed")
 
     async def on_shutdown(self) -> None:
@@ -123,7 +123,7 @@ class StubModuleAfterFailing(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         self.started = True
 
     async def on_shutdown(self) -> None:
@@ -701,7 +701,7 @@ class TestStartupFailureCleanup:
             def migration_revisions(self) -> str | None:
                 return None
 
-            async def on_startup(self, config, db) -> None:
+            async def on_startup(self, config, db, credential_store=None) -> None:
                 raise RuntimeError("first module fails")
 
             async def on_shutdown(self) -> None:

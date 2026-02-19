@@ -78,7 +78,7 @@ class _ChannelEgressModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         pass
 
     async def on_shutdown(self) -> None:
@@ -157,7 +157,7 @@ class _EmailEgressModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         pass
 
     async def on_shutdown(self) -> None:
@@ -228,7 +228,7 @@ class _IngressOnlyModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         pass
 
     async def on_shutdown(self) -> None:
@@ -268,7 +268,7 @@ class _NonChannelOutputModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         pass
 
     async def on_shutdown(self) -> None:
@@ -316,7 +316,7 @@ class _EgressMisclassifiedAsInputModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         pass
 
     async def on_shutdown(self) -> None:

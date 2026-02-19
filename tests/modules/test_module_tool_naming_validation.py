@@ -41,7 +41,7 @@ class DescriptorModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         pass
 
     async def on_shutdown(self) -> None:
