@@ -46,6 +46,23 @@ TELEGRAM_BOT_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/telegram_bot"
 TELEGRAM_USER_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/telegram_user_client"
 GMAIL_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/gmail"
 
+# ── Source shared env files (same as ENV_LOADER, before preflight check) ──
+# Pre-flight check must see the same credentials as the connector panes.
+# Source /secrets/.dev.env and .env now so that credentials stored there
+# are visible when _has_google_creds() runs below.
+if [ -f "/secrets/.dev.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . /secrets/.dev.env 2>/dev/null || true
+  set +a
+fi
+if [ -f "${PROJECT_DIR}/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "${PROJECT_DIR}/.env" 2>/dev/null || true
+  set +a
+fi
+
 # ── OAuth credential pre-flight check ─────────────────────────────────────
 # Check whether Google credentials are available via env or secrets file.
 # This runs in the *outer* shell before tmux windows are created so that
@@ -70,9 +87,9 @@ _has_google_creds() {
   # Check connector env file (sourced at connector startup)
   if [ -f "$GMAIL_CONNECTOR_ENV_FILE" ]; then
     local file_has_id file_has_secret file_has_token
-    file_has_id=$(grep -E '^(GOOGLE_OAUTH_CLIENT_ID|GMAIL_CLIENT_ID)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null | wc -l)
-    file_has_secret=$(grep -E '^(GOOGLE_OAUTH_CLIENT_SECRET|GMAIL_CLIENT_SECRET)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null | wc -l)
-    file_has_token=$(grep -E '^(GOOGLE_REFRESH_TOKEN|GMAIL_REFRESH_TOKEN)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null | wc -l)
+    file_has_id=$(grep -E '^(GOOGLE_OAUTH_CLIENT_ID|GMAIL_CLIENT_ID)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null | wc -l || echo 0)
+    file_has_secret=$(grep -E '^(GOOGLE_OAUTH_CLIENT_SECRET|GMAIL_CLIENT_SECRET)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null | wc -l || echo 0)
+    file_has_token=$(grep -E '^(GOOGLE_REFRESH_TOKEN|GMAIL_REFRESH_TOKEN)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null | wc -l || echo 0)
     if [ "$file_has_id" -gt 0 ] && [ "$file_has_secret" -gt 0 ] && [ "$file_has_token" -gt 0 ]; then
       return 0
     fi
