@@ -120,6 +120,43 @@ class TestListNotificationsDefaults:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
+    async def test_has_more_is_present_in_response(self):
+        """Regression: PaginationMeta.has_more must be serialized in the JSON response.
+
+        Previously the field was a plain @property (not @computed_field), which
+        Pydantic v2 silently omits from serialization.  The frontend relies on
+        has_more to enable the Next-page button.
+        """
+        rows = [_make_notification_row() for _ in range(3)]
+        app, _, _ = _build_app_with_mock_db(rows, total=100)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/notifications", params={"offset": 0, "limit": 3})
+
+        assert resp.status_code == 200
+        meta = resp.json()["meta"]
+        # has_more must be present as a JSON key, not undefined
+        assert "has_more" in meta
+        # With total=100, offset=0, limit=3, has_more must be True
+        assert meta["has_more"] is True
+
+    async def test_has_more_false_when_on_last_page(self):
+        """has_more is False when all records fit on the first page."""
+        rows = [_make_notification_row() for _ in range(3)]
+        app, _, _ = _build_app_with_mock_db(rows, total=3)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/notifications", params={"offset": 0, "limit": 50})
+
+        assert resp.status_code == 200
+        meta = resp.json()["meta"]
+        assert "has_more" in meta
+        assert meta["has_more"] is False
+
 
 class TestListNotificationsPagination:
     """Test custom offset/limit parameters."""

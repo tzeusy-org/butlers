@@ -22,6 +22,8 @@ import { cn } from "@/lib/utils";
 export interface NotificationFeedProps {
   notifications: NotificationSummary[];
   isLoading?: boolean;
+  /** When true, the empty state shows a hint that active filters may be hiding results. */
+  hasActiveFilters?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -78,11 +80,15 @@ function relativeTime(iso: string): string {
 // Empty state
 // ---------------------------------------------------------------------------
 
-function EmptyState() {
+function EmptyState({ hasActiveFilters = false }: { hasActiveFilters?: boolean }) {
+  const description = hasActiveFilters
+    ? "No notifications match the current filters. Try clearing the filters to see all notifications."
+    : "Notifications will appear here as butlers send messages via Telegram, email, and other channels.";
+
   return (
     <EmptyStateUI
       title="No notifications found"
-      description="Notifications will appear here as butlers send messages via Telegram, email, and other channels."
+      description={description}
     />
   );
 }
@@ -94,13 +100,14 @@ function EmptyState() {
 export function NotificationFeed({
   notifications,
   isLoading = false,
+  hasActiveFilters = false,
 }: NotificationFeedProps) {
   if (isLoading) {
     return <NotificationTableSkeleton />;
   }
 
   if (notifications.length === 0) {
-    return <EmptyState />;
+    return <EmptyState hasActiveFilters={hasActiveFilters} />;
   }
 
   return (

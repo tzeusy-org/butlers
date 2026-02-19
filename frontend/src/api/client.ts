@@ -238,16 +238,23 @@ export function getButlerSession(
 // Notifications
 // ---------------------------------------------------------------------------
 
-/** Build a URLSearchParams from notification query parameters. */
+/** Build a URLSearchParams from notification query parameters.
+ *
+ * Empty strings and the sentinel value "all" are treated as "no filter" and
+ * are intentionally omitted from the query string so the backend does not
+ * add spurious WHERE clauses that would return zero rows.
+ */
 function notificationSearchParams(params?: NotificationParams): URLSearchParams {
   const sp = new URLSearchParams();
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.butler != null) sp.set("butler", params.butler);
-  if (params?.channel != null) sp.set("channel", params.channel);
-  if (params?.status != null) sp.set("status", params.status);
-  if (params?.since != null) sp.set("since", params.since);
-  if (params?.until != null) sp.set("until", params.until);
+  if (params?.butler != null && params.butler !== "") sp.set("butler", params.butler);
+  if (params?.channel != null && params.channel !== "" && params.channel !== "all")
+    sp.set("channel", params.channel);
+  if (params?.status != null && params.status !== "" && params.status !== "all")
+    sp.set("status", params.status);
+  if (params?.since != null && params.since !== "") sp.set("since", params.since);
+  if (params?.until != null && params.until !== "") sp.set("until", params.until);
   return sp;
 }
 

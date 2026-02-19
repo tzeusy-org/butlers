@@ -84,14 +84,10 @@ async def _table_columns(pool, table_name: str) -> set[str]:
 def _group_select_fragments(group_columns: set[str]) -> tuple[str, str]:
     """Build schema-compatible select fragments for optional group fields."""
     description_sql = (
-        "g.description"
-        if "description" in group_columns
-        else "NULL::text AS description"
+        "g.description" if "description" in group_columns else "NULL::text AS description"
     )
     updated_at_sql = (
-        "g.updated_at"
-        if "updated_at" in group_columns
-        else "g.created_at AS updated_at"
+        "g.updated_at" if "updated_at" in group_columns else "g.created_at AS updated_at"
     )
     return description_sql, updated_at_sql
 

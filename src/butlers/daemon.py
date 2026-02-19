@@ -139,9 +139,9 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
 
 
 @functools.lru_cache(maxsize=1)
-def _load_switchboard_eligibility_sweep_job() -> (
-    Callable[[asyncpg.Pool], Awaitable[dict[str, Any]]]
-):
+def _load_switchboard_eligibility_sweep_job() -> Callable[
+    [asyncpg.Pool], Awaitable[dict[str, Any]]
+]:
     """Load the switchboard eligibility sweep job from roster/ by file path."""
     import importlib.util as _ilu
 

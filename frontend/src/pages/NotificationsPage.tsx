@@ -81,13 +81,18 @@ export default function NotificationsPage() {
   // Data hooks
   const { data: statsResponse, isLoading: statsLoading } =
     useNotificationStats();
-  const { data: notificationsResponse, isLoading: notificationsLoading } =
-    useNotifications(params);
+  const {
+    data: notificationsResponse,
+    isLoading: notificationsLoading,
+    isError: notificationsError,
+  } = useNotifications(params);
 
   const notifications = notificationsResponse?.data ?? [];
   const meta = notificationsResponse?.meta;
   const total = meta?.total ?? 0;
-  const hasMore = meta?.has_more ?? false;
+  // has_more is a computed property on the backend; derive it client-side as a
+  // fallback in case the backend serialization omits it.
+  const hasMore = meta?.has_more ?? (total > 0 && page * PAGE_SIZE + PAGE_SIZE < total);
 
   // Pagination helpers
   const rangeStart = total === 0 ? 0 : page * PAGE_SIZE + 1;
@@ -244,10 +249,15 @@ export default function NotificationsPage() {
         <CardContent>
           {notificationsLoading ? (
             <NotificationTableSkeleton rows={10} />
+          ) : notificationsError ? (
+            <p className="text-destructive py-8 text-center text-sm">
+              Failed to load notifications. Please try refreshing the page.
+            </p>
           ) : (
             <NotificationFeed
               notifications={notifications}
               isLoading={false}
+              hasActiveFilters={hasActiveFilters}
             />
           )}
         </CardContent>
