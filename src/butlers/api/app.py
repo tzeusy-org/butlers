@@ -42,6 +42,7 @@ from butlers.api.routers.notifications import (
 from butlers.api.routers.notifications import (
     router as notifications_router,
 )
+from butlers.api.routers.oauth import router as oauth_router
 from butlers.api.routers.schedules import router as schedules_router
 from butlers.api.routers.search import router as search_router
 from butlers.api.routers.sessions import (
@@ -157,6 +158,7 @@ def create_app(
     app.include_router(search_router)
     app.include_router(audit_router)
     app.include_router(memory_router)
+    app.include_router(oauth_router)
     app.include_router(sse_router)
 
     @app.get("/api/health")
