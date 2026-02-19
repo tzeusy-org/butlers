@@ -74,8 +74,21 @@ class Module(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def on_startup(self, config: Any, db: Any) -> None:
-        """Called after dependency resolution and migrations."""
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+        """Called after dependency resolution and migrations.
+
+        Parameters
+        ----------
+        config:
+            Module-specific validated configuration object.
+        db:
+            Butler database instance (provides ``db.pool`` for asyncpg).
+        credential_store:
+            Optional :class:`~butlers.credential_store.CredentialStore` for
+            DB-first credential resolution.  Passed by the daemon since
+            step 8b.  May be ``None`` in tests that do not need DB credential
+            resolution.
+        """
         ...
 
     @abc.abstractmethod
