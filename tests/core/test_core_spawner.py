@@ -436,7 +436,6 @@ class TestCredentialPassthrough:
         """When DB has no value, env var is used as fallback via CredentialStore.resolve()."""
         config = _make_config()
         store = AsyncMock()
-        # resolve() returns None (DB miss), CredentialStore already handles env fallback
         store.resolve = AsyncMock(return_value="env-via-store-fallback")
         env = await _build_env(config, credential_store=store)
         assert env["ANTHROPIC_API_KEY"] == "env-via-store-fallback"
