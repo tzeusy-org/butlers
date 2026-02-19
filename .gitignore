@@ -155,3 +155,7 @@ pgdata/
 .worktrees/parallel-agents/butlers-962.4/
 # bd worktree
 .worktrees/parallel-agents/butlers-962.5/
+# bd worktree
+.worktrees/parallel-agents/butlers-973.1/
+# bd worktree
+.worktrees/parallel-agents/butlers-973.2/
