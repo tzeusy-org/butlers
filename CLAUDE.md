@@ -117,6 +117,10 @@ tests/               # pytest tests
 - **Manifesto-driven design:** Each butler has a `MANIFESTO.md` that defines its identity, purpose, and value proposition for users. New features, tools, and UX decisions for a butler should be deeply aligned with its manifesto. When in doubt about scope or framing, consult the manifesto.
 - **Butler-specific API routes:** Dashboard API routes live in `roster/{butler}/api/router.py` and are auto-discovered by `src/butlers/api/router_discovery.py`. Each router.py must export a module-level `router` variable (APIRouter instance). No `__init__.py` needed. DB dependencies are auto-wired via `wire_db_dependencies()`. Co-locate Pydantic models in `models.py` alongside router.py.
 
+## Issue Tracking (Beads)
+
+This project uses `bd` (beads) for issue tracking. **Critical:** `.beads/config.yaml` sets `no-db: true`, meaning `.beads/issues.jsonl` is the sole source of truth — there is no SQLite database. All `bd` commands read/write the JSONL directly. Do not run `bd migrate`, `bd sync --import-only`, or attempt to fix SQLite state. See `AGENTS.md` for full beads workflow details.
+
 ## Implementation Plan
 
 Development follows milestones defined in `PROJECT_PLAN.md`. Use the `superpowers:executing-plans` skill to implement tasks from that plan. A separate `MEMORY_PROJECT_PLAN.md` covers the tiered memory subsystem (Eden → Mid-Term → Long-Term, LRU-based promotion/eviction).

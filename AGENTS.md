@@ -53,6 +53,17 @@ bd sync               # Sync with git
 
 This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) for issue tracking. Issues are stored in `.beads/` and tracked in git.
 
+### CRITICAL: no-db Mode (JSONL is the sole source of truth)
+
+This repo uses `no-db: true` (see `.beads/config.yaml`). This means:
+
+- **`.beads/issues.jsonl` is the only source of truth.** There is no SQLite database. `bd` reads from and writes back to the JSONL after each command.
+- **Do NOT run `bd migrate`, `bd sync --import-only`, or debug SQLite state** — these are irrelevant in no-db mode.
+- **`bd doctor` warnings about SQLite** (version mismatch, 0 issues in DB, repo fingerprint) are noise — ignore them.
+- **`bd sync` = commit JSONL to git.** It does NOT export from SQLite. The "Exported 0 issues" message is misleading but harmless — your data is in the JSONL.
+- **`bd create` writes directly to the JSONL file.** Beads persist immediately in the working tree.
+- If beads appear to vanish, check `git diff .beads/issues.jsonl` and `grep <id> .beads/issues.jsonl` — the data is in the file, not a database.
+
 ### Essential Commands
 
 ```bash
@@ -126,6 +137,10 @@ Each butler has a `MANIFESTO.md` that defines its public identity and value prop
 
 ### v1 MVP Status (2026-02-09)
 All 122 beads closed. 449 tests passing on main. Full implementation complete.
+
+### dev.sh Gmail OAuth rerun contract
+- In `dev.sh`, `_has_google_creds()` must check the same credential DB set as the OAuth gate (`_poll_db_for_refresh_token`), plus legacy/override DB names where applicable, so preflight and gate do not disagree.
+- Build the Gmail pane startup command at Layer 3 launch time (after OAuth gate), not once during early preflight; otherwise reruns can keep showing the stale "waiting for OAuth" pane even when credentials already exist.
 
 ### Code Layout
 - `src/butlers/core/` — state.py, scheduler.py, sessions.py, spawner.py, telemetry.py, telemetry_spans.py
@@ -264,6 +279,10 @@ make test-qg
 - Frontend route/component tests run with Vitest (`frontend/package.json` has `npm test` -> `vitest run`).
 - Colocate tests as `frontend/src/**/*.test.tsx` (example: `frontend/src/pages/ButlersPage.test.tsx`).
 
+### Memory browser episode expansion contract
+- `frontend/src/components/memory/MemoryBrowser.tsx` episodes rows expose an explicit `Expand`/`Collapse` control that reveals a full-content detail row (`Episode Content`) while keeping the main cell preview truncated.
+- Regression coverage lives in `frontend/src/components/memory/MemoryBrowser.test.tsx` and asserts collapsed-by-default, expand-to-read, and collapse-again behavior.
+
 ### Frontend docs source-of-truth contract
 - `docs/frontend/` is the canonical, implementation-grounded frontend spec set (`purpose-and-single-pane.md`, `information-architecture.md`, `feature-inventory.md`, `data-access-and-refresh.md`).
 - `docs/FRONTEND_PROJECT_PLAN.md` is historical/aspirational context; update `docs/frontend/` when routes, tabs, feature coverage, or data-refresh/write behavior changes.
@@ -325,7 +344,7 @@ make test-qg
 - If this happens, run `bd sync --status`, inspect staged `.beads/issues.jsonl`, commit the sync normalization (or intentionally restore it), then re-run `git push`.
 
 ### Beads worktree JSONL contract
-- `.beads/config.yaml` is pinned to `no-db: true` so `bd` reads/writes the active worktree's `.beads/issues.jsonl` instead of mutating the main-repo `.beads` database from worker worktrees.
+- `.beads/config.yaml` is pinned to `no-db: true` — **JSONL is the sole source of truth, not SQLite.** All `bd` commands read/write `.beads/issues.jsonl` directly. Do not attempt to fix SQLite state, run `bd migrate`, or `bd sync --import-only` — these are no-ops or irrelevant in this mode.
 - Regression coverage lives in `tests/tools/test_beads_worktree_sync.py` and must keep worktree `bd close`/`bd show`/`bd export`/`bd import` aligned with branch-local `.beads/issues.jsonl`.
 
 ### Beads no-db worktree hydration contract
