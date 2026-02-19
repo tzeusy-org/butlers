@@ -44,7 +44,7 @@ import html
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -653,17 +653,11 @@ async def run_telegram_user_client_connector() -> None:
             logger.error("Telegram user-client connector: invalid TELEGRAM_API_ID from DB: %s", exc)
             api_id = config.telegram_api_id
 
-        config = TelegramUserClientConnectorConfig(
-            switchboard_mcp_url=config.switchboard_mcp_url,
-            provider=config.provider,
-            channel=config.channel,
-            endpoint_identity=config.endpoint_identity,
+        config = replace(
+            config,
             telegram_api_id=api_id,
             telegram_api_hash=db_creds["TELEGRAM_API_HASH"],
             telegram_user_session=db_creds["TELEGRAM_USER_SESSION"],
-            cursor_path=config.cursor_path,
-            backfill_window_h=config.backfill_window_h,
-            max_inflight=config.max_inflight,
         )
         logger.debug("Telegram user-client connector: config updated with DB-resolved credentials")
 

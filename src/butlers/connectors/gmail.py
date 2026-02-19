@@ -1350,7 +1350,7 @@ async def run_gmail_connector() -> None:
                 connector_provider=os.environ.get("CONNECTOR_PROVIDER", "gmail"),
                 connector_channel=os.environ.get("CONNECTOR_CHANNEL", "email"),
                 connector_endpoint_identity=os.environ["CONNECTOR_ENDPOINT_IDENTITY"],
-                connector_cursor_path=cursor_path_str,  # type: ignore[arg-type]
+                connector_cursor_path=Path(cursor_path_str),
                 connector_max_inflight=int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8")),
                 connector_health_port=int(os.environ.get("CONNECTOR_HEALTH_PORT", "40082")),
                 gmail_client_id=db_creds["client_id"],

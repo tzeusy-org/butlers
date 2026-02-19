@@ -28,7 +28,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Thread
@@ -876,18 +876,7 @@ async def run_telegram_bot_connector() -> None:
 
     # Step 3: Override with DB-resolved token if available.
     if db_token is not None:
-        config = TelegramBotConnectorConfig(
-            switchboard_mcp_url=config.switchboard_mcp_url,
-            provider=config.provider,
-            channel=config.channel,
-            endpoint_identity=config.endpoint_identity,
-            telegram_token=db_token,
-            cursor_path=config.cursor_path,
-            poll_interval_s=config.poll_interval_s,
-            webhook_url=config.webhook_url,
-            max_inflight=config.max_inflight,
-            health_port=config.health_port,
-        )
+        config = replace(config, telegram_token=db_token)
         logger.debug("Telegram bot connector: config updated with DB-resolved token")
 
     connector = TelegramBotConnector(config)
