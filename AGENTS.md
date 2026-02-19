@@ -545,3 +545,10 @@ make test-qg
 - `src/butlers/api/models/state.py::StateEntry.value` and `StateSetRequest.value` are typed `Any` (widened from `dict[str, Any]` in PR #205); scalar/array/null JSON rows in `state.value` are now serialized correctly.
 - Keep list/get state endpoint value-shape contracts aligned with the full JSON domain accepted by the underlying state storage.
 - asyncpg decodes JSONB columns directly to native Python types; no secondary `json.loads` fallback is needed in the router.
+
+### Connector credential resolution pattern (CredentialStore)
+- Connectors are standalone processes and need their own short-lived asyncpg pool (min_size=1, max_size=2, command_timeout=5) gated on `DATABASE_URL` or `POSTGRES_HOST` being set.
+- `TelegramBotConnectorConfig` and `TelegramUserClientConnectorConfig` are Python **dataclasses** (not Pydantic models); use `dataclasses.replace(config, field=value)` for partial updates — `model_copy()` is Pydantic-only.
+- `GmailConnectorConfig` is a Pydantic `BaseModel` with `frozen=True`; use `config.model_copy(update={...})` for partial updates.
+- Pydantic v2 auto-coerces `str` to `pathlib.Path` for `Path`-typed fields, but prefer explicit `Path(cursor_path_str)` at construction sites to satisfy static type checkers and remove `type: ignore` suppressions.
+- `bd close` from worktrees silently fails to persist due to redirect/sharing issues; always re-close beads from the main repo after worktree operations.
