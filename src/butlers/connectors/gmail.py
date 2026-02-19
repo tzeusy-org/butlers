@@ -22,9 +22,13 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - CONNECTOR_CURSOR_PATH (required; stores last historyId)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_HEALTH_PORT (optional, default 8080)
-- GMAIL_CLIENT_ID or GOOGLE_OAUTH_CLIENT_ID (required; GMAIL_CLIENT_ID takes priority)
-- GMAIL_CLIENT_SECRET or GOOGLE_OAUTH_CLIENT_SECRET (required)
-- GMAIL_REFRESH_TOKEN or GOOGLE_REFRESH_TOKEN (required)
+- GOOGLE_OAUTH_CLIENT_ID (primary; used for OAuth bootstrap — app config)
+- GOOGLE_OAUTH_CLIENT_SECRET (primary; used for OAuth bootstrap — app config)
+- DATABASE_URL or POSTGRES_* (optional; if set, credentials are loaded from DB first)
+- CONNECTOR_BUTLER_DB_NAME (optional; butler DB name, defaults to 'butlers')
+- GMAIL_CLIENT_ID (deprecated alias for GOOGLE_OAUTH_CLIENT_ID; env-var fallback only)
+- GMAIL_CLIENT_SECRET (deprecated alias for GOOGLE_OAUTH_CLIENT_SECRET; env-var fallback only)
+- GMAIL_REFRESH_TOKEN or GOOGLE_REFRESH_TOKEN (deprecated; use DB-stored credentials)
 - GMAIL_WATCH_RENEW_INTERVAL_S (optional, default 86400 = 1 day)
 - GMAIL_POLL_INTERVAL_S (optional, default 60)
 - GMAIL_PUBSUB_ENABLED (optional, default false; enables Pub/Sub push mode)
@@ -58,6 +62,11 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
+from butlers.db import db_params_from_env
+from butlers.google_credentials import (
+    MissingGoogleCredentialsError,
+    resolve_google_credentials,
+)
 from butlers.startup_guard import require_google_credentials_or_exit
 from butlers.storage.blobs import BlobStore
 
@@ -185,25 +194,49 @@ class GmailConnectorConfig(BaseModel):
         pubsub_webhook_path = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook")
         pubsub_webhook_token = os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN")
 
-        # Resolve OAuth credentials: accept GOOGLE_OAUTH_* aliases as fallbacks
-        # so that credentials from the shared Google OAuth bootstrap work directly.
-        gmail_client_id = os.environ.get("GMAIL_CLIENT_ID") or os.environ.get(
-            "GOOGLE_OAUTH_CLIENT_ID"
+        # Resolve OAuth credentials from env vars (deprecated path).
+        # Prefer GOOGLE_OAUTH_* (canonical) over GMAIL_* (legacy aliases).
+        # Emit deprecation warnings for legacy GMAIL_* vars and GOOGLE_REFRESH_TOKEN.
+        gmail_client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID") or os.environ.get(
+            "GMAIL_CLIENT_ID"
         )
-        gmail_client_secret = os.environ.get("GMAIL_CLIENT_SECRET") or os.environ.get(
+        gmail_client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET") or os.environ.get(
+            "GMAIL_CLIENT_SECRET"
+        )
+        gmail_refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN") or os.environ.get(
+            "GMAIL_REFRESH_TOKEN"
+        )
+
+        # Emit deprecation warnings for legacy env vars
+        if os.environ.get("GMAIL_CLIENT_ID") and not os.environ.get("GOOGLE_OAUTH_CLIENT_ID"):
+            logger.warning(
+                "GMAIL_CLIENT_ID is deprecated. Use GOOGLE_OAUTH_CLIENT_ID instead. "
+                "Credential env vars will be removed in a future release — use the "
+                "dashboard OAuth flow to store credentials in the database."
+            )
+        if os.environ.get("GMAIL_CLIENT_SECRET") and not os.environ.get(
             "GOOGLE_OAUTH_CLIENT_SECRET"
-        )
-        gmail_refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN") or os.environ.get(
-            "GOOGLE_REFRESH_TOKEN"
-        )
+        ):
+            logger.warning(
+                "GMAIL_CLIENT_SECRET is deprecated. Use GOOGLE_OAUTH_CLIENT_SECRET instead. "
+                "Credential env vars will be removed in a future release — use the "
+                "dashboard OAuth flow to store credentials in the database."
+            )
+        if os.environ.get("GMAIL_REFRESH_TOKEN") or os.environ.get("GOOGLE_REFRESH_TOKEN"):
+            logger.warning(
+                "GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN env vars are deprecated. "
+                "Use the dashboard OAuth flow to store the refresh token in the database. "
+                "Set DATABASE_URL (or POSTGRES_*) and CONNECTOR_BUTLER_DB_NAME to enable "
+                "DB-first credential resolution."
+            )
 
         missing_cred_vars = []
         if not gmail_client_id:
-            missing_cred_vars.append("GMAIL_CLIENT_ID (or GOOGLE_OAUTH_CLIENT_ID)")
+            missing_cred_vars.append("GOOGLE_OAUTH_CLIENT_ID (or GMAIL_CLIENT_ID)")
         if not gmail_client_secret:
-            missing_cred_vars.append("GMAIL_CLIENT_SECRET (or GOOGLE_OAUTH_CLIENT_SECRET)")
+            missing_cred_vars.append("GOOGLE_OAUTH_CLIENT_SECRET (or GMAIL_CLIENT_SECRET)")
         if not gmail_refresh_token:
-            missing_cred_vars.append("GMAIL_REFRESH_TOKEN (or GOOGLE_REFRESH_TOKEN)")
+            missing_cred_vars.append("GOOGLE_REFRESH_TOKEN (or GMAIL_REFRESH_TOKEN)")
         if missing_cred_vars:
             missing_str = ", ".join(missing_cred_vars)
             raise ValueError(
@@ -1193,23 +1226,133 @@ class GmailConnectorRuntime:
             self._metrics.record_ingest_submission(status=status, latency=latency)
 
 
+async def _resolve_gmail_credentials_from_db() -> tuple[str, str, str] | None:
+    """Attempt DB-first credential resolution for the Gmail connector.
+
+    Connects to the butler's PostgreSQL database (if DATABASE_URL or POSTGRES_*
+    env vars are set), looks up credentials via ``resolve_google_credentials``,
+    and returns ``(client_id, client_secret, refresh_token)`` on success.
+
+    Returns ``None`` if:
+    - No DB connection parameters are configured (env vars absent).
+    - The DB is reachable but no credentials have been stored yet.
+
+    In both cases the caller should fall back to env-var resolution.
+    """
+    import asyncpg
+
+    db_params = db_params_from_env()
+    db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers")
+
+    # Only attempt DB resolution if a host is explicitly configured or DATABASE_URL set.
+    if not os.environ.get("DATABASE_URL") and db_params.get("host") == "localhost":
+        # Default values — user may not have configured a DB at all.
+        # Still attempt the connection; if it fails, return None gracefully.
+        pass
+
+    try:
+        pool = await asyncpg.create_pool(
+            host=db_params["host"],
+            port=db_params["port"],
+            user=db_params["user"],
+            password=db_params["password"],
+            database=db_name,
+            ssl=db_params.get("ssl"),  # type: ignore[arg-type]
+            min_size=1,
+            max_size=2,
+            command_timeout=5,
+        )
+    except Exception as exc:
+        logger.debug("DB connection failed during Gmail credential resolution (non-fatal): %s", exc)
+        return None
+
+    try:
+        async with pool.acquire() as conn:
+            creds = await resolve_google_credentials(conn, caller="gmail-connector")
+        logger.info("Gmail connector: resolved Google credentials from database (db=%s)", db_name)
+        return creds.client_id, creds.client_secret, creds.refresh_token
+    except MissingGoogleCredentialsError:
+        logger.debug(
+            "Gmail connector: no credentials in DB (db=%s), falling back to env vars", db_name
+        )
+        return None
+    except Exception as exc:
+        logger.debug("Gmail connector: DB credential lookup failed (non-fatal): %s", exc)
+        return None
+    finally:
+        await pool.close()
+
+
 async def run_gmail_connector() -> None:
-    """Run the Gmail connector runtime (async entrypoint)."""
+    """Run the Gmail connector runtime (async entrypoint).
+
+    Credential resolution order:
+    1. Database (if DATABASE_URL or POSTGRES_* env vars are configured).
+    2. Environment variables (GOOGLE_OAUTH_CLIENT_ID/SECRET + GOOGLE_REFRESH_TOKEN,
+       or legacy GMAIL_* aliases).
+    """
     configure_logging(level="INFO", butler_name="gmail")
+
+    # Step 1: Try DB-first credential resolution.
+    db_creds = await _resolve_gmail_credentials_from_db()
 
     try:
         config = GmailConnectorConfig.from_env()
     except Exception as exc:
-        logger.error("Failed to load connector config: %s", exc)
-        raise
+        if db_creds is None:
+            logger.error("Failed to load connector config: %s", exc)
+            raise
+        # Config failed due to missing credential env vars, but we have DB credentials.
+        # Inject them into the environment and retry.
+        logger.info(
+            "Gmail connector: injecting DB-resolved credentials into config (env vars absent)"
+        )
+        os.environ["GOOGLE_OAUTH_CLIENT_ID"] = db_creds[0]
+        os.environ["GOOGLE_OAUTH_CLIENT_SECRET"] = db_creds[1]
+        os.environ["GOOGLE_REFRESH_TOKEN"] = db_creds[2]
+        try:
+            config = GmailConnectorConfig.from_env()
+        except Exception as exc2:
+            logger.error("Failed to load connector config after DB credential injection: %s", exc2)
+            raise
+
+    # Step 2: If DB creds were found, override whatever was in env vars.
+    if db_creds is not None:
+        config = config.model_copy(
+            update={
+                "gmail_client_id": db_creds[0],
+                "gmail_client_secret": db_creds[1],
+                "gmail_refresh_token": db_creds[2],
+            }
+        )
+        logger.debug("Gmail connector: config updated with DB-resolved credentials")
 
     connector = GmailConnectorRuntime(config)
     await connector.start()
 
 
 def main() -> None:
-    """CLI entrypoint for Gmail connector."""
-    require_google_credentials_or_exit(caller="gmail-connector")
+    """CLI entrypoint for Gmail connector.
+
+    Credentials can come from:
+    1. The butler PostgreSQL database (DATABASE_URL or POSTGRES_* env vars required).
+    2. Environment variables (GOOGLE_OAUTH_CLIENT_ID/SECRET + GOOGLE_REFRESH_TOKEN,
+       or legacy GMAIL_* aliases — deprecated).
+
+    The env-only startup guard is skipped when a DB connection is potentially
+    available (DATABASE_URL or POSTGRES_HOST set), since DB credentials are resolved
+    async inside ``run_gmail_connector()``.
+    """
+    # Only run the synchronous env-only guard if no DB is configured.
+    # When a DB is configured, credentials may be in the DB even if env vars are absent.
+    has_db_config = bool(os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_HOST"))
+    if not has_db_config:
+        require_google_credentials_or_exit(caller="gmail-connector")
+    else:
+        logger.info(
+            "Gmail connector: DB configured — skipping env-only credential guard. "
+            "Credentials will be resolved from DB at startup."
+        )
     asyncio.run(run_gmail_connector())
 
 

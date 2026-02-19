@@ -199,12 +199,12 @@ fi
 # developers see the warning immediately rather than only inside a pane.
 
 _has_google_creds() {
-  # Check Calendar-style JSON blob first (matches startup_guard.py priority order)
+  # Check Calendar-style JSON blob (legacy — deprecated)
   if [ -n "${BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON:-}" ]; then
     return 0
   fi
 
-  # Check individual env vars next (mirrors GoogleCredentials.from_env order)
+  # Check individual env vars (mirrors GoogleCredentials.from_env order)
   local client_id="" client_secret="" refresh_token=""
   client_id="${GOOGLE_OAUTH_CLIENT_ID:-${GMAIL_CLIENT_ID:-}}"
   client_secret="${GOOGLE_OAUTH_CLIENT_SECRET:-${GMAIL_CLIENT_SECRET:-}}"
@@ -221,6 +221,22 @@ _has_google_creds() {
     file_has_secret=$(grep -E '^(GOOGLE_OAUTH_CLIENT_SECRET|GMAIL_CLIENT_SECRET)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null | wc -l || echo 0)
     file_has_token=$(grep -E '^(GOOGLE_REFRESH_TOKEN|GMAIL_REFRESH_TOKEN)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null | wc -l || echo 0)
     if [ "$file_has_id" -gt 0 ] && [ "$file_has_secret" -gt 0 ] && [ "$file_has_token" -gt 0 ]; then
+      return 0
+    fi
+  fi
+
+  # Check DB for stored credentials using psql (requires DB to be reachable).
+  # This allows the OAuth dashboard flow to provide credentials without env vars.
+  local db_host db_port db_user db_pass db_name
+  db_host="${POSTGRES_HOST:-localhost}"
+  db_port="${POSTGRES_PORT:-54320}"
+  db_user="${POSTGRES_USER:-butlers}"
+  db_pass="${POSTGRES_PASSWORD:-butlers}"
+  db_name="${CONNECTOR_BUTLER_DB_NAME:-butlers}"
+  if command -v psql >/dev/null 2>&1; then
+    local db_count
+    db_count=$(PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d "$db_name" -tAc       "SELECT COUNT(*) FROM google_oauth_credentials WHERE credential_key='google' AND (credentials->>'refresh_token') IS NOT NULL AND length(credentials->>'refresh_token') > 0;"       2>/dev/null || echo "0")
+    if [ "${db_count:-0}" -gt 0 ] 2>/dev/null; then
       return 0
     fi
   fi

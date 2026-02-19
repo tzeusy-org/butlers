@@ -25,6 +25,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
+from butlers.google_credentials import (
+    resolve_google_credentials,
+)
 from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
@@ -111,6 +114,20 @@ class _GoogleOAuthCredentials(BaseModel):
 
     @classmethod
     def from_env(cls) -> _GoogleOAuthCredentials:
+        """Load credentials from the legacy BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON env var.
+
+        .. deprecated::
+            BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON is deprecated. Credentials should be
+            bootstrapped via the dashboard OAuth flow and stored in the database. The
+            CalendarModule now calls resolve_google_credentials(pool) at startup, which
+            performs DB-first resolution with env-var fallback. This method is retained
+            only for backward compatibility when no DB pool is available.
+        """
+        logger.warning(
+            "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON env var is deprecated. "
+            "Use the dashboard OAuth flow to store credentials in the database. "
+            "See docs/oauth/google/setup-guide.md for instructions."
+        )
         raw_value = os.environ.get(GOOGLE_CALENDAR_CREDENTIALS_ENV, "").strip()
         if not raw_value:
             raise CalendarCredentialError(
@@ -1522,11 +1539,11 @@ class _GoogleProvider(CalendarProvider):
     def __init__(
         self,
         config: CalendarConfig,
+        credentials: _GoogleOAuthCredentials,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._config = config
         self._owns_http_client = http_client is None
-        credentials = _GoogleOAuthCredentials.from_env()
         self._http_client = http_client or httpx.AsyncClient(timeout=30.0)
         self._oauth = _GoogleOAuthClient(credentials, self._http_client)
 
@@ -2959,7 +2976,21 @@ class CalendarModule(Module):
                 f"Supported providers: {supported}"
             )
 
-        self._provider = provider_cls(self._config)
+        # Resolve Google OAuth credentials: DB-first with env fallback.
+        # The pool is available on db.pool when a Database instance is passed.
+        pool = getattr(db, "pool", None) if db is not None else None
+        if pool is not None:
+            google_creds_shared = await resolve_google_credentials(pool, caller="calendar")
+            credentials = _GoogleOAuthCredentials(
+                client_id=google_creds_shared.client_id,
+                client_secret=google_creds_shared.client_secret,
+                refresh_token=google_creds_shared.refresh_token,
+            )
+        else:
+            # No DB available (e.g. tests without a real pool) — fall back to env vars.
+            credentials = _GoogleOAuthCredentials.from_env()
+
+        self._provider = provider_cls(self._config, credentials)
 
         if self._config.sync.enabled:
             self._sync_task = asyncio.create_task(
