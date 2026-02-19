@@ -29,7 +29,7 @@ def temp_cursor_path(tmp_path: Path) -> Path:
 def gmail_config(temp_cursor_path: Path) -> GmailConnectorConfig:
     """Create test Gmail connector config."""
     return GmailConnectorConfig(
-        switchboard_mcp_url="http://localhost:8100/sse",
+        switchboard_mcp_url="http://localhost:40100/sse",
         connector_provider="gmail",
         connector_channel="email",
         connector_endpoint_identity="gmail:user:test@example.com",
@@ -55,7 +55,7 @@ class TestGmailConnectorConfig:
     def test_from_env_success(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test successful config loading from environment."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_PROVIDER", "gmail")
         monkeypatch.setenv("CONNECTOR_CHANNEL", "email")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
@@ -67,7 +67,7 @@ class TestGmailConnectorConfig:
 
         config = GmailConnectorConfig.from_env()
 
-        assert config.switchboard_mcp_url == "http://localhost:8100/sse"
+        assert config.switchboard_mcp_url == "http://localhost:40100/sse"
         assert config.connector_provider == "gmail"
         assert config.connector_channel == "email"
         assert config.connector_endpoint_identity == "gmail:user:test@example.com"
@@ -93,7 +93,7 @@ class TestGmailConnectorConfig:
     ) -> None:
         """Test config loading fails with invalid integer values."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
@@ -443,7 +443,7 @@ class TestGmailPubSubConfig:
     ) -> None:
         """Test Pub/Sub config when enabled with topic."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
@@ -456,7 +456,7 @@ class TestGmailPubSubConfig:
 
         assert config.gmail_pubsub_enabled is True
         assert config.gmail_pubsub_topic == "projects/my-project/topics/gmail-push"
-        assert config.gmail_pubsub_webhook_port == 8081
+        assert config.gmail_pubsub_webhook_port == 40081
         assert config.gmail_pubsub_webhook_path == "/gmail/webhook"
 
     def test_pubsub_config_enabled_without_topic_fails(
@@ -464,7 +464,7 @@ class TestGmailPubSubConfig:
     ) -> None:
         """Test Pub/Sub config fails when enabled without topic."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
@@ -480,7 +480,7 @@ class TestGmailPubSubConfig:
     ) -> None:
         """Test Pub/Sub config with custom webhook settings."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
@@ -501,7 +501,7 @@ class TestGmailPubSubConfig:
     ) -> None:
         """Test Pub/Sub is disabled by default."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
@@ -518,7 +518,7 @@ class TestGmailPubSubConfig:
     ) -> None:
         """Test webhook token is loaded from environment."""
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
@@ -1397,7 +1397,7 @@ class TestGmailConnectorConfigDeprecationWarnings:
         import logging
 
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
@@ -1423,7 +1423,7 @@ class TestGmailConnectorConfigDeprecationWarnings:
         import logging
 
         cursor_path = tmp_path / "cursor.json"
-        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")

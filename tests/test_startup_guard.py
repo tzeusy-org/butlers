@@ -150,7 +150,7 @@ class TestCheckGoogleCredentialsMissing:
         with mock.patch.dict("os.environ", clear, clear=True):
             result = check_google_credentials()
         remediation = result.remediation
-        assert "dashboard" in remediation.lower() or "localhost:8200" in remediation
+        assert "dashboard" in remediation.lower() or "localhost:40200" in remediation
         assert "GOOGLE_OAUTH_CLIENT_ID" in remediation
         assert "GOOGLE_OAUTH_CLIENT_SECRET" in remediation
         assert "GOOGLE_REFRESH_TOKEN" in remediation
@@ -212,13 +212,13 @@ class TestRequireGoogleCredentialsOrExit:
             with pytest.raises(SystemExit):
                 require_google_credentials_or_exit(
                     caller="gmail-connector",
-                    dashboard_url="http://localhost:8200",
+                    dashboard_url="http://localhost:40200",
                 )
         captured = capsys.readouterr()
         # Output goes to stderr
         assert "gmail-connector" in captured.err
         assert "STARTUP BLOCKED" in captured.err
-        assert "http://localhost:8200" in captured.err
+        assert "http://localhost:40200" in captured.err
 
     def test_caller_name_in_stderr_output(self, capsys: pytest.CaptureFixture) -> None:
         clear = _all_google_env_vars_cleared()

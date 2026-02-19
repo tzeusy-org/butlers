@@ -41,8 +41,8 @@ def _make_mock_client(*, connected: bool = True) -> MagicMock:
 
 class TestButlerConnectionInfo:
     def test_sse_url(self):
-        info = ButlerConnectionInfo(name="switchboard", port=8100)
-        assert info.sse_url == "http://localhost:8100/sse"
+        info = ButlerConnectionInfo(name="switchboard", port=40100)
+        assert info.sse_url == "http://localhost:40100/sse"
 
     def test_sse_url_custom_port(self):
         info = ButlerConnectionInfo(name="general", port=9999)
@@ -109,12 +109,12 @@ class TestMCPClientManagerGetClient:
         mock_client_cls.return_value = mock_client
 
         mgr = MCPClientManager()
-        mgr.register("sb", ButlerConnectionInfo("sb", 8100))
+        mgr.register("sb", ButlerConnectionInfo("sb", 40100))
 
         # First call — creates
         client1 = await mgr.get_client("sb")
         assert client1 is mock_client
-        mock_client_cls.assert_called_once_with("http://localhost:8100/sse", name="dashboard-sb")
+        mock_client_cls.assert_called_once_with("http://localhost:40100/sse", name="dashboard-sb")
         mock_client.__aenter__.assert_called_once()
 
         # Second call — returns cached
@@ -130,7 +130,7 @@ class TestMCPClientManagerGetClient:
         mock_client_cls.side_effect = [old_client, new_client]
 
         mgr = MCPClientManager()
-        mgr.register("sb", ButlerConnectionInfo("sb", 8100))
+        mgr.register("sb", ButlerConnectionInfo("sb", 40100))
 
         # First call — old client
         c1 = await mgr.get_client("sb")
@@ -153,7 +153,7 @@ class TestMCPClientManagerGetClient:
         mock_client_cls.return_value = mock_client
 
         mgr = MCPClientManager()
-        mgr.register("sb", ButlerConnectionInfo("sb", 8100))
+        mgr.register("sb", ButlerConnectionInfo("sb", 40100))
 
         with pytest.raises(ButlerUnreachableError) as exc_info:
             await mgr.get_client("sb")

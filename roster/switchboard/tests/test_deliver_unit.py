@@ -244,9 +244,9 @@ class TestDeliverTelegramSuccess:
         pool = _make_mock_pool(
             fetchrow_side_effect=[
                 # 1. butler_registry module lookup (deliver)
-                _registry_row("chatter", "http://localhost:8103/sse"),
+                _registry_row("chatter", "http://localhost:40103/sse"),
                 # 2. butler_registry endpoint lookup (route)
-                _registry_row("chatter", "http://localhost:8103/sse"),
+                _registry_row("chatter", "http://localhost:40103/sse"),
                 # 3. notifications INSERT RETURNING id
                 _notif_id_row(),
             ],
@@ -1090,13 +1090,13 @@ class TestCallButlerTool:
 
         with patch("butlers.tools.switchboard.routing.route.MCPClient", mock_ctor):
             result = await _call_butler_tool(
-                "http://localhost:8101/sse",
+                "http://localhost:40101/sse",
                 "bot_switchboard_handle_message",
                 {},
             )
 
         assert result == {"ok": True}
-        mock_ctor.assert_called_once_with("http://localhost:8101/sse", name="switchboard-router")
+        mock_ctor.assert_called_once_with("http://localhost:40101/sse", name="switchboard-router")
         mock_client.call_tool.assert_awaited_once_with(
             "bot_switchboard_handle_message",
             {},
@@ -1121,19 +1121,19 @@ class TestCallButlerTool:
 
         with patch("butlers.tools.switchboard.routing.route.MCPClient", mock_ctor):
             first = await _call_butler_tool(
-                "http://localhost:8101/sse",
+                "http://localhost:40101/sse",
                 "bot_switchboard_handle_message",
                 {},
             )
             second = await _call_butler_tool(
-                "http://localhost:8101/sse",
+                "http://localhost:40101/sse",
                 "bot_switchboard_handle_message",
                 {},
             )
 
         assert first == {"n": 1}
         assert second == {"n": 2}
-        mock_ctor.assert_called_once_with("http://localhost:8101/sse", name="switchboard-router")
+        mock_ctor.assert_called_once_with("http://localhost:40101/sse", name="switchboard-router")
         assert mock_client.call_tool.await_count == 2
 
     async def test_reconnects_when_cached_client_disconnected(self) -> None:
@@ -1163,13 +1163,13 @@ class TestCallButlerTool:
             MagicMock(side_effect=[first_ctx, second_ctx]),
         ) as mock_ctor:
             first = await _call_butler_tool(
-                "http://localhost:8101/sse",
+                "http://localhost:40101/sse",
                 "bot_switchboard_handle_message",
                 {},
             )
             first_ctx.is_connected.return_value = False
             second = await _call_butler_tool(
-                "http://localhost:8101/sse",
+                "http://localhost:40101/sse",
                 "bot_switchboard_handle_message",
                 {},
             )
@@ -1196,7 +1196,7 @@ class TestCallButlerTool:
                 match="Failed to call tool bot_switchboard_handle_message",
             ):
                 await _call_butler_tool(
-                    "http://localhost:8101/sse",
+                    "http://localhost:40101/sse",
                     "bot_switchboard_handle_message",
                     {"prompt": "Hello"},
                 )
@@ -1223,7 +1223,7 @@ class TestCallButlerTool:
         with patch("butlers.tools.switchboard.routing.route.MCPClient", mock_ctor):
             with pytest.raises(RuntimeError, match=rf"Unknown tool: {legacy_tool}"):
                 await _call_butler_tool(
-                    "http://localhost:8101/sse",
+                    "http://localhost:40101/sse",
                     legacy_tool,
                     {"message": "legacy"},
                 )

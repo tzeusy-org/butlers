@@ -35,7 +35,7 @@ pytestmark = pytest.mark.integration
 def telegram_config(tmp_path: Path) -> TelegramBotConnectorConfig:
     """Create test Telegram connector config."""
     return TelegramBotConnectorConfig(
-        switchboard_mcp_url="http://localhost:8100/sse",
+        switchboard_mcp_url="http://localhost:40100/sse",
         provider="telegram",
         channel="telegram",
         endpoint_identity="test_bot",
@@ -50,7 +50,7 @@ def telegram_config(tmp_path: Path) -> TelegramBotConnectorConfig:
 def gmail_config(tmp_path: Path) -> GmailConnectorConfig:
     """Create test Gmail connector config."""
     return GmailConnectorConfig(
-        switchboard_mcp_url="http://localhost:8100/sse",
+        switchboard_mcp_url="http://localhost:40100/sse",
         connector_provider="gmail",
         connector_channel="email",
         connector_endpoint_identity="gmail:user:test@example.com",

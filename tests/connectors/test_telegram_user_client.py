@@ -28,7 +28,7 @@ def mock_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, str]:
     """Set up mock environment variables for connector config."""
     cursor_path = tmp_path / "cursor.json"
     env_vars = {
-        "SWITCHBOARD_MCP_URL": "http://localhost:8100/sse",
+        "SWITCHBOARD_MCP_URL": "http://localhost:40100/sse",
         "CONNECTOR_PROVIDER": "telegram",
         "CONNECTOR_CHANNEL": "telegram",
         "CONNECTOR_ENDPOINT_IDENTITY": "telegram:user:123456",
@@ -48,7 +48,7 @@ def config(tmp_path: Path) -> TelegramUserClientConnectorConfig:
     """Create a test connector config."""
     cursor_path = tmp_path / "cursor.json"
     return TelegramUserClientConnectorConfig(
-        switchboard_mcp_url="http://localhost:8100/sse",
+        switchboard_mcp_url="http://localhost:40100/sse",
         provider="telegram",
         channel="telegram",
         endpoint_identity="telegram:user:123456",
@@ -67,7 +67,7 @@ class TestTelegramUserClientConnectorConfig:
         """Test loading config from environment variables."""
         config = TelegramUserClientConnectorConfig.from_env()
 
-        assert config.switchboard_mcp_url == "http://localhost:8100/sse"
+        assert config.switchboard_mcp_url == "http://localhost:40100/sse"
         assert config.provider == "telegram"
         assert config.channel == "telegram"
         assert config.endpoint_identity == "telegram:user:123456"
@@ -432,7 +432,7 @@ class TestTelegramUserClientConnectorUnit:
         if not TELETHON_AVAILABLE:
             # Verify that trying to create a connector raises an error
             config = TelegramUserClientConnectorConfig(
-                switchboard_mcp_url="http://localhost:8100/sse",
+                switchboard_mcp_url="http://localhost:40100/sse",
                 telegram_api_id=12345,
                 telegram_api_hash="test",
                 telegram_user_session="test",

@@ -44,7 +44,7 @@ pytestmark = pytest.mark.unit
 _BASE_ENV = {
     "GOOGLE_OAUTH_CLIENT_ID": "test-client-id.apps.googleusercontent.com",
     "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
-    "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost:8200/api/oauth/google/callback",
+    "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost:40200/api/oauth/google/callback",
     "GMAIL_REFRESH_TOKEN": "1//fake-refresh-token",
 }
 

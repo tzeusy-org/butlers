@@ -113,7 +113,7 @@ async def test_post_mail_mailbox_not_enabled(pool):
     await pool.execute("DELETE FROM routing_log")
 
     # Register a butler WITHOUT the mailbox module
-    await register_butler(pool, "bob", "http://localhost:8200/sse", "Bob butler", ["email"])
+    await register_butler(pool, "bob", "http://localhost:40200/sse", "Bob butler", ["email"])
 
     result = await post_mail(
         pool,
@@ -134,7 +134,7 @@ async def test_post_mail_mailbox_not_enabled_logs_routing(pool):
     await pool.execute("DELETE FROM butler_registry")
     await pool.execute("DELETE FROM routing_log")
 
-    await register_butler(pool, "nomb", "http://localhost:8200/sse", modules=["telegram"])
+    await register_butler(pool, "nomb", "http://localhost:40200/sse", modules=["telegram"])
 
     await post_mail(
         pool,

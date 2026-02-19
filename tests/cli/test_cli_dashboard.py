@@ -31,18 +31,18 @@ class TestDashboardCommand:
         assert "--host" in result.output
         assert "--port" in result.output
         assert "0.0.0.0" in result.output
-        assert "8200" in result.output
+        assert "40200" in result.output
 
     @patch("uvicorn.run")
     def test_dashboard_default_host_port(self, mock_uvicorn_run, runner):
-        """Dashboard should use default host 0.0.0.0 and port 8200."""
+        """Dashboard should use default host 0.0.0.0 and port 40200."""
         result = runner.invoke(cli, ["dashboard"])
         assert result.exit_code == 0
-        assert "Starting Butlers dashboard on 0.0.0.0:8200" in result.output
+        assert "Starting Butlers dashboard on 0.0.0.0:40200" in result.output
         mock_uvicorn_run.assert_called_once_with(
             "butlers.api.app:create_app",
             host="0.0.0.0",
-            port=8200,
+            port=40200,
             factory=True,
         )
 
@@ -51,11 +51,11 @@ class TestDashboardCommand:
         """Dashboard should accept a custom --host."""
         result = runner.invoke(cli, ["dashboard", "--host", "127.0.0.1"])
         assert result.exit_code == 0
-        assert "Starting Butlers dashboard on 127.0.0.1:8200" in result.output
+        assert "Starting Butlers dashboard on 127.0.0.1:40200" in result.output
         mock_uvicorn_run.assert_called_once_with(
             "butlers.api.app:create_app",
             host="127.0.0.1",
-            port=8200,
+            port=40200,
             factory=True,
         )
 

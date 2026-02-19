@@ -36,7 +36,7 @@ pytestmark = pytest.mark.unit
 GOOGLE_ENV = {
     "GOOGLE_OAUTH_CLIENT_ID": "test-client-id.apps.googleusercontent.com",
     "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
-    "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost:8200/api/oauth/google/callback",
+    "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost:40200/api/oauth/google/callback",
 }
 
 _FAKE_TOKEN_RESPONSE = {
@@ -549,7 +549,7 @@ class TestOAuthGoogleCallback:
         _store_state(state)
 
         mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
-        env = {**GOOGLE_ENV, "OAUTH_DASHBOARD_URL": "http://localhost:5173"}
+        env = {**GOOGLE_ENV, "OAUTH_DASHBOARD_URL": "http://localhost:40173"}
         with (
             patch.dict("os.environ", env, clear=False),
             patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
@@ -565,13 +565,13 @@ class TestOAuthGoogleCallback:
                 )
 
         assert resp.status_code == 302
-        assert "localhost:5173" in resp.headers["location"]
+        assert "localhost:40173" in resp.headers["location"]
         assert "oauth_success=true" in resp.headers["location"]
 
     async def test_callback_provider_error_redirects_to_dashboard_when_configured(self):
         """With OAUTH_DASHBOARD_URL set, provider error redirects to dashboard."""
         app = _make_app()
-        env = {**GOOGLE_ENV, "OAUTH_DASHBOARD_URL": "http://localhost:5173"}
+        env = {**GOOGLE_ENV, "OAUTH_DASHBOARD_URL": "http://localhost:40173"}
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
