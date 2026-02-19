@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 # ---------------------------------------------------------------------------
 # Base response wrappers
@@ -59,12 +59,11 @@ class PaginationMeta(BaseModel):
     offset: int
     limit: int
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def has_more(self) -> bool:
         """True when more items exist beyond the current page."""
         return self.offset + self.limit < self.total
-
-    model_config = {"json_schema_extra": {"properties": {"has_more": {"type": "boolean"}}}}
 
 
 class PaginatedResponse[T](BaseModel):
