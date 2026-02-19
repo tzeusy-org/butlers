@@ -476,3 +476,8 @@ make test-qg
 ### Beads concurrent-state reconciliation guardrail
 - In multi-worker coordinator runs, stale worker commits of `.beads/issues.jsonl` can resurrect previously normalized bead state (for example, reintroducing `review-running` labels or flipping merged review beads back to `blocked`).
 - After each coordinator cycle, re-run a PR-state normalization pass (`blocked` + `pr-review` / `pr-review-task`) before dispatching more workers, rather than assuming prior status updates remained authoritative.
+
+### Dev bootstrap connector env-file contract
+- `dev.sh` connectors window runs three connector processes: Telegram bot, Telegram user-client, and Gmail.
+- Each connector pane may source a local-only env file under `secrets/connectors/` (`telegram_bot`, `telegram_user_client`, `gmail`) using `set -a` so values only affect that pane process.
+- Connector identity/cursor env overrides should be per-connector (`TELEGRAM_BOT_CONNECTOR_*`, `TELEGRAM_USER_CONNECTOR_*`, `GMAIL_CONNECTOR_*`) to avoid shared `CONNECTOR_ENDPOINT_IDENTITY` / `CONNECTOR_CURSOR_PATH` collisions.

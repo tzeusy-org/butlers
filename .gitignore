@@ -38,6 +38,9 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+secrets/
+secrets/connectors/*
+!secrets/connectors/.gitkeep
 
 # Docker
 pgdata/
@@ -150,3 +153,5 @@ pgdata/
 .worktrees/parallel-agents/butlers-962.3/
 # bd worktree
 .worktrees/parallel-agents/butlers-962.4/
+# bd worktree
+.worktrees/parallel-agents/butlers-962.5/
