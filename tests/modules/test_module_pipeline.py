@@ -884,7 +884,10 @@ class _FakeIngressConn:
         self.dedupe_keys_seen: list[str] = []
 
     async def fetchrow(self, _query: str, *params: Any) -> dict[str, Any]:
-        dedupe_key = str(params[9])
+        # params[1] is the request_context JSON string ($2 in INSERT query).
+        # The dedupe_key is embedded there as request_context['dedupe_key'].
+        request_context = json.loads(params[1])
+        dedupe_key = str(request_context["dedupe_key"])
         self.dedupe_keys_seen.append(dedupe_key)
         if dedupe_key in self.request_by_key:
             return {

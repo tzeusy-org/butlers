@@ -239,6 +239,9 @@ def _patch_infra():
         "create_audit_pool": patch.object(
             ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
         ),
+        "recover_route_inbox": patch.object(
+            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
+        ),
         "get_adapter": patch("butlers.daemon.get_adapter", return_value=mock_adapter_cls),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
         "mock_db": mock_db,
@@ -276,6 +279,7 @@ class TestStartupSequence:
             patches["start_mcp_server"] as mock_start_server,
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             mock_db = patches["mock_db"]
 
@@ -341,6 +345,7 @@ class TestStartupSequence:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -367,6 +372,7 @@ class TestStartupSequence:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             before = time.monotonic()
@@ -415,6 +421,7 @@ class TestCoreToolRegistration:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             # Use empty registry so only core tools (not module tools) are registered.
             daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
@@ -462,6 +469,7 @@ class TestTriggerToolDispatch:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -499,6 +507,7 @@ class TestModuleToolRegistration:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -526,6 +535,7 @@ class TestModuleToolRegistration:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -552,6 +562,7 @@ class TestModuleToolRegistration:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -583,6 +594,7 @@ class TestModuleToolRegistration:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -614,6 +626,7 @@ class TestShutdownSequence:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -652,6 +665,7 @@ class TestShutdownSequence:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -679,6 +693,7 @@ class TestShutdownSequence:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -720,6 +735,7 @@ class TestShutdownSequence:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -969,6 +985,7 @@ class TestStatusTool:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             # Use empty registry so no modules are loaded (status.modules == {}).
             daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
@@ -1018,6 +1035,7 @@ class TestStatusTool:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -1061,6 +1079,7 @@ class TestHealthCheck:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             # Use empty registry: no modules means no failed modules, no
             # fetchval calls during _init_module_runtime_states, and
@@ -1175,6 +1194,7 @@ class TestStartupFailurePropagation:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             with pytest.raises(CredentialError, match="missing ANTHROPIC_API_KEY"):
@@ -1203,6 +1223,7 @@ class TestStartupFailurePropagation:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             with pytest.raises(ConnectionRefusedError):
@@ -1232,6 +1253,7 @@ class TestScheduleSync:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -1267,6 +1289,7 @@ class TestModuleCredentials:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -1452,6 +1475,7 @@ class TestModuleCredentialsTomlSource:
             patches["shutil_which"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1485,6 +1509,7 @@ class TestModuleCredentialsTomlSource:
             patches["shutil_which"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -1521,6 +1546,7 @@ class TestModuleCredentialsTomlSource:
             patches["shutil_which"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1555,6 +1581,7 @@ class TestModuleCredentialsTomlSource:
             patches["shutil_which"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1588,6 +1615,7 @@ class TestModuleCredentialsTomlSource:
             patches["shutil_which"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1624,6 +1652,7 @@ class TestModuleCredentialsTomlSource:
             patches["shutil_which"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1659,6 +1688,7 @@ class TestModuleCredentialsTomlSource:
             patches["shutil_which"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1712,6 +1742,7 @@ password_env = "BOT_EMAIL_PASSWORD"
             patches["get_adapter"],
             patches["shutil_which"],
             patches["connect_switchboard"],
+            patches["recover_route_inbox"],
             patches["start_mcp_server"],
         ):
             daemon = ButlerDaemon(tmp_path, registry=registry)
@@ -1898,6 +1929,7 @@ class TestRuntimeAdapterPassedToSpawner:
             patches["shutil_which"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -1937,6 +1969,7 @@ class TestMessagePipelineWiring:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["recover_route_inbox"],
             patch.object(TelegramModule, "on_startup", new_callable=AsyncMock),
             patch.object(EmailModule, "on_startup", new_callable=AsyncMock),
         ):
@@ -1977,6 +2010,7 @@ class TestMessagePipelineWiring:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["recover_route_inbox"],
             patch.object(TelegramModule, "on_startup", new_callable=AsyncMock),
             patch.object(EmailModule, "on_startup", new_callable=AsyncMock),
         ):
@@ -2328,6 +2362,7 @@ url = "http://custom-switchboard:9000/sse"
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -2372,6 +2407,7 @@ class TestNotifyTool:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -2708,6 +2744,7 @@ class TestRouteExecuteTool:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -2950,6 +2987,7 @@ class TestNonFatalModuleStartup:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -2984,6 +3022,7 @@ class TestNonFatalModuleStartup:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             with pytest.raises(CredentialError, match="ANTHROPIC_API_KEY"):
@@ -3009,6 +3048,7 @@ class TestNonFatalModuleStartup:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -3041,6 +3081,7 @@ class TestNonFatalModuleStartup:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -3070,6 +3111,7 @@ class TestNonFatalModuleStartup:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -3101,6 +3143,7 @@ class TestNonFatalModuleStartup:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -3146,6 +3189,7 @@ class TestNonFatalModuleStartup:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -3193,6 +3237,7 @@ class TestNonFatalModuleStartup:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -3234,6 +3279,7 @@ class TestSwitchboardHeartbeat:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -3339,6 +3385,7 @@ class TestSwitchboardHeartbeat:
             patches["start_mcp_server"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()

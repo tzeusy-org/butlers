@@ -5,11 +5,17 @@ Verifies that:
 - request_context includes all routing metadata fields
 - Non-route triggers (tick, schedule) are unaffected
 - Both dict and string input.context values are preserved
+
+Note: route.execute now uses accept-then-process async dispatch (butlers-963.6).
+Tests mock route_inbox_insert/mark_processing/mark_processed and await asyncio.sleep(0.05)
+before checking trigger call_args to allow the background task to complete.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,6 +25,24 @@ import pytest
 from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _mock_route_inbox(monkeypatch):
+    """Patch route_inbox functions for all tests in this module.
+
+    Prevents tests from hitting the mock DB pool via route_inbox_insert and
+    allows the background trigger task to complete cleanly.
+    """
+    mock_insert = AsyncMock(return_value=uuid.uuid4())
+    mock_mark_processing = AsyncMock()
+    mock_mark_processed = AsyncMock()
+    mock_mark_errored = AsyncMock()
+    monkeypatch.setattr("butlers.daemon.route_inbox_insert", mock_insert)
+    monkeypatch.setattr("butlers.daemon.route_inbox_mark_processing", mock_mark_processing)
+    monkeypatch.setattr("butlers.daemon.route_inbox_mark_processed", mock_mark_processed)
+    monkeypatch.setattr("butlers.daemon.route_inbox_mark_errored", mock_mark_errored)
+    return mock_insert
 
 
 def _toml_value(v: Any) -> str:
@@ -95,6 +119,9 @@ def _patch_infra():
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
+        "recover_route_inbox": patch.object(
+            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
+        ),
         "get_adapter": patch("butlers.daemon.get_adapter", return_value=mock_adapter_cls),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
         "mock_db": mock_db,
@@ -134,6 +161,7 @@ async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],
+        patches["recover_route_inbox"],
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()
@@ -191,7 +219,9 @@ class TestRouteExecuteRequestContextInjection:
             input={"prompt": "Run health check."},
         )
 
-        assert result["status"] == "ok"
+        # Wait for the background route_inbox processing task to complete
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         daemon.spawner.trigger.assert_awaited_once()
 
         # Extract the context argument passed to spawner.trigger
@@ -233,7 +263,9 @@ class TestRouteExecuteRequestContextInjection:
             },
         )
 
-        assert result["status"] == "ok"
+        # Wait for background task
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         call_args = daemon.spawner.trigger.call_args
         context_arg = call_args.kwargs.get("context")
 
@@ -266,7 +298,9 @@ class TestRouteExecuteRequestContextInjection:
             },
         )
 
-        assert result["status"] == "ok"
+        # Wait for background task
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         call_args = daemon.spawner.trigger.call_args
         context_arg = call_args.kwargs.get("context")
 
@@ -295,7 +329,9 @@ class TestRouteExecuteRequestContextInjection:
             input={"prompt": "Check vital signs."},
         )
 
-        assert result["status"] == "ok"
+        # Wait for background task
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         call_args = daemon.spawner.trigger.call_args
         context_arg = call_args.kwargs.get("context")
 
@@ -332,7 +368,9 @@ class TestRouteExecuteRequestContextInjection:
             input={"prompt": "Check status."},
         )
 
-        assert result["status"] == "ok"
+        # Wait for background task
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         call_args = daemon.spawner.trigger.call_args
         context_arg = call_args.kwargs.get("context")
 
@@ -386,7 +424,9 @@ class TestRouteExecuteRequestContextInjection:
             input={"prompt": "Track medication."},
         )
 
-        assert result["status"] == "ok"
+        # Wait for background task
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
         assert "INTERACTIVE DATA SOURCE" in context_arg
         assert 'channel="telegram"' in context_arg
@@ -413,7 +453,9 @@ class TestRouteExecuteRequestContextInjection:
             input={"prompt": "Check inbox."},
         )
 
-        assert result["status"] == "ok"
+        # Wait for background task
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
         assert "INTERACTIVE DATA SOURCE" in context_arg
         assert 'channel="email"' in context_arg
@@ -438,7 +480,9 @@ class TestRouteExecuteRequestContextInjection:
             input={"prompt": "Internal check."},
         )
 
-        assert result["status"] == "ok"
+        # Wait for background task
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
         assert "INTERACTIVE DATA SOURCE" not in context_arg
 
@@ -473,7 +517,9 @@ class TestRouteExecuteConversationHistoryInjection:
             input={"prompt": "When should I take it?", "conversation_history": history_text},
         )
 
-        assert result["status"] == "ok"
+        # Wait for the background route_inbox processing task to complete
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         daemon.spawner.trigger.assert_awaited_once()
 
         context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
@@ -508,7 +554,9 @@ class TestRouteExecuteConversationHistoryInjection:
             },
         )
 
-        assert result["status"] == "ok"
+        # Wait for background task
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
         assert context_arg is not None
 
@@ -538,7 +586,9 @@ class TestRouteExecuteConversationHistoryInjection:
             input={"prompt": "Do something."},
         )
 
-        assert result["status"] == "ok"
+        # Wait for background task
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
         assert context_arg is not None
         assert "CONVERSATION HISTORY" not in context_arg
@@ -563,7 +613,9 @@ class TestRouteExecuteConversationHistoryInjection:
             input={"prompt": "Do something.", "conversation_history": None},
         )
 
-        assert result["status"] == "ok"
+        # Wait for background task
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
         assert context_arg is not None
         assert "CONVERSATION HISTORY" not in context_arg
@@ -588,7 +640,9 @@ class TestRouteExecuteConversationHistoryInjection:
             input={"prompt": "Do something.", "conversation_history": ""},
         )
 
-        assert result["status"] == "ok"
+        # Wait for background task
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
         context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
         assert context_arg is not None
         assert "CONVERSATION HISTORY" not in context_arg

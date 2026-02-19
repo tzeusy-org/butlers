@@ -59,6 +59,13 @@ from butlers.config import (
     load_config,
     parse_approval_config,
 )
+from butlers.core.route_inbox import (
+    route_inbox_insert,
+    route_inbox_mark_errored,
+    route_inbox_mark_processed,
+    route_inbox_mark_processing,
+    route_inbox_recovery_sweep,
+)
 from butlers.core.runtimes import get_adapter
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.scheduler import schedule_delete as _schedule_delete
@@ -514,6 +521,8 @@ class ButlerDaemon:
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
         self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
         self.blob_store: LocalBlobStore | None = None
+        # Background tasks spawned by route.execute accept phase (non-messenger butlers)
+        self._route_inbox_tasks: set[asyncio.Task] = set()
 
     @property
     def _active_modules(self) -> list[Module]:
@@ -829,6 +838,11 @@ class ButlerDaemon:
         if self._buffer is not None:
             await self._buffer.start()
 
+        # 14c. Recover unprocessed route_inbox rows (non-switchboard, non-messenger butlers)
+        # Rows that were accepted but never processed due to a crash are re-dispatched here.
+        if self.config.name not in ("switchboard", "messenger") and self.spawner is not None:
+            await self._recover_route_inbox(pool)
+
         # 15. Launch switchboard heartbeat (non-switchboard butlers only)
         if self.config.switchboard_url is not None:
             self._switchboard_heartbeat_task = asyncio.create_task(
@@ -933,6 +947,108 @@ class ButlerDaemon:
             logger.info(
                 "Wired message pipeline for module(s): %s",
                 ", ".join(sorted(wired_modules)),
+            )
+
+    async def _recover_route_inbox(self, pool: asyncpg.Pool) -> None:
+        """Re-dispatch route_inbox rows that were accepted but never processed.
+
+        Called on startup to recover from crashes or restarts.  Rows in
+        'accepted' state older than the grace period are re-dispatched
+        as background tasks through the same path as the hot path.
+        """
+        if self.spawner is None:
+            return
+
+        spawner = self.spawner  # capture for closures
+
+        async def _dispatch_recovered(
+            *,
+            row_id: uuid.UUID,
+            route_envelope: dict,
+        ) -> None:
+            """Dispatch one recovered route_inbox row as a background task."""
+            import json as _json
+
+            from butlers.tools.switchboard.routing.contracts import parse_route_envelope
+
+            try:
+                parsed = parse_route_envelope(route_envelope)
+            except Exception as exc:
+                logger.warning(
+                    "route_inbox recovery: invalid envelope for id=%s, skipping: %s",
+                    row_id,
+                    exc,
+                )
+                await route_inbox_mark_errored(
+                    pool,
+                    row_id,
+                    f"Invalid envelope on recovery: {exc}",
+                )
+                return
+
+            route_context = parsed.request_context.model_dump(mode="json")
+            route_request_id = str(parsed.request_context.request_id)
+
+            # Rebuild context text
+            context_parts: list[str] = []
+            request_ctx_json = _json.dumps(route_context, ensure_ascii=False, indent=2)
+            context_parts.append(
+                f"REQUEST CONTEXT (for reply targeting and audit traceability):\n{request_ctx_json}"
+            )
+            _INTERACTIVE_CHANNELS = frozenset({"telegram", "email"})
+            if parsed.request_context.source_channel in _INTERACTIVE_CHANNELS:
+                source_channel = parsed.request_context.source_channel
+                context_parts.append(
+                    "INTERACTIVE DATA SOURCE:\n"
+                    f"This message originated from an interactive channel ({source_channel}). "
+                    "The user expects a reply through the same channel. "
+                    "Use the notify() tool to send your response:\n"
+                    f'- channel="{source_channel}"\n'
+                    '- intent="reply" for contextual responses\n'
+                    '- intent="react" with emoji for quick acknowledgments (telegram only)\n'
+                    "- Pass the request_context from above as the request_context parameter"
+                )
+            if parsed.input.conversation_history:
+                context_parts.append(
+                    f"\nCONVERSATION HISTORY:\n{parsed.input.conversation_history}"
+                )
+            if isinstance(parsed.input.context, dict):
+                input_ctx_json = _json.dumps(parsed.input.context, ensure_ascii=False, indent=2)
+                context_parts.append(f"\nINPUT CONTEXT:\n{input_ctx_json}")
+            elif isinstance(parsed.input.context, str):
+                context_parts.append(f"\nINPUT CONTEXT:\n{parsed.input.context}")
+
+            context_text = "\n".join(context_parts) if context_parts else None
+
+            await route_inbox_mark_processing(pool, row_id)
+            try:
+                result = await spawner.trigger(
+                    prompt=parsed.input.prompt,
+                    context=context_text,
+                    trigger_source="route",
+                    request_id=route_request_id,
+                )
+                await route_inbox_mark_processed(pool, row_id, result.session_id)
+            except Exception as exc:
+                error_msg = f"{type(exc).__name__}: {exc}"
+                logger.exception("route_inbox recovery: trigger failed for id=%s", row_id)
+                await route_inbox_mark_errored(pool, row_id, error_msg)
+
+        try:
+            recovered = await route_inbox_recovery_sweep(
+                pool,
+                dispatch_fn=_dispatch_recovered,
+            )
+            if recovered:
+                logger.info(
+                    "Butler %s: recovered %d unprocessed route_inbox row(s) on startup",
+                    self.config.name,
+                    recovered,
+                )
+        except Exception:
+            logger.exception(
+                "Butler %s: route_inbox recovery sweep failed on startup",
+                self.config.name,
             )
 
     async def _start_mcp_server(self) -> None:
@@ -1340,7 +1456,33 @@ class ButlerDaemon:
                 )
 
             if daemon.config.name != "messenger":
-                # Prepare context with injected request_context
+                # --- Accept phase (<50ms): persist to route_inbox, return immediately ---
+                #
+                # The switchboard must not block waiting for the full LLM session.
+                # We persist the envelope to route_inbox (durable), fire a background
+                # asyncio task for processing, and return {"status": "accepted"} now.
+                # See docs/architecture/concurrency.md Section 4.4.
+
+                pool = daemon.db.pool if daemon.db is not None else None
+                if pool is None:
+                    return _route_error_response(
+                        context_payload=route_context,
+                        error_class="internal_error",
+                        message="route.execute: database pool is not available",
+                    )
+
+                try:
+                    inbox_id = await route_inbox_insert(pool, route_envelope=route_payload)
+                except Exception as exc:
+                    return _route_error_response(
+                        context_payload=route_context,
+                        error_class="internal_error",
+                        message=f"route.execute: failed to persist to route_inbox: {exc}",
+                    )
+
+                # --- Process phase (asynchronous): build context and call spawner ---
+
+                # Build runtime context text (same as before, but in background)
                 context_parts: list[str] = []
 
                 # Add request_context header for runtime session
@@ -1381,36 +1523,60 @@ class ButlerDaemon:
                     context_parts.append(f"\nINPUT CONTEXT:\n{parsed_route.input.context}")
 
                 context_text = "\n".join(context_parts) if context_parts else None
+                prompt_text = parsed_route.input.prompt
 
-                try:
-                    trigger_result = await spawner.trigger(
-                        prompt=parsed_route.input.prompt,
-                        context=context_text,
-                        trigger_source="trigger",
-                        request_id=route_request_id,
-                    )
-                except TimeoutError as exc:
-                    return _route_error_response(
-                        context_payload=route_context,
-                        error_class="timeout",
-                        message=f"Routed execution timed out: {exc}",
-                    )
-                except Exception as exc:
-                    return _route_error_response(
-                        context_payload=route_context,
-                        error_class="internal_error",
-                        message=f"Routed execution failed: {exc}",
-                    )
+                async def _process_route(
+                    _inbox_id: uuid.UUID,
+                    _pool: asyncpg.Pool,
+                    _spawner: Spawner,
+                    _prompt: str,
+                    _context: str | None,
+                    _request_id: str,
+                ) -> None:
+                    """Background task: call spawner.trigger() and update route_inbox."""
+                    await route_inbox_mark_processing(_pool, _inbox_id)
+                    try:
+                        result = await _spawner.trigger(
+                            prompt=_prompt,
+                            context=_context,
+                            # Use 'route' as trigger_source to bypass the self-trigger
+                            # rejection guard (trigger_source=="trigger" deadlock check).
+                            trigger_source="route",
+                            request_id=_request_id,
+                        )
+                        await route_inbox_mark_processed(_pool, _inbox_id, result.session_id)
+                    except Exception as exc:
+                        error_msg = f"{type(exc).__name__}: {exc}"
+                        logger.exception(
+                            "route_inbox: background processing failed for id=%s request_id=%s",
+                            _inbox_id,
+                            _request_id,
+                        )
+                        await route_inbox_mark_errored(_pool, _inbox_id, error_msg)
 
-                return _route_success_response(
-                    context_payload=route_context,
-                    result_payload={
-                        "output": trigger_result.output,
-                        "success": trigger_result.success,
-                        "error": trigger_result.error,
-                        "duration_ms": trigger_result.duration_ms,
-                    },
+                task = asyncio.create_task(
+                    _process_route(
+                        inbox_id,
+                        pool,
+                        spawner,
+                        prompt_text,
+                        context_text,
+                        route_request_id,
+                    ),
+                    name=f"route-inbox-{inbox_id}",
                 )
+                # Track so shutdown can drain these tasks
+                daemon._route_inbox_tasks.add(task)
+                task.add_done_callback(daemon._route_inbox_tasks.discard)
+
+                # Return accepted immediately — switchboard no longer waits
+                return {
+                    "schema_version": "route_response.v1",
+                    "request_context": route_context,
+                    "status": "accepted",
+                    "inbox_id": str(inbox_id),
+                    "timing": {"duration_ms": _elapsed_ms()},
+                }
 
             input_context = parsed_route.input.context
             if not isinstance(input_context, dict):
@@ -2795,6 +2961,7 @@ class ButlerDaemon:
 
         1. Stop MCP server
         2. Stop durable buffer (drain queue, cancel workers)
+        2b. Cancel in-flight route_inbox background tasks
         3. Stop accepting new triggers and drain in-flight runtime sessions
         4. Cancel switchboard heartbeat
         5. Close Switchboard MCP client
@@ -2822,6 +2989,18 @@ class ButlerDaemon:
             shutdown_timeout = self.config.shutdown_timeout_s if self.config else 30.0
             await self._buffer.stop(drain_timeout_s=shutdown_timeout)
             self._buffer = None
+
+        # 2b. Cancel in-flight route_inbox background tasks.
+        # These tasks hold references to the spawner; cancel them before draining.
+        # Rows remain in 'accepted'/'processing' state in DB and will be recovered
+        # on next startup via _recover_route_inbox().
+        if self._route_inbox_tasks:
+            logger.info("Cancelling %d in-flight route_inbox task(s)", len(self._route_inbox_tasks))
+            for task in list(self._route_inbox_tasks):
+                task.cancel()
+            # Allow tasks to handle CancelledError
+            await asyncio.gather(*self._route_inbox_tasks, return_exceptions=True)
+            self._route_inbox_tasks.clear()
 
         # 3. Stop accepting new triggers and drain in-flight runtime sessions
         self._accepting_connections = False

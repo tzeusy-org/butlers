@@ -231,6 +231,9 @@ def _patch_infra():
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
+        "recover_route_inbox": patch.object(
+            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
+        ),
         "mock_db": mock_db,
         "mock_audit_db": mock_audit_db,
         "mock_pool": mock_pool,
@@ -410,6 +413,7 @@ class TestDaemonGracefulShutdown:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -438,6 +442,7 @@ class TestDaemonGracefulShutdown:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -466,6 +471,7 @@ class TestDaemonGracefulShutdown:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -506,6 +512,7 @@ class TestDaemonGracefulShutdown:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -574,6 +581,7 @@ class TestStartupFailureCleanup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()  # Should NOT raise
@@ -611,6 +619,7 @@ class TestStartupFailureCleanup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()  # Should NOT raise
@@ -650,6 +659,7 @@ class TestStartupFailureCleanup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -712,6 +722,7 @@ class TestStartupFailureCleanup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["recover_route_inbox"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()  # Should NOT raise

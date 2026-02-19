@@ -10,6 +10,7 @@ Verifies that:
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -106,6 +107,9 @@ def _patch_infra():
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
+        "recover_route_inbox": patch.object(
+            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
+        ),
         "get_adapter": patch("butlers.daemon.get_adapter", return_value=mock_adapter_cls),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
         "mock_db": mock_db,
@@ -145,6 +149,7 @@ async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],
+        patches["recover_route_inbox"],
     ):
         daemon = ButlerDaemon(butler_dir)
         await daemon.start()
@@ -177,6 +182,28 @@ def _valid_notify_request(*, origin_butler: str = "health") -> dict[str, Any]:
             "recipient": "12345",
         },
     }
+
+
+@pytest.fixture(autouse=True)
+def _mock_route_inbox(monkeypatch):
+    """Patch route_inbox DB calls so tests don't need a real DB pool."""
+    fake_inbox_id = uuid.uuid4()
+    monkeypatch.setattr(
+        "butlers.daemon.route_inbox_insert",
+        AsyncMock(return_value=fake_inbox_id),
+    )
+    monkeypatch.setattr(
+        "butlers.daemon.route_inbox_mark_processing",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "butlers.daemon.route_inbox_mark_processed",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "butlers.daemon.route_inbox_mark_errored",
+        AsyncMock(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +346,8 @@ class TestRouteExecuteAuthzAllowsTrustedCallers:
             input={"prompt": "Run health check."},
         )
 
-        assert result["status"] == "ok"
-        assert result["result"]["output"] == "done"
+        assert result["status"] == "accepted"
+        assert "inbox_id" in result
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +384,7 @@ class TestRouteExecuteCustomTrustedCallers:
             input={"prompt": "Tick check."},
         )
 
-        assert result["status"] == "ok"
+        assert result["status"] == "accepted"
 
     async def test_switchboard_rejected_when_not_in_custom_list(self, tmp_path: Path) -> None:
         """Even switchboard is rejected if excluded from custom config."""

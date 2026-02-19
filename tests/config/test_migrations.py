@@ -77,6 +77,7 @@ def test_core_migrations_create_tables(postgres_container):
     assert _table_exists(db_url, "state"), "state table should exist"
     assert _table_exists(db_url, "scheduled_tasks"), "scheduled_tasks table should exist"
     assert _table_exists(db_url, "sessions"), "sessions table should exist"
+    assert _table_exists(db_url, "route_inbox"), "route_inbox table should exist"
 
 
 def test_migrations_idempotent(postgres_container):
@@ -112,4 +113,4 @@ def test_alembic_version_tracking(postgres_container):
         versions = [row[0] for row in result]
     engine.dispose()
 
-    assert "core_005" in versions, f"Expected revision 'core_005' (current head) in {versions}"
+    assert "core_006" in versions, f"Expected revision 'core_006' (current head) in {versions}"
