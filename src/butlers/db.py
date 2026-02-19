@@ -177,6 +177,31 @@ class Database:
             self.pool = None
             logger.info("Connection pool closed for: %s", self.db_name)
 
+    # -- Pool proxy methods ------------------------------------------------
+    # Modules receive a Database instance but need to call asyncpg pool
+    # methods (fetch, fetchrow, fetchval, execute) directly.
+
+    def _require_pool(self) -> asyncpg.Pool:
+        if self.pool is None:
+            raise RuntimeError(f"Database '{self.db_name}' has no active connection pool")
+        return self.pool
+
+    async def fetch(self, query: str, *args: Any, timeout: float | None = None) -> list[Any]:
+        """Proxy to asyncpg Pool.fetch."""
+        return await self._require_pool().fetch(query, *args, timeout=timeout)
+
+    async def fetchrow(self, query: str, *args: Any, timeout: float | None = None) -> Any:
+        """Proxy to asyncpg Pool.fetchrow."""
+        return await self._require_pool().fetchrow(query, *args, timeout=timeout)
+
+    async def fetchval(self, query: str, *args: Any, timeout: float | None = None) -> Any:
+        """Proxy to asyncpg Pool.fetchval."""
+        return await self._require_pool().fetchval(query, *args, timeout=timeout)
+
+    async def execute(self, query: str, *args: Any, timeout: float | None = None) -> str:
+        """Proxy to asyncpg Pool.execute."""
+        return await self._require_pool().execute(query, *args, timeout=timeout)
+
     @classmethod
     def from_env(cls, db_name: str) -> Database:
         """Create Database instance from environment variables.

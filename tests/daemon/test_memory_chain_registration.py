@@ -63,8 +63,8 @@ class TestMemoryChainRegistration:
         migration_files = [
             f for f in chain_dir.iterdir() if f.suffix == ".py" and f.name != "__init__.py"
         ]
-        assert len(migration_files) == 5, (
-            f"Expected 5 migration files, found {len(migration_files)}"
+        assert len(migration_files) == 7, (
+            f"Expected 7 migration files, found {len(migration_files)}"
         )
 
     def test_core_also_in_shared_chains(self) -> None:
