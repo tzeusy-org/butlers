@@ -177,6 +177,10 @@ class GoogleCredentials(BaseModel):
             f"scope={self.scope!r})"
         )
 
+    # Alias __str__ to __repr__ so that str() also redacts secrets.
+    # Pydantic's default __str__ would expose field values verbatim.
+    __str__ = __repr__
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
