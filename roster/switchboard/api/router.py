@@ -9,6 +9,7 @@ Ingestion has moved to the Switchboard MCP server's ``ingest`` tool.
 
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import logging
 import sys
@@ -29,6 +30,8 @@ if _spec is not None and _spec.loader is not None:
 
     RegistryEntry = _models.RegistryEntry
     RoutingEntry = _models.RoutingEntry
+    HeartbeatRequest = _models.HeartbeatRequest
+    HeartbeatResponse = _models.HeartbeatResponse
 else:
     raise RuntimeError("Failed to load switchboard API models")
 
@@ -182,3 +185,96 @@ async def list_registry(
         )
 
     return ApiResponse[list[RegistryEntry]](data=data)
+
+
+# ---------------------------------------------------------------------------
+# POST /heartbeat — butler liveness signal
+# ---------------------------------------------------------------------------
+
+
+@router.post("/heartbeat", response_model=HeartbeatResponse)
+async def receive_heartbeat(
+    body: HeartbeatRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> HeartbeatResponse:
+    """Receive a liveness heartbeat from a butler.
+
+    Updates ``last_seen_at`` and manages eligibility state transitions:
+    - ``stale`` → ``active``: transition is logged to the eligibility audit log
+    - ``quarantined``: ``last_seen_at`` is updated, state remains unchanged
+    - ``active``: ``last_seen_at`` is updated, state unchanged
+    """
+    pool = _pool(db)
+
+    now = datetime.datetime.now(datetime.UTC)
+
+    row = await pool.fetchrow(
+        "SELECT eligibility_state, last_seen_at FROM butler_registry WHERE name = $1",
+        body.butler_name,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Butler '{body.butler_name}' not found")
+
+    current_state: str = row["eligibility_state"]
+    previous_last_seen_at = row["last_seen_at"]
+
+    if current_state == "stale":
+        # Transition stale → active and log the transition.
+        # Guard with AND eligibility_state = 'stale' to avoid a TOCTOU race
+        # where a concurrent operator quarantine overwrites the stale state
+        # after our SELECT but before our UPDATE.
+        result = await pool.execute(
+            "UPDATE butler_registry"
+            " SET last_seen_at = $1, eligibility_state = 'active',"
+            "     eligibility_updated_at = $1"
+            " WHERE name = $2 AND eligibility_state = 'stale'",
+            now,
+            body.butler_name,
+        )
+        rows_affected = int(result.split(" ")[-1]) if result else 0
+        if rows_affected > 0:
+            await pool.execute(
+                "INSERT INTO butler_registry_eligibility_log"
+                " (butler_name, previous_state, new_state, reason,"
+                "  previous_last_seen_at, new_last_seen_at, observed_at)"
+                " VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                body.butler_name,
+                "stale",
+                "active",
+                "health_restored",
+                previous_last_seen_at,
+                now,
+                now,
+            )
+            new_state = "active"
+        else:
+            # Row was concurrently modified (e.g. quarantined); re-read
+            # the current state and fall through to the last_seen_at update.
+            re_read = await pool.fetchrow(
+                "SELECT eligibility_state FROM butler_registry WHERE name = $1",
+                body.butler_name,
+            )
+            current_state = re_read["eligibility_state"] if re_read else current_state
+            await pool.execute(
+                "UPDATE butler_registry SET last_seen_at = $1 WHERE name = $2",
+                now,
+                body.butler_name,
+            )
+            new_state = current_state
+    else:
+        # For active or quarantined: only update last_seen_at, do not change state
+        await pool.execute(
+            "UPDATE butler_registry SET last_seen_at = $1 WHERE name = $2",
+            now,
+            body.butler_name,
+        )
+        new_state = current_state
+
+    logger.info(
+        "Heartbeat received from butler %r (state: %s → %s)",
+        body.butler_name,
+        current_state,
+        new_state,
+    )
+
+    return HeartbeatResponse(status="ok", eligibility_state=new_state)
