@@ -498,3 +498,7 @@ make test-qg
 - Frontend dev port is configurable via `FRONTEND_PORT` (default `40173`) and should be kept aligned with tailscale dashboard target and the Vite startup command (`--port ... --strictPort`).
 - Do not discard `tailscale serve` stderr in `dev.sh`; surfaced output is needed to diagnose operator/permission failures (for example `Access denied: serve config denied` and `sudo tailscale set --operator=$USER` remediation).
 - In `dev.sh` with `set -o pipefail`, avoid `grep ... | wc -l || echo 0` inside command substitutions; on no-match this can produce `0\n0` and break integer comparisons.
+
+### Scheduler native-dispatch contract
+- `ButlerDaemon._dispatch_scheduled_task()` is the scheduler dispatch hook used by both the background scheduler loop and MCP `tick` tool; deterministic schedules can bypass runtime/LLM calls here.
+- Switchboard `schedule:eligibility-sweep` is natively dispatched via the roster job loader (`_load_switchboard_eligibility_sweep_job`) and executes against the switchboard DB pool directly; non-native schedules still fall back to `spawner.trigger`.

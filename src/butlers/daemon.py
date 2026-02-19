@@ -42,6 +42,7 @@ import re
 import shutil
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -135,6 +136,29 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "module.set_enabled",
     }
 )
+
+
+@functools.lru_cache(maxsize=1)
+def _load_switchboard_eligibility_sweep_job() -> (
+    Callable[[asyncpg.Pool], Awaitable[dict[str, Any]]]
+):
+    """Load the switchboard eligibility sweep job from roster/ by file path."""
+    import importlib.util as _ilu
+
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / "roster"
+        / "switchboard"
+        / "jobs"
+        / "eligibility_sweep.py"
+    )
+    module_name = "roster_switchboard_eligibility_sweep_job"
+    spec = _ilu.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load switchboard eligibility sweep job from {module_path}")
+    module = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.run_eligibility_sweep_job
 
 
 class _McpSseDisconnectGuard:
@@ -1177,6 +1201,33 @@ class ButlerDaemon:
             finally:
                 self.switchboard_client = None
 
+    async def _dispatch_scheduled_task(self, prompt: str, trigger_source: str) -> Any:
+        """Dispatch one scheduled task, using native handlers when available.
+
+        For deterministic, rules-based schedules we can bypass runtime/LLM
+        invocation and execute Python job functions directly.
+        """
+        schedule_prefix = "schedule:"
+        schedule_name = (
+            trigger_source[len(schedule_prefix) :]
+            if trigger_source.startswith(schedule_prefix)
+            else None
+        )
+
+        if self.config.name == "switchboard" and schedule_name == "eligibility-sweep":
+            pool = self.db.pool if self.db is not None else None
+            if pool is None:
+                raise RuntimeError(
+                    "Scheduler native job dispatch requires an initialized switchboard DB pool"
+                )
+            run_eligibility_sweep_job = _load_switchboard_eligibility_sweep_job()
+            logger.debug("Dispatching native scheduled task: %s", schedule_name)
+            return await run_eligibility_sweep_job(pool)
+
+        if self.spawner is None:
+            raise RuntimeError("Scheduler dispatch requires an initialized spawner")
+        return await self.spawner.trigger(prompt=prompt, trigger_source=trigger_source)
+
     async def _scheduler_loop(self) -> None:
         """Periodically call tick() to dispatch due scheduled tasks.
 
@@ -1199,7 +1250,7 @@ class ButlerDaemon:
             return
 
         pool = self.db.pool
-        dispatch_fn = self.spawner.trigger
+        dispatch_fn = self._dispatch_scheduled_task
         interval = self.config.scheduler.tick_interval_seconds
 
         logger.info(
@@ -2363,7 +2414,7 @@ class ButlerDaemon:
             Primarily driven by the internal scheduler loop. Retained as an MCP tool
             for debugging and manual triggering.
             """
-            count = await _tick(pool, spawner.trigger)
+            count = await _tick(pool, daemon._dispatch_scheduled_task)
             return {"dispatched": count}
 
         # State tools
