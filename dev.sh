@@ -5,7 +5,7 @@
 #   connectors  — telegram bot connector (top-left) + gmail connector (top-right) + telegram user-client connector (bottom)
 #   dashboard   — dashboard API (top) + Vite frontend (bottom)
 #
-# Usage: ./dev.sh [--skip-oauth-check]
+# Usage: ./dev.sh [--skip-oauth-check] [--skip-tailscale-check]
 #
 # OAuth Bootstrap:
 #   Before launching the Gmail connector, this script checks whether Google
@@ -15,15 +15,28 @@
 #   the dashboard (http://localhost:8200 -> "Connect Google").
 #
 #   To suppress the check and start anyway:  ./dev.sh --skip-oauth-check
+#
+# Tailscale Serve:
+#   Google OAuth requires HTTPS for non-localhost redirect URIs. This script
+#   verifies that tailscale serve is running and forwarding to the dashboard
+#   port (8200). If not running, it attempts to start it automatically.
+#
+#   Prerequisites:
+#     - tailscale CLI installed and available on PATH
+#     - tailscale authenticated (run: tailscale up)
+#
+#   To suppress the tailscale check:  ./dev.sh --skip-tailscale-check
 
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 SKIP_OAUTH_CHECK=false
+SKIP_TAILSCALE_CHECK=false
 for arg in "$@"; do
   case "$arg" in
     --skip-oauth-check) SKIP_OAUTH_CHECK=true ;;
+    --skip-tailscale-check) SKIP_TAILSCALE_CHECK=true ;;
   esac
 done
 
@@ -75,6 +88,109 @@ if [ -f "${PROJECT_DIR}/.env" ]; then
   # shellcheck disable=SC1091
   . "${PROJECT_DIR}/.env" 2>/dev/null || true
   set +a
+fi
+
+# ── Tailscale serve pre-flight check ──────────────────────────────────────
+# Google OAuth requires HTTPS for non-localhost redirect URIs. Verify that
+# tailscale serve is running and pointing to the dashboard port (8200).
+# If not running, attempt to start it. If tailscale is unavailable or
+# unauthenticated, print actionable instructions and exit.
+
+DASHBOARD_PORT=8200
+
+_tailscale_serve_check() {
+  # Check tailscale CLI is available
+  if ! command -v tailscale &>/dev/null; then
+    echo "" >&2
+    echo "======================================================================" >&2
+    echo "  ERROR: tailscale CLI not found" >&2
+    echo "======================================================================" >&2
+    echo "" >&2
+    echo "  Google OAuth requires HTTPS for non-localhost redirect URIs." >&2
+    echo "  Butlers uses tailscale serve to provide a stable HTTPS endpoint." >&2
+    echo "" >&2
+    echo "  To fix:" >&2
+    echo "    1. Install Tailscale: https://tailscale.com/download" >&2
+    echo "    2. Authenticate:      tailscale up" >&2
+    echo "    3. Re-run:            ./dev.sh" >&2
+    echo "" >&2
+    echo "  To skip this check (OAuth callback will not work over HTTPS):" >&2
+    echo "    ./dev.sh --skip-tailscale-check" >&2
+    echo "======================================================================" >&2
+    echo "" >&2
+    return 1
+  fi
+
+  # Check tailscale is authenticated (status returns non-zero or shows Stopped/NeedsLogin)
+  local ts_status
+  ts_status=$(tailscale status --json 2>/dev/null) || true
+  local ts_state
+  ts_state=$(echo "$ts_status" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('BackendState','Unknown'))" 2>/dev/null || echo "Unknown")
+
+  if [ "$ts_state" = "NeedsLogin" ] || [ "$ts_state" = "NoState" ] || [ "$ts_state" = "Stopped" ]; then
+    echo "" >&2
+    echo "======================================================================" >&2
+    echo "  ERROR: tailscale is not authenticated (state: ${ts_state})" >&2
+    echo "======================================================================" >&2
+    echo "" >&2
+    echo "  Authenticate tailscale before starting Butlers:" >&2
+    echo "    tailscale up" >&2
+    echo "" >&2
+    echo "  Then re-run: ./dev.sh" >&2
+    echo "" >&2
+    echo "  To skip this check (OAuth callback will not work over HTTPS):" >&2
+    echo "    ./dev.sh --skip-tailscale-check" >&2
+    echo "======================================================================" >&2
+    echo "" >&2
+    return 1
+  fi
+
+  # Check if tailscale serve is already running and includes port 8200
+  local serve_status
+  serve_status=$(tailscale serve status 2>/dev/null) || serve_status=""
+  if echo "$serve_status" | grep -q "localhost:${DASHBOARD_PORT}"; then
+    echo "Tailscale serve: already running (forwarding to localhost:${DASHBOARD_PORT})"
+    return 0
+  fi
+
+  # Not yet serving — attempt to start it
+  echo "Tailscale serve: not active for port ${DASHBOARD_PORT}, starting..."
+  if tailscale serve https:443 "http://localhost:${DASHBOARD_PORT}" 2>/dev/null; then
+    # Verify it started correctly
+    serve_status=$(tailscale serve status 2>/dev/null) || serve_status=""
+    if echo "$serve_status" | grep -q "localhost:${DASHBOARD_PORT}"; then
+      local ts_hostname
+      ts_hostname=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','<your-name>.ts.net').rstrip('.'))" 2>/dev/null || echo "<your-name>.ts.net")
+      echo "Tailscale serve: started — https://${ts_hostname}/ → http://localhost:${DASHBOARD_PORT}"
+      echo ""
+      echo "  HTTPS callback URL: https://${ts_hostname}/api/oauth/google/callback"
+      echo "  Add this URI to your Google Cloud Console OAuth credentials."
+      echo ""
+      return 0
+    fi
+  fi
+
+  # Failed to start tailscale serve
+  echo "" >&2
+  echo "======================================================================" >&2
+  echo "  ERROR: Failed to start tailscale serve" >&2
+  echo "======================================================================" >&2
+  echo "" >&2
+  echo "  Could not start: tailscale serve https:443 http://localhost:${DASHBOARD_PORT}" >&2
+  echo "" >&2
+  echo "  To start manually:" >&2
+  echo "    tailscale serve https:443 http://localhost:${DASHBOARD_PORT}" >&2
+  echo "    tailscale serve status" >&2
+  echo "" >&2
+  echo "  To skip this check (OAuth callback will not work over HTTPS):" >&2
+  echo "    ./dev.sh --skip-tailscale-check" >&2
+  echo "======================================================================" >&2
+  echo "" >&2
+  return 1
+}
+
+if [ "$SKIP_TAILSCALE_CHECK" = "false" ]; then
+  _tailscale_serve_check || exit 1
 fi
 
 # ── OAuth credential pre-flight check ─────────────────────────────────────
