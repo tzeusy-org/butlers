@@ -20,6 +20,7 @@ The ButlerDaemon manages the lifecycle of a butler:
 14. Start FastMCP SSE server on configured port
 15. Launch switchboard heartbeat (non-switchboard butlers)
 16. Start internal scheduler loop (calls tick() every tick_interval_seconds)
+17. Start liveness reporter (non-switchboard butlers — POST to Switchboard heartbeat endpoint)
 
 On startup failure, already-initialized modules get on_shutdown() called.
 
@@ -27,7 +28,8 @@ Graceful shutdown: (a) stops the MCP server, (b) stops accepting new triggers,
 (c) drains in-flight runtime sessions up to a configurable timeout,
 (d) cancels switchboard heartbeat, (e) closes Switchboard MCP client,
 (f) cancels scheduler loop (waits for in-progress tick() to finish),
-(g) shuts down modules in reverse topological order, (h) closes DB pool.
+(g) cancels liveness reporter loop, (h) shuts down modules in reverse topological order,
+(i) closes DB pool.
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ from typing import Any, Literal
 from urllib.parse import parse_qs
 
 import asyncpg
+import httpx
 import uvicorn
 from fastmcp import Client as MCPClient
 from fastmcp import FastMCP
@@ -523,6 +526,7 @@ class ButlerDaemon:
         self._server_task: asyncio.Task | None = None
         self._switchboard_heartbeat_task: asyncio.Task | None = None
         self._scheduler_loop_task: asyncio.Task | None = None
+        self._liveness_reporter_task: asyncio.Task | None = None
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
@@ -859,6 +863,10 @@ class ButlerDaemon:
 
         # 16. Start internal scheduler loop
         self._scheduler_loop_task = asyncio.create_task(self._scheduler_loop())
+
+        # 17. Start liveness reporter (non-switchboard butlers only)
+        if self.config.name != "switchboard":
+            self._liveness_reporter_task = asyncio.create_task(self._liveness_reporter_loop())
 
         # Mark as accepting connections and record startup time
         self._accepting_connections = True
@@ -1232,6 +1240,73 @@ class ButlerDaemon:
                     )
         except asyncio.CancelledError:
             logger.info("Scheduler loop cancelled for butler %s", self.config.name)
+
+    async def _liveness_reporter_loop(self) -> None:
+        """Periodically POST to the Switchboard's heartbeat endpoint to signal liveness.
+
+        Runs as a background task for the lifetime of the butler (non-switchboard only).
+        Sends an initial heartbeat within 5 seconds of startup, then repeats every
+        ``heartbeat_interval_seconds`` (from ``[butler.scheduler]`` config, default 120).
+
+        Connection failures are logged at WARNING level — transient unavailability is
+        expected (e.g., Switchboard not yet started) and does not break the loop.
+
+        The Switchboard URL is resolved from the ``BUTLERS_SWITCHBOARD_URL`` environment
+        variable (default ``http://localhost:8200``), or from
+        ``[butler.scheduler].switchboard_url`` in butler.toml.
+
+        On cancellation (graceful shutdown), the loop exits cleanly.
+        """
+        butler_name = self.config.name
+        url = f"{self.config.scheduler.switchboard_url}/api/switchboard/heartbeat"
+        interval = self.config.scheduler.heartbeat_interval_seconds
+
+        logger.info(
+            "Liveness reporter started (heartbeat_interval_seconds=%d, url=%s) for butler %s",
+            interval,
+            url,
+            butler_name,
+        )
+
+        payload = {"butler_name": butler_name}
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                # Send initial heartbeat within 5 seconds of startup
+                await asyncio.sleep(5)
+                try:
+                    resp = await client.post(url, json=payload)
+                    resp.raise_for_status()
+                    logger.debug(
+                        "Liveness reporter: initial heartbeat sent for butler %s (status %d)",
+                        butler_name,
+                        resp.status_code,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Liveness reporter: initial heartbeat failed for butler %s",
+                        butler_name,
+                        exc_info=True,
+                    )
+
+                while True:
+                    await asyncio.sleep(interval)
+                    try:
+                        resp = await client.post(url, json=payload)
+                        resp.raise_for_status()
+                        logger.debug(
+                            "Liveness reporter: heartbeat sent for butler %s (status %d)",
+                            butler_name,
+                            resp.status_code,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Liveness reporter: heartbeat failed for butler %s",
+                            butler_name,
+                            exc_info=True,
+                        )
+            except asyncio.CancelledError:
+                logger.info("Liveness reporter cancelled for butler %s", butler_name)
 
     async def _switchboard_heartbeat_loop(self) -> None:
         """Periodically check and re-establish the Switchboard connection.
@@ -3175,6 +3250,15 @@ class ButlerDaemon:
             except asyncio.CancelledError:
                 pass
             self._scheduler_loop_task = None
+
+        # 5c. Cancel liveness reporter loop
+        if self._liveness_reporter_task is not None:
+            self._liveness_reporter_task.cancel()
+            try:
+                await self._liveness_reporter_task
+            except asyncio.CancelledError:
+                pass
+            self._liveness_reporter_task = None
 
         # 6. Module shutdown in reverse topological order (active modules only)
         active_set = {m.name for m in self._active_modules}
