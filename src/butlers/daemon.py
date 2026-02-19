@@ -5,10 +5,11 @@ The ButlerDaemon manages the lifecycle of a butler:
 2. Initialize telemetry
 3. Initialize modules (topological order)
 4. Validate module config schemas
-5. Validate credentials (env vars)
+5. Validate core credentials (ANTHROPIC_API_KEY, butler.env — env-only fast-fail)
 6. Provision database
 7. Run core Alembic migrations
 8. Run module Alembic migrations
+8b. Create CredentialStore; validate module credentials via DB-first resolution (non-fatal)
 9. Module on_startup (topological order)
 10. Create Spawner with runtime adapter (verify binary on PATH)
 10b. Wire message classification pipeline (switchboard only)
@@ -95,7 +96,12 @@ from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_list as _state_list
 from butlers.core.state import state_set as _state_set
 from butlers.core.telemetry import extract_trace_context, init_telemetry, tool_span
-from butlers.credentials import detect_secrets, validate_credentials, validate_module_credentials
+from butlers.credential_store import CredentialStore
+from butlers.credentials import (
+    detect_secrets,
+    validate_credentials,
+    validate_module_credentials_async,
+)
 from butlers.db import Database
 from butlers.migrations import has_butler_chain, run_migrations
 from butlers.modules.approvals.gate import apply_approval_gates
@@ -724,32 +730,14 @@ class ButlerDaemon:
         # 4. Validate module config schemas (non-fatal per-module).
         self._module_configs = self._validate_module_configs()
 
-        # 5. Validate credentials — core + butler.env are still fatal.
+        # 5. Validate core credentials (ANTHROPIC_API_KEY + butler.env — env-only fast-fail).
+        # Module credentials are validated later (step 8b) after the DB pool is available,
+        # so DB-stored credentials are visible at validation time.
         module_creds = self._collect_module_credentials()
         validate_credentials(
             self.config.env_required,
             self.config.env_optional,
         )
-
-        # 5b. Validate module credentials (non-fatal per-module).
-        module_cred_failures = validate_module_credentials(module_creds)
-        for mod_key, missing_vars in module_cred_failures.items():
-            # mod_key may be "modname" or "modname.scope" — map to root module.
-            root_mod = mod_key.split(".")[0]
-            error_msg = f"Missing env var(s): {', '.join(missing_vars)}"
-            self._module_statuses[root_mod] = ModuleStartupStatus(
-                status="failed", phase="credentials", error=error_msg
-            )
-            logger.warning("Module '%s' disabled: %s", root_mod, error_msg)
-        self._cascade_module_failures()
-
-        # Filter module_creds to exclude failed modules for spawner.
-        active_module_creds = {
-            k: v
-            for k, v in module_creds.items()
-            if k.split(".")[0] not in self._module_statuses
-            or self._module_statuses[k.split(".")[0]].status == "active"
-        }
 
         # 6. Provision database
         # If db was injected (e.g., for testing), skip provisioning
@@ -789,6 +777,38 @@ class ButlerDaemon:
                         "Module '%s' disabled: migration failed: %s", mod.name, error_msg
                     )
         self._cascade_module_failures()
+
+        # 8b. Create CredentialStore and validate module credentials (non-fatal per-module).
+        # DB pool is now available so DB-stored credentials are visible to resolve().
+        # Only validate credentials for modules that haven't already failed (e.g. from
+        # migration errors), to avoid redundant DB queries and overwriting earlier failure
+        # statuses with spurious credential failures.
+        credential_store = CredentialStore(pool)
+        active_module_creds_for_validation = {
+            k: v
+            for k, v in module_creds.items()
+            if k.split(".")[0] not in self._module_statuses
+        }
+        module_cred_failures = await validate_module_credentials_async(
+            active_module_creds_for_validation, credential_store
+        )
+        for mod_key, missing_vars in module_cred_failures.items():
+            # mod_key may be "modname" or "modname.scope" — map to root module.
+            root_mod = mod_key.split(".")[0]
+            error_msg = f"Missing credential(s): {', '.join(missing_vars)}"
+            self._module_statuses[root_mod] = ModuleStartupStatus(
+                status="failed", phase="credentials", error=error_msg
+            )
+            logger.warning("Module '%s' disabled: %s", root_mod, error_msg)
+        self._cascade_module_failures()
+
+        # Filter module_creds to exclude failed modules for spawner.
+        active_module_creds = {
+            k: v
+            for k, v in module_creds.items()
+            if k.split(".")[0] not in self._module_statuses
+            or self._module_statuses[k.split(".")[0]].status == "active"
+        }
 
         # 9. Call module on_startup (non-fatal per-module)
         started_modules: list[Module] = []

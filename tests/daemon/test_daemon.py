@@ -225,7 +225,9 @@ def _patch_infra():
         "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
         "validate_credentials": patch("butlers.daemon.validate_credentials"),
         "validate_module_credentials": patch(
-            "butlers.daemon.validate_module_credentials", return_value={}
+            "butlers.daemon.validate_module_credentials_async",
+            new_callable=AsyncMock,
+            return_value={},
         ),
         "init_telemetry": patch("butlers.daemon.init_telemetry"),
         "configure_logging": patch("butlers.core.logging.configure_logging"),
@@ -261,7 +263,11 @@ class TestStartupSequence:
     """Verify the startup sequence executes in the documented order."""
 
     async def test_startup_calls_in_order(self, butler_dir: Path) -> None:
-        """Key startup stages should execute in documented order."""
+        """Key startup stages should execute in documented order.
+
+        DB pool is created before module credential validation so that
+        DB-stored credentials are visible during validation (butlers-987.3).
+        """
         patches = _patch_infra()
         call_order: list[str] = []
 
@@ -269,7 +275,7 @@ class TestStartupSequence:
             patches["db_from_env"] as mock_from_env,
             patches["run_migrations"] as mock_migrations,
             patches["validate_credentials"] as mock_validate,
-            patches["validate_module_credentials"],
+            patches["validate_module_credentials"] as mock_mod_validate,
             patches["init_telemetry"] as mock_telemetry,
             patches["sync_schedules"] as mock_sync,
             patches["FastMCP"] as mock_fastmcp,
@@ -298,6 +304,12 @@ class TestStartupSequence:
             mock_migrations.side_effect = lambda *a, **kw: call_order.append(
                 f"run_migrations({kw.get('chain', a[1] if len(a) > 1 else 'core')})"
             )
+
+            async def _record_mod_validate(*a: object, **kw: object) -> dict:
+                call_order.append("validate_module_credentials_async")
+                return {}
+
+            mock_mod_validate.side_effect = _record_mod_validate
             mock_sync.side_effect = lambda *a, **kw: call_order.append("sync_schedules")
             mock_fastmcp.side_effect = lambda *a, **kw: (
                 call_order.append("FastMCP"),
@@ -319,6 +331,7 @@ class TestStartupSequence:
             "provision",
             "connect",
             "run_migrations(core)",
+            "validate_module_credentials_async",
             "Spawner",
             "sync_schedules",
             "FastMCP",
@@ -1271,7 +1284,7 @@ class TestModuleCredentials:
     """Verify module credentials are collected and validated separately."""
 
     async def test_module_creds_validated_separately(self, butler_dir_with_modules: Path) -> None:
-        """validate_module_credentials should receive module credential env vars."""
+        """validate_module_credentials_async should receive module credential env vars."""
         registry = _make_registry(StubModuleA, StubModuleB)
         patches = _patch_infra()
 
@@ -1298,11 +1311,50 @@ class TestModuleCredentials:
         mock_validate.assert_called_once()
         assert "module_credentials" not in mock_validate.call_args.kwargs
 
-        # validate_module_credentials called with module creds
+        # validate_module_credentials_async called with module creds (first positional arg)
         mock_mod_validate.assert_called_once()
         mod_creds_arg = mock_mod_validate.call_args[0][0]
         assert "stub_a" in mod_creds_arg
         assert "STUB_A_TOKEN" in mod_creds_arg["stub_a"]
+
+    async def test_credential_store_passed_to_module_validation(
+        self, butler_dir_with_modules: Path
+    ) -> None:
+        """validate_module_credentials_async receives a CredentialStore instance."""
+        from butlers.credential_store import CredentialStore
+
+        registry = _make_registry(StubModuleA, StubModuleB)
+        patches = _patch_infra()
+        received_args: list[object] = []
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"] as mock_mod_validate,
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+            patches["create_audit_pool"],
+            patches["recover_route_inbox"],
+        ):
+
+            async def _capture(*args: object, **kwargs: object) -> dict:
+                received_args.extend(args)
+                return {}
+
+            mock_mod_validate.side_effect = _capture
+            daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
+            await daemon.start()
+
+        # Second positional arg must be a CredentialStore
+        assert len(received_args) >= 2
+        assert isinstance(received_args[1], CredentialStore)
 
 
 class TestSecretDetection:
@@ -2973,9 +3025,10 @@ class TestNonFatalModuleStartup:
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
-            # Return credential failure for stub_a
+            # Return credential failure for stub_a (DB-first resolution found nothing)
             patch(
-                "butlers.daemon.validate_module_credentials",
+                "butlers.daemon.validate_module_credentials_async",
+                new_callable=AsyncMock,
                 return_value={"stub_a": ["STUB_A_TOKEN"]},
             ),
             patches["init_telemetry"],
@@ -3069,7 +3122,8 @@ class TestNonFatalModuleStartup:
             patches["run_migrations"],
             patches["validate_credentials"],
             patch(
-                "butlers.daemon.validate_module_credentials",
+                "butlers.daemon.validate_module_credentials_async",
+                new_callable=AsyncMock,
                 return_value={"stub_a": ["STUB_A_TOKEN"]},
             ),
             patches["init_telemetry"],
@@ -3225,7 +3279,8 @@ class TestNonFatalModuleStartup:
             patches["run_migrations"],
             patches["validate_credentials"],
             patch(
-                "butlers.daemon.validate_module_credentials",
+                "butlers.daemon.validate_module_credentials_async",
+                new_callable=AsyncMock,
                 return_value={"stub_a": ["STUB_A_TOKEN"]},
             ),
             patches["init_telemetry"],
