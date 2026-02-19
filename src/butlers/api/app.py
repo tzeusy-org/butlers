@@ -45,6 +45,7 @@ from butlers.api.routers.notifications import (
 from butlers.api.routers.oauth import router as oauth_router
 from butlers.api.routers.schedules import router as schedules_router
 from butlers.api.routers.search import router as search_router
+from butlers.api.routers.secrets import router as secrets_router
 from butlers.api.routers.sessions import (
     butler_sessions_router,
 )
@@ -152,6 +153,7 @@ def create_app(
     app.include_router(butler_sessions_router)
     app.include_router(schedules_router)
     app.include_router(modules_router)
+    app.include_router(secrets_router)
     app.include_router(state_router)
     app.include_router(traces_router)
     app.include_router(timeline_router)

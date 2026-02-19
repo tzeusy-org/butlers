@@ -302,6 +302,7 @@ from butlers.api.models.modules import (  # noqa: E402
 )
 from butlers.api.models.notification import NotificationStats, NotificationSummary  # noqa: E402
 from butlers.api.models.search import SearchResponse, SearchResult  # noqa: E402
+from butlers.api.models.secrets import SecretEntry, SecretUpsertRequest  # noqa: E402
 from butlers.api.models.session import SessionDetail  # noqa: E402
 from butlers.api.models.state import StateEntry, StateSetRequest  # noqa: E402
 from butlers.api.models.timeline import TimelineEvent, TimelineResponse  # noqa: E402
@@ -359,6 +360,8 @@ __all__ = [
     "ScheduleCreate",
     "ScheduleEntry",
     "ScheduleUpdate",
+    "SecretEntry",
+    "SecretUpsertRequest",
     "SessionDetail",
     "SessionSummary",
     "SkillInfo",
