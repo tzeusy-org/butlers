@@ -66,7 +66,7 @@ def _table_exists(db_url: str, table_name: str) -> bool:
 
 
 def test_core_migrations_create_tables(postgres_container):
-    """Run core migrations and verify all 3 tables are created."""
+    """Run core migrations and verify all core tables are created."""
     from butlers.migrations import run_migrations
 
     db_name = _unique_db_name()
@@ -78,6 +78,7 @@ def test_core_migrations_create_tables(postgres_container):
     assert _table_exists(db_url, "scheduled_tasks"), "scheduled_tasks table should exist"
     assert _table_exists(db_url, "sessions"), "sessions table should exist"
     assert _table_exists(db_url, "route_inbox"), "route_inbox table should exist"
+    assert _table_exists(db_url, "butler_secrets"), "butler_secrets table should exist"
 
 
 def test_migrations_idempotent(postgres_container):
@@ -113,4 +114,4 @@ def test_alembic_version_tracking(postgres_container):
         versions = [row[0] for row in result]
     engine.dispose()
 
-    assert "core_007" in versions, f"Expected revision 'core_007' (current head) in {versions}"
+    assert "core_008" in versions, f"Expected revision 'core_008' (current head) in {versions}"
