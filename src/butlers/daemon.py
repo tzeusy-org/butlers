@@ -19,13 +19,15 @@ The ButlerDaemon manages the lifecycle of a butler:
 13b. Apply approval gates to configured gated tools
 14. Start FastMCP SSE server on configured port
 15. Launch switchboard heartbeat (non-switchboard butlers)
+16. Start internal scheduler loop (calls tick() every tick_interval_seconds)
 
 On startup failure, already-initialized modules get on_shutdown() called.
 
 Graceful shutdown: (a) stops the MCP server, (b) stops accepting new triggers,
 (c) drains in-flight runtime sessions up to a configurable timeout,
 (d) cancels switchboard heartbeat, (e) closes Switchboard MCP client,
-(f) shuts down modules in reverse topological order, (g) closes DB pool.
+(f) cancels scheduler loop (waits for in-progress tick() to finish),
+(g) shuts down modules in reverse topological order, (h) closes DB pool.
 """
 
 from __future__ import annotations
@@ -519,6 +521,7 @@ class ButlerDaemon:
         self._server: uvicorn.Server | None = None
         self._server_task: asyncio.Task | None = None
         self._switchboard_heartbeat_task: asyncio.Task | None = None
+        self._scheduler_loop_task: asyncio.Task | None = None
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
@@ -853,6 +856,9 @@ class ButlerDaemon:
                 self._switchboard_heartbeat_loop()
             )
 
+        # 16. Start internal scheduler loop
+        self._scheduler_loop_task = asyncio.create_task(self._scheduler_loop())
+
         # Mark as accepting connections and record startup time
         self._accepting_connections = True
         self._started_at = time.monotonic()
@@ -1161,6 +1167,70 @@ class ButlerDaemon:
                 logger.warning("Error closing Switchboard client", exc_info=True)
             finally:
                 self.switchboard_client = None
+
+    async def _scheduler_loop(self) -> None:
+        """Periodically call tick() to dispatch due scheduled tasks.
+
+        Runs as a background task for the lifetime of the butler.  Sleeps for
+        ``tick_interval_seconds`` (from ``[butler.scheduler]`` config, default 60),
+        then calls ``tick()`` to evaluate and dispatch any due cron tasks.
+
+        Exceptions from ``tick()`` are logged and the loop continues — a single
+        tick failure never breaks the loop.
+
+        On cancellation (graceful shutdown):
+        - If sleeping between ticks, the loop exits immediately.
+        - If a tick() call is in-progress, ``asyncio.shield()`` wraps the inner
+          task so that the CancelledError interrupts only the await but the
+          tick itself continues running; the loop then awaits the shielded task
+          to let the in-progress tick() finish before exiting.
+        """
+        if self.db is None or self.db.pool is None or self.spawner is None:
+            logger.warning("Scheduler loop: DB or spawner not ready, loop will not run")
+            return
+
+        pool = self.db.pool
+        dispatch_fn = self.spawner.trigger
+        interval = self.config.scheduler.tick_interval_seconds
+
+        logger.info(
+            "Scheduler loop started (tick_interval_seconds=%d) for butler %s",
+            interval,
+            self.config.name,
+        )
+
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                tick_task = asyncio.create_task(_tick(pool, dispatch_fn))
+                try:
+                    dispatched = await asyncio.shield(tick_task)
+                    logger.debug(
+                        "Scheduler loop: tick() dispatched %d task(s) for butler %s",
+                        dispatched,
+                        self.config.name,
+                    )
+                except asyncio.CancelledError:
+                    # Cancellation arrived while tick() was running; let it finish.
+                    logger.debug(
+                        "Scheduler loop: cancelled during tick(), waiting for tick to finish"
+                    )
+                    try:
+                        await tick_task
+                    except Exception:
+                        logger.exception(
+                            "Scheduler loop: in-progress tick() raised on cancellation "
+                            "for butler %s",
+                            self.config.name,
+                        )
+                    raise
+                except Exception:
+                    logger.exception(
+                        "Scheduler loop: tick() raised an exception for butler %s; continuing",
+                        self.config.name,
+                    )
+        except asyncio.CancelledError:
+            logger.info("Scheduler loop cancelled for butler %s", self.config.name)
 
     async def _switchboard_heartbeat_loop(self) -> None:
         """Periodically check and re-establish the Switchboard connection.
@@ -3039,6 +3109,7 @@ class ButlerDaemon:
         3. Stop accepting new triggers and drain in-flight runtime sessions
         4. Cancel switchboard heartbeat
         5. Close Switchboard MCP client
+        5b. Cancel internal scheduler loop (wait for in-progress tick() to finish)
         6. Module on_shutdown in reverse topological order
         7. Close DB pool
         """
@@ -3094,6 +3165,15 @@ class ButlerDaemon:
 
         # 5. Close Switchboard MCP client
         await self._disconnect_switchboard()
+
+        # 5b. Cancel internal scheduler loop and wait for any in-progress tick() to finish
+        if self._scheduler_loop_task is not None:
+            self._scheduler_loop_task.cancel()
+            try:
+                await self._scheduler_loop_task
+            except asyncio.CancelledError:
+                pass
+            self._scheduler_loop_task = None
 
         # 6. Module shutdown in reverse topological order (active modules only)
         active_set = {m.name for m in self._active_modules}
