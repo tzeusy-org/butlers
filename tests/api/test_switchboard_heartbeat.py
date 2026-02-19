@@ -59,6 +59,7 @@ def _app_with_heartbeat_mock(
     *,
     fetchrow_result: dict | None = None,
     pool_available: bool = True,
+    execute_return: str | None = None,
 ):
     """Create a FastAPI test app wired with a mocked DatabaseManager.
 
@@ -66,12 +67,16 @@ def _app_with_heartbeat_mock(
     heartbeat handler queries butler_registry.  If None the butler is treated
     as not found (404).
 
+    ``execute_return`` controls the string returned by pool.execute().  For
+    stale→active tests, pass ``"UPDATE 1"`` so that the compare-and-set guard
+    in the handler counts one affected row and proceeds with the transition.
+
     create_app() and dependency_overrides are resolved in the same call so
     that the _get_db_manager function object matches in both.
     """
     mock_pool = AsyncMock()
     mock_pool.fetchrow = AsyncMock(return_value=fetchrow_result)
-    mock_pool.execute = AsyncMock(return_value=None)
+    mock_pool.execute = AsyncMock(return_value=execute_return)
 
     mock_db = MagicMock(spec=DatabaseManager)
     if pool_available:
@@ -129,7 +134,9 @@ class TestReceiveHeartbeat:
     async def test_stale_butler_transitions_to_active(self):
         """Stale butler receiving a heartbeat transitions to active state."""
         fetchrow_result = {"eligibility_state": "stale", "last_seen_at": None}
-        app, _ = _app_with_heartbeat_mock(fetchrow_result=fetchrow_result)
+        app, _ = _app_with_heartbeat_mock(
+            fetchrow_result=fetchrow_result, execute_return="UPDATE 1"
+        )
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -144,7 +151,9 @@ class TestReceiveHeartbeat:
     async def test_stale_transition_logs_to_eligibility_log(self):
         """Stale→active transition inserts a row into butler_registry_eligibility_log."""
         fetchrow_result = {"eligibility_state": "stale", "last_seen_at": None}
-        app, mock_pool = _app_with_heartbeat_mock(fetchrow_result=fetchrow_result)
+        app, mock_pool = _app_with_heartbeat_mock(
+            fetchrow_result=fetchrow_result, execute_return="UPDATE 1"
+        )
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -160,7 +169,9 @@ class TestReceiveHeartbeat:
     async def test_stale_transition_update_includes_eligibility_state(self):
         """Stale→active UPDATE sets eligibility_state = 'active' and eligibility_updated_at."""
         fetchrow_result = {"eligibility_state": "stale", "last_seen_at": None}
-        app, mock_pool = _app_with_heartbeat_mock(fetchrow_result=fetchrow_result)
+        app, mock_pool = _app_with_heartbeat_mock(
+            fetchrow_result=fetchrow_result, execute_return="UPDATE 1"
+        )
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -270,7 +281,9 @@ class TestReceiveHeartbeat:
     async def test_eligibility_log_insert_uses_correct_states(self):
         """Eligibility log INSERT records previous_state=stale, new_state=active."""
         fetchrow_result = {"eligibility_state": "stale", "last_seen_at": None}
-        app, mock_pool = _app_with_heartbeat_mock(fetchrow_result=fetchrow_result)
+        app, mock_pool = _app_with_heartbeat_mock(
+            fetchrow_result=fetchrow_result, execute_return="UPDATE 1"
+        )
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -291,4 +304,34 @@ class TestReceiveHeartbeat:
         assert args[0] == "health"  # butler_name
         assert args[1] == "stale"  # previous_state
         assert args[2] == "active"  # new_state
-        assert "heartbeat" in args[3].lower()  # reason
+        assert (
+            args[3] == "health_restored"
+        )  # canonical reason (matches registry._transition_reason)
+
+    async def test_stale_transition_skipped_when_row_concurrently_modified(self):
+        """If the compare-and-set UPDATE affects 0 rows (concurrent modification),
+        the handler falls back to re-reading state and only updates last_seen_at."""
+        fetchrow_result = {"eligibility_state": "stale", "last_seen_at": None}
+        # execute_return=None simulates 0 rows affected (concurrent quarantine)
+        app, mock_pool = _app_with_heartbeat_mock(
+            fetchrow_result=fetchrow_result, execute_return=None
+        )
+        # After the failed UPDATE, fetchrow is called again to re-read state
+        # Simulate the row being quarantined by the time we re-read it
+        mock_pool.fetchrow.side_effect = [
+            fetchrow_result,  # first call: initial SELECT
+            {"eligibility_state": "quarantined"},  # second call: re-read after CAS miss
+        ]
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/switchboard/heartbeat", json={"butler_name": "health"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        # Should reflect the re-read state (quarantined), not active
+        assert body["eligibility_state"] == "quarantined"
+        # No eligibility log INSERT should have occurred
+        sql_calls = [c[0][0] for c in mock_pool.execute.call_args_list]
+        assert not any("butler_registry_eligibility_log" in s for s in sql_calls)

@@ -219,29 +219,48 @@ async def receive_heartbeat(
     previous_last_seen_at = row["last_seen_at"]
 
     if current_state == "stale":
-        # Transition stale → active and log the transition
-        await pool.execute(
+        # Transition stale → active and log the transition.
+        # Guard with AND eligibility_state = 'stale' to avoid a TOCTOU race
+        # where a concurrent operator quarantine overwrites the stale state
+        # after our SELECT but before our UPDATE.
+        result = await pool.execute(
             "UPDATE butler_registry"
             " SET last_seen_at = $1, eligibility_state = 'active',"
             "     eligibility_updated_at = $1"
-            " WHERE name = $2",
+            " WHERE name = $2 AND eligibility_state = 'stale'",
             now,
             body.butler_name,
         )
-        await pool.execute(
-            "INSERT INTO butler_registry_eligibility_log"
-            " (butler_name, previous_state, new_state, reason,"
-            "  previous_last_seen_at, new_last_seen_at, observed_at)"
-            " VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            body.butler_name,
-            "stale",
-            "active",
-            "heartbeat received",
-            previous_last_seen_at,
-            now,
-            now,
-        )
-        new_state = "active"
+        rows_affected = int(result.split(" ")[-1]) if result else 0
+        if rows_affected > 0:
+            await pool.execute(
+                "INSERT INTO butler_registry_eligibility_log"
+                " (butler_name, previous_state, new_state, reason,"
+                "  previous_last_seen_at, new_last_seen_at, observed_at)"
+                " VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                body.butler_name,
+                "stale",
+                "active",
+                "health_restored",
+                previous_last_seen_at,
+                now,
+                now,
+            )
+            new_state = "active"
+        else:
+            # Row was concurrently modified (e.g. quarantined); re-read
+            # the current state and fall through to the last_seen_at update.
+            re_read = await pool.fetchrow(
+                "SELECT eligibility_state FROM butler_registry WHERE name = $1",
+                body.butler_name,
+            )
+            current_state = re_read["eligibility_state"] if re_read else current_state
+            await pool.execute(
+                "UPDATE butler_registry SET last_seen_at = $1 WHERE name = $2",
+                now,
+                body.butler_name,
+            )
+            new_state = current_state
     else:
         # For active or quarantined: only update last_seen_at, do not change state
         await pool.execute(
