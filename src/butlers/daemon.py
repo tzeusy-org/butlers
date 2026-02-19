@@ -1181,8 +1181,8 @@ class ButlerDaemon:
         On cancellation (graceful shutdown):
         - If sleeping between ticks, the loop exits immediately.
         - If a tick() call is in-progress, ``asyncio.shield()`` wraps the inner
-          coroutine so that the CancelledError interrupts only the await but the
-          tick itself continues running; the loop then awaits the shielded future
+          task so that the CancelledError interrupts only the await but the
+          tick itself continues running; the loop then awaits the shielded task
           to let the in-progress tick() finish before exiting.
         """
         if self.db is None or self.db.pool is None or self.spawner is None:
@@ -1202,22 +1202,21 @@ class ButlerDaemon:
         try:
             while True:
                 await asyncio.sleep(interval)
-                tick_future = asyncio.ensure_future(_tick(pool, dispatch_fn))
+                tick_task = asyncio.create_task(_tick(pool, dispatch_fn))
                 try:
-                    dispatched = await asyncio.shield(tick_future)
-                    if dispatched:
-                        logger.debug(
-                            "Scheduler loop: tick() dispatched %d task(s) for butler %s",
-                            dispatched,
-                            self.config.name,
-                        )
+                    dispatched = await asyncio.shield(tick_task)
+                    logger.debug(
+                        "Scheduler loop: tick() dispatched %d task(s) for butler %s",
+                        dispatched,
+                        self.config.name,
+                    )
                 except asyncio.CancelledError:
                     # Cancellation arrived while tick() was running; let it finish.
                     logger.debug(
                         "Scheduler loop: cancelled during tick(), waiting for tick to finish"
                     )
                     try:
-                        await tick_future
+                        await tick_task
                     except Exception:
                         logger.exception(
                             "Scheduler loop: in-progress tick() raised on cancellation "
