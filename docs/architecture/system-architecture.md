@@ -483,12 +483,16 @@ episodes (batch) → LLM extraction → candidate facts/rules
 
 ## 7. Database Architecture
 
-Each butler has a dedicated PostgreSQL database. There is no shared database or cross-butler queries.
+Each butler has a dedicated PostgreSQL database for runtime state and tools.
+Exception: auth/secrets resolution uses a shared credential database (`butler_shared`)
+for cross-butler read-only fallback, while each butler's local `butler_secrets`
+table remains the highest-precedence override layer.
 
 ```mermaid
 graph LR
     subgraph PG["PostgreSQL Server"]
         DB_SW[("butler_switchboard")]
+        DB_SHARED[("butler_shared<br/>credentials")]
         DB_GEN[("butler_general")]
         DB_REL[("butler_relationship")]
         DB_HEALTH[("butler_health")]
@@ -502,6 +506,12 @@ graph LR
     HEALTH["Health :40103"] --> DB_HEALTH
     HB["Heartbeat :40199"] --> DB_HB
     MSG["Messenger :40104"] --> DB_MSG
+    SW -. credentials fallback .-> DB_SHARED
+    GEN -. credentials fallback .-> DB_SHARED
+    REL -. credentials fallback .-> DB_SHARED
+    HEALTH -. credentials fallback .-> DB_SHARED
+    HB -. credentials fallback .-> DB_SHARED
+    MSG -. credentials fallback .-> DB_SHARED
 ```
 
 ### Shared schema (core tables, all butlers)

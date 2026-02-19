@@ -718,6 +718,14 @@ async def test_process_update_handles_submission_error(
 class TestResolveTelegramBotTokenFromDb:
     """Tests for _resolve_telegram_bot_token_from_db — DB-first credential resolution."""
 
+    @staticmethod
+    def _configure_single_db_env(
+        monkeypatch: pytest.MonkeyPatch, db_name: str = "butler_test"
+    ) -> None:
+        monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", db_name)
+        monkeypatch.setenv("BUTLER_SHARED_DB_NAME", db_name)
+        monkeypatch.setenv("BUTLER_LEGACY_SHARED_DB_NAME", db_name)
+
     async def test_returns_none_when_db_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Returns None gracefully when DB connection fails."""
         import asyncpg
@@ -740,6 +748,7 @@ class TestResolveTelegramBotTokenFromDb:
         import asyncpg
 
         monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+        self._configure_single_db_env(monkeypatch)
 
         mock_conn = AsyncMock()
         mock_conn.fetchrow.return_value = None  # No secret stored
@@ -763,7 +772,7 @@ class TestResolveTelegramBotTokenFromDb:
         import asyncpg
 
         monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
-        monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", "butler_test")
+        self._configure_single_db_env(monkeypatch)
 
         # The CredentialStore.load method does: conn.fetchrow(SELECT secret_value ...)
         mock_row = MagicMock()

@@ -96,7 +96,13 @@ from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_list as _state_list
 from butlers.core.state import state_set as _state_set
 from butlers.core.telemetry import extract_trace_context, init_telemetry, tool_span
-from butlers.credential_store import CredentialStore
+from butlers.credential_store import (
+    CredentialStore,
+    backfill_shared_secrets,
+    ensure_secrets_schema,
+    legacy_shared_db_name_from_env,
+    shared_db_name_from_env,
+)
 from butlers.credentials import (
     detect_secrets,
     validate_credentials,
@@ -561,6 +567,8 @@ class ButlerDaemon:
         self._pipeline: MessagePipeline | None = None
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
         self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
+        self._shared_credentials_db: Database | None = None
+        self._legacy_credentials_db: Database | None = None
         self.blob_store: LocalBlobStore | None = None
         # Background tasks spawned by route.execute accept phase (non-messenger butlers)
         self._route_inbox_tasks: set[asyncio.Task] = set()
@@ -778,12 +786,13 @@ class ButlerDaemon:
                     )
         self._cascade_module_failures()
 
-        # 8b. Create CredentialStore and validate module credentials (non-fatal per-module).
+        # 8b. Create layered CredentialStore and validate module credentials
+        # (non-fatal per-module).
         # DB pool is now available so DB-stored credentials are visible to resolve().
         # Only validate credentials for modules that haven't already failed (e.g. from
         # migration errors), to avoid redundant DB queries and overwriting earlier failure
         # statuses with spurious credential failures.
-        credential_store = CredentialStore(pool)
+        credential_store = await self._build_credential_store(pool)
         active_module_creds_for_validation = {
             k: v for k, v in module_creds.items() if k.split(".")[0] not in self._module_statuses
         }
@@ -3349,8 +3358,85 @@ class ButlerDaemon:
             await self._audit_db.close()
             self._audit_db = None
 
-        # 8. Close DB pool
+        # 8. Close credential-layer DB pools
+        if self._legacy_credentials_db is not None:
+            await self._legacy_credentials_db.close()
+            self._legacy_credentials_db = None
+
+        if self._shared_credentials_db is not None:
+            await self._shared_credentials_db.close()
+            self._shared_credentials_db = None
+
+        # 9. Close DB pool
         if self.db:
             await self.db.close()
 
         logger.info("Butler shutdown complete")
+
+    async def _build_credential_store(self, local_pool: asyncpg.Pool) -> CredentialStore:
+        """Build a credential store with local override + shared/legacy fallbacks."""
+        fallback_pools: list[asyncpg.Pool] = []
+
+        shared_db_name = shared_db_name_from_env()
+        shared_pool: asyncpg.Pool | None = None
+
+        if self.db is not None and self.db.db_name == shared_db_name:
+            shared_pool = local_pool
+        else:
+            shared_db = Database.from_env(shared_db_name)
+            if shared_db.db_name == self.config.db_name:
+                # Test harnesses may patch Database.from_env to always return the
+                # main DB object. Treat that as local-only mode.
+                shared_pool = local_pool
+            else:
+                try:
+                    await shared_db.provision()
+                    shared_pool = await shared_db.connect()
+                    await ensure_secrets_schema(shared_pool)
+                    self._shared_credentials_db = shared_db
+                except Exception:
+                    logger.warning(
+                        "Shared credential DB unavailable (db=%s); falling back to local/env only",
+                        shared_db_name,
+                        exc_info=True,
+                    )
+                    await shared_db.close()
+                    shared_pool = None
+
+        if shared_pool is not None and shared_pool is not local_pool:
+            fallback_pools.append(shared_pool)
+
+        legacy_db_name = legacy_shared_db_name_from_env()
+        legacy_pool: asyncpg.Pool | None = None
+        excluded_db_names = {self.config.db_name, shared_db_name}
+        if self._shared_credentials_db is not None:
+            excluded_db_names.add(self._shared_credentials_db.db_name)
+
+        if legacy_db_name:
+            legacy_db = Database.from_env(legacy_db_name)
+            if legacy_db.db_name not in excluded_db_names:
+                try:
+                    legacy_pool = await legacy_db.connect()
+                    self._legacy_credentials_db = legacy_db
+                except Exception:
+                    logger.info(
+                        "Legacy credential DB not available (db=%s); "
+                        "skipping compatibility fallback",
+                        legacy_db_name,
+                    )
+                    await legacy_db.close()
+                    legacy_pool = None
+
+        if legacy_pool is not None and legacy_pool is not local_pool:
+            fallback_pools.append(legacy_pool)
+
+        if shared_pool is not None and legacy_pool is not None:
+            try:
+                await backfill_shared_secrets(shared_pool, legacy_pool)
+            except Exception:
+                logger.warning(
+                    "Failed to backfill shared credentials from legacy store",
+                    exc_info=True,
+                )
+
+        return CredentialStore(local_pool, fallback_pools=fallback_pools)

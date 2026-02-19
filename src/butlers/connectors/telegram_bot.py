@@ -18,6 +18,9 @@ Environment Variables (from docs/connectors/telegram_bot.md):
     CONNECTOR_POLL_INTERVAL_S: Poll interval in seconds (required for polling)
     CONNECTOR_MAX_INFLIGHT: Max concurrent ingest submissions (optional, default 8)
     CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 40081)
+    CONNECTOR_BUTLER_DB_NAME: Local butler DB for per-butler secret overrides (optional)
+    BUTLER_SHARED_DB_NAME: Shared credential DB name (optional, default butler_shared)
+    BUTLER_LEGACY_SHARED_DB_NAME: Legacy centralized credential DB fallback (optional)
     BUTLER_TELEGRAM_TOKEN: Telegram bot token (required; resolved from DB first, then env)
 """
 
@@ -44,7 +47,11 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
-from butlers.credential_store import CredentialStore
+from butlers.credential_store import (
+    CredentialStore,
+    legacy_shared_db_name_from_env,
+    shared_db_name_from_env,
+)
 from butlers.db import db_params_from_env
 
 logger = logging.getLogger(__name__)
@@ -821,40 +828,60 @@ async def _resolve_telegram_bot_token_from_db() -> str | None:
     import asyncpg
 
     db_params = db_params_from_env()
-    db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers")
+    local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "").strip()
+    shared_db_name = shared_db_name_from_env()
+    legacy_db_name = legacy_shared_db_name_from_env()
+    candidate_db_names: list[str] = []
+    for name in [local_db_name, shared_db_name, legacy_db_name]:
+        if name and name not in candidate_db_names:
+            candidate_db_names.append(name)
 
-    try:
-        pool = await asyncpg.create_pool(
-            host=db_params["host"],
-            port=db_params["port"],
-            user=db_params["user"],
-            password=db_params["password"],
-            database=db_name,
-            ssl=db_params.get("ssl"),  # type: ignore[arg-type]
-            min_size=1,
-            max_size=2,
-            command_timeout=5,
-        )
-    except Exception as exc:
-        logger.debug(
-            "DB connection failed during Telegram bot credential resolution (non-fatal): %s", exc
-        )
+    connected_pools: list[tuple[str, asyncpg.Pool]] = []
+    for db_name in candidate_db_names:
+        try:
+            pool = await asyncpg.create_pool(
+                host=db_params["host"],
+                port=db_params["port"],
+                user=db_params["user"],
+                password=db_params["password"],
+                database=db_name,
+                ssl=db_params.get("ssl"),  # type: ignore[arg-type]
+                min_size=1,
+                max_size=2,
+                command_timeout=5,
+            )
+            connected_pools.append((db_name, pool))
+        except Exception as exc:
+            logger.debug(
+                "DB connection failed during Telegram bot credential resolution "
+                "(db=%s, non-fatal): %s",
+                db_name,
+                exc,
+            )
+
+    if not connected_pools:
         return None
 
+    primary_db_name, primary_pool = connected_pools[0]
+    fallback_pools = [pool for _, pool in connected_pools[1:]]
+    store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
+
     try:
-        store = CredentialStore(pool)
         token = await store.resolve("BUTLER_TELEGRAM_TOKEN", env_fallback=False)
         if token:
             logger.info(
-                "Telegram bot connector: resolved BUTLER_TELEGRAM_TOKEN from database (db=%s)",
-                db_name,
+                "Telegram bot connector: resolved BUTLER_TELEGRAM_TOKEN from layered DB lookup "
+                "(primary_db=%s, fallbacks=%d)",
+                primary_db_name,
+                len(fallback_pools),
             )
         return token
     except Exception as exc:
         logger.debug("Telegram bot connector: DB credential lookup failed (non-fatal): %s", exc)
         return None
     finally:
-        await pool.close()
+        for _, pool in connected_pools:
+            await pool.close()
 
 
 async def run_telegram_bot_connector() -> None:

@@ -11,12 +11,13 @@ Google OAuth network requests are made.
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from butlers.api.app import create_app
+from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
     _clear_state_store,
     _generate_state,
@@ -604,6 +605,36 @@ class TestOAuthGoogleCallback:
                 )
 
         assert resp.status_code == 503
+
+
+class TestCredentialStoreSelection:
+    def test_prefers_shared_credential_pool(self) -> None:
+        shared_pool = MagicMock()
+        db_manager = MagicMock()
+        db_manager.credential_shared_pool.return_value = shared_pool
+        db_manager.legacy_shared_pool.return_value = None
+
+        store = oauth_module._make_credential_store(db_manager)
+
+        assert store is not None
+        assert store.pool is shared_pool
+        assert len(store._fallback_pools) == 0  # noqa: SLF001
+
+    def test_falls_back_to_first_butler_pool_when_shared_missing(self) -> None:
+        fallback_pool = MagicMock()
+        legacy_pool = MagicMock()
+        db_manager = MagicMock()
+        db_manager.credential_shared_pool.side_effect = KeyError("missing")
+        db_manager.butler_names = ["switchboard"]
+        db_manager.pool.return_value = fallback_pool
+        db_manager.legacy_shared_pool.return_value = legacy_pool
+
+        store = oauth_module._make_credential_store(db_manager)
+
+        assert store is not None
+        assert store.pool is fallback_pool
+        assert len(store._fallback_pools) == 1  # noqa: SLF001
+        assert store._fallback_pools[0] is legacy_pool  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------

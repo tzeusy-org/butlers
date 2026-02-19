@@ -23,6 +23,12 @@ if TYPE_CHECKING:
 from butlers.api.db import DatabaseManager
 from butlers.api.pricing import PricingConfig, load_pricing
 from butlers.config import ConfigError, load_config
+from butlers.credential_store import (
+    backfill_shared_secrets,
+    ensure_secrets_schema,
+    legacy_shared_db_name_from_env,
+    shared_db_name_from_env,
+)
 from butlers.db import Database, db_params_from_env
 
 logger = logging.getLogger(__name__)
@@ -345,6 +351,37 @@ async def init_db_manager(
             await mgr.add_butler(cfg.name, db_name=cfg.db_name)
         except Exception:
             logger.warning("Failed to add DB pool for butler %s", cfg.name, exc_info=True)
+
+    shared_db_name = shared_db_name_from_env()
+    try:
+        shared_db = Database.from_env(shared_db_name)
+        await shared_db.provision()
+        await mgr.set_credential_shared_pool(shared_db_name)
+        await ensure_secrets_schema(mgr.credential_shared_pool())
+    except Exception:
+        logger.warning(
+            "Failed to initialize shared credential DB pool (db=%s)",
+            shared_db_name,
+            exc_info=True,
+        )
+
+    legacy_db_name = legacy_shared_db_name_from_env()
+    if legacy_db_name and legacy_db_name != shared_db_name:
+        try:
+            await mgr.set_legacy_shared_pool(legacy_db_name)
+        except Exception:
+            logger.info(
+                "Legacy credential DB unavailable (db=%s); compatibility fallback disabled",
+                legacy_db_name,
+            )
+
+    try:
+        await backfill_shared_secrets(mgr.credential_shared_pool(), mgr.legacy_shared_pool())
+    except KeyError:
+        # Shared pool was not configured; nothing to backfill.
+        pass
+    except Exception:
+        logger.warning("Failed to backfill shared credential store from legacy DB", exc_info=True)
 
     _db_manager = mgr
     return mgr

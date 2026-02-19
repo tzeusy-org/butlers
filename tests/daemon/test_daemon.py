@@ -339,7 +339,12 @@ class TestStartupSequence:
         ]
         # Filter to only expected items (there may be extra calls)
         filtered = [c for c in call_order if c in expected_order]
-        assert filtered == expected_order
+        # Shared/legacy credential wiring may trigger additional db_from_env calls.
+        # Verify required milestones still occur in order.
+        pos = 0
+        for expected in expected_order:
+            assert expected in filtered[pos:]
+            pos = filtered.index(expected, pos) + 1
 
     async def test_config_loaded(self, butler_dir: Path) -> None:
         """After start(), config should be populated from butler.toml."""

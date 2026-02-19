@@ -214,3 +214,70 @@ async def test_close_closes_all_pools(mock_create: AsyncMock, mgr: DatabaseManag
     pool_a.close.assert_called_once()
     pool_b.close.assert_called_once()
     assert mgr.butler_names == []
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_set_credential_shared_pool(mock_create: AsyncMock, mgr: DatabaseManager) -> None:
+    """Dedicated shared credential pool is configurable and retrievable."""
+    shared_pool = _make_mock_pool("shared")
+    mock_create.return_value = shared_pool
+
+    await mgr.set_credential_shared_pool("butler_shared")
+
+    assert mgr.credential_shared_pool() is shared_pool
+    mock_create.assert_called_once_with(
+        host="localhost",
+        port=5432,
+        user="pg",
+        password="secret",
+        database="butler_shared",
+        min_size=1,
+        max_size=5,
+    )
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_set_legacy_shared_pool(mock_create: AsyncMock, mgr: DatabaseManager) -> None:
+    """Legacy compatibility credential pool can be configured."""
+    legacy_pool = _make_mock_pool("legacy")
+    mock_create.return_value = legacy_pool
+
+    await mgr.set_legacy_shared_pool("butler_general")
+
+    assert mgr.legacy_shared_pool() is legacy_pool
+    mock_create.assert_called_once_with(
+        host="localhost",
+        port=5432,
+        user="pg",
+        password="secret",
+        database="butler_general",
+        min_size=1,
+        max_size=5,
+    )
+
+
+async def test_credential_shared_pool_raises_when_unset(mgr: DatabaseManager) -> None:
+    """Accessing shared credential pool before configuration raises KeyError."""
+    with pytest.raises(KeyError, match="Shared credential pool"):
+        mgr.credential_shared_pool()
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_close_closes_shared_and_legacy_pools(
+    mock_create: AsyncMock, mgr: DatabaseManager
+) -> None:
+    """close() shuts down shared/legacy pools in addition to butler pools."""
+    shared_pool = _make_mock_pool("shared")
+    legacy_pool = _make_mock_pool("legacy")
+    butler_pool = _make_mock_pool("butler")
+    mock_create.side_effect = [shared_pool, legacy_pool, butler_pool]
+
+    await mgr.set_credential_shared_pool("butler_shared")
+    await mgr.set_legacy_shared_pool("butler_general")
+    await mgr.add_butler("alpha")
+
+    await mgr.close()
+
+    shared_pool.close.assert_called_once()
+    legacy_pool.close.assert_called_once()
+    butler_pool.close.assert_called_once()

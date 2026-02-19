@@ -21,7 +21,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.credential_store import CredentialStore, SecretMetadata, _ensure_utc
+from butlers.credential_store import (
+    CredentialStore,
+    SecretMetadata,
+    _ensure_utc,
+    _is_missing_table_error,
+    backfill_shared_secrets,
+    legacy_shared_db_name_from_env,
+    shared_db_name_from_env,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -235,6 +243,46 @@ class TestResolve:
         with patch.dict(os.environ, {"MY_KEY": ""}):
             result = await store.resolve("MY_KEY")
         assert result is None
+
+    async def test_resolve_uses_fallback_pool_when_local_missing(self) -> None:
+        local_pool = _make_pool(fetchrow_return=None)
+        fallback_row = _make_row(secret_value="shared-secret")
+        fallback_pool = _make_pool(fetchrow_return=fallback_row)
+        store = CredentialStore(local_pool, fallback_pools=[fallback_pool])
+
+        result = await store.resolve("MY_KEY", env_fallback=False)
+
+        assert result == "shared-secret"
+        assert local_pool.acquire.call_count == 1
+        assert fallback_pool.acquire.call_count == 1
+
+    async def test_local_value_overrides_fallback_value(self) -> None:
+        local_row = _make_row(secret_value="local-secret")
+        local_pool = _make_pool(fetchrow_return=local_row)
+        fallback_row = _make_row(secret_value="shared-secret")
+        fallback_pool = _make_pool(fetchrow_return=fallback_row)
+        store = CredentialStore(local_pool, fallback_pools=[fallback_pool])
+
+        result = await store.resolve("MY_KEY", env_fallback=False)
+
+        assert result == "local-secret"
+        # No fallback hit because local already resolved
+        assert fallback_pool.acquire.call_count == 0
+
+    async def test_resolve_uses_second_fallback_before_env(self) -> None:
+        local_pool = _make_pool(fetchrow_return=None)
+        shared_pool = _make_pool(fetchrow_return=None)
+        legacy_row = _make_row(secret_value="legacy-secret")
+        legacy_pool = _make_pool(fetchrow_return=legacy_row)
+        store = CredentialStore(local_pool, fallback_pools=[shared_pool, legacy_pool])
+
+        with patch.dict(os.environ, {"MY_KEY": "env-secret"}):
+            result = await store.resolve("MY_KEY")
+
+        assert result == "legacy-secret"
+        assert local_pool.acquire.call_count == 1
+        assert shared_pool.acquire.call_count == 1
+        assert legacy_pool.acquire.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +508,13 @@ class TestCredentialStoreRepr:
         r = repr(store)
         assert "CredentialStore" in r
 
+    def test_repr_includes_fallback_pool_count(self) -> None:
+        pool = _make_pool()
+        fallback = _make_pool()
+        store = CredentialStore(pool, fallback_pools=[fallback])
+        r = repr(store)
+        assert "fallback_pools=1" in r
+
 
 # ---------------------------------------------------------------------------
 # _ensure_utc helper
@@ -498,3 +553,77 @@ class TestConcurrency:
         await store.load("K1")
         await store.load("K2")
         assert pool.acquire.call_count == 2
+
+
+class TestSharedDbHelpers:
+    def test_shared_db_name_from_env_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            assert shared_db_name_from_env() == "butler_shared"
+
+    def test_shared_db_name_from_env_custom(self) -> None:
+        with patch.dict(os.environ, {"BUTLER_SHARED_DB_NAME": "my_shared"}):
+            assert shared_db_name_from_env() == "my_shared"
+
+    def test_legacy_shared_db_name_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            assert legacy_shared_db_name_from_env() == "butler_general"
+
+    def test_legacy_shared_db_name_custom(self) -> None:
+        with patch.dict(os.environ, {"BUTLER_LEGACY_SHARED_DB_NAME": "legacy_db"}):
+            assert legacy_shared_db_name_from_env() == "legacy_db"
+
+    def test_is_missing_table_error_detection(self) -> None:
+        exc = RuntimeError('relation "butler_secrets" does not exist')
+        assert _is_missing_table_error(exc) is True
+
+    async def test_backfill_shared_secrets_inserts_only_missing_keys(self) -> None:
+        legacy_row_existing = _make_row(
+            secret_key="KEEP",
+            secret_value="v1",
+            category="general",
+            description=None,
+            is_sensitive=True,
+            created_at=_NOW,
+            updated_at=_NOW,
+            expires_at=None,
+        )
+        legacy_row_new = _make_row(
+            secret_key="NEW",
+            secret_value="v2",
+            category="google",
+            description="desc",
+            is_sensitive=False,
+            created_at=_NOW,
+            updated_at=_NOW,
+            expires_at=None,
+        )
+        legacy_pool = _make_pool(fetch_return=[legacy_row_existing, legacy_row_new])
+
+        shared_conn = AsyncMock()
+        # First two execute calls are schema ensure DDL, then two inserts.
+        shared_conn.execute.side_effect = ["DDL", "DDL", "INSERT 0 0", "INSERT 0 1"]
+        shared_cm = AsyncMock()
+        shared_cm.__aenter__ = AsyncMock(return_value=shared_conn)
+        shared_cm.__aexit__ = AsyncMock(return_value=False)
+        shared_pool = MagicMock()
+        shared_pool.acquire.return_value = shared_cm
+
+        inserted = await backfill_shared_secrets(shared_pool, legacy_pool)
+
+        assert inserted == 1
+        assert legacy_pool.acquire.call_count == 1
+        assert shared_pool.acquire.call_count == 1
+
+    async def test_backfill_shared_secrets_handles_missing_legacy_table(self) -> None:
+        legacy_conn = AsyncMock()
+        legacy_conn.fetch.side_effect = RuntimeError('relation "butler_secrets" does not exist')
+        legacy_cm = AsyncMock()
+        legacy_cm.__aenter__ = AsyncMock(return_value=legacy_conn)
+        legacy_cm.__aexit__ = AsyncMock(return_value=False)
+        legacy_pool = MagicMock()
+        legacy_pool.acquire.return_value = legacy_cm
+
+        shared_pool = _make_pool()
+        inserted = await backfill_shared_secrets(shared_pool, legacy_pool)
+
+        assert inserted == 0

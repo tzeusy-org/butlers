@@ -49,6 +49,34 @@ class DatabaseManager:
         self._min_pool_size = min_pool_size
         self._max_pool_size = max_pool_size
         self._pools: dict[str, asyncpg.Pool] = {}
+        self._shared_pool: asyncpg.Pool | None = None
+        self._legacy_shared_pool: asyncpg.Pool | None = None
+
+    async def _create_pool(self, *, database: str, log_name: str) -> asyncpg.Pool:
+        """Create an asyncpg pool with configured retry behavior."""
+        pool_kwargs: dict[str, Any] = {
+            "host": self._host,
+            "port": self._port,
+            "user": self._user,
+            "password": self._password,
+            "database": database,
+            "min_size": self._min_pool_size,
+            "max_size": self._max_pool_size,
+        }
+        if self._ssl is not None:
+            pool_kwargs["ssl"] = self._ssl
+        try:
+            return await asyncpg.create_pool(**pool_kwargs)
+        except Exception as exc:
+            if not should_retry_with_ssl_disable(exc, self._ssl):
+                raise
+            retry_kwargs = dict(pool_kwargs)
+            retry_kwargs["ssl"] = "disable"
+            logger.info(
+                "Retrying DB pool creation with ssl=disable for %s after SSL upgrade loss",
+                log_name,
+            )
+            return await asyncpg.create_pool(**retry_kwargs)
 
     async def add_butler(self, butler_name: str, db_name: str | None = None) -> None:
         """Add a butler database connection pool.
@@ -65,31 +93,37 @@ class DatabaseManager:
             return
 
         effective_db = db_name or butler_name
-        pool_kwargs: dict[str, Any] = {
-            "host": self._host,
-            "port": self._port,
-            "user": self._user,
-            "password": self._password,
-            "database": effective_db,
-            "min_size": self._min_pool_size,
-            "max_size": self._max_pool_size,
-        }
-        if self._ssl is not None:
-            pool_kwargs["ssl"] = self._ssl
-        try:
-            pool = await asyncpg.create_pool(**pool_kwargs)
-        except Exception as exc:
-            if not should_retry_with_ssl_disable(exc, self._ssl):
-                raise
-            retry_kwargs = dict(pool_kwargs)
-            retry_kwargs["ssl"] = "disable"
-            logger.info(
-                "Retrying DB pool creation with ssl=disable for butler %s after SSL upgrade loss",
-                butler_name,
-            )
-            pool = await asyncpg.create_pool(**retry_kwargs)
+        pool = await self._create_pool(database=effective_db, log_name=f"butler {butler_name}")
         self._pools[butler_name] = pool
         logger.info("Added pool for butler: %s (db=%s)", butler_name, effective_db)
+
+    async def set_credential_shared_pool(self, db_name: str) -> None:
+        """Set the dedicated shared credential DB pool."""
+        if self._shared_pool is not None:
+            await self._shared_pool.close()
+            self._shared_pool = None
+        self._shared_pool = await self._create_pool(database=db_name, log_name="shared credentials")
+        logger.info("Configured shared credential pool (db=%s)", db_name)
+
+    async def set_legacy_shared_pool(self, db_name: str) -> None:
+        """Set optional legacy centralized credential DB pool."""
+        if self._legacy_shared_pool is not None:
+            await self._legacy_shared_pool.close()
+            self._legacy_shared_pool = None
+        self._legacy_shared_pool = await self._create_pool(
+            database=db_name, log_name="legacy shared credentials"
+        )
+        logger.info("Configured legacy credential pool (db=%s)", db_name)
+
+    def credential_shared_pool(self) -> asyncpg.Pool:
+        """Return dedicated shared credential pool or raise KeyError."""
+        if self._shared_pool is None:
+            raise KeyError("Shared credential pool is not configured")
+        return self._shared_pool
+
+    def legacy_shared_pool(self) -> asyncpg.Pool | None:
+        """Return legacy centralized credential pool when configured."""
+        return self._legacy_shared_pool
 
     def pool(self, butler_name: str) -> asyncpg.Pool:
         """Get the connection pool for a specific butler.
@@ -145,6 +179,22 @@ class DatabaseManager:
 
     async def close(self) -> None:
         """Close all connection pools."""
+        if self._legacy_shared_pool is not None:
+            try:
+                await self._legacy_shared_pool.close()
+                logger.info("Closed legacy shared credential pool")
+            except Exception:
+                logger.warning("Error closing legacy shared credential pool", exc_info=True)
+            self._legacy_shared_pool = None
+
+        if self._shared_pool is not None:
+            try:
+                await self._shared_pool.close()
+                logger.info("Closed shared credential pool")
+            except Exception:
+                logger.warning("Error closing shared credential pool", exc_info=True)
+            self._shared_pool = None
+
         for name, p in self._pools.items():
             try:
                 await p.close()

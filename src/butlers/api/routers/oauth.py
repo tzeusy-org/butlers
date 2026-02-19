@@ -14,8 +14,8 @@ The bootstrap flow:
      - Validates the state parameter against the stored state token.
      - Exchanges the authorization code for tokens via Google's token endpoint.
      - Extracts and logs the refresh token (redacted) and persists credentials
-       to the shared ``google_oauth_credentials`` DB table. Secret material is
-       never printed or logged in plaintext.
+       to the shared credential store (``butler_shared.butler_secrets`` when
+       configured). Secret material is never printed or logged in plaintext.
      - Redirects to the dashboard URL on success (if OAUTH_DASHBOARD_URL is set),
        or returns a JSON success payload.
 
@@ -94,22 +94,43 @@ def _get_db_manager() -> Any:
 
 
 def _make_credential_store(db_manager: Any) -> CredentialStore | None:
-    """Build a CredentialStore from the first registered butler pool.
+    """Build a CredentialStore from the shared credential pool.
 
-    Returns None when db_manager is None, no butler pools are registered,
-    or the pool lookup raises an exception.
+    Returns None when db_manager is None or no usable pool can be resolved.
+    Resolution order:
+    1. Dedicated shared credential pool from DatabaseManager.
+    2. Compatibility fallback to first butler pool (legacy behavior).
     """
     if db_manager is None:
         return None
-    butler_names = getattr(db_manager, "butler_names", [])
-    if not butler_names:
-        return None
+
+    fallback_pools = []
     try:
-        pool = db_manager.pool(butler_names[0])
+        pool = db_manager.credential_shared_pool()
     except Exception:
-        logger.debug("Failed to obtain DB pool from db_manager; credential store unavailable.")
-        return None
-    return CredentialStore(pool)
+        butler_names = getattr(db_manager, "butler_names", [])
+        if not butler_names:
+            logger.debug("Shared credential pool unavailable and no butler pools are registered.")
+            return None
+        try:
+            pool = db_manager.pool(butler_names[0])
+            logger.warning(
+                "Shared credential pool unavailable; using legacy fallback pool from %s",
+                butler_names[0],
+            )
+        except Exception:
+            logger.debug("Failed to obtain fallback DB pool; credential store unavailable.")
+            return None
+
+    try:
+        legacy_pool = db_manager.legacy_shared_pool()
+        if legacy_pool is not None:
+            fallback_pools.append(legacy_pool)
+    except Exception:
+        # Optional compatibility pool; ignore lookup failures.
+        pass
+
+    return CredentialStore(pool, fallback_pools=fallback_pools)
 
 
 router = APIRouter(prefix="/api/oauth", tags=["oauth"])
@@ -453,7 +474,7 @@ async def oauth_google_callback(
             )
     else:
         logger.warning(
-            "No butler DB pools registered; credentials not persisted to DB. "
+            "Shared credential DB unavailable; credentials not persisted to DB. "
             "Set GOOGLE_REFRESH_TOKEN env var manually as a fallback."
         )
 
@@ -466,7 +487,8 @@ async def oauth_google_callback(
     if not creds_persisted:
         # DB is not wired; warn the operator. Secrets are never printed or logged.
         logger.warning(
-            "[BOOTSTRAP] Google credentials could NOT be persisted to DB (no DB pool wired). "
+            "[BOOTSTRAP] Google credentials could NOT be persisted to DB "
+            "(shared credential pool unavailable). "
             "Re-run the OAuth bootstrap with a running database, or set env vars manually: "
             "GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN."
         )
@@ -549,7 +571,7 @@ async def upsert_google_credentials(
     if cred_store is None:
         raise HTTPException(
             status_code=503,
-            detail="No butler DB pools registered. Cannot persist credentials.",
+            detail="Shared credential database is unavailable. Cannot persist credentials.",
         )
 
     await store_app_credentials(cred_store, client_id=client_id, client_secret=client_secret)
@@ -590,7 +612,7 @@ async def delete_google_credentials_endpoint(
     if cred_store is None:
         raise HTTPException(
             status_code=503,
-            detail="No butler DB pools registered. Cannot delete credentials.",
+            detail="Shared credential database is unavailable. Cannot delete credentials.",
         )
 
     deleted = await delete_google_credentials(cred_store)
@@ -635,7 +657,7 @@ async def get_google_credential_status(
     if cred_store is None:
         raise HTTPException(
             status_code=503,
-            detail="No butler DB pools registered.",
+            detail="Shared credential database is unavailable.",
         )
 
     app_creds = await load_app_credentials(cred_store)

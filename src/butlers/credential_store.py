@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -40,6 +42,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TABLE = "butler_secrets"
+_DEFAULT_SHARED_DB_NAME = "butler_shared"
+_DEFAULT_LEGACY_DB_NAME = "butler_general"
+_ENV_SHARED_DB_NAME = "BUTLER_SHARED_DB_NAME"
+_ENV_LEGACY_DB_NAME = "BUTLER_LEGACY_SHARED_DB_NAME"
+
+_SECRETS_TABLE_DDL = f"""
+CREATE TABLE IF NOT EXISTS {_TABLE} (
+    secret_key   TEXT PRIMARY KEY,
+    secret_value TEXT NOT NULL,
+    category     TEXT NOT NULL DEFAULT 'general',
+    description  TEXT,
+    is_sensitive BOOLEAN NOT NULL DEFAULT true,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ
+)
+"""
+
+_SECRETS_CATEGORY_INDEX_DDL = f"""
+CREATE INDEX IF NOT EXISTS ix_butler_secrets_category
+ON {_TABLE} (category)
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +137,16 @@ class CredentialStore:
         concurrent tool invocations are safe.
     """
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        fallback_pools: Iterable[asyncpg.Pool] | None = None,
+    ) -> None:
         self.pool = pool
+        self._fallback_pools: tuple[asyncpg.Pool, ...] = tuple(
+            p for p in (fallback_pools or ()) if p is not pool
+        )
 
     # ------------------------------------------------------------------
     # Write operations
@@ -202,9 +234,8 @@ class CredentialStore:
     async def load(self, key: str) -> str | None:
         """Load a secret value directly from the database.
 
-        Returns ``None`` if the key does not exist in the database.
-        Does NOT fall back to environment variables — use ``resolve()``
-        for that behaviour.
+        Returns ``None`` if the key does not exist in the configured
+        credential stores.
 
         Parameters
         ----------
@@ -214,22 +245,24 @@ class CredentialStore:
         Returns
         -------
         str | None
-            The stored value, or ``None`` if not found.
+            The stored value, or ``None`` if not found.  Lookup order is:
+            local store first, then configured fallback stores.
         """
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                f"SELECT secret_value FROM {_TABLE} WHERE secret_key = $1",
-                key,
-            )
-        if row is None:
-            return None
-        return row["secret_value"]
+        for source_name, pool in self._iter_lookup_pools():
+            row = await _safe_fetch_secret_row(pool, key, source_name=source_name)
+            if row is None:
+                continue
+            value = row["secret_value"]
+            logger.debug("Loaded secret %r from %s credential store", key, source_name)
+            return value
+        return None
 
     async def resolve(self, key: str, *, env_fallback: bool = True) -> str | None:
         """Resolve a secret — DB first, then environment variable.
 
         Resolution order:
-        1. Database (``butler_secrets`` table via ``load()``).
+        1. Local database (``butler_secrets`` table via ``load()``).
+        2. Fallback database(s), in configured order.
         2. ``os.environ[key]`` if *env_fallback* is ``True``.
 
         Parameters
@@ -247,10 +280,9 @@ class CredentialStore:
         str | None
             The resolved value, or ``None`` if not found in any source.
         """
-        # 1. Try database
+        # 1. Try local/fallback databases
         value = await self.load(key)
         if value is not None:
-            logger.debug("Resolved secret %r from database", key)
             return value
 
         # 2. Try environment variable
@@ -364,7 +396,14 @@ class CredentialStore:
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
-        return f"CredentialStore(pool={self.pool!r})"
+        return f"CredentialStore(pool={self.pool!r}, fallback_pools={len(self._fallback_pools)})"
+
+    def _iter_lookup_pools(self) -> list[tuple[str, asyncpg.Pool]]:
+        pools: list[tuple[str, asyncpg.Pool]] = [("local", self.pool)]
+        for idx, pool in enumerate(self._fallback_pools):
+            label = "shared" if idx == 0 else f"compat_{idx}"
+            pools.append((label, pool))
+        return pools
 
 
 # ---------------------------------------------------------------------------
@@ -377,3 +416,137 @@ def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt
+
+
+def shared_db_name_from_env() -> str:
+    """Resolve the shared credential database name from env/defaults."""
+    name = os.environ.get(_ENV_SHARED_DB_NAME, _DEFAULT_SHARED_DB_NAME).strip()
+    return name or _DEFAULT_SHARED_DB_NAME
+
+
+def legacy_shared_db_name_from_env() -> str:
+    """Resolve the legacy centralized credential DB name for compatibility."""
+    name = os.environ.get(_ENV_LEGACY_DB_NAME, _DEFAULT_LEGACY_DB_NAME).strip()
+    return name or _DEFAULT_LEGACY_DB_NAME
+
+
+async def ensure_secrets_schema(pool: asyncpg.Pool) -> None:
+    """Ensure ``butler_secrets`` exists on the target database."""
+    async with _acquire_conn(pool) as conn:
+        await conn.execute(_SECRETS_TABLE_DDL)
+        await conn.execute(_SECRETS_CATEGORY_INDEX_DDL)
+
+
+async def backfill_shared_secrets(
+    shared_pool: asyncpg.Pool,
+    legacy_pool: asyncpg.Pool | None,
+) -> int:
+    """Copy missing rows from legacy centralized secrets into shared DB.
+
+    Existing keys in the shared store are preserved; only missing keys are
+    inserted.  Returns the number of inserted rows.
+    """
+    if legacy_pool is None or legacy_pool is shared_pool:
+        return 0
+
+    async with _acquire_conn(legacy_pool) as legacy_conn:
+        try:
+            rows = await legacy_conn.fetch(
+                f"""
+                SELECT secret_key, secret_value, category, description,
+                       is_sensitive, created_at, updated_at, expires_at
+                FROM {_TABLE}
+                ORDER BY secret_key
+                """
+            )
+        except Exception as exc:
+            if _is_missing_table_error(exc):
+                logger.debug(
+                    "Legacy secrets table missing during shared backfill (table=%s); skipping",
+                    _TABLE,
+                )
+                return 0
+            raise
+
+    if not rows:
+        return 0
+
+    inserted = 0
+    async with _acquire_conn(shared_pool) as shared_conn:
+        await shared_conn.execute(_SECRETS_TABLE_DDL)
+        await shared_conn.execute(_SECRETS_CATEGORY_INDEX_DDL)
+        for row in rows:
+            result = await shared_conn.execute(
+                f"""
+                INSERT INTO {_TABLE}
+                    (secret_key, secret_value, category, description,
+                     is_sensitive, created_at, updated_at, expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (secret_key) DO NOTHING
+                """,
+                row["secret_key"],
+                row["secret_value"],
+                row["category"],
+                row["description"],
+                row["is_sensitive"],
+                row["created_at"],
+                row["updated_at"],
+                row["expires_at"],
+            )
+            if result and result.split()[-1] != "0":
+                inserted += 1
+
+    if inserted:
+        logger.info("Backfilled %d secret(s) from legacy store into shared store", inserted)
+    return inserted
+
+
+async def _safe_fetch_secret_row(
+    pool: asyncpg.Pool,
+    key: str,
+    *,
+    source_name: str,
+) -> Any:
+    """Return ``secret_value`` row for *key* or ``None`` if not found."""
+    try:
+        async with _acquire_conn(pool) as conn:
+            return await conn.fetchrow(
+                f"SELECT secret_value FROM {_TABLE} WHERE secret_key = $1",
+                key,
+            )
+    except Exception as exc:
+        if _is_missing_table_error(exc):
+            logger.debug(
+                "Skipping %s credential store lookup for key %r; table %s is missing",
+                source_name,
+                key,
+                _TABLE,
+            )
+            return None
+        raise
+
+
+def _is_missing_table_error(exc: Exception) -> bool:
+    """Return whether an exception indicates missing ``butler_secrets`` table."""
+    if exc.__class__.__name__ == "UndefinedTableError":
+        return True
+    msg = str(exc).lower()
+    return "relation" in msg and _TABLE in msg and "does not exist" in msg
+
+
+@asynccontextmanager
+async def _acquire_conn(pool: asyncpg.Pool) -> AsyncIterator[Any]:
+    """Acquire a DB connection, including AsyncMock-friendly test doubles."""
+    acquired = pool.acquire()
+    if hasattr(acquired, "__aenter__"):
+        async with acquired as conn:
+            yield conn
+        return
+    if hasattr(acquired, "__await__"):
+        acquired = await acquired
+    if hasattr(acquired, "__aenter__"):
+        async with acquired as conn:
+            yield conn
+        return
+    # Last-resort fallback for non-context-manager connection stubs.
+    yield acquired

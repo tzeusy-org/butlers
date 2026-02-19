@@ -1284,6 +1284,22 @@ class TestGmailAttachmentExtraction:
 class TestResolveGmailCredentialsFromDb:
     """Tests for _resolve_gmail_credentials_from_db."""
 
+    @staticmethod
+    def _configure_single_db_env(
+        monkeypatch: pytest.MonkeyPatch, db_name: str = "butler_test"
+    ) -> None:
+        monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", db_name)
+        monkeypatch.setenv("BUTLER_SHARED_DB_NAME", db_name)
+        monkeypatch.setenv("BUTLER_LEGACY_SHARED_DB_NAME", db_name)
+
+    @staticmethod
+    def _make_secret_row(value: str):
+        from unittest.mock import MagicMock
+
+        row = MagicMock()
+        row.__getitem__ = lambda self, key: value if key == "secret_value" else None
+        return row
+
     async def test_returns_none_when_no_db_configured(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1324,6 +1340,7 @@ class TestResolveGmailCredentialsFromDb:
         import asyncpg
 
         monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+        self._configure_single_db_env(monkeypatch)
 
         mock_conn = AsyncMock()
         mock_conn.fetchrow.return_value = None  # No credentials in DB
@@ -1353,18 +1370,22 @@ class TestResolveGmailCredentialsFromDb:
         import asyncpg
 
         monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
-        monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", "butler_test")
-
-        stored_payload = {
-            "client_id": "db-client-id",
-            "client_secret": "db-client-secret",
-            "refresh_token": "db-refresh-token",
-        }
-        record = MagicMock()
-        record.__getitem__ = lambda self, key: stored_payload
+        self._configure_single_db_env(monkeypatch)
 
         mock_conn = AsyncMock()
-        mock_conn.fetchrow.return_value = record
+        secrets = {
+            "GOOGLE_OAUTH_CLIENT_ID": "db-client-id",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "db-client-secret",
+            "GOOGLE_REFRESH_TOKEN": "db-refresh-token",
+        }
+
+        async def _fetchrow(query, key):
+            value = secrets.get(key)
+            if value is None:
+                return None
+            return self._make_secret_row(value)
+
+        mock_conn.fetchrow.side_effect = _fetchrow
 
         # Use asynccontextmanager to properly mock `async with pool.acquire() as conn:`
         @asynccontextmanager
@@ -1395,24 +1416,23 @@ class TestResolveGmailCredentialsFromDb:
         import asyncpg
 
         monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
-        monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", "butler_test")
-
-        stored_payload = {
-            "client_id": "db-client-id",
-            "client_secret": "db-client-secret",
-            "refresh_token": "db-refresh-token",
-        }
-        oauth_record = MagicMock()
-        oauth_record.__getitem__ = lambda self, key: stored_payload
-
-        # Second fetchrow call is from CredentialStore for GMAIL_PUBSUB_WEBHOOK_TOKEN
-        pubsub_row = MagicMock()
-        pubsub_row.__getitem__ = lambda self, key: "db-pubsub-token"
+        self._configure_single_db_env(monkeypatch)
 
         mock_conn = AsyncMock()
-        # First call: google_oauth_credentials table lookup
-        # Second call: butler_secrets table lookup via CredentialStore
-        mock_conn.fetchrow.side_effect = [oauth_record, pubsub_row]
+        secrets = {
+            "GOOGLE_OAUTH_CLIENT_ID": "db-client-id",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "db-client-secret",
+            "GOOGLE_REFRESH_TOKEN": "db-refresh-token",
+            "GMAIL_PUBSUB_WEBHOOK_TOKEN": "db-pubsub-token",
+        }
+
+        async def _fetchrow(query, key):
+            value = secrets.get(key)
+            if value is None:
+                return None
+            return self._make_secret_row(value)
+
+        mock_conn.fetchrow.side_effect = _fetchrow
 
         @asynccontextmanager
         async def fake_acquire():
@@ -1441,18 +1461,22 @@ class TestResolveGmailCredentialsFromDb:
         import asyncpg
 
         monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
-
-        stored_payload = {
-            "client_id": "db-client-id",
-            "client_secret": "db-client-secret",
-            "refresh_token": "db-refresh-token",
-        }
-        oauth_record = MagicMock()
-        oauth_record.__getitem__ = lambda self, key: stored_payload
+        self._configure_single_db_env(monkeypatch)
 
         mock_conn = AsyncMock()
-        # First call: oauth lookup (returns record), second call: pubsub token (not found)
-        mock_conn.fetchrow.side_effect = [oauth_record, None]
+        secrets = {
+            "GOOGLE_OAUTH_CLIENT_ID": "db-client-id",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "db-client-secret",
+            "GOOGLE_REFRESH_TOKEN": "db-refresh-token",
+        }
+
+        async def _fetchrow(query, key):
+            value = secrets.get(key)
+            if value is None:
+                return None
+            return self._make_secret_row(value)
+
+        mock_conn.fetchrow.side_effect = _fetchrow
 
         @asynccontextmanager
         async def fake_acquire():

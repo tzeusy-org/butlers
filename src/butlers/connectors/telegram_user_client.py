@@ -24,6 +24,9 @@ Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - CONNECTOR_CURSOR_PATH (required; stores last processed update/message ID)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_BACKFILL_WINDOW_H (optional, bounded startup replay in hours)
+- CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
+- BUTLER_SHARED_DB_NAME (optional; shared credential DB, defaults to 'butler_shared')
+- BUTLER_LEGACY_SHARED_DB_NAME (optional; legacy centralized credential DB fallback)
 - TELEGRAM_API_ID (required; resolved from DB first, then env; from my.telegram.org)
 - TELEGRAM_API_HASH (required; resolved from DB first, then env; from my.telegram.org)
 - TELEGRAM_USER_SESSION (required; resolved from DB first, then env; session string or
@@ -51,7 +54,11 @@ from typing import Any
 
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.core.logging import configure_logging
-from butlers.credential_store import CredentialStore
+from butlers.credential_store import (
+    CredentialStore,
+    legacy_shared_db_name_from_env,
+    shared_db_name_from_env,
+)
 from butlers.db import db_params_from_env
 
 # Telethon is marked as optional dependency - handle import gracefully
@@ -564,38 +571,55 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
     import asyncpg
 
     db_params = db_params_from_env()
-    db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers")
+    local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "").strip()
+    shared_db_name = shared_db_name_from_env()
+    legacy_db_name = legacy_shared_db_name_from_env()
+    candidate_db_names: list[str] = []
+    for name in [local_db_name, shared_db_name, legacy_db_name]:
+        if name and name not in candidate_db_names:
+            candidate_db_names.append(name)
 
-    try:
-        pool = await asyncpg.create_pool(
-            host=db_params["host"],
-            port=db_params["port"],
-            user=db_params["user"],
-            password=db_params["password"],
-            database=db_name,
-            ssl=db_params.get("ssl"),  # type: ignore[arg-type]
-            min_size=1,
-            max_size=2,
-            command_timeout=5,
-        )
-    except Exception as exc:
-        logger.debug(
-            "DB connection failed during Telegram user-client credential resolution "
-            "(non-fatal): %s",
-            exc,
-        )
+    connected_pools: list[tuple[str, asyncpg.Pool]] = []
+    for db_name in candidate_db_names:
+        try:
+            pool = await asyncpg.create_pool(
+                host=db_params["host"],
+                port=db_params["port"],
+                user=db_params["user"],
+                password=db_params["password"],
+                database=db_name,
+                ssl=db_params.get("ssl"),  # type: ignore[arg-type]
+                min_size=1,
+                max_size=2,
+                command_timeout=5,
+            )
+            connected_pools.append((db_name, pool))
+        except Exception as exc:
+            logger.debug(
+                "DB connection failed during Telegram user-client credential resolution "
+                "(db=%s, non-fatal): %s",
+                db_name,
+                exc,
+            )
+
+    if not connected_pools:
         return None
 
+    primary_db_name, primary_pool = connected_pools[0]
+    fallback_pools = [pool for _, pool in connected_pools[1:]]
+    store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
+
     try:
-        store = CredentialStore(pool)
         api_id = await store.resolve("TELEGRAM_API_ID", env_fallback=False)
         api_hash = await store.resolve("TELEGRAM_API_HASH", env_fallback=False)
         user_session = await store.resolve("TELEGRAM_USER_SESSION", env_fallback=False)
 
         if api_id and api_hash and user_session:
             logger.info(
-                "Telegram user-client connector: resolved credentials from database (db=%s)",
-                db_name,
+                "Telegram user-client connector: resolved credentials from layered DB lookup "
+                "(primary_db=%s, fallbacks=%d)",
+                primary_db_name,
+                len(fallback_pools),
             )
             return {
                 "TELEGRAM_API_ID": api_id,
@@ -613,8 +637,8 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
             if not v
         ]
         logger.debug(
-            "Telegram user-client connector: secrets not found in DB (db=%s): %s",
-            db_name,
+            "Telegram user-client connector: secrets not found in DB (primary_db=%s): %s",
+            primary_db_name,
             missing,
         )
         return None
@@ -624,7 +648,8 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
         )
         return None
     finally:
-        await pool.close()
+        for _, pool in connected_pools:
+            await pool.close()
 
 
 async def run_telegram_user_client_connector() -> None:

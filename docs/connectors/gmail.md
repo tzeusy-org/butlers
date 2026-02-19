@@ -81,14 +81,17 @@ fallback. This allows credentials stored via the dashboard OAuth flow to be used
 automatically without any env var configuration.
 
 **Resolution order:**
-1. Database: if `DATABASE_URL` or `POSTGRES_HOST` is configured, the connector queries
-   the butler's PostgreSQL database (`google_oauth_credentials` table) for stored credentials.
-2. Environment variables (deprecated fallback for backward compatibility).
+1. Local override DB: if `CONNECTOR_BUTLER_DB_NAME` is configured, that butler DB is queried first.
+2. Shared credential DB: `BUTLER_SHARED_DB_NAME` (default `butler_shared`).
+3. Legacy centralized DB fallback: `BUTLER_LEGACY_SHARED_DB_NAME` (default `butler_general`).
+4. Environment variables (deprecated fallback for backward compatibility).
 
 **DB-first variables (recommended):**
 - `DATABASE_URL` (optional; postgres connection URL, e.g., `postgres://user:pass@localhost:5432/butlers`)
   OR `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD` (individual vars)
-- `CONNECTOR_BUTLER_DB_NAME` (optional; butler DB name to query, default: `butlers`)
+- `CONNECTOR_BUTLER_DB_NAME` (optional; local butler DB name for per-butler override secrets)
+- `BUTLER_SHARED_DB_NAME` (optional; shared credential DB name, default: `butler_shared`)
+- `BUTLER_LEGACY_SHARED_DB_NAME` (optional; legacy centralized credential DB, default: `butler_general`)
 
 **App config variables (always required for OAuth bootstrap):**
 - `GOOGLE_OAUTH_CLIENT_ID` (required; OAuth client ID — used by dashboard OAuth flow)
