@@ -66,13 +66,13 @@ class TestButlerConnectionInfo:
 class TestMCPClientManagerRegistration:
     def test_register_and_list_names(self):
         mgr = MCPClientManager()
-        mgr.register("alpha", ButlerConnectionInfo("alpha", 8100))
-        mgr.register("beta", ButlerConnectionInfo("beta", 8101))
+        mgr.register("alpha", ButlerConnectionInfo("alpha", 40100))
+        mgr.register("beta", ButlerConnectionInfo("beta", 40101))
         assert mgr.butler_names == ["alpha", "beta"]
 
     def test_register_overwrites(self, caplog: pytest.LogCaptureFixture):
         mgr = MCPClientManager()
-        info1 = ButlerConnectionInfo("alpha", 8100)
+        info1 = ButlerConnectionInfo("alpha", 40100)
         info2 = ButlerConnectionInfo("alpha", 9999)
         mgr.register("alpha", info1)
         with caplog.at_level(logging.WARNING, logger="butlers.api.deps"):
@@ -175,8 +175,8 @@ class TestMCPClientManagerClose:
         mock_client_cls.side_effect = [client_a, client_b]
 
         mgr = MCPClientManager()
-        mgr.register("a", ButlerConnectionInfo("a", 8100))
-        mgr.register("b", ButlerConnectionInfo("b", 8101))
+        mgr.register("a", ButlerConnectionInfo("a", 40100))
+        mgr.register("b", ButlerConnectionInfo("b", 40101))
 
         await mgr.get_client("a")
         await mgr.get_client("b")
@@ -195,7 +195,7 @@ class TestMCPClientManagerClose:
         mock_client_cls.return_value = mock_client
 
         mgr = MCPClientManager()
-        mgr.register("bad", ButlerConnectionInfo("bad", 8100))
+        mgr.register("bad", ButlerConnectionInfo("bad", 40100))
         await mgr.get_client("bad")
 
         with caplog.at_level(logging.WARNING, logger="butlers.api.deps"):
@@ -215,14 +215,14 @@ class TestDiscoverButlers:
         sb_dir = tmp_path / "switchboard"
         sb_dir.mkdir()
         (sb_dir / "butler.toml").write_text(
-            '[butler]\nname = "switchboard"\nport = 8100\n'
+            '[butler]\nname = "switchboard"\nport = 40100\n'
             'description = "Routes messages"\n'
             '[runtime]\ntype = "claude-code"\n'
         )
         gen_dir = tmp_path / "general"
         gen_dir.mkdir()
         (gen_dir / "butler.toml").write_text(
-            '[butler]\nname = "general"\nport = 8101\n[runtime]\ntype = "claude-code"\n'
+            '[butler]\nname = "general"\nport = 40101\n[runtime]\ntype = "claude-code"\n'
         )
         # Create a non-butler dir (no toml)
         (tmp_path / "random-dir").mkdir()
@@ -259,7 +259,7 @@ class TestDiscoverButlers:
 
     def test_discover_sorted_by_name(self, tmp_path: Path):
         """Results are sorted alphabetically by directory name."""
-        for name, port in [("zebra", 8200), ("alpha", 8201)]:
+        for name, port in [("zebra", 40200), ("alpha", 40201)]:
             d = tmp_path / name
             d.mkdir()
             (d / "butler.toml").write_text(
@@ -274,7 +274,7 @@ class TestDiscoverButlers:
         d = tmp_path / "mybutler"
         d.mkdir()
         (d / "butler.toml").write_text(
-            '[butler]\nname = "mybutler"\nport = 8100\n'
+            '[butler]\nname = "mybutler"\nport = 40100\n'
             'description = "My awesome butler"\n'
             '[runtime]\ntype = "claude-code"\n'
         )
@@ -355,7 +355,7 @@ class TestFastAPIDependencies:
             d = tmp_path / "sb"
             d.mkdir()
             (d / "butler.toml").write_text(
-                '[butler]\nname = "sb"\nport = 8100\n[runtime]\ntype = "claude-code"\n'
+                '[butler]\nname = "sb"\nport = 40100\n[runtime]\ntype = "claude-code"\n'
             )
             init_dependencies(roster_dir=tmp_path)
 

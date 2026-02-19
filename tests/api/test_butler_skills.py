@@ -144,7 +144,7 @@ class TestReadSkills:
 class TestListButlerSkills:
     async def test_returns_404_for_unknown_butler(self, tmp_path: Path):
         """Unknown butler name returns 404."""
-        configs = [ButlerConnectionInfo("general", 8101)]
+        configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(online=True)
         app = _create_test_app(tmp_path, configs, mgr)
 
@@ -167,7 +167,7 @@ class TestListButlerSkills:
             },
         )
 
-        configs = [ButlerConnectionInfo("general", 8101)]
+        configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(online=True)
         app = _create_test_app(tmp_path, configs, mgr)
 
@@ -189,7 +189,7 @@ class TestListButlerSkills:
         butler_dir = tmp_path / "general"
         butler_dir.mkdir()
 
-        configs = [ButlerConnectionInfo("general", 8101)]
+        configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(online=True)
         app = _create_test_app(tmp_path, configs, mgr)
 
@@ -209,7 +209,7 @@ class TestListButlerSkills:
         butler_dir.mkdir()
         _make_skills(butler_dir, {"test-skill": content})
 
-        configs = [ButlerConnectionInfo("general", 8101)]
+        configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(online=True)
         app = _create_test_app(tmp_path, configs, mgr)
 
@@ -229,7 +229,7 @@ class TestListButlerSkills:
         butler_dir = tmp_path / "general"
         butler_dir.mkdir()
 
-        configs = [ButlerConnectionInfo("general", 8101)]
+        configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(online=True)
         app = _create_test_app(tmp_path, configs, mgr)
 

@@ -43,7 +43,7 @@ class TestApiResponse:
         assert payload["data"] == [1, 2, 3]
 
     def test_nested_model_data(self):
-        butler = ButlerSummary(name="atlas", status="running", port=8100, db="butler_atlas")
+        butler = ButlerSummary(name="atlas", status="running", port=40100, db="butler_atlas")
         resp = ApiResponse[ButlerSummary](data=butler)
         payload = resp.model_dump()
         assert payload["data"]["name"] == "atlas"
@@ -127,8 +127,8 @@ class TestPaginationMeta:
 class TestPaginatedResponse:
     def test_with_butler_summaries(self):
         butlers = [
-            ButlerSummary(name="atlas", status="running", port=8100, db="butler_atlas"),
-            ButlerSummary(name="switchboard", status="idle", port=8101, db="butler_switchboard"),
+            ButlerSummary(name="atlas", status="running", port=40100, db="butler_atlas"),
+            ButlerSummary(name="switchboard", status="idle", port=40101, db="butler_switchboard"),
         ]
         resp = PaginatedResponse[ButlerSummary](
             data=butlers,
@@ -168,10 +168,10 @@ class TestPaginatedResponse:
 
 class TestButlerSummary:
     def test_valid(self):
-        b = ButlerSummary(name="atlas", status="running", port=8100, db="butler_atlas")
+        b = ButlerSummary(name="atlas", status="running", port=40100, db="butler_atlas")
         assert b.name == "atlas"
         assert b.status == "running"
-        assert b.port == 8100
+        assert b.port == 40100
         assert b.db == "butler_atlas"
         assert b.modules == []
         assert b.schedule_count == 0

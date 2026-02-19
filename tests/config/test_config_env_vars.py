@@ -144,7 +144,7 @@ class TestLoadConfigEnvVars:
         toml = """\
 [butler]
 name = "mailbot"
-port = 8200
+port = 40200
 
 [modules.email]
 password = "${SOURCE_EMAIL_PASSWORD}"
