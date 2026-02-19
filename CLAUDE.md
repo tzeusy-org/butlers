@@ -49,7 +49,7 @@ Every butler has **core components** (always present) and **modules** (opt-in pe
 
 ### Trigger Flow
 
-1. Trigger arrives (external MCP call, scheduler due task, or heartbeat tick)
+1. Trigger arrives (external MCP call or internal scheduler due task)
 2. LLM CLI Spawner generates ephemeral MCP config → spawns LLM CLI via SDK
 3. Claude Code calls butler's MCP tools, runs skill scripts, returns
 4. Butler logs the session
@@ -57,7 +57,6 @@ Every butler has **core components** (always present) and **modules** (opt-in pe
 ### Special Butlers
 
 - **Switchboard Butler:** Routes external MCP requests to the correct butler
-- **Heartbeat Butler:** Calls `tick()` on every registered butler every 10 min
 
 ### Database Isolation
 

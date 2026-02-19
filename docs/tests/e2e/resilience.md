@@ -146,11 +146,11 @@ eligibility_state: active → quarantined
 ```
 
 Quarantined butlers are excluded from classification context, so the LLM stops
-routing to them. This is a self-healing mechanism — the heartbeat butler's tick
-can re-activate quarantined butlers when they respond to health checks.
+routing to them. This is a self-healing mechanism — when a butler starts responding
+to health checks again, it is re-activated.
 
 **Test:** Route to a butler, kill it, route again (triggers quarantine), restart
-it, verify that heartbeat tick re-activates it.
+it, verify that the butler is re-activated.
 
 ## Module Failure Isolation
 

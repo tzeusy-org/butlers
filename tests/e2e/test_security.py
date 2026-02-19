@@ -246,7 +246,7 @@ async def test_mcp_config_lockdown_health_tools_only(
     )
 
     # Should NOT mention switchboard-specific tools
-    switchboard_tools = ["classify_message", "route", "ingest_v1", "tick_all_butlers"]
+    switchboard_tools = ["classify_message", "route", "ingest_v1"]
 
     leaked_switchboard_tools = [
         tool for tool in switchboard_tools if tool in output_lower or tool in result.output

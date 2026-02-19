@@ -56,7 +56,6 @@ PostgreSQL database.
 | relationship | `butler_relationship` | state, scheduled_tasks, sessions | contacts, interactions, reminders |
 | health | `butler_health` | state, scheduled_tasks, sessions | measurements, medications, symptoms |
 | messenger | `butler_messenger` | state, scheduled_tasks, sessions | notification_log |
-| heartbeat | `butler_heartbeat` | state, scheduled_tasks, sessions | (core only) |
 
 **Provisioning sequence per butler:**
 
@@ -133,7 +132,6 @@ in production:
 | relationship | 8102 | HTTP/SSE | `http://localhost:8102/sse` |
 | health | 8103 | HTTP/SSE | `http://localhost:8103/sse` |
 | messenger | 8104 | HTTP/SSE | `http://localhost:8104/sse` |
-| heartbeat | 8199 | HTTP/SSE | `http://localhost:8199/sse` |
 
 ### Why These Ports
 
@@ -143,7 +141,6 @@ The port range `8100–8199` is chosen because:
 2. **Below common development ports.** Does not conflict with typical dev server
    ports (3000, 5173, 8000, 8080, 8200, 9000).
 3. **Contiguous and predictable.** Butlers are numbered sequentially from 8100.
-   The heartbeat butler uses 8199 as a sentinel (last in the range).
 4. **Dashboard lives at 8200.** The dashboard API runs at 8200, cleanly separated
    from the butler MCP port range.
 
@@ -287,7 +284,6 @@ def _require_api_key():
 | Classification (switchboard) | 4 | ~6,000 | ~1,200 | ~$0.010 |
 | Health spawner (measurement + medication) | 2 | ~6,500 | ~1,800 | ~$0.012 |
 | Relationship spawner (contact) | 1 | ~3,500 | ~1,000 | ~$0.007 |
-| Heartbeat tick | 1 | ~2,000 | ~500 | ~$0.004 |
 | Full e2e dispatch flow | 2 | ~7,000 | ~2,000 | ~$0.014 |
 | **Total per full run** | **~10** | **~25,000** | **~6,500** | **~$0.046** |
 
@@ -398,8 +394,8 @@ async with MCPClient("http://localhost:8103/sse") as client:
 │  │  Switchboard ──► General ──► Relationship ──► Health     │  │
 │  │   :8100          :8101       :8102           :8103       │  │
 │  │                                                          │  │
-│  │  Messenger ──► Heartbeat                                 │  │
-│  │   :8104        :8199                                     │  │
+│  │  Messenger                                               │  │
+│  │   :8104                                                  │  │
 │  │                                                          │  │
 │  │  Each: ButlerDaemon + FastMCP SSE + Spawner + DB pool   │  │
 │  └──────────────────────┬──────────────────────────────────┘  │
@@ -409,7 +405,7 @@ async with MCPClient("http://localhost:8103/sse") as client:
 │  │          TESTCONTAINER PostgreSQL (session-scoped)       │  │
 │  │                                                          │  │
 │  │  butler_switchboard  butler_general  butler_relationship │  │
-│  │  butler_health       butler_messenger butler_heartbeat   │  │
+│  │  butler_health       butler_messenger                    │  │
 │  │                                                          │  │
 │  │  Core tables: state, scheduled_tasks, sessions           │  │
 │  │  Butler tables: measurements, contacts, butler_registry  │  │

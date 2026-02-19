@@ -2358,7 +2358,11 @@ class ButlerDaemon:
 
         @mcp.tool()
         async def tick() -> dict:
-            """Evaluate due scheduled tasks and dispatch them now."""
+            """Evaluate due scheduled tasks and dispatch them now.
+
+            Primarily driven by the internal scheduler loop. Retained as an MCP tool
+            for debugging and manual triggering.
+            """
             count = await _tick(pool, spawner.trigger)
             return {"dispatched": count}
 

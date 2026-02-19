@@ -5,9 +5,9 @@ Last updated: 2026-02-13
 Primary owner: Platform/Core
 
 ## 1. Role
-The Base Butler specification defines the mandatory platform contract for all butlers other than role-specific overrides (for example Switchboard and Heartbeat).
+The Base Butler specification defines the mandatory platform contract for all butlers other than role-specific overrides (for example Switchboard).
 
-This document is the source of truth for shared butler behavior: identity, configuration, lifecycle, core tools, plugin/module architecture, persistence, scheduling, heartbeat integration, routing integration, and observability.
+This document is the source of truth for shared butler behavior: identity, configuration, lifecycle, core tools, plugin/module architecture, persistence, scheduling, routing integration, and observability.
 
 ## 2. Applicability and Override Rules
 Applicability:
@@ -34,7 +34,7 @@ Role-specific override section requirement:
 - Strict database isolation between butlers.
 - Pluggable capability model with deterministic dependency ordering.
 - Safe, auditable runtime invocation with bounded failure behavior.
-- Deterministic scheduling and heartbeat execution semantics.
+- Deterministic scheduling and execution semantics.
 - Stable integration contract with Switchboard routing.
 - First-class observability and trace correlation across butlers.
 
@@ -62,7 +62,7 @@ Strongly recommended fields:
 Target-state `[butler.switchboard]` routing fields:
 - `url`: Switchboard MCP endpoint URL.
 - `advertise`: whether this butler should be advertised in Switchboard registry.
-- `heartbeat_ttl_s`: expected registry staleness TTL for liveness policy.
+- `liveness_ttl_s`: expected registry staleness TTL for liveness policy.
 - `route_contract_min`: minimum accepted route envelope version.
 - `route_contract_max`: maximum accepted route envelope version.
 
@@ -159,18 +159,18 @@ Minimum persisted session fields:
 - `parent_session_id` when applicable
 - `request_id`, `subrequest_id`, `segment_id` when execution originates from a routed request context
 
-## 8. Scheduler and Heartbeat Contract
+## 8. Scheduler Contract
 Scheduler rules:
 - Static schedules in config are synced to DB on startup.
 - Runtime-created schedules are supported via core schedule tools.
 - `tick` evaluates due tasks by `next_run_at`, dispatches each, advances `next_run_at`, and records `last_result`.
 - Failure of one scheduled task must not block remaining due tasks.
 
-Heartbeat integration rules:
-- Every butler must support external `tick` calls.
+Scheduler integration rules:
+- Every butler must support external `tick` calls (for debugging and manual triggering).
 - `tick` handlers must be idempotent and safe under repeated calls.
-- A butler should complete `tick` within a bounded operational timeout for heartbeat stability.
-- Heartbeat-triggered failures must be observable in session/log surfaces.
+- A butler should complete `tick` within a bounded operational timeout for scheduler stability.
+- Scheduler-triggered failures must be observable in session/log surfaces.
 
 ## 9. Module (Plugin) Contract
 Modules are opt-in capability plugins and must conform to the `Module` interface:
@@ -550,7 +550,7 @@ Audit metadata contract:
 
 Metrics:
 - At minimum, emit request counts, error counts, and duration distributions.
-- Minimum metric coverage includes runtime sessions, core tool calls, scheduled task dispatch, and heartbeat tick handling.
+- Minimum metric coverage includes runtime sessions, core tool calls, and scheduled task dispatch.
 - Metrics must use low-cardinality attributes; required attributes where relevant:
 - `butler`
 - `tool_name`
@@ -672,4 +672,4 @@ Implementation quality checklist for all examples:
 - Emits trace/log/metric metadata with required low-cardinality attributes.
 
 ## 18. Non-Normative Note
-Role-specific docs (for example Switchboard, Heartbeat) should focus on role behavior and only restate base contracts when introducing stricter constraints or explicit overrides. Shared modules (for example memory) should define module-specific contracts in `docs/modules/`.
+Role-specific docs (for example Switchboard) should focus on role behavior and only restate base contracts when introducing stricter constraints or explicit overrides. Shared modules (for example memory) should define module-specific contracts in `docs/modules/`.

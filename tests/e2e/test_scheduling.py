@@ -3,12 +3,11 @@
 Validates timer-driven flows, cron lifecycle, and tick behavior per
 docs/tests/e2e/scheduling.md:
 
-1. Heartbeat tick triggers all butlers
-2. Tick idempotency (double-tick does not duplicate sessions)
-3. TOML schedule sync (schedules synced to scheduled_tasks table)
-4. Schedule CRUD via MCP tools
-5. Timer + external trigger interleaving
-6. Disabled schedule skipped
+1. Tick idempotency (double-tick does not duplicate sessions)
+2. TOML schedule sync (schedules synced to scheduled_tasks table)
+3. Schedule CRUD via MCP tools
+4. Timer + external trigger interleaving
+5. Disabled schedule skipped
 """
 
 from __future__ import annotations
@@ -30,92 +29,6 @@ if TYPE_CHECKING:
 
 
 pytestmark = pytest.mark.e2e
-
-
-# ---------------------------------------------------------------------------
-# Heartbeat Tick Tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_heartbeat_tick_triggers_all_butlers(
-    butler_ecosystem: ButlerEcosystem,
-    switchboard_pool: Pool,
-    heartbeat_pool: Pool,
-) -> None:
-    """Heartbeat tick should create sessions in all registered butlers.
-
-    Validates that calling tick() on the heartbeat butler triggers every
-    registered butler (except heartbeat itself) and creates a new session
-    with trigger_source="heartbeat" in each butler's DB.
-    """
-    # Get list of registered butlers from switchboard registry
-    async with switchboard_pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT name FROM butler_registry
-            WHERE eligibility_state = 'active'
-            ORDER BY name
-            """
-        )
-        registered_butlers = {row["name"] for row in rows}
-
-    # Record session counts before tick (exclude heartbeat since it ticks others)
-    session_counts_before: dict[str, int] = {}
-    for butler_name in registered_butlers:
-        if butler_name == "heartbeat":
-            continue
-        if butler_name in butler_ecosystem.pools:
-            pool = butler_ecosystem.pools[butler_name]
-            count = await pool.fetchval("SELECT COUNT(*) FROM sessions")
-            session_counts_before[butler_name] = count
-
-    # Fire heartbeat tick via MCP tool
-    heartbeat_daemon = butler_ecosystem.butlers["heartbeat"]
-    port = heartbeat_daemon.config.port
-    url = f"http://localhost:{port}/sse"
-
-    async with MCPClient(url) as client:
-        result = await client.call_tool("tick_all_butlers", {})
-
-    # Verify tick completed successfully
-    assert result is not None
-    assert "total" in result
-    assert "successful" in result
-    assert "failed" in result
-
-    # Give sessions time to complete (async spawner invocations)
-    await asyncio.sleep(2)
-
-    # Verify each butler (except heartbeat) got a new session
-    for butler_name in registered_butlers:
-        if butler_name == "heartbeat":
-            continue
-        if butler_name not in butler_ecosystem.pools:
-            continue
-
-        pool = butler_ecosystem.pools[butler_name]
-        count_after = await pool.fetchval("SELECT COUNT(*) FROM sessions")
-        count_before = session_counts_before.get(butler_name, 0)
-
-        assert count_after > count_before, (
-            f"Butler {butler_name} did not receive heartbeat trigger "
-            f"(before={count_before}, after={count_after})"
-        )
-
-        # Verify trigger_source is heartbeat-related
-        latest_session = await pool.fetchrow(
-            """
-            SELECT trigger_source FROM sessions
-            ORDER BY created_at DESC LIMIT 1
-            """
-        )
-        assert latest_session is not None
-        # Trigger source should be either "heartbeat" or "schedule:heartbeat-cycle"
-        assert (
-            "heartbeat" in latest_session["trigger_source"]
-            or "schedule:" in latest_session["trigger_source"]
-        ), f"Unexpected trigger_source: {latest_session['trigger_source']}"
 
 
 @pytest.mark.asyncio

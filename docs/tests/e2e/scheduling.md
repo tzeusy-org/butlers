@@ -3,8 +3,7 @@
 ## Overview
 
 Not all butler triggers come from external messages. The scheduler subsystem
-drives time-based triggers: cron-scheduled tasks, heartbeat ticks, and
-periodic maintenance jobs. These are fundamentally different from message-driven
+drives time-based triggers: cron-scheduled tasks and periodic maintenance jobs. These are fundamentally different from message-driven
 flows — they originate inside the system, run on timers, and must be idempotent.
 Scheduling E2E tests validate the full lifecycle of timer-driven flows.
 
@@ -13,88 +12,11 @@ Scheduling E2E tests validate the full lifecycle of timer-driven flows.
 | Origin | Entry Point | Trigger Source | How It Starts |
 |--------|-------------|----------------|---------------|
 | External message | `ingest_v1()` → classify → dispatch | `"external"` | User sends Telegram/Email/API message |
-| Heartbeat tick | `_tick(pool)` on heartbeat butler | `"heartbeat"` | Heartbeat butler's 10-min cron |
 | Scheduled task | `_tick(pool)` on any butler | `"scheduled"` | Butler's own cron schedules |
 | Test harness | Direct `spawner.trigger()` | `"test"` | E2E test code |
 
-Scheduling E2E tests focus on the second and third rows — triggers that
+Scheduling E2E tests focus on the second row (scheduled tasks) — triggers that
 originate from within the system rather than from external input.
-
-## Heartbeat Tick Flow
-
-### Architecture
-
-The heartbeat butler is a special butler that runs a 10-minute cron job. On
-each tick, it calls `trigger()` on every butler registered in the switchboard's
-`butler_registry`:
-
-```
-Heartbeat Butler (every 10 min)
-    │
-    ├─ _tick(heartbeat_pool)
-    │   │
-    │   ├─ Read scheduled_tasks WHERE due_at <= NOW()
-    │   │
-    │   └─ For each due task:
-    │       │
-    │       ├─ Resolve target butler from butler_registry
-    │       │
-    │       └─ route(switchboard_pool, target_butler, "trigger", {
-    │              prompt: task.prompt,
-    │              trigger_source: "heartbeat"
-    │          })
-    │           │
-    │           └─ Target butler spawns runtime session
-    │               └─ Runtime instance executes task-specific tools
-    │
-    └─ Update scheduled_tasks: next_due_at = compute_next(cron_expr)
-```
-
-### E2E Heartbeat Tests
-
-| Test | What It Validates |
-|------|-------------------|
-| Tick triggers all butlers | After `_tick()`, each registered butler has a new session with `trigger_source="heartbeat"` |
-| Tick is idempotent | Running `_tick()` twice in quick succession does not duplicate sessions (task not due again) |
-| Unavailable butler skipped | Kill one butler, run tick, verify other butlers still get triggered |
-| Session metadata | Heartbeat-triggered sessions have correct `trigger_source`, `trace_id`, and `duration_ms` |
-
-### Heartbeat Flow Test
-
-```python
-async def test_heartbeat_tick_triggers_all_butlers(butler_ecosystem):
-    """Heartbeat tick should trigger every registered butler."""
-    heartbeat = butler_ecosystem["heartbeat"]
-    switchboard = butler_ecosystem["switchboard"]
-
-    # Get registered butlers from registry
-    butlers = await switchboard.pool.fetch(
-        "SELECT name FROM butler_registry WHERE eligibility_state = 'active'"
-    )
-    butler_names = {row["name"] for row in butlers}
-
-    # Record session counts before tick
-    session_counts_before = {}
-    for name in butler_names:
-        if name in butler_ecosystem:
-            count = await butler_ecosystem[name].pool.fetchval(
-                "SELECT COUNT(*) FROM sessions"
-            )
-            session_counts_before[name] = count
-
-    # Fire tick
-    await _tick(heartbeat.pool)
-
-    # Verify each butler got a new session
-    for name in butler_names:
-        if name in butler_ecosystem:
-            count = await butler_ecosystem[name].pool.fetchval(
-                "SELECT COUNT(*) FROM sessions"
-            )
-            assert count > session_counts_before[name], (
-                f"Butler {name} did not receive heartbeat trigger"
-            )
-```
 
 ## Scheduled Task Lifecycle
 

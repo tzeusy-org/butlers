@@ -325,18 +325,7 @@ and integration-sensitive flows.
 
 | Test | Flow | Assertions |
 |------|------|------------|
-| Heartbeat tick | `_tick(heartbeat_pool)` → calls `trigger()` on all registered butlers | Each butler has a new session with `trigger_source="heartbeat"` |
 | Full e2e message flow | Mock Telegram message → ingest → classify → dispatch → butler tools → DB | Complete pipeline from external input to database side effects |
-
-**Heartbeat tick detail:**
-
-The heartbeat butler's `tick()` function reads scheduled tasks, finds due ones,
-and calls `trigger()` on target butlers. In the E2E harness, this validates:
-
-1. The heartbeat butler can read the `butler_registry` from the switchboard
-2. The heartbeat butler can reach each target butler via MCP
-3. Each target butler's spawner fires and records a session
-4. The session's `trigger_source` is `"heartbeat"` (not `"external"`)
 
 **Full e2e message flow detail:**
 
@@ -549,4 +538,3 @@ No changes to `conftest.py` or the ecosystem bootstrap are needed.
 | Database side effects | | | | X | X | X |
 | Session logging | | | | X | | X |
 | Response aggregation | | | | | | X |
-| Heartbeat tick | | | | | | X |

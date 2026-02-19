@@ -291,12 +291,6 @@ def messenger_pool(butler_ecosystem: ButlerEcosystem) -> Pool:
     return butler_ecosystem.pools["messenger"]
 
 
-@pytest.fixture
-def heartbeat_pool(butler_ecosystem: ButlerEcosystem) -> Pool:
-    """Heartbeat butler database pool."""
-    return butler_ecosystem.pools["heartbeat"]
-
-
 # ---------------------------------------------------------------------------
 # Logging and cost tracking (session-scoped)
 # ---------------------------------------------------------------------------

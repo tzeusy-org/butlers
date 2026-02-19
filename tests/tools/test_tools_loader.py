@@ -34,12 +34,6 @@ class TestRegisterButlerTools:
 
         assert callable(measurement_log)
 
-    def test_loads_heartbeat_tools(self):
-        """Heartbeat tools should be importable after registration."""
-        from butlers.tools.heartbeat import tick_all_butlers
-
-        assert callable(tick_all_butlers)
-
     def test_loads_relationship_tools(self):
         """Relationship tools should be importable after registration."""
         from butlers.tools.relationship import contact_create

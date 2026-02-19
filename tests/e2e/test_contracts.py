@@ -312,7 +312,7 @@ def test_classification_unknown_butler_entry():
     ]
 
     # Contract: filter out unknown butlers
-    known_butlers = {"health", "relationship", "general", "switchboard", "messenger", "heartbeat"}
+    known_butlers = {"health", "relationship", "general", "switchboard", "messenger"}
     valid_entries = [e for e in classification_response if e["butler"] in known_butlers]
 
     assert len(valid_entries) == 1

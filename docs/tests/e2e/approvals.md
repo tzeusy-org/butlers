@@ -258,13 +258,13 @@ approvals (
 
 ## Edge Cases
 
-### Gated Tool in Heartbeat Trigger
+### Gated Tool in Scheduled Trigger
 
-When a heartbeat tick triggers a butler and the runtime session calls a gated tool,
-the approval request must still be created. Heartbeat triggers are not exempt
+When a scheduled task triggers a butler and the runtime session calls a gated tool,
+the approval request must still be created. Scheduled triggers are not exempt
 from approval gates.
 
-**Test:** Configure a scheduled task that calls a gated tool, fire heartbeat
+**Test:** Configure a scheduled task that calls a gated tool, fire the scheduler
 tick, verify approval request is created.
 
 ### Multiple Gates in Sequence

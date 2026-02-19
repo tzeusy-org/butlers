@@ -81,7 +81,6 @@ LLM CLI instances ── ephemeral, locked-down, reason + act
 
 - Each butler owns a **dedicated PostgreSQL database** (strict isolation)
 - Butlers communicate only via MCP tools through the Switchboard
-- A **Heartbeat Butler** calls `tick()` on every butler every 10 minutes, triggering scheduled tasks
 - Butler configs are **git-based directories** with personality (`CLAUDE.md`), skills, and config (`butler.toml`)
 
 ### Detailed Architecture
@@ -90,7 +89,6 @@ LLM CLI instances ── ephemeral, locked-down, reason + act
 graph TB
     subgraph External
         Client[MCP Client]
-        Cron[Heartbeat Butler<br/>tick every 10 min]
     end
 
     subgraph Switchboard["Switchboard Butler :8100"]
@@ -100,8 +98,6 @@ graph TB
 
     Client --> SRouter
     SRouter --> SRegistry
-    Cron --> |tick_all_butlers| SRouter
-
     subgraph Butlers["Domain Butlers"]
         subgraph General["General :8101"]
             G_MCP[FastMCP Server]
@@ -191,7 +187,6 @@ graph TB
 | ----------------- | ------------------------------------------------ | ---------------------- |
 | External MCP call | Client calls `trigger(prompt)` tool              | `trigger`              |
 | Scheduler         | Cron expression fires, dispatched by `tick()`    | `schedule`             |
-| Heartbeat         | Heartbeat butler calls `tick_now()` every 10 min | `tick`                 |
 
 ### Module System
 
@@ -324,7 +319,6 @@ Each butler service mounts its config directory read-only from `butlers/<name>/`
 | Relationship  | 8102 | Contacts, interactions, gifts, activity feed           |
 | Health        | 8103 | Measurements, medications, conditions, symptoms        |
 | Messenger     | 8104 | Delivery relay — Telegram and email channel outputs    |
-| Heartbeat     | 8199 | System monitor — ticks all butlers every 10 min        |
 | Dashboard API | 8200 | Web UI backend for monitoring and managing butlers     |
 | Frontend      | 5173 | Vite dev server (development only)                     |
 | PostgreSQL    | 5432 | Shared database server (one DB per butler)             |

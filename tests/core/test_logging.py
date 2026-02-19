@@ -171,6 +171,7 @@ class TestResolveLogRoot:
         monkeypatch.setenv("BUTLERS_DISABLE_FILE_LOGGING", "0")
         assert resolve_log_root("/tmp/ignored") is None
 
+
 # ---------------------------------------------------------------------------
 # Log directory structure
 # ---------------------------------------------------------------------------
