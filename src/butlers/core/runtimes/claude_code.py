@@ -40,9 +40,10 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         Name of the butler this adapter serves. Used to construct per-butler
         stderr log paths. Optional; when omitted stderr is not captured.
     log_root:
-        Root directory for log files. Defaults to ``logs``. Stderr from
-        Claude Code CLI subprocesses is written to
-        ``{log_root}/butlers/{butler_name}_cc_stderr.log``.
+        Root directory for log files. When set, stderr from Claude Code CLI
+        subprocesses is written to
+        ``{log_root}/butlers/{butler_name}_cc_stderr.log``. When ``None``,
+        stderr capture is disabled.
     """
 
     def __init__(
@@ -53,7 +54,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
     ) -> None:
         self._sdk_query = sdk_query or query
         self._butler_name = butler_name
-        self._log_root = log_root or Path("logs")
+        self._log_root = log_root
 
     @property
     def binary_name(self) -> str:
@@ -97,7 +98,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         # Open per-butler stderr log file for Claude Code CLI diagnostics
         stderr_file = None
         stderr_kwargs: dict[str, Any] = {}
-        if self._butler_name:
+        if self._butler_name and self._log_root is not None:
             try:
                 stderr_dir = self._log_root / "butlers"
                 stderr_dir.mkdir(parents=True, exist_ok=True)

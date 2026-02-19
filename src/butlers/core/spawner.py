@@ -27,6 +27,7 @@ from opentelemetry.context import Context
 
 from butlers.config import ButlerConfig
 from butlers.core.audit import write_audit_entry
+from butlers.core.logging import resolve_log_root
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.sessions import session_complete, session_create
@@ -258,7 +259,7 @@ class Spawner:
             # Default: create a ClaudeCodeAdapter with the real SDK query
             from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
 
-            log_root = Path(config.logging.log_root or "logs")
+            log_root = resolve_log_root(config.logging.log_root)
             self._runtime = ClaudeCodeAdapter(
                 butler_name=config.name,
                 log_root=log_root,

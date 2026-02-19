@@ -45,6 +45,20 @@ ENV_LOADER="export \$(grep -v '^#' /secrets/.dev.env | xargs -d '\n') && export 
 TELEGRAM_BOT_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/telegram_bot"
 TELEGRAM_USER_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/telegram_user_client"
 GMAIL_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/gmail"
+LOGS_ROOT="${PROJECT_DIR}/logs"
+LOGS_RUN_ID="$(date +%Y%m%d_%H%M%S)"
+LOGS_RUN_DIR="${LOGS_ROOT}/${LOGS_RUN_ID}"
+LOGS_LATEST_LINK="${LOGS_ROOT}/latest"
+
+# Per-invocation logs directory and latest symlink.
+mkdir -p \
+  "${LOGS_RUN_DIR}/butlers" \
+  "${LOGS_RUN_DIR}/connectors" \
+  "${LOGS_RUN_DIR}/uvicorn" \
+  "${LOGS_RUN_DIR}/frontend"
+rm -rf "${LOGS_LATEST_LINK}"
+ln -s "${LOGS_RUN_DIR}" "${LOGS_LATEST_LINK}"
+echo "Logs for this run: ${LOGS_RUN_DIR}"
 
 # ── Source shared env files (same as ENV_LOADER, before preflight check) ──
 # Pre-flight check must see the same credentials as the connector panes.
@@ -154,13 +168,17 @@ done
 
 # ── backend window ──────────────────────────────────────────────────
 PANE_BACKEND=$(tmux new-window -t "$SESSION:" -n backend -c "$PROJECT_DIR" -P -F '#{pane_id}')
+tmux pipe-pane -o -t "$PANE_BACKEND" "cat >> '${LOGS_RUN_DIR}/butlers/up.log'"
 tmux send-keys -t "$PANE_BACKEND" \
-  "${ENV_LOADER} && uv sync --dev && docker compose stop postgres && docker compose up -d postgres && POSTGRES_PORT=54320 uv run butlers up" Enter
+  "${ENV_LOADER} && uv sync --dev && docker compose stop postgres && docker compose up -d postgres && POSTGRES_PORT=54320 BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers up" Enter
 
 # ── connectors window ──────────────────────────────────────────────
 PANE_TELEGRAM_BOT=$(tmux new-window -t "$SESSION:" -n connectors -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_TELEGRAM_USER=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -v -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_GMAIL=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -h -c "$PROJECT_DIR" -P -F '#{pane_id}')
+tmux pipe-pane -o -t "$PANE_TELEGRAM_BOT" "cat >> '${LOGS_RUN_DIR}/connectors/telegram_bot.log'"
+tmux pipe-pane -o -t "$PANE_TELEGRAM_USER" "cat >> '${LOGS_RUN_DIR}/connectors/telegram_user_client.log'"
+tmux pipe-pane -o -t "$PANE_GMAIL" "cat >> '${LOGS_RUN_DIR}/connectors/gmail.log'"
 
 tmux send-keys -t "$PANE_TELEGRAM_BOT" \
   "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && sleep 10 && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} CONNECTOR_CURSOR_PATH=\${TELEGRAM_BOT_CONNECTOR_CURSOR_PATH:-\${CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_bot_checkpoint.json}} uv run python -m butlers.connectors.telegram_bot" Enter
@@ -174,9 +192,11 @@ tmux send-keys -t "$PANE_GMAIL" \
 # ── dashboard window ───────────────────────────────────────────────
 PANE_DASHBOARD=$(tmux new-window -t "$SESSION:" -n dashboard -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_FRONTEND=$(tmux split-window -t "$PANE_DASHBOARD" -v -c "${PROJECT_DIR}/frontend" -P -F '#{pane_id}')
+tmux pipe-pane -o -t "$PANE_DASHBOARD" "cat >> '${LOGS_RUN_DIR}/uvicorn/dashboard.log'"
+tmux pipe-pane -o -t "$PANE_FRONTEND" "cat >> '${LOGS_RUN_DIR}/frontend/vite.log'"
 
 tmux send-keys -t "$PANE_DASHBOARD" \
-  "POSTGRES_PORT=54320 uv run butlers dashboard --host 0.0.0.0 --port 8200" Enter
+  "POSTGRES_PORT=54320 BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers dashboard --host 0.0.0.0 --port 8200" Enter
 # Brief wait for shell init in the split pane
 sleep 0.3
 tmux send-keys -t "$PANE_FRONTEND" \

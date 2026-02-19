@@ -63,6 +63,7 @@ from butlers.config import (
     load_config,
     parse_approval_config,
 )
+from butlers.core.logging import resolve_log_root
 from butlers.core.metrics import ButlerMetrics, init_metrics
 from butlers.core.route_inbox import (
     route_inbox_insert,
@@ -663,7 +664,7 @@ class ButlerDaemon:
         # 1b. Configure structured logging for this butler
         from butlers.core.logging import configure_logging
 
-        log_root = Path(self.config.logging.log_root or "logs")
+        log_root = resolve_log_root(self.config.logging.log_root)
         configure_logging(
             level=self.config.logging.level,
             fmt=self.config.logging.format,

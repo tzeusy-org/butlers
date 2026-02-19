@@ -26,6 +26,7 @@ Log directory layout (when ``log_root`` is set)::
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 import warnings
@@ -54,6 +55,31 @@ def set_butler_context(name: str) -> None:
 def get_butler_context() -> str | None:
     """Get the butler name for the current async context."""
     return _butler_context.get()
+
+
+def resolve_log_root(configured_log_root: str | None) -> Path | None:
+    """Resolve file-log root from config + environment overrides.
+
+    Precedence:
+    1. ``BUTLERS_LOG_ROOT`` (path override, or disable sentinel)
+    2. ``BUTLERS_DISABLE_FILE_LOGGING`` (truthy disables file logs)
+    3. ``configured_log_root`` from config
+    4. Default ``logs/`` fallback
+    """
+    explicit_log_root = os.environ.get("BUTLERS_LOG_ROOT")
+    if explicit_log_root is not None:
+        raw = explicit_log_root.strip()
+        if raw == "" or raw.lower() in {"none", "null", "stdout", "stderr", "disable", "-"}:
+            return None
+        return Path(raw)
+
+    disable_file_logging = os.environ.get("BUTLERS_DISABLE_FILE_LOGGING", "").strip().lower()
+    if disable_file_logging in {"1", "true", "yes", "on"}:
+        return None
+
+    if configured_log_root:
+        return Path(configured_log_root)
+    return Path("logs")
 
 
 # ---------------------------------------------------------------------------

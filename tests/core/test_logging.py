@@ -17,6 +17,7 @@ from butlers.core.logging import (
     add_otel_context,
     configure_logging,
     get_butler_context,
+    resolve_log_root,
     set_butler_context,
 )
 
@@ -148,6 +149,27 @@ class TestConfigureLogging:
         root = logging.getLogger()
         assert root.level == logging.DEBUG
 
+
+# ---------------------------------------------------------------------------
+# resolve_log_root()
+# ---------------------------------------------------------------------------
+
+
+class TestResolveLogRoot:
+    def test_defaults_to_logs_when_unset(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("BUTLERS_LOG_ROOT", raising=False)
+        monkeypatch.delenv("BUTLERS_DISABLE_FILE_LOGGING", raising=False)
+        assert resolve_log_root(None) == Path("logs")
+
+    def test_disable_file_logging_env_wins(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("BUTLERS_LOG_ROOT", raising=False)
+        monkeypatch.setenv("BUTLERS_DISABLE_FILE_LOGGING", "1")
+        assert resolve_log_root("/tmp/ignored") is None
+
+    def test_log_root_env_can_disable_with_sentinel(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("BUTLERS_LOG_ROOT", "none")
+        monkeypatch.setenv("BUTLERS_DISABLE_FILE_LOGGING", "0")
+        assert resolve_log_root("/tmp/ignored") is None
 
 # ---------------------------------------------------------------------------
 # Log directory structure
