@@ -642,8 +642,12 @@ class TestDirectDeliveryBypassRejection:
 
         This validates that even if a routed payload carries notify_request
         context, a non-messenger butler does not attempt direct channel
-        delivery; it uses spawner.trigger instead.
+        delivery; it uses spawner.trigger instead (asynchronously via route_inbox).
         """
+        import asyncio
+        import uuid
+        from unittest.mock import patch
+
         from butlers.daemon import ButlerDaemon
 
         daemon = ButlerDaemon(Path("."))
@@ -656,6 +660,7 @@ class TestDirectDeliveryBypassRejection:
                 success=True,
                 error=None,
                 duration_ms=42,
+                session_id=uuid.uuid4(),
             )
         )
         daemon._modules = []
@@ -682,32 +687,50 @@ class TestDirectDeliveryBypassRejection:
         assert route_execute is not None, "route.execute must be registered"
 
         # Use a valid UUID7 (route envelope validation requires UUID7).
-        result = await route_execute(
-            schema_version="route.v1",
-            request_context={
-                "request_id": _TEST_UUID7,
-                "received_at": "2026-02-14T00:00:00Z",
-                "source_channel": "telegram",
-                "source_endpoint_identity": "switchboard",
-                "source_sender_identity": "health",
-            },
-            input={
-                "prompt": "Test routed execution",
-                "context": {
-                    "notify_request": {
-                        "schema_version": "notify.v1",
-                        "origin_butler": "health",
-                        "delivery": {
-                            "intent": "send",
-                            "channel": "telegram",
-                            "message": "Hello",
-                            "recipient": "12345",
-                        },
-                    }
+        # Non-messenger route.execute now returns {"status": "accepted"} immediately
+        # (accept-then-process split, Section 4.4) and dispatches spawner.trigger()
+        # as a background task.
+        with (
+            patch(
+                "butlers.daemon.route_inbox_insert",
+                new_callable=AsyncMock,
+                return_value=uuid.uuid4(),
+            ),
+            patch("butlers.daemon.route_inbox_mark_processing", new_callable=AsyncMock),
+            patch("butlers.daemon.route_inbox_mark_processed", new_callable=AsyncMock),
+        ):
+            result = await route_execute(
+                schema_version="route.v1",
+                request_context={
+                    "request_id": _TEST_UUID7,
+                    "received_at": "2026-02-14T00:00:00Z",
+                    "source_channel": "telegram",
+                    "source_endpoint_identity": "switchboard",
+                    "source_sender_identity": "health",
                 },
-            },
-        )
+                input={
+                    "prompt": "Test routed execution",
+                    "context": {
+                        "notify_request": {
+                            "schema_version": "notify.v1",
+                            "origin_butler": "health",
+                            "delivery": {
+                                "intent": "send",
+                                "channel": "telegram",
+                                "message": "Hello",
+                                "recipient": "12345",
+                            },
+                        }
+                    },
+                },
+            )
 
-        assert result["status"] == "ok", f"Expected ok, got: {result}"
+            # Accept phase returns "accepted" immediately (not "ok").
+            assert result["status"] == "accepted", f"Expected accepted, got: {result}"
+            assert "inbox_id" in result
+
+            # Allow the background task to run and call spawner.trigger().
+            await asyncio.sleep(0.05)
+
         # Spawner was called (the non-messenger path), not channel adapters.
         daemon.spawner.trigger.assert_called_once()
