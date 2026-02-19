@@ -57,7 +57,7 @@ class StrictModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         self._startup_config = config
 
     async def on_shutdown(self) -> None:
@@ -96,7 +96,7 @@ class AllDefaultsModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         self._startup_config = config
 
     async def on_shutdown(self) -> None:
@@ -128,7 +128,7 @@ class NoSchemaModule(Module):
     def migration_revisions(self) -> str | None:
         return None
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         self._startup_config = config
 
     async def on_shutdown(self) -> None:

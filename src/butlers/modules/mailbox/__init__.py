@@ -111,7 +111,7 @@ class MailboxModule(Module):
             """Get message counts grouped by status."""
             return await module._mailbox_stats(module._get_pool())
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Store the DB pool reference."""
         self._pool = db
 

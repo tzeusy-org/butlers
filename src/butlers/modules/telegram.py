@@ -142,6 +142,9 @@ class TelegramModule(Module):
         self._processing_lifecycle: dict[str, ProcessingLifecycle] = {}
         self._reaction_locks: dict[str, asyncio.Lock] = {}
         self._terminal_reactions: OrderedDict[str, str] = OrderedDict()
+        # Credentials cached at startup via CredentialStore (DB-first, then env).
+        # Keys are the env var names configured in TelegramConfig (e.g. "BUTLER_TELEGRAM_TOKEN").
+        self._resolved_credentials: dict[str, str] = {}
 
     @property
     def name(self) -> str:
@@ -228,11 +231,17 @@ class TelegramModule(Module):
         self._pipeline = pipeline
 
     def _get_bot_token(self) -> str:
-        """Resolve Telegram bot token from configured bot credential scope."""
+        """Resolve Telegram bot token — startup-cached store first, then environment variable.
+
+        The token is pre-resolved at startup via CredentialStore (DB-first, then env)
+        and cached in ``self._resolved_credentials``.  If not cached (e.g. tests
+        without CredentialStore), falls back to ``os.environ`` directly.
+        """
         if not self._config.bot.enabled:
             raise RuntimeError("Telegram bot scope modules.telegram.bot is disabled")
         token_env = self._config.bot.token_env
-        token = os.environ.get(token_env)
+        # Use startup-resolved cache first; fall back to env vars for backwards compat.
+        token = self._resolved_credentials.get(token_env) or os.environ.get(token_env)
         if not token:
             raise RuntimeError(
                 f"Missing Telegram bot token for modules.telegram.bot: set {token_env}"
@@ -470,7 +479,11 @@ class TelegramModule(Module):
     ) -> None:
         if chat_id in (None, "") or message_id is None or message_key is None:
             return
-        if os.environ.get("BUTLER_TELEGRAM_TOKEN", "") == "":
+        # Check token availability via resolved cache or env var fallback.
+        token_available = self._resolved_credentials.get(
+            self._config.bot.token_env
+        ) or os.environ.get(self._config.bot.token_env, "")
+        if not token_available:
             return
         if reaction not in REACTION_TO_EMOJI:
             return
@@ -569,14 +582,34 @@ class TelegramModule(Module):
             _register_reply_tool(identity)
             _register_get_updates_tool(identity)
 
-    async def on_startup(self, config: Any, db: Any) -> None:
-        """Set webhook if configured. Ingestion is handled by TelegramBotConnector."""
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+        """Set webhook if configured. Ingestion is handled by TelegramBotConnector.
+
+        Parameters
+        ----------
+        config:
+            Module configuration (``TelegramConfig`` or raw dict).
+        db:
+            Butler database instance.
+        credential_store:
+            Optional :class:`~butlers.credential_store.CredentialStore`.
+            When provided, tokens are resolved DB-first with env fallback.
+            When ``None`` (e.g. tests), resolution falls back to env vars only.
+        """
         self._config = (
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))
         )
         self._client = httpx.AsyncClient()
         self._last_update_id = 0
         self._db = db
+        self._resolved_credentials = {}
+        if credential_store is not None:
+            # Resolve all configured token keys at startup and cache them.
+            for scope_cfg in [self._config.bot, self._config.user]:
+                token_env = scope_cfg.token_env
+                value = await credential_store.resolve(token_env)
+                if value is not None:
+                    self._resolved_credentials[token_env] = value
 
         if self._config.webhook_url:
             await self._set_webhook(self._config.webhook_url)

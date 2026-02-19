@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
 from butlers.google_credentials import (
+    MissingGoogleCredentialsError,
     resolve_google_credentials,
 )
 from butlers.modules.base import Module
@@ -2964,7 +2965,107 @@ class CalendarModule(Module):
                 "last_sync_error": sync_state.last_sync_error,
             }
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def _resolve_credentials(
+        self,
+        *,
+        db: Any,
+        credential_store: Any,
+    ) -> _GoogleOAuthCredentials:
+        """Resolve Google OAuth credentials using a three-tier lookup.
+
+        Resolution order:
+        1. CredentialStore (``butler_secrets`` table) for individual keys
+           ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``,
+           ``GOOGLE_REFRESH_TOKEN``.
+        2. Dedicated ``google_oauth_credentials`` DB table via
+           ``resolve_google_credentials(pool)``.
+        3. Environment variables via ``_GoogleOAuthCredentials.from_env()``.
+
+        Parameters
+        ----------
+        db:
+            Butler database instance (used to extract ``db.pool``).
+        credential_store:
+            Optional CredentialStore for step 1.  When ``None``, step 1 is
+            skipped.
+
+        Returns
+        -------
+        _GoogleOAuthCredentials
+            Resolved credentials.
+
+        Raises
+        ------
+        RuntimeError
+            If credentials cannot be resolved from any source.
+        """
+        # Step 1: Try CredentialStore (butler_secrets) for individual keys.
+        if credential_store is not None:
+            client_id = await credential_store.resolve("GOOGLE_OAUTH_CLIENT_ID", env_fallback=False)
+            client_secret = await credential_store.resolve(
+                "GOOGLE_OAUTH_CLIENT_SECRET", env_fallback=False
+            )
+            refresh_token = await credential_store.resolve(
+                "GOOGLE_REFRESH_TOKEN", env_fallback=False
+            )
+            if client_id and client_secret and refresh_token:
+                logger.debug("CalendarModule: resolved Google credentials from CredentialStore")
+                return _GoogleOAuthCredentials(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    refresh_token=refresh_token,
+                )
+
+        # Step 2: Try dedicated google_oauth_credentials DB table.
+        pool = getattr(db, "pool", None) if db is not None else None
+        if pool is not None:
+            try:
+                google_creds_shared = await resolve_google_credentials(pool, caller="calendar")
+                logger.debug(
+                    "CalendarModule: resolved Google credentials from"
+                    " google_oauth_credentials table"
+                )
+                return _GoogleOAuthCredentials(
+                    client_id=google_creds_shared.client_id,
+                    client_secret=google_creds_shared.client_secret,
+                    refresh_token=google_creds_shared.refresh_token,
+                )
+            except MissingGoogleCredentialsError:
+                pass  # Fall through to env vars.
+
+        # Step 3: Fall back to env vars.
+        try:
+            return _GoogleOAuthCredentials.from_env()
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "CalendarModule: Google OAuth credentials are not available. "
+                "Store them via the dashboard OAuth flow or set the "
+                "GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and "
+                "GOOGLE_REFRESH_TOKEN environment variables. "
+                f"Details: {exc}"
+            ) from exc
+
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+        """Initialize the calendar provider with resolved Google OAuth credentials.
+
+        Credential resolution order:
+        1. CredentialStore (``butler_secrets`` table) — individual keys
+           ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``, ``GOOGLE_REFRESH_TOKEN``.
+        2. Dedicated ``google_oauth_credentials`` DB table (via ``resolve_google_credentials``).
+        3. Environment variables (via ``_GoogleOAuthCredentials.from_env``).
+
+        Parameters
+        ----------
+        config:
+            Module configuration (``CalendarConfig`` or raw dict).
+        db:
+            Butler database instance.
+        credential_store:
+            Optional :class:`~butlers.credential_store.CredentialStore`.
+            When provided, individual Google credential keys are checked in
+            ``butler_secrets`` first before falling through to the dedicated
+            Google credentials table or environment variables.
+        """
         self._config = self._coerce_config(config)
         self._db = db
 
@@ -2976,20 +3077,7 @@ class CalendarModule(Module):
                 f"Supported providers: {supported}"
             )
 
-        # Resolve Google OAuth credentials: DB-first with env fallback.
-        # The pool is available on db.pool when a Database instance is passed.
-        pool = getattr(db, "pool", None) if db is not None else None
-        if pool is not None:
-            google_creds_shared = await resolve_google_credentials(pool, caller="calendar")
-            credentials = _GoogleOAuthCredentials(
-                client_id=google_creds_shared.client_id,
-                client_secret=google_creds_shared.client_secret,
-                refresh_token=google_creds_shared.refresh_token,
-            )
-        else:
-            # No DB available (e.g. tests without a real pool) — fall back to env vars.
-            credentials = _GoogleOAuthCredentials.from_env()
-
+        credentials = await self._resolve_credentials(db=db, credential_store=credential_store)
         self._provider = provider_cls(self._config, credentials)
 
         if self._config.sync.enabled:

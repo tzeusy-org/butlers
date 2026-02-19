@@ -785,9 +785,7 @@ class ButlerDaemon:
         # statuses with spurious credential failures.
         credential_store = CredentialStore(pool)
         active_module_creds_for_validation = {
-            k: v
-            for k, v in module_creds.items()
-            if k.split(".")[0] not in self._module_statuses
+            k: v for k, v in module_creds.items() if k.split(".")[0] not in self._module_statuses
         }
         module_cred_failures = await validate_module_credentials_async(
             active_module_creds_for_validation, credential_store
@@ -817,7 +815,7 @@ class ButlerDaemon:
                 continue
             try:
                 validated_config = self._module_configs.get(mod.name)
-                await mod.on_startup(validated_config, self.db)
+                await mod.on_startup(validated_config, self.db, credential_store)
                 started_modules.append(mod)
             except Exception as exc:
                 error_msg = str(exc)
