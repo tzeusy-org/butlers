@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -358,6 +358,9 @@ function RulesTab({ butlerScope }: { butlerScope?: string }) {
 
 function EpisodesTab({ butlerScope }: { butlerScope?: string }) {
   const [page, setPage] = useState(0);
+  const [expandedEpisodeId, setExpandedEpisodeId] = useState<string | null>(
+    null,
+  );
 
   const params: EpisodeParams = {
     butler: butlerScope,
@@ -390,29 +393,65 @@ function EpisodesTab({ butlerScope }: { butlerScope?: string }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {episodes.map((ep) => (
-                <TableRow key={ep.id}>
-                  <TableCell className="max-w-sm truncate">
-                    {truncate(ep.content)}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{ep.butler}</Badge>
-                  </TableCell>
-                  <TableCell>{ep.importance.toFixed(1)}</TableCell>
-                  <TableCell>
-                    {ep.consolidated ? (
-                      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
-                        Yes
-                      </Badge>
-                    ) : (
-                      <Badge variant="secondary">No</Badge>
+              {episodes.map((ep) => {
+                const isExpanded = expandedEpisodeId === ep.id;
+
+                return (
+                  <Fragment key={ep.id}>
+                    <TableRow>
+                      <TableCell className="max-w-sm align-top">
+                        <div className="space-y-1">
+                          <p className="truncate">{truncate(ep.content)}</p>
+                          <Button
+                            type="button"
+                            variant="link"
+                            size="xs"
+                            className="h-auto px-0 text-xs"
+                            onClick={() =>
+                              setExpandedEpisodeId((prev) =>
+                                prev === ep.id ? null : ep.id,
+                              )
+                            }
+                          >
+                            {isExpanded ? "Collapse" : "Expand"}
+                          </Button>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{ep.butler}</Badge>
+                      </TableCell>
+                      <TableCell>{ep.importance.toFixed(1)}</TableCell>
+                      <TableCell>
+                        {ep.consolidated ? (
+                          <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">
+                            Yes
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary">No</Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-sm">
+                        {new Date(ep.created_at).toLocaleString()}
+                      </TableCell>
+                    </TableRow>
+
+                    {isExpanded && (
+                      <TableRow>
+                        <TableCell colSpan={5} className="bg-muted/30 p-4">
+                          <div className="space-y-2">
+                            <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
+                              Episode Content
+                            </p>
+                            <p className="text-sm whitespace-pre-wrap break-words">
+                              {ep.content}
+                            </p>
+                          </div>
+                        </TableCell>
+                      </TableRow>
                     )}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {new Date(ep.created_at).toLocaleString()}
-                  </TableCell>
-                </TableRow>
-              ))}
+                  </Fragment>
+                );
+              })}
             </TableBody>
           </Table>
         </div>

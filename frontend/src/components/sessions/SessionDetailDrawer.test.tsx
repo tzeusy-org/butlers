@@ -25,6 +25,7 @@ const SESSION_DETAIL = {
   tool_calls: [],
   duration_ms: 1530,
   trace_id: "trace-xyz",
+  request_id: null,
   cost: { usd: 0.01 },
   started_at: "2026-02-13T00:00:00Z",
   completed_at: "2026-02-13T00:00:02Z",

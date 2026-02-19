@@ -90,6 +90,14 @@ rm -rf "${LOGS_LATEST_LINK}"
 ln -s "${LOGS_RUN_DIR}" "${LOGS_LATEST_LINK}"
 echo "Logs for this run: ${LOGS_RUN_DIR}"
 
+# Wrap a pane command so only process stdout/stderr (not shell prompt noise)
+# is mirrored to both the pane and a sanitized log file.
+_wrap_cmd_for_log() {
+  local raw_cmd="$1"
+  local log_file="$2"
+  printf '%s' "({ ${raw_cmd}; } 2>&1 | perl -pe 's/\\e\\[[0-9;?]*[ -\\/]*[@-~]//g; s/\\e\\][^\\a]*(?:\\a|\\e\\\\)//g; s/\\r//g; s/[\\x00-\\x08\\x0B-\\x1F\\x7F]//g' | tee -a '${log_file}')"
+}
+
 # ── Source shared env files (same as ENV_LOADER, before preflight check) ──
 # Pre-flight check must see the same credentials as the connector panes.
 # Source /secrets/.dev.env and .env now so that credentials stored there
@@ -528,18 +536,42 @@ _has_google_creds() {
 
   # Check DB for stored credentials using psql (requires DB to be reachable).
   # This allows the OAuth dashboard flow to provide credentials without env vars.
-  local db_host db_port db_user db_pass db_name
+  # Mirror the same DB set used by the OAuth gate so pre-flight and gate agree.
+  local db_host db_port db_user db_pass
+  local db_name
+  local db_candidates=()
   db_host="${POSTGRES_HOST:-localhost}"
   db_port="${POSTGRES_PORT:-54320}"
   db_user="${POSTGRES_USER:-butlers}"
   db_pass="${POSTGRES_PASSWORD:-butlers}"
-  db_name="${CONNECTOR_BUTLER_DB_NAME:-butlers}"
+  if [ -n "${CONNECTOR_BUTLER_DB_NAME:-}" ]; then
+    db_candidates+=("${CONNECTOR_BUTLER_DB_NAME}")
+  fi
+  db_candidates+=(
+    "butler_general"
+    "butler_health"
+    "butler_messenger"
+    "butler_relationship"
+    "butler_switchboard"
+    "butlers"
+  )
   if command -v psql >/dev/null 2>&1; then
     local db_count
-    db_count=$(PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d "$db_name" -tAc       "SELECT COUNT(*) FROM google_oauth_credentials WHERE credential_key='google' AND (credentials->>'refresh_token') IS NOT NULL AND length(credentials->>'refresh_token') > 0;"       2>/dev/null || echo "0")
-    if [ "${db_count:-0}" -gt 0 ] 2>/dev/null; then
-      return 0
-    fi
+    for db_name in "${db_candidates[@]}"; do
+      db_count=$(
+        PGPASSWORD="$db_pass" psql \
+          -h "$db_host" \
+          -p "$db_port" \
+          -U "$db_user" \
+          -d "$db_name" \
+          -tAc \
+          "SELECT COUNT(*) FROM google_oauth_credentials WHERE credential_key='google' AND (credentials->>'refresh_token') IS NOT NULL AND length(credentials->>'refresh_token') > 0;" \
+          2>/dev/null || echo "0"
+      )
+      if [ "${db_count:-0}" -gt 0 ] 2>/dev/null; then
+        return 0
+      fi
+    done
   fi
 
   return 1
@@ -604,6 +636,59 @@ _poll_oauth_via_http() {
   state=$(curl -sf "$status_url" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('state',''))" 2>/dev/null || echo "")
   # OAuthCredentialState.OK is the value when credentials are present
   [ "$state" = "ok" ]
+}
+
+# Pick the DB name the Gmail connector should use for DB-first OAuth credential lookup.
+# Preference order:
+# 1) Explicit connector override env vars
+# 2) First known butler DB containing a stored Google refresh token
+# 3) Fallback default (butler_general)
+_select_google_credentials_db() {
+  if [ -n "${GMAIL_CONNECTOR_BUTLER_DB_NAME:-}" ]; then
+    printf '%s' "${GMAIL_CONNECTOR_BUTLER_DB_NAME}"
+    return 0
+  fi
+  if [ -n "${CONNECTOR_BUTLER_DB_NAME:-}" ]; then
+    printf '%s' "${CONNECTOR_BUTLER_DB_NAME}"
+    return 0
+  fi
+
+  local db_host db_port db_user db_pass
+  db_host="${POSTGRES_HOST:-localhost}"
+  db_port="${POSTGRES_PORT:-54320}"
+  db_user="${POSTGRES_USER:-butlers}"
+  db_pass="${POSTGRES_PASSWORD:-butlers}"
+
+  if command -v psql >/dev/null 2>&1; then
+    local db_count
+    local db
+    local dbs=(
+      "butler_general"
+      "butler_health"
+      "butler_messenger"
+      "butler_relationship"
+      "butler_switchboard"
+      "butlers"
+    )
+    for db in "${dbs[@]}"; do
+      db_count=$(
+        PGPASSWORD="$db_pass" psql \
+          -h "$db_host" \
+          -p "$db_port" \
+          -U "$db_user" \
+          -d "$db" \
+          -tAc \
+          "SELECT COUNT(*) FROM google_oauth_credentials WHERE credential_key='google' AND (credentials->>'refresh_token') IS NOT NULL AND length(credentials->>'refresh_token') > 0;" \
+          2>/dev/null || echo "0"
+      )
+      if [ "${db_count:-0}" -gt 0 ] 2>/dev/null; then
+        printf '%s' "$db"
+        return 0
+      fi
+    done
+  fi
+
+  printf '%s' "butler_general"
 }
 
 # ── Layer 2: OAuth gate ────────────────────────────────────────────────────
@@ -728,15 +813,21 @@ fi
 # When credentials are missing, show guidance and wait rather than crash.
 # When credentials are present, start normally.
 
-_GMAIL_CMD_BASE="${ENV_LOADER} && if [ -f \"$GMAIL_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$GMAIL_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors"
+_build_gmail_pane_cmd() {
+  local gmail_cmd_base
+  local gmail_creds_db
+  gmail_cmd_base="${ENV_LOADER} && if [ -f \"$GMAIL_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$GMAIL_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors"
+  gmail_creds_db="$(_select_google_credentials_db)"
 
-if [ "$GOOGLE_CREDS_AVAILABLE" = "true" ] || [ "$SKIP_OAUTH_CHECK" = "true" ]; then
-  # Credentials available — start connector normally (guard in connector will verify)
-  GMAIL_PANE_CMD="${_GMAIL_CMD_BASE} && CONNECTOR_PROVIDER=gmail CONNECTOR_CHANNEL=email CONNECTOR_ENDPOINT_IDENTITY=\${GMAIL_CONNECTOR_ENDPOINT_IDENTITY:-gmail:user:dev} CONNECTOR_CURSOR_PATH=\${GMAIL_CONNECTOR_CURSOR_PATH:-.tmp/connectors/gmail_checkpoint.json} uv run python -m butlers.connectors.gmail"
-else
+  if [ "$SKIP_OAUTH_CHECK" = "true" ] || _has_google_creds; then
+    # Credentials available — start connector with DB-first lookup enabled.
+    printf '%s' "${gmail_cmd_base} && POSTGRES_HOST=${POSTGRES_HOST} POSTGRES_PORT=${POSTGRES_PORT} POSTGRES_USER=${POSTGRES_USER} CONNECTOR_BUTLER_DB_NAME=${gmail_creds_db} CONNECTOR_PROVIDER=gmail CONNECTOR_CHANNEL=email CONNECTOR_ENDPOINT_IDENTITY=\${GMAIL_CONNECTOR_ENDPOINT_IDENTITY:-gmail:user:dev} CONNECTOR_CURSOR_PATH=\${GMAIL_CONNECTOR_CURSOR_PATH:-.tmp/connectors/gmail_checkpoint.json} uv run python -m butlers.connectors.gmail"
+    return 0
+  fi
+
   # Credentials missing — show instructions and keep pane alive
-  GMAIL_PANE_CMD="echo '' && echo '======================================================================' && echo '  Gmail connector is waiting for Google OAuth credentials.' && echo '  Also required by: Calendar module.' && echo '======================================================================' && echo '' && echo '  To complete bootstrap:' && echo '    1. Open ${OAUTH_BROWSER_URL} in your browser' && echo '    2. Click Connect Google and complete the OAuth flow' && echo '    3. Once authorized, restart this pane (tmux: prefix+R or exit+up+Enter)' && echo '' && echo '  Or set credentials in: $GMAIL_CONNECTOR_ENV_FILE' && echo '    GOOGLE_OAUTH_CLIENT_ID=...' && echo '    GOOGLE_OAUTH_CLIENT_SECRET=...' && echo '    GOOGLE_REFRESH_TOKEN=...' && echo '' && echo '  Then rerun: ./dev.sh' && echo '' && echo '  (This pane will remain open — restart it after completing OAuth)' && bash"
-fi
+  printf '%s' "echo '' && echo '======================================================================' && echo '  Gmail connector is waiting for Google OAuth credentials.' && echo '  Also required by: Calendar module.' && echo '======================================================================' && echo '' && echo '  To complete bootstrap:' && echo '    1. Open ${OAUTH_BROWSER_URL} in your browser' && echo '    2. Click Connect Google and complete the OAuth flow' && echo '    3. Once authorized, restart this pane (tmux: prefix+R or exit+up+Enter)' && echo '' && echo '  Or set credentials in: $GMAIL_CONNECTOR_ENV_FILE' && echo '    GOOGLE_OAUTH_CLIENT_ID=...' && echo '    GOOGLE_OAUTH_CLIENT_SECRET=...' && echo '    GOOGLE_REFRESH_TOKEN=...' && echo '' && echo '  Then rerun: ./dev.sh' && echo '' && echo '  (This pane will remain open — restart it after completing OAuth)' && bash"
+}
 
 # Kill existing windows if present (idempotent re-runs)
 for WIN in backend connectors dashboard; do
@@ -749,15 +840,13 @@ done
 echo "Layer 1a: Starting dashboard API and frontend..."
 PANE_DASHBOARD=$(tmux new-window -t "$SESSION:" -n dashboard -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_FRONTEND=$(tmux split-window -t "$PANE_DASHBOARD" -v -c "${PROJECT_DIR}/frontend" -P -F '#{pane_id}')
-tmux pipe-pane -o -t "$PANE_DASHBOARD" "cat >> '${LOGS_RUN_DIR}/uvicorn/dashboard.log'"
-tmux pipe-pane -o -t "$PANE_FRONTEND" "cat >> '${LOGS_RUN_DIR}/frontend/vite.log'"
 
 tmux send-keys -t "$PANE_DASHBOARD" \
-  "GOOGLE_OAUTH_REDIRECT_URI=https://tzeusy.parrot-hen.ts.net/butlers-api/api/oauth/google/callback POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers dashboard --host 0.0.0.0 --port ${DASHBOARD_PORT}" Enter
+  "$(_wrap_cmd_for_log "GOOGLE_OAUTH_REDIRECT_URI=https://tzeusy.parrot-hen.ts.net/butlers-api/api/oauth/google/callback POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers dashboard --host 0.0.0.0 --port ${DASHBOARD_PORT}" "${LOGS_RUN_DIR}/uvicorn/dashboard.log")" Enter
 # Brief wait for shell init in the split pane
 sleep 0.3
 tmux send-keys -t "$PANE_FRONTEND" \
-  "npm install && VITE_API_URL=${FRONTEND_API_BASE_PATH} npm run dev -- --host 0.0.0.0 --port ${FRONTEND_PORT} --strictPort --base ${FRONTEND_BASE_PATH}" Enter
+  "$(_wrap_cmd_for_log "npm install && VITE_API_URL=${FRONTEND_API_BASE_PATH} npm run dev -- --host 0.0.0.0 --port ${FRONTEND_PORT} --strictPort --base ${FRONTEND_BASE_PATH}" "${LOGS_RUN_DIR}/frontend/vite.log")" Enter
 
 # ── Layer 1b: connectors window (telegram + frontend) ─────────────────────
 # Telegram connectors and frontend start without waiting for OAuth.
@@ -766,15 +855,12 @@ echo "Layer 1b: Starting Telegram connectors..."
 PANE_TELEGRAM_BOT=$(tmux new-window -t "$SESSION:" -n connectors -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_TELEGRAM_USER=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -v -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_GMAIL=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -h -c "$PROJECT_DIR" -P -F '#{pane_id}')
-tmux pipe-pane -o -t "$PANE_TELEGRAM_BOT" "cat >> '${LOGS_RUN_DIR}/connectors/telegram_bot.log'"
-tmux pipe-pane -o -t "$PANE_TELEGRAM_USER" "cat >> '${LOGS_RUN_DIR}/connectors/telegram_user_client.log'"
-tmux pipe-pane -o -t "$PANE_GMAIL" "cat >> '${LOGS_RUN_DIR}/connectors/gmail.log'"
 
 tmux send-keys -t "$PANE_TELEGRAM_BOT" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} CONNECTOR_CURSOR_PATH=\${TELEGRAM_BOT_CONNECTOR_CURSOR_PATH:-\${CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_bot_checkpoint.json}} uv run python -m butlers.connectors.telegram_bot" Enter
+  "$(_wrap_cmd_for_log "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} CONNECTOR_CURSOR_PATH=\${TELEGRAM_BOT_CONNECTOR_CURSOR_PATH:-\${CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_bot_checkpoint.json}} uv run python -m butlers.connectors.telegram_bot" "${LOGS_RUN_DIR}/connectors/telegram_bot.log")" Enter
 
 tmux send-keys -t "$PANE_TELEGRAM_USER" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY:-telegram:user:dev} CONNECTOR_CURSOR_PATH=\${TELEGRAM_USER_CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_user_client_checkpoint.json} uv run python -m butlers.connectors.telegram_user_client" Enter
+  "$(_wrap_cmd_for_log "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY:-telegram:user:dev} CONNECTOR_CURSOR_PATH=\${TELEGRAM_USER_CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_user_client_checkpoint.json} uv run python -m butlers.connectors.telegram_user_client" "${LOGS_RUN_DIR}/connectors/telegram_user_client.log")" Enter
 
 # Gmail pane shows a waiting message until Layer 3 starts it
 # (populated later after OAuth gate passes)
@@ -821,13 +907,13 @@ _oauth_gate || true
 echo "Layer 3: Starting butlers up and Gmail connector..."
 
 PANE_BACKEND=$(tmux new-window -t "$SESSION:" -n backend -c "$PROJECT_DIR" -P -F '#{pane_id}')
-tmux pipe-pane -o -t "$PANE_BACKEND" "cat >> '${LOGS_RUN_DIR}/butlers/up.log'"
 tmux send-keys -t "$PANE_BACKEND" \
-  "${ENV_LOADER} && uv sync --dev && POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_SWITCHBOARD_URL=http://localhost:${DASHBOARD_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers up" Enter
+  "$(_wrap_cmd_for_log "${ENV_LOADER} && uv sync --dev && POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_SWITCHBOARD_URL=http://localhost:${DASHBOARD_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers up" "${LOGS_RUN_DIR}/butlers/up.log")" Enter
 
 # Start Gmail pane (credentials-aware)
+GMAIL_PANE_CMD="$(_build_gmail_pane_cmd)"
 tmux send-keys -t "$PANE_GMAIL" \
-  "${GMAIL_PANE_CMD}" Enter
+  "$(_wrap_cmd_for_log "${GMAIL_PANE_CMD}" "${LOGS_RUN_DIR}/connectors/gmail.log")" Enter
 
 # Focus the backend window
 tmux select-window -t "${SESSION}:backend"
