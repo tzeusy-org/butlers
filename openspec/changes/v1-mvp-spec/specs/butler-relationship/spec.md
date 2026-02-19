@@ -1,6 +1,6 @@
 # Relationship Butler (Personal CRM)
 
-The Relationship butler is a personal CRM inspired by [Monica CRM](https://www.monicahq.com/). It tracks contacts, relationships, interactions, important dates, reminders, gifts, loans, and more. It runs as a standalone butler daemon on port 8102 with its own dedicated PostgreSQL database (`butler_relationship`). All functionality is implemented via dedicated schema and MCP tools — the Relationship butler has no modules.
+The Relationship butler is a personal CRM inspired by [Monica CRM](https://www.monicahq.com/). It tracks contacts, relationships, interactions, important dates, reminders, gifts, loans, and more. It runs as a standalone butler daemon on port 40102 with its own dedicated PostgreSQL database (`butler_relationship`). All functionality is implemented via dedicated schema and MCP tools — the Relationship butler has no modules.
 
 ## Configuration
 
@@ -8,7 +8,7 @@ The Relationship butler is a personal CRM inspired by [Monica CRM](https://www.m
 [butler]
 name = "relationship"
 description = "Personal CRM. Manages contacts, relationships, important dates, interactions, gifts, and reminders."
-port = 8102
+port = 40102
 
 [butler.db]
 name = "butler_relationship"

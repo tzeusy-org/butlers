@@ -157,7 +157,7 @@ Required behavior:
 
 ## 9. Environment Variables (Base)
 Reference connector runtime config (recommended naming):
-- `SWITCHBOARD_MCP_URL` (required): SSE endpoint URL for Switchboard MCP server (e.g. `http://localhost:8100/sse`).
+- `SWITCHBOARD_MCP_URL` (required): SSE endpoint URL for Switchboard MCP server (e.g. `http://localhost:40100/sse`).
 - `CONNECTOR_PROVIDER` (required): provider name (`telegram`, `gmail`, `imap`, etc.).
 - `CONNECTOR_CHANNEL` (required): canonical channel value (`telegram`, `email`, etc.).
 - `CONNECTOR_ENDPOINT_IDENTITY` (required): receiving identity (bot id, mailbox, client id).

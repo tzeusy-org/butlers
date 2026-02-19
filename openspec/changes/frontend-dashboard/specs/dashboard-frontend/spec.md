@@ -352,7 +352,7 @@ The application SHALL create a `QueryClient` instance with sensible defaults for
 
 ### Requirement: API client
 
-The application SHALL provide a base API client module at `api/client.ts` that wraps the `fetch` API. The base URL SHALL be configurable via the `VITE_API_URL` environment variable, defaulting to `/api` for production (same-origin) and `http://localhost:8200/api` for development. All responses SHALL be parsed as typed JSON using TypeScript generics. Non-2xx responses SHALL throw a typed `ApiError` containing the status code, status text, and response body.
+The application SHALL provide a base API client module at `api/client.ts` that wraps the `fetch` API. The base URL SHALL be configurable via the `VITE_API_URL` environment variable, defaulting to `/api` for production (same-origin) and `http://localhost:40200/api` for development. All responses SHALL be parsed as typed JSON using TypeScript generics. Non-2xx responses SHALL throw a typed `ApiError` containing the status code, status text, and response body.
 
 #### Scenario: Successful GET request returns typed data
 
@@ -362,9 +362,9 @@ The application SHALL provide a base API client module at `api/client.ts` that w
 
 #### Scenario: Base URL is read from VITE_API_URL
 
-- **WHEN** the `VITE_API_URL` environment variable is set to `"http://localhost:8200/api"`
+- **WHEN** the `VITE_API_URL` environment variable is set to `"http://localhost:40200/api"`
 - **AND** `apiClient.get("/butlers")` is called
-- **THEN** the fetch request SHALL be sent to `"http://localhost:8200/api/butlers"`
+- **THEN** the fetch request SHALL be sent to `"http://localhost:40200/api/butlers"`
 
 #### Scenario: Non-2xx response throws ApiError
 

@@ -9,7 +9,7 @@
 ## 2. Liveness Reporter
 
 - [ ] 2.1 Implement the liveness reporter as an asyncio background task in `daemon.py` — periodic HTTP POST to `{BUTLERS_SWITCHBOARD_URL}/api/heartbeat` with `{"butler_name": "<name>"}`, WARNING-level logging on connection failure
-- [ ] 2.2 Add Switchboard URL resolution: read `BUTLERS_SWITCHBOARD_URL` env var, default to `http://localhost:8200`
+- [ ] 2.2 Add Switchboard URL resolution: read `BUTLERS_SWITCHBOARD_URL` env var, default to `http://localhost:40200`
 - [ ] 2.3 Skip liveness reporter startup for the Switchboard butler (detect by butler name)
 - [ ] 2.4 Send initial heartbeat within 5 seconds of startup (before first interval sleep)
 - [ ] 2.5 Cancel the liveness reporter during graceful shutdown (alongside scheduler loop cancellation)

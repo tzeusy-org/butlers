@@ -269,7 +269,7 @@ AND the connection MUST be established as an MCP client to the target butler's M
 #### Scenario: SSE endpoint URL format
 
 WHEN a butler is registered in the `butler_registry`
-THEN its `endpoint_url` MUST be an HTTP(S) URL pointing to the butler's SSE endpoint (e.g., `http://localhost:8103/sse`)
+THEN its `endpoint_url` MUST be an HTTP(S) URL pointing to the butler's SSE endpoint (e.g., `http://localhost:40103/sse`)
 
 ---
 

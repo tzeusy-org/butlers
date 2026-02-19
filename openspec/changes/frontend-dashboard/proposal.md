@@ -52,5 +52,5 @@ The butler framework provides no visibility into system state, health, costs, or
 - **New dependencies (Python)**: FastAPI, uvicorn, httpx
 - **New dependencies (frontend)**: React, TypeScript, Vite, Tailwind CSS, shadcn/ui, TanStack Query, React Flow, Recharts, cmdk, date-fns, React Router
 - **Database changes**: New columns on `sessions` table (all butler DBs), new `notifications` table (Switchboard DB)
-- **Infrastructure**: Dashboard API service (port 8200), frontend dev server (port 5173), production static file serving from FastAPI
+- **Infrastructure**: Dashboard API service (port 40200), frontend dev server (port 40173), production static file serving from FastAPI
 - **APIs**: ~50 REST endpoints across butler discovery, sessions, schedules, state, traces, timeline, search, costs, notifications, and domain-specific views

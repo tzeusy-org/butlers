@@ -74,7 +74,7 @@ name = "butler_<butler-name>"
 ```
 
 **Key decisions:**
-- **Port**: Pick the next available port. Existing: switchboard=8100, general=8101, relationship=8102, health=8103, heartbeat=8199. Use 8104+ for new butlers.
+- **Port**: Pick the next available port. Existing: switchboard=40100, general=40101, relationship=40102, health=40103, heartbeat=40199. Use 40104+ for new butlers.
 - **Database**: Always `butler_<name>` — one database per butler (hard architectural constraint).
 - **Schedule**: Only add `[[butler.schedule]]` entries if the butler has periodic tasks. Each entry needs `name`, `cron`, and `prompt`.
 - **Modules**: Only add `[modules.<name>]` if using opt-in modules (telegram, email, etc.). Most butlers don't need modules.

@@ -163,7 +163,7 @@ makes it directly compatible with external testing tools and paradigms:
 
 | Category | Approach | Entry Point |
 |----------|----------|-------------|
-| **Load testing** | locust / k6 / wrk against `http://localhost:8100/sse` | External tool, ecosystem fixture holds environment |
+| **Load testing** | locust / k6 / wrk against `http://localhost:40100/sse` | External tool, ecosystem fixture holds environment |
 | **Concurrency testing** | Multiple concurrent `spawner.trigger()` calls | pytest tests stressing serial dispatch lock |
 | **Chaos testing** | Kill butler processes mid-test | Verify switchboard returns `target_unavailable` gracefully |
 | **Regression testing** | Pin scenario outputs as golden snapshots | Declarative scenarios with `expected_output` field |

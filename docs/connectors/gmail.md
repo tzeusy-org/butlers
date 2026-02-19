@@ -108,7 +108,7 @@ Optional runtime controls:
 Pub/Sub push notification controls (optional, for near real-time ingestion):
 - `GMAIL_PUBSUB_ENABLED` (enable Pub/Sub push mode, default false)
 - `GMAIL_PUBSUB_TOPIC` (required when enabled; GCP Pub/Sub topic, e.g., `projects/my-project/topics/gmail-push`)
-- `GMAIL_PUBSUB_WEBHOOK_PORT` (webhook server port, default 8081)
+- `GMAIL_PUBSUB_WEBHOOK_PORT` (webhook server port, default 40081)
 - `GMAIL_PUBSUB_WEBHOOK_PATH` (webhook endpoint path, default `/gmail/webhook`)
 
 Security requirements:
@@ -178,7 +178,7 @@ Set environment variables:
 ```bash
 GMAIL_PUBSUB_ENABLED=true
 GMAIL_PUBSUB_TOPIC=projects/my-project/topics/gmail-push
-GMAIL_PUBSUB_WEBHOOK_PORT=8081
+GMAIL_PUBSUB_WEBHOOK_PORT=40081
 GMAIL_PUBSUB_WEBHOOK_PATH=/gmail/webhook
 GMAIL_PUBSUB_WEBHOOK_TOKEN=your-secret-token  # Optional but recommended
 ```

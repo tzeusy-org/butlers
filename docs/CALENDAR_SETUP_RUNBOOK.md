@@ -43,7 +43,7 @@ Required credential fields:
    export DATABASE_URL=postgres://butlers:butlers@localhost:5432/butlers
    ```
 
-2. Start the butler and visit `http://localhost:8200/oauth/google/start` to complete the OAuth flow.
+2. Start the butler and visit `http://localhost:40200/oauth/google/start` to complete the OAuth flow.
    The refresh token is stored in the database automatically.
 
 **Legacy: Environment variable (deprecated, backward-compatible)**

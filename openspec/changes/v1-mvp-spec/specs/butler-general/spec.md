@@ -2,7 +2,7 @@
 
 The General butler is the catch-all butler for requests that do not fit any specialist butler. It provides freeform JSONB storage organized into optional collections, with tagging and text search capabilities. As usage patterns emerge, data stored in the General butler can be exported and migrated to a new specialized butler. The General butler runs no modules and has no scheduled tasks — it is purely reactive, responding only to MCP tool calls.
 
-**Port:** 8101
+**Port:** 40101
 **Database:** `butler_general`
 
 ## Database Schema
@@ -37,14 +37,14 @@ CREATE INDEX idx_entities_data ON entities USING GIN (data);
 
 ### Requirement: Butler Configuration
 
-The General butler SHALL be configured via `butler.toml` with `name = "general"`, `port = 8101`, and `db.name = "butler_general"`. It SHALL declare no modules and no scheduled tasks.
+The General butler SHALL be configured via `butler.toml` with `name = "general"`, `port = 40101`, and `db.name = "butler_general"`. It SHALL declare no modules and no scheduled tasks.
 
 #### Scenario: General butler starts with minimal config
 
-WHEN the General butler starts with a `butler.toml` containing `[butler]` with `name = "general"` and `port = 8101` and `[butler.db]` with `name = "butler_general"`,
+WHEN the General butler starts with a `butler.toml` containing `[butler]` with `name = "general"` and `port = 40101` and `[butler.db]` with `name = "butler_general"`,
 THEN the daemon SHALL start successfully with no modules loaded,
 AND no scheduled tasks SHALL be registered,
-AND the FastMCP server SHALL listen on port 8101.
+AND the FastMCP server SHALL listen on port 40101.
 
 ---
 

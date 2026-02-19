@@ -70,9 +70,9 @@ You must enable both Gmail API and Google Calendar API for Butlers to function w
 3. If prompted, first complete the OAuth consent screen setup (see above)
 4. Select **Web application** as the application type
 5. Under **Authorized redirect URIs**, add the following:
-   - **For local development (Tailscale)**: `https://<your-tailscale-domain>:8200/oauth/google/callback`
-   - **For localhost testing (if no Tailscale)**: `http://localhost:8200/oauth/google/callback`
-   - **For production (if deployed)**: `https://<your-production-domain>:8200/oauth/google/callback`
+   - **For local development (Tailscale)**: `https://<your-tailscale-domain>:40200/oauth/google/callback`
+   - **For localhost testing (if no Tailscale)**: `http://localhost:40200/oauth/google/callback`
+   - **For production (if deployed)**: `https://<your-production-domain>:40200/oauth/google/callback`
 
    > **IMPORTANT**: Google requires HTTPS for redirect URIs, except for localhost (127.0.0.1). Tailscale Funnel provides a way to serve HTTPS over localhost via `tailscale serve`.
 
@@ -160,7 +160,7 @@ flow = InstalledAppFlow.from_client_secrets_file(
     "credentials.json",  # The JSON file from Step 1.4
     SCOPES,
 )
-creds = flow.run_local_server(port=8200)
+creds = flow.run_local_server(port=40200)
 
 # Print the credentials
 print(json.dumps({
@@ -214,22 +214,22 @@ For local development, Google requires HTTPS redirect URIs (except localhost). *
 
 ### Step 3.2: Start Butlers on Local Port
 
-In one terminal, start Butlers with the API enabled on port 8200:
+In one terminal, start Butlers with the API enabled on port 40200:
 
 ```bash
 cd /home/tze/GitHub/butlers
 uv run src/butlers/main.py --config-path roster/sample-butler
 ```
 
-The API listens on `http://localhost:8200`.
+The API listens on `http://localhost:40200`.
 
 ### Step 3.3: Set Up Tailscale Serve for HTTPS
 
 In another terminal, expose the local API via Tailscale:
 
 ```bash
-# Serve local port 8200 via Tailscale
-tailscale serve https:443 http://localhost:8200
+# Serve local port 40200 via Tailscale
+tailscale serve https:443 http://localhost:40200
 ```
 
 This provides a stable HTTPS URL like:

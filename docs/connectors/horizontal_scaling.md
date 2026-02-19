@@ -627,7 +627,7 @@ spec:
         image: butlers/telegram-connector:latest
         env:
         - name: SWITCHBOARD_MCP_URL
-          value: "http://switchboard:8100/sse"
+          value: "http://switchboard:40100/sse"
         - name: CONNECTOR_COORDINATION_BACKEND
           value: "redis"
         - name: REDIS_URL

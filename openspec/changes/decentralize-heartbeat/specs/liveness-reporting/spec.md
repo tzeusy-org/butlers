@@ -37,12 +37,12 @@ AND the Switchboard SHALL NOT send heartbeats to itself
 
 ### Requirement: Liveness reporter interval and Switchboard URL are configurable
 
-The liveness reporter SHALL resolve the Switchboard URL from the `BUTLERS_SWITCHBOARD_URL` environment variable, defaulting to `http://localhost:8200`. The heartbeat interval SHALL default to 120 seconds and MAY be configured via `[butler.scheduler]` in `butler.toml`.
+The liveness reporter SHALL resolve the Switchboard URL from the `BUTLERS_SWITCHBOARD_URL` environment variable, defaulting to `http://localhost:40200`. The heartbeat interval SHALL default to 120 seconds and MAY be configured via `[butler.scheduler]` in `butler.toml`.
 
 #### Scenario: Default Switchboard URL
 
 WHEN the `BUTLERS_SWITCHBOARD_URL` environment variable is not set
-THEN the liveness reporter MUST send heartbeats to `http://localhost:8200/api/heartbeat`
+THEN the liveness reporter MUST send heartbeats to `http://localhost:40200/api/heartbeat`
 
 #### Scenario: Custom Switchboard URL from environment
 

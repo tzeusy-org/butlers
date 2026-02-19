@@ -38,7 +38,7 @@ Each butler daemon starts a second asyncio background task that periodically sen
 
 **Why not the other direction (Switchboard polls butlers)?** Pull-based monitoring means the Switchboard must know every butler's endpoint and actively probe them. This couples the Switchboard to butler availability and makes the Switchboard itself a single point of failure for monitoring. Push-based reporting is simpler: each butler is responsible for its own heartbeat.
 
-**Switchboard URL discovery:** Butlers resolve the Switchboard URL from the `BUTLERS_SWITCHBOARD_URL` environment variable, defaulting to `http://localhost:8200`. This avoids coupling every butler.toml to the Switchboard's deployment.
+**Switchboard URL discovery:** Butlers resolve the Switchboard URL from the `BUTLERS_SWITCHBOARD_URL` environment variable, defaulting to `http://localhost:40200`. This avoids coupling every butler.toml to the Switchboard's deployment.
 
 **Heartbeat interval:** Default 120 seconds (half of the default `liveness_ttl_seconds` of 300s). This gives each butler at least one retry window before being marked stale.
 

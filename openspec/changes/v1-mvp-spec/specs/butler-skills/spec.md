@@ -268,32 +268,32 @@ The `butlers init <name>` command SHALL scaffold a new butler config directory w
 
 #### Scenario: butlers init creates CLAUDE.md with placeholder
 
-WHEN `butlers init mybutler --port 8104` is invoked,
+WHEN `butlers init mybutler --port 40104` is invoked,
 THEN the directory `butlers/mybutler/` SHALL contain a `CLAUDE.md` file,
 AND the file SHALL contain a placeholder comment such as `<!-- Define this butler's personality, instructions, and available skills here -->`,
 AND the file MUST NOT be empty (it SHALL contain the placeholder to guide the user).
 
 #### Scenario: butlers init creates empty AGENTS.md
 
-WHEN `butlers init mybutler --port 8104` is invoked,
+WHEN `butlers init mybutler --port 40104` is invoked,
 THEN the directory `butlers/mybutler/` SHALL contain an `AGENTS.md` file,
 AND the file SHALL be empty or contain a minimal placeholder comment such as `<!-- Runtime notes populated by runtime sessions -->`.
 
 #### Scenario: butlers init creates empty skills directory
 
-WHEN `butlers init mybutler --port 8104` is invoked,
+WHEN `butlers init mybutler --port 40104` is invoked,
 THEN the directory `butlers/mybutler/` SHALL contain an empty `skills/` subdirectory,
 AND the directory SHALL contain no skill subdirectories.
 
 #### Scenario: Scaffolded butler is immediately startable
 
-WHEN `butlers init mybutler --port 8104` completes,
+WHEN `butlers init mybutler --port 40104` completes,
 THEN `butlers run --config butlers/mybutler` SHALL start the butler successfully,
 AND the LLM CLI Spawner SHALL use the default system prompt derived from the placeholder CLAUDE.md,
 AND the empty `skills/` directory SHALL not cause any errors.
 
 #### Scenario: butlers init does not create sample skills
 
-WHEN `butlers init mybutler --port 8104` is invoked,
+WHEN `butlers init mybutler --port 40104` is invoked,
 THEN the `skills/` directory SHALL be empty,
 AND no sample or template skill directories SHALL be created.
