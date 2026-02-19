@@ -200,6 +200,9 @@ make test-qg
 - For bugfixes/features under active development or investigation, default to targeted `pytest` runs to keep loops fast and context lean.
 - Run full-suite tests when branch changes are finalized and you need a pre-merge readiness signal.
 
+### Dashboard health endpoint alias contract
+- `src/butlers/api/app.py` must expose both `GET /api/health` and `GET /health` with the same `{"status":"ok"}` payload so direct infra probes and `/api`-prefixed clients both work.
+
 ### Approvals CAS/idempotency contract
 - `src/butlers/modules/approvals/module.py` decision paths (`_approve_action`, `_reject_action`, `_expire_stale_actions`) must use compare-and-set SQL writes (`... WHERE status='pending'`) so concurrent decision attempts cannot overwrite each other.
 - `src/butlers/modules/approvals/executor.py::execute_approved_action` is idempotent per `action_id`: it serializes execution with a process-local per-action lock, replays stored `execution_result` when status is already `executed`, and only performs the terminal write when status is still `approved`.
@@ -486,3 +489,9 @@ make test-qg
 - `src/butlers/core/telemetry.py::tool_span` decorator usage is unsafe if per-invocation span/token state is stored on the decorator instance (`self._span`, `self._token`): concurrent calls to one decorated async handler can trigger OpenTelemetry `Failed to detach context` / `Token ... created in a different Context`.
 - Repro pattern: concurrent `await asyncio.gather(...)` calls to a single `@tool_span(...)`-decorated function fail; per-call context-manager usage (`with tool_span(...)`) does not.
 - Track holistic fix in `butlers-978`, including both decorator state isolation and concurrent-session `_active_session_context` parent-lineage hardening.
+
+### Dev bootstrap tailscale+pipefail guardrail
+- `dev.sh::_tailscale_serve_check` should prefer modern Tailscale CLI syntax (`tailscale serve --yes --bg --https=443 http://localhost:8200`) with legacy positional fallback (`https:443 ...`) for older CLI versions.
+- `dev.sh` now defaults `TAILSCALE_PATH_PREFIX` to `/butlers`; non-root path routing must use `tailscale serve --set-path <prefix> ...` (modern CLI) and OAuth/browser URLs should include that prefix.
+- Do not discard `tailscale serve` stderr in `dev.sh`; surfaced output is needed to diagnose operator/permission failures (for example `Access denied: serve config denied` and `sudo tailscale set --operator=$USER` remediation).
+- In `dev.sh` with `set -o pipefail`, avoid `grep ... | wc -l || echo 0` inside command substitutions; on no-match this can produce `0\n0` and break integer comparisons.

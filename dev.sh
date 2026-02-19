@@ -114,10 +114,29 @@ fi
 # unauthenticated, print actionable instructions and exit.
 
 DASHBOARD_PORT=8200
+TAILSCALE_HTTPS_PORT="${TAILSCALE_HTTPS_PORT:-443}"
+TAILSCALE_PATH_PREFIX="${TAILSCALE_PATH_PREFIX:-/butlers}"
+LOCAL_DASHBOARD_URL="http://localhost:${DASHBOARD_PORT}"
+OAUTH_BROWSER_URL="${LOCAL_DASHBOARD_URL}"
+OAUTH_CALLBACK_URL="${LOCAL_DASHBOARD_URL}/api/oauth/google/callback"
 POSTGRES_PORT=54320
 POSTGRES_HOST=127.0.0.1
 POSTGRES_USER=butlers
 POSTGRES_DB_DEFAULT=butler_general
+
+# Normalize serve path prefix:
+# - empty -> /
+# - always starts with /
+# - trim trailing / except root
+if [ -z "${TAILSCALE_PATH_PREFIX}" ]; then
+  TAILSCALE_PATH_PREFIX="/"
+fi
+if [ "${TAILSCALE_PATH_PREFIX#/}" = "${TAILSCALE_PATH_PREFIX}" ]; then
+  TAILSCALE_PATH_PREFIX="/${TAILSCALE_PATH_PREFIX}"
+fi
+if [ "${TAILSCALE_PATH_PREFIX}" != "/" ]; then
+  TAILSCALE_PATH_PREFIX="${TAILSCALE_PATH_PREFIX%/}"
+fi
 
 # Configurable OAuth gate timeout. 0 = infinite (default).
 OAUTH_GATE_TIMEOUT="${OAUTH_GATE_TIMEOUT:-0}"
@@ -125,6 +144,68 @@ OAUTH_GATE_TIMEOUT="${OAUTH_GATE_TIMEOUT:-0}"
 OAUTH_POLL_INTERVAL=5
 
 _tailscale_serve_check() {
+  local proxy_target
+  proxy_target="http://localhost:${DASHBOARD_PORT}"
+
+  _set_oauth_urls_for_tailnet_host_port_path() {
+    local ts_host="$1"
+    local https_port="$2"
+    local path_prefix="$3"
+    local path_base=""
+    if [ -z "$ts_host" ]; then
+      return 0
+    fi
+
+    if [ "$path_prefix" != "/" ]; then
+      path_base="$path_prefix"
+    fi
+
+    if [ "${https_port}" = "443" ]; then
+      OAUTH_BROWSER_URL="https://${ts_host}${path_base}/"
+      OAUTH_CALLBACK_URL="https://${ts_host}${path_base}/api/oauth/google/callback"
+    else
+      OAUTH_BROWSER_URL="https://${ts_host}:${https_port}${path_base}/"
+      OAUTH_CALLBACK_URL="https://${ts_host}:${https_port}${path_base}/api/oauth/google/callback"
+    fi
+  }
+
+  _get_serve_target_ports_for_path() {
+    local target="$1"
+    local path_prefix="$2"
+    local status_json="$3"
+    SERVE_STATUS_JSON="$status_json" python3 - "$target" "$path_prefix" <<'PY'
+import json
+import os
+import sys
+
+target = sys.argv[1]
+path_prefix = sys.argv[2]
+data = json.loads(os.environ.get("SERVE_STATUS_JSON", "{}"))
+ports = set()
+
+for hostport, cfg in (data.get("Web") or {}).items():
+    handlers = (cfg or {}).get("Handlers") or {}
+    for handler_path, handler in handlers.items():
+        if (
+            handler_path == path_prefix
+            and isinstance(handler, dict)
+            and handler.get("Proxy") == target
+        ):
+            try:
+                _, port_str = hostport.rsplit(":", 1)
+                port = int(port_str)
+            except Exception:
+                port = 443
+            ports.add(str(port))
+            break
+
+if not ports:
+    raise SystemExit(1)
+
+print(" ".join(sorted(ports, key=int)))
+PY
+  }
+
   # Check tailscale CLI is available
   if ! command -v tailscale &>/dev/null; then
     echo "" >&2
@@ -171,25 +252,69 @@ _tailscale_serve_check() {
     return 1
   fi
 
-  # Check if tailscale serve is already running and includes port 8200
-  local serve_status
+  # Check if tailscale serve is already running with the requested HTTPS port.
+  local serve_status serve_status_json serve_ports desired_port_present
   serve_status=$(tailscale serve status 2>/dev/null) || serve_status=""
-  if echo "$serve_status" | grep -q "localhost:${DASHBOARD_PORT}"; then
-    echo "Tailscale serve: already running (forwarding to localhost:${DASHBOARD_PORT})"
+  serve_status_json=$(tailscale serve status --json 2>/dev/null) || serve_status_json="{}"
+  serve_ports=$(_get_serve_target_ports_for_path "$proxy_target" "$TAILSCALE_PATH_PREFIX" "$serve_status_json" 2>/dev/null || true)
+  desired_port_present=false
+  for p in $serve_ports; do
+    if [ "$p" = "$TAILSCALE_HTTPS_PORT" ]; then
+      desired_port_present=true
+      break
+    fi
+  done
+
+  if [ "$desired_port_present" = "true" ]; then
+    local ts_hostname
+    ts_hostname=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','').rstrip('.'))" 2>/dev/null || echo "")
+    _set_oauth_urls_for_tailnet_host_port_path "$ts_hostname" "$TAILSCALE_HTTPS_PORT" "$TAILSCALE_PATH_PREFIX"
+    echo "Tailscale serve: already running (forwarding to localhost:${DASHBOARD_PORT} on path ${TAILSCALE_PATH_PREFIX})"
+    echo "Tailscale URL: ${OAUTH_BROWSER_URL}"
     return 0
   fi
 
+  if [ -n "$serve_ports" ]; then
+    echo "Tailscale serve: existing mapping for localhost:${DASHBOARD_PORT} on path ${TAILSCALE_PATH_PREFIX} found on HTTPS ports [${serve_ports}], adding port ${TAILSCALE_HTTPS_PORT}..."
+  fi
+
   # Not yet serving — attempt to start it
-  echo "Tailscale serve: not active for port ${DASHBOARD_PORT}, starting..."
-  if tailscale serve https:443 "http://localhost:${DASHBOARD_PORT}" 2>/dev/null; then
+  # Newer tailscale versions (>=1.9x) use --https/--bg syntax while
+  # older versions accept the legacy positional https:443 form.
+  local start_output=""
+  local start_rc=0
+  echo "Tailscale serve: not active for path ${TAILSCALE_PATH_PREFIX} on HTTPS port ${TAILSCALE_HTTPS_PORT}, starting..."
+  if [ "$TAILSCALE_PATH_PREFIX" = "/" ]; then
+    start_output=$(tailscale serve --yes --bg --https="${TAILSCALE_HTTPS_PORT}" "http://localhost:${DASHBOARD_PORT}" 2>&1) || start_rc=$?
+  else
+    start_output=$(tailscale serve --yes --bg --https="${TAILSCALE_HTTPS_PORT}" --set-path "${TAILSCALE_PATH_PREFIX}" "http://localhost:${DASHBOARD_PORT}" 2>&1) || start_rc=$?
+  fi
+  if [ "$start_rc" -ne 0 ] && echo "$start_output" | grep -Eqi "(invalid argument format|unknown flag|usage)"; then
+    if [ "$TAILSCALE_PATH_PREFIX" = "/" ]; then
+      start_output=$(tailscale serve "https:${TAILSCALE_HTTPS_PORT}" "http://localhost:${DASHBOARD_PORT}" 2>&1) || start_rc=$?
+    else
+      start_output=$(tailscale serve "https:${TAILSCALE_HTTPS_PORT}" "${TAILSCALE_PATH_PREFIX}" "http://localhost:${DASHBOARD_PORT}" 2>&1) || start_rc=$?
+    fi
+  fi
+
+  if [ "$start_rc" -eq 0 ]; then
     # Verify it started correctly
-    serve_status=$(tailscale serve status 2>/dev/null) || serve_status=""
-    if echo "$serve_status" | grep -q "localhost:${DASHBOARD_PORT}"; then
+    serve_status_json=$(tailscale serve status --json 2>/dev/null) || serve_status_json="{}"
+    serve_ports=$(_get_serve_target_ports_for_path "$proxy_target" "$TAILSCALE_PATH_PREFIX" "$serve_status_json" 2>/dev/null || true)
+    desired_port_present=false
+    for p in $serve_ports; do
+      if [ "$p" = "$TAILSCALE_HTTPS_PORT" ]; then
+        desired_port_present=true
+        break
+      fi
+    done
+    if [ "$desired_port_present" = "true" ]; then
       local ts_hostname
       ts_hostname=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('Self',{}).get('DNSName','<your-name>.ts.net').rstrip('.'))" 2>/dev/null || echo "<your-name>.ts.net")
-      echo "Tailscale serve: started — https://${ts_hostname}/ → http://localhost:${DASHBOARD_PORT}"
+      _set_oauth_urls_for_tailnet_host_port_path "$ts_hostname" "$TAILSCALE_HTTPS_PORT" "$TAILSCALE_PATH_PREFIX"
+      echo "Tailscale serve: started — ${OAUTH_BROWSER_URL} → http://localhost:${DASHBOARD_PORT} (path ${TAILSCALE_PATH_PREFIX})"
       echo ""
-      echo "  HTTPS callback URL: https://${ts_hostname}/api/oauth/google/callback"
+      echo "  HTTPS callback URL: ${OAUTH_CALLBACK_URL}"
       echo "  Add this URI to your Google Cloud Console OAuth credentials."
       echo ""
       return 0
@@ -202,10 +327,31 @@ _tailscale_serve_check() {
   echo "  ERROR: Failed to start tailscale serve" >&2
   echo "======================================================================" >&2
   echo "" >&2
-  echo "  Could not start: tailscale serve https:443 http://localhost:${DASHBOARD_PORT}" >&2
+  echo "  Could not start tailscale serve for http://localhost:${DASHBOARD_PORT}" >&2
+  if [ -n "$start_output" ]; then
+    echo "" >&2
+    echo "  tailscale output:" >&2
+    echo "  $start_output" >&2
+  fi
+  if echo "$start_output" | grep -qi "Access denied: serve config denied"; then
+    echo "" >&2
+    echo "  This node requires elevated permissions to manage serve config." >&2
+    echo "  One-time setup to allow your user to manage serve without sudo:" >&2
+    echo "    sudo tailscale set --operator=$USER" >&2
+  fi
   echo "" >&2
   echo "  To start manually:" >&2
-  echo "    tailscale serve https:443 http://localhost:${DASHBOARD_PORT}" >&2
+  if [ "$TAILSCALE_PATH_PREFIX" = "/" ]; then
+    echo "    tailscale serve --yes --bg --https=${TAILSCALE_HTTPS_PORT} http://localhost:${DASHBOARD_PORT}" >&2
+  else
+    echo "    tailscale serve --yes --bg --https=${TAILSCALE_HTTPS_PORT} --set-path ${TAILSCALE_PATH_PREFIX} http://localhost:${DASHBOARD_PORT}" >&2
+  fi
+  echo "    # (older tailscale CLI fallback)" >&2
+  if [ "$TAILSCALE_PATH_PREFIX" = "/" ]; then
+    echo "    tailscale serve https:${TAILSCALE_HTTPS_PORT} http://localhost:${DASHBOARD_PORT}" >&2
+  else
+    echo "    tailscale serve https:${TAILSCALE_HTTPS_PORT} ${TAILSCALE_PATH_PREFIX} http://localhost:${DASHBOARD_PORT}" >&2
+  fi
   echo "    tailscale serve status" >&2
   echo "" >&2
   echo "  To skip this check (OAuth callback will not work over HTTPS):" >&2
@@ -278,11 +424,9 @@ _has_google_creds() {
 
   # Check connector env file (sourced at connector startup)
   if [ -f "$GMAIL_CONNECTOR_ENV_FILE" ]; then
-    local file_has_id file_has_secret file_has_token
-    file_has_id=$(grep -E '^(GOOGLE_OAUTH_CLIENT_ID|GMAIL_CLIENT_ID)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null | wc -l || echo 0)
-    file_has_secret=$(grep -E '^(GOOGLE_OAUTH_CLIENT_SECRET|GMAIL_CLIENT_SECRET)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null | wc -l || echo 0)
-    file_has_token=$(grep -E '^(GOOGLE_REFRESH_TOKEN|GMAIL_REFRESH_TOKEN)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null | wc -l || echo 0)
-    if [ "$file_has_id" -gt 0 ] && [ "$file_has_secret" -gt 0 ] && [ "$file_has_token" -gt 0 ]; then
+    if grep -Eq '^(GOOGLE_OAUTH_CLIENT_ID|GMAIL_CLIENT_ID)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null \
+      && grep -Eq '^(GOOGLE_OAUTH_CLIENT_SECRET|GMAIL_CLIENT_SECRET)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null \
+      && grep -Eq '^(GOOGLE_REFRESH_TOKEN|GMAIL_REFRESH_TOKEN)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null; then
       return 0
     fi
   fi
@@ -405,7 +549,7 @@ _oauth_gate() {
   echo "    - Calendar module      (calendar read/write for all butlers)"
   echo ""
   echo "  To complete OAuth bootstrap:"
-  echo "    1. Open http://localhost:${DASHBOARD_PORT} in your browser"
+  echo "    1. Open ${OAUTH_BROWSER_URL} in your browser"
   echo "    2. Click 'Connect Google' and complete the OAuth flow"
   echo "    3. Butlers will proceed automatically once credentials are stored"
   echo ""
@@ -466,7 +610,7 @@ if [ "$GOOGLE_CREDS_AVAILABLE" = "false" ] && [ "$SKIP_OAUTH_CHECK" = "false" ];
   echo "  credentials to be stored in the DB via the dashboard."
   echo ""
   echo "  Option A — Dashboard OAuth flow (recommended):"
-  echo "    1. Start Butlers and visit http://localhost:8200"
+  echo "    1. Start Butlers and visit ${OAUTH_BROWSER_URL}"
   echo "    2. Click 'Connect Google' and complete the OAuth flow"
   echo "    3. Credentials are stored in the DB — Layer 3 starts automatically"
   echo ""
@@ -496,7 +640,7 @@ if [ "$GOOGLE_CREDS_AVAILABLE" = "true" ] || [ "$SKIP_OAUTH_CHECK" = "true" ]; t
   GMAIL_PANE_CMD="${_GMAIL_CMD_BASE} && CONNECTOR_PROVIDER=gmail CONNECTOR_CHANNEL=email CONNECTOR_ENDPOINT_IDENTITY=\${GMAIL_CONNECTOR_ENDPOINT_IDENTITY:-gmail:user:dev} CONNECTOR_CURSOR_PATH=\${GMAIL_CONNECTOR_CURSOR_PATH:-.tmp/connectors/gmail_checkpoint.json} uv run python -m butlers.connectors.gmail"
 else
   # Credentials missing — show instructions and keep pane alive
-  GMAIL_PANE_CMD="echo '' && echo '======================================================================' && echo '  Gmail connector is waiting for Google OAuth credentials.' && echo '  Also required by: Calendar module.' && echo '======================================================================' && echo '' && echo '  To complete bootstrap:' && echo '    1. Open http://localhost:8200 in your browser' && echo '    2. Click Connect Google and complete the OAuth flow' && echo '    3. Once authorized, restart this pane (tmux: prefix+R or exit+up+Enter)' && echo '' && echo '  Or set credentials in: $GMAIL_CONNECTOR_ENV_FILE' && echo '    GOOGLE_OAUTH_CLIENT_ID=...' && echo '    GOOGLE_OAUTH_CLIENT_SECRET=...' && echo '    GOOGLE_REFRESH_TOKEN=...' && echo '' && echo '  Then rerun: ./dev.sh' && echo '' && echo '  (This pane will remain open — restart it after completing OAuth)' && bash"
+  GMAIL_PANE_CMD="echo '' && echo '======================================================================' && echo '  Gmail connector is waiting for Google OAuth credentials.' && echo '  Also required by: Calendar module.' && echo '======================================================================' && echo '' && echo '  To complete bootstrap:' && echo '    1. Open ${OAUTH_BROWSER_URL} in your browser' && echo '    2. Click Connect Google and complete the OAuth flow' && echo '    3. Once authorized, restart this pane (tmux: prefix+R or exit+up+Enter)' && echo '' && echo '  Or set credentials in: $GMAIL_CONNECTOR_ENV_FILE' && echo '    GOOGLE_OAUTH_CLIENT_ID=...' && echo '    GOOGLE_OAUTH_CLIENT_SECRET=...' && echo '    GOOGLE_REFRESH_TOKEN=...' && echo '' && echo '  Then rerun: ./dev.sh' && echo '' && echo '  (This pane will remain open — restart it after completing OAuth)' && bash"
 fi
 
 # Kill existing windows if present (idempotent re-runs)

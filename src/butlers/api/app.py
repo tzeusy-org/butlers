@@ -4,7 +4,7 @@ Provides a single-page-of-glass REST API over the butler infrastructure.
 The app factory creates a FastAPI instance with:
 - CORS middleware (configurable origins)
 - Lifespan handler for startup/shutdown of DB pools and MCP clients
-- Health endpoint at GET /api/health
+- Health endpoints at GET /api/health and GET /health
 - Router registration for future endpoint modules
 - Optional static file serving for production (frontend/dist/)
 """
@@ -162,6 +162,7 @@ def create_app(
     app.include_router(sse_router)
 
     @app.get("/api/health")
+    @app.get("/health")
     async def health():
         return {"status": "ok"}
 

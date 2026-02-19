@@ -17,6 +17,15 @@ class TestHealthEndpoint:
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
 
+    async def test_root_health_alias_returns_ok(self):
+        app = create_app()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/health")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
 
 class TestCORSMiddleware:
     async def test_cors_allows_configured_origin(self):
