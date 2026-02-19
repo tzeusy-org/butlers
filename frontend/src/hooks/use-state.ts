@@ -22,7 +22,7 @@ export function useSetState(butlerName: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ key, value }: { key: string; value: Record<string, unknown> }) =>
+    mutationFn: ({ key, value }: { key: string; value: unknown }) =>
       setButlerState(butlerName, key, value),
     onSuccess: (_data, variables) => {
       toast.success(`State key "${variables.key}" saved`);

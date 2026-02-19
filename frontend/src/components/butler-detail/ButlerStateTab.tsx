@@ -49,7 +49,7 @@ function SetValueDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSave: (key: string, value: Record<string, unknown>) => void;
+  onSave: (key: string, value: unknown) => void;
   isPending: boolean;
 }) {
   const [key, setKey] = useState("");
@@ -67,7 +67,7 @@ function SetValueDialog({
 
   function handleSave() {
     try {
-      const parsed = JSON.parse(value) as Record<string, unknown>;
+      const parsed = JSON.parse(value) as unknown;
       setParseError(null);
       onSave(key, parsed);
       onOpenChange(false);
@@ -144,7 +144,7 @@ export default function ButlerStateTab({ butlerName }: ButlerStateTabProps) {
 
   const entries = stateResponse?.data ?? [];
 
-  function handleEdit(key: string, value: Record<string, unknown>) {
+  function handleEdit(key: string, value: unknown) {
     setStateMutation.mutate({ key, value });
   }
 
@@ -152,7 +152,7 @@ export default function ButlerStateTab({ butlerName }: ButlerStateTabProps) {
     deleteStateMutation.mutate(key);
   }
 
-  function handleSetValue(key: string, value: Record<string, unknown>) {
+  function handleSetValue(key: string, value: unknown) {
     setStateMutation.mutate({ key, value });
   }
 

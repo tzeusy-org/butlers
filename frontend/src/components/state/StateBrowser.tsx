@@ -42,7 +42,7 @@ import { Textarea } from "@/components/ui/textarea";
 interface StateBrowserProps {
   entries: StateEntry[];
   isLoading: boolean;
-  onEdit: (key: string, value: Record<string, unknown>) => void;
+  onEdit: (key: string, value: unknown) => void;
   onDelete: (key: string) => void;
 }
 
@@ -51,7 +51,7 @@ interface StateBrowserProps {
 // ---------------------------------------------------------------------------
 
 /** Compact JSON preview (single line, truncated). */
-function jsonPreview(value: Record<string, unknown>, maxLen = 80): string {
+function jsonPreview(value: unknown, maxLen = 80): string {
   const str = JSON.stringify(value);
   return str.length > maxLen ? str.slice(0, maxLen) + "..." : str;
 }
@@ -287,7 +287,7 @@ export default function StateBrowser({
   }
 
   function handleEditSave(key: string, rawValue: string) {
-    const parsed = JSON.parse(rawValue) as Record<string, unknown>;
+    const parsed = JSON.parse(rawValue) as unknown;
     onEdit(key, parsed);
   }
 

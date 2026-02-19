@@ -43,6 +43,11 @@ def _make_state_record(
     }
 
 
+def _make_scalar_record(key: str, value: object, updated_at: datetime = _NOW) -> dict:
+    """Create a state record with an arbitrary JSON value (scalar, null, etc.)."""
+    return {"key": key, "value": value, "updated_at": updated_at}
+
+
 def _app_with_mock_db(
     *,
     fetch_rows: list | None = None,
@@ -147,6 +152,77 @@ class TestListState:
 
         assert resp.status_code == 503
 
+    async def test_boolean_value_returns_200(self):
+        """Regression: list endpoint must not 400 when a state row has a boolean value."""
+        rows = [_make_scalar_record(key="flag", value=True)]
+        app = _app_with_mock_db(fetch_rows=rows)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/switchboard/state")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"][0]["key"] == "flag"
+        assert body["data"][0]["value"] is True
+
+    async def test_null_value_returns_200(self):
+        """Regression: list endpoint must not 400 when a state row has a null value."""
+        rows = [_make_scalar_record(key="empty", value=None)]
+        app = _app_with_mock_db(fetch_rows=rows)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/switchboard/state")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"][0]["value"] is None
+
+    async def test_integer_value_returns_200(self):
+        """Regression: list endpoint must not 400 when a state row has an integer value."""
+        rows = [_make_scalar_record(key="count", value=42)]
+        app = _app_with_mock_db(fetch_rows=rows)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/switchboard/state")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"][0]["value"] == 42
+
+    async def test_array_value_returns_200(self):
+        """Regression: list endpoint must not 400 when a state row has an array value."""
+        rows = [_make_scalar_record(key="tags", value=["a", "b", "c"])]
+        app = _app_with_mock_db(fetch_rows=rows)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/switchboard/state")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"][0]["value"] == ["a", "b", "c"]
+
+    async def test_mixed_value_types_return_200(self):
+        """Regression: list endpoint returns 200 when state rows have mixed value types."""
+        rows = [
+            _make_scalar_record(key="flag", value=True),
+            _make_state_record(key="config", value={"theme": "dark"}),
+            _make_scalar_record(key="count", value=0),
+        ]
+        app = _app_with_mock_db(fetch_rows=rows)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/switchboard/state")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 3
+        assert data[0]["value"] is True
+        assert data[1]["value"] == {"theme": "dark"}
+        assert data[2]["value"] == 0
+
 
 # ---------------------------------------------------------------------------
 # GET /api/butlers/{name}/state/{key} — get single state entry
@@ -189,6 +265,32 @@ class TestGetState:
             resp = await client.get("/api/butlers/nonexistent/state/any_key")
 
         assert resp.status_code == 503
+
+    async def test_boolean_value_returns_200(self):
+        """Regression: get endpoint must not 400 when the row value is a boolean."""
+        row = _make_scalar_record(key="flag", value=False)
+        app = _app_with_mock_db(fetchrow_result=row)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/switchboard/state/flag")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["key"] == "flag"
+        assert body["data"]["value"] is False
+
+    async def test_null_value_returns_200(self):
+        """Regression: get endpoint must not 400 when the row value is null."""
+        row = _make_scalar_record(key="empty", value=None)
+        app = _app_with_mock_db(fetchrow_result=row)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/switchboard/state/empty")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"]["value"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -331,16 +331,25 @@ export interface ScheduleUpdate {
 // State
 // ---------------------------------------------------------------------------
 
-/** A key-value state entry from a butler's state store. */
+/** A key-value state entry from a butler's state store.
+ *
+ * ``value`` can be any JSON-serialisable type (object, array, scalar, or null)
+ * because the underlying JSONB column places no shape restrictions on stored
+ * values.
+ */
 export interface StateEntry {
   key: string;
-  value: Record<string, unknown>;
+  value: unknown;
   updated_at: string; // ISO 8601
 }
 
-/** Request body for setting a state value. */
+/** Request body for setting a state value.
+ *
+ * ``value`` accepts any JSON-serialisable type, matching the same contract as
+ * ``StateEntry.value``.
+ */
 export interface StateSetRequest {
-  value: Record<string, unknown>;
+  value: unknown;
 }
 
 // ---------------------------------------------------------------------------

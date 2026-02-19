@@ -5,11 +5,14 @@ Write endpoints proxy through the butler's MCP server to ensure state
 mutations go through the butler's own tools (``state_set``, ``state_delete``).
 
 Provides a single router mounted at ``/api/butlers/{name}/state``.
+
+Value contract: the underlying ``state`` JSONB column may hold any valid JSON
+value (object, array, scalar, or null).  asyncpg decodes JSONB directly to
+native Python types, so no secondary JSON parsing is needed.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -65,7 +68,7 @@ async def list_state(
     entries = [
         StateEntry(
             key=row["key"],
-            value=row["value"] if isinstance(row["value"], dict) else json.loads(row["value"]),
+            value=row["value"],
             updated_at=row["updated_at"],
         )
         for row in rows
@@ -103,10 +106,8 @@ async def get_state(
     if row is None:
         raise HTTPException(status_code=404, detail=f"State key '{key}' not found")
 
-    value = row["value"] if isinstance(row["value"], dict) else json.loads(row["value"])
-
     return ApiResponse[StateEntry](
-        data=StateEntry(key=row["key"], value=value, updated_at=row["updated_at"])
+        data=StateEntry(key=row["key"], value=row["value"], updated_at=row["updated_at"])
     )
 
 
