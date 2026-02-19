@@ -62,7 +62,7 @@ class MemoryModule(Module):
     def migration_revisions(self) -> str | None:
         return "memory"
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Store the Database reference for later pool access."""
         self._db = db
         if isinstance(config, MemoryModuleConfig):

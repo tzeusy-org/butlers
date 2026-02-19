@@ -405,7 +405,7 @@ class ApprovalsModule(Module):
             """Preview suggested constraints for creating a rule from a pending action."""
             return await module._suggest_rule_constraints(action_id)
 
-    async def on_startup(self, config: Any, db: Any) -> None:
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Initialize config and store db reference."""
         self._config = (
             config if isinstance(config, ApprovalsConfig) else ApprovalsConfig(**(config or {}))
