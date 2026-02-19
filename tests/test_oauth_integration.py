@@ -14,7 +14,6 @@ Scenarios:
 
 from __future__ import annotations
 
-import json
 import unittest.mock as mock
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,8 +26,8 @@ from butlers.api.routers.oauth import (
     _generate_state,
     _state_store,
     _store_state,
-    _validate_and_consume_state,
     _TokenExchangeError,
+    _validate_and_consume_state,
 )
 from butlers.startup_guard import (
     check_google_credentials,
@@ -51,8 +50,7 @@ _FAKE_TOKEN_RESPONSE = {
     "access_token": "ya29.fake_access_token",
     "refresh_token": "1//fake_refresh_token_xyz",
     "scope": (
-        "https://www.googleapis.com/auth/gmail.modify "
-        "https://www.googleapis.com/auth/calendar"
+        "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar"
     ),
     "token_type": "Bearer",
     "expires_in": 3600,
@@ -345,7 +343,7 @@ class TestPreStartEnforcement:
 
     def test_startup_guard_blocks_when_no_oauth_credentials(self):
         """require_google_credentials_or_exit() exits (code 1) when credentials absent."""
-        from butlers.startup_guard import _CREDENTIAL_FIELD_ALIASES, _CALENDAR_JSON_ENV
+        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
 
         all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
         all_vars.append(_CALENDAR_JSON_ENV)
@@ -359,7 +357,7 @@ class TestPreStartEnforcement:
 
     def test_startup_guard_passes_after_oauth_credentials_set_via_env(self):
         """After credentials are in env (as if set by OAuth flow), guard passes."""
-        from butlers.startup_guard import _CREDENTIAL_FIELD_ALIASES, _CALENDAR_JSON_ENV
+        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
 
         all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
         all_vars.append(_CALENDAR_JSON_ENV)
@@ -376,7 +374,7 @@ class TestPreStartEnforcement:
 
     def test_startup_guard_reports_which_vars_are_missing(self):
         """check_google_credentials() reports the canonical missing var names."""
-        from butlers.startup_guard import _CREDENTIAL_FIELD_ALIASES, _CALENDAR_JSON_ENV
+        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
 
         all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
         all_vars.append(_CALENDAR_JSON_ENV)
@@ -394,7 +392,7 @@ class TestPreStartEnforcement:
 
     def test_startup_guard_skip_mode_does_not_call_exit(self):
         """Simulates --skip-oauth-check: guard check returns result but caller skips exit."""
-        from butlers.startup_guard import _CREDENTIAL_FIELD_ALIASES, _CALENDAR_JSON_ENV
+        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
 
         all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
         all_vars.append(_CALENDAR_JSON_ENV)
@@ -411,7 +409,7 @@ class TestPreStartEnforcement:
 
     def test_startup_guard_remediation_mentions_dashboard_oauth(self):
         """Remediation text for missing creds should mention the dashboard OAuth flow."""
-        from butlers.startup_guard import _CREDENTIAL_FIELD_ALIASES, _CALENDAR_JSON_ENV
+        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
 
         all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
         all_vars.append(_CALENDAR_JSON_ENV)
@@ -484,9 +482,7 @@ class TestDevWorkflowWithMissingCredentials:
                 follow_redirects=False,
             ) as client:
                 for _ in range(5):
-                    resp = await client.get(
-                        "/api/oauth/google/start", params={"redirect": "false"}
-                    )
+                    resp = await client.get("/api/oauth/google/start", params={"redirect": "false"})
                     states.append(resp.json()["state"])
 
         # All states must be unique (no collisions)
@@ -494,7 +490,6 @@ class TestDevWorkflowWithMissingCredentials:
 
     async def test_oauth_status_shows_connected_after_credentials_configured(self):
         """Status changes to connected once credentials are in env (post-OAuth)."""
-        from butlers.api.routers.oauth import _probe_google_token
         from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
 
         app = _make_app()

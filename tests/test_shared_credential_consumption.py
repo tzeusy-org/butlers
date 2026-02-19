@@ -30,7 +30,6 @@ import pytest
 from butlers.google_credentials import (
     GoogleCredentials,
     MissingGoogleCredentialsError,
-    InvalidGoogleCredentialsError,
     load_google_credentials,
     resolve_google_credentials,
     store_google_credentials,
@@ -47,8 +46,7 @@ _SHARED_CREDS = {
     "client_secret": "shared-client-secret-abc",
     "refresh_token": "1//shared-refresh-token-xyz",
     "scope": (
-        "https://www.googleapis.com/auth/gmail.modify "
-        "https://www.googleapis.com/auth/calendar"
+        "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar"
     ),
 }
 
@@ -67,11 +65,13 @@ _GMAIL_ENV = {
 }
 
 # Calendar module uses BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON JSON blob
-_CALENDAR_JSON_BLOB = json.dumps({
-    "client_id": _SHARED_CREDS["client_id"],
-    "client_secret": _SHARED_CREDS["client_secret"],
-    "refresh_token": _SHARED_CREDS["refresh_token"],
-})
+_CALENDAR_JSON_BLOB = json.dumps(
+    {
+        "client_id": _SHARED_CREDS["client_id"],
+        "client_secret": _SHARED_CREDS["client_secret"],
+        "refresh_token": _SHARED_CREDS["refresh_token"],
+    }
+)
 _CALENDAR_ENV = {
     "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": _CALENDAR_JSON_BLOB,
 }
@@ -256,7 +256,7 @@ class TestCalendarModuleAcceptsSharedCredentialsFormat:
 
     def test_calendar_raises_when_blob_missing(self) -> None:
         """Calendar's from_env() raises CalendarCredentialError when blob not set."""
-        from butlers.modules.calendar import _GoogleOAuthCredentials, CalendarCredentialError
+        from butlers.modules.calendar import CalendarCredentialError, _GoogleOAuthCredentials
 
         with mock.patch.dict("os.environ", {}, clear=True):
             with pytest.raises(CalendarCredentialError):
@@ -267,13 +267,15 @@ class TestCalendarModuleAcceptsSharedCredentialsFormat:
         from butlers.modules.calendar import _GoogleOAuthCredentials
 
         # Build a blob in the format that store_google_credentials would write to DB
-        shared_blob = json.dumps({
-            "client_id": _SHARED_CREDS["client_id"],
-            "client_secret": _SHARED_CREDS["client_secret"],
-            "refresh_token": _SHARED_CREDS["refresh_token"],
-            "scope": _SHARED_CREDS["scope"],
-            "stored_at": "2026-02-19T00:00:00+00:00",
-        })
+        shared_blob = json.dumps(
+            {
+                "client_id": _SHARED_CREDS["client_id"],
+                "client_secret": _SHARED_CREDS["client_secret"],
+                "refresh_token": _SHARED_CREDS["refresh_token"],
+                "scope": _SHARED_CREDS["scope"],
+                "stored_at": "2026-02-19T00:00:00+00:00",
+            }
+        )
         env = {"BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": shared_blob}
 
         with mock.patch.dict("os.environ", env, clear=True):

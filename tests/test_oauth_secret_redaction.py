@@ -12,7 +12,6 @@ This acts as a cross-module security regression test.
 
 from __future__ import annotations
 
-import json
 import logging
 import unittest.mock as mock
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -22,9 +21,9 @@ import pytest
 
 from butlers.google_credentials import (
     GoogleCredentials,
-    store_google_credentials,
     load_google_credentials,
     resolve_google_credentials,
+    store_google_credentials,
 )
 from butlers.startup_guard import (
     check_google_credentials,
@@ -103,9 +102,7 @@ class TestGoogleCredentialsRedaction:
 
 
 class TestStoreCredentialsLogRedaction:
-    async def test_store_does_not_log_client_secret(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_store_does_not_log_client_secret(self, caplog: pytest.LogCaptureFixture) -> None:
         """store_google_credentials must not log client_secret at any level."""
         conn = AsyncMock()
         conn.execute.return_value = None
@@ -122,9 +119,7 @@ class TestStoreCredentialsLogRedaction:
         assert _CLIENT_SECRET not in caplog.text
         assert _SECRET_VALUE not in caplog.text
 
-    async def test_store_logs_safe_client_id(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_store_logs_safe_client_id(self, caplog: pytest.LogCaptureFixture) -> None:
         """store_google_credentials logs client_id (public) at DEBUG."""
         conn = AsyncMock()
         conn.execute.return_value = None
@@ -146,9 +141,7 @@ class TestStoreCredentialsLogRedaction:
 
 
 class TestLoadCredentialsLogRedaction:
-    async def test_load_does_not_log_secrets(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_load_does_not_log_secrets(self, caplog: pytest.LogCaptureFixture) -> None:
         """load_google_credentials must not log secrets at any log level."""
         payload = {
             "client_id": "pub-id",
@@ -166,9 +159,7 @@ class TestLoadCredentialsLogRedaction:
         assert _CLIENT_SECRET not in caplog.text
         assert _SECRET_VALUE not in caplog.text
 
-    async def test_resolve_does_not_log_secrets(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_resolve_does_not_log_secrets(self, caplog: pytest.LogCaptureFixture) -> None:
         """resolve_google_credentials must not log secret material."""
         payload = {
             "client_id": "pub-id",
@@ -197,7 +188,7 @@ class TestStartupGuardSecretRedaction:
         self, capsys: pytest.CaptureFixture
     ) -> None:
         """Startup guard stderr must not echo any partial credential values."""
-        from butlers.startup_guard import _CREDENTIAL_FIELD_ALIASES, _CALENDAR_JSON_ENV
+        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
 
         all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
         all_vars.append(_CALENDAR_JSON_ENV)
@@ -215,7 +206,7 @@ class TestStartupGuardSecretRedaction:
 
     def test_check_does_not_include_secret_values_in_message(self) -> None:
         """check_google_credentials() message must not contain any env var values."""
-        from butlers.startup_guard import _CREDENTIAL_FIELD_ALIASES, _CALENDAR_JSON_ENV
+        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
 
         all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
         all_vars.append(_CALENDAR_JSON_ENV)
@@ -249,7 +240,6 @@ class TestOAuthCallbackResponseRedaction:
             _clear_state_store,
             _generate_state,
             _store_state,
-            _TokenExchangeError,
         )
 
         _clear_state_store()
