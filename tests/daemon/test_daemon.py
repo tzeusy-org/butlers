@@ -196,6 +196,9 @@ def butler_dir_with_modules(tmp_path: Path) -> Path:
 def _patch_infra():
     """Return a dict of patches for all infrastructure dependencies."""
     mock_pool = AsyncMock()
+    # Default fetchval returns None so state_get/state_set calls during
+    # _init_module_runtime_states don't raise or return unexpected values.
+    mock_pool.fetchval = AsyncMock(return_value=None)
 
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
@@ -233,6 +236,9 @@ def _patch_infra():
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
+        "create_audit_pool": patch.object(
+            ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
+        ),
         "get_adapter": patch("butlers.daemon.get_adapter", return_value=mock_adapter_cls),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
         "mock_db": mock_db,
@@ -269,6 +275,7 @@ class TestStartupSequence:
             patches["shutil_which"],
             patches["start_mcp_server"] as mock_start_server,
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             mock_db = patches["mock_db"]
 
@@ -333,6 +340,7 @@ class TestStartupSequence:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -358,6 +366,7 @@ class TestStartupSequence:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             before = time.monotonic()
@@ -405,8 +414,10 @@ class TestCoreToolRegistration:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
-            daemon = ButlerDaemon(butler_dir)
+            # Use empty registry so only core tools (not module tools) are registered.
+            daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
             await daemon.start()
 
         assert set(registered_tools) == self.EXPECTED_TOOLS
@@ -450,6 +461,7 @@ class TestTriggerToolDispatch:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -486,6 +498,7 @@ class TestModuleToolRegistration:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -512,6 +525,7 @@ class TestModuleToolRegistration:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -537,6 +551,7 @@ class TestModuleToolRegistration:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -567,6 +582,7 @@ class TestModuleToolRegistration:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -597,6 +613,7 @@ class TestShutdownSequence:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -634,6 +651,7 @@ class TestShutdownSequence:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -660,6 +678,7 @@ class TestShutdownSequence:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -700,6 +719,7 @@ class TestShutdownSequence:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -948,8 +968,10 @@ class TestStatusTool:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
-            daemon = ButlerDaemon(butler_dir)
+            # Use empty registry so no modules are loaded (status.modules == {}).
+            daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
             await daemon.start()
 
         assert status_fn is not None, "status tool was not registered"
@@ -995,6 +1017,7 @@ class TestStatusTool:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -1035,9 +1058,14 @@ class TestHealthCheck:
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
-            daemon = ButlerDaemon(butler_dir)
+            # Use empty registry: no modules means no failed modules, no
+            # fetchval calls during _init_module_runtime_states, and
+            # health checks reflect only the DB pool probe.
+            daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
             await daemon.start()
 
         return daemon, status_fn
@@ -1146,6 +1174,7 @@ class TestStartupFailurePropagation:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             with pytest.raises(CredentialError, match="missing ANTHROPIC_API_KEY"):
@@ -1173,6 +1202,7 @@ class TestStartupFailurePropagation:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             with pytest.raises(ConnectionRefusedError):
@@ -1201,6 +1231,7 @@ class TestScheduleSync:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -1235,6 +1266,7 @@ class TestModuleCredentials:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -1419,6 +1451,7 @@ class TestModuleCredentialsTomlSource:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1451,6 +1484,7 @@ class TestModuleCredentialsTomlSource:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
             await daemon.start()
@@ -1486,6 +1520,7 @@ class TestModuleCredentialsTomlSource:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1519,6 +1554,7 @@ class TestModuleCredentialsTomlSource:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1551,6 +1587,7 @@ class TestModuleCredentialsTomlSource:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1586,6 +1623,7 @@ class TestModuleCredentialsTomlSource:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1620,6 +1658,7 @@ class TestModuleCredentialsTomlSource:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -1858,6 +1897,7 @@ class TestRuntimeAdapterPassedToSpawner:
             patches["get_adapter"],
             patches["shutil_which"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -2287,6 +2327,7 @@ url = "http://custom-switchboard:9000/sse"
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -2330,6 +2371,7 @@ class TestNotifyTool:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -2665,6 +2707,7 @@ class TestRouteExecuteTool:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -2906,6 +2949,7 @@ class TestNonFatalModuleStartup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -2939,6 +2983,7 @@ class TestNonFatalModuleStartup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             with pytest.raises(CredentialError, match="ANTHROPIC_API_KEY"):
@@ -2963,6 +3008,7 @@ class TestNonFatalModuleStartup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -2994,6 +3040,7 @@ class TestNonFatalModuleStartup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -3022,6 +3069,7 @@ class TestNonFatalModuleStartup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -3052,6 +3100,7 @@ class TestNonFatalModuleStartup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -3096,6 +3145,7 @@ class TestNonFatalModuleStartup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -3142,6 +3192,7 @@ class TestNonFatalModuleStartup:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir, registry=registry)
             await daemon.start()
@@ -3182,6 +3233,7 @@ class TestSwitchboardHeartbeat:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -3286,6 +3338,7 @@ class TestSwitchboardHeartbeat:
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()

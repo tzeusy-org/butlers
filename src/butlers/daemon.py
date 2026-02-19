@@ -115,6 +115,8 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "schedule_costs",
         "notify",
         "get_attachment",
+        "module.states",
+        "module.set_enabled",
     }
 )
 
