@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from butlers.config import BufferConfig
+from butlers.core.metrics import ButlerMetrics
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,10 @@ class DurableBuffer:
         Async callable that processes a single message reference.
         Signature: ``process_fn(ref: _MessageRef) -> None``
         Typically wraps ``pipeline.process()``.
+    butler_name:
+        Optional butler name used to label OTel metrics.  Defaults to
+        ``"switchboard"`` (the only butler that uses DurableBuffer in
+        production).
     """
 
     def __init__(
@@ -85,10 +90,13 @@ class DurableBuffer:
         config: BufferConfig,
         pool: Any,
         process_fn: Any,
+        *,
+        butler_name: str = "switchboard",
     ) -> None:
         self._config = config
         self._pool = pool
         self._process_fn = process_fn
+        self._metrics = ButlerMetrics(butler_name=butler_name)
 
         self._queue: asyncio.Queue[_MessageRef] = asyncio.Queue(maxsize=config.queue_capacity)
 
@@ -221,6 +229,8 @@ class DurableBuffer:
         try:
             self._queue.put_nowait(ref)
             self._enqueue_hot_total += 1
+            self._metrics.buffer_enqueue_hot()
+            self._metrics.buffer_queue_depth_inc()
             logger.debug(
                 "Buffer enqueued (hot): request_id=%s, queue_depth=%d",
                 request_id,
@@ -229,6 +239,7 @@ class DurableBuffer:
             return True
         except asyncio.QueueFull:
             self._backpressure_total += 1
+            self._metrics.buffer_backpressure()
             logger.warning(
                 "Buffer full (backpressure): request_id=%s will be recovered "
                 "by scanner in ~%ds, depth=%d",
@@ -259,6 +270,9 @@ class DurableBuffer:
                     ref.request_id,
                     process_latency_ms,
                 )
+
+                self._metrics.record_buffer_process_latency(process_latency_ms)
+                self._metrics.buffer_queue_depth_dec()
 
                 await self._process_fn(ref)
 
@@ -382,6 +396,9 @@ class DurableBuffer:
                 self._enqueue_cold_total += 1
                 self._scanner_recovered_total += 1
                 recovered += 1
+                self._metrics.buffer_enqueue_cold()
+                self._metrics.buffer_scanner_recovered()
+                self._metrics.buffer_queue_depth_inc()
                 logger.info(
                     "Buffer scanner recovered request_id=%s (received_at=%s)",
                     request_id,

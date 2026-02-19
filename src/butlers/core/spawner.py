@@ -27,6 +27,7 @@ from opentelemetry.context import Context
 
 from butlers.config import ButlerConfig
 from butlers.core.audit import write_audit_entry
+from butlers.core.metrics import ButlerMetrics
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.sessions import session_complete, session_create
 from butlers.core.skills import read_system_prompt
@@ -244,6 +245,7 @@ class Spawner:
         self._in_flight: set[asyncio.Task] = set()
         self._in_flight_event = asyncio.Event()
         self._in_flight_event.set()  # Initially no in-flight sessions
+        self._metrics = ButlerMetrics(butler_name=config.name)
 
         if runtime is not None:
             self._runtime = runtime
@@ -337,12 +339,27 @@ class Spawner:
         task = asyncio.current_task()
         if task is not None:
             self._in_flight.add(task)
+        # Track triggers waiting for a semaphore slot
+        self._metrics.spawner_queued_triggers_inc()
+        _semaphore_acquired = False
         try:
             async with self._session_semaphore:
-                return await self._run(
-                    prompt, trigger_source, context, max_turns, parent_context, request_id
-                )
+                # Slot acquired — no longer queued, now active
+                _semaphore_acquired = True
+                self._metrics.spawner_queued_triggers_dec()
+                self._metrics.spawner_active_sessions_inc()
+                try:
+                    return await self._run(
+                        prompt, trigger_source, context, max_turns, parent_context, request_id
+                    )
+                finally:
+                    self._metrics.spawner_active_sessions_dec()
         finally:
+            # If cancelled before acquiring the semaphore, queued_triggers_dec
+            # was never called inside the async-with block; decrement here to
+            # keep the gauge accurate.
+            if not _semaphore_acquired:
+                self._metrics.spawner_queued_triggers_dec()
             if task is not None:
                 self._in_flight.discard(task)
             if not self._in_flight:
@@ -592,6 +609,8 @@ class Spawner:
             return spawner_result
 
         finally:
+            # Record session duration metric using wall-clock time from t0
+            self._metrics.record_session_duration(int((time.monotonic() - t0) * 1000))
             # Clear session context before ending span so tool handlers
             # arriving after this point don't attach to a finished span.
             clear_active_session_context()
