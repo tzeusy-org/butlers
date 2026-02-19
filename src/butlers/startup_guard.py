@@ -135,6 +135,10 @@ def check_google_credentials() -> GoogleCredentialCheckResult:
     # Build helpful remediation message
     missing_list = ", ".join(missing_vars)
     remediation = (
+        "Google OAuth credentials are required by:\n"
+        "  - Gmail connector      (outbound email delivery)\n"
+        "  - Calendar module      (calendar read/write for all butlers)\n"
+        "\n"
         "To complete Google OAuth bootstrap:\n"
         "  1. Start the Butlers dashboard:  uv run butlers dashboard\n"
         "  2. Open http://localhost:8200 in your browser.\n"
@@ -265,7 +269,10 @@ def _print_credential_error(
     print(f"  STARTUP BLOCKED: {caller}", file=sys.stderr)
     print(separator, file=sys.stderr)
     print(f"\n  {result.message}\n", file=sys.stderr)
-    print("  How to fix:", file=sys.stderr)
+    print("  Required by:", file=sys.stderr)
+    print("    - Gmail connector      (outbound email delivery)", file=sys.stderr)
+    print("    - Calendar module      (calendar read/write for all butlers)", file=sys.stderr)
+    print("\n  How to fix:", file=sys.stderr)
     print(f"    1. Open the Butlers dashboard: {dashboard_url}", file=sys.stderr)
     print("    2. Click 'Connect Google' and complete the OAuth flow.", file=sys.stderr)
     print("    3. Once authorized, restart this connector.", file=sys.stderr)
