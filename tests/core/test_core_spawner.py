@@ -334,43 +334,51 @@ class TestSpawnerInvocation:
 
 
 class TestCredentialPassthrough:
-    """Only declared env vars are passed to the runtime instance."""
+    """Only declared env vars are passed to the runtime instance.
 
-    def test_anthropic_key_always_included(self):
+    Tests cover both the env-only path (no credential_store) and the
+    DB-first path (with a mocked CredentialStore).
+    """
+
+    # ------------------------------------------------------------------
+    # Env-only path (no credential_store — backwards compatibility)
+    # ------------------------------------------------------------------
+
+    async def test_anthropic_key_always_included(self):
         config = _make_config()
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-123"}, clear=False):
-            env = _build_env(config)
+            env = await _build_env(config)
             assert env["ANTHROPIC_API_KEY"] == "sk-test-123"
 
-    def test_required_env_vars_included(self):
+    async def test_required_env_vars_included(self):
         config = _make_config(env_required=["MY_SECRET"])
         with patch.dict(
             os.environ,
             {"ANTHROPIC_API_KEY": "sk-key", "MY_SECRET": "s3cret"},
             clear=False,
         ):
-            env = _build_env(config)
+            env = await _build_env(config)
             assert env["MY_SECRET"] == "s3cret"
 
-    def test_optional_env_vars_included_when_present(self):
+    async def test_optional_env_vars_included_when_present(self):
         config = _make_config(env_optional=["OPT_VAR"])
         with patch.dict(
             os.environ,
             {"ANTHROPIC_API_KEY": "sk-key", "OPT_VAR": "opt-val"},
             clear=False,
         ):
-            env = _build_env(config)
+            env = await _build_env(config)
             assert env["OPT_VAR"] == "opt-val"
 
-    def test_optional_env_vars_excluded_when_absent(self):
+    async def test_optional_env_vars_excluded_when_absent(self):
         config = _make_config(env_optional=["MISSING_OPT"])
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-key"}, clear=False):
             # Ensure the var is not set
             os.environ.pop("MISSING_OPT", None)
-            env = _build_env(config)
+            env = await _build_env(config)
             assert "MISSING_OPT" not in env
 
-    def test_module_credentials_included(self):
+    async def test_module_credentials_included(self):
         config = _make_config()
         module_creds = {"email": ["SMTP_PASSWORD", "IMAP_TOKEN"]}
         with patch.dict(
@@ -382,11 +390,11 @@ class TestCredentialPassthrough:
             },
             clear=False,
         ):
-            env = _build_env(config, module_credentials_env=module_creds)
+            env = await _build_env(config, module_credentials_env=module_creds)
             assert env["SMTP_PASSWORD"] == "pw123"
             assert env["IMAP_TOKEN"] == "tok456"
 
-    def test_undeclared_vars_not_leaked(self):
+    async def test_undeclared_vars_not_leaked(self):
         config = _make_config(env_required=["DECLARED"])
         with patch.dict(
             os.environ,
@@ -397,17 +405,73 @@ class TestCredentialPassthrough:
             },
             clear=False,
         ):
-            env = _build_env(config)
+            env = await _build_env(config)
             assert "UNDECLARED_SECRET" not in env
             assert "DECLARED" in env
 
-    def test_anthropic_key_missing_not_included(self):
+    async def test_anthropic_key_missing_not_included(self):
         config = _make_config()
         env_copy = os.environ.copy()
         env_copy.pop("ANTHROPIC_API_KEY", None)
         with patch.dict(os.environ, env_copy, clear=True):
-            env = _build_env(config)
+            env = await _build_env(config)
             assert "ANTHROPIC_API_KEY" not in env
+
+    # ------------------------------------------------------------------
+    # DB-first resolution path (with mocked CredentialStore)
+    # ------------------------------------------------------------------
+
+    async def test_db_resolution_anthropic_key(self):
+        """ANTHROPIC_API_KEY resolved from DB takes precedence over env."""
+        config = _make_config()
+        store = AsyncMock()
+        store.resolve = AsyncMock(
+            side_effect=lambda key: "db-sk-key" if key == "ANTHROPIC_API_KEY" else None
+        )
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "env-sk-key"}, clear=False):
+            env = await _build_env(config, credential_store=store)
+        assert env["ANTHROPIC_API_KEY"] == "db-sk-key"
+
+    async def test_db_resolution_env_fallback_when_db_miss(self):
+        """When DB has no value, env var is used as fallback via CredentialStore.resolve()."""
+        config = _make_config()
+        store = AsyncMock()
+        # resolve() returns None (DB miss), CredentialStore already handles env fallback
+        store.resolve = AsyncMock(return_value="env-via-store-fallback")
+        env = await _build_env(config, credential_store=store)
+        assert env["ANTHROPIC_API_KEY"] == "env-via-store-fallback"
+
+    async def test_db_resolution_module_credentials(self):
+        """Module credentials resolved from DB when CredentialStore is provided."""
+        config = _make_config()
+        module_creds = {"email": ["SMTP_PASSWORD", "IMAP_TOKEN"]}
+        store = AsyncMock()
+        resolved = {
+            "ANTHROPIC_API_KEY": "sk-key",
+            "SMTP_PASSWORD": "db-smtp-pw",
+            "IMAP_TOKEN": "db-imap-tok",
+        }
+        store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
+        env = await _build_env(config, module_credentials_env=module_creds, credential_store=store)
+        assert env["SMTP_PASSWORD"] == "db-smtp-pw"
+        assert env["IMAP_TOKEN"] == "db-imap-tok"
+
+    async def test_db_resolution_required_env_vars(self):
+        """butler-level required env vars resolved from DB when CredentialStore is provided."""
+        config = _make_config(env_required=["MY_SECRET"])
+        resolved = {"ANTHROPIC_API_KEY": "sk-key", "MY_SECRET": "db-secret-value"}
+        store = AsyncMock()
+        store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
+        env = await _build_env(config, credential_store=store)
+        assert env["MY_SECRET"] == "db-secret-value"
+
+    async def test_db_resolution_missing_key_excluded(self):
+        """When DB and env have no value for a key, it is excluded from env dict."""
+        config = _make_config(env_required=["MISSING_KEY"])
+        store = AsyncMock()
+        store.resolve = AsyncMock(return_value=None)  # Nothing found anywhere
+        env = await _build_env(config, credential_store=store)
+        assert "MISSING_KEY" not in env
 
     async def test_env_passed_to_adapter(self, tmp_path: Path):
         """Verify the env dict is passed through to the adapter."""
@@ -433,6 +497,31 @@ class TestCredentialPassthrough:
         passed_env = adapter.calls[0]["env"]
         assert passed_env["ANTHROPIC_API_KEY"] == "sk-key"
         assert passed_env["BUTLER_SECRET"] == "s3cret"
+
+    async def test_spawner_with_credential_store_passes_db_values_to_adapter(self, tmp_path: Path):
+        """Spawner with credential_store resolves credentials from DB for spawned instances."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(env_required=["MY_API_KEY"])
+
+        store = AsyncMock()
+        resolved = {"ANTHROPIC_API_KEY": "db-anthropic", "MY_API_KEY": "db-my-api-key"}
+        store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
+
+        adapter = MockAdapter(result_text="", capture=True)
+        spawner = Spawner(
+            config=config,
+            config_dir=config_dir,
+            runtime=adapter,
+            credential_store=store,
+        )
+
+        await spawner.trigger("test db creds", "tick")
+
+        assert len(adapter.calls) == 1
+        passed_env = adapter.calls[0]["env"]
+        assert passed_env["ANTHROPIC_API_KEY"] == "db-anthropic"
+        assert passed_env["MY_API_KEY"] == "db-my-api-key"
 
 
 # ---------------------------------------------------------------------------
