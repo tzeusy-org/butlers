@@ -22,9 +22,9 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - CONNECTOR_CURSOR_PATH (required; stores last historyId)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_HEALTH_PORT (optional, default 8080)
-- GMAIL_CLIENT_ID (required)
-- GMAIL_CLIENT_SECRET (required)
-- GMAIL_REFRESH_TOKEN (required)
+- GMAIL_CLIENT_ID or GOOGLE_OAUTH_CLIENT_ID (required; GMAIL_CLIENT_ID takes priority)
+- GMAIL_CLIENT_SECRET or GOOGLE_OAUTH_CLIENT_SECRET (required)
+- GMAIL_REFRESH_TOKEN or GOOGLE_REFRESH_TOKEN (required)
 - GMAIL_WATCH_RENEW_INTERVAL_S (optional, default 86400 = 1 day)
 - GMAIL_POLL_INTERVAL_S (optional, default 60)
 - GMAIL_PUBSUB_ENABLED (optional, default false; enables Pub/Sub push mode)
@@ -58,6 +58,7 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
+from butlers.startup_guard import require_google_credentials_or_exit
 from butlers.storage.blobs import BlobStore
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,32 @@ class GmailConnectorConfig(BaseModel):
         pubsub_webhook_path = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook")
         pubsub_webhook_token = os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN")
 
+        # Resolve OAuth credentials: accept GOOGLE_OAUTH_* aliases as fallbacks
+        # so that credentials from the shared Google OAuth bootstrap work directly.
+        gmail_client_id = os.environ.get("GMAIL_CLIENT_ID") or os.environ.get(
+            "GOOGLE_OAUTH_CLIENT_ID"
+        )
+        gmail_client_secret = os.environ.get("GMAIL_CLIENT_SECRET") or os.environ.get(
+            "GOOGLE_OAUTH_CLIENT_SECRET"
+        )
+        gmail_refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN") or os.environ.get(
+            "GOOGLE_REFRESH_TOKEN"
+        )
+
+        missing_cred_vars = []
+        if not gmail_client_id:
+            missing_cred_vars.append("GMAIL_CLIENT_ID (or GOOGLE_OAUTH_CLIENT_ID)")
+        if not gmail_client_secret:
+            missing_cred_vars.append("GMAIL_CLIENT_SECRET (or GOOGLE_OAUTH_CLIENT_SECRET)")
+        if not gmail_refresh_token:
+            missing_cred_vars.append("GMAIL_REFRESH_TOKEN (or GOOGLE_REFRESH_TOKEN)")
+        if missing_cred_vars:
+            missing_str = ", ".join(missing_cred_vars)
+            raise ValueError(
+                f"Google OAuth credentials missing. Set: {missing_str}. "
+                "Run the OAuth bootstrap via the dashboard or set env vars directly."
+            )
+
         return cls(
             switchboard_mcp_url=os.environ["SWITCHBOARD_MCP_URL"],
             connector_provider=os.environ.get("CONNECTOR_PROVIDER", "gmail"),
@@ -192,9 +219,9 @@ class GmailConnectorConfig(BaseModel):
             connector_cursor_path=Path(cursor_path_str),
             connector_max_inflight=max_inflight,
             connector_health_port=health_port,
-            gmail_client_id=os.environ["GMAIL_CLIENT_ID"],
-            gmail_client_secret=os.environ["GMAIL_CLIENT_SECRET"],
-            gmail_refresh_token=os.environ["GMAIL_REFRESH_TOKEN"],
+            gmail_client_id=gmail_client_id,
+            gmail_client_secret=gmail_client_secret,
+            gmail_refresh_token=gmail_refresh_token,
             gmail_watch_renew_interval_s=watch_renew_interval,
             gmail_poll_interval_s=poll_interval,
             gmail_pubsub_enabled=pubsub_enabled,
@@ -1182,6 +1209,7 @@ async def run_gmail_connector() -> None:
 
 def main() -> None:
     """CLI entrypoint for Gmail connector."""
+    require_google_credentials_or_exit(caller="gmail-connector")
     asyncio.run(run_gmail_connector())
 
 
