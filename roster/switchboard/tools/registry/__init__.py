@@ -11,6 +11,7 @@ from butlers.tools.switchboard.registry.registry import (
     resolve_routing_target,
     validate_route_target,
 )
+from butlers.tools.switchboard.registry.sweep import run_eligibility_sweep
 
 __all__ = [
     "DEFAULT_ROUTE_CONTRACT_VERSION",
@@ -21,5 +22,6 @@ __all__ = [
     "list_butlers",
     "register_butler",
     "resolve_routing_target",
+    "run_eligibility_sweep",
     "validate_route_target",
 ]

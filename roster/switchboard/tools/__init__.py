@@ -33,6 +33,7 @@ from butlers.tools.switchboard.registry.registry import (
     resolve_routing_target,
     validate_route_target,
 )
+from butlers.tools.switchboard.registry.sweep import run_eligibility_sweep
 from butlers.tools.switchboard.routing.contracts import (
     IngestEnvelopeV1,
     NotifyRequestV1,
@@ -85,5 +86,6 @@ __all__ = [
     "reset_switchboard_telemetry_for_tests",
     "resolve_routing_target",
     "route",
+    "run_eligibility_sweep",
     "validate_route_target",
 ]
