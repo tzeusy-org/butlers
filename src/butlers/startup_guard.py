@@ -110,7 +110,11 @@ def check_google_credentials() -> GoogleCredentialCheckResult:
                         remediation="",
                     )
         except Exception:
-            pass  # Fall through to individual var check
+            logger.debug(
+                "Failed to parse BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON, "
+                "falling through to individual env var check.",
+                exc_info=True,
+            )
 
     # Check individual env vars
     missing_vars: list[str] = []

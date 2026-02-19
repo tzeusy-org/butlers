@@ -52,18 +52,18 @@ GMAIL_CONNECTOR_ENV_FILE="${PROJECT_DIR}/secrets/connectors/gmail"
 # developers see the warning immediately rather than only inside a pane.
 
 _has_google_creds() {
-  # Check individual env vars first (highest priority, matches GoogleCredentials.from_env order)
+  # Check Calendar-style JSON blob first (matches startup_guard.py priority order)
+  if [ -n "${BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON:-}" ]; then
+    return 0
+  fi
+
+  # Check individual env vars next (mirrors GoogleCredentials.from_env order)
   local client_id="" client_secret="" refresh_token=""
   client_id="${GOOGLE_OAUTH_CLIENT_ID:-${GMAIL_CLIENT_ID:-}}"
   client_secret="${GOOGLE_OAUTH_CLIENT_SECRET:-${GMAIL_CLIENT_SECRET:-}}"
   refresh_token="${GOOGLE_REFRESH_TOKEN:-${GMAIL_REFRESH_TOKEN:-}}"
 
   if [ -n "$client_id" ] && [ -n "$client_secret" ] && [ -n "$refresh_token" ]; then
-    return 0
-  fi
-
-  # Check Calendar-style JSON blob
-  if [ -n "${BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON:-}" ]; then
     return 0
   fi
 
