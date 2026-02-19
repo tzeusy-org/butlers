@@ -27,7 +27,7 @@ def upgrade() -> None:
             scope TEXT NOT NULL DEFAULT 'global',
             maturity TEXT NOT NULL DEFAULT 'candidate',
             confidence FLOAT NOT NULL DEFAULT 0.5,
-            decay_rate FLOAT NOT NULL DEFAULT 0.01,
+            decay_rate FLOAT NOT NULL DEFAULT 0.008,
             permanence TEXT NOT NULL DEFAULT 'standard',
             effectiveness_score FLOAT NOT NULL DEFAULT 0.0,
             applied_count INTEGER NOT NULL DEFAULT 0,
@@ -38,6 +38,9 @@ def upgrade() -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             last_applied_at TIMESTAMPTZ,
             last_evaluated_at TIMESTAMPTZ,
+            last_confirmed_at TIMESTAMPTZ,
+            reference_count INTEGER NOT NULL DEFAULT 0,
+            last_referenced_at TIMESTAMPTZ,
             tags JSONB DEFAULT '[]'::jsonb,
             metadata JSONB DEFAULT '{}'::jsonb
         )
