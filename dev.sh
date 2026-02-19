@@ -9,19 +9,29 @@
 #   Layer 0  — postgres starts + tailscale serve check (outer shell)
 #   Layer 1a — dashboard API starts (postgres healthy)
 #   Layer 1b — telegram connectors + frontend start (no OAuth dependency)
-#   Layer 2  — OAuth gate check (dashboard responsive)
+#   Layer 2  — OAuth gate: wait for dashboard responsive, then poll DB for valid
+#              Google refresh token (Gmail connector + Calendar module dependency)
 #   Layer 3  — butlers up + Gmail connector start (OAuth gate passed)
 #
 # Usage: ./dev.sh [--skip-oauth-check] [--skip-tailscale-check]
 #
 # OAuth Bootstrap:
-#   Before launching the Gmail connector, this script checks whether Google
-#   OAuth credentials are present in the secrets file or environment. If
-#   credentials are missing, a prominent warning is printed and the Gmail
-#   connector pane shows clear instructions for completing the bootstrap via
-#   the dashboard (http://localhost:8200 -> "Connect Google").
+#   Before launching the Gmail connector and Calendar module, this script checks
+#   whether Google OAuth credentials are present in the DB or environment. When
+#   credentials are missing, the script polls the google_oauth_credentials table
+#   (every 5s) until OAuth completes via the dashboard — no manual restart needed.
+#   All other services (backend, Telegram, dashboard) start normally while waiting.
+#
+#   The gate polls the google_oauth_credentials table for a non-null refresh_token.
+#   Once found, Layer 3 proceeds automatically.
 #
 #   To suppress the check and start anyway:  ./dev.sh --skip-oauth-check
+#
+# OAuth Gate Timeout:
+#   By default the gate waits indefinitely (infinite timeout). Set the
+#   OAUTH_GATE_TIMEOUT environment variable to limit the wait:
+#     OAUTH_GATE_TIMEOUT=120 ./dev.sh   # give up after 120s
+#     OAUTH_GATE_TIMEOUT=0  ./dev.sh   # wait forever (default)
 #
 # Tailscale Serve:
 #   Google OAuth requires HTTPS for non-localhost redirect URIs. This script
@@ -105,6 +115,14 @@ fi
 
 DASHBOARD_PORT=8200
 POSTGRES_PORT=54320
+POSTGRES_HOST=127.0.0.1
+POSTGRES_USER=butlers
+POSTGRES_DB_DEFAULT=butler_general
+
+# Configurable OAuth gate timeout. 0 = infinite (default).
+OAUTH_GATE_TIMEOUT="${OAUTH_GATE_TIMEOUT:-0}"
+# Polling interval for the OAuth gate (seconds).
+OAUTH_POLL_INTERVAL=5
 
 _tailscale_serve_check() {
   # Check tailscale CLI is available
@@ -288,6 +306,150 @@ _has_google_creds() {
   return 1
 }
 
+# ── DB-based Google credential check ──────────────────────────────────────
+# Poll the google_oauth_credentials table for a non-null refresh_token.
+# Checks all known butler databases in order. Returns 0 on success.
+
+_poll_db_for_refresh_token() {
+  # Known butler databases in alphabetical order (matches roster discovery order).
+  # The dashboard API stores OAuth credentials to the first registered butler's DB.
+  local dbs=(
+    "butler_general"
+    "butler_health"
+    "butler_messenger"
+    "butler_relationship"
+    "butler_switchboard"
+  )
+
+  local psql_bin
+  psql_bin=$(command -v psql 2>/dev/null || echo "")
+
+  if [ -z "$psql_bin" ]; then
+    # psql not available — fall back to HTTP status endpoint on the dashboard
+    _poll_oauth_via_http && return 0
+    return 1
+  fi
+
+  for db in "${dbs[@]}"; do
+    local result
+    result=$(
+      PGPASSWORD="${POSTGRES_PASSWORD:-butlers}" \
+      psql \
+        -h "${POSTGRES_HOST}" \
+        -p "${POSTGRES_PORT}" \
+        -U "${POSTGRES_USER}" \
+        -d "$db" \
+        -t -c \
+        "SELECT credentials->>'refresh_token' FROM google_oauth_credentials
+         WHERE credential_key = 'google'
+           AND credentials->>'refresh_token' IS NOT NULL
+           AND credentials->>'refresh_token' != ''
+         LIMIT 1" \
+        2>/dev/null || echo ""
+    )
+    # Trim whitespace; non-empty means a valid refresh token was found
+    result="${result#"${result%%[![:space:]]*}"}"
+    result="${result%"${result##*[![:space:]]}"}"
+    if [ -n "$result" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# HTTP fallback: use /api/oauth/status endpoint if psql is unavailable
+_poll_oauth_via_http() {
+  local status_url="http://localhost:${DASHBOARD_PORT}/api/oauth/status"
+  local state
+  state=$(curl -sf "$status_url" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('state',''))" 2>/dev/null || echo "")
+  # OAuthCredentialState.OK is the value when credentials are present
+  [ "$state" = "ok" ]
+}
+
+# ── Layer 2: OAuth gate ────────────────────────────────────────────────────
+# Block the outer shell until Google OAuth credentials are available.
+# Credentials are resolved from env vars first (fast path), then via DB polling.
+# When credentials are missing, displays actionable instructions covering both
+# the Gmail connector and Calendar module — they share the same OAuth bootstrap.
+#
+# The gate polls at most every OAUTH_POLL_INTERVAL seconds. If OAUTH_GATE_TIMEOUT
+# is set to a positive integer, the gate gives up after that many seconds and
+# continues startup (non-blocking fallback, with a warning). Set to 0 for infinite
+# wait (the default).
+
+_oauth_gate() {
+  local poll_interval="${OAUTH_POLL_INTERVAL:-5}"
+  local timeout="${OAUTH_GATE_TIMEOUT:-0}"   # 0 = infinite
+  local elapsed=0
+
+  # Fast path: skip entirely if --skip-oauth-check was given
+  if [ "$SKIP_OAUTH_CHECK" = "true" ]; then
+    return 0
+  fi
+
+  # Fast path: env vars already present
+  if _has_google_creds; then
+    echo "Layer 2: Google OAuth credentials found in environment."
+    return 0
+  fi
+
+  # Slow path: credentials not in env — poll the DB
+  echo ""
+  echo "======================================================================"
+  echo "  Layer 2: Waiting for Google OAuth credentials"
+  echo "======================================================================"
+  echo ""
+  echo "  Google OAuth credentials are required by:"
+  echo "    - Gmail connector      (outbound email delivery)"
+  echo "    - Calendar module      (calendar read/write for all butlers)"
+  echo ""
+  echo "  To complete OAuth bootstrap:"
+  echo "    1. Open http://localhost:${DASHBOARD_PORT} in your browser"
+  echo "    2. Click 'Connect Google' and complete the OAuth flow"
+  echo "    3. Butlers will proceed automatically once credentials are stored"
+  echo ""
+  echo "  Alternatively, set credentials in ${GMAIL_CONNECTOR_ENV_FILE}:"
+  echo "    GOOGLE_OAUTH_CLIENT_ID=<your-client-id>"
+  echo "    GOOGLE_OAUTH_CLIENT_SECRET=<your-client-secret>"
+  echo "    GOOGLE_REFRESH_TOKEN=<your-refresh-token>"
+  echo "  Then rerun: ./dev.sh"
+  echo ""
+  if [ "$timeout" -gt 0 ] 2>/dev/null; then
+    echo "  Polling DB every ${poll_interval}s (timeout: ${timeout}s)..."
+  else
+    echo "  Polling DB every ${poll_interval}s (no timeout — Ctrl+C to abort)..."
+  fi
+  echo "  To skip this gate: ./dev.sh --skip-oauth-check"
+  echo "======================================================================"
+  echo ""
+
+  while true; do
+    if _poll_db_for_refresh_token; then
+      echo "Layer 2: Google OAuth credentials detected in DB — proceeding to Layer 3."
+      echo ""
+      return 0
+    fi
+
+    # Check timeout (0 means infinite)
+    if [ "$timeout" -gt 0 ] 2>/dev/null && [ "$elapsed" -ge "$timeout" ]; then
+      echo "" >&2
+      echo "======================================================================" >&2
+      echo "  WARNING: OAuth gate timed out after ${timeout}s" >&2
+      echo "======================================================================" >&2
+      echo "" >&2
+      echo "  Continuing startup without Google credentials." >&2
+      echo "  Gmail connector and Calendar module will be unavailable." >&2
+      echo "" >&2
+      return 1
+    fi
+
+    sleep "$poll_interval"
+    elapsed=$((elapsed + poll_interval))
+    echo "  Layer 2: Still waiting for Google OAuth... (${elapsed}s elapsed)"
+  done
+}
+
 GOOGLE_CREDS_AVAILABLE=false
 if _has_google_creds; then
   GOOGLE_CREDS_AVAILABLE=true
@@ -296,17 +458,17 @@ fi
 if [ "$GOOGLE_CREDS_AVAILABLE" = "false" ] && [ "$SKIP_OAUTH_CHECK" = "false" ]; then
   echo ""
   echo "======================================================================"
-  echo "  WARNING: Google OAuth credentials not found"
+  echo "  WARNING: Google OAuth credentials not found in environment"
   echo "======================================================================"
   echo ""
-  echo "  The Gmail connector requires Google OAuth credentials to start."
-  echo "  These can be supplied in one of two ways:"
+  echo "  The Gmail connector and Calendar module require Google OAuth"
+  echo "  credentials to start. The OAuth gate (Layer 2) will wait for"
+  echo "  credentials to be stored in the DB via the dashboard."
   echo ""
   echo "  Option A — Dashboard OAuth flow (recommended):"
   echo "    1. Start Butlers and visit http://localhost:8200"
   echo "    2. Click 'Connect Google' and complete the OAuth flow"
-  echo "    3. The refresh token is stored in the DB automatically"
-  echo "    4. Restart the Gmail connector pane (prefix+R in tmux)"
+  echo "    3. Credentials are stored in the DB — Layer 3 starts automatically"
   echo ""
   echo "  Option B — Environment variables in secrets file:"
   echo "    Add to ${GMAIL_CONNECTOR_ENV_FILE}:"
@@ -315,7 +477,7 @@ if [ "$GOOGLE_CREDS_AVAILABLE" = "false" ] && [ "$SKIP_OAUTH_CHECK" = "false" ];
   echo "      GOOGLE_REFRESH_TOKEN=<your-refresh-token>"
   echo "    Then rerun ./dev.sh"
   echo ""
-  echo "  The Gmail connector pane will show this guidance and wait."
+  echo "  Affected components: Gmail connector, Calendar module"
   echo "  All other services (backend, Telegram, dashboard) start normally."
   echo ""
   echo "  To suppress this check: ./dev.sh --skip-oauth-check"
@@ -334,7 +496,7 @@ if [ "$GOOGLE_CREDS_AVAILABLE" = "true" ] || [ "$SKIP_OAUTH_CHECK" = "true" ]; t
   GMAIL_PANE_CMD="${_GMAIL_CMD_BASE} && CONNECTOR_PROVIDER=gmail CONNECTOR_CHANNEL=email CONNECTOR_ENDPOINT_IDENTITY=\${GMAIL_CONNECTOR_ENDPOINT_IDENTITY:-gmail:user:dev} CONNECTOR_CURSOR_PATH=\${GMAIL_CONNECTOR_CURSOR_PATH:-.tmp/connectors/gmail_checkpoint.json} uv run python -m butlers.connectors.gmail"
 else
   # Credentials missing — show instructions and keep pane alive
-  GMAIL_PANE_CMD="echo '' && echo '======================================================================' && echo '  Gmail connector is waiting for Google OAuth credentials.' && echo '======================================================================' && echo '' && echo '  To complete bootstrap:' && echo '    1. Open http://localhost:8200 in your browser' && echo '    2. Click Connect Google and complete the OAuth flow' && echo '    3. Once authorized, restart this pane (tmux: prefix+R or exit+up+Enter)' && echo '' && echo '  Or set credentials in: $GMAIL_CONNECTOR_ENV_FILE' && echo '    GOOGLE_OAUTH_CLIENT_ID=...' && echo '    GOOGLE_OAUTH_CLIENT_SECRET=...' && echo '    GOOGLE_REFRESH_TOKEN=...' && echo '' && echo '  Then rerun: ./dev.sh' && echo '' && echo '  (This pane will remain open — restart it after completing OAuth)' && bash"
+  GMAIL_PANE_CMD="echo '' && echo '======================================================================' && echo '  Gmail connector is waiting for Google OAuth credentials.' && echo '  Also required by: Calendar module.' && echo '======================================================================' && echo '' && echo '  To complete bootstrap:' && echo '    1. Open http://localhost:8200 in your browser' && echo '    2. Click Connect Google and complete the OAuth flow' && echo '    3. Once authorized, restart this pane (tmux: prefix+R or exit+up+Enter)' && echo '' && echo '  Or set credentials in: $GMAIL_CONNECTOR_ENV_FILE' && echo '    GOOGLE_OAUTH_CLIENT_ID=...' && echo '    GOOGLE_OAUTH_CLIENT_SECRET=...' && echo '    GOOGLE_REFRESH_TOKEN=...' && echo '' && echo '  Then rerun: ./dev.sh' && echo '' && echo '  (This pane will remain open — restart it after completing OAuth)' && bash"
 fi
 
 # Kill existing windows if present (idempotent re-runs)
@@ -378,10 +540,10 @@ tmux send-keys -t "$PANE_TELEGRAM_USER" \
 # Gmail pane shows a waiting message until Layer 3 starts it
 # (populated later after OAuth gate passes)
 
-# ── Layer 2: OAuth gate — wait for dashboard to be responsive ─────────────
-# Block the outer shell until the dashboard API is reachable. Once it is,
-# run the OAuth gate check. This ensures butlers up and Gmail only start
-# after the dashboard is ready to serve OAuth redirects.
+# ── Layer 2: OAuth gate ────────────────────────────────────────────────────
+# Phase A: wait for the dashboard to be responsive.
+# Phase B: poll the DB for a valid Google refresh token.
+# Both phases run in the outer shell. Layer 3 only starts after this completes.
 
 _wait_for_dashboard() {
   local max_wait="${1:-60}"  # seconds
@@ -403,14 +565,17 @@ _wait_for_dashboard() {
   echo "  WARNING: Dashboard API did not respond within ${max_wait}s" >&2
   echo "======================================================================" >&2
   echo "" >&2
-  echo "  Continuing startup — butlers up and Gmail will start without" >&2
-  echo "  OAuth gate confirmation. Check the dashboard pane for errors." >&2
+  echo "  Continuing OAuth gate check — check the dashboard pane for errors." >&2
   echo "" >&2
   return 1
 }
 
-# Wait for dashboard; if it times out, continue rather than abort (non-fatal)
+# Phase A: wait for dashboard (non-fatal timeout — continue regardless)
 _wait_for_dashboard 60 || true
+
+# Phase B: run the OAuth gate (blocking poll)
+# Returns 0 if credentials found (or skipped), 1 if timed out.
+_oauth_gate || true
 
 # ── Layer 3: backend window + Gmail ───────────────────────────────────────
 # butlers up and Gmail connector start only after the OAuth gate has passed.
