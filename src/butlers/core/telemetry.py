@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import functools
 import logging
 import os
@@ -104,9 +105,9 @@ class tool_span:
         # Use the active session context as parent when available.  This
         # ensures tool spans started in HTTP handler tasks (which don't
         # inherit contextvars) still parent to the butler.llm_session span.
-        # When _active_session_context is None, start_span falls back to
-        # the current contextvars context (unchanged default behavior).
-        self._span = tracer.start_span(self._span_name, context=_active_session_context)
+        # When get_active_session_context() returns None, start_span falls
+        # back to the current contextvars context (unchanged default behavior).
+        self._span = tracer.start_span(self._span_name, context=get_active_session_context())
         self._span.set_attribute("butler.name", self._butler_name)
         self._token = trace.context_api.attach(trace.set_span_in_context(self._span))
         # Ensure butler context is correct for multi-butler mode
@@ -126,9 +127,20 @@ class tool_span:
     # -- decorator protocol ------------------------------------------------
 
     def __call__(self, func):  # noqa: ANN001, ANN204
+        # Capture the constructor args so each invocation creates a fresh
+        # tool_span instance.  This is the critical fix for the concurrency
+        # bug: the original ``with self:`` reused the single decorator object,
+        # so concurrent async calls shared ``self._span`` and ``self._token``,
+        # causing OpenTelemetry "token was created in a different Context"
+        # errors and double-end() calls on finished spans.
+        tool_name = self._tool_name
+        butler_name = self._butler_name
+
         @functools.wraps(func)
         async def _wrapper(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-            with self:
+            # Create a fresh context manager for every invocation so that
+            # concurrent calls each have their own _span / _token state.
+            with tool_span(tool_name, butler_name=butler_name):
                 return await func(*args, **kwargs)
 
         return _wrapper
@@ -145,28 +157,43 @@ class tool_span:
 # root span with a new trace ID instead of being a child of the session span.
 #
 # Fix: the Spawner stores the active session's OTel Context here before
-# invoking the runtime, and tool_span reads it back.  The Spawner's
-# asyncio.Lock guarantees serial dispatch, so a plain module-level variable
-# is safe (no concurrent sessions per butler).
+# invoking the runtime, and tool_span reads it back via get_active_session_context().
+#
+# A ContextVar is used (rather than a plain module-level variable) to prevent
+# cross-session trace contamination when max_concurrent_sessions > 1 (the
+# switchboard uses 3 concurrent sessions).  Each asyncio Task inherits its
+# own copy of the ContextVar from the spawning task, so concurrent
+# Spawner._run() coroutines each see their own independent session context.
+#
+# Note: HTTP handler tasks created by uvicorn/FastMCP are spawned from the
+# event-loop root context (not from the spawner task), so they do NOT inherit
+# the ContextVar value and will see the default (None).  This means tool_span
+# in those handlers creates a root span — the same behaviour as before when
+# no session context was set.  The concurrency race condition (where session B
+# overwrote session A's global variable) is eliminated.
 
-_active_session_context: Context | None = None
+_active_session_context_var: contextvars.ContextVar[Context | None] = contextvars.ContextVar(
+    "_active_session_context_var", default=None
+)
 
 
 def set_active_session_context(ctx: Context) -> None:
-    """Store the OTel context of the active LLM session for tool_span to use."""
-    global _active_session_context
-    _active_session_context = ctx
+    """Store the OTel context of the active LLM session for tool_span to use.
+
+    Uses a ContextVar so concurrent sessions each carry their own isolated
+    value; no cross-session contamination when max_concurrent_sessions > 1.
+    """
+    _active_session_context_var.set(ctx)
 
 
 def get_active_session_context() -> Context | None:
     """Return the active session's OTel context, or None if no session is running."""
-    return _active_session_context
+    return _active_session_context_var.get()
 
 
 def clear_active_session_context() -> None:
     """Clear the stored session context (called when the session ends)."""
-    global _active_session_context
-    _active_session_context = None
+    _active_session_context_var.set(None)
 
 
 # ---------------------------------------------------------------------------
