@@ -27,6 +27,7 @@ Metrics emitted:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -349,7 +350,11 @@ class DurableBuffer:
         recovered = 0
         for row in rows:
             request_context = row["request_context"] or {}
+            if isinstance(request_context, str):
+                request_context = json.loads(request_context)
             raw_payload = row["raw_payload"] or {}
+            if isinstance(raw_payload, str):
+                raw_payload = json.loads(raw_payload)
             normalized_text = row["normalized_text"] or ""
 
             if not normalized_text:
