@@ -121,19 +121,10 @@ class GoogleCredentials(BaseModel):
         MissingGoogleCredentialsError
             If required fields cannot be resolved from the environment.
         """
-
-        def _pick(*env_vars: str) -> str:
-            """Return the first non-empty value among env vars."""
-            for var in env_vars:
-                val = os.environ.get(var, "").strip()
-                if val:
-                    return val
-            return ""
-
-        client_id = _pick("GOOGLE_OAUTH_CLIENT_ID")
-        client_secret = _pick("GOOGLE_OAUTH_CLIENT_SECRET")
-        refresh_token = _pick("GOOGLE_REFRESH_TOKEN")
-        scope = _pick("GOOGLE_OAUTH_SCOPES") or None
+        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+        refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "").strip()
+        scope = os.environ.get("GOOGLE_OAUTH_SCOPES", "").strip() or None
 
         missing = [
             name
