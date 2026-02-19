@@ -429,9 +429,9 @@ class TestResolveGoogleCredentialsWithCredentialStore:
         pool = _make_empty_pool()
         store = CredentialStore(pool)
         env = {
-            "GMAIL_CLIENT_ID": "env-cid",
-            "GMAIL_CLIENT_SECRET": "env-csecret",
-            "GMAIL_REFRESH_TOKEN": "env-rtoken",
+            "GOOGLE_OAUTH_CLIENT_ID": "env-cid",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "env-csecret",
+            "GOOGLE_REFRESH_TOKEN": "env-rtoken",
         }
         with mock.patch.dict("os.environ", env, clear=True):
             creds = await resolve_google_credentials(store, caller="test")
@@ -450,9 +450,9 @@ class TestResolveGoogleCredentialsWithCredentialStore:
         pool = _make_pool_with_values({KEY_CLIENT_ID: "cid"})
         store = CredentialStore(pool)
         env = {
-            "GMAIL_CLIENT_ID": "env-cid",
-            "GMAIL_CLIENT_SECRET": "env-csecret",
-            "GMAIL_REFRESH_TOKEN": "env-rtoken",
+            "GOOGLE_OAUTH_CLIENT_ID": "env-cid",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "env-csecret",
+            "GOOGLE_REFRESH_TOKEN": "env-rtoken",
         }
         with mock.patch.dict("os.environ", env, clear=True):
             creds = await resolve_google_credentials(store, caller="test")
@@ -468,9 +468,9 @@ class TestResolveGoogleCredentialsWithCredentialStore:
         )
         store = CredentialStore(pool)
         env = {
-            "GMAIL_CLIENT_ID": "env-cid",
-            "GMAIL_CLIENT_SECRET": "env-csecret",
-            "GMAIL_REFRESH_TOKEN": "env-rtoken",
+            "GOOGLE_OAUTH_CLIENT_ID": "env-cid",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "env-csecret",
+            "GOOGLE_REFRESH_TOKEN": "env-rtoken",
         }
         with mock.patch.dict("os.environ", env, clear=True):
             creds = await resolve_google_credentials(store, caller="test")

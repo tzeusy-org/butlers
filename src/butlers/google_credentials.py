@@ -36,21 +36,19 @@ Usage — loading at module startup::
     client_id = creds.client_id
     refresh_token = creds.refresh_token
 
-Environment variable fallback (for backward compatibility)::
+Environment variable fallback (for bootstrap compatibility)::
 
     creds = GoogleCredentials.from_env()
 
 Where the following env vars are consulted:
-- ``GOOGLE_OAUTH_CLIENT_ID`` or ``GMAIL_CLIENT_ID`` (client_id)
-- ``GOOGLE_OAUTH_CLIENT_SECRET`` or ``GMAIL_CLIENT_SECRET`` (client_secret)
-- ``GOOGLE_REFRESH_TOKEN`` or ``GMAIL_REFRESH_TOKEN`` (refresh_token)
+- ``GOOGLE_OAUTH_CLIENT_ID`` (client_id)
+- ``GOOGLE_OAUTH_CLIENT_SECRET`` (client_secret)
+- ``GOOGLE_REFRESH_TOKEN`` (refresh_token)
 - ``GOOGLE_OAUTH_SCOPES`` (scope, optional)
-- ``BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON`` (JSON blob, Calendar-style)
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import Any
@@ -111,51 +109,30 @@ class GoogleCredentials(BaseModel):
     def from_env(cls) -> GoogleCredentials:
         """Build credentials from environment variables.
 
-        Checks several well-known variable names for maximum backward
-        compatibility with both the Gmail connector and Calendar module:
+        Reads canonical environment variable names only:
 
-        - client_id: ``GOOGLE_OAUTH_CLIENT_ID`` | ``GMAIL_CLIENT_ID``
-        - client_secret: ``GOOGLE_OAUTH_CLIENT_SECRET`` | ``GMAIL_CLIENT_SECRET``
-        - refresh_token: ``GOOGLE_REFRESH_TOKEN`` | ``GMAIL_REFRESH_TOKEN``
+        - client_id: ``GOOGLE_OAUTH_CLIENT_ID``
+        - client_secret: ``GOOGLE_OAUTH_CLIENT_SECRET``
+        - refresh_token: ``GOOGLE_REFRESH_TOKEN``
         - scope: ``GOOGLE_OAUTH_SCOPES`` (optional)
-
-        Also accepts the Calendar-style JSON blob via
-        ``BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON``, which is parsed and
-        merged into any present individual variables.
 
         Raises
         ------
         MissingGoogleCredentialsError
             If required fields cannot be resolved from the environment.
         """
-        # Try Calendar-style JSON blob first
-        cal_json_raw = os.environ.get("BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON", "").strip()
-        cal_data: dict[str, str] = {}
-        if cal_json_raw:
-            try:
-                parsed = json.loads(cal_json_raw)
-                if isinstance(parsed, dict):
-                    cal_data = {k: v for k, v in parsed.items() if isinstance(v, str)}
-            except json.JSONDecodeError:
-                pass  # Ignore malformed JSON — fall through to individual vars
 
-        def _pick(*env_vars: str, fallback: str = "") -> str:
+        def _pick(*env_vars: str) -> str:
             """Return the first non-empty value among env vars."""
             for var in env_vars:
                 val = os.environ.get(var, "").strip()
                 if val:
                     return val
-            return fallback
+            return ""
 
-        client_id = _pick("GOOGLE_OAUTH_CLIENT_ID", "GMAIL_CLIENT_ID") or cal_data.get(
-            "client_id", ""
-        )
-        client_secret = _pick("GOOGLE_OAUTH_CLIENT_SECRET", "GMAIL_CLIENT_SECRET") or cal_data.get(
-            "client_secret", ""
-        )
-        refresh_token = _pick("GOOGLE_REFRESH_TOKEN", "GMAIL_REFRESH_TOKEN") or cal_data.get(
-            "refresh_token", ""
-        )
+        client_id = _pick("GOOGLE_OAUTH_CLIENT_ID")
+        client_secret = _pick("GOOGLE_OAUTH_CLIENT_SECRET")
+        refresh_token = _pick("GOOGLE_REFRESH_TOKEN")
         scope = _pick("GOOGLE_OAUTH_SCOPES") or None
 
         missing = [
@@ -171,9 +148,8 @@ class GoogleCredentials(BaseModel):
             raise MissingGoogleCredentialsError(
                 f"Missing required Google credential field(s) from environment: "
                 f"{', '.join(missing)}. "
-                f"Set GOOGLE_OAUTH_CLIENT_ID / GMAIL_CLIENT_ID, "
-                f"GOOGLE_OAUTH_CLIENT_SECRET / GMAIL_CLIENT_SECRET, and "
-                f"GOOGLE_REFRESH_TOKEN / GMAIL_REFRESH_TOKEN."
+                f"Set GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and "
+                f"GOOGLE_REFRESH_TOKEN."
             )
 
         return cls(
@@ -548,9 +524,8 @@ async def resolve_google_credentials(
         raise MissingGoogleCredentialsError(
             f"[{caller}] Google OAuth credentials are not available. "
             f"Bootstrap via GET /api/oauth/google/start, or set the environment "
-            f"variables GOOGLE_OAUTH_CLIENT_ID / GMAIL_CLIENT_ID, "
-            f"GOOGLE_OAUTH_CLIENT_SECRET / GMAIL_CLIENT_SECRET, and "
-            f"GOOGLE_REFRESH_TOKEN / GMAIL_REFRESH_TOKEN. "
+            f"variables GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and "
+            f"GOOGLE_REFRESH_TOKEN. "
             f"Details: {env_exc}"
         ) from env_exc
 

@@ -56,9 +56,9 @@ calendar_id = "butler@group.calendar.google.com"
 default_conflict_policy = "suggest"
 ```
 
-Calendar setup requires Google OAuth credentials in
-`BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON` and a dedicated subcalendar per
-calendar-enabled butler. See `docs/CALENDAR_SETUP_RUNBOOK.md` for the full
+Calendar setup requires Google OAuth credentials stored via the dashboard
+OAuth bootstrap flow (DB-first). A dedicated subcalendar per calendar-enabled
+butler is also required. See `docs/CALENDAR_SETUP_RUNBOOK.md` for the full
 provisioning and validation workflow.
 
 ## Architecture

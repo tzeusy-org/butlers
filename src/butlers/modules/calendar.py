@@ -40,7 +40,6 @@ ApprovalEnqueuer = Callable[
     Coroutine[Any, Any, str],
 ]
 
-GOOGLE_CALENDAR_CREDENTIALS_ENV = "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON"
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_CALENDAR_API_BASE_URL = "https://www.googleapis.com/calendar/v3"
 BUTLER_EVENT_TITLE_PREFIX = "BUTLER:"
@@ -115,40 +114,54 @@ class _GoogleOAuthCredentials(BaseModel):
 
     @classmethod
     def from_env(cls) -> _GoogleOAuthCredentials:
-        """Load credentials from the legacy BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON env var.
+        """Load credentials from canonical Google OAuth environment variables.
 
-        .. deprecated::
-            BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON is deprecated. Credentials should be
-            bootstrapped via the dashboard OAuth flow and stored in the database. The
-            CalendarModule now calls resolve_google_credentials(pool) at startup, which
-            performs DB-first resolution with env-var fallback. This method is retained
-            only for backward compatibility when no DB pool is available.
+        Reads ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``, and
+        ``GOOGLE_REFRESH_TOKEN``.  This method is a last-resort fallback when neither
+        CredentialStore nor the database contains credentials.  Prefer the dashboard
+        OAuth bootstrap flow which stores credentials in the database.
+
+        Raises
+        ------
+        CalendarCredentialError
+            If any required environment variable is not set.
         """
-        logger.warning(
-            "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON env var is deprecated. "
-            "Use the dashboard OAuth flow to store credentials in the database. "
-            "See docs/oauth/google/setup-guide.md for instructions."
-        )
-        raw_value = os.environ.get(GOOGLE_CALENDAR_CREDENTIALS_ENV, "").strip()
-        if not raw_value:
+        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+        client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+        refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "").strip()
+
+        missing = [
+            name
+            for name, val in [
+                ("GOOGLE_OAUTH_CLIENT_ID", client_id),
+                ("GOOGLE_OAUTH_CLIENT_SECRET", client_secret),
+                ("GOOGLE_REFRESH_TOKEN", refresh_token),
+            ]
+            if not val
+        ]
+        if missing:
             raise CalendarCredentialError(
-                f"{GOOGLE_CALENDAR_CREDENTIALS_ENV} must be set to a non-empty JSON object"
+                f"Missing required Google credential environment variable(s): "
+                f"{', '.join(missing)}. "
+                f"Use the dashboard OAuth flow to store credentials in the database, "
+                f"or set these environment variables directly."
             )
-        return cls.from_json(raw_value)
+
+        return cls(
+            client_id=client_id,
+            client_secret=client_secret,
+            refresh_token=refresh_token,
+        )
 
     @classmethod
     def from_json(cls, raw_value: str) -> _GoogleOAuthCredentials:
         try:
             payload = json.loads(raw_value)
         except json.JSONDecodeError as exc:
-            raise CalendarCredentialError(
-                f"{GOOGLE_CALENDAR_CREDENTIALS_ENV} must be valid JSON: {exc.msg}"
-            ) from exc
+            raise CalendarCredentialError(f"Credential JSON must be valid JSON: {exc.msg}") from exc
 
         if not isinstance(payload, dict):
-            raise CalendarCredentialError(
-                f"{GOOGLE_CALENDAR_CREDENTIALS_ENV} must decode to a JSON object"
-            )
+            raise CalendarCredentialError("Credential JSON must decode to a JSON object")
 
         credential_data = {
             "client_id": _extract_google_credential_value(payload, "client_id"),
@@ -160,7 +173,7 @@ class _GoogleOAuthCredentials(BaseModel):
         if missing:
             field_list = ", ".join(missing)
             raise CalendarCredentialError(
-                f"{GOOGLE_CALENDAR_CREDENTIALS_ENV} is missing required field(s): {field_list}"
+                f"Credential JSON is missing required field(s): {field_list}"
             )
 
         invalid = sorted(
@@ -171,8 +184,7 @@ class _GoogleOAuthCredentials(BaseModel):
         if invalid:
             field_list = ", ".join(invalid)
             raise CalendarCredentialError(
-                f"{GOOGLE_CALENDAR_CREDENTIALS_ENV} must contain non-empty string "
-                f"field(s): {field_list}"
+                f"Credential JSON must contain non-empty string field(s): {field_list}"
             )
 
         return cls(
@@ -303,30 +315,17 @@ def _safe_google_error_message(response: httpx.Response) -> str:
 def _redact_credential_values(message: str) -> str:
     """Redact known credential values from an error message (spec section 15.3).
 
-    Reads credential JSON from the environment and replaces any credential field
-    values found in the message with ``[REDACTED]``.  This guards against
+    Reads canonical Google OAuth environment variables and replaces any credential
+    field values found in the message with ``[REDACTED]``.  This guards against
     transitive leakage when a credential value appears in an exception message,
     regardless of the credential length.
     """
-    raw_creds = os.environ.get(GOOGLE_CALENDAR_CREDENTIALS_ENV, "")
-    if not raw_creds:
-        return message
-    try:
-        payload = json.loads(raw_creds)
-    except (ValueError, TypeError):
-        return message
-    if not isinstance(payload, dict):
-        return message
-
-    # Collect all string values recursively (handles nested "installed"/"web" objects).
+    # Collect values from canonical env vars to redact from error messages.
     values_to_redact: list[str] = []
-    for v in payload.values():
-        if isinstance(v, str) and v.strip():
-            values_to_redact.append(v.strip())
-        elif isinstance(v, dict):
-            for nested_v in v.values():
-                if isinstance(nested_v, str) and nested_v.strip():
-                    values_to_redact.append(nested_v.strip())
+    for var in ("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"):
+        val = os.environ.get(var, "").strip()
+        if val:
+            values_to_redact.append(val)
 
     result = message
     for secret in values_to_redact:
@@ -2243,7 +2242,7 @@ class CalendarModule(Module):
 
     @property
     def credentials_env(self) -> list[str]:
-        return [GOOGLE_CALENDAR_CREDENTIALS_ENV]
+        return ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"]
 
     def migration_revisions(self) -> str | None:
         return None

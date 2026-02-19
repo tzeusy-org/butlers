@@ -16,7 +16,6 @@ from butlers.modules.calendar import (
     BUTLER_GENERATED_PRIVATE_KEY,
     BUTLER_NAME_PRIVATE_KEY,
     GOOGLE_CALENDAR_API_BASE_URL,
-    GOOGLE_CALENDAR_CREDENTIALS_ENV,
     GOOGLE_OAUTH_TOKEN_URL,
     AttendeeInfo,
     CalendarConfig,
@@ -69,7 +68,10 @@ class TestModuleABCCompliance:
         assert CalendarModule().migration_revisions() is None
 
     def test_credentials_env_declared(self):
-        assert CalendarModule().credentials_env == [GOOGLE_CALENDAR_CREDENTIALS_ENV]
+        env = CalendarModule().credentials_env
+        assert "GOOGLE_OAUTH_CLIENT_ID" in env
+        assert "GOOGLE_OAUTH_CLIENT_SECRET" in env
+        assert "GOOGLE_REFRESH_TOKEN" in env
 
 
 class TestCalendarConfig:
@@ -155,16 +157,9 @@ class TestModuleStartup:
     """Verify startup provider selection behavior."""
 
     async def test_startup_accepts_supported_provider(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "client_id": "test-client-id",
-                    "client_secret": "test-client-secret",
-                    "refresh_token": "test-refresh-token",
-                }
-            ),
-        )
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "test-refresh-token")
         mod = CalendarModule()
         await mod.on_startup({"provider": "google", "calendar_id": "primary"}, db=None)
 
@@ -1093,52 +1088,51 @@ class TestGoogleCredentialParsing:
     """Verify credential JSON parsing and validation errors."""
 
     def test_missing_env_is_explicit(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.delenv(GOOGLE_CALENDAR_CREDENTIALS_ENV, raising=False)
+        monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("GOOGLE_REFRESH_TOKEN", raising=False)
 
         with pytest.raises(CalendarCredentialError) as excinfo:
             _GoogleOAuthCredentials.from_env()
 
-        assert GOOGLE_CALENDAR_CREDENTIALS_ENV in str(excinfo.value)
-        assert "must be set" in str(excinfo.value)
+        msg = str(excinfo.value)
+        assert "GOOGLE_OAUTH_CLIENT_ID" in msg or "missing" in msg.lower()
 
     def test_invalid_json_is_explicit(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv(GOOGLE_CALENDAR_CREDENTIALS_ENV, "{not-valid-json")
-
+        """from_json() raises CalendarCredentialError for malformed JSON."""
         with pytest.raises(CalendarCredentialError) as excinfo:
-            _GoogleOAuthCredentials.from_env()
+            from butlers.modules.calendar import _GoogleOAuthCredentials
 
-        assert GOOGLE_CALENDAR_CREDENTIALS_ENV in str(excinfo.value)
-        assert "must be valid JSON" in str(excinfo.value)
+            _GoogleOAuthCredentials.from_json("{not-valid-json")
+
+        assert "valid JSON" in str(excinfo.value)
 
     def test_missing_fields_are_explicit(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps({"client_id": "client-id-only"}),
-        )
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id-only")
+        monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("GOOGLE_REFRESH_TOKEN", raising=False)
 
         with pytest.raises(CalendarCredentialError) as excinfo:
             _GoogleOAuthCredentials.from_env()
 
         message = str(excinfo.value)
-        assert "missing required field(s)" in message
-        assert "client_secret" in message
-        assert "refresh_token" in message
+        assert "missing" in message.lower() or "GOOGLE_OAUTH_CLIENT_SECRET" in message
+        assert "client_secret" in message or "GOOGLE_OAUTH_CLIENT_SECRET" in message
+        assert "refresh_token" in message or "GOOGLE_REFRESH_TOKEN" in message
 
-    def test_supports_installed_json_shape(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "installed": {
-                        "client_id": "installed-client-id",
-                        "client_secret": "installed-client-secret",
-                    },
-                    "refresh_token": "installed-refresh-token",
-                }
-            ),
+    def test_supports_installed_json_shape_via_from_json(self):
+        """from_json() supports the nested 'installed' JSON shape."""
+        raw_json = json.dumps(
+            {
+                "installed": {
+                    "client_id": "installed-client-id",
+                    "client_secret": "installed-client-secret",
+                },
+                "refresh_token": "installed-refresh-token",
+            }
         )
 
-        creds = _GoogleOAuthCredentials.from_env()
+        creds = _GoogleOAuthCredentials.from_json(raw_json)
         assert creds.client_id == "installed-client-id"
         assert creds.client_secret == "installed-client-secret"
         assert creds.refresh_token == "installed-refresh-token"

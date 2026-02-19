@@ -13,13 +13,11 @@ Covers:
 
 from __future__ import annotations
 
-import json
 import unittest.mock as mock
 
 import pytest
 
 from butlers.startup_guard import (
-    _CALENDAR_JSON_ENV,
     _CREDENTIAL_FIELD_ALIASES,
     GoogleCredentialCheckResult,
     check_google_credentials,
@@ -38,7 +36,6 @@ pytestmark = pytest.mark.unit
 def _all_google_env_vars_cleared() -> dict[str, str]:
     """Return a dict with all Google credential env vars set to empty."""
     all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
-    all_vars.append(_CALENDAR_JSON_ENV)
     return {v: "" for v in all_vars}
 
 
@@ -46,12 +43,6 @@ FULL_ENV = {
     "GOOGLE_OAUTH_CLIENT_ID": "gid-123",
     "GOOGLE_OAUTH_CLIENT_SECRET": "gsecret-xyz",
     "GOOGLE_REFRESH_TOKEN": "1//gtoken-abc",
-}
-
-GMAIL_ENV = {
-    "GMAIL_CLIENT_ID": "gmail-id-456",
-    "GMAIL_CLIENT_SECRET": "gmail-secret",
-    "GMAIL_REFRESH_TOKEN": "1//gmail-token",
 }
 
 
@@ -67,36 +58,6 @@ class TestCheckGoogleCredentialsPresent:
             result = check_google_credentials()
         assert result.ok is True
         assert result.missing_vars == []
-
-    def test_returns_ok_with_gmail_env_vars(self) -> None:
-        clear = _all_google_env_vars_cleared()
-        with mock.patch.dict("os.environ", {**clear, **GMAIL_ENV}):
-            result = check_google_credentials()
-        assert result.ok is True
-
-    def test_returns_ok_with_calendar_json_blob(self) -> None:
-        blob = json.dumps(
-            {
-                "client_id": "cal-id",
-                "client_secret": "cal-secret",
-                "refresh_token": "cal-token",
-            }
-        )
-        clear = _all_google_env_vars_cleared()
-        with mock.patch.dict("os.environ", {**clear, _CALENDAR_JSON_ENV: blob}):
-            result = check_google_credentials()
-        assert result.ok is True
-
-    def test_returns_ok_with_mixed_google_and_gmail_vars(self) -> None:
-        clear = _all_google_env_vars_cleared()
-        mixed = {
-            "GOOGLE_OAUTH_CLIENT_ID": "gid",
-            "GMAIL_CLIENT_SECRET": "gsecret",
-            "GOOGLE_REFRESH_TOKEN": "gtoken",
-        }
-        with mock.patch.dict("os.environ", {**clear, **mixed}):
-            result = check_google_credentials()
-        assert result.ok is True
 
     def test_result_has_empty_remediation_when_ok(self) -> None:
         clear = _all_google_env_vars_cleared()
@@ -129,7 +90,8 @@ class TestCheckGoogleCredentialsMissing:
 
     def test_returns_not_ok_when_partial_missing(self) -> None:
         clear = _all_google_env_vars_cleared()
-        with mock.patch.dict("os.environ", {**clear, "GMAIL_CLIENT_ID": "id"}):
+        # Only client_id present, others missing
+        with mock.patch.dict("os.environ", {**clear, "GOOGLE_OAUTH_CLIENT_ID": "id"}):
             result = check_google_credentials()
         assert result.ok is False
         assert "GOOGLE_OAUTH_CLIENT_SECRET" in result.missing_vars
@@ -158,26 +120,10 @@ class TestCheckGoogleCredentialsMissing:
     def test_remediation_does_not_contain_secret_values(self) -> None:
         """Remediation text must not echo back any env var values."""
         clear = _all_google_env_vars_cleared()
-        with mock.patch.dict("os.environ", {**clear, "GMAIL_CLIENT_ID": "SUPER-SECRET-ID"}):
+        with mock.patch.dict("os.environ", {**clear, "GOOGLE_OAUTH_CLIENT_ID": "SUPER-SECRET-ID"}):
             result = check_google_credentials()
         assert "SUPER-SECRET-ID" not in result.remediation
         assert "SUPER-SECRET-ID" not in result.message
-
-    def test_calendar_json_blob_missing_fields_not_ok(self) -> None:
-        """Calendar JSON blob with missing fields falls through to env check."""
-        clear = _all_google_env_vars_cleared()
-        # Blob is missing refresh_token
-        blob = json.dumps({"client_id": "id", "client_secret": "secret"})
-        with mock.patch.dict("os.environ", {**clear, _CALENDAR_JSON_ENV: blob}):
-            result = check_google_credentials()
-        assert result.ok is False
-
-    def test_calendar_json_blob_malformed_falls_through(self) -> None:
-        """Malformed Calendar JSON blob falls through to env check."""
-        clear = _all_google_env_vars_cleared()
-        with mock.patch.dict("os.environ", {**clear, _CALENDAR_JSON_ENV: "not-valid-json{{"}):
-            result = check_google_credentials()
-        assert result.ok is False
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +177,7 @@ class TestRequireGoogleCredentialsOrExit:
     def test_stderr_does_not_contain_secret_values(self, capsys: pytest.CaptureFixture) -> None:
         """Error output must not echo back env var values (even partial/wrong creds)."""
         clear = _all_google_env_vars_cleared()
-        partial = {"GMAIL_CLIENT_ID": "PARTIAL-SECRET-VALUE"}
+        partial = {"GOOGLE_OAUTH_CLIENT_ID": "PARTIAL-SECRET-VALUE"}
         with mock.patch.dict("os.environ", {**clear, **partial}):
             with pytest.raises(SystemExit):
                 require_google_credentials_or_exit(caller="test")
