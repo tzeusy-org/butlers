@@ -49,6 +49,8 @@ import uvicorn
 from fastmcp import Client as MCPClient
 from fastmcp import FastMCP
 from opentelemetry import trace
+from opentelemetry.context import Context as OtelContext
+from opentelemetry.trace import Link as OtelLink
 from pydantic import ConfigDict, ValidationError
 from starlette.requests import ClientDisconnect
 
@@ -968,7 +970,12 @@ class ButlerDaemon:
             row_id: uuid.UUID,
             route_envelope: dict,
         ) -> None:
-            """Dispatch one recovered route_inbox row as a background task."""
+            """Dispatch one recovered route_inbox row as a background task.
+
+            Recovery tasks always start a fresh root span — there is no live accept-phase
+            span to link to (the original request may have come from a previous daemon
+            run).  The request_id attribute allows cross-trace correlation via logs.
+            """
             import json as _json
 
             from butlers.tools.switchboard.routing.contracts import parse_route_envelope
@@ -1022,19 +1029,28 @@ class ButlerDaemon:
 
             context_text = "\n".join(context_parts) if context_parts else None
 
-            await route_inbox_mark_processing(pool, row_id)
-            try:
-                result = await spawner.trigger(
-                    prompt=parsed.input.prompt,
-                    context=context_text,
-                    trigger_source="route",
-                    request_id=route_request_id,
-                )
-                await route_inbox_mark_processed(pool, row_id, result.session_id)
-            except Exception as exc:
-                error_msg = f"{type(exc).__name__}: {exc}"
-                logger.exception("route_inbox recovery: trigger failed for id=%s", row_id)
-                await route_inbox_mark_errored(pool, row_id, error_msg)
+            _tracer = trace.get_tracer("butlers")
+            # Fresh root span for recovery — no accept-phase span to link to.
+            with _tracer.start_as_current_span(
+                "route.process.recovery",
+                context=OtelContext(),
+            ) as _recovery_span:
+                _recovery_span.set_attribute("butler.name", self.config.name)
+                _recovery_span.set_attribute("request_id", route_request_id)
+                await route_inbox_mark_processing(pool, row_id)
+                try:
+                    result = await spawner.trigger(
+                        prompt=parsed.input.prompt,
+                        context=context_text,
+                        trigger_source="route",
+                        request_id=route_request_id,
+                    )
+                    await route_inbox_mark_processed(pool, row_id, result.session_id)
+                except Exception as exc:
+                    error_msg = f"{type(exc).__name__}: {exc}"
+                    logger.exception("route_inbox recovery: trigger failed for id=%s", row_id)
+                    _recovery_span.set_status(trace.StatusCode.ERROR, error_msg)
+                    await route_inbox_mark_errored(pool, row_id, error_msg)
 
         try:
             recovered = await route_inbox_recovery_sweep(
@@ -1328,6 +1344,9 @@ class ButlerDaemon:
                 "butler.tool.route.execute", context=parent_ctx
             ) as _span:
                 _span.set_attribute("butler.name", butler_name)
+                # Capture the accept-phase span context so the background processing
+                # task can link back to it via a SpanLink (cross-trace correlation).
+                accept_span_ctx = _span.get_span_context()
                 return await _route_execute_inner(
                     schema_version=schema_version,
                     request_context=request_context,
@@ -1336,6 +1355,7 @@ class ButlerDaemon:
                     target=target,
                     source_metadata=source_metadata,
                     trace_context=trace_context,
+                    accept_span_ctx=accept_span_ctx,
                 )
 
         async def _route_execute_inner(
@@ -1346,6 +1366,7 @@ class ButlerDaemon:
             target: dict[str, Any] | None = None,
             source_metadata: dict[str, Any] | None = None,
             trace_context: dict[str, str] | None = None,
+            accept_span_ctx: trace.SpanContext | None = None,
         ) -> dict[str, Any]:
             started_at = time.monotonic()
 
@@ -1436,6 +1457,13 @@ class ButlerDaemon:
 
             route_context = parsed_route.request_context.model_dump(mode="json")
             route_request_id = str(parsed_route.request_context.request_id)
+
+            # Annotate the accept-phase span with request_id for cross-trace correlation.
+            # Both the accept span and the process span carry this attribute so operators
+            # can join the two sibling traces by request_id in their observability backend.
+            _current_accept_span = trace.get_current_span()
+            if _current_accept_span.is_recording():
+                _current_accept_span.set_attribute("request_id", route_request_id)
 
             # --- Authn/authz: enforce trusted caller identity ---
             caller_identity = parsed_route.request_context.source_endpoint_identity
@@ -1538,34 +1566,59 @@ class ButlerDaemon:
                     _context: str | None,
                     _request_id: str,
                     _accepted_at: datetime,
+                    _accept_span_ctx: trace.SpanContext | None,
                 ) -> None:
-                    """Background task: call spawner.trigger() and update route_inbox."""
+                    """Background task: call spawner.trigger() and update route_inbox.
+
+                    This task runs as a sibling trace (fresh root span) — it does NOT
+                    inherit the switchboard's OTel context.  A SpanLink back to the
+                    accept-phase span enables cross-trace correlation via request_id.
+                    """
                     # Record how long the request waited in the route_inbox queue
                     process_latency_ms = (datetime.now(UTC) - _accepted_at).total_seconds() * 1000
                     _route_metrics.record_route_process_latency(process_latency_ms)
 
-                    await route_inbox_mark_processing(_pool, _inbox_id)
-                    # Decrement after the DB mark so the gauge stays accurate if
-                    # mark_processing fails (row would still be in accepted state).
-                    _route_metrics.route_queue_depth_dec()
-                    try:
-                        result = await _spawner.trigger(
-                            prompt=_prompt,
-                            context=_context,
-                            # Use 'route' as trigger_source to bypass the self-trigger
-                            # rejection guard (trigger_source=="trigger" deadlock check).
-                            trigger_source="route",
-                            request_id=_request_id,
+                    _tracer = trace.get_tracer("butlers")
+                    # Build SpanLink to the accept-phase span for cross-trace correlation.
+                    _links: list[OtelLink] = []
+                    if _accept_span_ctx is not None and _accept_span_ctx.is_valid:
+                        _links.append(
+                            OtelLink(
+                                context=_accept_span_ctx,
+                                attributes={"request_id": _request_id},
+                            )
                         )
-                        await route_inbox_mark_processed(_pool, _inbox_id, result.session_id)
-                    except Exception as exc:
-                        error_msg = f"{type(exc).__name__}: {exc}"
-                        logger.exception(
-                            "route_inbox: background processing failed for id=%s request_id=%s",
-                            _inbox_id,
-                            _request_id,
-                        )
-                        await route_inbox_mark_errored(_pool, _inbox_id, error_msg)
+                    # Start a fresh root span — do NOT inherit the switchboard's context.
+                    with _tracer.start_as_current_span(
+                        "route.process",
+                        context=OtelContext(),
+                        links=_links,
+                    ) as _process_span:
+                        _process_span.set_attribute("butler.name", butler_name)
+                        _process_span.set_attribute("request_id", _request_id)
+                        await route_inbox_mark_processing(_pool, _inbox_id)
+                        # Decrement after the DB mark so the gauge stays accurate if
+                        # mark_processing fails (row would still be in accepted state).
+                        _route_metrics.route_queue_depth_dec()
+                        try:
+                            result = await _spawner.trigger(
+                                prompt=_prompt,
+                                context=_context,
+                                # Use 'route' as trigger_source to bypass the self-trigger
+                                # rejection guard (trigger_source=="trigger" deadlock check).
+                                trigger_source="route",
+                                request_id=_request_id,
+                            )
+                            await route_inbox_mark_processed(_pool, _inbox_id, result.session_id)
+                        except Exception as exc:
+                            error_msg = f"{type(exc).__name__}: {exc}"
+                            logger.exception(
+                                "route_inbox: background processing failed for id=%s request_id=%s",
+                                _inbox_id,
+                                _request_id,
+                            )
+                            _process_span.set_status(trace.StatusCode.ERROR, error_msg)
+                            await route_inbox_mark_errored(_pool, _inbox_id, error_msg)
 
                 # Record accept-phase metrics: latency and queue depth
                 _route_metrics.record_route_accept_latency(
@@ -1582,6 +1635,7 @@ class ButlerDaemon:
                         context_text,
                         route_request_id,
                         inbox_accepted_at,
+                        accept_span_ctx,
                     ),
                     name=f"route-inbox-{inbox_id}",
                 )
