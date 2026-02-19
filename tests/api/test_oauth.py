@@ -604,3 +604,121 @@ class TestOAuthGoogleCallback:
                 )
 
         assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Tests: credential persistence in callback
+# ---------------------------------------------------------------------------
+
+
+class TestOAuthCallbackCredentialPersistence:
+    """Tests for credential persistence via store_google_credentials in callback."""
+
+    async def test_callback_success_persists_credentials_when_db_manager_available(self):
+        """On success, credentials are stored in DB when DatabaseManager is wired."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from butlers.api.routers import oauth as oauth_module
+
+        app = _make_app()
+        state = _generate_state()
+        _store_state(state)
+
+        # Simulate a DatabaseManager with one butler pool
+        mock_pool = MagicMock()
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_pool.acquire.return_value = mock_conn
+
+        mock_db_manager = MagicMock()
+        mock_db_manager.butler_names = ["switchboard"]
+        mock_db_manager.pool.return_value = mock_pool
+
+        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
+        mock_store = AsyncMock()
+
+        # Override FastAPI dependency so callback receives the mock DB manager
+        app.dependency_overrides[oauth_module._get_db_manager] = lambda: mock_db_manager
+
+        with (
+            patch.dict("os.environ", GOOGLE_ENV, clear=False),
+            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
+            patch("butlers.api.routers.oauth.store_google_credentials", mock_store),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                resp = await client.get(
+                    "/api/oauth/google/callback",
+                    params={"code": "4/code", "state": state},
+                )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        # store_google_credentials should have been called
+        mock_store.assert_awaited_once()
+
+    async def test_callback_success_message_indicates_db_unavailable_when_no_manager(self):
+        """When no DB manager, success message tells operator to set env vars manually."""
+        app = _make_app()
+        state = _generate_state()
+        _store_state(state)
+
+        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
+        # Override _get_db_manager to return None (no DB wired)
+        with (
+            patch.dict("os.environ", GOOGLE_ENV, clear=False),
+            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                resp = await client.get(
+                    "/api/oauth/google/callback",
+                    params={"code": "4/code", "state": state},
+                )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        # Message should mention setting env vars when DB not available
+        assert "env" in body["message"].lower() or "GMAIL" in body["message"]
+
+    async def test_callback_success_still_returns_200_when_db_persist_fails(self):
+        """DB persistence failure is non-fatal; callback still succeeds."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from butlers.api.routers import oauth as oauth_module
+
+        app = _make_app()
+        state = _generate_state()
+        _store_state(state)
+
+        mock_db_manager = MagicMock()
+        mock_db_manager.butler_names = ["switchboard"]
+        mock_db_manager.pool.side_effect = RuntimeError("DB not available")
+
+        # Override FastAPI dependency so callback receives the mock DB manager
+        app.dependency_overrides[oauth_module._get_db_manager] = lambda: mock_db_manager
+
+        mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
+        with (
+            patch.dict("os.environ", GOOGLE_ENV, clear=False),
+            patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://test",
+            ) as client:
+                resp = await client.get(
+                    "/api/oauth/google/callback",
+                    params={"code": "4/code", "state": state},
+                )
+
+        # Must succeed even when DB persistence fails
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True

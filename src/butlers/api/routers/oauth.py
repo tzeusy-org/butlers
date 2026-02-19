@@ -13,8 +13,9 @@ The bootstrap flow:
   2. GET /api/oauth/google/callback
      - Validates the state parameter against the stored state token.
      - Exchanges the authorization code for tokens via Google's token endpoint.
-     - Extracts and logs the refresh token (printed to stdout so the operator
-       can capture it — no DB persistence here; this is a one-off bootstrap).
+     - Extracts and logs the refresh token (redacted) and persists credentials
+       to the shared ``google_oauth_credentials`` DB table. Secret material is
+       never printed or logged in plaintext.
      - Redirects to the dashboard URL on success (if OAUTH_DASHBOARD_URL is set),
        or returns a JSON success payload.
 
@@ -54,7 +55,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from butlers.api.models.oauth import (
@@ -65,8 +66,23 @@ from butlers.api.models.oauth import (
     OAuthStartResponse,
     OAuthStatusResponse,
 )
+from butlers.google_credentials import store_google_credentials
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Optional DB manager dependency for credential persistence
+# ---------------------------------------------------------------------------
+
+
+def _get_db_manager() -> Any:
+    """Stub replaced at startup by wire_db_dependencies().
+
+    When not wired (e.g. in tests that don't boot the full app), returns None
+    so the callback degrades gracefully to log-only mode.
+    """
+    return None
+
 
 router = APIRouter(prefix="/api/oauth", tags=["oauth"])
 
@@ -270,6 +286,7 @@ async def oauth_google_callback(
     error_description: str | None = Query(
         default=None, description="Human-readable error from Google."
     ),
+    db_manager: Any = Depends(_get_db_manager),
 ) -> Response:
     """Handle the Google OAuth callback after user authorization.
 
@@ -365,27 +382,75 @@ async def oauth_google_callback(
         )
         return JSONResponse(status_code=400, content=error_payload.model_dump())
 
-    # --- Emit refresh token to operator logs ---
-    # This is the bootstrap mechanism: the operator reads the token from logs
-    # and stores it in the appropriate environment variable.
-    logger.info("=" * 60)
-    logger.info("Google OAuth bootstrap COMPLETE")
-    logger.info("Refresh token: %s", refresh_token)
-    logger.info("Scope granted: %s", scope)
-    logger.info("Store this token in GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN as needed.")
-    logger.info("=" * 60)
+    # --- Persist credentials to DB and emit to operator logs ---
+    # Secret material (client_secret, refresh_token) is NEVER logged in plaintext.
+    # The DB is the primary persistence mechanism; log output is supplementary.
+    creds_persisted = False
+    if db_manager is not None:
+        # Attempt to persist credentials to the shared google_oauth_credentials table.
+        # This enables both Gmail connector and Calendar module to share a single
+        # OAuth bootstrap without duplicating credentials in env vars.
+        try:
+            # Use any registered butler pool; credentials are bootstrap-wide.
+            butler_names = db_manager.butler_names
+            if butler_names:
+                pool = db_manager.pool(butler_names[0])
+                async with pool.acquire() as conn:
+                    await store_google_credentials(
+                        conn,
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        refresh_token=refresh_token,
+                        scope=scope,
+                    )
+                creds_persisted = True
+                logger.info(
+                    "Google OAuth credentials persisted to DB (client_id=%s)",
+                    client_id,
+                )
+            else:
+                logger.warning(
+                    "No butler DB pools registered; credentials not persisted to DB. "
+                    "Set env vars manually: GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN."
+                )
+        except Exception:
+            logger.warning(
+                "Failed to persist Google credentials to DB; falling back to log-only mode.",
+                exc_info=True,
+            )
 
-    # Also print to stdout for easy capture in dev environments
-    print(f"\n{'=' * 60}")
-    print("Google OAuth Bootstrap Complete")
-    print(f"REFRESH_TOKEN={refresh_token}")
-    print(f"SCOPE_GRANTED={scope}")
-    print("Store this in your secrets file as GMAIL_REFRESH_TOKEN.")
-    print(f"{'=' * 60}\n")
+    logger.info(
+        "Google OAuth bootstrap COMPLETE (client_id=%s, persisted=%s)",
+        client_id,
+        creds_persisted,
+    )
+    logger.info("Scope granted: %s", scope)
+    if not creds_persisted:
+        # DB is not wired; warn the operator. Secrets are never printed or logged.
+        logger.warning(
+            "[BOOTSTRAP] Google credentials could NOT be persisted to DB (no DB pool wired). "
+            "Re-run the OAuth bootstrap with a running database, or set env vars manually: "
+            "GMAIL_CLIENT_ID / GOOGLE_OAUTH_CLIENT_ID, "
+            "GMAIL_CLIENT_SECRET / GOOGLE_OAUTH_CLIENT_SECRET, "
+            "GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN."
+        )
+        print(f"\n{'=' * 60}")
+        print("Google OAuth Bootstrap Complete")
+        print("WARNING: Credentials NOT persisted to DB.")
+        print("Re-run OAuth bootstrap with a running database, or set these env vars manually:")
+        print(f"  GMAIL_CLIENT_ID={client_id}")
+        print("  GMAIL_CLIENT_SECRET=<must be re-obtained via OAuth flow — never printed>")
+        print("  GMAIL_REFRESH_TOKEN=<must be re-obtained via OAuth flow — never printed>")
+        print(f"  GOOGLE_OAUTH_SCOPES={scope}")
+        print(f"{'=' * 60}\n")
 
     success_payload = OAuthCallbackSuccess(
         success=True,
-        message="OAuth bootstrap complete. Refresh token has been printed to server logs.",
+        message=(
+            "OAuth bootstrap complete. Credentials persisted to database."
+            if creds_persisted
+            else "OAuth bootstrap complete. Set GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN."
+        ),
         provider="google",
         scope=scope,
     )
