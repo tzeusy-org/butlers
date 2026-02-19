@@ -59,6 +59,7 @@ from butlers.config import (
     load_config,
     parse_approval_config,
 )
+from butlers.core.metrics import ButlerMetrics, init_metrics
 from butlers.core.route_inbox import (
     route_inbox_insert,
     route_inbox_mark_errored,
@@ -671,8 +672,9 @@ class ButlerDaemon:
         self.blob_store = LocalBlobStore(blob_storage_path)
         logger.info("Initialized blob storage at: %s", blob_storage_path)
 
-        # 2. Initialize telemetry
+        # 2. Initialize telemetry and metrics
         init_telemetry(f"butler.{self.config.name}")
+        init_metrics(f"butler.{self.config.name}")
 
         # 2.5. Detect inline secrets in config
         config_values = _flatten_config_for_secret_scan(self.config)
@@ -1261,6 +1263,7 @@ class ButlerDaemon:
         spawner = self.spawner
         daemon = self
         butler_name = self.config.name
+        _route_metrics = ButlerMetrics(butler_name=butler_name)
 
         @mcp.tool()
         @tool_span("status", butler_name=butler_name)
@@ -1471,6 +1474,7 @@ class ButlerDaemon:
                         message="route.execute: database pool is not available",
                     )
 
+                accept_started_at = time.monotonic()
                 try:
                     inbox_id = await route_inbox_insert(pool, route_envelope=route_payload)
                 except Exception as exc:
@@ -1479,6 +1483,7 @@ class ButlerDaemon:
                         error_class="internal_error",
                         message=f"route.execute: failed to persist to route_inbox: {exc}",
                     )
+                inbox_accepted_at = datetime.now(UTC)
 
                 # --- Process phase (asynchronous): build context and call spawner ---
 
@@ -1532,8 +1537,14 @@ class ButlerDaemon:
                     _prompt: str,
                     _context: str | None,
                     _request_id: str,
+                    _accepted_at: datetime,
                 ) -> None:
                     """Background task: call spawner.trigger() and update route_inbox."""
+                    # Record how long the request waited in the route_inbox queue
+                    process_latency_ms = (datetime.now(UTC) - _accepted_at).total_seconds() * 1000
+                    _route_metrics.record_route_process_latency(process_latency_ms)
+                    _route_metrics.route_queue_depth_dec()
+
                     await route_inbox_mark_processing(_pool, _inbox_id)
                     try:
                         result = await _spawner.trigger(
@@ -1554,6 +1565,12 @@ class ButlerDaemon:
                         )
                         await route_inbox_mark_errored(_pool, _inbox_id, error_msg)
 
+                # Record accept-phase metrics: latency and queue depth
+                _route_metrics.record_route_accept_latency(
+                    (time.monotonic() - accept_started_at) * 1000
+                )
+                _route_metrics.route_queue_depth_inc()
+
                 task = asyncio.create_task(
                     _process_route(
                         inbox_id,
@@ -1562,6 +1579,7 @@ class ButlerDaemon:
                         prompt_text,
                         context_text,
                         route_request_id,
+                        inbox_accepted_at,
                     ),
                     name=f"route-inbox-{inbox_id}",
                 )
