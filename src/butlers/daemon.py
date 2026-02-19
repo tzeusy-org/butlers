@@ -1543,9 +1543,11 @@ class ButlerDaemon:
                     # Record how long the request waited in the route_inbox queue
                     process_latency_ms = (datetime.now(UTC) - _accepted_at).total_seconds() * 1000
                     _route_metrics.record_route_process_latency(process_latency_ms)
-                    _route_metrics.route_queue_depth_dec()
 
                     await route_inbox_mark_processing(_pool, _inbox_id)
+                    # Decrement after the DB mark so the gauge stays accurate if
+                    # mark_processing fails (row would still be in accepted state).
+                    _route_metrics.route_queue_depth_dec()
                     try:
                         result = await _spawner.trigger(
                             prompt=_prompt,
