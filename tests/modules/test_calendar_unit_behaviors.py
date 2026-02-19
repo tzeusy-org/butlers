@@ -26,7 +26,6 @@ from pydantic import ValidationError
 from butlers.modules.calendar import (
     BUTLER_GENERATED_PRIVATE_KEY,
     BUTLER_NAME_PRIVATE_KEY,
-    GOOGLE_CALENDAR_CREDENTIALS_ENV,
     CalendarConfig,
     CalendarCredentialError,
     CalendarEventCreate,
@@ -772,24 +771,21 @@ class TestFindConflictsBoundaryCoercion:
     """Test that find_conflicts coerces types before comparing boundaries."""
 
     @pytest.fixture
-    def google_provider(self, monkeypatch):
-        """Build a _GoogleProvider with mocked credentials and HTTP client."""
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "client_id": "client-id",
-                    "client_secret": "client-secret",
-                    "refresh_token": "refresh-token",
-                }
-            ),
-        )
+    def google_provider(self):
+        """Build a _GoogleProvider with test credentials and mocked HTTP client."""
         config = CalendarConfig(
             provider="google",
             calendar_id="test@example.com",
             timezone="America/New_York",
         )
-        return _GoogleProvider(config=config, http_client=_make_mock_http_client())
+        credentials = _GoogleOAuthCredentials(
+            client_id="client-id",
+            client_secret="client-secret",
+            refresh_token="refresh-token",
+        )
+        return _GoogleProvider(
+            config=config, credentials=credentials, http_client=_make_mock_http_client()
+        )
 
     async def test_find_conflicts_date_boundaries_do_not_raise_type_error(self, google_provider):
         """date boundaries should be coerced to datetime before comparison — no TypeError."""

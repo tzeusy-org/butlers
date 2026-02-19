@@ -15,6 +15,7 @@ from butlers.connectors.gmail import (
     GmailConnectorConfig,
     GmailConnectorRuntime,
     GmailCursor,
+    _resolve_gmail_credentials_from_db,
 )
 
 
@@ -1273,3 +1274,164 @@ class TestGmailAttachmentExtraction:
         assert envelope["schema_version"] == "ingest.v1"
         # attachments should be None when no blob store
         assert envelope["payload"]["attachments"] is None
+
+
+# ---------------------------------------------------------------------------
+# DB-first Gmail credential resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGmailCredentialsFromDb:
+    """Tests for _resolve_gmail_credentials_from_db."""
+
+    async def test_returns_none_when_no_db_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Returns None when DATABASE_URL and POSTGRES_HOST are absent (default localhost)."""
+        import asyncpg
+
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        monkeypatch.delenv("POSTGRES_HOST", raising=False)
+
+        # Patch asyncpg to simulate connection failure (no DB running)
+        async def fake_create_pool(**kwargs):
+            raise Exception("Connection refused")
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_gmail_credentials_from_db()
+        assert result is None
+
+    async def test_returns_none_when_db_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns None gracefully when DB connection fails."""
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+
+        async def fake_create_pool(**kwargs):
+            raise OSError("Connection refused")
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_gmail_credentials_from_db()
+        assert result is None
+
+    async def test_returns_none_when_db_has_no_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Returns None when DB is connected but no credentials are stored."""
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock
+
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow.return_value = None  # No credentials in DB
+
+        @asynccontextmanager
+        async def fake_acquire():
+            yield mock_conn
+
+        mock_pool = MagicMock()
+        mock_pool.acquire = fake_acquire
+        mock_pool.close = AsyncMock()
+
+        async def fake_create_pool(**kwargs):
+            return mock_pool
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_gmail_credentials_from_db()
+        assert result is None
+
+    async def test_returns_credentials_when_db_has_stored_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Returns (client_id, client_secret, refresh_token) when DB has credentials."""
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock
+
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+        monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", "butler_test")
+
+        stored_payload = {
+            "client_id": "db-client-id",
+            "client_secret": "db-client-secret",
+            "refresh_token": "db-refresh-token",
+        }
+        record = MagicMock()
+        record.__getitem__ = lambda self, key: stored_payload
+
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow.return_value = record
+
+        # Use asynccontextmanager to properly mock `async with pool.acquire() as conn:`
+        @asynccontextmanager
+        async def fake_acquire():
+            yield mock_conn
+
+        mock_pool = MagicMock()
+        mock_pool.acquire = fake_acquire
+        mock_pool.close = AsyncMock()
+
+        async def fake_create_pool(**kwargs):
+            return mock_pool
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_gmail_credentials_from_db()
+        assert result is not None
+        client_id, client_secret, refresh_token = result
+        assert client_id == "db-client-id"
+        assert client_secret == "db-client-secret"
+        assert refresh_token == "db-refresh-token"
+
+
+class TestGmailConnectorConfigDeprecationWarnings:
+    """Verify deprecation warnings are emitted for legacy env vars."""
+
+    def test_from_env_warns_for_gmail_client_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """GMAIL_CLIENT_ID without GOOGLE_OAUTH_CLIENT_ID triggers deprecation warning."""
+        import logging
+
+        cursor_path = tmp_path / "cursor.json"
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+        monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.setenv("GMAIL_CLIENT_ID", "legacy-client-id")
+        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "legacy-secret")
+        monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "legacy-token")
+        monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("GOOGLE_REFRESH_TOKEN", raising=False)
+
+        with caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"):
+            GmailConnectorConfig.from_env()
+
+        assert any(
+            "GMAIL_CLIENT_ID" in record.message and "deprecated" in record.message.lower()
+            for record in caplog.records
+        )
+
+    def test_from_env_warns_for_refresh_token_env_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """GMAIL_REFRESH_TOKEN triggers a deprecation warning."""
+        import logging
+
+        cursor_path = tmp_path / "cursor.json"
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "legacy-refresh")
+        monkeypatch.delenv("GOOGLE_REFRESH_TOKEN", raising=False)
+
+        with caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"):
+            GmailConnectorConfig.from_env()
+
+        assert any("deprecated" in record.message.lower() for record in caplog.records)

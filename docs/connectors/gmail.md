@@ -74,11 +74,30 @@ Base connector variables:
 - `CONNECTOR_MAX_INFLIGHT` (optional, recommended default `8`)
 - `CONNECTOR_CURSOR_PATH` (required; stores last processed Gmail `historyId`)
 
-Gmail API auth variables (OAuth-based):
-- `GMAIL_CLIENT_ID` (required)
-- `GMAIL_CLIENT_SECRET` (required)
-- `GMAIL_REFRESH_TOKEN` (required)
-- `GMAIL_REDIRECT_URI` (required for token lifecycle in some setups)
+Gmail API auth variables (OAuth-based, DB-first resolution):
+
+The connector resolves Google OAuth credentials using DB-first resolution with env-var
+fallback. This allows credentials stored via the dashboard OAuth flow to be used
+automatically without any env var configuration.
+
+**Resolution order:**
+1. Database: if `DATABASE_URL` or `POSTGRES_HOST` is configured, the connector queries
+   the butler's PostgreSQL database (`google_oauth_credentials` table) for stored credentials.
+2. Environment variables (deprecated fallback for backward compatibility).
+
+**DB-first variables (recommended):**
+- `DATABASE_URL` (optional; postgres connection URL, e.g., `postgres://user:pass@localhost:5432/butlers`)
+  OR `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD` (individual vars)
+- `CONNECTOR_BUTLER_DB_NAME` (optional; butler DB name to query, default: `butlers`)
+
+**App config variables (always required for OAuth bootstrap):**
+- `GOOGLE_OAUTH_CLIENT_ID` (required; OAuth client ID — used by dashboard OAuth flow)
+- `GOOGLE_OAUTH_CLIENT_SECRET` (required; OAuth client secret — used by dashboard OAuth flow)
+
+**Deprecated env-var fallback (legacy, will be removed in a future release):**
+- `GMAIL_CLIENT_ID` (deprecated alias for `GOOGLE_OAUTH_CLIENT_ID`)
+- `GMAIL_CLIENT_SECRET` (deprecated alias for `GOOGLE_OAUTH_CLIENT_SECRET`)
+- `GMAIL_REFRESH_TOKEN` or `GOOGLE_REFRESH_TOKEN` (deprecated; store credentials in DB instead)
 
 Optional runtime controls:
 - `GMAIL_POLL_INTERVAL_S` (polling interval in seconds, default 60)

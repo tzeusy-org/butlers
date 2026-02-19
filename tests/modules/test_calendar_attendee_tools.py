@@ -15,9 +15,8 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -558,8 +557,14 @@ class TestGoogleProviderAddAttendees:
         mock_http.aclose = AsyncMock()
         config = CalendarConfig(provider="google", calendar_id="cal@example.com")
 
-        with patch.dict(os.environ, {"BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": FAKE_CREDS}):
-            provider = _GoogleProvider(config, http_client=mock_http)
+        from butlers.modules.calendar import _GoogleOAuthCredentials
+
+        credentials = _GoogleOAuthCredentials(
+            client_id="test-client-id",
+            client_secret="test-client-secret",
+            refresh_token="test-refresh-token",
+        )
+        provider = _GoogleProvider(config, credentials=credentials, http_client=mock_http)
 
         return provider, mock_http
 
@@ -694,8 +699,14 @@ class TestGoogleProviderRemoveAttendees:
         mock_http.aclose = AsyncMock()
         config = CalendarConfig(provider="google", calendar_id="cal@example.com")
 
-        with patch.dict(os.environ, {"BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": FAKE_CREDS}):
-            provider = _GoogleProvider(config, http_client=mock_http)
+        from butlers.modules.calendar import _GoogleOAuthCredentials
+
+        credentials = _GoogleOAuthCredentials(
+            client_id="test-client-id",
+            client_secret="test-client-secret",
+            refresh_token="test-refresh-token",
+        )
+        provider = _GoogleProvider(config, credentials=credentials, http_client=mock_http)
         provider._oauth._access_token = "fake-token"
         provider._oauth._access_token_expires_at = datetime(2099, 1, 1, tzinfo=UTC)
         return provider, mock_http

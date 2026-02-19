@@ -1,5 +1,13 @@
 # Google OAuth Operational Runbook
 
+> **Deprecation Notice (see butlers-973.7):**
+> `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON`, `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`,
+> `GMAIL_REFRESH_TOKEN`, and `GOOGLE_REFRESH_TOKEN` are deprecated env vars. Credentials
+> should now be stored in the butler database via the dashboard OAuth flow and resolved
+> at runtime using DB-first resolution. See `docs/oauth/google/setup-guide.md` for the
+> updated credential setup workflow. The env-var fallback remains functional for backward
+> compatibility during migration.
+
 ## Overview
 
 This runbook covers day-to-day operations, troubleshooting, and maintenance for Google OAuth tokens in production Butlers deployments. It complements `setup-guide.md` with operational procedures.

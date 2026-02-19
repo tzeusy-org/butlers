@@ -23,6 +23,7 @@ from butlers.startup_guard import (
     _CREDENTIAL_FIELD_ALIASES,
     GoogleCredentialCheckResult,
     check_google_credentials,
+    check_google_credentials_with_db,
     require_google_credentials_or_exit,
 )
 
@@ -284,3 +285,81 @@ class TestGoogleCredentialCheckResult:
         )
         assert result.ok is False
         assert "GOOGLE_OAUTH_CLIENT_ID" in result.missing_vars
+
+
+# ---------------------------------------------------------------------------
+# check_google_credentials_with_db (async DB + env check)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckGoogleCredentialsWithDb:
+    """Tests for the async DB-first credential check."""
+
+    async def test_returns_ok_when_db_has_credentials(self) -> None:
+        """check_google_credentials_with_db returns ok=True when DB has credentials."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        # Build a fake conn that returns stored credentials
+        payload = {
+            "client_id": "db-client-id",
+            "client_secret": "db-secret",
+            "refresh_token": "db-refresh-token",
+        }
+        record = MagicMock()
+        record.__getitem__ = lambda self, key: payload
+        conn = AsyncMock()
+        conn.fetchrow.return_value = record
+
+        result = await check_google_credentials_with_db(conn, caller="test")
+        assert result.ok is True
+        assert result.missing_vars == []
+        assert result.remediation == ""
+
+    async def test_falls_back_to_env_when_db_empty(self) -> None:
+        """Returns ok=True when DB empty but env vars are set."""
+        from unittest.mock import AsyncMock
+
+        conn = AsyncMock()
+        conn.fetchrow.return_value = None  # Empty DB
+
+        clear = _all_google_env_vars_cleared()
+        with mock.patch.dict("os.environ", {**clear, **FULL_ENV}):
+            result = await check_google_credentials_with_db(conn, caller="test")
+        assert result.ok is True
+
+    async def test_returns_not_ok_when_neither_db_nor_env(self) -> None:
+        """Returns ok=False when neither DB nor env vars have credentials."""
+        from unittest.mock import AsyncMock
+
+        conn = AsyncMock()
+        conn.fetchrow.return_value = None  # Empty DB
+
+        clear = _all_google_env_vars_cleared()
+        with mock.patch.dict("os.environ", clear, clear=True):
+            result = await check_google_credentials_with_db(conn, caller="test")
+        assert result.ok is False
+        assert len(result.missing_vars) > 0
+
+    async def test_db_takes_priority_over_env(self) -> None:
+        """DB credentials are returned even when env vars differ."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        payload = {
+            "client_id": "db-id",
+            "client_secret": "db-secret",
+            "refresh_token": "db-token",
+        }
+        record = MagicMock()
+        record.__getitem__ = lambda self, key: payload
+        conn = AsyncMock()
+        conn.fetchrow.return_value = record
+
+        # Env has different credentials
+        different_env = {
+            "GOOGLE_OAUTH_CLIENT_ID": "env-id",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "env-secret",
+            "GOOGLE_REFRESH_TOKEN": "env-token",
+        }
+        with mock.patch.dict("os.environ", different_env):
+            result = await check_google_credentials_with_db(conn, caller="test")
+        assert result.ok is True

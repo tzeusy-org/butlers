@@ -164,6 +164,58 @@ def check_google_credentials() -> GoogleCredentialCheckResult:
 
 
 # ---------------------------------------------------------------------------
+# Async DB-aware credential check
+# ---------------------------------------------------------------------------
+
+
+async def check_google_credentials_with_db(
+    conn: object,
+    *,
+    caller: str = "unknown",
+) -> GoogleCredentialCheckResult:
+    """Check whether Google OAuth credentials are available from DB or environment.
+
+    This is an async check that queries the database first (DB-first resolution),
+    then falls back to environment variables if the DB has no stored credentials.
+
+    Parameters
+    ----------
+    conn:
+        An asyncpg connection or pool to use for DB lookup.
+    caller:
+        Name of the calling component (used in log messages).
+
+    Returns
+    -------
+    GoogleCredentialCheckResult
+        A result object describing credential availability. When ok=True,
+        credentials are present in either the DB or environment variables.
+    """
+    from butlers.google_credentials import (
+        MissingGoogleCredentialsError,
+        resolve_google_credentials,
+    )
+
+    try:
+        await resolve_google_credentials(conn, caller=caller)
+        return GoogleCredentialCheckResult(
+            ok=True,
+            missing_vars=[],
+            message="Google credentials are available (DB or environment).",
+            remediation="",
+        )
+    except MissingGoogleCredentialsError as exc:
+        env_result = check_google_credentials()
+        # Use the env check's missing_vars and remediation (they are always populated)
+        return GoogleCredentialCheckResult(
+            ok=False,
+            missing_vars=env_result.missing_vars,
+            message=str(exc),
+            remediation=env_result.remediation,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Hard-exit guard (for connector entrypoints)
 # ---------------------------------------------------------------------------
 

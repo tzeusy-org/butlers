@@ -24,12 +24,12 @@ import pytest
 from butlers.modules.calendar import (
     BUTLER_GENERATED_PRIVATE_KEY,
     BUTLER_NAME_PRIVATE_KEY,
-    GOOGLE_CALENDAR_CREDENTIALS_ENV,
     CalendarConfig,
     CalendarEvent,
     CalendarEventUpdate,
     CalendarRequestError,
     _build_google_event_patch_body,
+    _GoogleOAuthCredentials,
     _GoogleProvider,
 )
 
@@ -89,15 +89,21 @@ def _make_google_event_payload(
 
 
 @pytest.fixture
-def google_provider(monkeypatch):
-    """Return a _GoogleProvider with mocked credentials and HTTP client."""
-    monkeypatch.setenv(GOOGLE_CALENDAR_CREDENTIALS_ENV, _make_credentials_json())
+def google_provider():
+    """Return a _GoogleProvider with test credentials and mocked HTTP client."""
     config = CalendarConfig(
         provider="google",
         calendar_id="test@example.com",
         timezone="UTC",
     )
-    return _GoogleProvider(config=config, http_client=_make_mock_http_client())
+    credentials = _GoogleOAuthCredentials(
+        client_id="client-id",
+        client_secret="client-secret",
+        refresh_token="refresh-token",
+    )
+    return _GoogleProvider(
+        config=config, credentials=credentials, http_client=_make_mock_http_client()
+    )
 
 
 # ---------------------------------------------------------------------------

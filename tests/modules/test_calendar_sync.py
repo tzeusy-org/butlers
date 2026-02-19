@@ -37,6 +37,7 @@ from butlers.modules.calendar import (
     CalendarSyncConfig,
     CalendarSyncState,
     CalendarSyncTokenExpiredError,
+    _GoogleOAuthCredentials,
     _GoogleProvider,
 )
 
@@ -393,12 +394,13 @@ class TestGoogleProviderSyncIncremental:
     """Unit tests for the _GoogleProvider sync_incremental implementation."""
 
     def _make_provider(self, http_client: httpx.AsyncClient) -> _GoogleProvider:
-        import os
-
-        os.environ["BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON"] = GOOGLE_CREDS_JSON
         cfg = CalendarConfig(provider="google", calendar_id="primary")
-        provider = _GoogleProvider(cfg, http_client=http_client)
-        return provider
+        credentials = _GoogleOAuthCredentials(
+            client_id="test-client-id",
+            client_secret="test-client-secret",
+            refresh_token="test-refresh-token",
+        )
+        return _GoogleProvider(cfg, credentials=credentials, http_client=http_client)
 
     def _make_http_response(
         self,

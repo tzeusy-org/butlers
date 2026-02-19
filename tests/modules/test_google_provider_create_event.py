@@ -30,7 +30,6 @@ from butlers.modules.calendar import (
     BUTLER_GENERATED_PRIVATE_KEY,
     BUTLER_NAME_PRIVATE_KEY,
     GOOGLE_CALENDAR_API_BASE_URL,
-    GOOGLE_CALENDAR_CREDENTIALS_ENV,
     GOOGLE_OAUTH_TOKEN_URL,
     AttendeeResponseStatus,
     CalendarConfig,
@@ -39,6 +38,7 @@ from butlers.modules.calendar import (
     CalendarNotificationInput,
     CalendarRequestError,
     _build_google_event_body,
+    _GoogleOAuthCredentials,
     _GoogleProvider,
 )
 
@@ -116,12 +116,10 @@ def _make_google_event_response(
 
 
 def _make_provider(
-    monkeypatch: pytest.MonkeyPatch,
     mock_client: AsyncMock,
     *,
     config: CalendarConfig | None = None,
 ) -> _GoogleProvider:
-    monkeypatch.setenv(GOOGLE_CALENDAR_CREDENTIALS_ENV, _make_creds_json())
     mock_client.post.return_value = _mock_response(
         status_code=200,
         url=GOOGLE_OAUTH_TOKEN_URL,
@@ -133,7 +131,12 @@ def _make_provider(
         calendar_id="primary",
         timezone="UTC",
     )
-    return _GoogleProvider(config=cfg, http_client=mock_client)
+    credentials = _GoogleOAuthCredentials(
+        client_id="client-id",
+        client_secret="client-secret",
+        refresh_token="refresh-token",
+    )
+    return _GoogleProvider(config=cfg, credentials=credentials, http_client=mock_client)
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +463,7 @@ class TestBuildGoogleEventBody:
 class TestGoogleProviderCreateEvent:
     """Test _GoogleProvider.create_event sends correct POST and parses response."""
 
-    async def test_create_event_sends_post_to_correct_url(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_create_event_sends_post_to_correct_url(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response(
             status_code=200,
@@ -484,7 +487,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=event_response,
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="BUTLER: Team Sync",
@@ -534,7 +537,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=event_response,
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="BUTLER: Weekly Sync",
@@ -588,7 +591,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=event_response,
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="BUTLER: Team Sync",
@@ -608,7 +611,7 @@ class TestGoogleProviderCreateEvent:
         assert private[BUTLER_GENERATED_PRIVATE_KEY] == "true"
         assert private[BUTLER_NAME_PRIVATE_KEY] == "general"
 
-    async def test_create_event_with_recurrence_rule(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_create_event_with_recurrence_rule(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response(
             status_code=200,
@@ -625,7 +628,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=event_response,
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="Weekly Standup",
@@ -660,7 +663,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=event_response,
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="Morning Meeting",
@@ -701,7 +704,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=event_response,
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="Holiday",
@@ -737,7 +740,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=_make_google_event_response(),
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="Meeting",
@@ -754,7 +757,7 @@ class TestGoogleProviderCreateEvent:
             "overrides": [{"method": "popup", "minutes": 15}],
         }
 
-    async def test_create_event_with_color_id(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_create_event_with_color_id(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response(
             status_code=200,
@@ -768,7 +771,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=_make_google_event_response(color_id="9"),
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="Colored Event",
@@ -783,7 +786,7 @@ class TestGoogleProviderCreateEvent:
         assert body["colorId"] == "9"
         assert result.color_id == "9"
 
-    async def test_create_event_with_status_tentative(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_create_event_with_status_tentative(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response(
             status_code=200,
@@ -797,7 +800,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=_make_google_event_response(status="tentative"),
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="Maybe Meeting",
@@ -827,7 +830,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body={"error": {"message": "Insufficient permissions"}},
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="Blocked Meeting",
@@ -856,7 +859,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=_make_google_event_response(),
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="Meeting",
@@ -872,7 +875,7 @@ class TestGoogleProviderCreateEvent:
         url = call_args.args[1]
         assert "butler%40group.calendar.google.com" in url
 
-    async def test_create_event_sends_bearer_token(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_create_event_sends_bearer_token(self):
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         # _make_provider sets access_token to "access-token"
         mock_client.post.return_value = _mock_response(
@@ -887,7 +890,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=_make_google_event_response(),
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="Meeting",
@@ -915,7 +918,7 @@ class TestGoogleProviderCreateEvent:
             method="POST",
             json_body=_make_google_event_response(),
         )
-        provider = _make_provider(monkeypatch, mock_client)
+        provider = _make_provider(mock_client)
 
         payload = CalendarEventCreate(
             title="Meeting",
