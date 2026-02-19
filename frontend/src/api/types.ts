@@ -1005,3 +1005,39 @@ export interface DeleteCredentialsResponse {
   deleted: boolean;
   message: string;
 }
+
+// ---------------------------------------------------------------------------
+// Generic secrets management types
+// ---------------------------------------------------------------------------
+
+/** Metadata for a single secret. Values are never exposed in responses. */
+export interface SecretEntry {
+  key: string;
+  category: string;
+  description: string | null;
+  is_sensitive: boolean;
+  is_set: boolean;
+  created_at: string;
+  updated_at: string;
+  expires_at: string | null;
+  source: string;
+}
+
+/** Request body for creating or updating a secret (PUT). */
+export interface SecretUpsertRequest {
+  value: string;
+  category?: string | null;
+  description?: string | null;
+  is_sensitive?: boolean | null;
+  expires_at?: string | null;
+}
+
+/** Known secret categories for grouping. */
+export type SecretCategory = "core" | "telegram" | "email" | "google" | "gemini" | "general";
+
+/** Predefined secret key templates with descriptions and auto-detected categories. */
+export interface SecretTemplate {
+  key: string;
+  description: string;
+  category: SecretCategory;
+}

@@ -64,3 +64,53 @@ export function useDeleteGoogleCredentials() {
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Generic secrets CRUD hooks
+// ---------------------------------------------------------------------------
+
+import {
+  deleteSecret,
+  listSecrets,
+  upsertSecret,
+} from "@/api/index.ts";
+import type { SecretUpsertRequest } from "@/api/index.ts";
+
+export const genericSecretsKeys = {
+  all: (butlerName: string) => ["secrets", "generic", butlerName] as const,
+  list: (butlerName: string, category?: string) =>
+    ["secrets", "generic", butlerName, "list", category ?? "all"] as const,
+};
+
+/** Fetch all secrets for a butler. */
+export function useSecrets(butlerName: string, category?: string) {
+  return useQuery({
+    queryKey: genericSecretsKeys.list(butlerName, category),
+    queryFn: () => listSecrets(butlerName, category),
+    enabled: !!butlerName,
+    retry: false,
+  });
+}
+
+/** Create or update a secret for a butler. */
+export function useUpsertSecret(butlerName: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ key, request }: { key: string; request: SecretUpsertRequest }) =>
+      upsertSecret(butlerName, key, request),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: genericSecretsKeys.all(butlerName) });
+    },
+  });
+}
+
+/** Delete a secret from a butler's secret store. */
+export function useDeleteSecret(butlerName: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (key: string) => deleteSecret(butlerName, key),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: genericSecretsKeys.all(butlerName) });
+    },
+  });
+}

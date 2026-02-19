@@ -185,3 +185,17 @@ export type {
   UpsertAppCredentialsRequest,
   UpsertAppCredentialsResponse,
 } from "./types.ts";
+
+export {
+  deleteSecret,
+  getSecretMeta,
+  listSecrets,
+  upsertSecret,
+} from "./client.ts";
+
+export type {
+  SecretCategory,
+  SecretEntry,
+  SecretTemplate,
+  SecretUpsertRequest,
+} from "./types.ts";

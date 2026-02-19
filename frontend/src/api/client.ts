@@ -1051,3 +1051,60 @@ export function deleteGoogleCredentials(): Promise<DeleteCredentialsResponse> {
 export function getOAuthStartUrl(): string {
   return `${API_BASE_URL}/oauth/google/start`;
 }
+
+// ---------------------------------------------------------------------------
+// Generic secrets CRUD API functions
+// ---------------------------------------------------------------------------
+
+import type {
+  SecretEntry,
+  SecretUpsertRequest,
+} from "./types.ts";
+
+/** List all secrets for a butler (metadata only — values never returned). */
+export function listSecrets(
+  butlerName: string,
+  category?: string,
+): Promise<ApiResponse<SecretEntry[]>> {
+  const qs = category ? `?category=${encodeURIComponent(category)}` : "";
+  return apiFetch<ApiResponse<SecretEntry[]>>(
+    `/butlers/${encodeURIComponent(butlerName)}/secrets${qs}`,
+  );
+}
+
+/** Fetch a single secret's metadata. */
+export function getSecretMeta(
+  butlerName: string,
+  key: string,
+): Promise<ApiResponse<SecretEntry>> {
+  return apiFetch<ApiResponse<SecretEntry>>(
+    `/butlers/${encodeURIComponent(butlerName)}/secrets/${encodeURIComponent(key)}`,
+  );
+}
+
+/** Create or update a secret. Value is write-only and never echoed back. */
+export function upsertSecret(
+  butlerName: string,
+  key: string,
+  request: SecretUpsertRequest,
+): Promise<ApiResponse<SecretEntry>> {
+  return apiFetch<ApiResponse<SecretEntry>>(
+    `/butlers/${encodeURIComponent(butlerName)}/secrets/${encodeURIComponent(key)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+/** Delete a secret from a butler's secret store. */
+export function deleteSecret(
+  butlerName: string,
+  key: string,
+): Promise<ApiResponse<{ key: string; status: string }>> {
+  return apiFetch<ApiResponse<{ key: string; status: string }>>(
+    `/butlers/${encodeURIComponent(butlerName)}/secrets/${encodeURIComponent(key)}`,
+    { method: "DELETE" },
+  );
+}

@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import type { OAuthCredentialState } from "@/api/index.ts";
+import type { OAuthCredentialState, SecretEntry } from "@/api/index.ts";
 import { getOAuthStartUrl } from "@/api/index.ts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,10 +22,21 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SecretFormModal } from "@/components/secrets/SecretFormModal";
+import { SecretsTable } from "@/components/secrets/SecretsTable";
+import { useButlers } from "@/hooks/use-butlers";
 import {
   useDeleteGoogleCredentials,
   useGoogleCredentialStatus,
+  useSecrets,
   useUpsertGoogleCredentials,
 } from "@/hooks/use-secrets";
 
@@ -231,31 +242,20 @@ function DeleteCredentialsDialog() {
 }
 
 // ---------------------------------------------------------------------------
-// Main page
+// Google OAuth section
 // ---------------------------------------------------------------------------
 
-export default function SecretsPage() {
+function GoogleOAuthSection() {
   const credStatusQuery = useGoogleCredentialStatus();
-
   const credStatus = credStatusQuery.data;
   const isLoading = credStatusQuery.isLoading;
   const isError = credStatusQuery.isError;
-
-  // The OAuth start URL — navigates user to Google consent screen
   const oauthStartUrl = getOAuthStartUrl();
   const canStartOAuth =
     credStatus?.client_id_configured && credStatus?.client_secret_configured;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Secrets</h1>
-        <p className="text-muted-foreground mt-1">
-          Manage Google OAuth credentials stored in the database.
-          Secret values are never displayed — only presence indicators are shown.
-        </p>
-      </div>
-
+    <>
       {/* Credential status card */}
       <Card>
         <CardHeader>
@@ -394,6 +394,138 @@ export default function SecretsPage() {
           <DeleteCredentialsDialog />
         </CardContent>
       </Card>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Generic secrets section (per-butler)
+// ---------------------------------------------------------------------------
+
+function GenericSecretsSection() {
+  const { data: butlersResponse, isLoading: butlersLoading } = useButlers();
+  const butlerNames = butlersResponse?.data?.map((b) => b.name) ?? [];
+
+  const [selectedButler, setSelectedButler] = useState<string>("");
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [editSecret, setEditSecret] = useState<SecretEntry | null>(null);
+
+  // Pick first butler by default once loaded
+  const activeButler = selectedButler || (butlerNames[0] ?? "");
+
+  const { data: secretsResponse, isLoading, isError } = useSecrets(activeButler);
+  const secrets = secretsResponse?.data ?? [];
+
+  function handleEdit(secret: SecretEntry) {
+    setEditSecret(secret);
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <CardTitle>Secrets</CardTitle>
+            <CardDescription>
+              All secrets stored in the database, grouped by category.
+              Values are masked — use the reveal toggle to confirm presence.
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Butler selector */}
+            {butlersLoading ? (
+              <Skeleton className="h-9 w-36" />
+            ) : butlerNames.length > 1 ? (
+              <Select
+                value={activeButler}
+                onValueChange={setSelectedButler}
+              >
+                <SelectTrigger className="w-36">
+                  <SelectValue placeholder="Select butler" />
+                </SelectTrigger>
+                <SelectContent>
+                  {butlerNames.map((name) => (
+                    <SelectItem key={name} value={name}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+            <Button
+              size="sm"
+              onClick={() => setAddModalOpen(true)}
+              disabled={!activeButler}
+            >
+              Add Secret
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {!activeButler ? (
+          <p className="text-sm text-muted-foreground">
+            No butlers available. Start a butler to manage its secrets.
+          </p>
+        ) : (
+          <SecretsTable
+            butlerName={activeButler}
+            secrets={secrets}
+            isLoading={isLoading}
+            isError={isError}
+            onEdit={handleEdit}
+          />
+        )}
+      </CardContent>
+
+      {/* Add modal */}
+      <SecretFormModal
+        butlerName={activeButler}
+        open={addModalOpen}
+        onOpenChange={setAddModalOpen}
+      />
+
+      {/* Edit modal */}
+      <SecretFormModal
+        butlerName={activeButler}
+        editSecret={editSecret}
+        open={!!editSecret}
+        onOpenChange={(open) => {
+          if (!open) setEditSecret(null);
+        }}
+      />
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+
+export default function SecretsPage() {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">Secrets</h1>
+        <p className="text-muted-foreground mt-1">
+          Manage secrets and OAuth credentials stored in the database.
+          Secret values are never displayed — only presence indicators are shown.
+        </p>
+      </div>
+
+      {/* Generic secrets management — main section */}
+      <GenericSecretsSection />
+
+      {/* Google OAuth — specialized section */}
+      <div className="space-y-4">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">Google OAuth</h2>
+          <p className="text-muted-foreground text-sm mt-0.5">
+            Configure the Google OAuth app credentials and authorization flow.
+          </p>
+        </div>
+        <GoogleOAuthSection />
+      </div>
     </div>
   );
 }
