@@ -482,6 +482,25 @@ class TelegramBotConnector:
             # Mark API as disconnected on failure
             self._source_api_ok = False
 
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+                if exc.response.status_code == 409:
+                    description = self._telegram_error_description(exc.response)
+                    conflict_hint = self._describe_get_updates_conflict(exc.response)
+                    self._metrics.record_source_api_call(api_method="getUpdates", status="conflict")
+                    self._metrics.record_error(
+                        error_type=get_error_type(exc), operation="fetch_updates"
+                    )
+                    logger.warning(
+                        "Telegram getUpdates conflict; skipping this poll cycle",
+                        extra={
+                            "endpoint_identity": self._config.endpoint_identity,
+                            "status_code": 409,
+                            "description": description,
+                            "hint": conflict_hint,
+                        },
+                    )
+                    return []
+
             # Record failed API call
             is_rate_limited = (
                 isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
@@ -491,6 +510,44 @@ class TelegramBotConnector:
             self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_updates")
 
             raise
+
+    @staticmethod
+    def _telegram_error_description(response: httpx.Response | None) -> str | None:
+        if response is None:
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if isinstance(payload, dict):
+            description = payload.get("description")
+            if isinstance(description, str):
+                description = description.strip()
+                if description:
+                    return description
+        return None
+
+    @classmethod
+    def _describe_get_updates_conflict(cls, response: httpx.Response | None) -> str:
+        description = cls._telegram_error_description(response)
+        if description is None:
+            return (
+                "Telegram rejected getUpdates with 409 Conflict. "
+                "Ensure only one poller is active and webhook mode is not enabled for this token."
+            )
+
+        normalized = description.lower()
+        if "webhook" in normalized:
+            return (
+                f"{description} Disable webhook mode for this token "
+                "or switch this connector to webhook ingestion."
+            )
+        if "terminated by other getupdates request" in normalized:
+            return (
+                f"{description} Another consumer is polling with this token; "
+                "ensure only one polling process is active."
+            )
+        return description
 
     async def _set_webhook(self, webhook_url: str) -> dict[str, Any]:
         """Call Telegram setWebhook API."""

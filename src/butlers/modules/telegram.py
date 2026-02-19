@@ -395,6 +395,28 @@ class TelegramModule(Module):
                     return description
         return None
 
+    @classmethod
+    def _describe_get_updates_conflict(cls, response: httpx.Response | None) -> str:
+        description = cls._telegram_error_description(response)
+        if description is None:
+            return (
+                "Telegram rejected getUpdates with 409 Conflict. "
+                "Ensure only one poller is active and webhook mode is not enabled for this token."
+            )
+
+        normalized = description.lower()
+        if "webhook" in normalized:
+            return (
+                f"{description} Disable webhook mode for this token "
+                "or switch this caller to webhook ingestion."
+            )
+        if "terminated by other getupdates request" in normalized:
+            return (
+                f"{description} Another consumer is polling with this token; "
+                "ensure only one polling process is active."
+            )
+        return description
+
     @staticmethod
     def _is_expected_reaction_http_400(
         *, reaction: str, error: httpx.HTTPStatusError, description: str | None
@@ -772,8 +794,24 @@ class TelegramModule(Module):
             params["offset"] = self._last_update_id + 1
 
         client = self._get_client()
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
+        try:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 409:
+                description = self._telegram_error_description(exc.response)
+                hint = self._describe_get_updates_conflict(exc.response)
+                logger.warning(
+                    "Telegram getUpdates conflict; returning no updates",
+                    extra={
+                        "source": "telegram",
+                        "telegram_status_code": 409,
+                        "telegram_error_description": description,
+                        "hint": hint,
+                    },
+                )
+                return []
+            raise
         data = resp.json()
         updates: list[dict[str, Any]] = data.get("result", [])
 

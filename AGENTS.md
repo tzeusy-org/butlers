@@ -141,6 +141,7 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 ### dev.sh Gmail OAuth rerun contract
 - In `dev.sh`, `_has_google_creds()` must check the same credential DB set as the OAuth gate (`_poll_db_for_refresh_token`), plus legacy/override DB names where applicable, so preflight and gate do not disagree.
 - Build the Gmail pane startup command at Layer 3 launch time (after OAuth gate), not once during early preflight; otherwise reruns can keep showing the stale "waiting for OAuth" pane even when credentials already exist.
+- For pane logs, prefer wrapping the launched command with stdout/stderr tee capture (`_wrap_cmd_for_log`) instead of raw `tmux pipe-pane`, so log files contain process output rather than interactive shell prompt/control-sequence noise.
 
 ### Code Layout
 - `src/butlers/core/` — state.py, scheduler.py, sessions.py, spawner.py, telemetry.py, telemetry_spans.py
@@ -274,6 +275,10 @@ make test-qg
 - `RoutingResult` includes `routed_targets`, `acked_targets`, and `failed_targets`; decomposition callers should populate these so Telegram can hold `:eye` until aggregate completion.
 - Per-message reaction state must not grow unbounded: terminal messages should prune `_processing_lifecycle`/`_reaction_locks`, and duplicate-update idempotence should be preserved via the bounded `_terminal_reactions` cache (`TERMINAL_REACTION_CACHE_SIZE`).
 - `src/butlers/modules/telegram.py::_update_reaction` treats `httpx.HTTPStatusError` 400 responses from `setMessageReaction` as expected/non-fatal when Telegram indicates reaction unsupported/unavailable; for terminal failure (`:space invader` internal alias -> 👾) it should warn-and-skip rather than emit stack traces.
+
+### Telegram getUpdates conflict contract
+- `src/butlers/connectors/telegram_bot.py::_get_updates` must treat Telegram `HTTP 409 Conflict` responses as recoverable polling conflicts: record source API status `conflict`, emit warning-level diagnostics with parsed Telegram `description`, and return `[]` instead of raising.
+- `src/butlers/modules/telegram.py::_get_updates` should likewise treat `HTTP 409 Conflict` as non-fatal and return `[]` with a warning so ingress/tool callers avoid repeated unhandled stack traces during webhook/poller contention.
 
 ### Frontend test harness
 - Frontend route/component tests run with Vitest (`frontend/package.json` has `npm test` -> `vitest run`).

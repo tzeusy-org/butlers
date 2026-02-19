@@ -366,6 +366,26 @@ class TestGetUpdates:
         assert updates == []
         assert telegram_module._last_update_id == 0
 
+    async def test_conflict_returns_empty_updates(
+        self, telegram_module: TelegramModule, monkeypatch, caplog: pytest.LogCaptureFixture
+    ):
+        """409 Conflict returns no updates and logs an actionable warning."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get.return_value = _mock_response(
+            {"ok": False, "description": "Conflict: terminated by other getUpdates request"},
+            status_code=409,
+        )
+        telegram_module._client = mock_client
+
+        with caplog.at_level("WARNING"):
+            updates = await telegram_module._get_updates()
+
+        assert updates == []
+        assert telegram_module._last_update_id == 0
+        assert any("getUpdates conflict" in rec.message for rec in caplog.records)
+
     @pytest.mark.parametrize("tool_name", ["user_telegram_get_updates", "bot_telegram_get_updates"])
     async def test_get_updates_via_tools(
         self,

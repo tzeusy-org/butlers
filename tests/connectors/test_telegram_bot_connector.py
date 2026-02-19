@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 
 from butlers.connectors.telegram_bot import (
@@ -541,6 +542,30 @@ async def test_get_updates_empty_result(connector: TelegramBotConnector) -> None
 
         assert len(updates) == 0
         assert connector._last_update_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_updates_conflict_returns_empty(
+    connector: TelegramBotConnector, caplog: pytest.LogCaptureFixture
+) -> None:
+    """409 Conflict should be treated as a recoverable polling conflict."""
+    connector._last_update_id = 200
+
+    response = httpx.Response(
+        status_code=409,
+        json={"ok": False, "description": "Conflict: terminated by other getUpdates request"},
+        request=httpx.Request("GET", "https://api.telegram.org/botTOKEN/getUpdates"),
+    )
+
+    with caplog.at_level("WARNING"):
+        with patch.object(connector._http_client, "get", return_value=response) as mock_get:
+            updates = await connector._get_updates()
+
+    assert updates == []
+    assert connector._last_update_id == 200
+    assert connector._source_api_ok is False
+    mock_get.assert_called_once()
+    assert any("getUpdates conflict" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio
