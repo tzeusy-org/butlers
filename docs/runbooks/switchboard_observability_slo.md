@@ -9,6 +9,69 @@ for Switchboard runtime operations.
 - Root trace span for accepted ingress: `butlers.switchboard.message`
 - Primary correlation key: `request_id` across logs and persisted lifecycle records
 
+## Trace Structure: Accept-Then-Process Decoupling
+
+After the accept-then-process split (Section 4.4), switchboard routing produces **two
+sibling traces** linked by `request_id` rather than a single deeply-nested trace:
+
+```
+Trace A (switchboard, short-lived ~15ms):
+  switchboard.message
+    └── routing.llm_decision
+          └── butler.llm_session (classification)
+                └── route_to_butler
+                      └── route.dispatch
+                            └── butler.tool.route.execute  ← accept phase ends here
+                                  attribute: request_id = "<uuid>"
+                                  SpanLink → Trace B / route.process
+
+Trace B (target butler, long-lived, e.g. health):
+  route.process  ← fresh root span, no parent
+    attribute: request_id = "<uuid>"   ← same as Trace A for correlation
+    link → Trace A / butler.tool.route.execute
+    └── butler.llm_session (target processing)
+          └── ... (tool calls)
+```
+
+### Querying Across Traces
+
+Do **not** join on parent span ID — the two traces have different trace IDs.
+Use `request_id` as the join key:
+
+```
+# Find all spans for a given request across all traces:
+SELECT * FROM spans WHERE attributes['request_id'] = '<uuid>'
+
+# Find the accept span:
+SELECT * FROM spans
+WHERE name = 'butler.tool.route.execute'
+  AND attributes['request_id'] = '<uuid>'
+
+# Find the process span:
+SELECT * FROM spans
+WHERE name = 'route.process'
+  AND attributes['request_id'] = '<uuid>'
+
+# Follow the SpanLink from process back to accept:
+# process_span.links[0].context.{trace_id, span_id} → accept span
+```
+
+### Accept Phase Duration
+
+The switchboard's trace (Trace A) ends when `butler.tool.route.execute` completes.
+This is expected to be **< 50ms** — it reflects only the accept phase (inbox persist).
+The target butler's processing time is captured separately in Trace B.
+
+If Trace A duration is consistently > 50ms, investigate:
+- `route_inbox_insert` latency (DB write to target butler's database)
+- Network latency to target butler's MCP endpoint
+
+### Recovery Dispatch Traces
+
+Crash-recovery dispatches (`route.process.recovery` spans) always start fresh root
+spans with no SpanLink — the original accept-phase span may be from a previous daemon
+run. Use `request_id` attribute for correlation with historical log records.
+
 ## SLI Definitions
 
 1. Ingress acceptance latency (`butlers.switchboard.ingress_accept_latency_ms`)
