@@ -41,6 +41,7 @@ import logging
 import os
 import secrets
 import time
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
@@ -77,6 +78,8 @@ _DEFAULT_SCOPES = " ".join(
 _STATE_TTL_SECONDS = 600  # 10 minutes
 
 # Maps state token → expiry timestamp (monotonic)
+# NOTE: This store is process-local. Do not run multiple worker processes
+# (e.g. gunicorn -w N) — CSRF state validation will silently fail across workers.
 _state_store: dict[str, float] = {}
 
 
@@ -164,7 +167,13 @@ def _get_dashboard_url() -> str | None:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/google/start", response_model=OAuthStartResponse)
+@router.get(
+    "/google/start",
+    responses={
+        200: {"model": OAuthStartResponse, "description": "JSON payload (redirect=false)"},
+        302: {"description": "Redirect to Google authorization URL"},
+    },
+)
 async def oauth_google_start(
     redirect: bool = Query(
         default=True,
@@ -243,6 +252,8 @@ async def oauth_google_callback(
     # --- Handle provider-side errors (e.g. user denied consent) ---
     if error:
         logger.warning("Google OAuth provider error: %s", error)
+        if error_description:
+            logger.debug("Google OAuth provider error_description: %s", error_description)
         error_payload = OAuthCallbackError(
             error_code="provider_error",
             message=_sanitize_provider_error(error),
@@ -362,7 +373,7 @@ async def _exchange_code_for_tokens(
     client_id: str,
     client_secret: str,
     redirect_uri: str,
-) -> dict:
+) -> dict[str, Any]:
     """Exchange an authorization code for OAuth tokens.
 
     Parameters
