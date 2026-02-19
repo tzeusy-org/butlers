@@ -11,7 +11,7 @@ Typical usage in a connector entrypoint::
 
     require_google_credentials_or_exit(
         caller="gmail-connector",
-        dashboard_url="http://localhost:8200",
+        dashboard_url="http://localhost:40200",
     )
 
 Typical usage to get a status without exiting::
@@ -141,7 +141,7 @@ def check_google_credentials() -> GoogleCredentialCheckResult:
         "\n"
         "To complete Google OAuth bootstrap:\n"
         "  1. Start the Butlers dashboard:  uv run butlers dashboard\n"
-        "  2. Open http://localhost:8200 in your browser.\n"
+        "  2. Open http://localhost:40200 in your browser.\n"
         "  3. Click 'Connect Google' and follow the OAuth flow.\n"
         "  4. After successful authorization, the refresh token is stored in the DB.\n"
         "\n"
@@ -227,7 +227,7 @@ async def check_google_credentials_with_db(
 def require_google_credentials_or_exit(
     *,
     caller: str = "component",
-    dashboard_url: str = "http://localhost:8200",
+    dashboard_url: str = "http://localhost:40200",
     exit_code: int = 1,
 ) -> None:
     """Check for Google credentials and exit with a clear message if missing.

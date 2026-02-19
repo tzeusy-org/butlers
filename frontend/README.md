@@ -21,7 +21,7 @@ A modern web dashboard for monitoring and managing Butlers AI agent framework. B
 
 - Node.js 18+ with npm
 - PostgreSQL running (e.g. `docker compose up -d postgres` from the project root)
-- Dashboard API backend running on `http://localhost:8200`
+- Dashboard API backend running on `http://localhost:40200`
 
 ### Starting the Backend
 
@@ -32,7 +32,7 @@ From the project root:
 docker compose up -d postgres
 
 # Start the Dashboard API
-uv run butlers dashboard --port 8200
+uv run butlers dashboard --port 40200
 ```
 
 Or use Docker Compose to run both together:
@@ -57,7 +57,7 @@ Start the dev server with hot module replacement:
 npm run dev
 ```
 
-The dashboard will be available at `http://localhost:5173` with API requests proxied to the backend at `http://localhost:8200`.
+The dashboard will be available at `http://localhost:40173` with API requests proxied to the backend at `http://localhost:40200`.
 
 Alternatively, run the entire stack (Postgres + API + frontend) via Docker Compose from the project root:
 
@@ -184,7 +184,7 @@ frontend/
 
 The dashboard connects to the Butlers FastAPI backend via:
 
-- **Development proxy**: Vite proxies `/api` requests to `http://localhost:8200` (configured in `vite.config.ts`)
+- **Development proxy**: Vite proxies `/api` requests to `http://localhost:40200` (configured in `vite.config.ts`)
 - **API client**: Auto-generated TypeScript client in `src/api/client.ts` provides type-safe methods for all backend endpoints
 - **TanStack Query**: Manages server state, caching, and automatic refetching
 

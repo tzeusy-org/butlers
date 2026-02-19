@@ -1,6 +1,6 @@
 [butler]
 name = "relationship"
-port = 8102
+port = 40102
 description = "Personal CRM. Manages contacts, relationships, important dates, interactions, gifts, and reminders."
 
 [butler.db]

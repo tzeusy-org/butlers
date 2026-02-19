@@ -22,7 +22,7 @@ All classification and routing happens downstream in Switchboard after ingest ac
 ### Running in Polling Mode (Dev)
 
 ```bash
-export SWITCHBOARD_MCP_URL="http://localhost:8100/sse"
+export SWITCHBOARD_MCP_URL="http://localhost:40100/sse"
 export CONNECTOR_PROVIDER="telegram"
 export CONNECTOR_CHANNEL="telegram"
 export CONNECTOR_ENDPOINT_IDENTITY="your_bot_username"
@@ -36,7 +36,7 @@ python -m butlers.connectors.telegram_bot
 ### Running in Webhook Mode (Prod)
 
 ```bash
-export SWITCHBOARD_MCP_URL="http://localhost:8100/sse"
+export SWITCHBOARD_MCP_URL="http://localhost:40100/sse"
 export CONNECTOR_PROVIDER="telegram"
 export CONNECTOR_CHANNEL="telegram"
 export CONNECTOR_ENDPOINT_IDENTITY="your_bot_username"

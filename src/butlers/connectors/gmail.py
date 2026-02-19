@@ -21,7 +21,7 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - CONNECTOR_ENDPOINT_IDENTITY (required, e.g. "gmail:user:alice@gmail.com")
 - CONNECTOR_CURSOR_PATH (required; stores last historyId)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
-- CONNECTOR_HEALTH_PORT (optional, default 8080)
+- CONNECTOR_HEALTH_PORT (optional, default 40082)
 - GOOGLE_OAUTH_CLIENT_ID (primary; used for OAuth bootstrap — app config)
 - GOOGLE_OAUTH_CLIENT_SECRET (primary; used for OAuth bootstrap — app config)
 - DATABASE_URL or POSTGRES_* (optional; if set, credentials are loaded from DB first)
@@ -115,7 +115,7 @@ class GmailConnectorConfig(BaseModel):
     connector_max_inflight: int = 8
 
     # Health check config
-    connector_health_port: int = 8080
+    connector_health_port: int = 40082
 
     # Gmail API OAuth
     gmail_client_id: str
@@ -148,7 +148,7 @@ class GmailConnectorConfig(BaseModel):
                 f"CONNECTOR_MAX_INFLIGHT must be an integer, got: {max_inflight_str}"
             ) from exc
 
-        health_port_str = os.environ.get("CONNECTOR_HEALTH_PORT", "8080")
+        health_port_str = os.environ.get("CONNECTOR_HEALTH_PORT", "40082")
         try:
             health_port = int(health_port_str)
         except ValueError as exc:

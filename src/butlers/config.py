@@ -171,7 +171,7 @@ class SchedulerConfig:
 
     tick_interval_seconds: int = 60
     heartbeat_interval_seconds: int = 120
-    switchboard_url: str = "http://localhost:8200"
+    switchboard_url: str = "http://localhost:40200"
 
 
 @dataclass
@@ -521,10 +521,10 @@ def load_config(config_dir: Path) -> ButlerConfig:
     # --- [butler.switchboard] sub-section ---
     switchboard_section = butler_section.get("switchboard", {})
     switchboard_url: str | None = switchboard_section.get("url")
-    # Default: derive from the Switchboard butler's known port (8100)
+    # Default: derive from the Switchboard butler's known port (40100)
     # unless this butler IS the switchboard.
     if switchboard_url is None and name != "switchboard":
-        switchboard_url = "http://localhost:8100/sse"
+        switchboard_url = "http://localhost:40100/sse"
 
     # --- [butler.security] sub-section ---
     security_section = butler_section.get("security", {})
@@ -560,7 +560,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
             "Must be a positive integer."
         )
     # Switchboard URL for liveness reporter: env var > toml > default
-    _default_sb_url = os.environ.get("BUTLERS_SWITCHBOARD_URL", "http://localhost:8200")
+    _default_sb_url = os.environ.get("BUTLERS_SWITCHBOARD_URL", "http://localhost:40200")
     switchboard_liveness_url = scheduler_section.get("switchboard_url", _default_sb_url)
     scheduler_config = SchedulerConfig(
         tick_interval_seconds=tick_interval_seconds,

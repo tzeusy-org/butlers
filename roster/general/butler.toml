@@ -1,6 +1,6 @@
 [butler]
 name = "general"
-port = 8101
+port = 40101
 description = "Flexible catch-all assistant for freeform data"
 
 [butler.db]

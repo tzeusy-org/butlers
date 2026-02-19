@@ -12,12 +12,12 @@
 #   docker compose up -d
 #
 # All butler services will be available on their configured ports:
-#   - switchboard: 8100
-#   - general: 8101
-#   - relationship: 8102
-#   - health: 8103
-#   - heartbeat: 8199
-#   - dashboard-api: 8200
+#   - switchboard: 40100
+#   - general: 40101
+#   - relationship: 40102
+#   - health: 40103
+#   - heartbeat: 40199
+#   - dashboard-api: 40200
 #
 # Observability: Grafana/Tempo tracing via LGTM stack (Alloy OTLP endpoint)
 
@@ -46,7 +46,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8100:8100"
+      - "40100:40100"
     volumes:
       - ./butlers/switchboard:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -67,7 +67,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8101:8101"
+      - "40101:40101"
     volumes:
       - ./butlers/general:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -88,7 +88,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8102:8102"
+      - "40102:40102"
     volumes:
       - ./butlers/relationship:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -109,7 +109,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8103:8103"
+      - "40103:40103"
     volumes:
       - ./butlers/health:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -130,7 +130,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8199:8199"
+      - "40199:40199"
     volumes:
       - ./butlers/heartbeat:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
@@ -151,10 +151,10 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8200:8200"
+      - "40200:40200"
     volumes:
       - ./roster:/app/roster:ro
-    command: ["dashboard", "--host", "0.0.0.0", "--port", "8200"]
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "40200"]
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
@@ -173,9 +173,9 @@ services:
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules
     ports:
-      - "5173:5173"
+      - "40173:40173"
     environment:
-      - VITE_API_URL=http://dashboard-api:8200
+      - VITE_API_URL=http://dashboard-api:40200
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     depends_on:
       - dashboard-api

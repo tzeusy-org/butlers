@@ -17,7 +17,7 @@ Environment Variables (from docs/connectors/telegram_bot.md):
     CONNECTOR_CURSOR_PATH: Checkpoint file path for polling mode (required for polling)
     CONNECTOR_POLL_INTERVAL_S: Poll interval in seconds (required for polling)
     CONNECTOR_MAX_INFLIGHT: Max concurrent ingest submissions (optional, default 8)
-    CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 8080)
+    CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 40081)
     BUTLER_TELEGRAM_TOKEN: Telegram bot token (required)
 """
 
@@ -149,7 +149,7 @@ class TelegramBotConnectorConfig:
     max_inflight: int = 8
 
     # Health check config
-    health_port: int = 8080
+    health_port: int = 40081
 
     @classmethod
     def from_env(cls) -> TelegramBotConnectorConfig:
@@ -178,7 +178,7 @@ class TelegramBotConnectorConfig:
 
         max_inflight = int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8"))
 
-        health_port = int(os.environ.get("CONNECTOR_HEALTH_PORT", "8080"))
+        health_port = int(os.environ.get("CONNECTOR_HEALTH_PORT", "40081"))
 
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
