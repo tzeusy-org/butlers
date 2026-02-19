@@ -36,7 +36,7 @@
 # Tailscale Serve:
 #   Google OAuth requires HTTPS for non-localhost redirect URIs. This script
 #   verifies that tailscale serve is running and forwarding to the dashboard
-#   port (8200). If not running, it attempts to start it automatically.
+#   port (40200). If not running, it attempts to start it automatically.
 #
 #   Prerequisites:
 #     - tailscale CLI installed and available on PATH
@@ -109,11 +109,11 @@ fi
 
 # ── Layer 0: Tailscale serve pre-flight check ──────────────────────────────────────
 # Google OAuth requires HTTPS for non-localhost redirect URIs. Verify that
-# tailscale serve is running and pointing to the dashboard port (8200).
+# tailscale serve is running and pointing to the dashboard port (40200).
 # If not running, attempt to start it. If tailscale is unavailable or
 # unauthenticated, print actionable instructions and exit.
 
-DASHBOARD_PORT=8200
+DASHBOARD_PORT=40200
 TAILSCALE_HTTPS_PORT="${TAILSCALE_HTTPS_PORT:-443}"
 TAILSCALE_PATH_PREFIX="${TAILSCALE_PATH_PREFIX:-/butlers}"
 LOCAL_DASHBOARD_URL="http://localhost:${DASHBOARD_PORT}"

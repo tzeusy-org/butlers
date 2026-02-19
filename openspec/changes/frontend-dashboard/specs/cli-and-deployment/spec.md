@@ -14,14 +14,14 @@ The `butlers dashboard` CLI command SHALL start the FastAPI dashboard API server
 
 - **WHEN** `butlers dashboard` is invoked with no arguments
 - **THEN** the CLI MUST start the FastAPI dashboard API server via uvicorn
-- **AND** the server MUST listen on `0.0.0.0:8200` (the default host and port)
+- **AND** the server MUST listen on `0.0.0.0:40200` (the default host and port)
 - **AND** the CLI MUST log a message indicating the dashboard is running and the URL it is accessible at
 
 #### Scenario: Start dashboard with custom host and port
 
 - **WHEN** `butlers dashboard --host 127.0.0.1 --port 9000` is invoked
 - **THEN** the CLI MUST start the dashboard API server listening on `127.0.0.1:9000`
-- **AND** the server MUST NOT listen on the default `0.0.0.0:8200`
+- **AND** the server MUST NOT listen on the default `0.0.0.0:40200`
 
 #### Scenario: Dashboard requires DATABASE_URL
 
@@ -46,7 +46,7 @@ The `docker-compose.yml` SHALL include a `dashboard-api` service that runs the d
 - **WHEN** `docker compose up -d dashboard-api` is invoked
 - **THEN** a `dashboard-api` service MUST start using the same Docker image as butler services
 - **AND** the service MUST run `butlers dashboard` as its command
-- **AND** the service MUST expose port `8200` mapped to the container's port `8200`
+- **AND** the service MUST expose port `40200` mapped to the container's port `40200`
 - **AND** the service MUST depend on the `postgres` service with condition `service_healthy`
 
 #### Scenario: dashboard-api environment variables
@@ -78,7 +78,7 @@ The `docker-compose.yml` SHALL include an optional `frontend` service for local 
 - **WHEN** `docker compose up -d frontend` is invoked
 - **THEN** a `frontend` service MUST start using the `node:22-slim` image
 - **AND** the service MUST run `npm run dev` as its command
-- **AND** the service MUST expose port `5173` mapped to the container's port `5173`
+- **AND** the service MUST expose port `40173` mapped to the container's port `40173`
 
 #### Scenario: frontend service mounts source code
 

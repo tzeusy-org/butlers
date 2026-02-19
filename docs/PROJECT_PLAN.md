@@ -183,7 +183,7 @@ butler-name/
 [butler]
 name = "assistant"
 description = "Personal assistant with email and calendar access"
-port = 8101
+port = 40101
 
 [butler.db]
 name = "butler_assistant"
@@ -230,7 +230,7 @@ credentials_env = "GCAL_ASSISTANT_CREDS"
 [butler]
 name = "minimal"
 description = "A butler with only core tools"
-port = 8100
+port = 40100
 ```
 
 ### Core Concepts
@@ -314,7 +314,7 @@ When the LLM CLI Spawner is invoked (via `trigger`, scheduler, or `tick`), it:
 {
   "mcpServers": {
     "assistant": {
-      "url": "http://localhost:8101/sse"
+      "url": "http://localhost:40101/sse"
     }
   }
 }
@@ -360,21 +360,21 @@ The MVP ships 4 butlers + the Heartbeat infrastructure butler:
                             │
                     ┌───────▼────────┐
                     │  Switchboard   │ ← public ingress + routing
-                    │  port 8100     │
+                    │  port 40100     │
                     └──┬──┬──┬──────┘
                  MCP   │  │  │  MCP
           ┌────────────▼┐ │ ┌▼───────────┐
           │ Relationship│ │ │   Health    │
           │ (CRM)       │ │ │ (tracking) │
-          │ port 8102   │ │ │ port 8103  │
+          │ port 40102   │ │ │ port 40103  │
           └─────────────┘ │ └────────────┘
                     ┌─────▼──────┐
                     │  General   │ ← catch-all, freeform JSON
-                    │  port 8101 │
+                    │  port 40101 │
                     └────────────┘
 
           ┌──────────────────────────┐
-          │  Heartbeat (port 8199)   │ ← ticks all butlers every 10m
+          │  Heartbeat (port 40199)   │ ← ticks all butlers every 10m
           └──────────────────────────┘
 ```
 
@@ -407,7 +407,7 @@ The **public-facing ingress**. Listens on Telegram (bot) and Email (IMAP/webhook
 [butler]
 name = "switchboard"
 description = "Public ingress. Listens on Telegram and Email, routes to specialist butlers."
-port = 8100
+port = 40100
 
 [butler.db]
 name = "butler_switchboard"
@@ -483,7 +483,7 @@ A personal relationship manager inspired by [Monica CRM](https://www.monicahq.co
 [butler]
 name = "relationship"
 description = "Personal CRM. Manages contacts, relationships, important dates, interactions, gifts, and reminders."
-port = 8102
+port = 40102
 
 [butler.db]
 name = "butler_relationship"
@@ -719,7 +719,7 @@ Tracks health data, medications, conditions, diet, and aggregates research. Desi
 [butler]
 name = "health"
 description = "Health tracking and management. Medications, measurements, diet, conditions, symptoms, and research aggregation."
-port = 8103
+port = 40103
 
 [butler.db]
 name = "butler_health"
@@ -851,7 +851,7 @@ The **catch-all** for requests that don't fit other butlers. Uses a **freeform J
 [butler]
 name = "general"
 description = "General-purpose catch-all butler. Freeform JSON data for anything that doesn't fit a specialist butler. Data migrates to new butlers over time."
-port = 8101
+port = 40101
 
 [butler.db]
 name = "butler_general"
@@ -905,7 +905,7 @@ Infrastructure butler. Calls `tick()` on every registered butler every 10 minute
 [butler]
 name = "heartbeat"
 description = "Infrastructure butler. Calls tick() on all registered butlers every 10 minutes."
-port = 8199
+port = 40199
 
 [butler.db]
 name = "butler_heartbeat"
@@ -1205,7 +1205,7 @@ butlers run --config butlers/switchboard
 
 # Utilities
 butlers list                                  # list discovered butlers and their ports
-butlers init <name> --port 8104               # scaffold a new butler directory
+butlers init <name> --port 40104               # scaffold a new butler directory
 ```
 
 Both modes use MCP-over-HTTP for inter-butler communication, so behavior is identical regardless of process topology. The only difference is process isolation.
@@ -1216,11 +1216,11 @@ One Python process, one asyncio event loop, all butler MCP servers bound to diff
 
 ```
 $ butlers up
-[2026-02-09 08:00:00] switchboard   listening on :8100
-[2026-02-09 08:00:00] general       listening on :8101
-[2026-02-09 08:00:00] relationship  listening on :8102
-[2026-02-09 08:00:00] health        listening on :8103
-[2026-02-09 08:00:00] heartbeat     listening on :8199
+[2026-02-09 08:00:00] switchboard   listening on :40100
+[2026-02-09 08:00:00] general       listening on :40101
+[2026-02-09 08:00:00] relationship  listening on :40102
+[2026-02-09 08:00:00] health        listening on :40103
+[2026-02-09 08:00:00] heartbeat     listening on :40199
 ```
 
 Requires PostgreSQL running locally (or via `docker compose up postgres`). Reads all `butlers/*/butler.toml` configs, creates per-butler databases if they don't exist, applies migrations, and starts all MCP servers concurrently.
@@ -1276,7 +1276,7 @@ services:
     volumes:
       - ./butlers/switchboard:/etc/butler:ro
     ports:
-      - "8100:8100"
+      - "40100:40100"
     environment:
       DATABASE_URL: postgres://butlers:butlers@postgres/butler_switchboard
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -1291,7 +1291,7 @@ services:
     volumes:
       - ./butlers/general:/etc/butler:ro
     ports:
-      - "8101:8101"
+      - "40101:40101"
     environment:
       DATABASE_URL: postgres://butlers:butlers@postgres/butler_general
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -1306,7 +1306,7 @@ services:
     volumes:
       - ./butlers/relationship:/etc/butler:ro
     ports:
-      - "8102:8102"
+      - "40102:40102"
     environment:
       DATABASE_URL: postgres://butlers:butlers@postgres/butler_relationship
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -1321,7 +1321,7 @@ services:
     volumes:
       - ./butlers/health:/etc/butler:ro
     ports:
-      - "8103:8103"
+      - "40103:40103"
     environment:
       DATABASE_URL: postgres://butlers:butlers@postgres/butler_health
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
@@ -1336,7 +1336,7 @@ services:
     volumes:
       - ./butlers/heartbeat:/etc/butler:ro
     ports:
-      - "8199:8199"
+      - "40199:40199"
     environment:
       DATABASE_URL: postgres://butlers:butlers@postgres/butler_heartbeat
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}

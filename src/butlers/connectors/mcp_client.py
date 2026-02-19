@@ -26,7 +26,7 @@ class CachedMCPClient:
     Parameters
     ----------
     endpoint_url:
-        SSE endpoint URL of the target MCP server (e.g. ``http://localhost:8100/sse``).
+        SSE endpoint URL of the target MCP server (e.g. ``http://localhost:40100/sse``).
     client_name:
         Human-readable name for logging and MCP session metadata.
     """

@@ -34,7 +34,7 @@ This runbook covers deployment, monitoring, recovery, and rollback operations fo
 **Configuration:**
 ```bash
 # Required environment variables
-export SWITCHBOARD_MCP_URL="http://localhost:8100/sse"
+export SWITCHBOARD_MCP_URL="http://localhost:40100/sse"
 export CONNECTOR_PROVIDER="telegram"
 export CONNECTOR_CHANNEL="telegram"
 export CONNECTOR_ENDPOINT_IDENTITY="your_bot_username"
@@ -105,7 +105,7 @@ export CONNECTOR_WEBHOOK_URL="https://your-domain.com/telegram/webhook"
 **Configuration:**
 ```bash
 # Required environment variables
-export SWITCHBOARD_MCP_URL="http://localhost:8100/sse"
+export SWITCHBOARD_MCP_URL="http://localhost:40100/sse"
 export CONNECTOR_PROVIDER="gmail"
 export CONNECTOR_CHANNEL="email"
 export CONNECTOR_ENDPOINT_IDENTITY="gmail:user:your-email@gmail.com"

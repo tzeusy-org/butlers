@@ -24,14 +24,14 @@ mode = "polling"                # Module-specific settings.
 
 | Butler       | Port |
 |-------------|------|
-| switchboard | 8100 |
-| general     | 8101 |
-| relationship| 8102 |
-| health      | 8103 |
-| heartbeat   | 8199 |
-| *next*      | 8104+|
+| switchboard | 40100 |
+| general     | 40101 |
+| relationship| 40102 |
+| health      | 40103 |
+| heartbeat   | 40199 |
+| *next*      | 40104+|
 
-Heartbeat uses 8199 as a convention — it's an infrastructure butler, not a domain butler.
+Heartbeat uses 40199 as a convention — it's an infrastructure butler, not a domain butler.
 
 ## Existing Examples
 
@@ -40,7 +40,7 @@ Heartbeat uses 8199 as a convention — it's an infrastructure butler, not a dom
 ```toml
 [butler]
 name = "general"
-port = 8101
+port = 40101
 description = "Flexible catch-all assistant for freeform data"
 
 [butler.db]
@@ -52,7 +52,7 @@ name = "butler_general"
 ```toml
 [butler]
 name = "health"
-port = 8103
+port = 40103
 description = "Health tracking assistant for measurements, medications, diet, and symptoms"
 
 [butler.db]
@@ -85,7 +85,7 @@ Use the health_summary and trend_report tools to compile this data.
 ```toml
 [butler]
 name = "switchboard"
-port = 8100
+port = 40100
 description = "Routes incoming messages to specialist butlers"
 
 [butler.db]
@@ -102,7 +102,7 @@ mode = "polling"
 ```toml
 [butler]
 name = "heartbeat"
-port = 8199
+port = 40199
 description = "System heartbeat — ticks all registered butlers on a schedule"
 
 [butler.db]

@@ -62,7 +62,7 @@ Required variables:
 
 ```bash
 # Switchboard MCP server connection
-export SWITCHBOARD_MCP_URL="http://switchboard:8100/sse"  # Use http://localhost:8100/sse for local dev
+export SWITCHBOARD_MCP_URL="http://switchboard:40100/sse"  # Use http://localhost:40100/sse for local dev
 
 # Connector identity
 export CONNECTOR_PROVIDER="telegram"
@@ -153,7 +153,7 @@ services:
     image: butlers:latest
     command: telegram-user-client-connector
     environment:
-      SWITCHBOARD_MCP_URL: http://switchboard:8100/sse
+      SWITCHBOARD_MCP_URL: http://switchboard:40100/sse
       CONNECTOR_PROVIDER: telegram
       CONNECTOR_CHANNEL: telegram
       CONNECTOR_ENDPOINT_IDENTITY: telegram:user:${TELEGRAM_USER_ID}
@@ -212,7 +212,7 @@ sudo journalctl -u telegram-user-client-connector -f
 cat /var/lib/butlers/connectors/telegram-user-client/cursor.json
 
 # Check Switchboard ingest metrics
-curl http://localhost:8100/metrics
+curl http://localhost:40100/metrics
 ```
 
 ### Key Metrics

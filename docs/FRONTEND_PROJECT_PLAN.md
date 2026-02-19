@@ -37,7 +37,7 @@
              │                           │
    ┌─────────▼──────────┐    ┌──────────▼───────────────────┐
    │  Butler MCP Daemons │    │  PostgreSQL (per-butler DBs) │
-   │  (ports 8100-8199)  │    │  butler_switchboard          │
+   │  (ports 40100-40199)  │    │  butler_switchboard          │
    └─────────────────────┘    │  butler_general              │
                               │  butler_relationship         │
                               │  butler_health               │
@@ -1210,9 +1210,9 @@ UX polish and groundwork for real-time updates.
 ```yaml
   dashboard-api:
     image: butlers:latest
-    command: ["butlers", "dashboard", "--host", "0.0.0.0", "--port", "8200"]
+    command: ["butlers", "dashboard", "--host", "0.0.0.0", "--port", "40200"]
     ports:
-      - "8200:8200"
+      - "40200:40200"
     environment:
       DATABASE_URL: postgres://butlers:butlers@postgres/butler_switchboard
       BUTLERS_DIR: /etc/butlers
@@ -1229,11 +1229,11 @@ UX polish and groundwork for real-time updates.
     working_dir: /app
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
     ports:
-      - "5173:5173"
+      - "40173:40173"
     volumes:
       - ./frontend:/app
     environment:
-      VITE_API_URL: http://localhost:8200
+      VITE_API_URL: http://localhost:40200
 ```
 
 **Production deployment:** Build frontend with `vite build`, serve the `dist/` static files directly from the FastAPI app using `StaticFiles` mount. Single service, no separate frontend container.

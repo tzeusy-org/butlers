@@ -296,7 +296,7 @@ The test validates:
 This test bypasses the LLM entirely and calls the butler's MCP tool directly:
 
 ```python
-async with MCPClient("http://localhost:8103/sse") as client:
+async with MCPClient("http://localhost:40103/sse") as client:
     result = await client.call_tool("measurement_log", {
         "type": "weight",
         "value": 80.0,

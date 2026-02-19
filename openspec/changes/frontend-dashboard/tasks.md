@@ -20,7 +20,7 @@
 - [ ] 2.5 Create `src/butlers/api/deps.py` — `MCPClientManager` (lazy FastMCP client per butler, graceful unreachable handling), `discover_butlers()` using existing config loader, FastAPI dependency functions
 - [ ] 2.6 Create `src/butlers/api/models/__init__.py` — shared Pydantic response/request models base
 - [ ] 2.7 Add `GET /api/health` endpoint returning per-butler daemon and database status
-- [ ] 2.8 Add `butlers dashboard` CLI command to `cli.py` — starts uvicorn with `--host` (default 0.0.0.0) and `--port` (default 8200) options
+- [ ] 2.8 Add `butlers dashboard` CLI command to `cli.py` — starts uvicorn with `--host` (default 0.0.0.0) and `--port` (default 40200) options
 - [ ] 2.9 Add API error handling: consistent `{"error": {"code", "message", "butler?"}}` format, 502 for unreachable butlers, 404 for unknown butlers
 - [ ] 2.10 Create `pricing.toml` config for per-model token pricing, loaded at API startup
 - [ ] 2.11 Tests for DatabaseManager (pool creation, fan_out, shutdown)
@@ -238,8 +238,8 @@
 
 ## 24. Docker & Deployment
 
-- [ ] 24.1 Add `dashboard-api` service to docker-compose.yml — port 8200, depends on postgres healthy, mounts butlers/ config read-only
-- [ ] 24.2 Add `frontend` dev service to docker-compose.yml (behind compose profile, not started by default) — node:22-slim, port 5173
+- [ ] 24.1 Add `dashboard-api` service to docker-compose.yml — port 40200, depends on postgres healthy, mounts butlers/ config read-only
+- [ ] 24.2 Add `frontend` dev service to docker-compose.yml (behind compose profile, not started by default) — node:22-slim, port 40173
 - [ ] 24.3 Configure FastAPI static file serving for production — mount frontend/dist/ at / with html=True fallback, API routes take precedence
 - [ ] 24.4 Add frontend build step documentation (vite build → dist/ → served by dashboard-api)
 

@@ -27,7 +27,7 @@ def test_messenger_butler_toml_has_delivery_module_wiring() -> None:
 
     butler = data.get("butler", {})
     assert butler.get("name") == "messenger"
-    assert butler.get("port") == 8104
+    assert butler.get("port") == 40104
 
     db = butler.get("db", {})
     assert db.get("name") == "butler_messenger"
@@ -69,7 +69,7 @@ def test_readme_documents_running_messenger_with_switchboard() -> None:
 
     assert "butlers up --only switchboard --only messenger" in readme
     assert "| messenger" in readme
-    assert "| 8104" in readme
+    assert "| 40104" in readme
     assert "butler_telegram_token" in readme
     assert "butler_email_address" in readme
     assert "butler_email_password" in readme

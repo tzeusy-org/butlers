@@ -31,7 +31,7 @@ Prerequisites:
 - [ ] **Tailscale is serving the backend**
   ```bash
   tailscale serve status
-  # Expected: https://<your-name>.ts.net/ → http://localhost:8200
+  # Expected: https://<your-name>.ts.net/ → http://localhost:40200
   ```
 
 - [ ] **Backend API is reachable via HTTPS**

@@ -26,11 +26,11 @@ AND start all butler MCP servers concurrently on their configured ports within a
 WHEN `butlers up` starts all discovered butlers successfully,
 THEN the CLI MUST log a timestamped message for each butler indicating its name and listening port, for example:
 ```
-[2026-02-09 08:00:00] switchboard   listening on :8100
-[2026-02-09 08:00:00] general       listening on :8101
-[2026-02-09 08:00:00] relationship  listening on :8102
-[2026-02-09 08:00:00] health        listening on :8103
-[2026-02-09 08:00:00] heartbeat     listening on :8199
+[2026-02-09 08:00:00] switchboard   listening on :40100
+[2026-02-09 08:00:00] general       listening on :40101
+[2026-02-09 08:00:00] relationship  listening on :40102
+[2026-02-09 08:00:00] health        listening on :40103
+[2026-02-09 08:00:00] heartbeat     listening on :40199
 ```
 
 #### Scenario: Start a subset of butlers with --only
@@ -117,9 +117,9 @@ The `butlers init` command SHALL scaffold a new butler config directory with the
 
 #### Scenario: Scaffold a new butler
 
-WHEN `butlers init mybutler --port 8104` is invoked,
+WHEN `butlers init mybutler --port 40104` is invoked,
 THEN the CLI MUST create the directory `butlers/mybutler/`,
-AND the directory MUST contain a `butler.toml` file with `[butler]` section containing `name = "mybutler"` and `port = 8104`,
+AND the directory MUST contain a `butler.toml` file with `[butler]` section containing `name = "mybutler"` and `port = 40104`,
 AND the directory MUST contain an empty `CLAUDE.md` file (or one with a placeholder comment),
 AND the directory MUST contain an empty `AGENTS.md` file (or one with a placeholder comment),
 AND the directory MUST contain an empty `skills/` subdirectory.
@@ -132,14 +132,14 @@ AND the `butler.toml` MUST contain a `port` field with a reasonable default valu
 
 #### Scenario: Init refuses to overwrite existing directory
 
-WHEN `butlers init mybutler --port 8104` is invoked and `butlers/mybutler/` already exists,
+WHEN `butlers init mybutler --port 40104` is invoked and `butlers/mybutler/` already exists,
 THEN the CLI MUST report an error indicating the directory already exists,
 AND the CLI MUST NOT modify the existing directory,
 AND the CLI MUST exit with a non-zero status code.
 
 #### Scenario: Generated butler.toml is valid
 
-WHEN `butlers init mybutler --port 8104` creates a `butler.toml`,
+WHEN `butlers init mybutler --port 40104` creates a `butler.toml`,
 THEN the generated file MUST be valid TOML,
 AND the file MUST be parseable by the daemon's config loader,
 AND the generated butler MUST be startable via `butlers run --config butlers/mybutler` without modification.
@@ -367,11 +367,11 @@ Each butler SHALL be assigned a unique port number in its `butler.toml`. The por
 #### Scenario: Default v1 butler port assignments
 
 WHEN the v1 MVP butlers are configured,
-THEN the Switchboard MUST use port 8100,
-AND the General butler MUST use port 8101,
-AND the Relationship butler MUST use port 8102,
-AND the Health butler MUST use port 8103,
-AND the Heartbeat butler MUST use port 8199.
+THEN the Switchboard MUST use port 40100,
+AND the General butler MUST use port 40101,
+AND the Relationship butler MUST use port 40102,
+AND the Health butler MUST use port 40103,
+AND the Heartbeat butler MUST use port 40199.
 
 #### Scenario: Port conflict detected at startup
 

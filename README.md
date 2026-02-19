@@ -29,7 +29,7 @@ A personal assistant butler configured in `butler.toml`:
 [butler]
 name = "assistant"
 description = "Personal assistant with email and calendar"
-port = 8101
+port = 40101
 
 [[butler.schedule]]
 name = "morning-briefing"
@@ -91,7 +91,7 @@ graph TB
         Client[MCP Client]
     end
 
-    subgraph Switchboard["Switchboard Butler :8100"]
+    subgraph Switchboard["Switchboard Butler :40100"]
         SRouter[Route Tool]
         SRegistry[Butler Registry]
     end
@@ -99,13 +99,13 @@ graph TB
     Client --> SRouter
     SRouter --> SRegistry
     subgraph Butlers["Domain Butlers"]
-        subgraph General["General :8101"]
+        subgraph General["General :40101"]
             G_MCP[FastMCP Server]
         end
-        subgraph Relationship["Relationship :8102"]
+        subgraph Relationship["Relationship :40102"]
             R_MCP[FastMCP Server]
         end
-        subgraph Health["Health :8103"]
+        subgraph Health["Health :40103"]
             H_MCP[FastMCP Server]
         end
     end
@@ -263,8 +263,8 @@ butlers list
 ```
 
 Access points:
-- Butler MCP servers on their configured ports (8100-8199)
-- Dashboard API on port 8200
+- Butler MCP servers on their configured ports (40100-40199)
+- Dashboard API on port 40200
 - Grafana Tempo for distributed tracing (external Alloy endpoint)
 
 ### Dashboard (Frontend)
@@ -273,13 +273,13 @@ The web dashboard provides real-time monitoring and management of all butlers. I
 
 ```bash
 # 1. Start the Dashboard API (requires PostgreSQL)
-uv run butlers dashboard --port 8200
+uv run butlers dashboard --port 40200
 
 # 2. Start the frontend dev server (in another terminal)
 cd frontend && npm install && npm run dev
 ```
 
-The dashboard will be available at `http://localhost:5173`.
+The dashboard will be available at `http://localhost:40173`.
 
 Alternatively, use Docker Compose with the `dev` profile to run everything together:
 
@@ -287,7 +287,7 @@ Alternatively, use Docker Compose with the `dev` profile to run everything toget
 docker compose --profile dev up
 ```
 
-This starts PostgreSQL, the Dashboard API (port 8200), and the Vite dev server (port 5173).
+This starts PostgreSQL, the Dashboard API (port 40200), and the Vite dev server (port 40173).
 
 ### Production
 
@@ -314,13 +314,13 @@ Each butler service mounts its config directory read-only from `butlers/<name>/`
 
 | Service       | Port | Description                                            |
 | ------------- | ---- | ------------------------------------------------------ |
-| Switchboard   | 8100 | Message router — routes MCP requests to domain butlers |
-| General       | 8101 | Catch-all assistant with collections/entities          |
-| Relationship  | 8102 | Contacts, interactions, gifts, activity feed           |
-| Health        | 8103 | Measurements, medications, conditions, symptoms        |
-| Messenger     | 8104 | Delivery relay — Telegram and email channel outputs    |
-| Dashboard API | 8200 | Web UI backend for monitoring and managing butlers     |
-| Frontend      | 5173 | Vite dev server (development only)                     |
+| Switchboard   | 40100 | Message router — routes MCP requests to domain butlers |
+| General       | 40101 | Catch-all assistant with collections/entities          |
+| Relationship  | 40102 | Contacts, interactions, gifts, activity feed           |
+| Health        | 40103 | Measurements, medications, conditions, symptoms        |
+| Messenger     | 40104 | Delivery relay — Telegram and email channel outputs    |
+| Dashboard API | 40200 | Web UI backend for monitoring and managing butlers     |
+| Frontend      | 40173 | Vite dev server (development only)                     |
 | PostgreSQL    | 5432 | Shared database server (one DB per butler)             |
 
 **Note:** OTLP HTTP traces (port 4318) are sent to an external Alloy instance (not exposed locally).
@@ -337,7 +337,7 @@ butlers init NAME --port PORT [--dir PATH]   Scaffold a new butler config direct
 ### Scaffolding a New Butler
 
 ```bash
-butlers init mybutler --port 8104
+butlers init mybutler --port 40104
 ```
 
 Creates:

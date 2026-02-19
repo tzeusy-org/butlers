@@ -159,7 +159,7 @@ def list_cmd(butlers_dir: Path) -> None:
 
 @cli.command()
 @click.argument("name")
-@click.option("--port", type=int, default=8100, help="Port for the butler's MCP server")
+@click.option("--port", type=int, default=40100, help="Port for the butler's MCP server")
 @click.option(
     "--dir",
     "butlers_dir",
@@ -208,7 +208,7 @@ name = "butler_{name}"
 @click.option(
     "--port",
     type=int,
-    default=8200,
+    default=40200,
     show_default=True,
     help="Port for the dashboard server",
 )

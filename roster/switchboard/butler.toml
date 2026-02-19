@@ -1,6 +1,6 @@
 [butler]
 name = "switchboard"
-port = 8100
+port = 40100
 description = "Routes incoming messages to specialist butlers"
 
 [butler.runtime]

@@ -873,7 +873,7 @@ class TestSwitchboardUrlConfig:
     """Tests for [butler.switchboard] section parsing."""
 
     def test_default_switchboard_url_for_non_switchboard(self, tmp_path: Path):
-        """Non-switchboard butlers default to http://localhost:8100/sse."""
+        """Non-switchboard butlers default to http://localhost:40100/sse."""
         toml = """\
 [butler]
 name = "general"
@@ -882,7 +882,7 @@ port = 8101
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
 
-        assert cfg.switchboard_url == "http://localhost:8100/sse"
+        assert cfg.switchboard_url == "http://localhost:40100/sse"
 
 
 class TestMessengerConfigValidation:
@@ -1000,12 +1000,12 @@ name = "switchboard"
 port = 8100
 
 [butler.switchboard]
-url = "http://other-switchboard:8100/sse"
+url = "http://other-switchboard:40100/sse"
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
 
-        assert cfg.switchboard_url == "http://other-switchboard:8100/sse"
+        assert cfg.switchboard_url == "http://other-switchboard:40100/sse"
 
     def test_switchboard_url_env_var_resolution(self, tmp_path: Path, monkeypatch):
         """switchboard_url supports ${ENV_VAR} resolution."""
@@ -1016,12 +1016,12 @@ name = "health"
 port = 8103
 
 [butler.switchboard]
-url = "http://${SWITCHBOARD_HOST}:8100/sse"
+url = "http://${SWITCHBOARD_HOST}:40100/sse"
 """
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
 
-        assert cfg.switchboard_url == "http://sb.prod.internal:8100/sse"
+        assert cfg.switchboard_url == "http://sb.prod.internal:40100/sse"
 
     def test_switchboard_url_in_butler_config_dataclass(self):
         """ButlerConfig dataclass defaults switchboard_url to None."""
@@ -1040,7 +1040,7 @@ port = 8103
         config_dir = _write_toml(tmp_path, toml)
         cfg = load_config(config_dir)
 
-        assert cfg.switchboard_url == "http://localhost:8100/sse"
+        assert cfg.switchboard_url == "http://localhost:40100/sse"
 
 
 # ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ Environment variables:
   GOOGLE_OAUTH_CLIENT_ID     — OAuth client ID (required)
   GOOGLE_OAUTH_CLIENT_SECRET — OAuth client secret (required)
   GOOGLE_OAUTH_REDIRECT_URI  — Callback URL registered with Google
-                               (default: http://localhost:8200/api/oauth/google/callback)
+                               (default: http://localhost:40200/api/oauth/google/callback)
   GOOGLE_OAUTH_SCOPES        — Space-separated scopes
                                (default: Gmail + Calendar read/write)
   OAUTH_DASHBOARD_URL        — Where to redirect after a successful bootstrap
@@ -103,7 +103,7 @@ GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_TOKEN_INFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 
-_DEFAULT_REDIRECT_URI = "http://localhost:8200/api/oauth/google/callback"
+_DEFAULT_REDIRECT_URI = "http://localhost:40200/api/oauth/google/callback"
 _DEFAULT_SCOPES = " ".join(
     [
         "https://www.googleapis.com/auth/gmail.readonly",

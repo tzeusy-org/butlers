@@ -42,7 +42,7 @@ describe("RegistryTable", () => {
         data: [
           {
             name: "switchboard",
-            endpoint_url: "http://localhost:8100/sse",
+            endpoint_url: "http://localhost:40100/sse",
             description: "Route messages",
             modules: "telegram, email" as unknown as unknown[],
             last_seen_at: null,
@@ -63,7 +63,7 @@ describe("RegistryTable", () => {
         data: [
           {
             name: "empty",
-            endpoint_url: "http://localhost:8101/sse",
+            endpoint_url: "http://localhost:40101/sse",
             description: null,
             modules: [],
             last_seen_at: null,
@@ -71,7 +71,7 @@ describe("RegistryTable", () => {
           },
           {
             name: "single",
-            endpoint_url: "http://localhost:8102/sse",
+            endpoint_url: "http://localhost:40102/sse",
             description: null,
             modules: "telegram" as unknown as unknown[],
             last_seen_at: null,
@@ -93,7 +93,7 @@ describe("RegistryTable", () => {
         data: [
           {
             name: "legacy",
-            endpoint_url: "http://localhost:8103/sse",
+            endpoint_url: "http://localhost:40103/sse",
             description: null,
             modules: "[telegram, email]" as unknown as unknown[],
             last_seen_at: null,
@@ -119,7 +119,7 @@ describe("RegistryTable", () => {
         data: [
           {
             name: "nested",
-            endpoint_url: "http://localhost:8104/sse",
+            endpoint_url: "http://localhost:40104/sse",
             description: null,
             modules: deeplyNestedModules as unknown as unknown[],
             last_seen_at: null,

@@ -21,7 +21,7 @@ def mock_config(tmp_path: Path) -> TelegramBotConnectorConfig:
     """Create a mock connector configuration."""
     cursor_path = tmp_path / "cursor.json"
     return TelegramBotConnectorConfig(
-        switchboard_mcp_url="http://localhost:8100/sse",
+        switchboard_mcp_url="http://localhost:40100/sse",
         provider="telegram",
         channel="telegram",
         endpoint_identity="test_bot",
@@ -62,7 +62,7 @@ def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     """Test loading configuration from environment variables."""
     cursor_path = tmp_path / "cursor.json"
 
-    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
     monkeypatch.setenv("CONNECTOR_PROVIDER", "telegram")
     monkeypatch.setenv("CONNECTOR_CHANNEL", "telegram")
     monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "my_bot")
@@ -73,7 +73,7 @@ def test_config_from_env_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 
     config = TelegramBotConnectorConfig.from_env()
 
-    assert config.switchboard_mcp_url == "http://localhost:8100/sse"
+    assert config.switchboard_mcp_url == "http://localhost:40100/sse"
     assert config.provider == "telegram"
     assert config.channel == "telegram"
     assert config.endpoint_identity == "my_bot"
@@ -90,7 +90,7 @@ def test_config_from_env_missing_required_fields(monkeypatch: pytest.MonkeyPatch
         TelegramBotConnectorConfig.from_env()
 
     # Missing CONNECTOR_ENDPOINT_IDENTITY
-    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:8100/sse")
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
     with pytest.raises(ValueError, match="CONNECTOR_ENDPOINT_IDENTITY"):
         TelegramBotConnectorConfig.from_env()
 

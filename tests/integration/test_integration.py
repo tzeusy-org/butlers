@@ -543,10 +543,10 @@ class TestSwitchboardRoutingIntegration:
         from butlers.tools.switchboard import list_butlers, register_butler
 
         await register_butler(
-            pool, "health", "http://localhost:8101/sse", "Health butler", ["email"]
+            pool, "health", "http://localhost:40101/sse", "Health butler", ["email"]
         )
         await register_butler(
-            pool, "general", "http://localhost:8102/sse", "General butler", ["telegram"]
+            pool, "general", "http://localhost:40102/sse", "General butler", ["telegram"]
         )
 
         butlers = await list_butlers(pool)

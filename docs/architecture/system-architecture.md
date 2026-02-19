@@ -27,7 +27,7 @@ graph TB
         HB_CONN["Heartbeat<br/>Connector"]
     end
 
-    subgraph Switchboard["Switchboard Butler :8100"]
+    subgraph Switchboard["Switchboard Butler :40100"]
         direction TB
         SB_MCP["MCP Server"]
         SB_INGEST["ingest tool"]
@@ -43,7 +43,7 @@ graph TB
         SB_MCP -.-> SB_DB
     end
 
-    subgraph Heartbeat["Heartbeat Butler :8199"]
+    subgraph Heartbeat["Heartbeat Butler :40199"]
         HB_MCP["MCP Server"]
         HB_TICK["tick() dispatcher"]
         HB_DB[("butler_heartbeat<br/>PostgreSQL")]
@@ -52,7 +52,7 @@ graph TB
     end
 
     subgraph Specialists["Domain Butlers"]
-        subgraph General["General Butler :8101"]
+        subgraph General["General Butler :40101"]
             GEN_MCP["MCP Server"]
             GEN_CORE["Core:<br/>State · Scheduler · Sessions"]
             GEN_MOD["Modules:<br/>Calendar · Memory"]
@@ -62,7 +62,7 @@ graph TB
             GEN_MCP -.-> GEN_DB
         end
 
-        subgraph Relationship["Relationship Butler :8102"]
+        subgraph Relationship["Relationship Butler :40102"]
             REL_MCP["MCP Server"]
             REL_CORE["Core:<br/>State · Scheduler · Sessions"]
             REL_MOD["Modules:<br/>Memory"]
@@ -72,7 +72,7 @@ graph TB
             REL_MCP -.-> REL_DB
         end
 
-        subgraph Health["Health Butler :8103"]
+        subgraph Health["Health Butler :40103"]
             HEALTH_MCP["MCP Server"]
             HEALTH_CORE["Core:<br/>State · Scheduler · Sessions"]
             HEALTH_MOD["Modules:<br/>Memory"]
@@ -83,7 +83,7 @@ graph TB
         end
     end
 
-    subgraph Messenger["Messenger Butler :8104"]
+    subgraph Messenger["Messenger Butler :40104"]
         MSG_MCP["MCP Server"]
         MSG_DELIVERY["Delivery Engine"]
         MSG_TG["bot_telegram_send_message<br/>bot_telegram_reply_to_message"]
@@ -496,12 +496,12 @@ graph LR
         DB_MSG[("butler_messenger")]
     end
 
-    SW["Switchboard :8100"] --> DB_SW
-    GEN["General :8101"] --> DB_GEN
-    REL["Relationship :8102"] --> DB_REL
-    HEALTH["Health :8103"] --> DB_HEALTH
-    HB["Heartbeat :8199"] --> DB_HB
-    MSG["Messenger :8104"] --> DB_MSG
+    SW["Switchboard :40100"] --> DB_SW
+    GEN["General :40101"] --> DB_GEN
+    REL["Relationship :40102"] --> DB_REL
+    HEALTH["Health :40103"] --> DB_HEALTH
+    HB["Heartbeat :40199"] --> DB_HB
+    MSG["Messenger :40104"] --> DB_MSG
 ```
 
 ### Shared schema (core tables, all butlers)

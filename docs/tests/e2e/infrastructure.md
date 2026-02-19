@@ -127,21 +127,21 @@ in production:
 
 | Butler | Port | Protocol | Endpoint |
 |--------|------|----------|----------|
-| switchboard | 8100 | HTTP/SSE | `http://localhost:8100/sse` |
-| general | 8101 | HTTP/SSE | `http://localhost:8101/sse` |
-| relationship | 8102 | HTTP/SSE | `http://localhost:8102/sse` |
-| health | 8103 | HTTP/SSE | `http://localhost:8103/sse` |
-| messenger | 8104 | HTTP/SSE | `http://localhost:8104/sse` |
+| switchboard | 40100 | HTTP/SSE | `http://localhost:40100/sse` |
+| general | 40101 | HTTP/SSE | `http://localhost:40101/sse` |
+| relationship | 40102 | HTTP/SSE | `http://localhost:40102/sse` |
+| health | 40103 | HTTP/SSE | `http://localhost:40103/sse` |
+| messenger | 40104 | HTTP/SSE | `http://localhost:40104/sse` |
 
 ### Why These Ports
 
-The port range `8100–8199` is chosen because:
+The port range `40100–40199` is chosen because:
 
 1. **Above the privileged range.** No `sudo` or `CAP_NET_BIND_SERVICE` required.
 2. **Below common development ports.** Does not conflict with typical dev server
    ports (3000, 5173, 8000, 8080, 8200, 9000).
-3. **Contiguous and predictable.** Butlers are numbered sequentially from 8100.
-4. **Dashboard lives at 8200.** The dashboard API runs at 8200, cleanly separated
+3. **Contiguous and predictable.** Butlers are numbered sequentially from 40100.
+4. **Dashboard lives at 40200.** The dashboard API runs at 40200, cleanly separated
    from the butler MCP port range.
 
 ### Port Conflict Avoidance
@@ -151,7 +151,7 @@ ports as production. This means:
 
 - If the production stack is running (`butlers up`), the E2E harness will fail
   to bind. **Stop the production stack before running E2E tests.**
-- If another process occupies any port in the 8100–8199 range, the harness will
+- If another process occupies any port in the 40100–40199 range, the harness will
   fail with an `EADDRINUSE` error for that specific butler.
 
 This is an intentional design choice. Dynamic port allocation would require
@@ -368,7 +368,7 @@ debugger:
 ```python
 from fastmcp import Client as MCPClient
 
-async with MCPClient("http://localhost:8103/sse") as client:
+async with MCPClient("http://localhost:40103/sse") as client:
     result = await client.call_tool("status", {})
     print(result)
 ```
@@ -392,10 +392,10 @@ async with MCPClient("http://localhost:8103/sse") as client:
 │  │              BUTLER ECOSYSTEM (session-scoped)           │  │
 │  │                                                          │  │
 │  │  Switchboard ──► General ──► Relationship ──► Health     │  │
-│  │   :8100          :8101       :8102           :8103       │  │
+│  │   :40100          :40101       :40102           :40103       │  │
 │  │                                                          │  │
 │  │  Messenger                                               │  │
-│  │   :8104                                                  │  │
+│  │   :40104                                                  │  │
 │  │                                                          │  │
 │  │  Each: ButlerDaemon + FastMCP SSE + Spawner + DB pool   │  │
 │  └──────────────────────┬──────────────────────────────────┘  │

@@ -28,7 +28,7 @@ from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
 
-_HB_URL = "http://test-switchboard:8200/api/switchboard/heartbeat"
+_HB_URL = "http://test-switchboard:40200/api/switchboard/heartbeat"
 
 
 # ---------------------------------------------------------------------------
@@ -181,13 +181,13 @@ class TestLivenessReporterConfig:
             load_config(tmp_path)
 
     def test_default_switchboard_url(self, tmp_path: Path) -> None:
-        """switchboard_url defaults to http://localhost:8200 when not configured."""
+        """switchboard_url defaults to http://localhost:40200 when not configured."""
         _make_butler_toml(tmp_path)
         # Ensure BUTLERS_SWITCHBOARD_URL is not set for this test
         env_backup = os.environ.pop("BUTLERS_SWITCHBOARD_URL", None)
         try:
             config = load_config(tmp_path)
-            assert config.scheduler.switchboard_url == "http://localhost:8200"
+            assert config.scheduler.switchboard_url == "http://localhost:40200"
         finally:
             if env_backup is not None:
                 os.environ["BUTLERS_SWITCHBOARD_URL"] = env_backup
@@ -214,7 +214,7 @@ class TestLivenessReporterConfig:
         """SchedulerConfig defaults are correct."""
         cfg = SchedulerConfig()
         assert cfg.heartbeat_interval_seconds == 120
-        assert cfg.switchboard_url == "http://localhost:8200"
+        assert cfg.switchboard_url == "http://localhost:40200"
 
 
 # ---------------------------------------------------------------------------
@@ -330,7 +330,7 @@ class TestLivenessReporterBehavior:
         daemon.config = ButlerConfig(name=name, port=9100)
         daemon.config.scheduler = SchedulerConfig(
             heartbeat_interval_seconds=120,
-            switchboard_url="http://test-switchboard:8200",
+            switchboard_url="http://test-switchboard:40200",
         )
         return daemon
 
@@ -377,7 +377,7 @@ class TestLivenessReporterBehavior:
         daemon = self._make_daemon(tmp_path)
         daemon.config.scheduler = SchedulerConfig(
             heartbeat_interval_seconds=1,
-            switchboard_url="http://test-switchboard:8200",
+            switchboard_url="http://test-switchboard:40200",
         )
         mock_client = _make_mock_client()
 
@@ -408,7 +408,7 @@ class TestLivenessReporterBehavior:
         daemon = self._make_daemon(tmp_path)
         daemon.config.scheduler = SchedulerConfig(
             heartbeat_interval_seconds=1,
-            switchboard_url="http://test-switchboard:8200",
+            switchboard_url="http://test-switchboard:40200",
         )
 
         call_count = 0

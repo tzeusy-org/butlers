@@ -28,9 +28,9 @@ with any HTTP load testing tool:
 | Tool | Command | What It Tests |
 |------|---------|--------------|
 | **k6** | `k6 run --vus 10 --duration 30s script.js` | Sustained load against switchboard |
-| **locust** | `locust -f locustfile.py --host http://localhost:8100` | Ramp-up load with user simulation |
-| **wrk** | `wrk -t4 -c10 -d30s http://localhost:8100/sse` | Raw SSE connection throughput |
-| **hey** | `hey -n 100 -c 5 http://localhost:8103/sse` | Quick latency distribution |
+| **locust** | `locust -f locustfile.py --host http://localhost:40100` | Ramp-up load with user simulation |
+| **wrk** | `wrk -t4 -c10 -d30s http://localhost:40100/sse` | Raw SSE connection throughput |
+| **hey** | `hey -n 100 -c 5 http://localhost:40103/sse` | Quick latency distribution |
 
 ### k6 Load Test Script
 
@@ -48,7 +48,7 @@ export const options = {
 
 export default function () {
     // Call the switchboard's status tool
-    const res = http.post('http://localhost:8100/sse', JSON.stringify({
+    const res = http.post('http://localhost:40100/sse', JSON.stringify({
         method: 'tools/call',
         params: { name: 'status', arguments: {} },
     }), { headers: { 'Content-Type': 'application/json' } });
@@ -77,8 +77,8 @@ from tests.e2e.conftest import bootstrap_ecosystem
 async def main():
     ecosystem = await bootstrap_ecosystem()
     print("Ecosystem running. Press Ctrl+C to stop.")
-    print("Switchboard: http://localhost:8100/sse")
-    print("Health:      http://localhost:8103/sse")
+    print("Switchboard: http://localhost:40100/sse")
+    print("Health:      http://localhost:40103/sse")
     try:
         await asyncio.Event().wait()  # block forever
     finally:

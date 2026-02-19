@@ -1,6 +1,6 @@
 [butler]
 name = "messenger"
-port = 8104
+port = 40104
 description = "Outbound delivery execution plane for Telegram and Email"
 
 [butler.runtime]

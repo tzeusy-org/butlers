@@ -1252,7 +1252,7 @@ class ButlerDaemon:
         expected (e.g., Switchboard not yet started) and does not break the loop.
 
         The Switchboard URL is resolved from the ``BUTLERS_SWITCHBOARD_URL`` environment
-        variable (default ``http://localhost:8200``), or from
+        variable (default ``http://localhost:40200``), or from
         ``[butler.scheduler].switchboard_url`` in butler.toml.
 
         On cancellation (graceful shutdown), the loop exits cleanly.

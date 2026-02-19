@@ -21,7 +21,7 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - CONNECTOR_ENDPOINT_IDENTITY (required, e.g. "gmail:user:alice@gmail.com")
 - CONNECTOR_CURSOR_PATH (required; stores last historyId)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
-- CONNECTOR_HEALTH_PORT (optional, default 8080)
+- CONNECTOR_HEALTH_PORT (optional, default 40082)
 - GOOGLE_OAUTH_CLIENT_ID (primary; used for OAuth bootstrap — app config)
 - GOOGLE_OAUTH_CLIENT_SECRET (primary; used for OAuth bootstrap — app config)
 - DATABASE_URL or POSTGRES_* (optional; if set, credentials are loaded from DB first)
@@ -33,7 +33,7 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - GMAIL_POLL_INTERVAL_S (optional, default 60)
 - GMAIL_PUBSUB_ENABLED (optional, default false; enables Pub/Sub push mode)
 - GMAIL_PUBSUB_TOPIC (required if GMAIL_PUBSUB_ENABLED=true; GCP Pub/Sub topic)
-- GMAIL_PUBSUB_WEBHOOK_PORT (optional, default 8081; port for Pub/Sub webhook)
+- GMAIL_PUBSUB_WEBHOOK_PORT (optional, default 40083; port for Pub/Sub webhook)
 - GMAIL_PUBSUB_WEBHOOK_PATH (optional, default /gmail/webhook; path for Pub/Sub webhook)
 - GMAIL_PUBSUB_WEBHOOK_TOKEN (optional but recommended; auth token for webhook security)
 """
@@ -115,7 +115,7 @@ class GmailConnectorConfig(BaseModel):
     connector_max_inflight: int = 8
 
     # Health check config
-    connector_health_port: int = 8080
+    connector_health_port: int = 40082
 
     # Gmail API OAuth
     gmail_client_id: str
@@ -129,7 +129,7 @@ class GmailConnectorConfig(BaseModel):
     # Pub/Sub push notification config (optional)
     gmail_pubsub_enabled: bool = False
     gmail_pubsub_topic: str | None = None
-    gmail_pubsub_webhook_port: int = 8081
+    gmail_pubsub_webhook_port: int = 40083
     gmail_pubsub_webhook_path: str = "/gmail/webhook"
     gmail_pubsub_webhook_token: str | None = None  # Optional auth token for webhook
 
@@ -148,7 +148,7 @@ class GmailConnectorConfig(BaseModel):
                 f"CONNECTOR_MAX_INFLIGHT must be an integer, got: {max_inflight_str}"
             ) from exc
 
-        health_port_str = os.environ.get("CONNECTOR_HEALTH_PORT", "8080")
+        health_port_str = os.environ.get("CONNECTOR_HEALTH_PORT", "40082")
         try:
             health_port = int(health_port_str)
         except ValueError as exc:
@@ -183,7 +183,7 @@ class GmailConnectorConfig(BaseModel):
         if pubsub_enabled and not pubsub_topic:
             raise ValueError("GMAIL_PUBSUB_TOPIC is required when GMAIL_PUBSUB_ENABLED=true")
 
-        pubsub_webhook_port_str = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PORT", "8081")
+        pubsub_webhook_port_str = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PORT", "40083")
         try:
             pubsub_webhook_port = int(pubsub_webhook_port_str)
         except ValueError as exc:

@@ -1,6 +1,6 @@
 # Health Butler Specification
 
-The Health butler tracks personal health data including measurements, medications, conditions, diet, symptoms, and research. It is designed for longitudinal health tracking, providing tools to log data over time and generate summaries and trend reports. The Health butler runs on port 8103 with its own dedicated database `butler_health`. It has no modules initially -- all functionality is provided via butler-specific MCP tools.
+The Health butler tracks personal health data including measurements, medications, conditions, diet, symptoms, and research. It is designed for longitudinal health tracking, providing tools to log data over time and generate summaries and trend reports. The Health butler runs on port 40103 with its own dedicated database `butler_health`. It has no modules initially -- all functionality is provided via butler-specific MCP tools.
 
 ---
 
@@ -85,13 +85,13 @@ CREATE TABLE research (
 
 ### Requirement: Butler Configuration
 
-The Health butler SHALL be configured with `name = "health"`, `port = 8103`, and database name `butler_health` in its `butler.toml`. The Health butler SHALL have no modules initially -- all domain-specific tools are registered as butler-specific MCP tools.
+The Health butler SHALL be configured with `name = "health"`, `port = 40103`, and database name `butler_health` in its `butler.toml`. The Health butler SHALL have no modules initially -- all domain-specific tools are registered as butler-specific MCP tools.
 
 #### Scenario: Health butler starts with correct identity
 
 WHEN the Health butler starts with its `butler.toml`,
 THEN the butler name SHALL be "health",
-AND the port SHALL be 8103,
+AND the port SHALL be 40103,
 AND the database SHALL be `butler_health`.
 
 #### Scenario: Health butler has no modules

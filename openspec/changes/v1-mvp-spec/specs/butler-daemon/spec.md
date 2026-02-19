@@ -27,7 +27,7 @@ AND the butler name, description, port, database name, schedule entries, and mod
 
 #### Scenario: Minimal config loads with defaults
 
-WHEN the daemon starts with a `butler.toml` containing only `[butler]` with `name = "minimal"` and `port = 8100`,
+WHEN the daemon starts with a `butler.toml` containing only `[butler]` with `name = "minimal"` and `port = 40100`,
 THEN the daemon SHALL load successfully,
 AND the database name SHALL default to `butler_minimal`,
 AND the schedule list SHALL be empty,
@@ -241,8 +241,8 @@ The server MUST be fully operational before the daemon signals readiness. The da
 
 #### Scenario: Server starts on configured port
 
-WHEN the daemon has completed all initialization steps and the config specifies `port = 8101`,
-THEN the FastMCP server SHALL begin accepting MCP connections on port 8101 via SSE transport.
+WHEN the daemon has completed all initialization steps and the config specifies `port = 40101`,
+THEN the FastMCP server SHALL begin accepting MCP connections on port 40101 via SSE transport.
 
 #### Scenario: Port conflict prevents startup
 

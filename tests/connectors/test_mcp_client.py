@@ -12,7 +12,7 @@ from butlers.connectors.mcp_client import CachedMCPClient
 @pytest.fixture
 def client() -> CachedMCPClient:
     """Create a CachedMCPClient for testing."""
-    return CachedMCPClient("http://localhost:8100/sse", client_name="test-connector")
+    return CachedMCPClient("http://localhost:40100/sse", client_name="test-connector")
 
 
 class TestCachedMCPClient:

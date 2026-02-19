@@ -1,6 +1,6 @@
 # Dashboard API
 
-The Dashboard API is a FastAPI application that bridges the React frontend to the butler ecosystem. It provides REST endpoints for butler discovery, live operations (via MCP clients), and data browsing (via direct asyncpg reads). The API runs on port 8200 and serves as the single entry point for all dashboard interactions.
+The Dashboard API is a FastAPI application that bridges the React frontend to the butler ecosystem. It provides REST endpoints for butler discovery, live operations (via MCP clients), and data browsing (via direct asyncpg reads). The API runs on port 40200 and serves as the single entry point for all dashboard interactions.
 
 All butler daemons are discovered dynamically from the roster configuration directory and each has a dedicated PostgreSQL database and FastMCP SSE server. The dashboard API maintains connections to all discovered butlers.
 
@@ -135,7 +135,7 @@ On shutdown, `MCPClientManager.shutdown()` SHALL close all open client connectio
 
 #### Scenario: Lazy connection on first use
 - **WHEN** `mcp_manager.client("health")` is called for the first time
-- **THEN** a FastMCP client connection SHALL be established to `http://localhost:8103/sse`
+- **THEN** a FastMCP client connection SHALL be established to `http://localhost:40103/sse`
 - **AND** the connected client SHALL be cached for subsequent calls
 
 #### Scenario: Cached client returned on subsequent calls
@@ -145,7 +145,7 @@ On shutdown, `MCPClientManager.shutdown()` SHALL close all open client connectio
 #### Scenario: Unreachable butler returns None
 - **WHEN** `mcp_manager.client("health")` is called but the health butler daemon is not running
 - **THEN** the method SHALL return `None`
-- **AND** a warning SHALL be logged indicating that butler "health" is unreachable at `http://localhost:8103/sse`
+- **AND** a warning SHALL be logged indicating that butler "health" is unreachable at `http://localhost:40103/sse`
 
 #### Scenario: call_tool succeeds for reachable butler
 - **WHEN** `mcp_manager.call_tool("switchboard", "status")` is called and the Switchboard daemon is running
@@ -261,25 +261,25 @@ The endpoint MUST always return HTTP 200 -- even if all butlers are down and all
 
 ### Requirement: CORS Configuration
 
-The dashboard API SHALL attach CORS middleware to allow requests from the frontend development server. In development, the Vite dev server runs on `http://localhost:5173`.
+The dashboard API SHALL attach CORS middleware to allow requests from the frontend development server. In development, the Vite dev server runs on `http://localhost:40173`.
 
-The CORS middleware MUST allow the origin `http://localhost:5173`. It MUST allow all standard HTTP methods (GET, POST, PUT, DELETE, OPTIONS). It MUST allow the `Content-Type` and `Authorization` headers. It MUST support credentials.
+The CORS middleware MUST allow the origin `http://localhost:40173`. It MUST allow all standard HTTP methods (GET, POST, PUT, DELETE, OPTIONS). It MUST allow the `Content-Type` and `Authorization` headers. It MUST support credentials.
 
-The allowed origins SHALL be configurable via the `CORS_ORIGINS` environment variable, which accepts a comma-separated list of origins. If `CORS_ORIGINS` is not set, the default SHALL be `["http://localhost:5173"]`.
+The allowed origins SHALL be configurable via the `CORS_ORIGINS` environment variable, which accepts a comma-separated list of origins. If `CORS_ORIGINS` is not set, the default SHALL be `["http://localhost:40173"]`.
 
 #### Scenario: Frontend dev server origin allowed
-- **WHEN** the frontend at `http://localhost:5173` sends a preflight OPTIONS request to the dashboard API
-- **THEN** the response SHALL include `Access-Control-Allow-Origin: http://localhost:5173`
+- **WHEN** the frontend at `http://localhost:40173` sends a preflight OPTIONS request to the dashboard API
+- **THEN** the response SHALL include `Access-Control-Allow-Origin: http://localhost:40173`
 - **AND** the response SHALL include the allowed methods and headers
 
 #### Scenario: Cross-origin GET request succeeds
-- **WHEN** the frontend at `http://localhost:5173` sends a `GET /api/health` request
+- **WHEN** the frontend at `http://localhost:40173` sends a `GET /api/health` request
 - **THEN** the response SHALL include the `Access-Control-Allow-Origin` header
 - **AND** the response body SHALL be the health check JSON
 
 #### Scenario: Custom CORS origins via environment variable
-- **WHEN** the `CORS_ORIGINS` environment variable is set to `"http://localhost:5173,http://localhost:3000"`
-- **THEN** both `http://localhost:5173` and `http://localhost:3000` SHALL be allowed origins
+- **WHEN** the `CORS_ORIGINS` environment variable is set to `"http://localhost:40173,http://localhost:3000"`
+- **THEN** both `http://localhost:40173` and `http://localhost:3000` SHALL be allowed origins
 
 #### Scenario: Unknown origin is rejected
 - **WHEN** a request arrives from `http://evil.example.com` and that origin is not in the allowed list
