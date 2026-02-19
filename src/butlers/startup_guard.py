@@ -64,14 +64,11 @@ class GoogleCredentialCheckResult:
 # ---------------------------------------------------------------------------
 
 # Variables checked in priority order (mirrors GoogleCredentials.from_env).
-# A credential is "present" if ANY of the aliases for each field is non-empty.
 _CREDENTIAL_FIELD_ALIASES: list[tuple[str, list[str]]] = [
-    ("client_id", ["GOOGLE_OAUTH_CLIENT_ID", "GMAIL_CLIENT_ID"]),
-    ("client_secret", ["GOOGLE_OAUTH_CLIENT_SECRET", "GMAIL_CLIENT_SECRET"]),
-    ("refresh_token", ["GOOGLE_REFRESH_TOKEN", "GMAIL_REFRESH_TOKEN"]),
+    ("client_id", ["GOOGLE_OAUTH_CLIENT_ID"]),
+    ("client_secret", ["GOOGLE_OAUTH_CLIENT_SECRET"]),
+    ("refresh_token", ["GOOGLE_REFRESH_TOKEN"]),
 ]
-
-_CALENDAR_JSON_ENV = "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON"
 
 
 def check_google_credentials() -> GoogleCredentialCheckResult:
@@ -87,35 +84,6 @@ def check_google_credentials() -> GoogleCredentialCheckResult:
         A result object describing credential availability and, if missing,
         actionable remediation guidance.
     """
-    # Check Calendar-style JSON blob (supports the Calendar module path)
-    cal_json_raw = os.environ.get(_CALENDAR_JSON_ENV, "").strip()
-    if cal_json_raw:
-        # Parse lightly — just check required keys exist
-        import json as _json
-
-        try:
-            cal_data = _json.loads(cal_json_raw)
-            if isinstance(cal_data, dict):
-                has_client_id = bool(cal_data.get("client_id", "").strip())
-                has_client_secret = bool(cal_data.get("client_secret", "").strip())
-                has_refresh_token = bool(cal_data.get("refresh_token", "").strip())
-                if has_client_id and has_client_secret and has_refresh_token:
-                    return GoogleCredentialCheckResult(
-                        ok=True,
-                        missing_vars=[],
-                        message=(
-                            "Google credentials are available via "
-                            "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON."
-                        ),
-                        remediation="",
-                    )
-        except Exception:
-            logger.debug(
-                "Failed to parse BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON, "
-                "falling through to individual env var check.",
-                exc_info=True,
-            )
-
     # Check individual env vars
     missing_vars: list[str] = []
     for field_name, aliases in _CREDENTIAL_FIELD_ALIASES:
@@ -145,7 +113,7 @@ def check_google_credentials() -> GoogleCredentialCheckResult:
         "  3. Click 'Connect Google' and follow the OAuth flow.\n"
         "  4. After successful authorization, the refresh token is stored in the DB.\n"
         "\n"
-        "Alternatively, set these environment variables in your secrets file:\n"
+        "Alternatively, set these environment variables:\n"
         "  GOOGLE_OAUTH_CLIENT_ID=<your-client-id>\n"
         "  GOOGLE_OAUTH_CLIENT_SECRET=<your-client-secret>\n"
         "  GOOGLE_REFRESH_TOKEN=<your-refresh-token>\n"

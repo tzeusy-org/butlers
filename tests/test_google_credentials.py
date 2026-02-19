@@ -128,60 +128,17 @@ class TestFromEnv:
         assert creds.client_secret == "gsecret"
         assert creds.refresh_token == "gtoken"
 
-    def test_from_env_gmail_vars(self) -> None:
+    def test_from_env_gmail_vars_not_supported(self) -> None:
+        """Deprecated GMAIL_* aliases are no longer supported by from_env()."""
         env = {
             "GMAIL_CLIENT_ID": "gid",
             "GMAIL_CLIENT_SECRET": "gsecret",
             "GMAIL_REFRESH_TOKEN": "gtoken",
         }
         with mock.patch.dict("os.environ", env, clear=True):
-            creds = GoogleCredentials.from_env()
-        assert creds.client_id == "gid"
-
-    def test_google_vars_take_priority_over_gmail_vars(self) -> None:
-        env = {
-            "GOOGLE_OAUTH_CLIENT_ID": "google-id",
-            "GMAIL_CLIENT_ID": "gmail-id",
-            "GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
-            "GMAIL_CLIENT_SECRET": "gmail-secret",
-            "GOOGLE_REFRESH_TOKEN": "google-token",
-            "GMAIL_REFRESH_TOKEN": "gmail-token",
-        }
-        with mock.patch.dict("os.environ", env, clear=True):
-            creds = GoogleCredentials.from_env()
-        assert creds.client_id == "google-id"
-        assert creds.client_secret == "google-secret"
-        assert creds.refresh_token == "google-token"
-
-    def test_from_env_calendar_json_blob(self) -> None:
-        blob = json.dumps(
-            {
-                "client_id": "cal-id",
-                "client_secret": "cal-secret",
-                "refresh_token": "cal-token",
-            }
-        )
-        env = {"BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": blob}
-        with mock.patch.dict("os.environ", env, clear=True):
-            creds = GoogleCredentials.from_env()
-        assert creds.client_id == "cal-id"
-        assert creds.client_secret == "cal-secret"
-        assert creds.refresh_token == "cal-token"
-
-    def test_from_env_individual_vars_override_json_blob(self) -> None:
-        blob = json.dumps(
-            {"client_id": "blob-id", "client_secret": "blob-secret", "refresh_token": "blob-token"}
-        )
-        env = {
-            "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": blob,
-            "GMAIL_CLIENT_ID": "env-id",
-            "GMAIL_CLIENT_SECRET": "env-secret",
-            "GMAIL_REFRESH_TOKEN": "env-token",
-        }
-        with mock.patch.dict("os.environ", env, clear=True):
-            creds = GoogleCredentials.from_env()
-        # Individual env vars win over JSON blob
-        assert creds.client_id == "env-id"
+            # GMAIL_* vars are no longer checked — should raise
+            with pytest.raises(MissingGoogleCredentialsError):
+                GoogleCredentials.from_env()
 
     def test_from_env_missing_all_raises(self) -> None:
         with mock.patch.dict("os.environ", {}, clear=True):
@@ -193,7 +150,7 @@ class TestFromEnv:
         assert "refresh_token" in msg
 
     def test_from_env_missing_partial_raises(self) -> None:
-        env = {"GMAIL_CLIENT_ID": "id"}
+        env = {"GOOGLE_OAUTH_CLIENT_ID": "id"}
         with mock.patch.dict("os.environ", env, clear=True):
             with pytest.raises(MissingGoogleCredentialsError) as exc_info:
                 GoogleCredentials.from_env()
@@ -203,26 +160,14 @@ class TestFromEnv:
 
     def test_from_env_scope_from_env(self) -> None:
         env = {
-            "GMAIL_CLIENT_ID": "id",
-            "GMAIL_CLIENT_SECRET": "secret",
-            "GMAIL_REFRESH_TOKEN": "token",
+            "GOOGLE_OAUTH_CLIENT_ID": "id",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "secret",
+            "GOOGLE_REFRESH_TOKEN": "token",
             "GOOGLE_OAUTH_SCOPES": "https://www.googleapis.com/auth/calendar",
         }
         with mock.patch.dict("os.environ", env, clear=True):
             creds = GoogleCredentials.from_env()
         assert "calendar" in creds.scope
-
-    def test_from_env_malformed_json_blob_falls_through(self) -> None:
-        env = {
-            "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": "not-valid-json{{{",
-            "GMAIL_CLIENT_ID": "id",
-            "GMAIL_CLIENT_SECRET": "secret",
-            "GMAIL_REFRESH_TOKEN": "token",
-        }
-        with mock.patch.dict("os.environ", env, clear=True):
-            # Should not raise — falls back to individual vars
-            creds = GoogleCredentials.from_env()
-        assert creds.client_id == "id"
 
 
 # ---------------------------------------------------------------------------
@@ -378,9 +323,9 @@ class TestResolveGoogleCredentials:
     async def test_resolve_falls_back_to_env_when_db_empty(self) -> None:
         conn = _make_conn(row=None)
         env = {
-            "GMAIL_CLIENT_ID": "env-id",
-            "GMAIL_CLIENT_SECRET": "env-secret",
-            "GMAIL_REFRESH_TOKEN": "env-token",
+            "GOOGLE_OAUTH_CLIENT_ID": "env-id",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "env-secret",
+            "GOOGLE_REFRESH_TOKEN": "env-token",
         }
         with mock.patch.dict("os.environ", env, clear=True):
             result = await resolve_google_credentials(conn, caller="test")
@@ -391,9 +336,9 @@ class TestResolveGoogleCredentials:
         payload = {"client_id": "cid"}  # missing secret and token
         conn = _make_conn(row={"credentials": payload})
         env = {
-            "GMAIL_CLIENT_ID": "env-id",
-            "GMAIL_CLIENT_SECRET": "env-secret",
-            "GMAIL_REFRESH_TOKEN": "env-token",
+            "GOOGLE_OAUTH_CLIENT_ID": "env-id",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "env-secret",
+            "GOOGLE_REFRESH_TOKEN": "env-token",
         }
         with mock.patch.dict("os.environ", env, clear=True):
             result = await resolve_google_credentials(conn, caller="test")
@@ -416,11 +361,7 @@ class TestResolveGoogleCredentials:
                 await resolve_google_credentials(conn, caller="gmail")
         msg = str(exc_info.value)
         # Must describe how to fix the problem
-        assert (
-            "GMAIL_CLIENT_ID" in msg
-            or "GOOGLE_OAUTH_CLIENT_ID" in msg
-            or "bootstrap" in msg.lower()
-        )
+        assert "GOOGLE_OAUTH_CLIENT_ID" in msg or "bootstrap" in msg.lower()
 
     async def test_resolve_does_not_log_secrets(self, caplog: pytest.LogCaptureFixture) -> None:
         payload = {

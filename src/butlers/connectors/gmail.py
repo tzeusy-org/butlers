@@ -26,9 +26,9 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - GOOGLE_OAUTH_CLIENT_SECRET (primary; used for OAuth bootstrap — app config)
 - DATABASE_URL or POSTGRES_* (optional; if set, credentials are loaded from DB first)
 - CONNECTOR_BUTLER_DB_NAME (optional; butler DB name, defaults to 'butlers')
-- GMAIL_CLIENT_ID (deprecated alias for GOOGLE_OAUTH_CLIENT_ID; env-var fallback only)
-- GMAIL_CLIENT_SECRET (deprecated alias for GOOGLE_OAUTH_CLIENT_SECRET; env-var fallback only)
-- GMAIL_REFRESH_TOKEN or GOOGLE_REFRESH_TOKEN (deprecated; use DB-stored credentials)
+- GOOGLE_OAUTH_CLIENT_ID (primary; used for OAuth app config — optional when DB has credentials)
+- GOOGLE_OAUTH_CLIENT_SECRET (primary; used for OAuth app config — optional when DB has credentials)
+- GOOGLE_REFRESH_TOKEN (optional; use DB-stored credentials via dashboard OAuth flow instead)
 - GMAIL_WATCH_RENEW_INTERVAL_S (optional, default 86400 = 1 day)
 - GMAIL_POLL_INTERVAL_S (optional, default 60)
 - GMAIL_PUBSUB_ENABLED (optional, default false; enables Pub/Sub push mode)
@@ -195,49 +195,20 @@ class GmailConnectorConfig(BaseModel):
         pubsub_webhook_path = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook")
         pubsub_webhook_token = os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN")
 
-        # Resolve OAuth credentials from env vars (deprecated path).
-        # Prefer GOOGLE_OAUTH_* (canonical) over GMAIL_* (legacy aliases).
-        # Emit deprecation warnings for legacy GMAIL_* vars and GOOGLE_REFRESH_TOKEN.
-        gmail_client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID") or os.environ.get(
-            "GMAIL_CLIENT_ID"
-        )
-        gmail_client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET") or os.environ.get(
-            "GMAIL_CLIENT_SECRET"
-        )
-        gmail_refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN") or os.environ.get(
-            "GMAIL_REFRESH_TOKEN"
-        )
-
-        # Emit deprecation warnings for legacy env vars
-        if os.environ.get("GMAIL_CLIENT_ID") and not os.environ.get("GOOGLE_OAUTH_CLIENT_ID"):
-            logger.warning(
-                "GMAIL_CLIENT_ID is deprecated. Use GOOGLE_OAUTH_CLIENT_ID instead. "
-                "Credential env vars will be removed in a future release — use the "
-                "dashboard OAuth flow to store credentials in the database."
-            )
-        if os.environ.get("GMAIL_CLIENT_SECRET") and not os.environ.get(
-            "GOOGLE_OAUTH_CLIENT_SECRET"
-        ):
-            logger.warning(
-                "GMAIL_CLIENT_SECRET is deprecated. Use GOOGLE_OAUTH_CLIENT_SECRET instead. "
-                "Credential env vars will be removed in a future release — use the "
-                "dashboard OAuth flow to store credentials in the database."
-            )
-        if os.environ.get("GMAIL_REFRESH_TOKEN") or os.environ.get("GOOGLE_REFRESH_TOKEN"):
-            logger.warning(
-                "GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN env vars are deprecated. "
-                "Use the dashboard OAuth flow to store the refresh token in the database. "
-                "Set DATABASE_URL (or POSTGRES_*) and CONNECTOR_BUTLER_DB_NAME to enable "
-                "DB-first credential resolution."
-            )
+        # Resolve OAuth credentials from env vars.
+        # Credentials should be stored via the dashboard OAuth flow (DB-first).
+        # These env vars serve as a fallback for bootstrap scenarios.
+        gmail_client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+        gmail_client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+        gmail_refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "").strip()
 
         missing_cred_vars = []
         if not gmail_client_id:
-            missing_cred_vars.append("GOOGLE_OAUTH_CLIENT_ID (or GMAIL_CLIENT_ID)")
+            missing_cred_vars.append("GOOGLE_OAUTH_CLIENT_ID")
         if not gmail_client_secret:
-            missing_cred_vars.append("GOOGLE_OAUTH_CLIENT_SECRET (or GMAIL_CLIENT_SECRET)")
+            missing_cred_vars.append("GOOGLE_OAUTH_CLIENT_SECRET")
         if not gmail_refresh_token:
-            missing_cred_vars.append("GOOGLE_REFRESH_TOKEN (or GMAIL_REFRESH_TOKEN)")
+            missing_cred_vars.append("GOOGLE_REFRESH_TOKEN")
         if missing_cred_vars:
             missing_str = ", ".join(missing_cred_vars)
             raise ValueError(

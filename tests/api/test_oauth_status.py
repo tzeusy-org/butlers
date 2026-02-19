@@ -45,7 +45,7 @@ _BASE_ENV = {
     "GOOGLE_OAUTH_CLIENT_ID": "test-client-id.apps.googleusercontent.com",
     "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
     "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost:40200/api/oauth/google/callback",
-    "GMAIL_REFRESH_TOKEN": "1//fake-refresh-token",
+    "GOOGLE_REFRESH_TOKEN": "1//fake-refresh-token",
 }
 
 _FULL_SCOPES = (
@@ -153,7 +153,7 @@ class TestOAuthStatusNotConfigured:
     async def test_no_refresh_token_returns_not_configured(self):
         """No stored refresh token → not_configured with connect guidance."""
         app = _make_app()
-        env = {**_BASE_ENV, "GMAIL_REFRESH_TOKEN": "", "GOOGLE_REFRESH_TOKEN": ""}
+        env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": ""}
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -170,7 +170,7 @@ class TestOAuthStatusNotConfigured:
     async def test_google_refresh_token_env_var_accepted(self):
         """GOOGLE_REFRESH_TOKEN is an accepted fallback for the stored token."""
         app = _make_app()
-        env = {**_BASE_ENV, "GMAIL_REFRESH_TOKEN": "", "GOOGLE_REFRESH_TOKEN": "1//fallback"}
+        env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": "1//fallback"}
 
         mock_probe = AsyncMock(return_value=_connected_status())
         with patch.dict("os.environ", env, clear=False), patch(_PROBE_PATCH, mock_probe):
@@ -613,7 +613,7 @@ class TestOAuthStatusResponseShape:
     async def test_response_has_google_key(self):
         """Top-level response always has a 'google' key."""
         app = _make_app()
-        env = {**_BASE_ENV, "GMAIL_REFRESH_TOKEN": "", "GOOGLE_REFRESH_TOKEN": ""}
+        env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": ""}
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -627,7 +627,7 @@ class TestOAuthStatusResponseShape:
     async def test_credential_status_has_required_fields(self):
         """OAuthCredentialStatus payload has required fields: state, connected, provider."""
         app = _make_app()
-        env = {**_BASE_ENV, "GMAIL_REFRESH_TOKEN": "", "GOOGLE_REFRESH_TOKEN": ""}
+        env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": ""}
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -642,7 +642,7 @@ class TestOAuthStatusResponseShape:
     async def test_connected_false_always_has_remediation(self):
         """When connected=False, remediation must be a non-empty string."""
         app = _make_app()
-        env = {**_BASE_ENV, "GMAIL_REFRESH_TOKEN": "", "GOOGLE_REFRESH_TOKEN": ""}
+        env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": ""}
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -661,7 +661,6 @@ class TestOAuthStatusResponseShape:
         env = {
             "GOOGLE_OAUTH_CLIENT_ID": "",
             "GOOGLE_OAUTH_CLIENT_SECRET": "",
-            "GMAIL_REFRESH_TOKEN": "",
             "GOOGLE_REFRESH_TOKEN": "",
         }
         with patch.dict("os.environ", env, clear=False):

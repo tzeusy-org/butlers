@@ -33,8 +33,7 @@ Environment variables:
                                (default: Gmail + Calendar read/write)
   OAUTH_DASHBOARD_URL        — Where to redirect after a successful bootstrap
                                (default: not set; returns JSON payload instead)
-  GMAIL_REFRESH_TOKEN        — Stored refresh token (set after bootstrap)
-  GOOGLE_REFRESH_TOKEN       — Alternative env var for the stored refresh token
+  GOOGLE_REFRESH_TOKEN       — Stored refresh token (set after bootstrap; DB-stored by default)
 
 Security notes:
   - State tokens are one-time-use: consumed on first callback validation.
@@ -213,14 +212,11 @@ def _get_dashboard_url() -> str | None:
 def _get_stored_refresh_token() -> str | None:
     """Read the stored Google refresh token from environment.
 
-    Checks GMAIL_REFRESH_TOKEN first, then GOOGLE_REFRESH_TOKEN.
-    Returns None if neither is set.
+    Checks GOOGLE_REFRESH_TOKEN. Returns None if not set.
+    Prefer DB-stored credentials (via the dashboard OAuth flow) over env vars.
     """
-    for var in ("GMAIL_REFRESH_TOKEN", "GOOGLE_REFRESH_TOKEN"):
-        val = os.environ.get(var, "").strip()
-        if val:
-            return val
-    return None
+    val = os.environ.get("GOOGLE_REFRESH_TOKEN", "").strip()
+    return val or None
 
 
 async def _resolve_app_credentials(db_manager: Any = None) -> tuple[str, str]:
@@ -458,7 +454,7 @@ async def oauth_google_callback(
     else:
         logger.warning(
             "No butler DB pools registered; credentials not persisted to DB. "
-            "Set env vars manually: GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN."
+            "Set GOOGLE_REFRESH_TOKEN env var manually as a fallback."
         )
 
     logger.info(
@@ -472,17 +468,15 @@ async def oauth_google_callback(
         logger.warning(
             "[BOOTSTRAP] Google credentials could NOT be persisted to DB (no DB pool wired). "
             "Re-run the OAuth bootstrap with a running database, or set env vars manually: "
-            "GMAIL_CLIENT_ID / GOOGLE_OAUTH_CLIENT_ID, "
-            "GMAIL_CLIENT_SECRET / GOOGLE_OAUTH_CLIENT_SECRET, "
-            "GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN."
+            "GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN."
         )
         print(f"\n{'=' * 60}")
         print("Google OAuth Bootstrap Complete")
         print("WARNING: Credentials NOT persisted to DB.")
         print("Re-run OAuth bootstrap with a running database, or set these env vars manually:")
-        print(f"  GMAIL_CLIENT_ID={client_id}")
-        print("  GMAIL_CLIENT_SECRET=<must be re-obtained via OAuth flow — never printed>")
-        print("  GMAIL_REFRESH_TOKEN=<must be re-obtained via OAuth flow — never printed>")
+        print(f"  GOOGLE_OAUTH_CLIENT_ID={client_id}")
+        print("  GOOGLE_OAUTH_CLIENT_SECRET=<must be re-obtained via OAuth flow — never printed>")
+        print("  GOOGLE_REFRESH_TOKEN=<must be re-obtained via OAuth flow — never printed>")
         print(f"  GOOGLE_OAUTH_SCOPES={scope}")
         print(f"{'=' * 60}\n")
 
@@ -491,7 +485,7 @@ async def oauth_google_callback(
         message=(
             "OAuth bootstrap complete. Credentials persisted to database."
             if creds_persisted
-            else "OAuth bootstrap complete. Set GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN."
+            else "OAuth bootstrap complete. Set GOOGLE_REFRESH_TOKEN env var."
         ),
         provider="google",
         scope=scope,
@@ -765,7 +759,7 @@ async def _check_google_credential_status(db_manager: Any = None) -> OAuthCreden
                 "Google credentials have not been connected yet. "
                 "Click 'Connect Google' to start the OAuth authorization flow."
             ),
-            detail="No refresh token found in DB or GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN.",
+            detail="No refresh token found in DB or GOOGLE_REFRESH_TOKEN env var.",
         )
 
     # --- Check 3: probe Google to validate the refresh token ---

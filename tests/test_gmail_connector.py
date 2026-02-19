@@ -61,9 +61,9 @@ class TestGmailConnectorConfig:
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
         monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "8")
-        monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
-        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "client-secret")
-        monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh-token")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "refresh-token")
 
         config = GmailConnectorConfig.from_env()
 
@@ -82,7 +82,7 @@ class TestGmailConnectorConfig:
         # Clear all required env vars
         monkeypatch.delenv("SWITCHBOARD_MCP_URL", raising=False)
         monkeypatch.delenv("CONNECTOR_ENDPOINT_IDENTITY", raising=False)
-        monkeypatch.delenv("GMAIL_CLIENT_ID", raising=False)
+        monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
 
         # Should raise ValueError for missing CONNECTOR_CURSOR_PATH first
         with pytest.raises((KeyError, ValueError)):
@@ -96,9 +96,9 @@ class TestGmailConnectorConfig:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
-        monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
-        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "client-secret")
-        monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh-token")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "refresh-token")
         monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "invalid")
 
         with pytest.raises(ValueError, match="CONNECTOR_MAX_INFLIGHT must be an integer"):
@@ -446,9 +446,9 @@ class TestGmailPubSubConfig:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
-        monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
-        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "client-secret")
-        monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh-token")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "refresh-token")
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
         monkeypatch.setenv("GMAIL_PUBSUB_TOPIC", "projects/my-project/topics/gmail-push")
 
@@ -467,9 +467,9 @@ class TestGmailPubSubConfig:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
-        monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
-        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "client-secret")
-        monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh-token")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "refresh-token")
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
 
         with pytest.raises(ValueError, match="GMAIL_PUBSUB_TOPIC is required"):
@@ -483,9 +483,9 @@ class TestGmailPubSubConfig:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
-        monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
-        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "client-secret")
-        monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh-token")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "refresh-token")
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
         monkeypatch.setenv("GMAIL_PUBSUB_TOPIC", "projects/my-project/topics/gmail-push")
         monkeypatch.setenv("GMAIL_PUBSUB_WEBHOOK_PORT", "9000")
@@ -504,9 +504,9 @@ class TestGmailPubSubConfig:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
-        monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
-        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "client-secret")
-        monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh-token")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "refresh-token")
 
         config = GmailConnectorConfig.from_env()
 
@@ -521,9 +521,9 @@ class TestGmailPubSubConfig:
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
         monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
-        monkeypatch.setenv("GMAIL_CLIENT_ID", "client-id")
-        monkeypatch.setenv("GMAIL_CLIENT_SECRET", "client-secret")
-        monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "refresh-token")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "refresh-token")
         monkeypatch.setenv("GMAIL_PUBSUB_ENABLED", "true")
         monkeypatch.setenv("GMAIL_PUBSUB_TOPIC", "projects/test/topics/gmail")
         monkeypatch.setenv("GMAIL_PUBSUB_WEBHOOK_TOKEN", "secret-token-123")
@@ -1472,14 +1472,12 @@ class TestResolveGmailCredentialsFromDb:
 
 
 class TestGmailConnectorConfigDeprecationWarnings:
-    """Verify deprecation warnings are emitted for legacy env vars."""
+    """Verify deprecated GMAIL_* env vars no longer work as credentials."""
 
-    def test_from_env_warns_for_gmail_client_id(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    def test_gmail_client_id_not_accepted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """GMAIL_CLIENT_ID without GOOGLE_OAUTH_CLIENT_ID triggers deprecation warning."""
-        import logging
-
+        """GMAIL_CLIENT_ID is no longer accepted — must use GOOGLE_OAUTH_CLIENT_ID."""
         cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
@@ -1489,23 +1487,16 @@ class TestGmailConnectorConfigDeprecationWarnings:
         monkeypatch.setenv("GMAIL_CLIENT_SECRET", "legacy-secret")
         monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "legacy-token")
         monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
-        monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
         monkeypatch.delenv("GOOGLE_REFRESH_TOKEN", raising=False)
 
-        with caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"):
+        # GMAIL_* vars are no longer accepted; should raise ValueError
+        with pytest.raises(ValueError, match="GOOGLE_OAUTH_CLIENT_ID"):
             GmailConnectorConfig.from_env()
 
-        assert any(
-            "GMAIL_CLIENT_ID" in record.message and "deprecated" in record.message.lower()
-            for record in caplog.records
-        )
-
-    def test_from_env_warns_for_refresh_token_env_var(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    def test_google_refresh_token_env_required(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """GMAIL_REFRESH_TOKEN triggers a deprecation warning."""
-        import logging
-
+        """GMAIL_REFRESH_TOKEN is no longer accepted; must use GOOGLE_REFRESH_TOKEN."""
         cursor_path = tmp_path / "cursor.json"
         monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
         monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
@@ -1515,7 +1506,6 @@ class TestGmailConnectorConfigDeprecationWarnings:
         monkeypatch.setenv("GMAIL_REFRESH_TOKEN", "legacy-refresh")
         monkeypatch.delenv("GOOGLE_REFRESH_TOKEN", raising=False)
 
-        with caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"):
+        # GMAIL_REFRESH_TOKEN no longer used; should raise ValueError
+        with pytest.raises(ValueError, match="GOOGLE_REFRESH_TOKEN"):
             GmailConnectorConfig.from_env()
-
-        assert any("deprecated" in record.message.lower() for record in caplog.records)
