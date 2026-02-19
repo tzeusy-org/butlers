@@ -341,9 +341,11 @@ class Spawner:
             self._in_flight.add(task)
         # Track triggers waiting for a semaphore slot
         self._metrics.spawner_queued_triggers_inc()
+        _semaphore_acquired = False
         try:
             async with self._session_semaphore:
                 # Slot acquired — no longer queued, now active
+                _semaphore_acquired = True
                 self._metrics.spawner_queued_triggers_dec()
                 self._metrics.spawner_active_sessions_inc()
                 try:
@@ -353,6 +355,11 @@ class Spawner:
                 finally:
                     self._metrics.spawner_active_sessions_dec()
         finally:
+            # If cancelled before acquiring the semaphore, queued_triggers_dec
+            # was never called inside the async-with block; decrement here to
+            # keep the gauge accurate.
+            if not _semaphore_acquired:
+                self._metrics.spawner_queued_triggers_dec()
             if task is not None:
                 self._in_flight.discard(task)
             if not self._in_flight:

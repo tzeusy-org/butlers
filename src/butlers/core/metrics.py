@@ -263,6 +263,10 @@ class ButlerMetrics:
     def __init__(self, butler_name: str) -> None:
         self._butler = butler_name
         self._attrs = {"butler": butler_name}
+        # Pre-compute path-labelled attribute dicts so hot-path enqueue helpers
+        # avoid dict allocation on every call.
+        self._attrs_buf_hot = {**self._attrs, "path": "hot"}
+        self._attrs_buf_cold = {**self._attrs, "path": "cold"}
 
         # Instruments are created lazily; store factory lambdas here so that
         # the class body does not eagerly call get_meter() at module import time
@@ -381,11 +385,11 @@ class ButlerMetrics:
 
     def buffer_enqueue_hot(self) -> None:
         """Record a successful hot-path enqueue."""
-        self._buf_enqueue.add(1, {**self._attrs, "path": "hot"})
+        self._buf_enqueue.add(1, self._attrs_buf_hot)
 
     def buffer_enqueue_cold(self) -> None:
         """Record a cold-path enqueue (scanner recovery)."""
-        self._buf_enqueue.add(1, {**self._attrs, "path": "cold"})
+        self._buf_enqueue.add(1, self._attrs_buf_cold)
 
     def buffer_backpressure(self) -> None:
         """Record a queue-full backpressure event."""
