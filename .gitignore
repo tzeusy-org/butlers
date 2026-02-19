@@ -132,3 +132,29 @@ pgdata/
 .worktrees/parallel-agents/butlers-963.1/
 # bd worktree
 .worktrees/parallel-agents/butlers-963.2/
+# bd worktree
+.worktrees/parallel-agents/butlers-963.3/
+# bd worktree
+.worktrees/parallel-agents/butlers-964/
+# bd worktree
+.worktrees/parallel-agents/butlers-964-pr181/
+# bd worktree
+.worktrees/parallel-agents/butlers-963.4/
+# bd worktree
+.worktrees/parallel-agents/butlers-963.5/
+# bd worktree
+.worktrees/parallel-agents/butlers-965/
+# bd worktree
+.worktrees/parallel-agents/butlers-966/
+# bd worktree
+.worktrees/parallel-agents/butlers-963.6/
+# bd worktree
+.worktrees/parallel-agents/butlers-963.7/
+# bd worktree
+.worktrees/parallel-agents/butlers-963.8/
+# bd worktree
+.worktrees/parallel-agents/butlers-969/
+# bd worktree
+.worktrees/parallel-agents/butlers-964-bug/
+# bd worktree
+.worktrees/parallel-agents/butlers-967/
