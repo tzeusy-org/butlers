@@ -529,7 +529,7 @@ class TestButlerSpecificMigrationInDaemon:
 
             mock_mig.side_effect = track_migration
 
-            daemon = ButlerDaemon(butler_dir)
+            daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
             await daemon.start()
 
         assert call_log == ["migrate:core", "migrate:relationship"]

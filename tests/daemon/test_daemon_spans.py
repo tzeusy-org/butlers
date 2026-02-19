@@ -171,7 +171,11 @@ def _patch_infra():
         "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
         "get_adapter": patch(
             "butlers.daemon.get_adapter",
-            return_value=type("MockAdapter", (), {"binary_name": "claude"}),
+            return_value=type(
+                "MockAdapter",
+                (),
+                {"binary_name": "claude", "__init__": lambda self, **kwargs: None},
+            ),
         ),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
