@@ -333,13 +333,23 @@ class TestGetCredentialStatusEndpoint:
         assert data["oauth_health"] == "not_configured"
 
     def test_get_status_with_app_credentials_only(self) -> None:
-        row = {"credentials": {"client_id": "my-id", "client_secret": "my-secret"}}
-        db_manager, conn = _make_db_manager(row=row)
+        from butlers.google_credentials import GoogleAppCredentials
+
+        db_manager, _ = _make_db_manager(row=None)
         client = self._make_client(db_manager=db_manager)
 
-        with patch(
-            "butlers.api.routers.oauth._check_google_credential_status",
-        ) as mock_status:
+        with (
+            patch(
+                "butlers.api.routers.oauth._check_google_credential_status",
+            ) as mock_status,
+            patch(
+                "butlers.api.routers.oauth.load_app_credentials",
+                return_value=GoogleAppCredentials(
+                    client_id="my-id",
+                    client_secret="my-secret",
+                ),
+            ),
+        ):
             from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
 
             mock_status.return_value = OAuthCredentialStatus(
@@ -355,20 +365,25 @@ class TestGetCredentialStatusEndpoint:
         assert data["refresh_token_present"] is False
 
     def test_get_status_fully_configured(self) -> None:
-        row = {
-            "credentials": {
-                "client_id": "my-id",
-                "client_secret": "my-secret",
-                "refresh_token": "my-refresh",
-                "scope": "gmail calendar",
-            }
-        }
-        db_manager, conn = _make_db_manager(row=row)
+        from butlers.google_credentials import GoogleAppCredentials
+
+        db_manager, _ = _make_db_manager(row=None)
         client = self._make_client(db_manager=db_manager)
 
-        with patch(
-            "butlers.api.routers.oauth._check_google_credential_status",
-        ) as mock_status:
+        with (
+            patch(
+                "butlers.api.routers.oauth._check_google_credential_status",
+            ) as mock_status,
+            patch(
+                "butlers.api.routers.oauth.load_app_credentials",
+                return_value=GoogleAppCredentials(
+                    client_id="my-id",
+                    client_secret="my-secret",
+                    refresh_token="my-refresh",
+                    scope="gmail calendar",
+                ),
+            ),
+        ):
             from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
 
             mock_status.return_value = OAuthCredentialStatus(
@@ -386,19 +401,24 @@ class TestGetCredentialStatusEndpoint:
 
     def test_secret_values_not_returned(self) -> None:
         """Ensure secret values (client_secret, refresh_token) are never in the response."""
-        row = {
-            "credentials": {
-                "client_id": "my-id",
-                "client_secret": "SUPER_SECRET_VALUE",
-                "refresh_token": "TOP_SECRET_REFRESH",
-            }
-        }
-        db_manager, conn = _make_db_manager(row=row)
+        from butlers.google_credentials import GoogleAppCredentials
+
+        db_manager, _ = _make_db_manager(row=None)
         client = self._make_client(db_manager=db_manager)
 
-        with patch(
-            "butlers.api.routers.oauth._check_google_credential_status",
-        ) as mock_status:
+        with (
+            patch(
+                "butlers.api.routers.oauth._check_google_credential_status",
+            ) as mock_status,
+            patch(
+                "butlers.api.routers.oauth.load_app_credentials",
+                return_value=GoogleAppCredentials(
+                    client_id="my-id",
+                    client_secret="SUPER_SECRET_VALUE",
+                    refresh_token="TOP_SECRET_REFRESH",
+                ),
+            ),
+        ):
             from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
 
             mock_status.return_value = OAuthCredentialStatus(

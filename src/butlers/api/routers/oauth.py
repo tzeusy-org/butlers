@@ -70,6 +70,7 @@ from butlers.api.models.oauth import (
     UpsertAppCredentialsRequest,
     UpsertAppCredentialsResponse,
 )
+from butlers.credential_store import CredentialStore
 from butlers.google_credentials import (
     delete_google_credentials,
     load_app_credentials,
@@ -91,6 +92,25 @@ def _get_db_manager() -> Any:
     so the callback degrades gracefully to log-only mode.
     """
     return None
+
+
+def _make_credential_store(db_manager: Any) -> CredentialStore | None:
+    """Build a CredentialStore from the first registered butler pool.
+
+    Returns None when db_manager is None, no butler pools are registered,
+    or the pool lookup raises an exception.
+    """
+    if db_manager is None:
+        return None
+    butler_names = getattr(db_manager, "butler_names", [])
+    if not butler_names:
+        return None
+    try:
+        pool = db_manager.pool(butler_names[0])
+    except Exception:
+        logger.debug("Failed to obtain DB pool from db_manager; credential store unavailable.")
+        return None
+    return CredentialStore(pool)
 
 
 router = APIRouter(prefix="/api/oauth", tags=["oauth"])
@@ -213,18 +233,15 @@ async def _resolve_app_credentials(db_manager: Any = None) -> tuple[str, str]:
     client_secret = ""
 
     # Try DB credentials first
-    if db_manager is not None:
-        butler_names = getattr(db_manager, "butler_names", [])
-        if butler_names:
-            try:
-                pool = db_manager.pool(butler_names[0])
-                async with pool.acquire() as conn:
-                    app_creds = await load_app_credentials(conn)
-                if app_creds:
-                    client_id = app_creds.client_id or ""
-                    client_secret = app_creds.client_secret or ""
-            except Exception:
-                logger.debug("DB credential lookup failed; falling back to env vars.")
+    cred_store = _make_credential_store(db_manager)
+    if cred_store is not None:
+        try:
+            app_creds = await load_app_credentials(cred_store)
+            if app_creds:
+                client_id = app_creds.client_id or ""
+                client_secret = app_creds.client_secret or ""
+        except Exception:
+            logger.debug("DB credential lookup failed; falling back to env vars.")
 
     # Fall back to env vars for any missing fields
     if not client_id:
@@ -415,38 +432,34 @@ async def oauth_google_callback(
     # Secret material (client_secret, refresh_token) is NEVER logged in plaintext.
     # The DB is the primary persistence mechanism; log output is supplementary.
     creds_persisted = False
-    if db_manager is not None:
-        # Attempt to persist credentials to the shared google_oauth_credentials table.
+    cred_store = _make_credential_store(db_manager)
+    if cred_store is not None:
+        # Persist credentials to butler_secrets via CredentialStore.
         # This enables both Gmail connector and Calendar module to share a single
         # OAuth bootstrap without duplicating credentials in env vars.
         try:
-            # Use any registered butler pool; credentials are bootstrap-wide.
-            butler_names = db_manager.butler_names
-            if butler_names:
-                pool = db_manager.pool(butler_names[0])
-                async with pool.acquire() as conn:
-                    await store_google_credentials(
-                        conn,
-                        client_id=client_id,
-                        client_secret=client_secret,
-                        refresh_token=refresh_token,
-                        scope=scope,
-                    )
-                creds_persisted = True
-                logger.info(
-                    "Google OAuth credentials persisted to DB (client_id=%s)",
-                    client_id,
-                )
-            else:
-                logger.warning(
-                    "No butler DB pools registered; credentials not persisted to DB. "
-                    "Set env vars manually: GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN."
-                )
+            await store_google_credentials(
+                cred_store,
+                client_id=client_id,
+                client_secret=client_secret,
+                refresh_token=refresh_token,
+                scope=scope,
+            )
+            creds_persisted = True
+            logger.info(
+                "Google OAuth credentials persisted to butler_secrets (client_id=%s)",
+                client_id,
+            )
         except Exception:
             logger.warning(
                 "Failed to persist Google credentials to DB; falling back to log-only mode.",
                 exc_info=True,
             )
+    else:
+        logger.warning(
+            "No butler DB pools registered; credentials not persisted to DB. "
+            "Set env vars manually: GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN."
+        )
 
     logger.info(
         "Google OAuth bootstrap COMPLETE (client_id=%s, persisted=%s)",
@@ -538,16 +551,14 @@ async def upsert_google_credentials(
             detail="client_id and client_secret must be non-empty.",
         )
 
-    butler_names = db_manager.butler_names
-    if not butler_names:
+    cred_store = _make_credential_store(db_manager)
+    if cred_store is None:
         raise HTTPException(
             status_code=503,
             detail="No butler DB pools registered. Cannot persist credentials.",
         )
 
-    pool = db_manager.pool(butler_names[0])
-    async with pool.acquire() as conn:
-        await store_app_credentials(conn, client_id=client_id, client_secret=client_secret)
+    await store_app_credentials(cred_store, client_id=client_id, client_secret=client_secret)
 
     return UpsertAppCredentialsResponse(
         success=True,
@@ -581,16 +592,14 @@ async def delete_google_credentials_endpoint(
             detail="Database not available. Cannot delete credentials.",
         )
 
-    butler_names = db_manager.butler_names
-    if not butler_names:
+    cred_store = _make_credential_store(db_manager)
+    if cred_store is None:
         raise HTTPException(
             status_code=503,
             detail="No butler DB pools registered. Cannot delete credentials.",
         )
 
-    pool = db_manager.pool(butler_names[0])
-    async with pool.acquire() as conn:
-        deleted = await delete_google_credentials(conn)
+    deleted = await delete_google_credentials(cred_store)
 
     return DeleteCredentialsResponse(
         success=True,
@@ -628,16 +637,14 @@ async def get_google_credential_status(
             detail="Database not available.",
         )
 
-    butler_names = db_manager.butler_names
-    if not butler_names:
+    cred_store = _make_credential_store(db_manager)
+    if cred_store is None:
         raise HTTPException(
             status_code=503,
             detail="No butler DB pools registered.",
         )
 
-    pool = db_manager.pool(butler_names[0])
-    async with pool.acquire() as conn:
-        app_creds = await load_app_credentials(conn)
+    app_creds = await load_app_credentials(cred_store)
 
     client_id_configured = app_creds is not None and bool(app_creds.client_id)
     client_secret_configured = app_creds is not None and bool(app_creds.client_secret)
@@ -719,19 +726,16 @@ async def _check_google_credential_status(db_manager: Any = None) -> OAuthCreden
     refresh_token: str | None = None
 
     # Try DB credentials
-    if db_manager is not None:
-        butler_names = db_manager.butler_names
-        if butler_names:
-            try:
-                pool = db_manager.pool(butler_names[0])
-                async with pool.acquire() as conn:
-                    app_creds = await load_app_credentials(conn)
-                if app_creds:
-                    client_id = app_creds.client_id
-                    client_secret = app_creds.client_secret
-                    refresh_token = app_creds.refresh_token
-            except Exception:
-                pass  # Fall through to env vars
+    cred_store = _make_credential_store(db_manager)
+    if cred_store is not None:
+        try:
+            app_creds = await load_app_credentials(cred_store)
+            if app_creds:
+                client_id = app_creds.client_id
+                client_secret = app_creds.client_secret
+                refresh_token = app_creds.refresh_token
+        except Exception:
+            pass  # Fall through to env vars
 
     # Fall back to env vars for any missing fields
     if not client_id:
