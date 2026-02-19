@@ -2,7 +2,7 @@
 # Bootstrap a full Butlers dev environment in tmux.
 # Creates three windows:
 #   backend     — postgres + butlers up
-#   connectors  — telegram bot connector (polling)
+#   connectors  — telegram bot connector (top) + telegram user-client connector (bottom)
 #   dashboard   — dashboard API (top) + Vite frontend (bottom)
 #
 # Usage: ./dev.sh
@@ -38,9 +38,14 @@ tmux send-keys -t "$PANE_BACKEND" \
   "${ENV_LOADER} && uv sync --dev && docker compose stop postgres && docker compose up -d postgres && POSTGRES_PORT=54320 uv run butlers up" Enter
 
 # ── connectors window ──────────────────────────────────────────────
-PANE_TELEGRAM=$(tmux new-window -t "$SESSION:" -n connectors -c "$PROJECT_DIR" -P -F '#{pane_id}')
-tmux send-keys -t "$PANE_TELEGRAM" \
-  "${ENV_LOADER} && mkdir -p .tmp/connectors && sleep 10 && uv run python -m butlers.connectors.telegram_bot" Enter
+PANE_TELEGRAM_BOT=$(tmux new-window -t "$SESSION:" -n connectors -c "$PROJECT_DIR" -P -F '#{pane_id}')
+PANE_TELEGRAM_USER=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -v -c "$PROJECT_DIR" -P -F '#{pane_id}')
+
+tmux send-keys -t "$PANE_TELEGRAM_BOT" \
+  "${ENV_LOADER} && mkdir -p .tmp/connectors && sleep 10 && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} CONNECTOR_CURSOR_PATH=\${TELEGRAM_BOT_CONNECTOR_CURSOR_PATH:-\${CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_bot_checkpoint.json}} uv run python -m butlers.connectors.telegram_bot" Enter
+
+tmux send-keys -t "$PANE_TELEGRAM_USER" \
+  "${ENV_LOADER} && mkdir -p .tmp/connectors && sleep 10 && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY:-telegram:user:dev} CONNECTOR_CURSOR_PATH=\${TELEGRAM_USER_CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_user_client_checkpoint.json} uv run python -m butlers.connectors.telegram_user_client" Enter
 
 # ── dashboard window ───────────────────────────────────────────────
 PANE_DASHBOARD=$(tmux new-window -t "$SESSION:" -n dashboard -c "$PROJECT_DIR" -P -F '#{pane_id}')

@@ -140,3 +140,13 @@ pgdata/
 .worktrees/parallel-agents/butlers-964-bug/
 .worktrees/parallel-agents/butlers-967/
 .worktrees/parallel-agents/review-970/
+# bd worktree
+.worktrees/parallel-agents/review-972/
+# bd worktree
+.worktrees/parallel-agents/butlers-962.1/
+# bd worktree
+.worktrees/parallel-agents/butlers-962.2/
+# bd worktree
+.worktrees/parallel-agents/butlers-962.3/
+# bd worktree
+.worktrees/parallel-agents/butlers-962.4/

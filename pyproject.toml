@@ -28,11 +28,11 @@ dependencies = [
     "structlog",
     "prometheus-client",
     "pillow>=10.0.0",
+    "telethon>=1.36.0",
 ]
 
 [project.optional-dependencies]
 connectors = [
-    "telethon>=1.36.0",
 ]
 
 [dependency-groups]
