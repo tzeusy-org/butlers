@@ -10,7 +10,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +98,47 @@ def validate_module_credentials(
     failures: dict[str, list[str]] = {}
     for module_name, cred_vars in module_credentials.items():
         missing = [var for var in cred_vars if not os.environ.get(var)]
+        if missing:
+            failures[module_name] = missing
+    return failures
+
+
+async def validate_module_credentials_async(
+    module_credentials: dict[str, list[str]],
+    credential_store: CredentialStore,
+) -> dict[str, list[str]]:
+    """Check module credentials via DB-first resolution and return per-module missing vars.
+
+    Uses ``CredentialStore.resolve()`` for each declared credential key so that
+    secrets stored in the database are visible at validation time.  Environment
+    variables remain as a fallback (the ``CredentialStore`` default behaviour).
+
+    Unlike ``validate_credentials``, this function does **not** raise.
+    It returns a dict mapping module name to the list of missing credential
+    keys.  An empty dict means all module credentials are resolvable.
+
+    Parameters
+    ----------
+    module_credentials:
+        Dict mapping module (or scoped-module) name to list of credential
+        key names (typically env var names such as ``"TELEGRAM_BOT_TOKEN"``).
+    credential_store:
+        An initialised :class:`~butlers.credential_store.CredentialStore`
+        instance backed by the butler's database pool.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Mapping of module name to missing credential key names.  Only modules
+        with at least one unresolvable credential appear in the result.
+    """
+    failures: dict[str, list[str]] = {}
+    for module_name, cred_vars in module_credentials.items():
+        missing = []
+        for var in cred_vars:
+            value = await credential_store.resolve(var)
+            if not value:
+                missing.append(var)
         if missing:
             failures[module_name] = missing
     return failures

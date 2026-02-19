@@ -84,7 +84,9 @@ def _patch_infra():
         "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
         "validate_credentials": patch("butlers.daemon.validate_credentials"),
         "validate_module_credentials": patch(
-            "butlers.daemon.validate_module_credentials", return_value={}
+            "butlers.daemon.validate_module_credentials_async",
+            new_callable=AsyncMock,
+            return_value={},
         ),
         "init_telemetry": patch("butlers.daemon.init_telemetry"),
         "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),

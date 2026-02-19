@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import logging
+from unittest.mock import AsyncMock
 
 import pytest
 
-from butlers.credentials import CredentialError, validate_credentials, validate_module_credentials
+from butlers.credentials import (
+    CredentialError,
+    validate_credentials,
+    validate_module_credentials,
+    validate_module_credentials_async,
+)
 
 pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
@@ -504,3 +510,117 @@ def test_validate_module_credentials_empty_input():
     """Returns empty dict for empty input."""
     result = validate_module_credentials({})
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Tests for validate_module_credentials_async
+# ---------------------------------------------------------------------------
+
+
+def _make_credential_store(resolved: dict[str, str | None]) -> object:
+    """Create a mock CredentialStore that resolves keys from ``resolved`` dict."""
+    store = AsyncMock()
+
+    async def _resolve(key: str, *, env_fallback: bool = True) -> str | None:
+        return resolved.get(key)
+
+    store.resolve = _resolve
+    return store
+
+
+async def test_validate_module_credentials_async_returns_failures(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Returns dict of module → missing keys when neither DB nor env has them."""
+    monkeypatch.delenv("TG_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("CAL_CLIENT_SECRET", raising=False)
+
+    # DB has CAL_CLIENT_ID only; everything else not in DB either
+    store = _make_credential_store({"CAL_CLIENT_ID": "db-value"})
+
+    result = await validate_module_credentials_async(
+        {
+            "telegram": ["TG_BOT_TOKEN"],
+            "calendar": ["CAL_CLIENT_ID", "CAL_CLIENT_SECRET"],
+        },
+        store,  # type: ignore[arg-type]
+    )
+
+    assert "telegram" in result
+    assert result["telegram"] == ["TG_BOT_TOKEN"]
+    assert "calendar" in result
+    assert result["calendar"] == ["CAL_CLIENT_SECRET"]
+
+
+async def test_validate_module_credentials_async_db_stored_passes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Credentials stored in DB pass validation even when env var is absent."""
+    monkeypatch.delenv("TG_BOT_TOKEN", raising=False)
+
+    # DB has the token
+    store = _make_credential_store({"TG_BOT_TOKEN": "db-stored-token"})
+
+    result = await validate_module_credentials_async(
+        {"telegram": ["TG_BOT_TOKEN"]},
+        store,  # type: ignore[arg-type]
+    )
+
+    # No failures because DB resolved the credential
+    assert result == {}
+
+
+async def test_validate_module_credentials_async_env_fallback_passes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Credentials in env pass even when not in DB (CredentialStore env_fallback)."""
+    monkeypatch.setenv("TG_BOT_TOKEN", "env-token")
+
+    # DB has nothing; but store.resolve delegates to env fallback via the real store
+    # Here we simulate the store returning the env value
+    store = _make_credential_store({"TG_BOT_TOKEN": "env-token"})
+
+    result = await validate_module_credentials_async(
+        {"telegram": ["TG_BOT_TOKEN"]},
+        store,  # type: ignore[arg-type]
+    )
+
+    assert result == {}
+
+
+async def test_validate_module_credentials_async_empty_input():
+    """Returns empty dict for empty input."""
+    store = _make_credential_store({})
+
+    result = await validate_module_credentials_async({}, store)  # type: ignore[arg-type]
+    assert result == {}
+
+
+async def test_validate_module_credentials_async_all_missing():
+    """Returns all modules when none of their credentials are resolvable."""
+    store = _make_credential_store({})  # nothing in DB; env also empty
+
+    result = await validate_module_credentials_async(
+        {
+            "email": ["EMAIL_PASS"],
+            "telegram": ["TG_BOT_TOKEN"],
+        },
+        store,  # type: ignore[arg-type]
+    )
+
+    assert "email" in result
+    assert "telegram" in result
+
+
+async def test_validate_module_credentials_async_multiple_keys_partial_missing():
+    """Only missing keys are listed per module."""
+    store = _make_credential_store({"CAL_CLIENT_ID": "present"})
+
+    result = await validate_module_credentials_async(
+        {"calendar": ["CAL_CLIENT_ID", "CAL_CLIENT_SECRET", "CAL_REFRESH_TOKEN"]},
+        store,  # type: ignore[arg-type]
+    )
+
+    # CAL_CLIENT_ID is resolved; CAL_CLIENT_SECRET and CAL_REFRESH_TOKEN are missing
+    assert "calendar" in result
+    assert result["calendar"] == ["CAL_CLIENT_SECRET", "CAL_REFRESH_TOKEN"]

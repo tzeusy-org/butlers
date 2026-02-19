@@ -231,7 +231,9 @@ def _patch_infra(mock_pool: AsyncMock | None = None):
         "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
         "validate_credentials": patch("butlers.daemon.validate_credentials"),
         "validate_module_credentials": patch(
-            "butlers.daemon.validate_module_credentials", return_value={}
+            "butlers.daemon.validate_module_credentials_async",
+            new_callable=AsyncMock,
+            return_value={},
         ),
         "init_telemetry": patch("butlers.daemon.init_telemetry"),
         "configure_logging": patch("butlers.core.logging.configure_logging"),
