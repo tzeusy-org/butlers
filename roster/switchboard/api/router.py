@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import datetime
 import importlib.util
+import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -36,6 +38,42 @@ else:
     raise RuntimeError("Failed to load switchboard API models")
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_jsonb_string_list(raw: Any) -> list[str]:
+    """Normalize a JSONB value that may be a list, a JSON-serialized string, or a plain string.
+
+    asyncpg decodes JSONB columns to native Python types.  When the stored value
+    is a JSON array (``["a","b"]``) it returns a Python ``list``; when the stored
+    value is a JSON string (``"a"`` or ``"a,b"``) it returns a Python ``str``.
+    Calling ``list()`` on a string iterates its characters, which is the
+    char-splitting regression this helper guards against.
+    """
+    if raw is None:
+        return []
+
+    # asyncpg already decoded the JSONB — handle the native Python types.
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, str) and item.strip()]
+
+    if isinstance(raw, str):
+        candidate = raw.strip()
+        if not candidate:
+            return []
+        # Try JSON parse first (handles stored-as-string serialized arrays).
+        try:
+            decoded = json.loads(candidate)
+        except json.JSONDecodeError:
+            decoded = candidate
+
+        if isinstance(decoded, list):
+            return [item for item in decoded if isinstance(item, str) and item.strip()]
+        if isinstance(decoded, str):
+            # Comma-separated plain string.
+            return [tok.strip() for tok in decoded.split(",") if tok.strip()]
+
+    return []
+
 
 router = APIRouter(prefix="/api/switchboard", tags=["switchboard"])
 
@@ -166,8 +204,8 @@ async def list_registry(
                 name=r["name"],
                 endpoint_url=r["endpoint_url"],
                 description=r.get("description"),
-                modules=list(r["modules"]) if r.get("modules") else [],
-                capabilities=list(r["capabilities"]) if r.get("capabilities") else [],
+                modules=_normalize_jsonb_string_list(r.get("modules")),
+                capabilities=_normalize_jsonb_string_list(r.get("capabilities")),
                 last_seen_at=str(r["last_seen_at"]) if r.get("last_seen_at") else None,
                 eligibility_state=str(r.get("eligibility_state") or "active"),
                 liveness_ttl_seconds=int(r.get("liveness_ttl_seconds") or 300),
