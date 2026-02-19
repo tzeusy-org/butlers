@@ -60,3 +60,9 @@ prompt = "Run memory consolidation to process unconsolidated episodes and extrac
 name = "memory-episode-cleanup"
 cron = "0 4 * * *"
 prompt = "Run memory episode cleanup to delete expired episodes and enforce capacity limits."
+
+# Butler registry liveness sweep
+[[butler.schedule]]
+name = "eligibility-sweep"
+cron = "*/5 * * * *"
+prompt = "Run the eligibility sweep by calling run_eligibility_sweep to evaluate butler liveness and transition eligibility states (active→stale→quarantined) based on liveness_ttl_seconds. Log a summary of any transitions."
