@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # Bootstrap a full Butlers dev environment in tmux.
 # Creates three windows:
-#   backend     — postgres + butlers up
+#   backend     — butlers up (starts after OAuth gate)
 #   connectors  — telegram bot connector (top-left) + gmail connector (top-right) + telegram user-client connector (bottom)
 #   dashboard   — dashboard API (top) + Vite frontend (bottom)
+#
+# Startup DAG:
+#   Layer 0  — postgres starts + tailscale serve check (outer shell)
+#   Layer 1a — dashboard API starts (postgres healthy)
+#   Layer 1b — telegram connectors + frontend start (no OAuth dependency)
+#   Layer 2  — OAuth gate check (dashboard responsive)
+#   Layer 3  — butlers up + Gmail connector start (OAuth gate passed)
 #
 # Usage: ./dev.sh [--skip-oauth-check] [--skip-tailscale-check]
 #
@@ -90,13 +97,14 @@ if [ -f "${PROJECT_DIR}/.env" ]; then
   set +a
 fi
 
-# ── Tailscale serve pre-flight check ──────────────────────────────────────
+# ── Layer 0: Tailscale serve pre-flight check ──────────────────────────────────────
 # Google OAuth requires HTTPS for non-localhost redirect URIs. Verify that
 # tailscale serve is running and pointing to the dashboard port (8200).
 # If not running, attempt to start it. If tailscale is unavailable or
 # unauthenticated, print actionable instructions and exit.
 
 DASHBOARD_PORT=8200
+POSTGRES_PORT=54320
 
 _tailscale_serve_check() {
   # Check tailscale CLI is available
@@ -193,6 +201,42 @@ if [ "$SKIP_TAILSCALE_CHECK" = "false" ]; then
   _tailscale_serve_check || exit 1
 fi
 
+# ── Layer 0: Postgres startup + health check ──────────────────────────────
+# Start postgres and wait until pg_isready confirms it is accepting connections.
+# All subsequent layers depend on a healthy postgres instance.
+
+_wait_for_postgres() {
+  local max_wait="${1:-30}"  # seconds
+  local interval=1
+  local elapsed=0
+
+  echo "Layer 0: Starting postgres..."
+  docker compose stop postgres 2>/dev/null || true
+  docker compose up -d postgres
+
+  echo "Layer 0: Waiting for postgres to be healthy (pg_isready)..."
+  while [ "$elapsed" -lt "$max_wait" ]; do
+    if pg_isready -h 127.0.0.1 -p "${POSTGRES_PORT}" -q 2>/dev/null; then
+      echo "Layer 0: postgres is healthy (${elapsed}s)"
+      return 0
+    fi
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+
+  echo "" >&2
+  echo "======================================================================" >&2
+  echo "  ERROR: postgres did not become healthy within ${max_wait}s" >&2
+  echo "======================================================================" >&2
+  echo "" >&2
+  echo "  Check docker compose logs:" >&2
+  echo "    docker compose logs postgres" >&2
+  echo "" >&2
+  return 1
+}
+
+_wait_for_postgres 30 || exit 1
+
 # ── OAuth credential pre-flight check ─────────────────────────────────────
 # Check whether Google credentials are available via env or secrets file.
 # This runs in the *outer* shell before tmux windows are created so that
@@ -267,7 +311,7 @@ fi
 # When credentials are missing, show guidance and wait rather than crash.
 # When credentials are present, start normally.
 
-_GMAIL_CMD_BASE="${ENV_LOADER} && if [ -f \"$GMAIL_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$GMAIL_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && sleep 10"
+_GMAIL_CMD_BASE="${ENV_LOADER} && if [ -f \"$GMAIL_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$GMAIL_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors"
 
 if [ "$GOOGLE_CREDS_AVAILABLE" = "true" ] || [ "$SKIP_OAUTH_CHECK" = "true" ]; then
   # Credentials available — start connector normally (guard in connector will verify)
@@ -282,13 +326,26 @@ for WIN in backend connectors dashboard; do
   tmux kill-window -t "${SESSION}:${WIN}" 2>/dev/null || true
 done
 
-# ── backend window ──────────────────────────────────────────────────
-PANE_BACKEND=$(tmux new-window -t "$SESSION:" -n backend -c "$PROJECT_DIR" -P -F '#{pane_id}')
-tmux pipe-pane -o -t "$PANE_BACKEND" "cat >> '${LOGS_RUN_DIR}/butlers/up.log'"
-tmux send-keys -t "$PANE_BACKEND" \
-  "${ENV_LOADER} && uv sync --dev && docker compose stop postgres && docker compose up -d postgres && POSTGRES_PORT=54320 BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers up" Enter
+# ── Layer 1a: dashboard window ─────────────────────────────────────────────
+# Dashboard API starts immediately after postgres is healthy.
+# OAuth gate (Layer 2) will wait for this to be responsive.
+echo "Layer 1a: Starting dashboard API and frontend..."
+PANE_DASHBOARD=$(tmux new-window -t "$SESSION:" -n dashboard -c "$PROJECT_DIR" -P -F '#{pane_id}')
+PANE_FRONTEND=$(tmux split-window -t "$PANE_DASHBOARD" -v -c "${PROJECT_DIR}/frontend" -P -F '#{pane_id}')
+tmux pipe-pane -o -t "$PANE_DASHBOARD" "cat >> '${LOGS_RUN_DIR}/uvicorn/dashboard.log'"
+tmux pipe-pane -o -t "$PANE_FRONTEND" "cat >> '${LOGS_RUN_DIR}/frontend/vite.log'"
 
-# ── connectors window ──────────────────────────────────────────────
+tmux send-keys -t "$PANE_DASHBOARD" \
+  "POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers dashboard --host 0.0.0.0 --port ${DASHBOARD_PORT}" Enter
+# Brief wait for shell init in the split pane
+sleep 0.3
+tmux send-keys -t "$PANE_FRONTEND" \
+  "npm install && npm run dev -- --host 0.0.0.0" Enter
+
+# ── Layer 1b: connectors window (telegram + frontend) ─────────────────────
+# Telegram connectors and frontend start without waiting for OAuth.
+# Gmail pane is created here but will block until Layer 3 is reached.
+echo "Layer 1b: Starting Telegram connectors..."
 PANE_TELEGRAM_BOT=$(tmux new-window -t "$SESSION:" -n connectors -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_TELEGRAM_USER=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -v -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_GMAIL=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -h -c "$PROJECT_DIR" -P -F '#{pane_id}')
@@ -297,26 +354,60 @@ tmux pipe-pane -o -t "$PANE_TELEGRAM_USER" "cat >> '${LOGS_RUN_DIR}/connectors/t
 tmux pipe-pane -o -t "$PANE_GMAIL" "cat >> '${LOGS_RUN_DIR}/connectors/gmail.log'"
 
 tmux send-keys -t "$PANE_TELEGRAM_BOT" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && sleep 10 && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} CONNECTOR_CURSOR_PATH=\${TELEGRAM_BOT_CONNECTOR_CURSOR_PATH:-\${CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_bot_checkpoint.json}} uv run python -m butlers.connectors.telegram_bot" Enter
+  "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} CONNECTOR_CURSOR_PATH=\${TELEGRAM_BOT_CONNECTOR_CURSOR_PATH:-\${CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_bot_checkpoint.json}} uv run python -m butlers.connectors.telegram_bot" Enter
 
 tmux send-keys -t "$PANE_TELEGRAM_USER" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && sleep 10 && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY:-telegram:user:dev} CONNECTOR_CURSOR_PATH=\${TELEGRAM_USER_CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_user_client_checkpoint.json} uv run python -m butlers.connectors.telegram_user_client" Enter
+  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY:-telegram:user:dev} CONNECTOR_CURSOR_PATH=\${TELEGRAM_USER_CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_user_client_checkpoint.json} uv run python -m butlers.connectors.telegram_user_client" Enter
 
+# Gmail pane shows a waiting message until Layer 3 starts it
+# (populated later after OAuth gate passes)
+
+# ── Layer 2: OAuth gate — wait for dashboard to be responsive ─────────────
+# Block the outer shell until the dashboard API is reachable. Once it is,
+# run the OAuth gate check. This ensures butlers up and Gmail only start
+# after the dashboard is ready to serve OAuth redirects.
+
+_wait_for_dashboard() {
+  local max_wait="${1:-60}"  # seconds
+  local interval=2
+  local elapsed=0
+
+  echo "Layer 2: Waiting for dashboard API to be responsive (http://localhost:${DASHBOARD_PORT}/health)..."
+  while [ "$elapsed" -lt "$max_wait" ]; do
+    if curl -sf "http://localhost:${DASHBOARD_PORT}/health" >/dev/null 2>&1; then
+      echo "Layer 2: Dashboard API is responsive (${elapsed}s)"
+      return 0
+    fi
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+
+  echo "" >&2
+  echo "======================================================================" >&2
+  echo "  WARNING: Dashboard API did not respond within ${max_wait}s" >&2
+  echo "======================================================================" >&2
+  echo "" >&2
+  echo "  Continuing startup — butlers up and Gmail will start without" >&2
+  echo "  OAuth gate confirmation. Check the dashboard pane for errors." >&2
+  echo "" >&2
+  return 1
+}
+
+# Wait for dashboard; if it times out, continue rather than abort (non-fatal)
+_wait_for_dashboard 60 || true
+
+# ── Layer 3: backend window + Gmail ───────────────────────────────────────
+# butlers up and Gmail connector start only after the OAuth gate has passed.
+echo "Layer 3: Starting butlers up and Gmail connector..."
+
+PANE_BACKEND=$(tmux new-window -t "$SESSION:" -n backend -c "$PROJECT_DIR" -P -F '#{pane_id}')
+tmux pipe-pane -o -t "$PANE_BACKEND" "cat >> '${LOGS_RUN_DIR}/butlers/up.log'"
+tmux send-keys -t "$PANE_BACKEND" \
+  "${ENV_LOADER} && uv sync --dev && POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers up" Enter
+
+# Start Gmail pane (credentials-aware)
 tmux send-keys -t "$PANE_GMAIL" \
   "${GMAIL_PANE_CMD}" Enter
-
-# ── dashboard window ───────────────────────────────────────────────
-PANE_DASHBOARD=$(tmux new-window -t "$SESSION:" -n dashboard -c "$PROJECT_DIR" -P -F '#{pane_id}')
-PANE_FRONTEND=$(tmux split-window -t "$PANE_DASHBOARD" -v -c "${PROJECT_DIR}/frontend" -P -F '#{pane_id}')
-tmux pipe-pane -o -t "$PANE_DASHBOARD" "cat >> '${LOGS_RUN_DIR}/uvicorn/dashboard.log'"
-tmux pipe-pane -o -t "$PANE_FRONTEND" "cat >> '${LOGS_RUN_DIR}/frontend/vite.log'"
-
-tmux send-keys -t "$PANE_DASHBOARD" \
-  "POSTGRES_PORT=54320 BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers dashboard --host 0.0.0.0 --port 8200" Enter
-# Brief wait for shell init in the split pane
-sleep 0.3
-tmux send-keys -t "$PANE_FRONTEND" \
-  "npm install && npm run dev -- --host 0.0.0.0" Enter
 
 # Focus the backend window
 tmux select-window -t "${SESSION}:backend"
