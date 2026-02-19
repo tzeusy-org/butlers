@@ -28,6 +28,7 @@ import EntitiesPage from './pages/EntitiesPage.tsx'
 import EntityDetailPage from './pages/EntityDetailPage.tsx'
 import ApprovalsPage from './pages/ApprovalsPage.tsx'
 import ApprovalRulesPage from './pages/ApprovalRulesPage.tsx'
+import SecretsPage from './pages/SecretsPage.tsx'
 
 export const router = createBrowserRouter([
   {
@@ -61,6 +62,7 @@ export const router = createBrowserRouter([
       { path: '/costs', element: <CostsPage /> },
       { path: '/memory', element: <MemoryPage /> },
       { path: '/settings', element: <SettingsPage /> },
+      { path: '/secrets', element: <SecretsPage /> },
     ],
   },
 ])

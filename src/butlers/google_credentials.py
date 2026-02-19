@@ -401,3 +401,198 @@ async def resolve_google_credentials(
             f"GOOGLE_REFRESH_TOKEN / GMAIL_REFRESH_TOKEN. "
             f"Details: {env_exc}"
         ) from env_exc
+
+
+# ---------------------------------------------------------------------------
+# Partial credential model (app credentials only, no refresh token)
+# ---------------------------------------------------------------------------
+
+
+class GoogleAppCredentials(BaseModel):
+    """Partial Google credential set — app credentials only (client_id + client_secret).
+
+    Used when the operator has entered app credentials but has not yet run the
+    OAuth flow to obtain a refresh token. The ``/secrets`` dashboard page stores
+    these via ``store_app_credentials()`` before triggering OAuth.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str = Field(min_length=1)
+    client_secret: str = Field(min_length=1)
+    refresh_token: str | None = None
+    scope: str | None = None
+
+    @field_validator("client_id", "client_secret")
+    @classmethod
+    def _normalize_non_empty(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must be a non-empty string")
+        return normalized
+
+    def __repr__(self) -> str:
+        return (
+            f"GoogleAppCredentials("
+            f"client_id={self.client_id!r}, "
+            f"client_secret=<REDACTED>, "
+            f"refresh_token={'<REDACTED>' if self.refresh_token else None}, "
+            f"scope={self.scope!r})"
+        )
+
+    __str__ = __repr__
+
+
+async def store_app_credentials(
+    conn: Any,
+    *,
+    client_id: str,
+    client_secret: str,
+) -> None:
+    """Persist Google OAuth app credentials (client_id + client_secret) to the database.
+
+    This is a partial upsert that stores only the app credentials.  If a refresh
+    token already exists in the database, it is preserved.  If not, only the
+    client_id and client_secret are stored so that the OAuth flow can be triggered.
+
+    Secret material (client_secret) is never logged.
+
+    Parameters
+    ----------
+    conn:
+        An asyncpg connection or pool.
+    client_id:
+        OAuth client ID (non-secret).
+    client_secret:
+        OAuth client secret (secret — never logged).
+    """
+    # Validate inputs
+    client_id = client_id.strip()
+    client_secret = client_secret.strip()
+    if not client_id:
+        raise ValueError("client_id must be a non-empty string")
+    if not client_secret:
+        raise ValueError("client_secret must be a non-empty string")
+
+    # Load existing credentials to preserve refresh_token if present
+    existing: dict[str, Any] = {}
+    row = await conn.fetchrow(
+        f"SELECT credentials FROM {_TABLE} WHERE credential_key = $1",
+        _SINGLETON_KEY,
+    )
+    if row is not None:
+        raw = row["credentials"]
+        if isinstance(raw, str):
+            try:
+                existing = json.loads(raw)
+            except json.JSONDecodeError:
+                existing = {}
+        elif isinstance(raw, dict):
+            existing = raw
+
+    # Build the new payload — preserve any existing refresh_token/scope
+    payload: dict[str, Any] = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "stored_at": datetime.now(UTC).isoformat(),
+    }
+    if existing.get("refresh_token"):
+        payload["refresh_token"] = existing["refresh_token"]
+    if existing.get("scope"):
+        payload["scope"] = existing["scope"]
+
+    await conn.execute(
+        f"""
+        INSERT INTO {_TABLE} (credential_key, credentials)
+        VALUES ($1, $2::jsonb)
+        ON CONFLICT (credential_key)
+        DO UPDATE SET
+            credentials = EXCLUDED.credentials,
+            updated_at = now()
+        """,
+        _SINGLETON_KEY,
+        json.dumps(payload),
+    )
+    logger.info(
+        "Google app credentials (client_id + client_secret) stored in DB (client_id=%s)",
+        client_id,
+    )
+    # Do NOT log client_secret.
+
+
+async def load_app_credentials(conn: Any) -> GoogleAppCredentials | None:
+    """Load Google app credentials (client_id + client_secret) from the database.
+
+    Returns ``None`` if no credentials have been stored yet.
+    Unlike ``load_google_credentials``, this does NOT require a refresh_token
+    to be present.
+
+    Parameters
+    ----------
+    conn:
+        An asyncpg connection or pool.
+
+    Returns
+    -------
+    GoogleAppCredentials | None
+        The stored credentials, or None if the table is empty.
+    """
+    row = await conn.fetchrow(
+        f"SELECT credentials FROM {_TABLE} WHERE credential_key = $1",
+        _SINGLETON_KEY,
+    )
+    if row is None:
+        return None
+
+    raw = row["credentials"]
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise InvalidGoogleCredentialsError(
+                f"Stored Google credentials JSON is malformed: {exc}"
+            ) from exc
+    elif isinstance(raw, dict):
+        data = raw
+    else:
+        raise InvalidGoogleCredentialsError(
+            f"Stored Google credentials has unexpected type: {type(raw).__name__}"
+        )
+
+    client_id = data.get("client_id", "").strip()
+    client_secret = data.get("client_secret", "").strip()
+    if not client_id or not client_secret:
+        return None
+
+    return GoogleAppCredentials(
+        client_id=client_id,
+        client_secret=client_secret,
+        refresh_token=data.get("refresh_token") or None,
+        scope=data.get("scope") or None,
+    )
+
+
+async def delete_google_credentials(conn: Any) -> bool:
+    """Delete stored Google OAuth credentials from the database.
+
+    Parameters
+    ----------
+    conn:
+        An asyncpg connection or pool.
+
+    Returns
+    -------
+    bool
+        True if a row was deleted, False if no credentials were stored.
+    """
+    result = await conn.execute(
+        f"DELETE FROM {_TABLE} WHERE credential_key = $1",
+        _SINGLETON_KEY,
+    )
+    # asyncpg returns a string like "DELETE 1" or "DELETE 0"
+    deleted = result.split()[-1] != "0" if result else False
+    if deleted:
+        logger.info("Google OAuth credentials deleted from DB")
+    else:
+        logger.info("No Google OAuth credentials to delete")
+    return deleted

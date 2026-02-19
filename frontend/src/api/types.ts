@@ -944,3 +944,55 @@ export interface ExpireStaleActionsResponse {
   expired_count: number;
   expired_ids: string[];
 }
+
+// ---------------------------------------------------------------------------
+// OAuth / Secrets management types
+// ---------------------------------------------------------------------------
+
+export type OAuthCredentialState =
+  | "connected"
+  | "not_configured"
+  | "expired"
+  | "missing_scope"
+  | "redirect_uri_mismatch"
+  | "unapproved_tester"
+  | "unknown_error";
+
+export interface OAuthCredentialStatus {
+  provider: string;
+  state: OAuthCredentialState;
+  connected: boolean;
+  scopes_granted: string[] | null;
+  remediation: string | null;
+  detail: string | null;
+}
+
+export interface OAuthStatusResponse {
+  google: OAuthCredentialStatus;
+}
+
+export interface GoogleCredentialStatusResponse {
+  client_id_configured: boolean;
+  client_secret_configured: boolean;
+  refresh_token_present: boolean;
+  scope: string | null;
+  oauth_health: OAuthCredentialState;
+  oauth_health_remediation: string | null;
+  oauth_health_detail: string | null;
+}
+
+export interface UpsertAppCredentialsRequest {
+  client_id: string;
+  client_secret: string;
+}
+
+export interface UpsertAppCredentialsResponse {
+  success: boolean;
+  message: string;
+}
+
+export interface DeleteCredentialsResponse {
+  success: boolean;
+  deleted: boolean;
+  message: string;
+}

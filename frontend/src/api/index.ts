@@ -5,6 +5,11 @@
 export {
   ApiError,
   apiFetch,
+  deleteGoogleCredentials,
+  getGoogleCredentialStatus,
+  getOAuthStartUrl,
+  getOAuthStatus,
+  upsertGoogleCredentials,
   createButlerSchedule,
   deleteButlerSchedule,
   getAuditLog,
@@ -172,4 +177,11 @@ export type {
   ApprovalRuleParams,
   ExpireStaleActionsResponse,
   RuleConstraintSuggestion,
+  DeleteCredentialsResponse,
+  GoogleCredentialStatusResponse,
+  OAuthCredentialState,
+  OAuthCredentialStatus,
+  OAuthStatusResponse,
+  UpsertAppCredentialsRequest,
+  UpsertAppCredentialsResponse,
 } from "./types.ts";

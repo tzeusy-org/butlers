@@ -132,3 +132,68 @@ class OAuthStatusResponse(BaseModel):
     """
 
     google: OAuthCredentialStatus
+
+
+# ---------------------------------------------------------------------------
+# Credential management models (for /secrets dashboard page)
+# ---------------------------------------------------------------------------
+
+
+class CredentialField(StrEnum):
+    """Which credential fields are present in the DB."""
+
+    present = "present"
+    absent = "absent"
+
+
+class GoogleCredentialStatusResponse(BaseModel):
+    """Masked credential status for GET /api/oauth/google/credentials.
+
+    Secret values are NEVER returned — only presence indicators.
+    """
+
+    client_id_configured: bool
+    """True iff client_id is stored in the database."""
+
+    client_secret_configured: bool
+    """True iff client_secret is stored in the database."""
+
+    refresh_token_present: bool
+    """True iff a refresh token has been obtained and stored."""
+
+    scope: str | None = None
+    """OAuth scopes granted (if known)."""
+
+    oauth_health: OAuthCredentialState
+    """Current OAuth health state (from the /status probe)."""
+
+    oauth_health_remediation: str | None = None
+    """Actionable remediation guidance when not connected."""
+
+    oauth_health_detail: str | None = None
+    """Optional technical detail for operator diagnostics."""
+
+
+class UpsertAppCredentialsRequest(BaseModel):
+    """Request body for PUT /api/oauth/google/credentials."""
+
+    client_id: str
+    """Google OAuth client ID."""
+
+    client_secret: str
+    """Google OAuth client secret."""
+
+
+class UpsertAppCredentialsResponse(BaseModel):
+    """Response for PUT /api/oauth/google/credentials."""
+
+    success: bool = True
+    message: str = "Google app credentials stored."
+
+
+class DeleteCredentialsResponse(BaseModel):
+    """Response for DELETE /api/oauth/google/credentials."""
+
+    success: bool = True
+    deleted: bool
+    message: str

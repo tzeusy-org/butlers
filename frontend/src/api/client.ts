@@ -1000,3 +1000,47 @@ export function getRuleSuggestions(
 export function getApprovalMetrics(): Promise<ApiResponse<ApprovalMetrics>> {
   return apiFetch<ApiResponse<ApprovalMetrics>>("/approvals/metrics");
 }
+
+// ---------------------------------------------------------------------------
+// OAuth / Secrets management API functions
+// ---------------------------------------------------------------------------
+
+import type {
+  DeleteCredentialsResponse,
+  GoogleCredentialStatusResponse,
+  OAuthStatusResponse,
+  UpsertAppCredentialsRequest,
+  UpsertAppCredentialsResponse,
+} from "./types.ts";
+
+/** Fetch the current OAuth status (probes Google token validity). */
+export function getOAuthStatus(): Promise<OAuthStatusResponse> {
+  return apiFetch<OAuthStatusResponse>("/oauth/status");
+}
+
+/** Fetch the masked credential status (presence only, no secret values). */
+export function getGoogleCredentialStatus(): Promise<GoogleCredentialStatusResponse> {
+  return apiFetch<GoogleCredentialStatusResponse>("/oauth/google/credentials");
+}
+
+/** Store Google app credentials (client_id + client_secret). */
+export function upsertGoogleCredentials(
+  request: UpsertAppCredentialsRequest,
+): Promise<UpsertAppCredentialsResponse> {
+  return apiFetch<UpsertAppCredentialsResponse>("/oauth/google/credentials", {
+    method: "PUT",
+    body: JSON.stringify(request),
+  });
+}
+
+/** Delete all stored Google OAuth credentials. */
+export function deleteGoogleCredentials(): Promise<DeleteCredentialsResponse> {
+  return apiFetch<DeleteCredentialsResponse>("/oauth/google/credentials", {
+    method: "DELETE",
+  });
+}
+
+/** Trigger the Google OAuth flow (returns the authorization URL). */
+export function getOAuthStartUrl(): string {
+  return `${API_BASE_URL}/oauth/google/start`;
+}

@@ -16,6 +16,7 @@ const navItems = [
   { path: '/collections', label: 'Collections' },
   { path: '/memory', label: 'Memory' },
   { path: '/entities', label: 'Entities' },
+  { path: '/secrets', label: 'Secrets' },
   { path: '/settings', label: 'Settings' },
 ]
 

@@ -59,14 +59,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from butlers.api.models.oauth import (
+    DeleteCredentialsResponse,
+    GoogleCredentialStatusResponse,
     OAuthCallbackError,
     OAuthCallbackSuccess,
     OAuthCredentialState,
     OAuthCredentialStatus,
     OAuthStartResponse,
     OAuthStatusResponse,
+    UpsertAppCredentialsRequest,
+    UpsertAppCredentialsResponse,
 )
-from butlers.google_credentials import store_google_credentials
+from butlers.google_credentials import (
+    delete_google_credentials,
+    load_app_credentials,
+    store_app_credentials,
+    store_google_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -465,6 +474,171 @@ async def oauth_google_callback(
 
 
 # ---------------------------------------------------------------------------
+# Credential management endpoints (for /secrets dashboard page)
+# ---------------------------------------------------------------------------
+
+
+@router.put(
+    "/google/credentials",
+    response_model=UpsertAppCredentialsResponse,
+    summary="Store Google app credentials (client_id + client_secret)",
+    description=(
+        "Stores the Google OAuth app credentials (client_id and client_secret) in the database. "
+        "An existing refresh token is preserved if already present. "
+        "Secret values are never echoed back in responses."
+    ),
+)
+async def upsert_google_credentials(
+    body: UpsertAppCredentialsRequest,
+    db_manager: Any = Depends(_get_db_manager),
+) -> UpsertAppCredentialsResponse:
+    """Store Google app credentials in the database.
+
+    Stores client_id and client_secret. If a refresh token is already stored
+    from a previous OAuth flow, it is preserved.
+
+    Raises
+    ------
+    HTTPException 503
+        If no database is available to store the credentials.
+    HTTPException 422
+        If client_id or client_secret are empty.
+    """
+    if db_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Database not available. Cannot persist credentials.",
+        )
+
+    client_id = body.client_id.strip()
+    client_secret = body.client_secret.strip()
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=422,
+            detail="client_id and client_secret must be non-empty.",
+        )
+
+    butler_names = db_manager.butler_names
+    if not butler_names:
+        raise HTTPException(
+            status_code=503,
+            detail="No butler DB pools registered. Cannot persist credentials.",
+        )
+
+    pool = db_manager.pool(butler_names[0])
+    async with pool.acquire() as conn:
+        await store_app_credentials(conn, client_id=client_id, client_secret=client_secret)
+
+    return UpsertAppCredentialsResponse(
+        success=True,
+        message="Google app credentials stored.",
+    )
+
+
+@router.delete(
+    "/google/credentials",
+    response_model=DeleteCredentialsResponse,
+    summary="Delete stored Google credentials",
+    description=(
+        "Deletes all stored Google OAuth credentials from the database "
+        "(client_id, client_secret, and refresh_token if present). "
+        "A confirmation is expected before calling this endpoint."
+    ),
+)
+async def delete_google_credentials_endpoint(
+    db_manager: Any = Depends(_get_db_manager),
+) -> DeleteCredentialsResponse:
+    """Delete all stored Google OAuth credentials from the database.
+
+    Raises
+    ------
+    HTTPException 503
+        If no database is available.
+    """
+    if db_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Database not available. Cannot delete credentials.",
+        )
+
+    butler_names = db_manager.butler_names
+    if not butler_names:
+        raise HTTPException(
+            status_code=503,
+            detail="No butler DB pools registered. Cannot delete credentials.",
+        )
+
+    pool = db_manager.pool(butler_names[0])
+    async with pool.acquire() as conn:
+        deleted = await delete_google_credentials(conn)
+
+    return DeleteCredentialsResponse(
+        success=True,
+        deleted=deleted,
+        message="Credentials deleted." if deleted else "No credentials were stored.",
+    )
+
+
+@router.get(
+    "/google/credentials",
+    response_model=GoogleCredentialStatusResponse,
+    summary="Get Google credential status (masked)",
+    description=(
+        "Returns presence indicators for stored Google credentials. "
+        "Secret values are NEVER returned — only boolean presence flags. "
+        "Also probes OAuth health via the status endpoint."
+    ),
+)
+async def get_google_credential_status(
+    db_manager: Any = Depends(_get_db_manager),
+) -> GoogleCredentialStatusResponse:
+    """Return masked status of stored Google credentials.
+
+    Does not return any secret values — only presence indicators.
+    Also probes OAuth health (same as /status endpoint).
+
+    Raises
+    ------
+    HTTPException 503
+        If no database is available.
+    """
+    if db_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Database not available.",
+        )
+
+    butler_names = db_manager.butler_names
+    if not butler_names:
+        raise HTTPException(
+            status_code=503,
+            detail="No butler DB pools registered.",
+        )
+
+    pool = db_manager.pool(butler_names[0])
+    async with pool.acquire() as conn:
+        app_creds = await load_app_credentials(conn)
+
+    client_id_configured = app_creds is not None and bool(app_creds.client_id)
+    client_secret_configured = app_creds is not None and bool(app_creds.client_secret)
+    refresh_token_present = app_creds is not None and bool(app_creds.refresh_token)
+    scope = app_creds.scope if app_creds else None
+
+    # Also probe the OAuth health
+    health = await _check_google_credential_status()
+
+    return GoogleCredentialStatusResponse(
+        client_id_configured=client_id_configured,
+        client_secret_configured=client_secret_configured,
+        refresh_token_present=refresh_token_present,
+        scope=scope,
+        oauth_health=health.state,
+        oauth_health_remediation=health.remediation,
+        oauth_health_detail=health.detail,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Status endpoint
 # ---------------------------------------------------------------------------
 
@@ -479,10 +653,12 @@ async def oauth_google_callback(
         "and to surface actionable remediation guidance in the dashboard UX."
     ),
 )
-async def oauth_status() -> OAuthStatusResponse:
+async def oauth_status(
+    db_manager: Any = Depends(_get_db_manager),
+) -> OAuthStatusResponse:
     """Report the current state of Google OAuth credentials.
 
-    Checks whether the stored refresh token environment variables are set and,
+    Checks whether credentials are configured (DB first, then env vars) and,
     when possible, probes Google's token-info endpoint to validate scope coverage.
 
     This endpoint is designed for dashboard polling (e.g. after completing the
@@ -493,28 +669,57 @@ async def oauth_status() -> OAuthStatusResponse:
     OAuthStatusResponse
         Aggregated status for all OAuth providers (Google only in v1).
     """
-    google_status = await _check_google_credential_status()
+    google_status = await _check_google_credential_status(db_manager=db_manager)
     return OAuthStatusResponse(google=google_status)
 
 
-async def _check_google_credential_status() -> OAuthCredentialStatus:
+async def _check_google_credential_status(db_manager: Any = None) -> OAuthCredentialStatus:
     """Derive the operational status of the stored Google credentials.
 
     Performs the following checks in order:
 
-    1. Whether GOOGLE_OAUTH_CLIENT_ID / CLIENT_SECRET are configured (not_configured).
-    2. Whether a refresh token is stored in env (not_configured).
-    3. Probe the token-info endpoint by attempting to refresh an access token and
-       then introspecting the resulting scopes (missing_scope, expired, etc.).
+    1. Whether client_id/client_secret are available (DB first, then env vars).
+    2. Whether a refresh token is stored (DB first, then env vars).
+    3. Probe Google's token-info endpoint to validate scope coverage.
+
+    Parameters
+    ----------
+    db_manager:
+        Optional DatabaseManager instance.  When provided, DB credentials
+        are checked before env vars.
 
     Returns
     -------
     OAuthCredentialStatus
         Structured status including state, connected flag, and remediation text.
     """
-    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
-    refresh_token = _get_stored_refresh_token()
+    # --- Resolution: DB first, env fallback ---
+    client_id: str = ""
+    client_secret: str = ""
+    refresh_token: str | None = None
+
+    # Try DB credentials
+    if db_manager is not None:
+        butler_names = db_manager.butler_names
+        if butler_names:
+            try:
+                pool = db_manager.pool(butler_names[0])
+                async with pool.acquire() as conn:
+                    app_creds = await load_app_credentials(conn)
+                if app_creds:
+                    client_id = app_creds.client_id
+                    client_secret = app_creds.client_secret
+                    refresh_token = app_creds.refresh_token
+            except Exception:
+                pass  # Fall through to env vars
+
+    # Fall back to env vars for any missing fields
+    if not client_id:
+        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+    if not client_secret:
+        client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+    if not refresh_token:
+        refresh_token = _get_stored_refresh_token()
 
     # --- Check 1: client credentials not configured ---
     if not client_id or not client_secret:
@@ -522,10 +727,10 @@ async def _check_google_credential_status() -> OAuthCredentialStatus:
             state=OAuthCredentialState.not_configured,
             remediation=(
                 "Google OAuth client credentials are not configured. "
-                "Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET, "
+                "Add your client_id and client_secret on the Secrets page, "
                 "then click 'Connect Google' to start the authorization flow."
             ),
-            detail="GOOGLE_OAUTH_CLIENT_ID or GOOGLE_OAUTH_CLIENT_SECRET is missing.",
+            detail="client_id or client_secret is missing (DB and env vars).",
         )
 
     # --- Check 2: no refresh token stored ---
@@ -536,7 +741,7 @@ async def _check_google_credential_status() -> OAuthCredentialStatus:
                 "Google credentials have not been connected yet. "
                 "Click 'Connect Google' to start the OAuth authorization flow."
             ),
-            detail="No refresh token found in GMAIL_REFRESH_TOKEN or GOOGLE_REFRESH_TOKEN.",
+            detail="No refresh token found in DB or GMAIL_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN.",
         )
 
     # --- Check 3: probe Google to validate the refresh token ---
