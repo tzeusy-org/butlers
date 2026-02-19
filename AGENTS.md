@@ -542,5 +542,6 @@ make test-qg
 - Switchboard `schedule:eligibility-sweep` is natively dispatched via the roster job loader (`_load_switchboard_eligibility_sweep_job`) and executes against the switchboard DB pool directly; non-native schedules still fall back to `spawner.trigger`.
 
 ### State API JSON-shape contract
-- `src/butlers/api/models/state.py::StateEntry.value` is currently constrained to `dict[str, Any]`; scalar/array/null JSON rows in `state.value` can trigger response-model validation failures on `/api/butlers/{name}/state`.
+- `src/butlers/api/models/state.py::StateEntry.value` and `StateSetRequest.value` are typed `Any` (widened from `dict[str, Any]` in PR #205); scalar/array/null JSON rows in `state.value` are now serialized correctly.
 - Keep list/get state endpoint value-shape contracts aligned with the full JSON domain accepted by the underlying state storage.
+- asyncpg decodes JSONB columns directly to native Python types; no secondary `json.loads` fallback is needed in the router.
