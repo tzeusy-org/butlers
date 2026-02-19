@@ -753,7 +753,7 @@ tmux pipe-pane -o -t "$PANE_DASHBOARD" "cat >> '${LOGS_RUN_DIR}/uvicorn/dashboar
 tmux pipe-pane -o -t "$PANE_FRONTEND" "cat >> '${LOGS_RUN_DIR}/frontend/vite.log'"
 
 tmux send-keys -t "$PANE_DASHBOARD" \
-  "POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers dashboard --host 0.0.0.0 --port ${DASHBOARD_PORT}" Enter
+  "GOOGLE_OAUTH_REDIRECT_URI=https://tzeusy.parrot-hen.ts.net/butlers-api/api/oauth/google/callback POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers dashboard --host 0.0.0.0 --port ${DASHBOARD_PORT}" Enter
 # Brief wait for shell init in the split pane
 sleep 0.3
 tmux send-keys -t "$PANE_FRONTEND" \
@@ -823,7 +823,7 @@ echo "Layer 3: Starting butlers up and Gmail connector..."
 PANE_BACKEND=$(tmux new-window -t "$SESSION:" -n backend -c "$PROJECT_DIR" -P -F '#{pane_id}')
 tmux pipe-pane -o -t "$PANE_BACKEND" "cat >> '${LOGS_RUN_DIR}/butlers/up.log'"
 tmux send-keys -t "$PANE_BACKEND" \
-  "${ENV_LOADER} && uv sync --dev && POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers up" Enter
+  "${ENV_LOADER} && uv sync --dev && POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_SWITCHBOARD_URL=http://localhost:${DASHBOARD_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers up" Enter
 
 # Start Gmail pane (credentials-aware)
 tmux send-keys -t "$PANE_GMAIL" \

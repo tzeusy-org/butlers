@@ -174,28 +174,6 @@ def _clear_state_store() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _get_client_id() -> str:
-    """Read GOOGLE_OAUTH_CLIENT_ID from environment."""
-    val = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
-    if not val:
-        raise HTTPException(
-            status_code=503,
-            detail="GOOGLE_OAUTH_CLIENT_ID is not configured on the server.",
-        )
-    return val
-
-
-def _get_client_secret() -> str:
-    """Read GOOGLE_OAUTH_CLIENT_SECRET from environment."""
-    val = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
-    if not val:
-        raise HTTPException(
-            status_code=503,
-            detail="GOOGLE_OAUTH_CLIENT_SECRET is not configured on the server.",
-        )
-    return val
-
-
 def _get_redirect_uri() -> str:
     """Read GOOGLE_OAUTH_REDIRECT_URI or use the default."""
     return os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", _DEFAULT_REDIRECT_URI).strip()
@@ -225,6 +203,48 @@ def _get_stored_refresh_token() -> str | None:
     return None
 
 
+async def _resolve_app_credentials(db_manager: Any = None) -> tuple[str, str]:
+    """Resolve client_id and client_secret from DB first, then env vars.
+
+    Returns (client_id, client_secret). Raises HTTPException(503) if either
+    value is missing from both sources.
+    """
+    client_id = ""
+    client_secret = ""
+
+    # Try DB credentials first
+    if db_manager is not None:
+        butler_names = getattr(db_manager, "butler_names", [])
+        if butler_names:
+            try:
+                pool = db_manager.pool(butler_names[0])
+                async with pool.acquire() as conn:
+                    app_creds = await load_app_credentials(conn)
+                if app_creds:
+                    client_id = app_creds.client_id or ""
+                    client_secret = app_creds.client_secret or ""
+            except Exception:
+                logger.debug("DB credential lookup failed; falling back to env vars.")
+
+    # Fall back to env vars for any missing fields
+    if not client_id:
+        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+    if not client_secret:
+        client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+
+    if not client_id:
+        raise HTTPException(
+            status_code=503,
+            detail="GOOGLE_OAUTH_CLIENT_ID is not configured on the server.",
+        )
+    if not client_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="GOOGLE_OAUTH_CLIENT_SECRET is not configured on the server.",
+        )
+    return client_id, client_secret
+
+
 # ---------------------------------------------------------------------------
 # Start endpoint
 # ---------------------------------------------------------------------------
@@ -243,6 +263,7 @@ async def oauth_google_start(
         description="If true (default), redirect to Google authorization URL. "
         "If false, return the URL as JSON for programmatic callers.",
     ),
+    db_manager: Any = Depends(_get_db_manager),
 ) -> Response:
     """Begin the Google OAuth authorization flow.
 
@@ -250,7 +271,7 @@ async def oauth_google_start(
     builds the Google authorization URL, and either redirects the browser
     or returns the URL as JSON (when ``?redirect=false``).
     """
-    client_id = _get_client_id()
+    client_id, _ = await _resolve_app_credentials(db_manager)
     redirect_uri = _get_redirect_uri()
     scopes = _get_scopes()
 
@@ -357,8 +378,7 @@ async def oauth_google_callback(
         return JSONResponse(status_code=400, content=error_payload.model_dump())
 
     # --- Exchange code for tokens ---
-    client_secret = _get_client_secret()
-    client_id = _get_client_id()
+    client_id, client_secret = await _resolve_app_credentials(db_manager)
     redirect_uri = _get_redirect_uri()
 
     try:
