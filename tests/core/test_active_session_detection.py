@@ -153,14 +153,8 @@ def _unique_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
 
-@pytest.fixture(scope="module")
-def postgres_container():
-    if not docker_available:
-        pytest.skip("Docker not available")
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16") as postgres:
-        yield postgres
+# Use the session-scoped postgres_container from root conftest (not a local override)
+# so the event loop is shared across the whole session, avoiding asyncpg loop mismatch.
 
 
 @pytest.fixture
@@ -222,6 +216,7 @@ async def pool(postgres_container):
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
 class TestSessionsActive:
     """Integration tests for sessions_active() query."""
 
