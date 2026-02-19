@@ -164,9 +164,14 @@ class SchedulerConfig:
 
     Controls the internal asyncio scheduler loop that calls tick() periodically
     to dispatch due cron tasks without relying on external heartbeat calls.
+
+    Also controls the liveness reporter loop that periodically sends HTTP POST
+    to the Switchboard's /api/switchboard/heartbeat endpoint.
     """
 
     tick_interval_seconds: int = 60
+    heartbeat_interval_seconds: int = 120
+    switchboard_url: str = "http://localhost:8200"
 
 
 @dataclass
@@ -547,7 +552,21 @@ def load_config(config_dir: Path) -> ButlerConfig:
             f"Invalid butler.scheduler.tick_interval_seconds: {tick_interval_seconds!r}. "
             "Must be a positive integer."
         )
-    scheduler_config = SchedulerConfig(tick_interval_seconds=tick_interval_seconds)
+    raw_heartbeat_interval = scheduler_section.get("heartbeat_interval_seconds", 120)
+    heartbeat_interval_seconds = int(raw_heartbeat_interval)
+    if heartbeat_interval_seconds <= 0:
+        raise ConfigError(
+            f"Invalid butler.scheduler.heartbeat_interval_seconds: {heartbeat_interval_seconds!r}. "
+            "Must be a positive integer."
+        )
+    # Switchboard URL for liveness reporter: env var > toml > default
+    _default_sb_url = os.environ.get("BUTLERS_SWITCHBOARD_URL", "http://localhost:8200")
+    switchboard_liveness_url = scheduler_section.get("switchboard_url", _default_sb_url)
+    scheduler_config = SchedulerConfig(
+        tick_interval_seconds=tick_interval_seconds,
+        heartbeat_interval_seconds=heartbeat_interval_seconds,
+        switchboard_url=switchboard_liveness_url,
+    )
 
     # --- [buffer] top-level section ---
     buffer_section = data.get("buffer", {})
