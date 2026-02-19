@@ -383,18 +383,30 @@ def test_list_contact_feed():
 def test_list_groups():
     """GET /groups returns groups with member counts."""
     gid = uuid4()
-    app = _app_with_mock_db(
+    app, _, mock_pool = _app_with_mock_db(
         fetchval_result=1,
-        fetch_rows=[
-            {
-                "id": gid,
-                "name": "Work",
-                "description": "Colleagues",
-                "created_at": datetime(2025, 1, 1, tzinfo=UTC),
-                "updated_at": datetime(2025, 1, 1, tzinfo=UTC),
-                "member_count": 5,
-            }
-        ],
+        include_mock_pool=True,
+    )
+    mock_pool.fetch = AsyncMock(
+        side_effect=[
+            [
+                {"column_name": "id"},
+                {"column_name": "name"},
+                {"column_name": "description"},
+                {"column_name": "created_at"},
+                {"column_name": "updated_at"},
+            ],
+            [
+                {
+                    "id": gid,
+                    "name": "Work",
+                    "description": "Colleagues",
+                    "created_at": datetime(2025, 1, 1, tzinfo=UTC),
+                    "updated_at": datetime(2025, 1, 1, tzinfo=UTC),
+                    "member_count": 5,
+                }
+            ],
+        ]
     )
 
     with TestClient(app=app) as client:
@@ -405,6 +417,49 @@ def test_list_groups():
     assert len(data["groups"]) == 1
     assert data["groups"][0]["name"] == "Work"
     assert data["groups"][0]["member_count"] == 5
+
+
+def test_list_groups_legacy_schema_without_optional_group_columns():
+    """GET /groups works when groups lacks description/updated_at columns."""
+    gid = uuid4()
+    created_at = datetime(2025, 1, 1, tzinfo=UTC)
+    app, _, mock_pool = _app_with_mock_db(fetchval_result=1, include_mock_pool=True)
+    mock_pool.fetch = AsyncMock(
+        side_effect=[
+            [
+                {"column_name": "id"},
+                {"column_name": "name"},
+                {"column_name": "created_at"},
+            ],
+            [
+                {
+                    "id": gid,
+                    "name": "Work",
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                    "description": None,
+                    "member_count": 2,
+                }
+            ],
+        ]
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.get("/api/relationship/groups")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["groups"][0]["description"] is None
+    assert data["groups"][0]["updated_at"] == "2025-01-01T00:00:00Z"
+    assert mock_pool.fetch.await_count == 2
+
+    schema_sql = mock_pool.fetch.await_args_list[0].args[0]
+    groups_sql = mock_pool.fetch.await_args_list[1].args[0]
+    assert "information_schema.columns" in schema_sql
+    assert "g.description" not in groups_sql
+    assert "g.updated_at" not in groups_sql
+    assert "NULL::text AS description" in groups_sql
+    assert "g.created_at AS updated_at" in groups_sql
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +496,47 @@ def test_get_group_not_found():
         resp = client.get(f"/api/relationship/groups/{uuid4()}")
 
     assert resp.status_code == 404
+
+
+def test_get_group_legacy_schema_without_optional_group_columns():
+    """GET /groups/{id} works when groups lacks description/updated_at columns."""
+    gid = uuid4()
+    created_at = datetime(2025, 1, 1, tzinfo=UTC)
+    app, _, mock_pool = _app_with_mock_db(include_mock_pool=True)
+    mock_pool.fetch = AsyncMock(
+        return_value=[
+            {"column_name": "id"},
+            {"column_name": "name"},
+            {"column_name": "created_at"},
+        ]
+    )
+    mock_pool.fetchrow = AsyncMock(
+        return_value={
+            "id": gid,
+            "name": "Family",
+            "created_at": created_at,
+            "updated_at": created_at,
+            "description": None,
+            "member_count": 3,
+        }
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/groups/{gid}")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["description"] is None
+    assert data["updated_at"] == "2025-01-01T00:00:00Z"
+    assert mock_pool.fetch.await_count == 1
+
+    schema_sql = mock_pool.fetch.await_args_list[0].args[0]
+    groups_sql = mock_pool.fetchrow.await_args_list[0].args[0]
+    assert "information_schema.columns" in schema_sql
+    assert "g.description" not in groups_sql
+    assert "g.updated_at" not in groups_sql
+    assert "NULL::text AS description" in groups_sql
+    assert "g.created_at AS updated_at" in groups_sql
 
 
 # ---------------------------------------------------------------------------

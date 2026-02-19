@@ -68,6 +68,34 @@ def _pool(db: DatabaseManager):
         )
 
 
+async def _table_columns(pool, table_name: str) -> set[str]:
+    """Return column names for a table in public schema."""
+    rows = await pool.fetch(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = $1
+        """,
+        table_name,
+    )
+    return {row["column_name"] for row in rows}
+
+
+def _group_select_fragments(group_columns: set[str]) -> tuple[str, str]:
+    """Build schema-compatible select fragments for optional group fields."""
+    description_sql = (
+        "g.description"
+        if "description" in group_columns
+        else "NULL::text AS description"
+    )
+    updated_at_sql = (
+        "g.updated_at"
+        if "updated_at" in group_columns
+        else "g.created_at AS updated_at"
+    )
+    return description_sql, updated_at_sql
+
+
 # ---------------------------------------------------------------------------
 # GET /contacts — list with search and label filter
 # ---------------------------------------------------------------------------
@@ -487,17 +515,19 @@ async def list_groups(
 ) -> GroupListResponse:
     """List all groups with member counts, paginated."""
     pool = _pool(db)
+    group_columns = await _table_columns(pool, "groups")
+    description_sql, updated_at_sql = _group_select_fragments(group_columns)
 
     total = await pool.fetchval("SELECT count(*) FROM groups") or 0
 
     rows = await pool.fetch(
-        """
+        f"""
         SELECT
             g.id,
             g.name,
-            g.description,
+            {description_sql},
             g.created_at,
-            g.updated_at,
+            {updated_at_sql},
             count(gm.contact_id) AS member_count
         FROM groups g
         LEFT JOIN group_members gm ON gm.group_id = g.id
@@ -537,15 +567,17 @@ async def get_group(
 ) -> Group:
     """Get a group with its member count."""
     pool = _pool(db)
+    group_columns = await _table_columns(pool, "groups")
+    description_sql, updated_at_sql = _group_select_fragments(group_columns)
 
     row = await pool.fetchrow(
-        """
+        f"""
         SELECT
             g.id,
             g.name,
-            g.description,
+            {description_sql},
             g.created_at,
-            g.updated_at,
+            {updated_at_sql},
             count(gm.contact_id) AS member_count
         FROM groups g
         LEFT JOIN group_members gm ON gm.group_id = g.id

@@ -366,6 +366,10 @@ make test-qg
 - Relationship schema stores date kind in `important_dates.label` (not `important_dates.date_type`).
 - API queries touching birthdays/upcoming dates should use `label` consistently to avoid `UndefinedColumnError` on production schema.
 
+### Relationship groups API schema-compat contract
+- `roster/relationship/api/router.py` group reads (`list_groups`, `get_group`) must introspect `groups` columns via `information_schema.columns` before composing SELECTs.
+- For deployments where `groups.description` and/or `groups.updated_at` are absent, project fallback expressions (`NULL::text AS description`, `g.created_at AS updated_at`) so responses keep the `Group` model shape and avoid `UndefinedColumnError`.
+
 ### Switchboard MCP routing contract
 - `roster/switchboard/tools/routing/route.py::_call_butler_tool` calls butler endpoints via `fastmcp.Client` and should return `CallToolResult.data` when present.
 - If a target returns `Unknown tool` for an identity-prefixed routing tool name, routing retries `trigger` with mapped args (`prompt` from `prompt`/`message`, optional `context`).
