@@ -90,12 +90,12 @@ rm -rf "${LOGS_LATEST_LINK}"
 ln -s "${LOGS_RUN_DIR}" "${LOGS_LATEST_LINK}"
 echo "Logs for this run: ${LOGS_RUN_DIR}"
 
-# Mirror tmux pane output to a sanitized log file without changing pane behavior.
-_pipe_pane_to_log() {
-  local pane_id="$1"
+# Wrap pane commands so logs capture process stdout/stderr only.
+# This avoids shell startup noise (prompt escapes, shell-init warnings).
+_wrap_cmd_for_log() {
+  local raw_cmd="$1"
   local log_file="$2"
-  tmux pipe-pane -o -t "$pane_id" \
-    "perl -pe 'BEGIN{\$|=1}; s/\\e\\[[0-9;?]*[ -\\/]*[@-~]//g; s/\\e\\][^\\a]*(?:\\a|\\e\\\\)//g; s/\\r//g; s/[\\x00-\\x08\\x0B-\\x1F\\x7F]//g' >> '$log_file'"
+  printf '%s' "({ ${raw_cmd}; } 2>&1 | perl -pe 's/\\e\\[[0-9;?]*[ -\\/]*[@-~]//g; s/\\e\\][^\\a]*(?:\\a|\\e\\\\)//g; s/\\r//g; s/[\\x00-\\x08\\x0B-\\x1F\\x7F]//g' | tee -a '${log_file}')"
 }
 
 # ── Source shared env files (same as ENV_LOADER, before preflight check) ──
@@ -773,15 +773,13 @@ done
 echo "Layer 1a: Starting dashboard API and frontend..."
 PANE_DASHBOARD=$(tmux new-window -t "$SESSION:" -n dashboard -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_FRONTEND=$(tmux split-window -t "$PANE_DASHBOARD" -v -c "${PROJECT_DIR}/frontend" -P -F '#{pane_id}')
-_pipe_pane_to_log "$PANE_DASHBOARD" "${LOGS_RUN_DIR}/uvicorn/dashboard.log"
-_pipe_pane_to_log "$PANE_FRONTEND" "${LOGS_RUN_DIR}/frontend/vite.log"
 
 tmux send-keys -t "$PANE_DASHBOARD" \
-  "GOOGLE_OAUTH_REDIRECT_URI=${OAUTH_CALLBACK_URL} POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers dashboard --host 0.0.0.0 --port ${DASHBOARD_PORT}" Enter
+  "$(_wrap_cmd_for_log "GOOGLE_OAUTH_REDIRECT_URI=${OAUTH_CALLBACK_URL} POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers dashboard --host 0.0.0.0 --port ${DASHBOARD_PORT}" "${LOGS_RUN_DIR}/uvicorn/dashboard.log")" Enter
 # Brief wait for shell init in the split pane
 sleep 0.3
 tmux send-keys -t "$PANE_FRONTEND" \
-  "npm install && VITE_API_URL=${FRONTEND_API_BASE_PATH} npm run dev -- --host 0.0.0.0 --port ${FRONTEND_PORT} --strictPort --base ${FRONTEND_BASE_PATH}" Enter
+  "$(_wrap_cmd_for_log "npm install && VITE_API_URL=${FRONTEND_API_BASE_PATH} npm run dev -- --host 0.0.0.0 --port ${FRONTEND_PORT} --strictPort --base ${FRONTEND_BASE_PATH}" "${LOGS_RUN_DIR}/frontend/vite.log")" Enter
 
 # ── Layer 1b: connectors window (telegram + frontend) ─────────────────────
 # Telegram connectors and frontend start without waiting for OAuth.
@@ -790,18 +788,15 @@ echo "Layer 1b: Starting Telegram connectors..."
 PANE_TELEGRAM_BOT=$(tmux new-window -t "$SESSION:" -n connectors -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_TELEGRAM_USER=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -v -c "$PROJECT_DIR" -P -F '#{pane_id}')
 PANE_GMAIL=$(tmux split-window -t "$PANE_TELEGRAM_BOT" -h -c "$PROJECT_DIR" -P -F '#{pane_id}')
-_pipe_pane_to_log "$PANE_TELEGRAM_BOT" "${LOGS_RUN_DIR}/connectors/telegram_bot.log"
-_pipe_pane_to_log "$PANE_TELEGRAM_USER" "${LOGS_RUN_DIR}/connectors/telegram_user_client.log"
-_pipe_pane_to_log "$PANE_GMAIL" "${LOGS_RUN_DIR}/connectors/gmail.log"
 # Give newly split panes a moment to finish shell init before send-keys.
 # Without this, tmux can occasionally drop early keystrokes on fast reruns.
 sleep 0.3
 
 tmux send-keys -t "$PANE_TELEGRAM_BOT" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} CONNECTOR_CURSOR_PATH=\${TELEGRAM_BOT_CONNECTOR_CURSOR_PATH:-\${CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_bot_checkpoint.json}} uv run python -m butlers.connectors.telegram_bot" Enter
+  "$(_wrap_cmd_for_log "${ENV_LOADER} && if [ -f \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_BOT_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_BOT_CONNECTOR_ENDPOINT_IDENTITY:-\${CONNECTOR_ENDPOINT_IDENTITY:-telegram:bot:dev}} CONNECTOR_CURSOR_PATH=\${TELEGRAM_BOT_CONNECTOR_CURSOR_PATH:-\${CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_bot_checkpoint.json}} uv run python -m butlers.connectors.telegram_bot" "${LOGS_RUN_DIR}/connectors/telegram_bot.log")" Enter
 
 tmux send-keys -t "$PANE_TELEGRAM_USER" \
-  "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY:-telegram:user:dev} CONNECTOR_CURSOR_PATH=\${TELEGRAM_USER_CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_user_client_checkpoint.json} uv run python -m butlers.connectors.telegram_user_client" Enter
+  "$(_wrap_cmd_for_log "${ENV_LOADER} && if [ -f \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$TELEGRAM_USER_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors && CONNECTOR_PROVIDER=telegram CONNECTOR_CHANNEL=telegram CONNECTOR_ENDPOINT_IDENTITY=\${TELEGRAM_USER_CONNECTOR_ENDPOINT_IDENTITY:-telegram:user:dev} CONNECTOR_CURSOR_PATH=\${TELEGRAM_USER_CONNECTOR_CURSOR_PATH:-.tmp/connectors/telegram_user_client_checkpoint.json} uv run python -m butlers.connectors.telegram_user_client" "${LOGS_RUN_DIR}/connectors/telegram_user_client.log")" Enter
 
 # Gmail pane shows a waiting message until Layer 3 starts it
 # (populated later after OAuth gate passes)
@@ -848,14 +843,13 @@ _oauth_gate || true
 echo "Layer 3: Starting butlers up and Gmail connector..."
 
 PANE_BACKEND=$(tmux new-window -t "$SESSION:" -n backend -c "$PROJECT_DIR" -P -F '#{pane_id}')
-_pipe_pane_to_log "$PANE_BACKEND" "${LOGS_RUN_DIR}/butlers/up.log"
 tmux send-keys -t "$PANE_BACKEND" \
-  "${ENV_LOADER} && uv sync --dev && POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_SWITCHBOARD_URL=http://localhost:${DASHBOARD_PORT} uv run butlers up" Enter
+  "$(_wrap_cmd_for_log "${ENV_LOADER} && uv sync --dev && POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_SWITCHBOARD_URL=http://localhost:${DASHBOARD_PORT} uv run butlers up" "${LOGS_RUN_DIR}/butlers/up.log")" Enter
 
 # Start Gmail pane (credentials-aware)
 GMAIL_PANE_CMD="$(_build_gmail_pane_cmd)"
 tmux send-keys -t "$PANE_GMAIL" \
-  "${GMAIL_PANE_CMD}" Enter
+  "$(_wrap_cmd_for_log "${GMAIL_PANE_CMD}" "${LOGS_RUN_DIR}/connectors/gmail.log")" Enter
 
 # Focus the backend window
 tmux select-window -t "${SESSION}:backend"
