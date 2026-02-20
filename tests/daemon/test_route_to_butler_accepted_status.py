@@ -88,6 +88,10 @@ def _patch_infra():
             new_callable=AsyncMock,
             return_value={},
         ),
+        "validate_core_credentials": patch(
+            "butlers.daemon.validate_core_credentials_async",
+            new_callable=AsyncMock,
+        ),
         "init_telemetry": patch("butlers.daemon.init_telemetry"),
         "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.daemon.FastMCP"),
@@ -150,6 +154,7 @@ async def _start_switchboard_and_capture_route_to_butler(
         patches["run_migrations"],
         patches["validate_credentials"],
         patches["validate_module_credentials"],
+        patches["validate_core_credentials"],
         patches["init_telemetry"],
         patches["sync_schedules"],
         patch("butlers.daemon.FastMCP", return_value=mock_mcp),

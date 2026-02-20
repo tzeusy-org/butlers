@@ -46,9 +46,10 @@ def validate_credentials(
     """
     missing: list[tuple[str, str]] = []  # (var_name, source_component)
 
-    # Always check ANTHROPIC_API_KEY
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        missing.append(("ANTHROPIC_API_KEY", "core"))
+    # NOTE: ANTHROPIC_API_KEY is no longer checked here — it may live in the
+    # butler_secrets DB table (added by butlers-987).  Core credentials are
+    # validated asynchronously via validate_core_credentials_async() after the
+    # database pool is available (daemon step 8c).
 
     # Check [butler.env].required
     for var in env_required:
@@ -142,6 +143,35 @@ async def validate_module_credentials_async(
         if missing:
             failures[module_name] = missing
     return failures
+
+
+async def validate_core_credentials_async(
+    credential_store: CredentialStore,
+) -> None:
+    """Validate that core credentials (e.g. ANTHROPIC_API_KEY) are resolvable.
+
+    Uses ``CredentialStore.resolve()`` (DB-first, env fallback) so that
+    secrets stored in the ``butler_secrets`` table are visible.
+
+    Raises
+    ------
+    CredentialError
+        If any required core credential cannot be resolved from DB or env.
+    """
+    core_keys = ["ANTHROPIC_API_KEY"]
+    missing = []
+    for key in core_keys:
+        value = await credential_store.resolve(key)
+        if not value:
+            missing.append(key)
+    if missing:
+        lines = [f"  - {var} (required by core)" for var in missing]
+        msg = (
+            "Missing required core credentials (checked DB + env):\n"
+            + "\n".join(lines)
+            + "\n\nAdd via dashboard Secrets page or set as environment variable."
+        )
+        raise CredentialError(msg)
 
 
 def detect_secrets(config_values: dict[str, Any]) -> list[str]:

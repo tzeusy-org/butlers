@@ -13,16 +13,25 @@ export interface SecretTemplate {
 }
 
 export const SECRET_TEMPLATES: SecretTemplate[] = [
+  // Core — LLM API keys
   { key: "ANTHROPIC_API_KEY", description: "Anthropic Claude API key", category: "core" },
-  { key: "BUTLER_TELEGRAM_TOKEN", description: "Telegram bot token", category: "telegram" },
-  { key: "BUTLER_TELEGRAM_CHAT_ID", description: "Telegram chat ID", category: "telegram" },
-  { key: "BUTLER_EMAIL_ADDRESS", description: "Butler email address", category: "email" },
-  { key: "BUTLER_EMAIL_PASSWORD", description: "Email account password or app password", category: "email" },
-  { key: "BUTLER_EMAIL_SMTP_HOST", description: "SMTP server hostname", category: "email" },
-  { key: "BUTLER_EMAIL_IMAP_HOST", description: "IMAP server hostname", category: "email" },
-  { key: "GOOGLE_CLIENT_ID", description: "Google OAuth client ID", category: "google" },
-  { key: "GOOGLE_CLIENT_SECRET", description: "Google OAuth client secret", category: "google" },
+  { key: "GOOGLE_API_KEY", description: "Google API key (Maps, etc.)", category: "core" },
   { key: "GEMINI_API_KEY", description: "Google Gemini API key", category: "gemini" },
+  // Telegram — bot and user-client credentials
+  { key: "BUTLER_TELEGRAM_TOKEN", description: "Telegram bot token (from @BotFather)", category: "telegram" },
+  { key: "BUTLER_TELEGRAM_CHAT_ID", description: "Telegram chat ID for bot messages", category: "telegram" },
+  { key: "USER_TELEGRAM_TOKEN", description: "User Telegram bot token (for user-scoped ops)", category: "telegram" },
+  { key: "TELEGRAM_API_ID", description: "Telegram API ID (from my.telegram.org)", category: "telegram" },
+  { key: "TELEGRAM_API_HASH", description: "Telegram API hash (from my.telegram.org)", category: "telegram" },
+  { key: "TELEGRAM_USER_SESSION", description: "Telegram user-client session string", category: "telegram" },
+  // Email — butler and user credentials
+  { key: "BUTLER_EMAIL_ADDRESS", description: "Butler email address", category: "email" },
+  { key: "BUTLER_EMAIL_PASSWORD", description: "Butler email password or app password", category: "email" },
+  { key: "USER_EMAIL_ADDRESS", description: "User email address", category: "email" },
+  { key: "USER_EMAIL_PASSWORD", description: "User email password or app password", category: "email" },
+  // Google OAuth
+  { key: "GOOGLE_OAUTH_CLIENT_ID", description: "Google OAuth client ID", category: "google" },
+  { key: "GOOGLE_OAUTH_CLIENT_SECRET", description: "Google OAuth client secret", category: "google" },
 ];
 
 export const SECRET_CATEGORIES: SecretCategory[] = [

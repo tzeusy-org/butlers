@@ -9,6 +9,7 @@ import pytest
 
 from butlers.credentials import (
     CredentialError,
+    validate_core_credentials_async,
     validate_credentials,
     validate_module_credentials,
     validate_module_credentials_async,
@@ -19,14 +20,16 @@ pytestmark = pytest.mark.unit
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Env vars used across tests.  Every test that isn't specifically testing for
-# the absence of ANTHROPIC_API_KEY must set it via monkeypatch.
-_ANTHROPIC_KEY = "ANTHROPIC_API_KEY"
 
+def _make_credential_store_simple(resolved: dict[str, str | None]) -> object:
+    """Create a mock CredentialStore that resolves keys from ``resolved`` dict."""
+    store = AsyncMock()
 
-def _set_anthropic_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure ANTHROPIC_API_KEY is present so it doesn't cause spurious failures."""
-    monkeypatch.setenv(_ANTHROPIC_KEY, "sk-test-key")
+    async def _resolve(key: str, *, env_fallback: bool = True) -> str | None:
+        return resolved.get(key)
+
+    store.resolve = _resolve
+    return store
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +39,6 @@ def _set_anthropic_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_all_present(monkeypatch: pytest.MonkeyPatch):
     """No error when every required variable is set."""
-    _set_anthropic_key(monkeypatch)
     monkeypatch.setenv("PG_DSN", "postgres://localhost/test")
     monkeypatch.setenv("EMAIL_PASS", "secret")
 
@@ -53,12 +55,20 @@ def test_all_present(monkeypatch: pytest.MonkeyPatch):
 # ---------------------------------------------------------------------------
 
 
-def test_missing_anthropic_key(monkeypatch: pytest.MonkeyPatch):
-    """Missing ANTHROPIC_API_KEY raises CredentialError."""
-    monkeypatch.delenv(_ANTHROPIC_KEY, raising=False)
+async def test_missing_anthropic_key():
+    """Missing ANTHROPIC_API_KEY raises CredentialError (async DB-first check)."""
+    store = _make_credential_store_simple({})  # nothing in DB or env
 
     with pytest.raises(CredentialError, match="ANTHROPIC_API_KEY"):
-        validate_credentials(env_required=[], env_optional=[])
+        await validate_core_credentials_async(store)  # type: ignore[arg-type]
+
+
+async def test_anthropic_key_in_db_passes():
+    """ANTHROPIC_API_KEY stored in DB passes core credential validation."""
+    store = _make_credential_store_simple({"ANTHROPIC_API_KEY": "sk-db-key"})
+
+    # Should not raise
+    await validate_core_credentials_async(store)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +78,6 @@ def test_missing_anthropic_key(monkeypatch: pytest.MonkeyPatch):
 
 def test_missing_butler_env_required(monkeypatch: pytest.MonkeyPatch):
     """Missing butler.env required var raises CredentialError."""
-    _set_anthropic_key(monkeypatch)
     monkeypatch.delenv("PG_DSN", raising=False)
 
     with pytest.raises(CredentialError, match="PG_DSN"):
@@ -82,7 +91,6 @@ def test_missing_butler_env_required(monkeypatch: pytest.MonkeyPatch):
 
 def test_missing_module_credentials(monkeypatch: pytest.MonkeyPatch):
     """Missing module credential raises CredentialError."""
-    _set_anthropic_key(monkeypatch)
     monkeypatch.delenv("TG_BOT_TOKEN", raising=False)
 
     with pytest.raises(CredentialError, match="TG_BOT_TOKEN"):
@@ -100,7 +108,6 @@ def test_missing_module_credentials(monkeypatch: pytest.MonkeyPatch):
 
 def test_multiple_missing_aggregated(monkeypatch: pytest.MonkeyPatch):
     """All missing vars are reported in a single CredentialError."""
-    monkeypatch.delenv(_ANTHROPIC_KEY, raising=False)
     monkeypatch.delenv("PG_DSN", raising=False)
     monkeypatch.delenv("EMAIL_PASS", raising=False)
 
@@ -112,7 +119,7 @@ def test_multiple_missing_aggregated(monkeypatch: pytest.MonkeyPatch):
         )
 
     msg = str(exc_info.value)
-    assert "ANTHROPIC_API_KEY" in msg
+    # ANTHROPIC_API_KEY is no longer checked here (deferred to async DB-first check)
     assert "PG_DSN" in msg
     assert "EMAIL_PASS" in msg
 
@@ -124,7 +131,6 @@ def test_multiple_missing_aggregated(monkeypatch: pytest.MonkeyPatch):
 
 def test_optional_missing_warns(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
     """Missing optional var produces a warning but no error."""
-    _set_anthropic_key(monkeypatch)
     monkeypatch.delenv("SLACK_TOKEN", raising=False)
 
     with caplog.at_level(logging.WARNING, logger="butlers.credentials"):
@@ -137,7 +143,6 @@ def test_optional_present_no_warning(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
     """Present optional var produces no warning."""
-    _set_anthropic_key(monkeypatch)
     monkeypatch.setenv("SLACK_TOKEN", "xoxb-test")
 
     with caplog.at_level(logging.WARNING, logger="butlers.credentials"):
@@ -153,7 +158,6 @@ def test_optional_present_no_warning(
 
 def test_error_message_identifies_sources(monkeypatch: pytest.MonkeyPatch):
     """Error message names the source component for each missing variable."""
-    monkeypatch.delenv(_ANTHROPIC_KEY, raising=False)
     monkeypatch.delenv("PG_DSN", raising=False)
     monkeypatch.delenv("TG_TOKEN", raising=False)
 
@@ -165,7 +169,7 @@ def test_error_message_identifies_sources(monkeypatch: pytest.MonkeyPatch):
         )
 
     msg = str(exc_info.value)
-    assert "required by core" in msg
+    # "required by core" no longer applies (ANTHROPIC_API_KEY is DB-first now)
     assert "required by butler.env" in msg
     assert "required by module:telegram" in msg
 
@@ -174,7 +178,6 @@ def test_error_message_identifies_identity_scoped_module_source(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """Identity-scoped module sources are preserved in the aggregated message."""
-    _set_anthropic_key(monkeypatch)
     monkeypatch.delenv("BOT_EMAIL_ADDRESS", raising=False)
 
     with pytest.raises(CredentialError) as exc_info:

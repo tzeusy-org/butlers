@@ -5,11 +5,12 @@ The ButlerDaemon manages the lifecycle of a butler:
 2. Initialize telemetry
 3. Initialize modules (topological order)
 4. Validate module config schemas
-5. Validate core credentials (ANTHROPIC_API_KEY, butler.env — env-only fast-fail)
+5. Validate butler.env credentials (env-only fast-fail for non-secret config)
 6. Provision database
 7. Run core Alembic migrations
 8. Run module Alembic migrations
 8b. Create CredentialStore; validate module credentials via DB-first resolution (non-fatal)
+8c. Validate core credentials (ANTHROPIC_API_KEY) via DB-first resolution (fatal)
 9. Module on_startup (topological order)
 10. Create Spawner with runtime adapter (verify binary on PATH)
 10b. Wire message classification pipeline (switchboard only)
@@ -105,6 +106,7 @@ from butlers.credential_store import (
 )
 from butlers.credentials import (
     detect_secrets,
+    validate_core_credentials_async,
     validate_credentials,
     validate_module_credentials_async,
 )
@@ -738,9 +740,9 @@ class ButlerDaemon:
         # 4. Validate module config schemas (non-fatal per-module).
         self._module_configs = self._validate_module_configs()
 
-        # 5. Validate core credentials (ANTHROPIC_API_KEY + butler.env — env-only fast-fail).
-        # Module credentials are validated later (step 8b) after the DB pool is available,
-        # so DB-stored credentials are visible at validation time.
+        # 5. Validate butler.env credentials (env-only fast-fail for non-secret config).
+        # Core secrets (ANTHROPIC_API_KEY) and module credentials are validated later
+        # (steps 8b/8c) after the DB pool is available, so DB-stored secrets are visible.
         module_creds = self._collect_module_credentials()
         validate_credentials(
             self.config.env_required,
@@ -808,6 +810,10 @@ class ButlerDaemon:
             )
             logger.warning("Module '%s' disabled: %s", root_mod, error_msg)
         self._cascade_module_failures()
+
+        # 8c. Validate core credentials (ANTHROPIC_API_KEY) via DB-first resolution.
+        # This is fatal — the butler cannot spawn LLM CLI sessions without an API key.
+        await validate_core_credentials_async(credential_store)
 
         # Filter module_creds to exclude failed modules for spawner.
         active_module_creds = {

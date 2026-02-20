@@ -51,7 +51,6 @@ services:
       - ./butlers/switchboard:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=butlers
@@ -72,7 +71,6 @@ services:
       - ./butlers/general:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=butlers
@@ -93,7 +91,6 @@ services:
       - ./butlers/relationship:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=butlers
@@ -114,7 +111,6 @@ services:
       - ./butlers/health:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=butlers
@@ -135,7 +131,6 @@ services:
       - ./butlers/heartbeat:/etc/butler:ro
     command: ["run", "--config", "/etc/butler"]
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_USER=butlers

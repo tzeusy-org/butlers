@@ -117,6 +117,15 @@ def _patch_infra(butler_name: str = "health"):
         "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
         "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
         "validate_credentials": patch("butlers.daemon.validate_credentials"),
+        "validate_module_credentials": patch(
+            "butlers.daemon.validate_module_credentials_async",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        "validate_core_credentials": patch(
+            "butlers.daemon.validate_core_credentials_async",
+            new_callable=AsyncMock,
+        ),
         "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
         "get_adapter": patch("butlers.daemon.get_adapter", return_value=mock_adapter_cls),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
@@ -156,6 +165,8 @@ async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict, *, o
         patches["db_from_env"],
         patches["run_migrations"],
         patches["validate_credentials"],
+        patches["validate_module_credentials"],
+        patches["validate_core_credentials"],
         # Patch init_telemetry but return the real in-memory tracer so spans are captured
         patch("butlers.daemon.init_telemetry", return_value=otel_tracer),
         patches["sync_schedules"],
