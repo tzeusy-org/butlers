@@ -1,4 +1,4 @@
-"""Tests for Memory Butler migration files."""
+"""Tests for the memory module baseline migration file."""
 
 from __future__ import annotations
 
@@ -12,10 +12,13 @@ pytestmark = pytest.mark.unit
 
 MODULES_DIR = Path(__file__).resolve().parent.parent.parent / "src" / "butlers" / "modules"
 MIGRATION_DIR = MODULES_DIR / "memory" / "migrations"
-MIGRATION_FILE = MIGRATION_DIR / "001_create_episodes.py"
+MIGRATION_FILE = MIGRATION_DIR / "001_memory_baseline.py"
 
 
-def _load_migration(filename: str = "001_create_episodes.py", module_name: str = "migration_001"):
+def _load_migration(
+    filename: str = "001_memory_baseline.py",
+    module_name: str = "memory_baseline_migration",
+):
     """Load a migration module dynamically."""
     filepath = MIGRATION_DIR / filename
     spec = importlib.util.spec_from_file_location(module_name, filepath)
@@ -26,219 +29,97 @@ def _load_migration(filename: str = "001_create_episodes.py", module_name: str =
     return mod
 
 
-# ── 001_create_episodes ──────────────────────────────────────────────
-
-
-def test_migration_file_exists():
-    """The 001_create_episodes migration file exists on disk."""
+def test_migration_file_exists() -> None:
+    """The baseline migration file exists on disk."""
     assert MIGRATION_FILE.exists(), f"Migration file not found at {MIGRATION_FILE}"
 
 
-def test_init_file_exists():
+def test_init_file_exists() -> None:
     """The __init__.py file exists in the migrations directory."""
     init_file = MIGRATION_DIR / "__init__.py"
     assert init_file.exists(), f"__init__.py not found at {init_file}"
 
 
-def test_branch_labels():
-    """The migration declares the 'memory' branch label."""
-    mod = _load_migration()
-    assert hasattr(mod, "branch_labels")
-    assert mod.branch_labels == ("memory",)
-
-
-def test_revision_identifiers():
-    """The migration has correct revision identifiers."""
+def test_revision_identifiers() -> None:
+    """The baseline migration has correct revision metadata."""
     mod = _load_migration()
     assert mod.revision == "mem_001"
     assert mod.down_revision is None
+    assert mod.branch_labels == ("memory",)
     assert mod.depends_on is None
 
 
-def test_upgrade_function_exists():
-    """The migration has an upgrade() function."""
+def test_upgrade_and_downgrade_exist() -> None:
+    """The migration declares upgrade()/downgrade() callables."""
     mod = _load_migration()
-    assert hasattr(mod, "upgrade")
     assert callable(mod.upgrade)
-
-
-def test_downgrade_function_exists():
-    """The migration has a downgrade() function."""
-    mod = _load_migration()
-    assert hasattr(mod, "downgrade")
     assert callable(mod.downgrade)
 
 
-# ── 003_create_rules ─────────────────────────────────────────────────
-
-
-class TestRulesMigration:
-    """Tests for the 003_create_rules migration."""
-
-    @staticmethod
-    def _load():
-        return _load_migration("003_create_rules.py", "migration_003")
-
-    def test_migration_file_exists(self):
-        """The 003_create_rules migration file exists on disk."""
-        path = MIGRATION_DIR / "003_create_rules.py"
-        assert path.exists(), f"Migration file not found at {path}"
-
-    def test_revision_identifiers(self):
-        """The migration has correct revision identifiers."""
-        mod = self._load()
-        assert mod.revision == "mem_003"
-        assert mod.down_revision == "mem_002"
-        assert mod.branch_labels is None
-        assert mod.depends_on is None
-
-    def test_upgrade_function_exists(self):
-        """The migration has an upgrade() function."""
-        mod = self._load()
-        assert hasattr(mod, "upgrade")
-        assert callable(mod.upgrade)
-
-    def test_downgrade_function_exists(self):
-        """The migration has a downgrade() function."""
-        mod = self._load()
-        assert hasattr(mod, "downgrade")
-        assert callable(mod.downgrade)
-
-    def test_upgrade_creates_rules_table(self):
-        """The upgrade SQL contains CREATE TABLE rules."""
-        mod = self._load()
-        source = inspect.getsource(mod.upgrade)
-        assert "CREATE TABLE" in source
-        assert "rules" in source
-
-    def test_upgrade_has_required_columns(self):
-        """The upgrade SQL declares all required columns."""
-        mod = self._load()
-        source = inspect.getsource(mod.upgrade)
-        required_columns = [
-            "id UUID",
-            "content TEXT",
-            "embedding vector(384)",
-            "search_vector tsvector",
-            "scope TEXT",
-            "maturity TEXT",
-            "confidence FLOAT",
-            "decay_rate FLOAT",
-            "permanence TEXT",
-            "effectiveness_score FLOAT",
-            "applied_count INTEGER",
-            "success_count INTEGER",
-            "harmful_count INTEGER",
-            "source_episode_id UUID",
-            "source_butler TEXT",
-            "created_at TIMESTAMPTZ",
-            "last_applied_at TIMESTAMPTZ",
-            "last_evaluated_at TIMESTAMPTZ",
-            "tags JSONB",
-            "metadata JSONB",
-        ]
-        for col in required_columns:
-            assert col in source, f"Missing column: {col}"
-
-    def test_upgrade_has_scope_maturity_index(self):
-        """The upgrade SQL creates a composite index on scope + maturity."""
-        mod = self._load()
-        source = inspect.getsource(mod.upgrade)
-        assert "idx_rules_scope_maturity" in source
-        assert "(scope, maturity)" in source
-
-    def test_upgrade_has_gin_search_index(self):
-        """The upgrade SQL creates a GIN index on search_vector."""
-        mod = self._load()
-        source = inspect.getsource(mod.upgrade)
-        assert "idx_rules_search" in source
-        assert "USING gin(search_vector)" in source
-
-    def test_upgrade_has_episode_fk(self):
-        """The upgrade SQL references episodes table for source_episode_id."""
-        mod = self._load()
-        source = inspect.getsource(mod.upgrade)
-        assert "REFERENCES episodes(id)" in source
-
-    def test_downgrade_drops_rules(self):
-        """The downgrade SQL drops the rules table."""
-        mod = self._load()
-        source = inspect.getsource(mod.downgrade)
-        assert "DROP TABLE" in source
-        assert "rules" in source
-
-
-# ── 004_create_memory_links ──────────────────────────────────────────────
-
-MEMORY_LINKS_FILE = MIGRATION_DIR / "004_create_memory_links.py"
-
-
-def _load_memory_links():
-    return _load_migration("004_create_memory_links.py", "migration_004")
-
-
-def test_004_file_exists():
-    """The 004_create_memory_links migration file exists on disk."""
-    assert MEMORY_LINKS_FILE.exists(), f"Migration file not found at {MEMORY_LINKS_FILE}"
-
-
-def test_004_revision_identifiers():
-    """Migration 004 has correct revision chain."""
-    mod = _load_memory_links()
-    assert mod.revision == "mem_004"
-    assert mod.down_revision == "mem_003"
-    assert mod.depends_on is None
-
-
-def test_004_upgrade_function_exists():
-    """Migration 004 has an upgrade() function."""
-    mod = _load_memory_links()
-    assert hasattr(mod, "upgrade")
-    assert callable(mod.upgrade)
-
-
-def test_004_downgrade_function_exists():
-    """Migration 004 has a downgrade() function."""
-    mod = _load_memory_links()
-    assert hasattr(mod, "downgrade")
-    assert callable(mod.downgrade)
-
-
-def test_004_upgrade_creates_memory_links_table():
-    """The upgrade SQL contains the memory_links table definition."""
-    mod = _load_memory_links()
+def test_upgrade_creates_all_memory_tables() -> None:
+    """Upgrade SQL creates the full target-state table set."""
+    mod = _load_migration()
     source = inspect.getsource(mod.upgrade)
-    assert "memory_links" in source
-    assert "source_type" in source
-    assert "source_id" in source
-    assert "target_type" in source
-    assert "target_id" in source
-    assert "relation" in source
-    assert "created_at" in source
-    assert "PRIMARY KEY" in source
+    for table in ("episodes", "facts", "rules", "memory_links"):
+        assert f"CREATE TABLE IF NOT EXISTS {table}" in source
 
 
-def test_004_upgrade_has_check_constraint():
-    """The upgrade SQL contains a CHECK constraint for valid relation values."""
-    mod = _load_memory_links()
+def test_upgrade_contains_consolidation_columns_and_index() -> None:
+    """Episodes table has consolidation metadata from the final target state."""
+    mod = _load_migration()
     source = inspect.getsource(mod.upgrade)
-    assert "CHECK" in source
+    assert "consolidation_status VARCHAR(20)" in source
+    assert "retry_count INTEGER" in source
+    assert "last_error TEXT" in source
+    assert "idx_episodes_unconsolidated" in source
+    assert "WHERE consolidation_status = 'pending'" in source
+
+
+def test_upgrade_contains_runtime_indexes() -> None:
+    """Upgrade SQL creates all required query/vector indexes."""
+    mod = _load_migration()
+    source = inspect.getsource(mod.upgrade)
+    expected_indexes = (
+        "idx_episodes_butler_created",
+        "idx_episodes_expires",
+        "idx_episodes_search",
+        "idx_episodes_embedding",
+        "idx_facts_scope_validity",
+        "idx_facts_subject_predicate",
+        "idx_facts_search",
+        "idx_facts_tags",
+        "idx_facts_embedding",
+        "idx_rules_scope_maturity",
+        "idx_rules_search",
+        "idx_rules_embedding",
+        "idx_memory_links_target",
+    )
+    for index_name in expected_indexes:
+        assert index_name in source, f"Missing index: {index_name}"
+
+
+def test_upgrade_contains_memory_links_constraint() -> None:
+    """Upgrade SQL enforces valid relation values for memory links."""
+    mod = _load_migration()
+    source = inspect.getsource(mod.upgrade)
+    assert "chk_memory_links_relation" in source
     for relation in ("derived_from", "supports", "contradicts", "supersedes", "related_to"):
-        assert relation in source, f"Missing relation value: {relation}"
+        assert relation in source
 
 
-def test_004_upgrade_has_target_index():
-    """The upgrade SQL creates an index on (target_type, target_id)."""
-    mod = _load_memory_links()
+def test_upgrade_enables_required_extensions() -> None:
+    """Upgrade SQL enables vector + uuid-ossp extensions."""
+    mod = _load_migration()
     source = inspect.getsource(mod.upgrade)
-    assert "idx_memory_links_target" in source
-    assert "target_type" in source
-    assert "target_id" in source
+    assert "CREATE EXTENSION IF NOT EXISTS vector" in source
+    assert "uuid-ossp" in source
 
 
-def test_004_downgrade_drops_table():
-    """The downgrade SQL drops the memory_links table."""
-    mod = _load_memory_links()
+def test_downgrade_drops_memory_tables() -> None:
+    """Downgrade removes memory tables in reverse dependency order."""
+    mod = _load_migration()
     source = inspect.getsource(mod.downgrade)
-    assert "DROP TABLE" in source
-    assert "memory_links" in source
+    assert "DROP TABLE IF EXISTS memory_links" in source
+    assert "DROP TABLE IF EXISTS rules" in source
+    assert "DROP TABLE IF EXISTS facts" in source
+    assert "DROP TABLE IF EXISTS episodes" in source

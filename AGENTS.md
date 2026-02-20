@@ -202,6 +202,10 @@ Alembic revisions are chain-prefixed (`core_*`, `mem_*`, `sw_*`) rather than bar
 - Table renames preserve existing index names; when rewriting a table in-place (rename old + create new), new index names must not collide with indexes still attached to the renamed backup table.
 - `src/butlers/migrations.py::_build_alembic_config` must escape `%` as `%%` when setting `sqlalchemy.url` on Alembic `Config`; otherwise percent-encoded libpq query params (for example `options=-csearch_path%3D...`) raise `configparser` interpolation errors.
 
+### Memory migration baseline contract
+- `src/butlers/modules/memory/migrations/` is a single baseline chain file: `001_memory_baseline.py` (`revision=mem_001`, `branch_labels=('memory',)`, `down_revision=None`).
+- Legacy incremental memory revisions (`001_create_episodes.py` through `007_fix_rules_missing_columns.py`) are intentionally removed; no prior revision compatibility is preserved for this rewrite.
+
 ### Known Warnings (not bugs)
 - 2 RuntimeWarnings in CLI tests from monkeypatched `asyncio.run` — unawaited coroutines in test mocking
 

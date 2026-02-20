@@ -60,11 +60,11 @@ class TestMemoryChainRegistration:
         """The resolved memory chain directory should contain migration files."""
         chain_dir = _resolve_chain_dir("memory")
         assert chain_dir is not None
-        migration_files = [
-            f for f in chain_dir.iterdir() if f.suffix == ".py" and f.name != "__init__.py"
-        ]
-        assert len(migration_files) == 7, (
-            f"Expected 7 migration files, found {len(migration_files)}"
+        migration_files = sorted(
+            f.name for f in chain_dir.iterdir() if f.suffix == ".py" and f.name != "__init__.py"
+        )
+        assert migration_files == ["001_memory_baseline.py"], (
+            f"Expected one baseline file, found {migration_files}"
         )
 
     def test_core_also_in_shared_chains(self) -> None:
@@ -91,15 +91,11 @@ class TestMemoryChainRegistration:
         assert has_butler_chain("nonexistent_butler_xyz") is False
 
 
-class TestFullRevisionChain:
-    """Validate the complete 001->002->003->004->005 revision chain."""
+class TestBaselineRevisionChain:
+    """Validate the single baseline revision chain for memory."""
 
     EXPECTED_CHAIN = [
-        ("001_create_episodes.py", "mem_001", None),
-        ("002_create_facts.py", "mem_002", "mem_001"),
-        ("003_create_rules.py", "mem_003", "mem_002"),
-        ("004_create_memory_links.py", "mem_004", "mem_003"),
-        ("005_add_vector_indexes.py", "mem_005", "mem_004"),
+        ("001_memory_baseline.py", "mem_001", None),
     ]
 
     @staticmethod
@@ -112,8 +108,8 @@ class TestFullRevisionChain:
         spec.loader.exec_module(mod)
         return mod
 
-    def test_all_five_migration_files_exist(self) -> None:
-        """All 5 expected migration files should exist on disk."""
+    def test_all_expected_migration_files_exist(self) -> None:
+        """The baseline migration file should exist on disk."""
         for filename, _, _ in self.EXPECTED_CHAIN:
             filepath = MEMORY_MIGRATIONS_DIR / filename
             assert filepath.exists(), f"Missing migration: {filepath}"
@@ -129,16 +125,11 @@ class TestFullRevisionChain:
                 f"{filename}: expected down_revision={expected_down_rev}, got {mod.down_revision}"
             )
 
-    def test_only_first_migration_has_branch_label(self) -> None:
-        """Only 001 should have branch_labels=('memory',); the rest should be None."""
-        for filename, expected_rev, _ in self.EXPECTED_CHAIN:
-            mod = self._load_migration(filename)
-            if expected_rev == "mem_001":
-                assert mod.branch_labels == ("memory",), (
-                    f"{filename} should have branch_labels=('memory',)"
-                )
-            else:
-                assert mod.branch_labels is None, f"{filename} should have branch_labels=None"
+    def test_branch_label_present_on_baseline_root(self) -> None:
+        """The baseline root should have branch_labels=('memory',)."""
+        filename, _, _ = self.EXPECTED_CHAIN[0]
+        mod = self._load_migration(filename)
+        assert mod.branch_labels == ("memory",), f"{filename} should have branch_labels=('memory',)"
 
     def test_no_migration_has_depends_on(self) -> None:
         """All migrations should have depends_on=None (chaining via down_revision)."""
@@ -162,21 +153,17 @@ class TestFullRevisionChain:
         assert len(revisions) == len(set(revisions)), f"Duplicate revisions found: {revisions}"
 
     def test_chain_is_linear(self) -> None:
-        """The chain should form a single linear sequence from 001 to 005."""
-        # Build a mapping from revision -> down_revision
+        """The chain should form a single linear sequence with one head."""
         chain_map = {}
         for filename, _, _ in self.EXPECTED_CHAIN:
             mod = self._load_migration(filename)
             chain_map[mod.revision] = mod.down_revision
 
-        # Walk from 005 back to 001
-        current = "mem_005"
+        current = "mem_001"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
             path.append(current)
 
         path.reverse()
-        assert path == ["mem_001", "mem_002", "mem_003", "mem_004", "mem_005"], (
-            f"Expected linear chain [mem_001..mem_005], got {path}"
-        )
+        assert path == ["mem_001"], f"Expected linear chain [mem_001], got {path}"
