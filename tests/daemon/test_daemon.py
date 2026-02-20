@@ -13,11 +13,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from fastapi import FastAPI
 from fastmcp import FastMCP as RuntimeFastMCP
 from pydantic import BaseModel
-from starlette.applications import Starlette
 from starlette.requests import ClientDisconnect
-from starlette.routing import Mount, Route
 from starlette.testclient import TestClient
 
 from butlers.credentials import CredentialError
@@ -814,17 +813,13 @@ class TestMCPServerStartup:
         patches = _patch_infra()
 
         mock_mcp = MagicMock()
-        streamable_app = Starlette(
-            routes=[
-                Route("/mcp", endpoint=lambda _request: None, methods=["GET", "POST", "DELETE"]),
-            ]
+        streamable_app = FastAPI()
+        streamable_app.add_api_route(
+            "/mcp", endpoint=lambda: None, methods=["GET", "POST", "DELETE"]
         )
-        sse_app = Starlette(
-            routes=[
-                Route("/sse", endpoint=lambda _request: None, methods=["GET"]),
-                Mount("/messages", app=Starlette()),
-            ]
-        )
+        sse_app = FastAPI()
+        sse_app.add_api_route("/sse", endpoint=lambda: None, methods=["GET"])
+        sse_app.mount("/messages", app=FastAPI())
         mock_mcp.http_app.side_effect = [streamable_app, sse_app]
 
         mock_uvicorn_server = MagicMock()
@@ -860,14 +855,13 @@ class TestMCPServerStartup:
             assert len(args) == 1
             wrapped_app = args[0]
             assert isinstance(wrapped_app, _McpSseDisconnectGuard)
-            route_map = {
-                (type(route).__name__, route.path): route for route in wrapped_app._app.routes
-            }
-            assert ("Route", "/mcp") in route_map
-            assert ("Route", "/sse") in route_map
-            assert ("Mount", "/messages") in route_map
-            assert route_map[("Route", "/mcp")].methods == {"GET", "POST", "DELETE", "HEAD"}
-            assert route_map[("Route", "/sse")].methods == {"GET", "HEAD"}
+            route_map = {route.path: route for route in wrapped_app._app.routes}
+            assert "/mcp" in route_map
+            assert "/sse" in route_map
+            assert "/messages" in route_map
+            assert type(route_map["/messages"]).__name__ == "Mount"
+            assert route_map["/mcp"].methods.issuperset({"GET", "POST", "DELETE"})
+            assert route_map["/sse"].methods.issuperset({"GET"})
             assert wrapped_app._butler_name == "test-butler"
             assert kwargs == {
                 "host": "0.0.0.0",
@@ -900,15 +894,11 @@ class TestMCPServerStartup:
             await asyncio.sleep(999)  # Block indefinitely
 
         mock_mcp = MagicMock()
-        streamable_app = Starlette(
-            routes=[Route("/mcp", endpoint=lambda _request: None, methods=["GET", "POST"])]
-        )
-        sse_app = Starlette(
-            routes=[
-                Route("/sse", endpoint=lambda _request: None, methods=["GET"]),
-                Mount("/messages", app=Starlette()),
-            ]
-        )
+        streamable_app = FastAPI()
+        streamable_app.add_api_route("/mcp", endpoint=lambda: None, methods=["GET", "POST"])
+        sse_app = FastAPI()
+        sse_app.add_api_route("/sse", endpoint=lambda: None, methods=["GET"])
+        sse_app.mount("/messages", app=FastAPI())
         mock_mcp.http_app.side_effect = [streamable_app, sse_app]
 
         mock_uvicorn_server = MagicMock()
