@@ -20,7 +20,7 @@ from butlers.api.deps import (
     get_mcp_manager,
 )
 from butlers.api.models import Issue
-from butlers.api.routers.issues import _check_butler_reachability
+from butlers.api.routers.issues import _check_butler_reachability, _get_db_manager_optional
 
 pytestmark = pytest.mark.unit
 
@@ -48,10 +48,12 @@ def _make_configs() -> list[ButlerConnectionInfo]:
     ]
 
 
-def _override_deps(app, mgr, configs):
+def _override_deps(app, mgr, configs, db=None):
     """Apply dependency overrides for mcp_manager and butler_configs."""
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
+    if db is not None:
+        app.dependency_overrides[_get_db_manager_optional] = lambda: db
 
 
 # ---------------------------------------------------------------------------
@@ -332,3 +334,83 @@ class TestListIssuesEndpoint:
             assert issue.type == "unreachable"
             assert issue.butler == "mybutler"
             assert issue.link == "/butlers/mybutler"
+
+    async def test_audit_schedule_error_surfaces_as_issue(self):
+        """Latest schedule-triggered audit error should appear as a critical issue."""
+        configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
+        mock_client = _make_mock_client()
+
+        mgr = MagicMock(spec=MCPClientManager)
+        mgr.get_client = AsyncMock(return_value=mock_client)
+
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "butler": "switchboard",
+                    "operation": "session",
+                    "request_summary": {
+                        "trigger_source": "schedule:eligibility-sweep",
+                        "session_id": "s-1",
+                    },
+                    "result": "error",
+                    "error": "RuntimeError: sweep failed",
+                    "created_at": "2026-02-20T00:00:00+00:00",
+                }
+            ]
+        )
+        mock_db = MagicMock()
+        mock_db.pool = MagicMock(return_value=mock_pool)
+
+        app = create_app()
+        _override_deps(app, mgr, configs, db=mock_db)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/issues")
+
+        assert response.status_code == 200
+        issues = response.json()["data"]
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "critical"
+        assert issues[0]["type"] == "scheduled_task_failure:eligibility-sweep"
+        assert issues[0]["butler"] == "switchboard"
+        assert "eligibility-sweep" in issues[0]["description"]
+
+    async def test_audit_non_schedule_error_surfaces_as_warning(self):
+        """Non-schedule audit failures should surface as warning issues."""
+        configs: list[ButlerConnectionInfo] = []
+        mgr = MagicMock(spec=MCPClientManager)
+
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "butler": "general",
+                    "operation": "trigger",
+                    "request_summary": {"session_id": "s-2"},
+                    "result": "error",
+                    "error": "ValueError: invalid payload",
+                    "created_at": "2026-02-20T00:00:00+00:00",
+                }
+            ]
+        )
+        mock_db = MagicMock()
+        mock_db.pool = MagicMock(return_value=mock_pool)
+
+        app = create_app()
+        _override_deps(app, mgr, configs, db=mock_db)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/issues")
+
+        assert response.status_code == 200
+        issues = response.json()["data"]
+        assert len(issues) == 1
+        assert issues[0]["severity"] == "warning"
+        assert issues[0]["type"] == "audit_error:trigger:default"
+        assert issues[0]["butler"] == "general"
+        assert "trigger" in issues[0]["description"]
