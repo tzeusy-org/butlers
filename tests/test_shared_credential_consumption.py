@@ -2,8 +2,8 @@
 
 Verifies that credentials stored in the shared GoogleCredentials store
 (google_credentials.py) can be consumed by:
-- The Gmail connector (GmailConnectorConfig.from_env via GMAIL_* / GOOGLE_OAUTH_* env vars)
-- The Calendar module (_GoogleOAuthCredentials.from_env via BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON)
+- The Gmail connector (GmailConnectorConfig.from_env via canonical GOOGLE_OAUTH_* env vars)
+- The Calendar module (_GoogleOAuthCredentials.from_env via canonical GOOGLE_OAUTH_* env vars)
 
 Also verifies the shared resolve_google_credentials() DB-first + env fallback
 path that both modules can use at startup.
@@ -13,8 +13,8 @@ their own env-var resolution. The shared GoogleCredentials.from_env() covers
 all the same variable names. Tests here verify that:
 1. Credentials stored via the OAuth bootstrap flow (GOOGLE_OAUTH_* vars) are
    accepted by both Gmail connector's from_env() and the shared from_env().
-2. The Calendar JSON blob format is accepted by both the shared from_env() and
-   the Calendar module's own from_env().
+2. Legacy aliases/legacy blob env vars are rejected by from_env() fallbacks.
+3. Calendar JSON payloads are parseable via _GoogleOAuthCredentials.from_json().
 3. resolve_google_credentials() DB-first + env fallback works end-to-end.
 4. Both callers (gmail, calendar) get the same credentials from a shared DB store.
 """
@@ -57,35 +57,28 @@ _OAUTH_BOOTSTRAP_ENV = {
     "GOOGLE_REFRESH_TOKEN": _SHARED_CREDS["refresh_token"],
 }
 
-# Gmail connector uses GMAIL_* or GOOGLE_OAUTH_* (from docs/connector)
-_GMAIL_ENV = {
+# Legacy env vars are no longer accepted by runtime resolution paths.
+_LEGACY_GMAIL_ENV = {
     "GMAIL_CLIENT_ID": _SHARED_CREDS["client_id"],
     "GMAIL_CLIENT_SECRET": _SHARED_CREDS["client_secret"],
     "GMAIL_REFRESH_TOKEN": _SHARED_CREDS["refresh_token"],
 }
 
-# Calendar module uses BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON JSON blob
-_CALENDAR_JSON_BLOB = json.dumps(
-    {
-        "client_id": _SHARED_CREDS["client_id"],
-        "client_secret": _SHARED_CREDS["client_secret"],
-        "refresh_token": _SHARED_CREDS["refresh_token"],
-    }
-)
-_CALENDAR_ENV = {
-    "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": _CALENDAR_JSON_BLOB,
+_LEGACY_CALENDAR_JSON_BLOB_ENV = {
+    "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": json.dumps(
+        {
+            "client_id": _SHARED_CREDS["client_id"],
+            "client_secret": _SHARED_CREDS["client_secret"],
+            "refresh_token": _SHARED_CREDS["refresh_token"],
+        }
+    )
 }
 
 
 def _make_conn(row_data: dict | None = None) -> AsyncMock:
     """Build a fake asyncpg connection that returns a stored credential row."""
     conn = AsyncMock()
-    if row_data is None:
-        conn.fetchrow.return_value = None
-    else:
-        record = MagicMock()
-        record.__getitem__ = lambda self, key: row_data[key]
-        conn.fetchrow.return_value = record
+    conn.fetchrow.return_value = row_data
     conn.execute.return_value = None
     return conn
 
@@ -100,17 +93,8 @@ def _make_db_conn_with_creds(creds: dict) -> AsyncMock:
 # ---------------------------------------------------------------------------
 
 
-class TestGoogleCredentialsFromEnvForGmail:
-    """Verify that GoogleCredentials.from_env() accepts Gmail connector env vars."""
-
-    def test_from_env_accepts_gmail_prefix_env_vars(self) -> None:
-        """GMAIL_* env vars resolve successfully via shared from_env()."""
-        with mock.patch.dict("os.environ", _GMAIL_ENV, clear=True):
-            creds = GoogleCredentials.from_env()
-
-        assert creds.client_id == _SHARED_CREDS["client_id"]
-        assert creds.client_secret == _SHARED_CREDS["client_secret"]
-        assert creds.refresh_token == _SHARED_CREDS["refresh_token"]
+class TestGoogleCredentialsFromEnv:
+    """Verify canonical env-var behavior for GoogleCredentials.from_env()."""
 
     def test_from_env_accepts_google_oauth_prefix_env_vars(self) -> None:
         """GOOGLE_OAUTH_* env vars (set by OAuth bootstrap) resolve via shared from_env()."""
@@ -121,52 +105,54 @@ class TestGoogleCredentialsFromEnvForGmail:
         assert creds.client_secret == _SHARED_CREDS["client_secret"]
         assert creds.refresh_token == _SHARED_CREDS["refresh_token"]
 
-    def test_google_oauth_vars_take_priority_over_gmail_vars_for_gmail(self) -> None:
-        """GOOGLE_OAUTH_* wins over GMAIL_* when both are present."""
-        mixed_env = {
-            "GOOGLE_OAUTH_CLIENT_ID": "google-id",
-            "GOOGLE_OAUTH_CLIENT_SECRET": "google-secret",
-            "GOOGLE_REFRESH_TOKEN": "google-token",
-            "GMAIL_CLIENT_ID": "gmail-id",
-            "GMAIL_CLIENT_SECRET": "gmail-secret",
-            "GMAIL_REFRESH_TOKEN": "gmail-token",
-        }
-        with mock.patch.dict("os.environ", mixed_env, clear=True):
+    def test_from_env_accepts_optional_scope(self) -> None:
+        """GOOGLE_OAUTH_SCOPES is captured when present."""
+        with mock.patch.dict(
+            "os.environ",
+            {
+                **_OAUTH_BOOTSTRAP_ENV,
+                "GOOGLE_OAUTH_SCOPES": _SHARED_CREDS["scope"],
+            },
+            clear=True,
+        ):
             creds = GoogleCredentials.from_env()
 
-        # GOOGLE_OAUTH_* must take precedence
-        assert creds.client_id == "google-id"
-        assert creds.client_secret == "google-secret"
-        assert creds.refresh_token == "google-token"
+        assert creds.scope == _SHARED_CREDS["scope"]
+
+    def test_from_env_rejects_legacy_gmail_prefix_env_vars(self) -> None:
+        """Legacy GMAIL_* aliases are not accepted by from_env()."""
+        with mock.patch.dict("os.environ", _LEGACY_GMAIL_ENV, clear=True):
+            with pytest.raises(MissingGoogleCredentialsError):
+                GoogleCredentials.from_env()
+
+    def test_from_env_rejects_legacy_calendar_json_blob_env_var(self) -> None:
+        """Legacy calendar JSON blob env var is not accepted by from_env()."""
+        with mock.patch.dict("os.environ", _LEGACY_CALENDAR_JSON_BLOB_ENV, clear=True):
+            with pytest.raises(MissingGoogleCredentialsError):
+                GoogleCredentials.from_env()
 
 
-class TestGoogleCredentialsFromEnvForCalendar:
-    """Verify that GoogleCredentials.from_env() accepts Calendar JSON blob env var."""
+class TestGoogleCredentialsFromJsonForCalendar:
+    """Verify calendar compatibility for stored JSON payload parsing."""
 
-    def test_from_env_accepts_calendar_json_blob(self) -> None:
-        """BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON blob resolves via shared from_env()."""
-        with mock.patch.dict("os.environ", _CALENDAR_ENV, clear=True):
-            creds = GoogleCredentials.from_env()
+    def test_calendar_from_json_accepts_shared_payload(self) -> None:
+        """Calendar helper parses shared credential payload JSON."""
+        from butlers.modules.calendar import _GoogleOAuthCredentials
+
+        shared_blob = json.dumps(
+            {
+                "client_id": _SHARED_CREDS["client_id"],
+                "client_secret": _SHARED_CREDS["client_secret"],
+                "refresh_token": _SHARED_CREDS["refresh_token"],
+                "scope": _SHARED_CREDS["scope"],
+                "stored_at": "2026-02-19T00:00:00+00:00",
+            }
+        )
+        creds = _GoogleOAuthCredentials.from_json(shared_blob)
 
         assert creds.client_id == _SHARED_CREDS["client_id"]
         assert creds.client_secret == _SHARED_CREDS["client_secret"]
         assert creds.refresh_token == _SHARED_CREDS["refresh_token"]
-
-    def test_individual_vars_override_calendar_json_blob(self) -> None:
-        """Individual env vars take precedence over Calendar JSON blob."""
-        override_env = {
-            **_CALENDAR_ENV,
-            "GMAIL_CLIENT_ID": "override-id",
-            "GMAIL_CLIENT_SECRET": "override-secret",
-            "GMAIL_REFRESH_TOKEN": "override-token",
-        }
-        with mock.patch.dict("os.environ", override_env, clear=True):
-            creds = GoogleCredentials.from_env()
-
-        # Individual vars win over JSON blob
-        assert creds.client_id == "override-id"
-        assert creds.client_secret == "override-secret"
-        assert creds.refresh_token == "override-token"
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +185,8 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
         assert config.gmail_client_secret == _SHARED_CREDS["client_secret"]
         assert config.gmail_refresh_token == _SHARED_CREDS["refresh_token"]
 
-    def test_gmail_connector_config_loads_gmail_prefix_vars(self) -> None:
-        """GmailConnectorConfig.from_env() accepts GMAIL_* credential vars."""
+    def test_gmail_connector_config_rejects_legacy_gmail_prefix_vars(self) -> None:
+        """GmailConnectorConfig.from_env() rejects legacy GMAIL_* credential vars."""
         from butlers.connectors.gmail import GmailConnectorConfig
 
         required_non_creds = {
@@ -210,15 +196,12 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
         }
         env = {
             **required_non_creds,
-            **_GMAIL_ENV,
+            **_LEGACY_GMAIL_ENV,
         }
 
         with mock.patch.dict("os.environ", env, clear=True):
-            config = GmailConnectorConfig.from_env()
-
-        assert config.gmail_client_id == _SHARED_CREDS["client_id"]
-        assert config.gmail_client_secret == _SHARED_CREDS["client_secret"]
-        assert config.gmail_refresh_token == _SHARED_CREDS["refresh_token"]
+            with pytest.raises(ValueError, match="Google OAuth credentials missing"):
+                GmailConnectorConfig.from_env()
 
     def test_gmail_connector_config_fails_without_credentials(self) -> None:
         """GmailConnectorConfig.from_env() raises ValueError when credentials absent."""
@@ -236,37 +219,36 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
 
 
 # ---------------------------------------------------------------------------
-# Calendar module accepts shared credentials via JSON blob
+# Calendar module accepts canonical env credentials
 # ---------------------------------------------------------------------------
 
 
 class TestCalendarModuleAcceptsSharedCredentialsFormat:
     """Verify Calendar module credential resolution against shared credential format."""
 
-    def test_calendar_json_blob_resolves_all_required_fields(self) -> None:
-        """Calendar's _GoogleOAuthCredentials.from_env() parses the shared blob format."""
+    def test_calendar_from_env_resolves_all_required_fields(self) -> None:
+        """Calendar's _GoogleOAuthCredentials.from_env() parses canonical env vars."""
         from butlers.modules.calendar import _GoogleOAuthCredentials
 
-        with mock.patch.dict("os.environ", _CALENDAR_ENV, clear=True):
+        with mock.patch.dict("os.environ", _OAUTH_BOOTSTRAP_ENV, clear=True):
             creds = _GoogleOAuthCredentials.from_env()
 
         assert creds.client_id == _SHARED_CREDS["client_id"]
         assert creds.client_secret == _SHARED_CREDS["client_secret"]
         assert creds.refresh_token == _SHARED_CREDS["refresh_token"]
 
-    def test_calendar_raises_when_blob_missing(self) -> None:
-        """Calendar's from_env() raises CalendarCredentialError when blob not set."""
+    def test_calendar_raises_when_env_vars_missing(self) -> None:
+        """Calendar's from_env() raises CalendarCredentialError when vars are not set."""
         from butlers.modules.calendar import CalendarCredentialError, _GoogleOAuthCredentials
 
         with mock.patch.dict("os.environ", {}, clear=True):
             with pytest.raises(CalendarCredentialError):
                 _GoogleOAuthCredentials.from_env()
 
-    def test_shared_blob_is_compatible_with_calendar_json_format(self) -> None:
-        """A blob generated by store_google_credentials is parseable by Calendar module."""
+    def test_shared_blob_is_compatible_with_calendar_json_parser(self) -> None:
+        """A shared credential blob is parseable via Calendar's from_json parser."""
         from butlers.modules.calendar import _GoogleOAuthCredentials
 
-        # Build a blob in the format that store_google_credentials would write to DB
         shared_blob = json.dumps(
             {
                 "client_id": _SHARED_CREDS["client_id"],
@@ -276,10 +258,7 @@ class TestCalendarModuleAcceptsSharedCredentialsFormat:
                 "stored_at": "2026-02-19T00:00:00+00:00",
             }
         )
-        env = {"BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": shared_blob}
-
-        with mock.patch.dict("os.environ", env, clear=True):
-            creds = _GoogleOAuthCredentials.from_env()
+        creds = _GoogleOAuthCredentials.from_json(shared_blob)
 
         assert creds.client_id == _SHARED_CREDS["client_id"]
         assert creds.client_secret == _SHARED_CREDS["client_secret"]
@@ -328,15 +307,13 @@ class TestResolveSharedCredentialsBothCallers:
         assert gmail_creds.client_secret == calendar_creds.client_secret
         assert gmail_creds.refresh_token == calendar_creds.refresh_token
 
-    async def test_resolve_falls_back_to_gmail_env_vars_when_db_empty(self) -> None:
-        """resolve_google_credentials falls back to GMAIL_* env vars when DB is empty."""
+    async def test_resolve_rejects_legacy_gmail_env_vars_when_db_empty(self) -> None:
+        """resolve_google_credentials rejects legacy GMAIL_* env vars when DB is empty."""
         conn = _make_conn(row_data=None)  # Empty DB
 
-        with mock.patch.dict("os.environ", _GMAIL_ENV, clear=True):
-            result = await resolve_google_credentials(conn, caller="gmail")
-
-        assert result.client_id == _SHARED_CREDS["client_id"]
-        assert result.refresh_token == _SHARED_CREDS["refresh_token"]
+        with mock.patch.dict("os.environ", _LEGACY_GMAIL_ENV, clear=True):
+            with pytest.raises(MissingGoogleCredentialsError):
+                await resolve_google_credentials(conn, caller="gmail")
 
     async def test_resolve_falls_back_to_google_oauth_env_vars_when_db_empty(self) -> None:
         """resolve_google_credentials falls back to GOOGLE_OAUTH_* vars (OAuth bootstrap)."""
@@ -398,9 +375,7 @@ class TestStoreAndLoadRoundTrip:
 
         async def fake_fetchrow(sql: str, *args: object):
             if stored_data:
-                record = MagicMock()
-                record.__getitem__ = lambda self, key: stored_data["payload"]
-                return record
+                return {"credentials": stored_data["payload"]}
             return None
 
         conn = AsyncMock()
@@ -435,9 +410,7 @@ class TestStoreAndLoadRoundTrip:
 
         async def fake_fetchrow(sql: str, *args: object):
             if stored_data:
-                record = MagicMock()
-                record.__getitem__ = lambda self, key: stored_data["payload"]
-                return record
+                return {"credentials": stored_data["payload"]}
             return None
 
         conn = AsyncMock()
@@ -465,33 +438,30 @@ class TestStoreAndLoadRoundTrip:
 class TestCalendarModuleOnStartupDbFirst:
     """Verify CalendarModule.on_startup resolves credentials from DB when pool available."""
 
-    async def test_on_startup_uses_db_credentials_when_pool_available(self) -> None:
-        """CalendarModule resolves Google credentials from DB during on_startup."""
+    async def test_on_startup_uses_credential_store_when_available(self) -> None:
+        """CalendarModule resolves Google credentials from credential_store during on_startup."""
         from butlers.modules.calendar import CalendarModule
 
-        conn_creds = {
-            "client_id": _SHARED_CREDS["client_id"],
-            "client_secret": _SHARED_CREDS["client_secret"],
-            "refresh_token": _SHARED_CREDS["refresh_token"],
-        }
-        # Build a mock DB with a pool that serves the stored credentials
-        db_creds_conn = _make_db_conn_with_creds(conn_creds)
+        async def _resolve(key: str, env_fallback: bool = True) -> str | None:
+            values = {
+                "GOOGLE_OAUTH_CLIENT_ID": _SHARED_CREDS["client_id"],
+                "GOOGLE_OAUTH_CLIENT_SECRET": _SHARED_CREDS["client_secret"],
+                "GOOGLE_REFRESH_TOKEN": _SHARED_CREDS["refresh_token"],
+            }
+            assert env_fallback is False
+            return values.get(key)
 
-        pool = MagicMock()
-        pool.acquire = MagicMock()
-        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=db_creds_conn)
-        pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-
-        # Also make fetchrow accessible on pool directly (asyncpg pool supports direct calls)
-        pool.fetchrow = db_creds_conn.fetchrow
-
+        credential_store = AsyncMock()
+        credential_store.resolve.side_effect = _resolve
         db = MagicMock()
-        db.pool = pool
 
         mod = CalendarModule()
-        # on_startup should succeed with DB credentials (no env vars needed)
         with mock.patch.dict("os.environ", {}, clear=True):
-            await mod.on_startup({"provider": "google", "calendar_id": "primary"}, db=db)
+            await mod.on_startup(
+                {"provider": "google", "calendar_id": "primary"},
+                db=db,
+                credential_store=credential_store,
+            )
 
         provider = getattr(mod, "_provider")
         assert provider is not None
@@ -505,7 +475,7 @@ class TestCalendarModuleOnStartupDbFirst:
         from butlers.modules.calendar import CalendarModule
 
         mod = CalendarModule()
-        with mock.patch.dict("os.environ", _CALENDAR_ENV, clear=True):
+        with mock.patch.dict("os.environ", _OAUTH_BOOTSTRAP_ENV, clear=True):
             await mod.on_startup({"provider": "google", "calendar_id": "primary"}, db=None)
 
         provider = getattr(mod, "_provider")
