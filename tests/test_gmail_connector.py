@@ -1493,6 +1493,72 @@ class TestResolveGmailCredentialsFromDb:
         assert result is not None
         assert "pubsub_webhook_token" not in result
 
+    async def test_uses_shared_schema_fallback_with_schema_scoped_search_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Falls back to shared schema lookup and configures asyncpg search_path per pool."""
+        from contextlib import asynccontextmanager
+
+        import asyncpg
+
+        monkeypatch.setenv("DATABASE_URL", "postgres://localhost:5432/test")
+        monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", "butlers")
+        monkeypatch.setenv("CONNECTOR_BUTLER_DB_SCHEMA", "general")
+        monkeypatch.setenv("BUTLER_SHARED_DB_NAME", "butlers")
+        monkeypatch.setenv("BUTLER_SHARED_DB_SCHEMA", "shared")
+
+        local_conn = AsyncMock()
+        local_conn.fetchrow.return_value = None
+
+        shared_conn = AsyncMock()
+        secrets = {
+            "GOOGLE_OAUTH_CLIENT_ID": "db-client-id",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "db-client-secret",
+            "GOOGLE_REFRESH_TOKEN": "db-refresh-token",
+        }
+
+        async def _shared_fetchrow(query, key):
+            value = secrets.get(key)
+            if value is None:
+                return None
+            return self._make_secret_row(value)
+
+        shared_conn.fetchrow.side_effect = _shared_fetchrow
+
+        @asynccontextmanager
+        async def local_acquire():
+            yield local_conn
+
+        @asynccontextmanager
+        async def shared_acquire():
+            yield shared_conn
+
+        local_pool = MagicMock()
+        local_pool.acquire = local_acquire
+        local_pool.close = AsyncMock()
+
+        shared_pool = MagicMock()
+        shared_pool.acquire = shared_acquire
+        shared_pool.close = AsyncMock()
+
+        search_paths: list[str | None] = []
+
+        async def fake_create_pool(**kwargs):
+            server_settings = kwargs.get("server_settings") or {}
+            search_path = server_settings.get("search_path")
+            search_paths.append(search_path)
+            if search_path == "general,shared,public":
+                return local_pool
+            if search_path == "shared,public":
+                return shared_pool
+            raise AssertionError(f"Unexpected search_path: {search_path!r}")
+
+        monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+        result = await _resolve_gmail_credentials_from_db()
+        assert result is not None
+        assert result["client_id"] == "db-client-id"
+        assert search_paths == ["general,shared,public", "shared,public"]
+
 
 class TestGmailConnectorConfigDeprecationWarnings:
     """Verify deprecated GMAIL_* env vars no longer work as credentials."""

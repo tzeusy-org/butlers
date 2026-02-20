@@ -62,8 +62,8 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
-from butlers.credential_store import CredentialStore
-from butlers.db import db_params_from_env
+from butlers.credential_store import CredentialStore, shared_db_name_from_env
+from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
 from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
     load_google_credentials,
@@ -1201,10 +1201,16 @@ class GmailConnectorRuntime:
 async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
     """Attempt DB-first credential resolution for the Gmail connector.
 
-    Connects to the butler's PostgreSQL database (if DATABASE_URL or POSTGRES_*
-    env vars are set), looks up Google OAuth credentials from
+    Connects to one or more candidate PostgreSQL DB/schema contexts, looks up
+    Google OAuth credentials from
     ``butler_secrets`` via :class:`~butlers.credential_store.CredentialStore`,
     and optionally resolves the Pub/Sub webhook token from the same store.
+
+    Lookup order:
+    1. ``CONNECTOR_BUTLER_DB_NAME`` + ``CONNECTOR_BUTLER_DB_SCHEMA`` (local)
+    2. ``BUTLER_SHARED_DB_NAME`` + ``BUTLER_SHARED_DB_SCHEMA`` (shared)
+
+    Each lookup pool applies schema-scoped ``search_path`` when schema is set.
 
     Returns a dict with keys ``client_id``, ``client_secret``,
     ``refresh_token``, and optionally ``pubsub_webhook_token`` on success.
@@ -1218,40 +1224,118 @@ async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
     import asyncpg
 
     db_params = db_params_from_env()
-    db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers")
+    local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers").strip() or "butlers"
+    local_schema = os.environ.get("CONNECTOR_BUTLER_DB_SCHEMA")
+    shared_db_name = shared_db_name_from_env()
+    shared_schema = os.environ.get("BUTLER_SHARED_DB_SCHEMA", "shared")
 
-    # Only attempt DB resolution if a host is explicitly configured or DATABASE_URL set.
-    if not os.environ.get("DATABASE_URL") and db_params.get("host") == "localhost":
-        # Default values — user may not have configured a DB at all.
-        # Still attempt the connection; if it fails, return None gracefully.
-        pass
+    candidates: list[tuple[str, str, str | None]] = []
+    for source_name, db_name, schema in [
+        ("local", local_db_name, local_schema),
+        ("shared", shared_db_name, shared_schema),
+    ]:
+        normalized_db_name = db_name.strip()
+        normalized_schema = schema.strip() if schema is not None else None
+        if not normalized_db_name:
+            continue
+        candidate = (source_name, normalized_db_name, normalized_schema or None)
+        if candidate not in candidates:
+            candidates.append(candidate)
 
-    try:
-        pool = await asyncpg.create_pool(
-            host=db_params["host"],
-            port=db_params["port"],
-            user=db_params["user"],
-            password=db_params["password"],
-            database=db_name,
-            ssl=db_params.get("ssl"),  # type: ignore[arg-type]
-            min_size=1,
-            max_size=2,
-            command_timeout=5,
-        )
-    except Exception as exc:
-        logger.debug("DB connection failed during Gmail credential resolution (non-fatal): %s", exc)
+    connected_pools: list[tuple[str, str, str | None, asyncpg.Pool]] = []
+    for source_name, db_name, schema in candidates:
+        pool_kwargs: dict[str, Any] = {
+            "host": db_params["host"],
+            "port": db_params["port"],
+            "user": db_params["user"],
+            "password": db_params["password"],
+            "database": db_name,
+            "min_size": 1,
+            "max_size": 2,
+            "command_timeout": 5,
+        }
+        search_path: str | None = None
+        if schema is not None:
+            try:
+                search_path = schema_search_path(schema)
+            except ValueError as exc:
+                logger.debug(
+                    "Gmail connector: invalid %s schema %r (db=%s, non-fatal): %s",
+                    source_name,
+                    schema,
+                    db_name,
+                    exc,
+                )
+                continue
+        if search_path is not None:
+            pool_kwargs["server_settings"] = {"search_path": search_path}
+
+        configured_ssl = db_params.get("ssl")
+        if configured_ssl is not None:
+            pool_kwargs["ssl"] = configured_ssl
+
+        try:
+            pool = await asyncpg.create_pool(**pool_kwargs)
+        except Exception as exc:
+            should_retry_ssl_disable = should_retry_with_ssl_disable(
+                exc,
+                configured_ssl if isinstance(configured_ssl, str) else None,
+            )
+            if should_retry_ssl_disable:
+                retry_kwargs = dict(pool_kwargs)
+                retry_kwargs["ssl"] = "disable"
+                try:
+                    pool = await asyncpg.create_pool(**retry_kwargs)
+                except Exception as retry_exc:
+                    logger.debug(
+                        "DB connection failed during Gmail credential resolution "
+                        "(source=%s, db=%s, schema=%s, non-fatal): %s",
+                        source_name,
+                        db_name,
+                        schema,
+                        retry_exc,
+                    )
+                    continue
+            else:
+                logger.debug(
+                    "DB connection failed during Gmail credential resolution "
+                    "(source=%s, db=%s, schema=%s, non-fatal): %s",
+                    source_name,
+                    db_name,
+                    schema,
+                    exc,
+                )
+                continue
+
+        connected_pools.append((source_name, db_name, schema, pool))
+
+    if not connected_pools:
         return None
 
+    primary_source, primary_db_name, primary_schema, primary_pool = connected_pools[0]
+    fallback_pools = [pool for _, _, _, pool in connected_pools[1:]]
+
     try:
-        store = CredentialStore(pool)
+        store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
         creds = await load_google_credentials(store)
         if creds is None:
             logger.debug(
-                "Gmail connector: no credentials in DB (db=%s), falling back to env vars",
-                db_name,
+                "Gmail connector: no credentials in DB (primary=%s db=%s schema=%s, fallbacks=%d), "
+                "falling back to env vars",
+                primary_source,
+                primary_db_name,
+                primary_schema,
+                len(fallback_pools),
             )
             return None
-        logger.info("Gmail connector: resolved Google credentials from database (db=%s)", db_name)
+        logger.info(
+            "Gmail connector: resolved Google credentials from layered DB lookup "
+            "(primary=%s db=%s schema=%s, fallbacks=%d)",
+            primary_source,
+            primary_db_name,
+            primary_schema,
+            len(fallback_pools),
+        )
 
         result: dict[str, str] = {
             "client_id": creds.client_id,
@@ -1265,8 +1349,12 @@ async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
             if pubsub_token:
                 result["pubsub_webhook_token"] = pubsub_token
                 logger.info(
-                    "Gmail connector: resolved GMAIL_PUBSUB_WEBHOOK_TOKEN from database (db=%s)",
-                    db_name,
+                    "Gmail connector: resolved GMAIL_PUBSUB_WEBHOOK_TOKEN from layered DB lookup "
+                    "(primary=%s db=%s schema=%s, fallbacks=%d)",
+                    primary_source,
+                    primary_db_name,
+                    primary_schema,
+                    len(fallback_pools),
                 )
         except Exception as exc:
             logger.debug(
@@ -1276,8 +1364,11 @@ async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
         return result
     except InvalidGoogleCredentialsError as exc:
         logger.warning(
-            "Gmail connector: stored Google credentials are invalid in DB (db=%s): %s",
-            db_name,
+            "Gmail connector: stored Google credentials are invalid in layered DB lookup "
+            "(primary=%s db=%s schema=%s): %s",
+            primary_source,
+            primary_db_name,
+            primary_schema,
             exc,
         )
         return None
@@ -1285,7 +1376,8 @@ async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
         logger.debug("Gmail connector: DB credential lookup failed (non-fatal): %s", exc)
         return None
     finally:
-        await pool.close()
+        for _, _, _, pool in connected_pools:
+            await pool.close()
 
 
 async def run_gmail_connector() -> None:

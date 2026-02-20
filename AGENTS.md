@@ -587,3 +587,12 @@ make test-qg
 - `docs/architecture/system-architecture.md` remains current-state for deployed topology and includes a transition note linking to the migration plan.
 - `scripts/one_db_data_migration.py` is the canonical `butlers-1003.4` data-move utility: use `plan` + `migrate --dry-run` for staged rehearsal, `run` for copy+parity, and `rollback --confirm-rollback ROLLBACK` to reset target tables after failed attempts; archive JSON reports from each phase.
 - `docs/operations/one-db-data-migration-runbook.md` is the executable command/checklist reference for staging dry-runs, parity signoff, and rollback validation.
+
+### Legacy-compat cleanup hotspots (dev runtime)
+- Runtime source currently does not read `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON` or deprecated `GMAIL_*` credential aliases directly; these names mainly remain in `dev.sh`, docs, and tests.
+- Active compatibility hotspots to evaluate first for removal: `dev.sh::_has_google_creds`, `src/butlers/modules/calendar.py::_resolve_credentials` fallback path, `src/butlers/google_credentials.py` legacy asyncpg/table helpers, `roster/switchboard/tools/notification/deliver.py` legacy positional-arg shim, and `src/butlers/api/routers/butlers.py` legacy module-status list parsing.
+
+### Gmail connector shared-schema credential lookup contract
+- `src/butlers/connectors/gmail.py::_resolve_gmail_credentials_from_db` must perform layered DB-first lookup across local (`CONNECTOR_BUTLER_DB_NAME` + optional `CONNECTOR_BUTLER_DB_SCHEMA`) and shared (`BUTLER_SHARED_DB_NAME` + `BUTLER_SHARED_DB_SCHEMA`, default `shared`) contexts.
+- Each lookup pool must apply schema-scoped `server_settings={"search_path": ...}` (via `schema_search_path`) so `butler_secrets` resolves correctly in one-db/shared-schema topologies; otherwise startup can fall through to `GmailConnectorConfig.from_env()` and incorrectly raise missing env credential errors.
+- Regression coverage lives in `tests/test_gmail_connector.py::TestResolveGmailCredentialsFromDb::test_uses_shared_schema_fallback_with_schema_scoped_search_path`.
