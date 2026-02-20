@@ -352,6 +352,9 @@ make test-qg
 - `.beads/config.yaml` is pinned to `no-db: true` — **JSONL is the sole source of truth, not SQLite.** All `bd` commands read/write `.beads/issues.jsonl` directly. Do not attempt to fix SQLite state, run `bd migrate`, or `bd sync --import-only` — these are no-ops or irrelevant in this mode.
 - Regression coverage lives in `tests/tools/test_beads_worktree_sync.py` and must keep worktree `bd close`/`bd show`/`bd export`/`bd import` aligned with branch-local `.beads/issues.jsonl`.
 
+### Beads PR-review strip guardrail
+- Before a reviewer worker strips `.beads/` drift from a PR branch, persist any new coordinator-side bead mutations on main first; otherwise restoring `.beads/` from `origin/main` can resurrect stale issue snapshots and drop freshly created/updated beads (for example new `pr-review-task` IDs).
+
 ### Beads no-db worktree hydration contract
 - When a worker worktree may be stale relative to newly-created issues, run `bd sync --import` in that worktree before `bd show <id>` lookups.
 - Regression coverage lives in `tests/tools/test_beads_worktree_hydration.py` and verifies stale lookup failure followed by successful hydration.
@@ -362,10 +365,10 @@ make test-qg
 ### CredentialStore service (src/butlers/credential_store.py)
 - Lives at `src/butlers/credential_store.py`. Backed by `butler_secrets` table (migration `core_008`).
 - Uses `TYPE_CHECKING` guard to import `asyncpg.Pool` (avoids runtime dependency, keeps type safety).
-- `resolve(key, env_fallback=True)`: local DB first, then configured fallback DB pools (shared/legacy), then `os.environ.get(key)`, skipping empty-string env values.
+- `resolve(key, env_fallback=True)`: DB-first, then `os.environ.get(key)`, skips empty string env values.
 - `list_secrets()` returns only DB-stored secrets (env-only secrets are not listed). `is_set=True` always for any DB row (table enforces `secret_value NOT NULL`).
 - Thread-safe: each operation independently calls `pool.acquire()`; never shares connections across concurrent calls.
-- Helper contracts: `shared_db_name_from_env()` defaults to `butler_shared`, `legacy_shared_db_name_from_env()` defaults to `butler_general`, and `backfill_shared_secrets()` copies missing keys from legacy into shared without overwriting existing shared rows.
+- Gmail connector DB bootstrap must read OAuth keys via `CredentialStore`/`load_google_credentials` (`butler_secrets`), not legacy `google_oauth_credentials`; optional Pub/Sub token lookup failures must not null-out already resolved OAuth creds.
 
 ### Beads worktree write guardrail
 - In git worktrees, `bd` operations can target the primary repo DB/JSONL instead of the worktree copy; verify with `bd --no-db show <id>` before write operations.
@@ -549,7 +552,6 @@ make test-qg
 
 ### Connector credential resolution pattern (CredentialStore)
 - Connectors are standalone processes and need their own short-lived asyncpg pool (min_size=1, max_size=2, command_timeout=5) gated on `DATABASE_URL` or `POSTGRES_HOST` being set.
-- Connector DB credential lookup order is: optional local override (`CONNECTOR_BUTLER_DB_NAME`) -> shared store (`BUTLER_SHARED_DB_NAME`, default `butler_shared`) -> legacy centralized fallback (`BUTLER_LEGACY_SHARED_DB_NAME`, default `butler_general`) -> env fallback in connector config loaders.
 - `TelegramBotConnectorConfig` and `TelegramUserClientConnectorConfig` are Python **dataclasses** (not Pydantic models); use `dataclasses.replace(config, field=value)` for partial updates — `model_copy()` is Pydantic-only.
 - `GmailConnectorConfig` is a Pydantic `BaseModel` with `frozen=True`; use `config.model_copy(update={...})` for partial updates.
 - Pydantic v2 auto-coerces `str` to `pathlib.Path` for `Path`-typed fields, but prefer explicit `Path(cursor_path_str)` at construction sites to satisfy static type checkers and remove `type: ignore` suppressions.

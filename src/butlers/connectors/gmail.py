@@ -25,9 +25,7 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - GOOGLE_OAUTH_CLIENT_ID (primary; used for OAuth bootstrap — app config)
 - GOOGLE_OAUTH_CLIENT_SECRET (primary; used for OAuth bootstrap — app config)
 - DATABASE_URL or POSTGRES_* (optional; if set, credentials are loaded from DB first)
-- CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
-- BUTLER_SHARED_DB_NAME (optional; shared credential DB, defaults to 'butler_shared')
-- BUTLER_LEGACY_SHARED_DB_NAME (optional; legacy centralized credential DB fallback)
+- CONNECTOR_BUTLER_DB_NAME (optional; butler DB name, defaults to 'butlers')
 - GOOGLE_OAUTH_CLIENT_ID (primary; used for OAuth app config — optional when DB has credentials)
 - GOOGLE_OAUTH_CLIENT_SECRET (primary; used for OAuth app config — optional when DB has credentials)
 - GOOGLE_REFRESH_TOKEN (optional; use DB-stored credentials via dashboard OAuth flow instead)
@@ -64,15 +62,11 @@ from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
-from butlers.credential_store import (
-    CredentialStore,
-    legacy_shared_db_name_from_env,
-    shared_db_name_from_env,
-)
+from butlers.credential_store import CredentialStore
 from butlers.db import db_params_from_env
 from butlers.google_credentials import (
-    MissingGoogleCredentialsError,
-    resolve_google_credentials,
+    InvalidGoogleCredentialsError,
+    load_google_credentials,
 )
 from butlers.startup_guard import require_google_credentials_or_exit
 from butlers.storage.blobs import BlobStore
@@ -1208,9 +1202,9 @@ async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
     """Attempt DB-first credential resolution for the Gmail connector.
 
     Connects to the butler's PostgreSQL database (if DATABASE_URL or POSTGRES_*
-    env vars are set), looks up Google OAuth credentials via
-    ``resolve_google_credentials`` and the Pub/Sub webhook token via
-    :class:`~butlers.credential_store.CredentialStore`.
+    env vars are set), looks up Google OAuth credentials from
+    ``butler_secrets`` via :class:`~butlers.credential_store.CredentialStore`,
+    and optionally resolves the Pub/Sub webhook token from the same store.
 
     Returns a dict with keys ``client_id``, ``client_secret``,
     ``refresh_token``, and optionally ``pubsub_webhook_token`` on success.
@@ -1224,13 +1218,7 @@ async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
     import asyncpg
 
     db_params = db_params_from_env()
-    local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "").strip()
-    shared_db_name = shared_db_name_from_env()
-    legacy_db_name = legacy_shared_db_name_from_env()
-    candidate_db_names: list[str] = []
-    for name in [local_db_name, shared_db_name, legacy_db_name]:
-        if name and name not in candidate_db_names:
-            candidate_db_names.append(name)
+    db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "butlers")
 
     # Only attempt DB resolution if a host is explicitly configured or DATABASE_URL set.
     if not os.environ.get("DATABASE_URL") and db_params.get("host") == "localhost":
@@ -1238,72 +1226,66 @@ async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
         # Still attempt the connection; if it fails, return None gracefully.
         pass
 
-    connected_pools: list[tuple[str, asyncpg.Pool]] = []
-    for db_name in candidate_db_names:
-        try:
-            pool = await asyncpg.create_pool(
-                host=db_params["host"],
-                port=db_params["port"],
-                user=db_params["user"],
-                password=db_params["password"],
-                database=db_name,
-                ssl=db_params.get("ssl"),  # type: ignore[arg-type]
-                min_size=1,
-                max_size=2,
-                command_timeout=5,
-            )
-            connected_pools.append((db_name, pool))
-        except Exception as exc:
-            logger.debug(
-                "DB connection failed during Gmail credential resolution (db=%s, non-fatal): %s",
-                db_name,
-                exc,
-            )
-
-    if not connected_pools:
+    try:
+        pool = await asyncpg.create_pool(
+            host=db_params["host"],
+            port=db_params["port"],
+            user=db_params["user"],
+            password=db_params["password"],
+            database=db_name,
+            ssl=db_params.get("ssl"),  # type: ignore[arg-type]
+            min_size=1,
+            max_size=2,
+            command_timeout=5,
+        )
+    except Exception as exc:
+        logger.debug("DB connection failed during Gmail credential resolution (non-fatal): %s", exc)
         return None
 
-    primary_db_name, primary_pool = connected_pools[0]
-    fallback_pools = [pool for _, pool in connected_pools[1:]]
-    store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
-
     try:
-        creds = await resolve_google_credentials(store, caller="gmail-connector")
-        logger.info(
-            "Gmail connector: resolved Google credentials from layered database lookup "
-            "(primary_db=%s, fallbacks=%d)",
-            primary_db_name,
-            len(fallback_pools),
-        )
-
-        # Also try to resolve the Pub/Sub webhook token via CredentialStore.
-        pubsub_token = await store.resolve("GMAIL_PUBSUB_WEBHOOK_TOKEN", env_fallback=False)
+        store = CredentialStore(pool)
+        creds = await load_google_credentials(store)
+        if creds is None:
+            logger.debug(
+                "Gmail connector: no credentials in DB (db=%s), falling back to env vars",
+                db_name,
+            )
+            return None
+        logger.info("Gmail connector: resolved Google credentials from database (db=%s)", db_name)
 
         result: dict[str, str] = {
             "client_id": creds.client_id,
             "client_secret": creds.client_secret,
             "refresh_token": creds.refresh_token,
         }
-        if pubsub_token:
-            result["pubsub_webhook_token"] = pubsub_token
-            logger.info(
-                "Gmail connector: resolved GMAIL_PUBSUB_WEBHOOK_TOKEN from layered DB lookup "
-                "(primary_db=%s)",
-                primary_db_name,
+
+        # Pub/Sub token is optional: failure here must not invalidate OAuth credentials.
+        try:
+            pubsub_token = await store.resolve("GMAIL_PUBSUB_WEBHOOK_TOKEN", env_fallback=False)
+            if pubsub_token:
+                result["pubsub_webhook_token"] = pubsub_token
+                logger.info(
+                    "Gmail connector: resolved GMAIL_PUBSUB_WEBHOOK_TOKEN from database (db=%s)",
+                    db_name,
+                )
+        except Exception as exc:
+            logger.debug(
+                "Gmail connector: optional Pub/Sub token lookup failed (non-fatal): %s",
+                exc,
             )
         return result
-    except MissingGoogleCredentialsError:
-        logger.debug(
-            "Gmail connector: no credentials in DB (primary_db=%s), falling back to env vars",
-            primary_db_name,
+    except InvalidGoogleCredentialsError as exc:
+        logger.warning(
+            "Gmail connector: stored Google credentials are invalid in DB (db=%s): %s",
+            db_name,
+            exc,
         )
         return None
     except Exception as exc:
         logger.debug("Gmail connector: DB credential lookup failed (non-fatal): %s", exc)
         return None
     finally:
-        for _, pool in connected_pools:
-            await pool.close()
+        await pool.close()
 
 
 async def run_gmail_connector() -> None:
