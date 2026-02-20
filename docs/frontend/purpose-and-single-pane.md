@@ -18,13 +18,13 @@ The frontend is intentionally the single pane that combines:
 - Notifications and auditability.
 - Approval queue and standing-rule governance for high-impact autonomous actions (target integration).
 - Domain data browsing (relationship, health, general entities, memory).
-- Safe-but-powerful admin controls (trigger, schedules, state).
+- Safe-but-powerful admin controls (trigger, schedules, state, MCP debug calls).
 
 This single-pane role reduces operational latency for three critical loops:
 
 - Detect: identify what is failing, degraded, or expensive.
 - Diagnose: inspect sessions, traces, state, and timeline context.
-- Act: trigger runs, update schedules, and correct state from one UI.
+- Act: trigger runs, update schedules, correct state, and debug MCP tools from one UI.
 
 ## Scope Boundaries (Current)
 

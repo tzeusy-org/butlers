@@ -432,6 +432,32 @@ export interface TriggerResponse {
 }
 
 // ---------------------------------------------------------------------------
+// MCP debugging
+// ---------------------------------------------------------------------------
+
+/** A tool exposed by a butler's MCP server. */
+export interface ButlerMcpTool {
+  name: string;
+  description: string | null;
+  input_schema: Record<string, unknown> | null;
+}
+
+/** Request body for calling an MCP tool. */
+export interface ButlerMcpToolCallRequest {
+  tool_name: string;
+  arguments?: Record<string, unknown>;
+}
+
+/** Response from calling an MCP tool. */
+export interface ButlerMcpToolCallResponse {
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  result: unknown;
+  raw_text: string | null;
+  is_error: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Relationship / CRM
 // ---------------------------------------------------------------------------
 

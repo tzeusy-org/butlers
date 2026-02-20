@@ -68,6 +68,9 @@ The frontend currently performs writes only in these areas:
 - Butler State:
   - set/overwrite (`PUT /state/:key`)
   - delete (`DELETE /state/:key`)
+- Butler MCP Debug:
+  - list tools (`GET /mcp/tools`)
+  - call tool (`POST /mcp/call`)
 
 All other route surfaces are currently read-only.
 
@@ -78,7 +81,7 @@ All other route surfaces are currently read-only.
 - Operations:
   - notifications (+ stats), costs, issues
 - Butler control:
-  - config, skills, schedules, state, trigger
+  - config, skills, schedules, state, trigger, mcp debug
 - Relationship domain:
   - contacts, groups, labels, contact subresources, upcoming dates
 - Health domain:

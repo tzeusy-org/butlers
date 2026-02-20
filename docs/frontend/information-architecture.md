@@ -82,6 +82,7 @@ Always rendered tab triggers:
 - `Skills`
 - `Schedules`
 - `Trigger`
+- `MCP`
 - `State`
 - `CRM`
 - `Memory`

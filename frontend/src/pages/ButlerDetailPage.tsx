@@ -34,6 +34,9 @@ const ButlerSkillsTab = lazy(
 const ButlerTriggerTab = lazy(
   () => import("@/components/butler-detail/ButlerTriggerTab.tsx"),
 );
+const ButlerMcpTab = lazy(
+  () => import("@/components/butler-detail/ButlerMcpTab.tsx"),
+);
 const ButlerStateTab = lazy(
   () => import("@/components/butler-detail/ButlerStateTab.tsx"),
 );
@@ -70,6 +73,7 @@ const BASE_TABS = [
   "schedules",
   "state",
   "trigger",
+  "mcp",
   "crm",
   "memory",
 ] as const;
@@ -406,6 +410,7 @@ export default function ButlerDetailPage() {
           <TabsTrigger value="skills">Skills</TabsTrigger>
           <TabsTrigger value="schedules">Schedules</TabsTrigger>
           <TabsTrigger value="trigger">Trigger</TabsTrigger>
+          <TabsTrigger value="mcp">MCP</TabsTrigger>
           <TabsTrigger value="state">State</TabsTrigger>
           <TabsTrigger value="crm">CRM</TabsTrigger>
           <TabsTrigger value="memory">Memory</TabsTrigger>
@@ -457,6 +462,12 @@ export default function ButlerDetailPage() {
         <TabsContent value="state">
           <Suspense fallback={<TabFallback label="state" />}>
             <ButlerStateTab butlerName={name} />
+          </Suspense>
+        </TabsContent>
+
+        <TabsContent value="mcp">
+          <Suspense fallback={<TabFallback label="mcp" />}>
+            <ButlerMcpTab butlerName={name} />
           </Suspense>
         </TabsContent>
 

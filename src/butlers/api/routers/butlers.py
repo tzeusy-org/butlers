@@ -30,6 +30,9 @@ from butlers.api.models import (
     ButlerConfigResponse,
     ButlerDetail,
     ButlerSummary,
+    MCPToolCallRequest,
+    MCPToolCallResponse,
+    MCPToolInfo,
     ModuleInfo,
     ModuleStatus,
     ScheduleEntry,
@@ -47,6 +50,8 @@ router = APIRouter(prefix="/api/butlers", tags=["butlers"])
 
 # Timeout (in seconds) for each individual butler status probe.
 _STATUS_TIMEOUT_S = 5.0
+_MCP_LIST_TOOLS_TIMEOUT_S = 15.0
+_MCP_CALL_TIMEOUT_S = 30.0
 
 # Default roster location relative to the repository root.
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[4] / "roster"
@@ -182,6 +187,54 @@ def _read_optional_text(path: Path) -> str | None:
     return None
 
 
+def _extract_mcp_result_text(result: object) -> str | None:
+    """Extract text content from an MCP tool result."""
+    content = getattr(result, "content", None)
+    if not isinstance(content, list):
+        return None
+
+    text_parts: list[str] = []
+    for block in content:
+        text = getattr(block, "text", None)
+        if isinstance(text, str) and text:
+            text_parts.append(text)
+
+    if not text_parts:
+        return None
+    return "\n".join(text_parts)
+
+
+def _parse_mcp_result_payload(raw_text: str | None) -> object:
+    """Parse MCP text payload as JSON when possible, else return plain text."""
+    if raw_text is None:
+        return None
+    try:
+        return json.loads(raw_text)
+    except (json.JSONDecodeError, TypeError):
+        return raw_text
+
+
+def _normalize_tool_info(tool: object) -> MCPToolInfo | None:
+    """Normalize FastMCP tool metadata from dict- or object-shaped records."""
+    if isinstance(tool, dict):
+        name = tool.get("name")
+        description = tool.get("description")
+        input_schema = tool.get("inputSchema", tool.get("input_schema"))
+    else:
+        name = getattr(tool, "name", None)
+        description = getattr(tool, "description", None)
+        input_schema = getattr(tool, "input_schema", getattr(tool, "inputSchema", None))
+
+    if not isinstance(name, str) or not name:
+        return None
+    if description is not None and not isinstance(description, str):
+        description = str(description)
+    if input_schema is not None and not isinstance(input_schema, dict):
+        input_schema = None
+
+    return MCPToolInfo(name=name, description=description, input_schema=input_schema)
+
+
 @router.get("/{name}/config", response_model=ApiResponse[ButlerConfigResponse])
 async def get_butler_config(
     name: str,
@@ -288,6 +341,117 @@ async def list_butler_skills(
     skills = _read_skills(butler_dir)
 
     return ApiResponse[list[SkillInfo]](data=skills)
+
+
+# ---------------------------------------------------------------------------
+# MCP debug endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{name}/mcp/tools", response_model=ApiResponse[list[MCPToolInfo]])
+async def list_butler_mcp_tools(
+    name: str,
+    configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
+    mcp_manager: MCPClientManager = Depends(get_mcp_manager),
+) -> ApiResponse[list[MCPToolInfo]]:
+    """Return MCP tools exposed by a single butler."""
+    if not any(cfg.name == name for cfg in configs):
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+
+    try:
+        client = await asyncio.wait_for(
+            mcp_manager.get_client(name),
+            timeout=_MCP_LIST_TOOLS_TIMEOUT_S,
+        )
+        raw_tools = await asyncio.wait_for(
+            client.list_tools(),
+            timeout=_MCP_LIST_TOOLS_TIMEOUT_S,
+        )
+    except ButlerUnreachableError:
+        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable")
+    except TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail=f"MCP tool listing for butler '{name}' timed out",
+        )
+    except Exception as exc:
+        logger.warning("Unexpected MCP list_tools failure for %s", name, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to list MCP tools for butler '{name}': {exc}",
+        )
+
+    if not isinstance(raw_tools, list):
+        logger.warning(
+            "Unexpected list_tools payload type for butler %s: %s",
+            name,
+            type(raw_tools).__name__,
+        )
+        raw_tools = []
+
+    tools: list[MCPToolInfo] = []
+    for raw in raw_tools:
+        normalized = _normalize_tool_info(raw)
+        if normalized is not None:
+            tools.append(normalized)
+
+    return ApiResponse[list[MCPToolInfo]](data=tools)
+
+
+@router.post("/{name}/mcp/call", response_model=ApiResponse[MCPToolCallResponse])
+async def call_butler_mcp_tool(
+    name: str,
+    request: MCPToolCallRequest,
+    configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
+    mcp_manager: MCPClientManager = Depends(get_mcp_manager),
+) -> ApiResponse[MCPToolCallResponse]:
+    """Invoke an MCP tool on a butler for debugging."""
+    if not any(cfg.name == name for cfg in configs):
+        raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
+
+    tool_name = request.tool_name.strip()
+    if not tool_name:
+        raise HTTPException(status_code=400, detail="tool_name must not be empty")
+
+    try:
+        client = await asyncio.wait_for(
+            mcp_manager.get_client(name),
+            timeout=_MCP_CALL_TIMEOUT_S,
+        )
+        result = await asyncio.wait_for(
+            client.call_tool(tool_name, request.arguments),
+            timeout=_MCP_CALL_TIMEOUT_S,
+        )
+    except ButlerUnreachableError:
+        raise HTTPException(status_code=503, detail=f"Butler '{name}' is unreachable")
+    except TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail=f"MCP tool call '{tool_name}' to butler '{name}' timed out",
+        )
+    except Exception as exc:
+        logger.warning(
+            "Unexpected MCP tool call failure for %s.%s",
+            name,
+            tool_name,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"MCP tool call '{tool_name}' failed for butler '{name}': {exc}",
+        )
+
+    raw_text = _extract_mcp_result_text(result)
+    parsed_result = _parse_mcp_result_payload(raw_text)
+    is_error = bool(getattr(result, "is_error", False))
+    response = MCPToolCallResponse(
+        tool_name=tool_name,
+        arguments=request.arguments,
+        result=parsed_result,
+        raw_text=raw_text,
+        is_error=is_error,
+    )
+    return ApiResponse[MCPToolCallResponse](data=response)
 
 
 # ---------------------------------------------------------------------------

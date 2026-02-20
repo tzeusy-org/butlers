@@ -7,6 +7,7 @@ pagination metadata, and common summary models used across all endpoints.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, computed_field
@@ -210,6 +211,36 @@ class TickResponse(BaseModel):
 
     success: bool
     message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# MCP debugging models
+# ---------------------------------------------------------------------------
+
+
+class MCPToolInfo(BaseModel):
+    """A tool exposed by a butler's MCP server."""
+
+    name: str
+    description: str | None = None
+    input_schema: dict[str, Any] | None = None
+
+
+class MCPToolCallRequest(BaseModel):
+    """Request body for invoking an MCP tool on a butler."""
+
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class MCPToolCallResponse(BaseModel):
+    """Response envelope for a proxied MCP tool invocation."""
+
+    tool_name: str
+    arguments: dict[str, Any]
+    result: dict[str, Any] | list[Any] | str | int | float | bool | None = None
+    raw_text: str | None = None
+    is_error: bool = False
 
 
 # ---------------------------------------------------------------------------

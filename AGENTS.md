@@ -649,4 +649,16 @@ make test-qg
 - Codex runtime system instructions are loaded from per-butler `AGENTS.md` (via `src/butlers/core/runtimes/codex.py::parse_system_prompt_file`), not `CLAUDE.md`.
 - `CodexAdapter.invoke()` must call `codex exec --json --full-auto` (non-interactive mode). Top-level `codex --full-auto` requires a TTY and should not be used by the spawner subprocess path.
 - Codex CLI no longer supports `--instructions`; butler/system prompt content must be embedded into the `exec` initial prompt payload, and MCP endpoints should be passed via `-c mcp_servers.<name>.url="..."`.
+- `CodexAdapter.invoke()` must insert a `--` option delimiter before the positional prompt argument so user prompts beginning with `-`/`--` are not parsed as Codex CLI flags.
 - `CodexAdapter.invoke()` must forward configured model via CLI `--model <id>` when `model` is non-empty, so roster model pins (for example `gpt-5.3-codex-spark`) are actually enforced at launch time.
+
+### Butler MCP debug surface contract
+- Butler detail now includes an always-available `MCP` tab (`frontend/src/pages/ButlerDetailPage.tsx`) for per-butler debug tool calls.
+- Dashboard API exposes per-butler MCP debug endpoints in `src/butlers/api/routers/butlers.py`: `GET /api/butlers/{name}/mcp/tools` (normalized `name`/`description`/`input_schema`) and `POST /api/butlers/{name}/mcp/call` (tool name + arguments passthrough with parsed `result`, `raw_text`, `is_error`).
+- Frontend contracts are typed in `frontend/src/api/types.ts` (`ButlerMcpTool`, `ButlerMcpToolCallRequest`, `ButlerMcpToolCallResponse`) and wired through `frontend/src/api/client.ts` + `frontend/src/api/index.ts`.
+
+### Codex MCP transport mismatch contract
+- Butler daemons currently expose MCP over SSE only (`src/butlers/daemon.py` uses `http_app(transport="sse")`) and spawner runtime config points spawned runtimes at `http://localhost:<port>/sse` (`src/butlers/core/spawner.py`).
+- Codex CLI MCP URL configuration (`-c mcp_servers.<name>.url="..."`) is handled by a streamable-HTTP client; against `/sse` it fails with `unexpected content type` (for example 405 `text/plain`) and drops external MCP tools.
+- Symptom: Codex sessions may succeed with plain-text responses but record zero MCP tool calls (including missing `notify()`), even when prompt instructions require tool usage.
+- To restore Codex tool availability, provide a streamable HTTP endpoint (for example `/mcp`) for runtime sessions or add a transport bridge compatible with Codex MCP.

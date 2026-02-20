@@ -29,6 +29,8 @@ All endpoints and payload shapes below are mandatory. Absence or shape drift is 
 - `GET /api/butlers/{name}/config` -> `ApiResponse<ButlerConfigResponse>`
 - `GET /api/butlers/{name}/skills` -> `ApiResponse<SkillInfo[]>`
 - `POST /api/butlers/{name}/trigger` -> `TriggerResponse`
+- `GET /api/butlers/{name}/mcp/tools` -> `ApiResponse<MCPToolInfo[]>`
+- `POST /api/butlers/{name}/mcp/call` -> `ApiResponse<MCPToolCallResponse>`
 
 ## Sessions Contract
 
@@ -149,6 +151,14 @@ Grouped result keys required by frontend:
 - `GET /api/butlers/{name}/state` -> `ApiResponse<StateEntry[]>`
 - `PUT /api/butlers/{name}/state/{key}` -> `ApiResponse<...>`
 - `DELETE /api/butlers/{name}/state/{key}` -> `ApiResponse<...>`
+
+## Butler MCP Debug Contract
+
+- `GET /api/butlers/{name}/mcp/tools` -> `ApiResponse<MCPToolInfo[]>`
+  - `MCPToolInfo`: `name`, `description`, `input_schema`
+- `POST /api/butlers/{name}/mcp/call` -> `ApiResponse<MCPToolCallResponse>`
+  - Request: `{ tool_name: string, arguments?: object }`
+  - Response: `tool_name`, `arguments`, `result` (parsed when JSON), `raw_text`, `is_error`
 
 ## Relationship Domain Contract
 

@@ -86,6 +86,12 @@ This inventory describes what is implemented today in `frontend/src/**`.
 - In-memory trigger history for current page session.
 - Skill-prefill support from Skills tab.
 
+### MCP Tab
+
+- Lists MCP tools exposed by the selected butler.
+- Allows ad-hoc MCP tool invocation with optional JSON object arguments.
+- Shows parsed result payload, raw text payload, and tool error status.
+
 ### CRM Tab
 
 - For `relationship` butler:

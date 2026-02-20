@@ -59,6 +59,9 @@ import type {
   TraceParams,
   TraceSummary,
   TriggerResponse,
+  ButlerMcpTool,
+  ButlerMcpToolCallRequest,
+  ButlerMcpToolCallResponse,
   Dose,
   HealthCondition,
   HealthResearch,
@@ -441,6 +444,30 @@ export function triggerButler(
     {
       method: "POST",
       body: JSON.stringify({ prompt }),
+    },
+  );
+}
+
+/** Fetch MCP tools exposed by a specific butler. */
+export function getButlerMcpTools(name: string): Promise<ApiResponse<ButlerMcpTool[]>> {
+  return apiFetch<ApiResponse<ButlerMcpTool[]>>(
+    `/butlers/${encodeURIComponent(name)}/mcp/tools`,
+  );
+}
+
+/** Call an MCP tool on a specific butler with optional arguments. */
+export function callButlerMcpTool(
+  name: string,
+  request: ButlerMcpToolCallRequest,
+): Promise<ApiResponse<ButlerMcpToolCallResponse>> {
+  return apiFetch<ApiResponse<ButlerMcpToolCallResponse>>(
+    `/butlers/${encodeURIComponent(name)}/mcp/call`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        tool_name: request.tool_name,
+        arguments: request.arguments ?? {},
+      }),
     },
   );
 }
