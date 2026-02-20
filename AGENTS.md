@@ -562,6 +562,11 @@ make test-qg
 - `ButlerDaemon._dispatch_scheduled_task()` is the scheduler dispatch hook used by both the background scheduler loop and MCP `tick` tool; deterministic schedules can bypass runtime/LLM calls here.
 - Switchboard `schedule:eligibility-sweep` is natively dispatched via the roster job loader (`_load_switchboard_eligibility_sweep_job`) and executes against the switchboard DB pool directly; non-native schedules still fall back to `spawner.trigger`.
 
+### Issues aggregation contract
+- `src/butlers/api/routers/issues.py` now aggregates two sources: reachability checks and active audit failures from `dashboard_audit_log` (switchboard DB).
+- Audit-derived issues are stream-based: latest row per `(butler, operation, request_summary.trigger_source)` within the lookback window is considered active only when `result='error'`.
+- Schedule-triggered session failures (`trigger_source` starts with `schedule:`) surface as `critical` `scheduled_task_failure:*` issues; other audit errors surface as `warning` `audit_error:*` issues, linking to `/audit-log`.
+
 ### State API JSON-shape contract
 - `src/butlers/api/models/state.py::StateEntry.value` and `StateSetRequest.value` are typed `Any` (widened from `dict[str, Any]` in PR #205); scalar/array/null JSON rows in `state.value` are now serialized correctly.
 - Keep list/get state endpoint value-shape contracts aligned with the full JSON domain accepted by the underlying state storage.
@@ -587,6 +592,15 @@ make test-qg
 - `docs/architecture/system-architecture.md` remains current-state for deployed topology and includes a transition note linking to the migration plan.
 - `scripts/one_db_data_migration.py` is the canonical `butlers-1003.4` data-move utility: use `plan` + `migrate --dry-run` for staged rehearsal, `run` for copy+parity, and `rollback --confirm-rollback ROLLBACK` to reset target tables after failed attempts; archive JSON reports from each phase.
 - `docs/operations/one-db-data-migration-runbook.md` is the executable command/checklist reference for staging dry-runs, parity signoff, and rollback validation.
+
+### Telegram connector DB-first startup contract
+- `run_telegram_bot_connector()` and `run_telegram_user_client_connector()` must not hard-fail on missing credential env vars when DB credentials are available; if `from_env()` fails only due missing creds and DB lookup succeeded, build config from required non-credential env vars plus DB-resolved secrets.
+- Keep required non-credential startup env checks explicit in DB-fallback path (`SWITCHBOARD_MCP_URL`, `CONNECTOR_ENDPOINT_IDENTITY`, and `CONNECTOR_CURSOR_PATH` for user-client).
+- Regression coverage lives in `tests/connectors/test_telegram_bot_connector.py::test_run_telegram_bot_connector_uses_db_token_when_env_missing` and `tests/connectors/test_telegram_user_client.py::test_run_telegram_user_client_connector_uses_db_credentials_when_env_missing`.
+
+### OAuth/dev messaging DB-first contract
+- User-facing OAuth guidance (dev bootstrap, startup guards, OAuth callback responses) should default to dashboard + shared `butler_secrets` persistence and avoid recommending `GMAIL_*`/manual env fallback as the normal path.
+- `docs/runbooks/connector_operations.md` should not advertise removed `GMAIL_*` aliases; troubleshooting should direct operators to rerun OAuth/bootstrap so credentials persist in DB.
 
 ### Legacy-compat cleanup hotspots (dev runtime)
 - Runtime source currently does not read `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON` or deprecated `GMAIL_*` credential aliases directly; these names mainly remain in `dev.sh`, docs, and tests.

@@ -514,9 +514,11 @@ async def resolve_google_credentials(
     except MissingGoogleCredentialsError as env_exc:
         raise MissingGoogleCredentialsError(
             f"[{caller}] Google OAuth credentials are not available. "
-            f"Bootstrap via GET /api/oauth/google/start, or set the environment "
-            f"variables GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and "
-            f"GOOGLE_REFRESH_TOKEN. "
+            f"Bootstrap via GET /api/oauth/google/start and persist credentials to "
+            f"the shared butler_secrets store. "
+            f"If running in legacy no-DB mode, set GOOGLE_OAUTH_CLIENT_ID, "
+            f"GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN environment "
+            f"variables. "
             f"Details: {env_exc}"
         ) from env_exc
 

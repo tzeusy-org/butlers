@@ -665,10 +665,56 @@ async def run_telegram_user_client_connector() -> None:
         db_creds = await _resolve_telegram_user_credentials_from_db()
 
     # Step 2: Load config from env vars.
-    config = TelegramUserClientConnectorConfig.from_env()
+    # If env credentials are missing but DB credentials exist, build config directly.
+    env_config_ok = True
+    config: TelegramUserClientConnectorConfig | None = None
+    try:
+        config = TelegramUserClientConnectorConfig.from_env()
+    except Exception as exc:
+        if db_creds is None:
+            logger.error("Failed to load Telegram user-client connector config: %s", exc)
+            raise
+        env_config_ok = False
+        logger.info(
+            "Telegram user-client connector: env-var config load failed (%s); "
+            "will build from DB-resolved credentials.",
+            exc,
+        )
 
-    # Step 3: Override with DB-resolved credentials if available.
-    if db_creds is not None:
+    if not env_config_ok:
+        assert db_creds is not None
+        if not TELETHON_AVAILABLE:
+            raise RuntimeError("Telethon is not installed. Install with: uv pip install telethon")
+        endpoint_identity = os.environ.get("CONNECTOR_ENDPOINT_IDENTITY")
+        if not endpoint_identity:
+            raise ValueError("CONNECTOR_ENDPOINT_IDENTITY environment variable is required")
+        switchboard_mcp_url = os.environ.get("SWITCHBOARD_MCP_URL")
+        if not switchboard_mcp_url:
+            raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
+        cursor_path_str = os.environ.get("CONNECTOR_CURSOR_PATH")
+        if not cursor_path_str:
+            raise ValueError("CONNECTOR_CURSOR_PATH environment variable is required")
+        try:
+            api_id = int(db_creds["TELEGRAM_API_ID"])
+        except ValueError as exc:
+            raise ValueError(
+                f"Telegram user-client connector: invalid TELEGRAM_API_ID from DB: {exc}"
+            ) from exc
+        backfill_window_str = os.environ.get("CONNECTOR_BACKFILL_WINDOW_H")
+        config = TelegramUserClientConnectorConfig(
+            switchboard_mcp_url=switchboard_mcp_url,
+            provider=os.environ.get("CONNECTOR_PROVIDER", "telegram"),
+            channel=os.environ.get("CONNECTOR_CHANNEL", "telegram"),
+            endpoint_identity=endpoint_identity,
+            telegram_api_id=api_id,
+            telegram_api_hash=db_creds["TELEGRAM_API_HASH"],
+            telegram_user_session=db_creds["TELEGRAM_USER_SESSION"],
+            cursor_path=Path(cursor_path_str),
+            backfill_window_h=int(backfill_window_str) if backfill_window_str else None,
+            max_inflight=int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8")),
+        )
+    elif db_creds is not None and config is not None:
+        # Step 3: Override with DB-resolved credentials if available.
         try:
             api_id = int(db_creds["TELEGRAM_API_ID"])
         except ValueError as exc:
@@ -683,6 +729,7 @@ async def run_telegram_user_client_connector() -> None:
         )
         logger.debug("Telegram user-client connector: config updated with DB-resolved credentials")
 
+    assert config is not None
     connector = TelegramUserClientConnector(config)
 
     try:

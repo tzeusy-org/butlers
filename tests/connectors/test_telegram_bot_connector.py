@@ -15,6 +15,7 @@ from butlers.connectors.telegram_bot import (
     TelegramBotConnector,
     TelegramBotConnectorConfig,
     _resolve_telegram_bot_token_from_db,
+    run_telegram_bot_connector,
 )
 
 
@@ -791,3 +792,37 @@ class TestResolveTelegramBotTokenFromDb:
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
         result = await _resolve_telegram_bot_token_from_db()
         assert result == "db-bot-token-abc123"
+
+
+@pytest.mark.asyncio
+async def test_run_telegram_bot_connector_uses_db_token_when_env_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DB token should be sufficient even when BUTLER_TELEGRAM_TOKEN env var is absent."""
+    cursor_path = tmp_path / "cursor.json"
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+    monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "telegram:bot:test")
+    monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+    monkeypatch.setenv("POSTGRES_HOST", "localhost")
+    monkeypatch.delenv("BUTLER_TELEGRAM_TOKEN", raising=False)
+
+    mock_connector = Mock()
+    mock_connector.start_polling = AsyncMock()
+    mock_connector.stop = AsyncMock()
+
+    with (
+        patch(
+            "butlers.connectors.telegram_bot._resolve_telegram_bot_token_from_db",
+            new=AsyncMock(return_value="db-token-123"),
+        ),
+        patch("butlers.connectors.telegram_bot.configure_logging"),
+        patch(
+            "butlers.connectors.telegram_bot.TelegramBotConnector",
+            return_value=mock_connector,
+        ) as cls,
+    ):
+        await run_telegram_bot_connector()
+
+    passed_config = cls.call_args[0][0]
+    assert passed_config.telegram_token == "db-token-123"
+    mock_connector.start_polling.assert_awaited_once()

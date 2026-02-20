@@ -213,7 +213,8 @@ class GmailConnectorConfig(BaseModel):
             missing_str = ", ".join(missing_cred_vars)
             raise ValueError(
                 f"Google OAuth credentials missing. Set: {missing_str}. "
-                "Run the OAuth bootstrap via the dashboard or set env vars directly."
+                "Run the OAuth bootstrap via the dashboard and ensure DB-backed "
+                "credential lookup is configured. Env vars are legacy no-DB fallback."
             )
 
         return cls(

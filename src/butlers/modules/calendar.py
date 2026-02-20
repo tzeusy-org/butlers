@@ -139,8 +139,8 @@ class _GoogleOAuthCredentials(BaseModel):
             raise CalendarCredentialError(
                 f"Missing required Google credential environment variable(s): "
                 f"{', '.join(missing)}. "
-                f"Use the dashboard OAuth flow to store credentials in the database, "
-                f"or set these environment variables directly."
+                f"Use the dashboard OAuth flow to store credentials in the database. "
+                f"Environment variables are only for legacy no-DB mode."
             )
 
         return cls(
@@ -3015,9 +3015,8 @@ class CalendarModule(Module):
         except RuntimeError as exc:
             raise RuntimeError(
                 "CalendarModule: Google OAuth credentials are not available. "
-                "Store them via the dashboard OAuth flow or set the "
-                "GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and "
-                "GOOGLE_REFRESH_TOKEN environment variables. "
+                "Store them via the dashboard OAuth flow (shared butler_secrets store). "
+                "Environment variables are only for legacy no-DB mode. "
                 f"Details: {exc}"
             ) from exc
 

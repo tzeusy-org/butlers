@@ -695,7 +695,7 @@ class TestOAuthCallbackCredentialPersistence:
         mock_store.assert_awaited_once()
 
     async def test_callback_success_message_indicates_db_unavailable_when_no_manager(self):
-        """When no DB manager, success message tells operator to set env vars manually."""
+        """When no DB manager, success message clearly reports DB persistence failure."""
         app = _make_app()
         state = _generate_state()
         _store_state(state)
@@ -718,8 +718,7 @@ class TestOAuthCallbackCredentialPersistence:
         assert resp.status_code == 200
         body = resp.json()
         assert body["success"] is True
-        # Message should mention setting env vars when DB not available
-        assert "env" in body["message"].lower() or "GMAIL" in body["message"]
+        assert "not persisted to db" in body["message"].lower()
 
     async def test_callback_success_still_returns_200_when_db_persist_fails(self):
         """DB persistence failure is non-fatal; callback still succeeds."""

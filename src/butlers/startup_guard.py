@@ -113,12 +113,10 @@ def check_google_credentials() -> GoogleCredentialCheckResult:
         "  3. Click 'Connect Google' and follow the OAuth flow.\n"
         "  4. After successful authorization, the refresh token is stored in the DB.\n"
         "\n"
-        "Alternatively, set these environment variables:\n"
-        "  GOOGLE_OAUTH_CLIENT_ID=<your-client-id>\n"
-        "  GOOGLE_OAUTH_CLIENT_SECRET=<your-client-secret>\n"
-        "  GOOGLE_REFRESH_TOKEN=<your-refresh-token>\n"
+        "Then restart this connector.\n"
         "\n"
-        "Then restart this connector."
+        "Legacy no-DB mode only: set GOOGLE_OAUTH_CLIENT_ID,\n"
+        "GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN env vars."
     )
 
     message = (
@@ -244,8 +242,9 @@ def _print_credential_error(
     print(f"    1. Open the Butlers dashboard: {dashboard_url}", file=sys.stderr)
     print("    2. Click 'Connect Google' and complete the OAuth flow.", file=sys.stderr)
     print("    3. Once authorized, restart this connector.", file=sys.stderr)
-    print("\n  Or set environment variables:", file=sys.stderr)
-    print("    GOOGLE_OAUTH_CLIENT_ID=<your-client-id>", file=sys.stderr)
-    print("    GOOGLE_OAUTH_CLIENT_SECRET=<your-client-secret>", file=sys.stderr)
-    print("    GOOGLE_REFRESH_TOKEN=<your-refresh-token>", file=sys.stderr)
+    print(
+        "\n  Legacy no-DB mode only: set GOOGLE_OAUTH_CLIENT_ID, "
+        "GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN.",
+        file=sys.stderr,
+    )
     print(f"\n{separator}\n", file=sys.stderr)

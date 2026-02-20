@@ -15,6 +15,7 @@ from butlers.connectors.telegram_user_client import (
     TelegramUserClientConnector,
     TelegramUserClientConnectorConfig,
     _resolve_telegram_user_credentials_from_db,
+    run_telegram_user_client_connector,
 )
 
 # Skip all tests if Telethon is not available
@@ -538,3 +539,47 @@ class TestResolveTelegramUserCredentialsFromDb:
         assert result["TELEGRAM_API_ID"] == "12345"
         assert result["TELEGRAM_API_HASH"] == "test-api-hash"
         assert result["TELEGRAM_USER_SESSION"] == "test-session"
+
+
+@pytest.mark.asyncio
+async def test_run_telegram_user_client_connector_uses_db_credentials_when_env_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DB credentials should be sufficient even when TELEGRAM_* env vars are absent."""
+    cursor_path = tmp_path / "cursor.json"
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+    monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "telegram:user:test")
+    monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+    monkeypatch.setenv("POSTGRES_HOST", "localhost")
+    monkeypatch.delenv("TELEGRAM_API_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_API_HASH", raising=False)
+    monkeypatch.delenv("TELEGRAM_USER_SESSION", raising=False)
+
+    mock_connector = MagicMock()
+    mock_connector.start = AsyncMock()
+    mock_connector.stop = AsyncMock()
+
+    with (
+        patch(
+            "butlers.connectors.telegram_user_client._resolve_telegram_user_credentials_from_db",
+            new=AsyncMock(
+                return_value={
+                    "TELEGRAM_API_ID": "12345",
+                    "TELEGRAM_API_HASH": "db-hash",
+                    "TELEGRAM_USER_SESSION": "db-session",
+                }
+            ),
+        ),
+        patch("butlers.connectors.telegram_user_client.configure_logging"),
+        patch(
+            "butlers.connectors.telegram_user_client.TelegramUserClientConnector",
+            return_value=mock_connector,
+        ) as cls,
+    ):
+        await run_telegram_user_client_connector()
+
+    passed_config = cls.call_args[0][0]
+    assert passed_config.telegram_api_id == 12345
+    assert passed_config.telegram_api_hash == "db-hash"
+    assert passed_config.telegram_user_session == "db-session"
+    mock_connector.start.assert_awaited_once()

@@ -656,9 +656,9 @@ _oauth_gate() {
     return 0
   fi
 
-  # Fast path: env vars already present
+  # Fast path: credentials already available via env/file/DB checks
   if _has_google_creds; then
-    echo "Layer 2: Google OAuth credentials found in environment."
+    echo "Layer 2: Google OAuth credentials detected (env or DB)."
     return 0
   fi
 
@@ -676,12 +676,6 @@ _oauth_gate() {
   echo "    1. Open ${OAUTH_BROWSER_URL} in your browser"
   echo "    2. Click 'Connect Google' and complete the OAuth flow"
   echo "    3. Butlers will proceed automatically once credentials are stored"
-  echo ""
-  echo "  Alternatively, set credentials in ${GMAIL_CONNECTOR_ENV_FILE}:"
-  echo "    GOOGLE_OAUTH_CLIENT_ID=<your-client-id>"
-  echo "    GOOGLE_OAUTH_CLIENT_SECRET=<your-client-secret>"
-  echo "    GOOGLE_REFRESH_TOKEN=<your-refresh-token>"
-  echo "  Then rerun: ./dev.sh"
   echo ""
   if [ "$timeout" -gt 0 ] 2>/dev/null; then
     echo "  Polling DB every ${poll_interval}s (timeout: ${timeout}s)..."
@@ -726,7 +720,7 @@ fi
 if [ "$GOOGLE_CREDS_AVAILABLE" = "false" ] && [ "$SKIP_OAUTH_CHECK" = "false" ]; then
   echo ""
   echo "======================================================================"
-  echo "  WARNING: Google OAuth credentials not found in environment"
+  echo "  WARNING: Google OAuth credentials not found yet"
   echo "======================================================================"
   echo ""
   echo "  The Gmail connector and Calendar module require Google OAuth"
@@ -737,13 +731,6 @@ if [ "$GOOGLE_CREDS_AVAILABLE" = "false" ] && [ "$SKIP_OAUTH_CHECK" = "false" ];
   echo "    1. Start Butlers and visit ${OAUTH_BROWSER_URL}"
   echo "    2. Click 'Connect Google' and complete the OAuth flow"
   echo "    3. Credentials are stored in the DB — Layer 3 starts automatically"
-  echo ""
-  echo "  Option B — Environment variables in secrets file:"
-  echo "    Add to ${GMAIL_CONNECTOR_ENV_FILE}:"
-  echo "      GOOGLE_OAUTH_CLIENT_ID=<your-client-id>"
-  echo "      GOOGLE_OAUTH_CLIENT_SECRET=<your-client-secret>"
-  echo "      GOOGLE_REFRESH_TOKEN=<your-refresh-token>"
-  echo "    Then rerun ./dev.sh"
   echo ""
   echo "  Affected components: Gmail connector, Calendar module"
   echo "  All other services (backend, Telegram, dashboard) start normally."
@@ -772,7 +759,7 @@ _build_gmail_pane_cmd() {
   fi
 
   # Credentials missing — show instructions and keep pane alive
-  printf '%s' "echo '' && echo '======================================================================' && echo '  Gmail connector is waiting for Google OAuth credentials.' && echo '  Also required by: Calendar module.' && echo '======================================================================' && echo '' && echo '  To complete bootstrap:' && echo '    1. Open ${OAUTH_BROWSER_URL} in your browser' && echo '    2. Click Connect Google and complete the OAuth flow' && echo '    3. Once authorized, restart this pane (tmux: prefix+R or exit+up+Enter)' && echo '' && echo '  Or set credentials in: $GMAIL_CONNECTOR_ENV_FILE' && echo '    GOOGLE_OAUTH_CLIENT_ID=...' && echo '    GOOGLE_OAUTH_CLIENT_SECRET=...' && echo '    GOOGLE_REFRESH_TOKEN=...' && echo '' && echo '  Then rerun: ./dev.sh' && echo '' && echo '  (This pane will remain open — restart it after completing OAuth)' && bash"
+  printf '%s' "echo '' && echo '======================================================================' && echo '  Gmail connector is waiting for Google OAuth credentials.' && echo '  Also required by: Calendar module.' && echo '======================================================================' && echo '' && echo '  To complete bootstrap:' && echo '    1. Open ${OAUTH_BROWSER_URL} in your browser' && echo '    2. Click Connect Google and complete the OAuth flow' && echo '    3. Once authorized, restart this pane (tmux: prefix+R or exit+up+Enter)' && echo '' && echo '  Credentials are read from the shared DB (butler_secrets).' && echo '' && echo '  (This pane will remain open — restart it after completing OAuth)' && bash"
 }
 
 # Kill existing windows if present (idempotent re-runs)

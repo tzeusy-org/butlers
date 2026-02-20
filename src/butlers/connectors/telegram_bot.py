@@ -896,13 +896,49 @@ async def run_telegram_bot_connector() -> None:
         db_token = await _resolve_telegram_bot_token_from_db()
 
     # Step 2: Load config from env vars.
-    config = TelegramBotConnectorConfig.from_env()
+    # If env token is missing but DB token exists, build config directly.
+    env_config_ok = True
+    config: TelegramBotConnectorConfig | None = None
+    try:
+        config = TelegramBotConnectorConfig.from_env()
+    except Exception as exc:
+        if db_token is None:
+            logger.error("Failed to load Telegram bot connector config: %s", exc)
+            raise
+        env_config_ok = False
+        logger.info(
+            "Telegram bot connector: env-var config load failed (%s); "
+            "will build from DB-resolved credentials.",
+            exc,
+        )
 
-    # Step 3: Override with DB-resolved token if available.
-    if db_token is not None:
+    if not env_config_ok:
+        assert db_token is not None
+        endpoint_identity = os.environ.get("CONNECTOR_ENDPOINT_IDENTITY")
+        if not endpoint_identity:
+            raise ValueError("CONNECTOR_ENDPOINT_IDENTITY environment variable is required")
+        switchboard_mcp_url = os.environ.get("SWITCHBOARD_MCP_URL")
+        if not switchboard_mcp_url:
+            raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
+        cursor_path_str = os.environ.get("CONNECTOR_CURSOR_PATH")
+        config = TelegramBotConnectorConfig(
+            switchboard_mcp_url=switchboard_mcp_url,
+            provider=os.environ.get("CONNECTOR_PROVIDER", "telegram"),
+            channel=os.environ.get("CONNECTOR_CHANNEL", "telegram"),
+            endpoint_identity=endpoint_identity,
+            telegram_token=db_token,
+            cursor_path=Path(cursor_path_str) if cursor_path_str else None,
+            poll_interval_s=float(os.environ.get("CONNECTOR_POLL_INTERVAL_S", "1.0")),
+            webhook_url=os.environ.get("CONNECTOR_WEBHOOK_URL"),
+            max_inflight=int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8")),
+            health_port=int(os.environ.get("CONNECTOR_HEALTH_PORT", "40081")),
+        )
+    elif db_token is not None and config is not None:
+        # Step 3: Override with DB-resolved token if available.
         config = replace(config, telegram_token=db_token)
         logger.debug("Telegram bot connector: config updated with DB-resolved token")
 
+    assert config is not None
     connector = TelegramBotConnector(config)
 
     # Determine mode based on config

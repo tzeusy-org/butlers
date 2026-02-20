@@ -468,7 +468,7 @@ async def oauth_google_callback(
     else:
         logger.warning(
             "Shared credential DB unavailable; credentials not persisted to DB. "
-            "Set GOOGLE_REFRESH_TOKEN env var manually as a fallback."
+            "Re-run OAuth bootstrap when shared credential DB is available."
         )
 
     logger.info(
@@ -482,16 +482,13 @@ async def oauth_google_callback(
         logger.warning(
             "[BOOTSTRAP] Google credentials could NOT be persisted to DB "
             "(shared credential pool unavailable). "
-            "Re-run the OAuth bootstrap with a running database, or set env vars manually: "
-            "GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN."
+            "Re-run the OAuth bootstrap with a running shared credential database."
         )
         print(f"\n{'=' * 60}")
         print("Google OAuth Bootstrap Complete")
         print("WARNING: Credentials NOT persisted to DB.")
-        print("Re-run OAuth bootstrap with a running database, or set these env vars manually:")
-        print(f"  GOOGLE_OAUTH_CLIENT_ID={client_id}")
-        print("  GOOGLE_OAUTH_CLIENT_SECRET=<must be re-obtained via OAuth flow — never printed>")
-        print("  GOOGLE_REFRESH_TOKEN=<must be re-obtained via OAuth flow — never printed>")
+        print("Re-run OAuth bootstrap with shared credential DB connectivity restored.")
+        print(f"Client ID used for this attempt: {client_id}")
         print(f"{'=' * 60}\n")
 
     success_payload = OAuthCallbackSuccess(
@@ -499,7 +496,7 @@ async def oauth_google_callback(
         message=(
             "OAuth bootstrap complete. Credentials persisted to database."
             if creds_persisted
-            else "OAuth bootstrap complete. Set GOOGLE_REFRESH_TOKEN env var."
+            else "OAuth bootstrap complete, but credentials were NOT persisted to DB."
         ),
         provider="google",
         scope=scope,

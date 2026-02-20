@@ -122,10 +122,8 @@ export GOOGLE_OAUTH_CLIENT_ID="your-client-id"
 export GOOGLE_OAUTH_CLIENT_SECRET="your-client-secret"
 # After completing the dashboard OAuth flow, no refresh token env var is needed.
 
-# Option 2: Legacy env vars (deprecated, backward-compatible)
-# export GMAIL_CLIENT_ID="your-client-id"  # deprecated alias
-# export GMAIL_CLIENT_SECRET="your-client-secret"  # deprecated alias
-# export GMAIL_REFRESH_TOKEN="your-refresh-token"  # deprecated
+# Legacy `GMAIL_*` aliases were removed; use canonical `GOOGLE_OAUTH_*`
+# keys and the dashboard OAuth flow (DB-first credential storage).
 
 # Optional: watch renewal and polling intervals
 export GMAIL_WATCH_RENEW_INTERVAL_S="86400"  # 1 day
@@ -463,7 +461,7 @@ ERROR: Failed to fetch history changes: 401 Unauthorized
 
 **Resolution:**
 - Re-run OAuth flow to obtain new refresh token
-- Update `GMAIL_REFRESH_TOKEN` environment variable
+- Ensure credentials are persisted in `butler_secrets` via dashboard OAuth flow
 - Restart connector
 
 ### Missed Messages/Updates
@@ -516,9 +514,6 @@ ERROR: Failed to fetch history changes: 401 Unauthorized
 | `DATABASE_URL` | No | - | DB URL for DB-first credential resolution |
 | `CONNECTOR_BUTLER_DB_NAME` | No | - | Local butler DB name for per-butler override secrets |
 | `BUTLER_SHARED_DB_NAME` | No | `butlers` | Shared credential DB name |
-| `GMAIL_CLIENT_ID` | No | - | **Deprecated** alias for `GOOGLE_OAUTH_CLIENT_ID` |
-| `GMAIL_CLIENT_SECRET` | No | - | **Deprecated** alias for `GOOGLE_OAUTH_CLIENT_SECRET` |
-| `GMAIL_REFRESH_TOKEN` | No | - | **Deprecated**; use DB-stored credentials |
 | `GMAIL_WATCH_RENEW_INTERVAL_S` | No | `86400` | Watch renewal interval (seconds) |
 | `GMAIL_POLL_INTERVAL_S` | No | `60` | History polling interval (seconds) |
 
