@@ -569,7 +569,6 @@ class TestDeliverNotificationLogging:
                 channel="telegram",
                 message="Hello",
                 recipient="123456",
-                source_butler="health",
                 call_fn=mock_call,
             )
 
@@ -705,10 +704,17 @@ class TestDeliverSourceButler:
 
             await deliver(
                 pool,
-                channel="telegram",
-                message="Test",
-                recipient="123",
                 source_butler="health",
+                notify_request={
+                    "schema_version": "notify.v1",
+                    "origin_butler": "health",
+                    "delivery": {
+                        "intent": "send",
+                        "channel": "telegram",
+                        "message": "Test",
+                        "recipient": "123",
+                    },
+                },
                 call_fn=mock_call,
             )
 
@@ -1021,7 +1027,7 @@ class TestDeliverNotifyRouting:
         assert result["status"] == "failed"
         assert "Invalid notify.v1 envelope" in result["error"]
 
-    async def test_legacy_specialist_delivery_is_normalized_to_notify_v1(self) -> None:
+    async def test_specialist_delivery_requires_explicit_notify_request(self) -> None:
         from butlers.tools.switchboard import deliver
 
         pool = _make_mock_pool(
@@ -1047,13 +1053,9 @@ class TestDeliverNotifyRouting:
             call_fn=mock_call,
         )
 
-        assert result["status"] == "sent"
-        assert len(captured) == 1
-        notify_payload = captured[0]["args"]["input"]["context"]["notify_request"]
-        assert notify_payload["origin_butler"] == "health"
-        assert notify_payload["delivery"]["channel"] == "email"
-        assert notify_payload["delivery"]["subject"] == "Summary"
-        assert notify_payload["delivery"]["recipient"] == "user@example.com"
+        assert result["status"] == "failed"
+        assert "notify.v1 envelope required for specialist delivery" in result["error"]
+        assert captured == []
 
 
 # ---------------------------------------------------------------------------

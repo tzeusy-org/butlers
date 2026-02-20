@@ -302,9 +302,8 @@ async def _get_module_health_via_mcp(
 ) -> list[ModuleStatus]:
     """Call the butler's MCP ``status()`` tool and extract per-module health.
 
-    Handles both the new dict format (``{"modules": {"mod": {"status": ...}}}``)
-    and the legacy list format (``{"modules": ["mod1", "mod2"]}``) for backward
-    compatibility with older butler daemons.
+    Expects the current status payload shape:
+    ``{"modules": {"mod": {"status": ...}}}``.
     """
     try:
         client = await asyncio.wait_for(
@@ -323,11 +322,14 @@ async def _get_module_health_via_mcp(
                 status_data = json.loads(text)
 
         raw_modules = status_data.get("modules", {})
+        if not isinstance(raw_modules, dict):
+            logger.warning(
+                "Unexpected module status payload for butler %s: expected object, got %s",
+                name,
+                type(raw_modules).__name__,
+            )
+            raw_modules = {}
         butler_health = status_data.get("health", "unknown")
-
-        # Backward compat: legacy list format → treat all as active.
-        if isinstance(raw_modules, list):
-            raw_modules = {m: {"status": "active"} for m in raw_modules}
 
         modules: list[ModuleStatus] = []
         for mod_name in module_names:
