@@ -135,6 +135,9 @@ git push                # Push to remote
 ### Manifesto-driven design
 Each butler has a `MANIFESTO.md` that defines its public identity and value proposition. Features, tools, and UX decisions for a butler should be deeply aligned with its manifesto. The manifesto is the source of truth for *what this butler is for* — CLAUDE.md is *how it behaves*, butler.toml is *what it runs*. When proposing new features or evaluating scope, check the manifesto first.
 
+### Calendar module config reminder
+- Calendar configs run through `src/butlers/daemon.py::_validate_module_configs`, which loads the module's `config_schema` and rejects extra/missing fields; `CalendarConfig` in `src/butlers/modules/calendar.py:906-925` demands `provider` + `calendar_id`, so any butler must populate them before the module can enable.
+
 ### v1 MVP Status (2026-02-09)
 All 122 beads closed. 449 tests passing on main. Full implementation complete.
 
@@ -475,6 +478,10 @@ make test-qg
 ### Liveness reporter 404 contract
 - `src/butlers/daemon.py::_liveness_reporter_loop` must treat heartbeat endpoint `404 Not Found` as persistent misconfiguration (wrong host/port/path), log a single warning, and stop the reporter loop instead of retrying indefinitely with traceback spam.
 - Regression coverage lives in `tests/daemon/test_liveness_reporter.py::test_404_disables_reporter_without_retries`.
+
+### Switchboard heartbeat auto-registration contract
+- `roster/switchboard/api/router.py::receive_heartbeat` should attempt roster-driven self-registration (`roster/<butler>/butler.toml`) when a heartbeat arrives for a butler missing from `butler_registry`, then re-check registry and continue normal heartbeat state handling.
+- Unknown names with no roster config must still return `404`, preserving the signal for truly invalid targets.
 
 ### MCP client lifecycle hotspot
 - `roster/switchboard/tools/routing/route.py::_call_butler_tool` currently opens a new `fastmcp.Client` (`async with`) per routed tool call, which can generate high `/sse` + `ListToolsRequest` log volume under heartbeat fanout.

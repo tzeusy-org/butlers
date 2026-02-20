@@ -14,6 +14,13 @@ type = "codex"
 name = "butlers"
 schema = "messenger"
 
+[modules.calendar]
+provider = "google"
+calendar_id = "07fd80d3b4464836e586759b1b8672f1f97f80a9d642a30482176246dff4510b@group.calendar.google.com"
+
+[modules.calendar.conflicts]
+policy = "suggest"
+
 [modules.telegram]
 
 [modules.telegram.user]
