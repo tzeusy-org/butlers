@@ -263,6 +263,7 @@ class Spawner:
         self._audit_pool = audit_pool
         self._credential_store = credential_store
         self._session_semaphore = asyncio.Semaphore(config.runtime.max_concurrent_sessions)
+        self._max_queued_sessions = config.runtime.max_queued_sessions
         self._accepting = True
         self._in_flight: set[asyncio.Task] = set()
         self._in_flight_event = asyncio.Event()
@@ -349,6 +350,25 @@ class Spawner:
             error_msg = (
                 "Runtime invocation rejected: trigger tool cannot be called while "
                 "another session is in flight"
+            )
+            logger.warning(error_msg)
+            return SpawnerResult(
+                success=False,
+                error=error_msg,
+                model=self._config.runtime.model,
+            )
+
+        # Implementation note: queue-depth checks read Semaphore._waiters, which
+        # is also a CPython internal. We intentionally pair this with _value so
+        # backpressure only rejects when no active slot is available and the
+        # waiter queue has reached max_queued_sessions. Revisit if asyncio internals
+        # change or cross-interpreter portability becomes a requirement.
+        raw_waiters = getattr(self._session_semaphore, "_waiters", None)
+        queued_waiters = len(raw_waiters or ())
+        if self._session_semaphore._value == 0 and queued_waiters >= self._max_queued_sessions:
+            error_msg = (
+                "Runtime invocation rejected: spawner queue is full "
+                f"(max_queued_sessions={self._max_queued_sessions})"
             )
             logger.warning(error_msg)
             return SpawnerResult(
@@ -449,6 +469,8 @@ class Spawner:
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
+        runtime = self._runtime.create_worker()
+        runtime_invoked = False
 
         # Prepend context to prompt if provided
         final_prompt = prompt
@@ -515,7 +537,8 @@ class Spawner:
             }
 
             # Invoke via runtime adapter
-            result_text, tool_calls, usage = await self._runtime.invoke(
+            runtime_invoked = True
+            result_text, tool_calls, usage = await runtime.invoke(
                 prompt=final_prompt,
                 system_prompt=system_prompt,
                 mcp_servers=mcp_servers,
@@ -614,6 +637,18 @@ class Spawner:
                     success=False,
                     error=error_msg,
                 )
+
+            # Runtime failures can leave provider/client context dirty.
+            # Best-effort reset keeps subsequent sessions isolated.
+            if runtime_invoked:
+                try:
+                    await runtime.reset()
+                except Exception:
+                    logger.warning(
+                        "Runtime reset failed after invocation error for butler %s",
+                        self._config.name,
+                        exc_info=True,
+                    )
 
             # Write daemon-side audit log entry (error)
             await write_audit_entry(

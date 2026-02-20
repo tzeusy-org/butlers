@@ -56,6 +56,14 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         self._butler_name = butler_name
         self._log_root = log_root
 
+    def create_worker(self) -> RuntimeAdapter:
+        """Create an independent adapter for a pooled spawner worker."""
+        return ClaudeCodeAdapter(
+            sdk_query=self._sdk_query,
+            butler_name=self._butler_name,
+            log_root=self._log_root,
+        )
+
     @property
     def binary_name(self) -> str:
         return "claude"

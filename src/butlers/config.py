@@ -62,11 +62,15 @@ class RuntimeConfig:
     simultaneously for this butler. Default of 1 preserves serial (lock-like)
     behaviour for unaudited butlers; set higher only for butlers explicitly
     designed for concurrency.
+
+    max_queued_sessions controls spawner queue backpressure. Once the queue is
+    full, new triggers are rejected immediately instead of waiting unboundedly.
     """
 
     type: str = "claude-code"
     model: str | None = DEFAULT_MODEL
     max_concurrent_sessions: int = 1
+    max_queued_sessions: int = 100
 
 
 @dataclass
@@ -270,18 +274,38 @@ def _parse_runtime(butler_section: dict) -> RuntimeConfig:
 
     max_concurrent_sessions defaults to 1 when absent — preserves serial
     (lock-like) behaviour for existing butler configs.
+    max_queued_sessions defaults to 100 when absent.
     """
     runtime_section = butler_section.get("runtime", {})
     model = runtime_section.get("model")
     max_concurrent_sessions = int(runtime_section.get("max_concurrent_sessions", 1))
+    max_queued_sessions = int(runtime_section.get("max_queued_sessions", 100))
+
+    if max_concurrent_sessions <= 0:
+        raise ConfigError(
+            f"Invalid butler.runtime.max_concurrent_sessions: {max_concurrent_sessions!r}. "
+            "Must be a positive integer."
+        )
+    if max_queued_sessions <= 0:
+        raise ConfigError(
+            f"Invalid butler.runtime.max_queued_sessions: {max_queued_sessions!r}. "
+            "Must be a positive integer."
+        )
 
     # Normalise empty/whitespace string → use default
     if isinstance(model, str) and not model.strip():
         model = None
 
     if model is not None:
-        return RuntimeConfig(model=model, max_concurrent_sessions=max_concurrent_sessions)
-    return RuntimeConfig(max_concurrent_sessions=max_concurrent_sessions)
+        return RuntimeConfig(
+            model=model,
+            max_concurrent_sessions=max_concurrent_sessions,
+            max_queued_sessions=max_queued_sessions,
+        )
+    return RuntimeConfig(
+        max_concurrent_sessions=max_concurrent_sessions,
+        max_queued_sessions=max_queued_sessions,
+    )
 
 
 def parse_approval_config(raw: dict[str, Any] | None) -> ApprovalConfig | None:
@@ -639,6 +663,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         type=runtime_type,
         model=butler_runtime.model,
         max_concurrent_sessions=butler_runtime.max_concurrent_sessions,
+        max_queued_sessions=butler_runtime.max_queued_sessions,
     )
 
     return ButlerConfig(

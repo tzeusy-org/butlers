@@ -230,6 +230,10 @@ class GeminiAdapter(RuntimeAdapter):
     def __init__(self, gemini_binary: str | None = None) -> None:
         self._gemini_binary = gemini_binary
 
+    def create_worker(self) -> RuntimeAdapter:
+        """Create an independent adapter for a pooled spawner worker."""
+        return GeminiAdapter(gemini_binary=self._gemini_binary)
+
     @property
     def binary_name(self) -> str:
         return "gemini"

@@ -111,6 +111,24 @@ class RuntimeAdapter(abc.ABC):
         """
         ...
 
+    def create_worker(self) -> RuntimeAdapter:
+        """Return a worker-scoped adapter instance for pooled spawner workers.
+
+        Default implementation returns ``self`` which is sufficient for
+        stateless adapters. Stateful adapters may override to return a fresh
+        instance per worker.
+        """
+        return self
+
+    async def reset(self) -> None:
+        """Reset adapter/provider state after a failed invocation.
+
+        The spawner calls this after unsuccessful sessions so adapters that
+        cache provider clients can clear stale state before the next request.
+        Default implementation is a no-op.
+        """
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Adapter registry

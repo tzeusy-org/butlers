@@ -53,6 +53,16 @@ def test_gemini_adapter_with_custom_binary():
     assert adapter._get_binary() == "/usr/local/bin/gemini"
 
 
+def test_gemini_adapter_create_worker_preserves_binary():
+    """create_worker() returns a distinct adapter with the same binary config."""
+    adapter = GeminiAdapter(gemini_binary="/usr/local/bin/gemini")
+    worker = adapter.create_worker()
+
+    assert worker is not adapter
+    assert isinstance(worker, GeminiAdapter)
+    assert worker._gemini_binary == "/usr/local/bin/gemini"
+
+
 # ---------------------------------------------------------------------------
 # _find_gemini_binary tests
 # ---------------------------------------------------------------------------

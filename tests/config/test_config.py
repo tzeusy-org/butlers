@@ -1282,17 +1282,25 @@ queue_capacity = 50
         assert cfg.buffer.scanner_batch_size == 50
 
     def test_switchboard_butler_toml_has_explicit_buffer_section(self):
-        """Switchboard butler.toml has an explicit [buffer] section with all defaults."""
+        """Switchboard butler.toml has explicit buffer tuning for pooled workers."""
         repo_root = Path(__file__).resolve().parent.parent.parent
         switchboard_config_dir = repo_root / "roster" / "switchboard"
         cfg = load_config(switchboard_config_dir)
 
         assert isinstance(cfg.buffer, BufferConfig)
         assert cfg.buffer.queue_capacity == 100
-        assert cfg.buffer.worker_count == 1
+        assert cfg.buffer.worker_count == 3
         assert cfg.buffer.scanner_interval_s == 30
         assert cfg.buffer.scanner_grace_s == 10
         assert cfg.buffer.scanner_batch_size == 50
+
+    def test_switchboard_buffer_workers_match_runtime_pool_size(self):
+        """Switchboard queue workers should match max_concurrent_sessions."""
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        switchboard_config_dir = repo_root / "roster" / "switchboard"
+        cfg = load_config(switchboard_config_dir)
+
+        assert cfg.buffer.worker_count == cfg.runtime.max_concurrent_sessions
 
 
 # ---------------------------------------------------------------------------
@@ -1386,3 +1394,118 @@ max_concurrent_sessions = 3
         messenger_config_dir = repo_root / "roster" / "messenger"
         cfg = load_config(messenger_config_dir)
         assert cfg.runtime.max_concurrent_sessions == 2
+
+
+# ---------------------------------------------------------------------------
+# RuntimeConfig max_queued_sessions tests
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeConfigMaxQueuedSessions:
+    """Tests for max_queued_sessions field in RuntimeConfig."""
+
+    def test_default_is_one_hundred(self):
+        """RuntimeConfig.max_queued_sessions defaults to 100."""
+        rc = RuntimeConfig()
+        assert rc.max_queued_sessions == 100
+
+    def test_explicit_value_stored(self):
+        """RuntimeConfig accepts an explicit max_queued_sessions value."""
+        rc = RuntimeConfig(max_queued_sessions=25)
+        assert rc.max_queued_sessions == 25
+
+    def test_butler_config_defaults_to_one_hundred(self):
+        """ButlerConfig.runtime.max_queued_sessions defaults to 100."""
+        cfg = ButlerConfig(name="test", port=9000)
+        assert cfg.runtime.max_queued_sessions == 100
+
+    def test_missing_field_defaults_to_one_hundred(self, tmp_path: Path):
+        """Configs without max_queued_sessions keep default 100."""
+        toml = """\
+[butler]
+name = "legacybot"
+port = 7054
+"""
+        (tmp_path / "butler.toml").write_text(toml)
+        cfg = load_config(tmp_path)
+        assert cfg.runtime.max_queued_sessions == 100
+
+    def test_runtime_section_without_field_defaults_to_one_hundred(self, tmp_path: Path):
+        """[butler.runtime] without max_queued_sessions defaults to 100."""
+        toml = """\
+[butler]
+name = "nofield"
+port = 7055
+
+[butler.runtime]
+model = "claude-haiku-4-5-20251001"
+"""
+        (tmp_path / "butler.toml").write_text(toml)
+        cfg = load_config(tmp_path)
+        assert cfg.runtime.max_queued_sessions == 100
+
+    def test_explicit_value_parsed_from_toml(self, tmp_path: Path):
+        """max_queued_sessions is parsed from [butler.runtime]."""
+        toml = """\
+[butler]
+name = "queuedbot"
+port = 7056
+
+[butler.runtime]
+max_queued_sessions = 7
+"""
+        (tmp_path / "butler.toml").write_text(toml)
+        cfg = load_config(tmp_path)
+        assert cfg.runtime.max_queued_sessions == 7
+
+    def test_value_parsed_with_model_and_concurrency(self, tmp_path: Path):
+        """max_queued_sessions parses correctly alongside other runtime fields."""
+        toml = """\
+[butler]
+name = "fullruntimebot"
+port = 7057
+
+[butler.runtime]
+model = "claude-opus-4-20250514"
+max_concurrent_sessions = 3
+max_queued_sessions = 9
+"""
+        (tmp_path / "butler.toml").write_text(toml)
+        cfg = load_config(tmp_path)
+        assert cfg.runtime.model == "claude-opus-4-20250514"
+        assert cfg.runtime.max_concurrent_sessions == 3
+        assert cfg.runtime.max_queued_sessions == 9
+
+    def test_zero_value_rejected(self, tmp_path: Path):
+        """Non-positive max_queued_sessions values are rejected."""
+        toml = """\
+[butler]
+name = "badqueue"
+port = 7058
+
+[butler.runtime]
+max_queued_sessions = 0
+"""
+        (tmp_path / "butler.toml").write_text(toml)
+        with pytest.raises(
+            ConfigError,
+            match=r"Invalid butler.runtime.max_queued_sessions: 0\. Must be a positive integer\.",
+        ):
+            load_config(tmp_path)
+
+    def test_negative_value_rejected(self, tmp_path: Path):
+        """Negative max_queued_sessions values are rejected."""
+        toml = """\
+[butler]
+name = "badqueue"
+port = 7059
+
+[butler.runtime]
+max_queued_sessions = -2
+"""
+        (tmp_path / "butler.toml").write_text(toml)
+        with pytest.raises(
+            ConfigError,
+            match=r"Invalid butler.runtime.max_queued_sessions: -2\. Must be a positive integer\.",
+        ):
+            load_config(tmp_path)

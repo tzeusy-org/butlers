@@ -191,6 +191,10 @@ class CodexAdapter(RuntimeAdapter):
     def __init__(self, codex_binary: str | None = None) -> None:
         self._codex_binary = codex_binary
 
+    def create_worker(self) -> RuntimeAdapter:
+        """Create an independent adapter for a pooled spawner worker."""
+        return CodexAdapter(codex_binary=self._codex_binary)
+
     @property
     def binary_name(self) -> str:
         return "codex"
