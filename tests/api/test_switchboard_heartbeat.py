@@ -11,7 +11,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -225,6 +225,37 @@ class TestReceiveHeartbeat:
             )
 
         assert resp.status_code == 404
+
+    async def test_missing_registry_row_auto_registers_from_roster(self):
+        """If butler is missing from registry but exists in roster, heartbeat succeeds."""
+        app, mock_pool = _app_with_heartbeat_mock(fetchrow_result=None)
+        mock_pool.fetchrow = AsyncMock(
+            side_effect=[
+                None,
+                {"eligibility_state": "active", "last_seen_at": None},
+            ]
+        )
+        router_module = sys.modules[_MODULE_NAME]
+        register_mock = AsyncMock(return_value=True)
+
+        with patch.object(
+            router_module,
+            "_register_missing_butler_from_roster",
+            new=register_mock,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/api/switchboard/heartbeat",
+                    json={"butler_name": "health"},
+                )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["eligibility_state"] == "active"
+        register_mock.assert_awaited_once_with(mock_pool, "health")
 
     async def test_missing_butler_name_returns_422(self):
         """Missing butler_name field returns 422 Unprocessable Entity."""

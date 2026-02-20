@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.config import load_config
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -78,6 +79,9 @@ def _normalize_jsonb_string_list(raw: Any) -> list[str]:
 router = APIRouter(prefix="/api/switchboard", tags=["switchboard"])
 
 BUTLER_DB = "switchboard"
+_ROSTER_DIR = Path(__file__).resolve().parents[2]
+_REGISTRY_MODULE_NAME = "switchboard_registry_tools"
+_REGISTRY_PATH = Path(__file__).resolve().parents[1] / "tools" / "registry" / "registry.py"
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -97,6 +101,51 @@ def _pool(db: DatabaseManager):
             status_code=503,
             detail="Switchboard butler database is not available",
         )
+
+
+async def _register_missing_butler_from_roster(pool: Any, butler_name: str) -> bool:
+    """Attempt to register an unknown butler using roster config metadata.
+
+    Returns ``True`` when registration is attempted successfully, else ``False``
+    (missing config or registration error).
+    """
+    config_dir = _ROSTER_DIR / butler_name
+    toml_path = config_dir / "butler.toml"
+    if not toml_path.exists():
+        return False
+
+    try:
+        if _REGISTRY_MODULE_NAME in sys.modules:
+            registry_module = sys.modules[_REGISTRY_MODULE_NAME]
+        else:
+            spec = importlib.util.spec_from_file_location(_REGISTRY_MODULE_NAME, _REGISTRY_PATH)
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"Failed to load registry tools from {_REGISTRY_PATH}")
+            registry_module = importlib.util.module_from_spec(spec)
+            sys.modules[_REGISTRY_MODULE_NAME] = registry_module
+            spec.loader.exec_module(registry_module)
+
+        register_butler = registry_module.register_butler
+        config = load_config(config_dir)
+        endpoint_url = f"http://localhost:{config.port}/sse"
+        modules = list(config.modules.keys())
+        capabilities = sorted(set(modules) | {"trigger"})
+        await register_butler(
+            pool,
+            config.name,
+            endpoint_url,
+            config.description,
+            modules,
+            capabilities=capabilities,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to auto-register missing butler %r from roster",
+            butler_name,
+            exc_info=True,
+        )
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +299,15 @@ async def receive_heartbeat(
         "SELECT eligibility_state, last_seen_at FROM butler_registry WHERE name = $1",
         body.butler_name,
     )
+
+    if row is None:
+        registered = await _register_missing_butler_from_roster(pool, body.butler_name)
+        if registered:
+            row = await pool.fetchrow(
+                "SELECT eligibility_state, last_seen_at FROM butler_registry WHERE name = $1",
+                body.butler_name,
+            )
+
     if row is None:
         raise HTTPException(status_code=404, detail=f"Butler '{body.butler_name}' not found")
 
