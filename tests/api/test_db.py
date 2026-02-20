@@ -67,6 +67,26 @@ async def test_add_butler_custom_db_name(mock_create: AsyncMock, mgr: DatabaseMa
 
 
 @patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_add_butler_schema_sets_search_path(
+    mock_create: AsyncMock, mgr: DatabaseManager
+) -> None:
+    """Schema-scoped pools set server search_path for one-db topology."""
+    mock_create.return_value = _make_mock_pool()
+    await mgr.add_butler("atlas", db_name="butlers", db_schema="general")
+
+    mock_create.assert_called_once_with(
+        host="localhost",
+        port=5432,
+        user="pg",
+        password="secret",
+        database="butlers",
+        min_size=1,
+        max_size=5,
+        server_settings={"search_path": "general,shared,public"},
+    )
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
 async def test_add_butler_forwards_ssl_mode(mock_create: AsyncMock) -> None:
     """Configured SSL mode is forwarded to asyncpg.create_pool."""
     mock_create.return_value = _make_mock_pool()
@@ -233,6 +253,29 @@ async def test_set_credential_shared_pool(mock_create: AsyncMock, mgr: DatabaseM
         database="butler_shared",
         min_size=1,
         max_size=5,
+    )
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_set_credential_shared_pool_with_schema(
+    mock_create: AsyncMock, mgr: DatabaseManager
+) -> None:
+    """Shared credential pool supports explicit shared schema semantics."""
+    shared_pool = _make_mock_pool("shared")
+    mock_create.return_value = shared_pool
+
+    await mgr.set_credential_shared_pool("butlers", db_schema="shared")
+
+    assert mgr.credential_shared_pool() is shared_pool
+    mock_create.assert_called_once_with(
+        host="localhost",
+        port=5432,
+        user="pg",
+        password="secret",
+        database="butlers",
+        min_size=1,
+        max_size=5,
+        server_settings={"search_path": "shared,public"},
     )
 
 

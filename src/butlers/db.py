@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _VALID_SSL_MODES = {"disable", "prefer", "allow", "require", "verify-ca", "verify-full"}
 _SSL_UPGRADE_CONNECTION_LOST = "unexpected connection_lost() call"
+_SCHEMA_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _normalize_ssl_mode(value: str | None) -> str | None:
@@ -41,6 +43,30 @@ def _db_params_from_database_url(database_url: str) -> dict[str, str | int | Non
     }
 
 
+def _normalize_schema_name(value: str | None) -> str | None:
+    """Normalize and validate a schema name."""
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if _SCHEMA_NAME_PATTERN.fullmatch(normalized) is None:
+        raise ValueError(f"Invalid schema name: {value!r}. Expected a SQL identifier-style string.")
+    return normalized
+
+
+def schema_search_path(schema: str | None) -> str | None:
+    """Build a deterministic search_path for schema-scoped runtime access."""
+    normalized = _normalize_schema_name(schema)
+    if normalized is None:
+        return None
+    search_path: list[str] = []
+    for part in (normalized, "shared", "public"):
+        if part not in search_path:
+            search_path.append(part)
+    return ",".join(search_path)
+
+
 def should_retry_with_ssl_disable(exc: Exception, configured_ssl: str | None) -> bool:
     """Return True when asyncpg SSL STARTTLS fallback should retry with ssl=disable."""
     return (
@@ -67,14 +93,15 @@ def db_params_from_env() -> dict[str, str | int | None]:
 class Database:
     """Manages asyncpg connection pool and database provisioning.
 
-    Each butler owns a dedicated PostgreSQL database. This class handles
-    creating the database if it doesn't exist (provisioning) and managing
-    the asyncpg connection pool for runtime queries.
+    Supports both legacy per-butler databases and one-db/multi-schema runtime
+    topology. This class handles creating the target database (provisioning)
+    and managing an asyncpg pool, optionally with schema-scoped search_path.
     """
 
     def __init__(
         self,
         db_name: str,
+        schema: str | None = None,
         host: str = "localhost",
         port: int = 5432,
         user: str = "postgres",
@@ -84,6 +111,7 @@ class Database:
         max_pool_size: int = 10,
     ) -> None:
         self.db_name = db_name
+        self.schema = _normalize_schema_name(schema)
         self.host = host
         self.port = port
         self.user = user
@@ -92,6 +120,17 @@ class Database:
         self.min_pool_size = min_pool_size
         self.max_pool_size = max_pool_size
         self.pool: asyncpg.Pool | None = None
+
+    def set_schema(self, schema: str | None) -> None:
+        """Set schema context for runtime query resolution."""
+        self.schema = _normalize_schema_name(schema)
+
+    def _server_settings(self) -> dict[str, str] | None:
+        """Return asyncpg server settings for this database context."""
+        search_path = schema_search_path(self.schema)
+        if search_path is None:
+            return None
+        return {"search_path": search_path}
 
     async def provision(self) -> None:
         """Create the database if it doesn't exist.
@@ -156,6 +195,9 @@ class Database:
             "min_size": self.min_pool_size,
             "max_size": self.max_pool_size,
         }
+        server_settings = self._server_settings()
+        if server_settings is not None:
+            pool_kwargs["server_settings"] = server_settings
         if self.ssl is not None:
             pool_kwargs["ssl"] = self.ssl
         try:

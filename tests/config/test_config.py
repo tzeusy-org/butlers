@@ -157,6 +157,53 @@ def test_default_db_name(tmp_path: Path):
     cfg = load_config(config_dir)
 
     assert cfg.db_name == "butler_alfred"
+    assert cfg.db_schema is None
+
+
+def test_db_schema_parsed_for_one_db_topology(tmp_path: Path):
+    """[butler.db].schema is parsed and preserved for one-db setups."""
+    toml = """\
+[butler]
+name = "general"
+port = 9001
+
+[butler.db]
+name = "butlers"
+schema = "general"
+"""
+    cfg = load_config(_write_toml(tmp_path, toml))
+
+    assert cfg.db_name == "butlers"
+    assert cfg.db_schema == "general"
+
+
+def test_db_schema_required_when_db_name_is_butlers(tmp_path: Path):
+    """Consolidated DB configs must declare explicit schema target."""
+    toml = """\
+[butler]
+name = "general"
+port = 9002
+
+[butler.db]
+name = "butlers"
+"""
+    with pytest.raises(ConfigError, match="butler.db.schema is required"):
+        load_config(_write_toml(tmp_path, toml))
+
+
+def test_db_schema_rejects_invalid_identifier(tmp_path: Path):
+    """Schema names must be safe SQL identifier-style values."""
+    toml = """\
+[butler]
+name = "general"
+port = 9003
+
+[butler.db]
+name = "butlers"
+schema = "general; drop schema public"
+"""
+    with pytest.raises(ConfigError, match="Invalid butler.db.schema"):
+        load_config(_write_toml(tmp_path, toml))
 
 
 def test_env_section(tmp_path: Path):

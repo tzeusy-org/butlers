@@ -40,6 +40,7 @@ import asyncio
 import functools
 import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -49,7 +50,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote, quote_plus
 
 import asyncpg
 import httpx
@@ -110,7 +111,7 @@ from butlers.credentials import (
     validate_credentials,
     validate_module_credentials_async,
 )
-from butlers.db import Database
+from butlers.db import Database, schema_search_path
 from butlers.migrations import has_butler_chain, run_migrations
 from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.base import Module, ToolIODescriptor
@@ -371,6 +372,8 @@ def _flatten_config_for_secret_scan(config: ButlerConfig) -> dict[str, Any]:
     if config.description:
         flat["butler.description"] = config.description
     flat["butler.db.name"] = config.db_name
+    if config.db_schema:
+        flat["butler.db.schema"] = config.db_schema
 
     # Schedules (cron and prompt strings)
     for i, schedule in enumerate(config.schedules):
@@ -753,6 +756,7 @@ class ButlerDaemon:
         # If db was injected (e.g., for testing), skip provisioning
         if self.db is None:
             self.db = Database.from_env(self.config.db_name)
+            self.db.set_schema(self.config.db_schema)
             await self.db.provision()
             pool = await self.db.connect()
         else:
@@ -1163,9 +1167,8 @@ class ButlerDaemon:
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
         """Create or reuse a connection pool for daemon-side audit logging.
 
-        The switchboard butler reuses its own pool (it already points at
-        ``butler_switchboard``).  Other butlers open a small dedicated pool
-        to the switchboard database.
+        The switchboard butler reuses its own pool. Other butlers open a small
+        dedicated pool to the switchboard DB context.
 
         Returns ``None`` (with a warning) if the pool cannot be created.
         """
@@ -1173,12 +1176,19 @@ class ButlerDaemon:
             return own_pool
 
         try:
-            audit_db = Database.from_env("butler_switchboard")
+            audit_db_name = self.config.db_name if self.config.db_schema else "butler_switchboard"
+            audit_db_schema = "switchboard" if self.config.db_schema else None
+            audit_db = Database.from_env(audit_db_name)
+            audit_db.set_schema(audit_db_schema)
             audit_db.min_pool_size = 1
             audit_db.max_pool_size = 2
             await audit_db.connect()
             self._audit_db = audit_db
-            logger.info("Audit pool connected to butler_switchboard")
+            logger.info(
+                "Audit pool connected (db=%s, schema=%s)",
+                audit_db_name,
+                audit_db_schema or "<default>",
+            )
             return audit_db.pool
         except Exception:
             logger.warning(
@@ -1476,7 +1486,16 @@ class ButlerDaemon:
     def _build_db_url(self) -> str:
         """Build SQLAlchemy-compatible DB URL from Database config."""
         db = self.db
-        return f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
+        user = quote(db.user, safe="")
+        password = quote(db.password, safe="")
+        db_name = quote(db.db_name, safe="")
+        base = f"postgresql://{user}:{password}@{db.host}:{db.port}/{db_name}"
+        schema = db.schema if isinstance(db.schema, str) else None
+        search_path = schema_search_path(schema)
+        if search_path is None:
+            return base
+        options = quote_plus(f"-csearch_path={search_path}")
+        return f"{base}?options={options}"
 
     async def _check_health(self) -> str:
         """Check health of all core components.
@@ -3382,15 +3401,55 @@ class ButlerDaemon:
     async def _build_credential_store(self, local_pool: asyncpg.Pool) -> CredentialStore:
         """Build a credential store with local override + shared/legacy fallbacks."""
         fallback_pools: list[asyncpg.Pool] = []
+        schema_topology = bool(self.config.db_schema)
+        configured_shared_db_name = shared_db_name_from_env()
+        shared_db_name = configured_shared_db_name
+        shared_db_schema: str | None = None
+        if schema_topology:
+            shared_db_name = self.config.db_name
+            shared_db_schema = "shared"
+            if (
+                os.environ.get("BUTLER_SHARED_DB_NAME") is not None
+                and configured_shared_db_name != shared_db_name
+            ):
+                logger.warning(
+                    "Using transitional BUTLER_SHARED_DB_NAME=%s override in one-db mode; "
+                    "expected %s",
+                    configured_shared_db_name,
+                    shared_db_name,
+                )
+                shared_db_name = configured_shared_db_name
 
-        shared_db_name = shared_db_name_from_env()
         shared_pool: asyncpg.Pool | None = None
 
-        if self.db is not None and self.db.db_name == shared_db_name:
+        if schema_topology:
+            shared_db = Database.from_env(shared_db_name)
+            shared_db.set_schema(shared_db_schema)
+            if shared_db is self.db:
+                # Test harnesses may patch Database.from_env to always return the
+                # main DB object. Treat that as local-only mode.
+                shared_pool = local_pool
+            else:
+                try:
+                    await shared_db.provision()
+                    shared_pool = await shared_db.connect()
+                    await ensure_secrets_schema(shared_pool)
+                    self._shared_credentials_db = shared_db
+                except Exception:
+                    logger.warning(
+                        "Shared credential DB unavailable (db=%s, schema=%s); "
+                        "falling back to local/env only",
+                        shared_db_name,
+                        shared_db_schema,
+                        exc_info=True,
+                    )
+                    await shared_db.close()
+                    shared_pool = None
+        elif self.db is not None and self.db.db_name == shared_db_name:
             shared_pool = local_pool
         else:
             shared_db = Database.from_env(shared_db_name)
-            if shared_db.db_name == self.config.db_name:
+            if shared_db is self.db:
                 # Test harnesses may patch Database.from_env to always return the
                 # main DB object. Treat that as local-only mode.
                 shared_pool = local_pool
@@ -3413,6 +3472,8 @@ class ButlerDaemon:
             fallback_pools.append(shared_pool)
 
         legacy_db_name = legacy_shared_db_name_from_env()
+        if schema_topology and os.environ.get("BUTLER_LEGACY_SHARED_DB_NAME") is None:
+            legacy_db_name = ""
         legacy_pool: asyncpg.Pool | None = None
         excluded_db_names = {self.config.db_name, shared_db_name}
         if self._shared_credentials_db is not None:

@@ -4,7 +4,8 @@ port = 40101
 description = "Flexible catch-all assistant for freeform data"
 
 [butler.db]
-name = "butler_general"
+name = "butlers"
+schema = "general"
 
 [modules.calendar]
 provider = "google"

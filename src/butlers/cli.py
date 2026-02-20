@@ -184,7 +184,8 @@ port = {port}
 description = ""
 
 [butler.db]
-name = "butler_{name}"
+name = "butlers"
+schema = "{name}"
 """
     (butler_dir / "butler.toml").write_text(toml_content)
 

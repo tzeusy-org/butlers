@@ -126,6 +126,7 @@ class ButlerDetail(ButlerSummary):
 
     description: str | None = None
     db_name: str | None = None
+    db_schema: str | None = None
     modules: list[ModuleInfo] = Field(default_factory=list)
     schedules: list[ScheduleEntry] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)

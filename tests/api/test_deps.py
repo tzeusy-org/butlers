@@ -15,6 +15,7 @@ from butlers.api.deps import (
     discover_butlers,
     get_butler_configs,
     get_mcp_manager,
+    init_db_manager,
     init_dependencies,
     shutdown_dependencies,
 )
@@ -282,6 +283,76 @@ class TestDiscoverButlers:
         result = discover_butlers(roster_dir=tmp_path)
         assert len(result) == 1
         assert result[0].description == "My awesome butler"
+
+    def test_discover_includes_db_schema(self, tmp_path: Path):
+        """Schema-aware DB config is surfaced in connection info."""
+        d = tmp_path / "general"
+        d.mkdir()
+        (d / "butler.toml").write_text(
+            '[butler]\nname = "general"\nport = 40101\n'
+            '[butler.db]\nname = "butlers"\nschema = "general"\n'
+            '[runtime]\ntype = "claude-code"\n'
+        )
+
+        result = discover_butlers(roster_dir=tmp_path)
+
+        assert len(result) == 1
+        assert result[0].db_name == "butlers"
+        assert result[0].db_schema == "general"
+
+
+class TestInitDbManager:
+    async def test_one_db_topology_uses_shared_schema_pool(self, monkeypatch: pytest.MonkeyPatch):
+        """One-db configs wire shared credentials to db=butlers schema=shared."""
+        import butlers.api.deps as deps_mod
+
+        monkeypatch.delenv("BUTLER_SHARED_DB_NAME", raising=False)
+        monkeypatch.delenv("BUTLER_LEGACY_SHARED_DB_NAME", raising=False)
+
+        configs = [
+            ButlerConnectionInfo(
+                name="general", port=40101, db_name="butlers", db_schema="general"
+            ),
+            ButlerConnectionInfo(
+                name="switchboard",
+                port=40100,
+                db_name="butlers",
+                db_schema="switchboard",
+            ),
+        ]
+
+        mgr = MagicMock()
+        mgr.add_butler = AsyncMock()
+        mgr.set_credential_shared_pool = AsyncMock()
+        mgr.set_legacy_shared_pool = AsyncMock()
+        shared_pool = AsyncMock()
+        mgr.credential_shared_pool = MagicMock(return_value=shared_pool)
+        mgr.legacy_shared_pool = MagicMock(return_value=None)
+
+        def _mk_db(db_name: str) -> MagicMock:
+            db = MagicMock()
+            db.db_name = db_name
+            db.set_schema = MagicMock()
+            db.provision = AsyncMock()
+            db.connect = AsyncMock(return_value=AsyncMock())
+            return db
+
+        original_db_manager = deps_mod._db_manager
+        try:
+            with (
+                patch("butlers.api.deps.DatabaseManager", return_value=mgr),
+                patch("butlers.api.deps.Database.from_env", side_effect=_mk_db),
+                patch("butlers.api.deps.ensure_secrets_schema", new_callable=AsyncMock),
+                patch("butlers.api.deps.backfill_shared_secrets", new_callable=AsyncMock),
+            ):
+                await init_db_manager(configs)
+        finally:
+            deps_mod._db_manager = original_db_manager
+
+        mgr.add_butler.assert_any_await("general", db_name="butlers", db_schema="general")
+        mgr.add_butler.assert_any_await("switchboard", db_name="butlers", db_schema="switchboard")
+        mgr.set_credential_shared_pool.assert_awaited_once_with("butlers", db_schema="shared")
+        mgr.set_legacy_shared_pool.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

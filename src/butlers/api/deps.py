@@ -11,6 +11,7 @@ Provides:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -45,6 +46,7 @@ class ButlerConnectionInfo:
     port: int
     description: str | None = None
     db_name: str | None = None
+    db_schema: str | None = None
 
     @property
     def sse_url(self) -> str:
@@ -216,6 +218,7 @@ def discover_butlers(
                     port=config.port,
                     description=config.description,
                     db_name=config.db_name or None,
+                    db_schema=config.db_schema or None,
                 )
             )
         except ConfigError as exc:
@@ -343,29 +346,58 @@ async def init_db_manager(
 
     params = _db_params_from_env()
     mgr = DatabaseManager(**params)
+    effective_db_names = {cfg.db_name or f"butler_{cfg.name}" for cfg in butler_configs}
+    all_schema_scoped = bool(butler_configs) and all(cfg.db_schema for cfg in butler_configs)
+    one_db_schema_topology = len(effective_db_names) == 1 and all_schema_scoped
 
     for cfg in butler_configs:
         try:
-            db = Database.from_env(cfg.db_name or f"butler_{cfg.name}")
+            effective_db_name = cfg.db_name or f"butler_{cfg.name}"
+            db = Database.from_env(effective_db_name)
+            db.set_schema(cfg.db_schema)
             await db.provision()
-            await mgr.add_butler(cfg.name, db_name=cfg.db_name)
+            await mgr.add_butler(
+                cfg.name,
+                db_name=effective_db_name,
+                db_schema=cfg.db_schema,
+            )
         except Exception:
             logger.warning("Failed to add DB pool for butler %s", cfg.name, exc_info=True)
 
-    shared_db_name = shared_db_name_from_env()
+    configured_shared_db_name = shared_db_name_from_env()
+    shared_db_env_override = os.environ.get("BUTLER_SHARED_DB_NAME")
+    shared_db_name = configured_shared_db_name
+    shared_db_schema: str | None = None
+    if one_db_schema_topology:
+        canonical_db_name = next(iter(effective_db_names))
+        if shared_db_env_override is None:
+            shared_db_name = canonical_db_name
+        elif configured_shared_db_name != canonical_db_name:
+            logger.warning(
+                "Using transitional BUTLER_SHARED_DB_NAME=%s override in one-db mode; expected %s",
+                configured_shared_db_name,
+                canonical_db_name,
+            )
+        shared_db_schema = "shared"
+
     try:
         shared_db = Database.from_env(shared_db_name)
+        shared_db.set_schema(shared_db_schema)
         await shared_db.provision()
-        await mgr.set_credential_shared_pool(shared_db_name)
+        await mgr.set_credential_shared_pool(shared_db_name, db_schema=shared_db_schema)
         await ensure_secrets_schema(mgr.credential_shared_pool())
     except Exception:
         logger.warning(
-            "Failed to initialize shared credential DB pool (db=%s)",
+            "Failed to initialize shared credential DB pool (db=%s, schema=%s)",
             shared_db_name,
+            shared_db_schema,
             exc_info=True,
         )
 
+    legacy_db_env_override = os.environ.get("BUTLER_LEGACY_SHARED_DB_NAME")
     legacy_db_name = legacy_shared_db_name_from_env()
+    if one_db_schema_topology and legacy_db_env_override is None:
+        legacy_db_name = ""
     if legacy_db_name and legacy_db_name != shared_db_name:
         try:
             await mgr.set_legacy_shared_pool(legacy_db_name)

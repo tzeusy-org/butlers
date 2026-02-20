@@ -219,3 +219,21 @@ name = "butler_${DB_SUFFIX}"
         cfg = load_config(config_dir)
 
         assert cfg.db_name == "butler_prod"
+
+    def test_db_schema_resolved(self, tmp_path, monkeypatch):
+        """Env vars in db schema are resolved."""
+        monkeypatch.setenv("BUTLER_SCHEMA", "general")
+        toml = """\
+[butler]
+name = "dbbot"
+port = 8501
+
+[butler.db]
+name = "butlers"
+schema = "${BUTLER_SCHEMA}"
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+
+        assert cfg.db_name == "butlers"
+        assert cfg.db_schema == "general"

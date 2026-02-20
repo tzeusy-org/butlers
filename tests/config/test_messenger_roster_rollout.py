@@ -30,7 +30,8 @@ def test_messenger_butler_toml_has_delivery_module_wiring() -> None:
     assert butler.get("port") == 40104
 
     db = butler.get("db", {})
-    assert db.get("name") == "butler_messenger"
+    assert db.get("name") == "butlers"
+    assert db.get("schema") == "messenger"
 
     modules = data.get("modules", {})
 

@@ -138,6 +138,12 @@ Each butler has a `MANIFESTO.md` that defines its public identity and value prop
 ### v1 MVP Status (2026-02-09)
 All 122 beads closed. 449 tests passing on main. Full implementation complete.
 
+### One-DB runtime topology contract (butlers-1003.5)
+- `[butler.db]` is schema-aware: when `name = "butlers"`, `schema` is required (explicit target schema, no implicit fallback).
+- `Database` / `DatabaseManager` apply schema-scoped `search_path` (`<schema>,shared,public`; shared pool uses `shared,public`) for one-db pool resolution.
+- API startup (`init_db_manager`) treats one-db topology as canonical shared-credentials path (`db=butlers`, schema `shared`) and suppresses default legacy fallback DB unless `BUTLER_LEGACY_SHARED_DB_NAME` is explicitly set.
+- Daemon migration URL generation includes libpq `options=-csearch_path=...` when a schema is configured so Alembic runs in the intended schema context.
+
 ### dev.sh Gmail OAuth rerun contract
 - In `dev.sh`, `_has_google_creds()` must check the same credential DB set as the OAuth gate (`_poll_db_for_refresh_token`), plus legacy/override DB names where applicable, so preflight and gate do not disagree.
 - Build the Gmail pane startup command at Layer 3 launch time (after OAuth gate), not once during early preflight; otherwise reruns can keep showing the stale "waiting for OAuth" pane even when credentials already exist.

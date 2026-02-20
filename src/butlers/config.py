@@ -24,6 +24,8 @@ DEFAULT_TRUSTED_ROUTE_CALLERS: tuple[str, ...] = ("switchboard",)
 
 # Pattern matching ${VAR_NAME} — supports alphanumeric + underscore variable names.
 _ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_DB_SCHEMA_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CONSOLIDATED_DB_NAME = "butlers"
 
 
 class ConfigError(Exception):
@@ -182,6 +184,7 @@ class ButlerConfig:
     port: int
     description: str | None = None
     db_name: str = ""
+    db_schema: str | None = None
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     schedules: list[ScheduleConfig] = field(default_factory=list)
@@ -492,7 +495,30 @@ def load_config(config_dir: Path) -> ButlerConfig:
 
     # --- [butler.db] sub-section ---
     db_section = butler_section.get("db", {})
-    db_name = db_section.get("name", f"butler_{name}")
+    db_name = str(db_section.get("name", f"butler_{name}")).strip()
+    if not db_name:
+        raise ConfigError("butler.db.name must be a non-empty string")
+
+    db_schema_raw = db_section.get("schema")
+    db_schema: str | None = None
+    if db_schema_raw is not None:
+        if not isinstance(db_schema_raw, str):
+            raise ConfigError("butler.db.schema must be a string when set")
+        normalized_schema = db_schema_raw.strip()
+        if not normalized_schema:
+            raise ConfigError("butler.db.schema must be a non-empty string when set")
+        if _DB_SCHEMA_PATTERN.fullmatch(normalized_schema) is None:
+            raise ConfigError(
+                "Invalid butler.db.schema: "
+                f"{db_schema_raw!r}. Expected a valid SQL identifier-style value."
+            )
+        db_schema = normalized_schema
+
+    if db_name == _CONSOLIDATED_DB_NAME and db_schema is None:
+        raise ConfigError(
+            "butler.db.schema is required when butler.db.name is 'butlers' "
+            "(one-db schema-scoped topology)."
+        )
 
     # --- [butler.env] sub-section ---
     env_section = butler_section.get("env", {})
@@ -620,6 +646,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         port=port,
         description=description,
         db_name=db_name,
+        db_schema=db_schema,
         logging=logging_config,
         runtime=runtime,
         schedules=schedules,
