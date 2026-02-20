@@ -79,6 +79,11 @@ Required query support:
 - `since`
 - `until`
 
+`NotificationSummary.metadata` normalization:
+
+- API responses always emit `metadata` as either an object or `null`.
+- Legacy non-object metadata payloads (arrays, strings, scalars) are normalized to `null`.
+
 ## Issues Contract
 
 - `GET /api/issues` -> `ApiResponse<Issue[]>`

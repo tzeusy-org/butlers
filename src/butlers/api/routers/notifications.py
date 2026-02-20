@@ -12,6 +12,7 @@ Provides two routers:
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import datetime
 
 import asyncpg
@@ -41,6 +42,21 @@ def _get_switchboard_pool(db: DatabaseManager) -> asyncpg.Pool | None:
             "Switchboard DB pool unavailable; returning empty notification payloads",
         )
         return None
+
+
+def _normalize_notification_metadata(value: object | None) -> dict | None:
+    """Normalize DB metadata to the API contract shape.
+
+    ``NotificationSummary.metadata`` is an object-or-null field. Some legacy
+    rows may contain non-object JSON values (for example strings, arrays, or
+    scalars). Those values are normalized to ``None`` so list endpoints remain
+    stable and never fail serialization.
+    """
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return dict(value)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +135,7 @@ async def _query_notifications(
             channel=row["channel"],
             recipient=row["recipient"],
             message=row["message"],
-            metadata=dict(row["metadata"]) if row["metadata"] else None,
+            metadata=_normalize_notification_metadata(row["metadata"]),
             status=row["status"],
             error=row["error"],
             session_id=row["session_id"],

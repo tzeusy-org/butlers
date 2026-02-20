@@ -398,6 +398,31 @@ class TestListNotificationsResponseShape:
         assert item["session_id"] == str(sid)
         assert item["trace_id"] == "abc123"
 
+    async def test_non_mapping_metadata_is_normalized_to_null(self):
+        """Legacy non-object metadata values must not fail list serialization."""
+        rows = [
+            _make_notification_row(message="object", metadata={"key": "value"}),
+            {**_make_notification_row(message="null"), "metadata": None},
+            _make_notification_row(message="array", metadata=["x", "y"]),
+            _make_notification_row(message="string", metadata="legacy"),
+            _make_notification_row(message="scalar", metadata=42),
+        ]
+        app, _, _ = _build_app_with_mock_db(rows, total=5)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/notifications", params={"offset": 0, "limit": 20})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        metadata_by_message = {item["message"]: item["metadata"] for item in body["data"]}
+        assert metadata_by_message["object"] == {"key": "value"}
+        assert metadata_by_message["null"] is None
+        assert metadata_by_message["array"] is None
+        assert metadata_by_message["string"] is None
+        assert metadata_by_message["scalar"] is None
+
     async def test_switchboard_pool_is_used(self):
         """Verify the endpoint queries the switchboard database specifically."""
         app, _, mock_db = _build_app_with_mock_db([], total=0)
