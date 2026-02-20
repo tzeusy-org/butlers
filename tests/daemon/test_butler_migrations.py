@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from butlers.daemon import ButlerDaemon
 from butlers.migrations import (
+    _build_alembic_config,
     _discover_butler_chains,
     _discover_module_chains,
     _resolve_chain_dir,
@@ -25,6 +26,18 @@ from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
 
 pytestmark = pytest.mark.unit
+
+
+def test_build_alembic_config_accepts_percent_encoded_db_url() -> None:
+    """DB URLs with libpq options must not fail ConfigParser interpolation."""
+    db_url = (
+        "postgresql://butlers:butlers@localhost:54320/butlers"
+        "?options=-csearch_path%3Dswitchboard%2Cshared%2Cpublic"
+    )
+
+    config = _build_alembic_config(db_url, chains=["core"])
+
+    assert config.get_main_option("sqlalchemy.url") == db_url
 
 # ---------------------------------------------------------------------------
 # has_butler_chain unit tests

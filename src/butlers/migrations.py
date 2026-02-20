@@ -137,7 +137,9 @@ def _build_alembic_config(db_url: str, chains: list[str] | None = None) -> Confi
     ini_path = ALEMBIC_DIR / "alembic.ini"
     config = Config(str(ini_path))
     config.set_main_option("script_location", str(ALEMBIC_DIR))
-    config.set_main_option("sqlalchemy.url", db_url)
+    # Alembic Config uses configparser interpolation; percent-encoded DB URLs
+    # (for example libpq options with %3D/%2C) must escape '%' as '%%'.
+    config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
     # Always include ALL version locations so Alembic can resolve every
     # revision in alembic_version, even when upgrading a single branch.
