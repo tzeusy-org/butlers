@@ -764,12 +764,13 @@ class ButlerDaemon:
 
         # 7. Run core Alembic migrations
         db_url = self._build_db_url()
-        await run_migrations(db_url, chain="core")
+        migration_schema = self.config.db_schema or None
+        await run_migrations(db_url, chain="core", schema=migration_schema)
 
         # 7b. Run butler-specific Alembic migrations (if chain exists)
         if has_butler_chain(self.config.name):
             logger.info("Running butler-specific migrations for: %s", self.config.name)
-            await run_migrations(db_url, chain=self.config.name)
+            await run_migrations(db_url, chain=self.config.name, schema=migration_schema)
 
         # 8. Run module Alembic migrations (non-fatal per-module)
         for mod in self._modules:
@@ -778,7 +779,7 @@ class ButlerDaemon:
             rev = mod.migration_revisions()
             if rev:
                 try:
-                    await run_migrations(db_url, chain=rev)
+                    await run_migrations(db_url, chain=rev, schema=migration_schema)
                 except Exception as exc:
                     error_msg = str(exc)
                     self._module_statuses[mod.name] = ModuleStartupStatus(

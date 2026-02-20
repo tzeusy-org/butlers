@@ -80,6 +80,24 @@ def _table_exists(db_url: str, table_name: str) -> bool:
     return bool(exists)
 
 
+def _table_exists_in_schema(db_url: str, schema_name: str, table_name: str) -> bool:
+    """Check whether a table exists in a specific schema."""
+    engine = create_engine(db_url)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                "SELECT EXISTS ("
+                "  SELECT 1 FROM information_schema.tables"
+                "  WHERE table_schema = :s AND table_name = :t"
+                ")"
+            ),
+            {"s": schema_name, "t": table_name},
+        )
+        exists = result.scalar()
+    engine.dispose()
+    return bool(exists)
+
+
 def _schema_exists(db_url: str, schema_name: str) -> bool:
     """Check whether a schema exists in the database."""
     engine = create_engine(db_url)
@@ -338,3 +356,31 @@ def test_alembic_version_tracking(postgres_container):
     engine.dispose()
 
     assert "core_011" in versions, f"Expected revision 'core_011' (current head) in {versions}"
+
+
+def test_schema_scoped_alembic_version_tracking_isolated(postgres_container):
+    """Schema-scoped runs should track revisions in separate schema-local tables."""
+    from butlers.migrations import run_migrations
+
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
+
+    asyncio.run(run_migrations(db_url, chain="core", schema="general"))
+    asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+
+    assert _table_exists_in_schema(db_url, "general", "alembic_version")
+    assert _table_exists_in_schema(db_url, "health", "alembic_version")
+    assert not _table_exists_in_schema(db_url, "public", "alembic_version")
+
+    engine = create_engine(db_url)
+    with engine.connect() as conn:
+        general_versions = [
+            row[0] for row in conn.execute(text("SELECT version_num FROM general.alembic_version"))
+        ]
+        health_versions = [
+            row[0] for row in conn.execute(text("SELECT version_num FROM health.alembic_version"))
+        ]
+    engine.dispose()
+
+    assert "core_011" in general_versions
+    assert "core_011" in health_versions

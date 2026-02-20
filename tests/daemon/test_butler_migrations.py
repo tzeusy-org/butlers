@@ -6,6 +6,7 @@ after core migrations and before module migrations, when such a chain exists.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,6 +22,7 @@ from butlers.migrations import (
     _resolve_chain_dir,
     get_all_chains,
     has_butler_chain,
+    run_migrations,
 )
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
@@ -38,6 +40,46 @@ def test_build_alembic_config_accepts_percent_encoded_db_url() -> None:
     config = _build_alembic_config(db_url, chains=["core"])
 
     assert config.get_main_option("sqlalchemy.url") == db_url
+
+
+def test_build_alembic_config_sets_schema_options() -> None:
+    """Schema-scoped runs should set target + version table schema options."""
+    config = _build_alembic_config(
+        "postgresql://butlers:butlers@localhost:54320/butlers",
+        chains=["core"],
+        target_schema="switchboard",
+    )
+
+    assert config.get_main_option("butlers.target_schema") == "switchboard"
+    assert config.get_main_option("version_table_schema") == "switchboard"
+
+
+def test_build_alembic_config_rejects_invalid_schema() -> None:
+    """Invalid schema names should fail fast."""
+    with pytest.raises(ValueError, match="Invalid migration schema name"):
+        _build_alembic_config(
+            "postgresql://butlers:butlers@localhost:54320/butlers",
+            chains=["core"],
+            target_schema="bad-schema",
+        )
+
+
+def test_run_migrations_all_upgrades_each_chain_in_order() -> None:
+    """chain='all' should upgrade each discovered chain in deterministic order."""
+    config = MagicMock()
+    with (
+        patch("butlers.migrations.get_all_chains", return_value=["core", "mailbox", "switchboard"]),
+        patch("butlers.migrations._build_alembic_config", return_value=config),
+        patch("butlers.migrations.command.upgrade") as mock_upgrade,
+    ):
+        asyncio.run(run_migrations("postgresql://db", chain="all", schema="switchboard"))
+
+    assert mock_upgrade.call_args_list == [
+        ((config, "core@head"),),
+        ((config, "mailbox@head"),),
+        ((config, "switchboard@head"),),
+    ]
+
 
 # ---------------------------------------------------------------------------
 # has_butler_chain unit tests
@@ -350,9 +392,17 @@ class StubModule(Module):
         self.shutdown_called = True
 
 
-def _make_butler_toml(tmp_path: Path, name: str, modules: dict | None = None) -> Path:
+def _make_butler_toml(
+    tmp_path: Path,
+    name: str,
+    modules: dict | None = None,
+    *,
+    db_name: str | None = None,
+    db_schema: str | None = None,
+) -> Path:
     """Write a butler.toml with a given butler name."""
     modules = modules or {}
+    resolved_db_name = db_name or f"butler_{name.replace('-', '_')}"
     toml_lines = [
         "[butler]",
         f'name = "{name}"',
@@ -360,8 +410,10 @@ def _make_butler_toml(tmp_path: Path, name: str, modules: dict | None = None) ->
         f'description = "Test butler {name}"',
         "",
         "[butler.db]",
-        f'name = "butler_{name.replace("-", "_")}"',
+        f'name = "{resolved_db_name}"',
     ]
+    if db_schema is not None:
+        toml_lines.append(f'schema = "{db_schema}"')
     for mod_name, mod_cfg in modules.items():
         toml_lines.append(f"\n[modules.{mod_name}]")
         for k, v in mod_cfg.items():
@@ -452,7 +504,7 @@ class TestButlerSpecificMigrationInDaemon:
         ):
             mock_has_chain.return_value = True
 
-            async def track_migration(db_url, chain="core"):
+            async def track_migration(db_url, chain="core", schema=None):
                 call_log.append(f"migrate:{chain}")
 
             mock_mig.side_effect = track_migration
@@ -490,7 +542,7 @@ class TestButlerSpecificMigrationInDaemon:
         ):
             mock_has_chain.return_value = False
 
-            async def track_migration(db_url, chain="core"):
+            async def track_migration(db_url, chain="core", schema=None):
                 call_log.append(f"migrate:{chain}")
 
             mock_mig.side_effect = track_migration
@@ -554,7 +606,7 @@ class TestButlerSpecificMigrationInDaemon:
         ):
             mock_has_chain.return_value = True
 
-            async def track_migration(db_url, chain="core"):
+            async def track_migration(db_url, chain="core", schema=None):
                 call_log.append(f"migrate:{chain}")
 
             mock_mig.side_effect = track_migration
@@ -563,3 +615,42 @@ class TestButlerSpecificMigrationInDaemon:
             await daemon.start()
 
         assert call_log == ["migrate:core", "migrate:relationship"]
+
+    async def test_one_db_schema_passed_to_all_migration_runs(self, tmp_path: Path) -> None:
+        """One-db topology should pass configured schema to every migration chain."""
+        butler_dir = _make_butler_toml(
+            tmp_path,
+            "relationship",
+            modules={"stub_mod": {}},
+            db_name="butlers",
+            db_schema="relationship",
+        )
+        registry = ModuleRegistry()
+        registry.register(StubModule)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"] as mock_mig,
+            patches["has_butler_chain"] as mock_has_chain,
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["validate_core_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["recover_route_inbox"],
+        ):
+            mock_has_chain.return_value = True
+
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        chains = [call.kwargs["chain"] for call in mock_mig.await_args_list]
+        schemas = [call.kwargs["schema"] for call in mock_mig.await_args_list]
+        assert chains == ["core", "relationship", "stub_mod"]
+        assert schemas == ["relationship", "relationship", "relationship"]

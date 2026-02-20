@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 
 from alembic.config import Config
@@ -27,6 +28,9 @@ MODULES_DIR = Path(__file__).resolve().parent / "modules"
 
 # Shared chains: always included regardless of butler identity
 _SHARED_CHAINS = ["core"]
+_TARGET_SCHEMA_OPTION = "butlers.target_schema"
+_VERSION_TABLE_SCHEMA_OPTION = "version_table_schema"
+_VALID_SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _discover_module_chains() -> list[str]:
@@ -124,12 +128,27 @@ def get_all_chains() -> list[str]:
     return shared + modules + butlers
 
 
-def _build_alembic_config(db_url: str, chains: list[str] | None = None) -> Config:
+def _normalize_schema(schema: str | None) -> str | None:
+    """Normalize and validate a schema name for migration execution."""
+    if schema is None:
+        return None
+    normalized = schema.strip()
+    if not normalized:
+        return None
+    if _VALID_SCHEMA_RE.fullmatch(normalized) is None:
+        raise ValueError(f"Invalid migration schema name: {schema!r}")
+    return normalized
+
+
+def _build_alembic_config(
+    db_url: str, chains: list[str] | None = None, target_schema: str | None = None
+) -> Config:
     """Build an Alembic Config pointing at the correct version directories.
 
     Args:
         db_url: SQLAlchemy-compatible database URL.
         chains: List of version chain names to include. Defaults to all chains.
+        target_schema: Optional target schema for schema-scoped migration runs.
 
     Returns:
         A configured alembic.config.Config instance.
@@ -140,6 +159,10 @@ def _build_alembic_config(db_url: str, chains: list[str] | None = None) -> Confi
     # Alembic Config uses configparser interpolation; percent-encoded DB URLs
     # (for example libpq options with %3D/%2C) must escape '%' as '%%'.
     config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
+    normalized_schema = _normalize_schema(target_schema)
+    if normalized_schema is not None:
+        config.set_main_option(_TARGET_SCHEMA_OPTION, normalized_schema)
+        config.set_main_option(_VERSION_TABLE_SCHEMA_OPTION, normalized_schema)
 
     # Always include ALL version locations so Alembic can resolve every
     # revision in alembic_version, even when upgrading a single branch.
@@ -185,7 +208,24 @@ def has_butler_chain(butler_name: str) -> bool:
     return len(migration_files) > 0
 
 
-async def run_migrations(db_url: str, chain: str = "core") -> None:
+def _resolve_target_chains(chain: str) -> list[str]:
+    """Resolve the deterministic chain execution order."""
+    if chain == "all":
+        return get_all_chains()
+    return [chain]
+
+
+def _upgrade_chain(config: Config, chain: str, schema: str | None) -> None:
+    """Upgrade a single chain to head and emit contextual logs."""
+    logger.info(
+        "Running migration chain to head (chain=%s, schema=%s)",
+        chain,
+        schema or "<default>",
+    )
+    command.upgrade(config, f"{chain}@head")
+
+
+async def run_migrations(db_url: str, chain: str = "core", schema: str | None = None) -> None:
     """Run Alembic migrations programmatically for a specific chain.
 
     This is the primary entry point for running migrations from the butler
@@ -198,19 +238,10 @@ async def run_migrations(db_url: str, chain: str = "core") -> None:
         chain: Version chain to migrate. Must be one of the recognized chains
             (core, mailbox, approvals, or any butler name with a migrations/
             directory). Pass ``"all"`` to migrate all chains.
+        schema: Optional target schema for one-db/multi-schema topology.
     """
-    if chain == "all":
-        chains = get_all_chains()
-    else:
-        chains = [chain]
-
-    config = _build_alembic_config(db_url, chains)
-
-    if chain == "all":
-        # Upgrade all chains to head
-        logger.info("Running all migration chains to head")
-        command.upgrade(config, "heads")
-    else:
-        # Upgrade a specific chain branch to its head
-        logger.info("Running %s migration chain to head", chain)
-        command.upgrade(config, f"{chain}@head")
+    chains = _resolve_target_chains(chain)
+    normalized_schema = _normalize_schema(schema)
+    config = _build_alembic_config(db_url, chains, target_schema=normalized_schema)
+    for resolved_chain in chains:
+        _upgrade_chain(config, resolved_chain, normalized_schema)
