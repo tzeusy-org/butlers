@@ -863,7 +863,7 @@ echo "Layer 3: Starting butlers up and Gmail connector..."
 PANE_BACKEND=$(tmux new-window -t "$SESSION:" -n backend -c "$PROJECT_DIR" -P -F '#{pane_id}')
 _pipe_pane_to_log "$PANE_BACKEND" "${LOGS_RUN_DIR}/butlers/up.log"
 tmux send-keys -t "$PANE_BACKEND" \
-  "${ENV_LOADER} && uv sync --dev && POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_SWITCHBOARD_URL=http://localhost:${DASHBOARD_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers up" Enter
+  "${ENV_LOADER} && uv sync --dev && POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_SWITCHBOARD_URL=http://localhost:${DASHBOARD_PORT} uv run butlers up" Enter
 
 # Start Gmail pane (credentials-aware)
 GMAIL_PANE_CMD="$(_build_gmail_pane_cmd)"
