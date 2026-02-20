@@ -571,3 +571,5 @@ make test-qg
 ### One-DB multi-schema migration planning contract
 - `docs/operations/one-db-multi-schema-migration.md` is the authoritative plan for epic `butlers-1003`: target topology (`shared` + per-butler schemas), role/ACL model, phased cutover + rollback, parity/isolation gates, and child-issue decomposition.
 - `docs/architecture/system-architecture.md` remains current-state for deployed topology and includes a transition note linking to the migration plan.
+- `scripts/one_db_data_migration.py` is the canonical `butlers-1003.4` data-move utility: use `plan` + `migrate --dry-run` for staged rehearsal, `run` for copy+parity, and `rollback --confirm-rollback ROLLBACK` to reset target tables after failed attempts; archive JSON reports from each phase.
+- `docs/operations/one-db-data-migration-runbook.md` is the executable command/checklist reference for staging dry-runs, parity signoff, and rollback validation.

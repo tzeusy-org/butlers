@@ -175,17 +175,28 @@ Entry criteria:
 - ACL and runtime wiring validated in staging.
 
 Execution:
-- Backfill data from each source DB into corresponding target schema.
-- Run deterministic parity checks (counts + checksums + sample record diff).
+- Follow `docs/operations/one-db-data-migration-runbook.md` for exact commands and report retention.
+- Run staged dry-runs (no writes) and archive artifacts:
+  - `python scripts/one_db_data_migration.py plan ... --report-path <artifact>`
+  - `python scripts/one_db_data_migration.py migrate --dry-run ... --report-path <artifact>`
+- Execute backfill + parity verification:
+  - `python scripts/one_db_data_migration.py run ... --replace-target --report-path <artifact>`
+- Required table coverage baseline:
+  - Core tables per butler schema: `state`, `scheduled_tasks`, `sessions`, `route_inbox`
+  - Shared schema table: `butler_secrets`
+- On mismatch, parity must fail with non-zero exit and block cutover.
 
 Exit criteria:
 - All parity checks pass.
 - No unresolved critical mismatches.
+- Migration report artifacts are stored with cutover records.
 
 Rollback:
 - Abort cutover.
 - Keep source DBs authoritative.
-- Discard/rebuild target schema data in staging before next attempt.
+- Clear target migrated data and re-attempt:
+  - `python scripts/one_db_data_migration.py rollback ... --confirm-rollback ROLLBACK --report-path <artifact>`
+- Validate rollback completion with post-rollback row-count report (`rollback` command output + report).
 
 ### Phase 4: Cutover and observation window
 
@@ -243,6 +254,25 @@ Required checks (must pass):
 
 Failure policy:
 - Any unexpected cross-schema access blocks cutover.
+
+### 7.3 Final cutover signoff checklist (data integrity)
+
+All items are mandatory before flipping production runtime to one-DB:
+
+- Latest `run` report exists and shows:
+  - `status=ok`
+  - `summary.tables_failed=0`
+  - no `mismatch` result rows
+- Reports are archived for:
+  - `plan` dry-run
+  - `migrate --dry-run`
+  - final `run`
+  - rollback rehearsal (`rollback`) from staging
+- Required tables are explicitly covered in the report set:
+  - per-butler: `state`, `scheduled_tasks`, `sessions`, `route_inbox`
+  - shared: `butler_secrets`
+- Any prior parity mismatch has a resolved rerun artifact (no unresolved failure reports).
+- Operator signoff confirms source DBs remain authoritative until post-cutover validation window completes.
 
 ## 8. Rollback Strategy Summary
 
