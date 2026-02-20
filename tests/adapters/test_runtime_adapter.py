@@ -285,7 +285,7 @@ def test_claude_code_adapter_parse_empty_prompt(tmp_path: Path):
 
 async def test_claude_code_adapter_invoke_with_mock():
     """ClaudeCodeAdapter.invoke() calls sdk_query and parses results."""
-    from claude_code_sdk import ResultMessage
+    from claude_agent_sdk import ResultMessage
 
     async def mock_query(*, prompt, options):
         yield ResultMessage(
@@ -314,7 +314,7 @@ async def test_claude_code_adapter_invoke_with_mock():
 
 async def test_claude_code_adapter_invoke_with_tool_calls():
     """ClaudeCodeAdapter.invoke() captures ToolUseBlock tool calls."""
-    from claude_code_sdk import AssistantMessage, ResultMessage, ToolUseBlock
+    from claude_agent_sdk import AssistantMessage, ResultMessage, ToolUseBlock
 
     async def mock_query(*, prompt, options):
         yield AssistantMessage(
@@ -348,7 +348,7 @@ async def test_claude_code_adapter_invoke_with_tool_calls():
 
 async def test_claude_code_adapter_invoke_captures_usage():
     """ClaudeCodeAdapter.invoke() extracts token usage from ResultMessage."""
-    from claude_code_sdk import ResultMessage
+    from claude_agent_sdk import ResultMessage
 
     async def mock_query(*, prompt, options):
         yield ResultMessage(
@@ -378,7 +378,7 @@ async def test_claude_code_adapter_invoke_captures_usage():
 
 async def test_claude_code_adapter_invoke_none_usage():
     """ClaudeCodeAdapter.invoke() returns None usage when SDK usage is None."""
-    from claude_code_sdk import ResultMessage
+    from claude_agent_sdk import ResultMessage
 
     async def mock_query(*, prompt, options):
         yield ResultMessage(
@@ -411,7 +411,7 @@ async def test_claude_code_adapter_invoke_none_usage():
 
 async def test_claude_code_adapter_passes_stderr_options_when_butler_name_set(tmp_path: Path):
     """ClaudeCodeAdapter passes debug_stderr and extra_args when butler_name is set."""
-    from claude_code_sdk import ResultMessage
+    from claude_agent_sdk import ResultMessage
 
     captured_options = {}
 
@@ -453,7 +453,7 @@ async def test_claude_code_adapter_passes_stderr_options_when_butler_name_set(tm
 
 async def test_claude_code_adapter_no_stderr_without_butler_name():
     """ClaudeCodeAdapter does not set debug_stderr when butler_name is not set."""
-    from claude_code_sdk import ResultMessage
+    from claude_agent_sdk import ResultMessage
 
     captured_options = {}
 

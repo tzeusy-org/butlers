@@ -157,7 +157,7 @@ graph TB
         T1[Trigger arrives] --> T2[Acquire lock]
         T2 --> T3[Create session record]
         T3 --> T4[Generate MCP config]
-        T4 --> T5[Invoke Claude Code SDK]
+        T4 --> T5[Invoke Claude Agent SDK]
         T5 --> T6[Parse result + tool calls]
         T6 --> T7[Complete session log]
     end
@@ -367,7 +367,7 @@ These apply to all butler instances:
 
 | Variable                      | Required | Default     | Description                                                                                              |
 | ----------------------------- | -------- | ----------- | -------------------------------------------------------------------------------------------------------- |
-| `ANTHROPIC_API_KEY`           | Yes      | —           | API key for Claude Code SDK. Checked at startup for every butler.                                        |
+| `ANTHROPIC_API_KEY`           | Yes      | —           | API key for Claude Agent SDK. Checked at startup for every butler.                                        |
 | `POSTGRES_HOST`               | No       | `localhost` | PostgreSQL server hostname                                                                               |
 | `POSTGRES_PORT`               | No       | `5432`      | PostgreSQL server port                                                                                   |
 | `POSTGRES_USER`               | No       | `postgres`  | PostgreSQL username                                                                                      |
@@ -448,7 +448,7 @@ Docker flake triage under parallel quality gates:
 
 ## Tech Stack
 
-Python 3.12+ · FastMCP · Claude Code SDK · PostgreSQL · asyncpg · Docker · asyncio · OpenTelemetry · Alembic · Click · Pydantic
+Python 3.12+ · FastMCP · Claude Agent SDK · PostgreSQL · asyncpg · Docker · asyncio · OpenTelemetry · Alembic · Click · Pydantic
 
 ## Status
 

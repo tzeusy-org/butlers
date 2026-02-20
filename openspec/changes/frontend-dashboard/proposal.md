@@ -40,7 +40,7 @@ The butler framework provides no visibility into system state, health, costs, or
 ### Modified Capabilities
 
 - `session-log`: Add `input_tokens`, `output_tokens`, `model`, `trace_id`, and `parent_session_id` columns. LLM CLI spawner must capture token usage from SDK response and store alongside session records.
-- `llm-cli-spawner`: Update to capture and persist token usage (input/output tokens, model) from Claude Code SDK response into the session record.
+- `llm-cli-spawner`: Update to capture and persist token usage (input/output tokens, model) from Claude Agent SDK response into the session record.
 - `switchboard`: Add `deliver(channel, message, recipient?, metadata?)` tool for notification routing, and `notifications` table for delivery logging.
 - `cli-and-deployment`: Add `butlers dashboard` CLI command and Docker Compose services for dashboard-api and frontend.
 - `dashboard-health`: Write operations (e.g., logging new measurements) explicitly deferred for v1. Dashboard health views are read-only; health data entry is handled via chat interactions with the Health butler.

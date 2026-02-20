@@ -1,10 +1,10 @@
-"""ClaudeCodeAdapter — RuntimeAdapter implementation for Claude Code SDK.
+"""ClaudeCodeAdapter — RuntimeAdapter implementation for Claude Agent SDK.
 
-Encapsulates all Claude Code SDK-specific logic:
-- claude_code_sdk imports (ClaudeCodeOptions, ResultMessage, ToolUseBlock,
+Encapsulates all Claude Agent SDK-specific logic:
+- claude_agent_sdk imports (ClaudeAgentOptions, ResultMessage, ToolUseBlock,
   McpSSEServerConfig, query)
 - MCP config file writing (JSON format with mcpServers key)
-- SDK invocation (building ClaudeCodeOptions, calling query(),
+- SDK invocation (building ClaudeAgentOptions, calling query(),
   parsing ResultMessage/ToolUseBlock)
 - CLAUDE.md reading logic
 """
@@ -17,8 +17,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from claude_code_sdk import ClaudeCodeOptions, ResultMessage, ToolUseBlock, query
-from claude_code_sdk.types import McpSSEServerConfig
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, ToolUseBlock, query
+from claude_agent_sdk.types import McpSSEServerConfig
 
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class ClaudeCodeAdapter(RuntimeAdapter):
-    """Runtime adapter for the Claude Code SDK.
+    """Runtime adapter for the Claude Agent SDK.
 
     Handles SDK invocation, MCP config file generation (JSON format),
     and CLAUDE.md system prompt reading.
@@ -35,7 +35,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
     ----------
     sdk_query:
         Callable to use for the actual SDK invocation. Defaults to
-        ``claude_code_sdk.query``. Override in tests to inject a mock.
+        ``claude_agent_sdk.query``. Override in tests to inject a mock.
     butler_name:
         Name of the butler this adapter serves. Used to construct per-butler
         stderr log paths. Optional; when omitted stderr is not captured.
@@ -71,9 +71,9 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         cwd: Path | None = None,
         timeout: int | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
-        """Invoke Claude Code SDK with the given prompt and configuration.
+        """Invoke Claude Agent SDK with the given prompt and configuration.
 
-        Builds ClaudeCodeOptions with MCP server configs (as
+        Builds ClaudeAgentOptions with MCP server configs (as
         McpSSEServerConfig), calls query(), and parses
         ResultMessage/ToolUseBlock from the response stream.
 
@@ -117,7 +117,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 )
 
         try:
-            options = ClaudeCodeOptions(
+            options = ClaudeAgentOptions(
                 system_prompt=system_prompt,
                 mcp_servers=sdk_mcp_servers,
                 permission_mode="bypassPermissions",

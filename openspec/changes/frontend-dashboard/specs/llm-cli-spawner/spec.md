@@ -1,6 +1,6 @@
 # LLM CLI Spawner (Delta)
 
-Delta spec for the `llm-cli-spawner` capability. Updates session logging to capture token usage and model information from the Claude Code SDK response.
+Delta spec for the `llm-cli-spawner` capability. Updates session logging to capture token usage and model information from the Claude Agent SDK response.
 
 ---
 
@@ -8,7 +8,7 @@ Delta spec for the `llm-cli-spawner` capability. Updates session logging to capt
 
 ### Requirement: Session logging
 
-The LLM CLI Spawner SHALL log every runtime invocation to the butler's `sessions` table, regardless of whether the invocation succeeded or failed. The session record MUST include the prompt, recorded tool calls, output, success status, error details (if any), duration, and trace ID. The session record MUST also include `input_tokens`, `output_tokens`, and `model` extracted from the Claude Code SDK response.
+The LLM CLI Spawner SHALL log every runtime invocation to the butler's `sessions` table, regardless of whether the invocation succeeded or failed. The session record MUST include the prompt, recorded tool calls, output, success status, error details (if any), duration, and trace ID. The session record MUST also include `input_tokens`, `output_tokens`, and `model` extracted from the Claude Agent SDK response.
 
 #### Scenario: Successful session is logged
 

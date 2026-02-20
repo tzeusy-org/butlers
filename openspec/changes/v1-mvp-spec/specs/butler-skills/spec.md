@@ -42,7 +42,7 @@ AND CC SHALL be able to list the `skills/` subdirectory via bash.
 
 ### Requirement: CLAUDE.md -- Butler personality
 
-Each butler's config directory MUST contain a `CLAUDE.md` file. The LLM CLI Spawner SHALL read this file and pass its contents as the `system_prompt` parameter to the Claude Code SDK when spawning a runtime instance. CLAUDE.md defines the butler's identity, behavioral instructions, constraints, an overview of available tools, and guidance on when and how to use those tools.
+Each butler's config directory MUST contain a `CLAUDE.md` file. The LLM CLI Spawner SHALL read this file and pass its contents as the `system_prompt` parameter to the Claude Agent SDK when spawning a runtime instance. CLAUDE.md defines the butler's identity, behavioral instructions, constraints, an overview of available tools, and guidance on when and how to use those tools.
 
 CLAUDE.md SHOULD list available skills so that CC knows what is available without needing to browse the filesystem. Each listed skill SHOULD include the skill name and a brief description of its purpose.
 
@@ -51,7 +51,7 @@ If CLAUDE.md is missing or empty, the LLM CLI Spawner SHALL spawn CC with a mini
 #### Scenario: CLAUDE.md is passed as system prompt
 
 WHEN the LLM CLI Spawner spawns a runtime instance for a butler whose `CLAUDE.md` contains the text "You are the Health butler. You track daily health metrics.",
-THEN the `system_prompt` parameter passed to `claude_code_sdk.query` SHALL be "You are the Health butler. You track daily health metrics.".
+THEN the `system_prompt` parameter passed to `claude_agent_sdk.query` SHALL be "You are the Health butler. You track daily health metrics.".
 
 #### Scenario: CLAUDE.md lists available skills
 

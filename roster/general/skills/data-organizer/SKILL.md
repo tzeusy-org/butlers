@@ -88,7 +88,7 @@ Track initiatives, goals, or multi-step endeavors.
   "tags": ["ai", "framework", "mcp"],
   "started_at": "2026-01-15",
   "updated_at": "2026-02-09",
-  "notes": "Using Python 3.12, FastMCP, Claude Code SDK"
+  "notes": "Using Python 3.12, FastMCP, Claude Agent SDK"
 }
 ```
 

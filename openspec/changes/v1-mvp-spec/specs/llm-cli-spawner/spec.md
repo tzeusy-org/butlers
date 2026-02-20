@@ -1,6 +1,6 @@
 # LLM CLI Spawner
 
-The LLM CLI Spawner manages ephemeral LLM CLI instances via the Claude Code SDK. It is a core component present in every butler, responsible for generating locked-down MCP configurations, spawning Claude Code sessions, logging results, and cleaning up temporary resources.
+The LLM CLI Spawner manages ephemeral LLM CLI instances via the Claude Agent SDK. It is a core component present in every butler, responsible for generating locked-down MCP configurations, spawning Claude Code sessions, logging results, and cleaning up temporary resources.
 
 ## ADDED Requirements
 
@@ -45,10 +45,10 @@ THEN each invocation MUST use a distinct temp directory with a different UUID
 
 ### Requirement: LLM CLI invocation via SDK
 
-The LLM CLI Spawner SHALL spawn Claude Code using the `claude_code_sdk.query` function with the generated MCP config, the butler's CLAUDE.md as system prompt, and the butler's config directory as the working directory.
+The LLM CLI Spawner SHALL spawn Claude Code using the `claude_agent_sdk.query` function with the generated MCP config, the butler's CLAUDE.md as system prompt, and the butler's config directory as the working directory.
 
 ```python
-from claude_code_sdk import query
+from claude_agent_sdk import query
 
 result = await query(
     prompt=task_prompt,
@@ -64,7 +64,7 @@ result = await query(
 #### Scenario: CC is spawned with correct parameters
 
 WHEN the LLM CLI Spawner is triggered with prompt "Check overdue tasks"
-THEN it SHALL call `claude_code_sdk.query` with `prompt` set to "Check overdue tasks"
+THEN it SHALL call `claude_agent_sdk.query` with `prompt` set to "Check overdue tasks"
 AND `options.system_prompt` SHALL be the contents of the butler's `CLAUDE.md` file
 AND `options.mcp_config` SHALL be the path to the generated ephemeral MCP config file
 AND `options.cwd` SHALL be the butler's config directory path

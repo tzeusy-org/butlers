@@ -4,9 +4,9 @@
 
 **Goal:** An AI agent framework where each "butler" is a long-running MCP server daemon with core infrastructure (state, scheduler, LLM CLI spawner, session log) and opt-in modules (email, telegram, calendar, etc.). When triggered, a butler spawns an ephemeral LLM CLI instance wired exclusively to itself. Claude Code is the universal executor — it reasons about what to do and uses whatever tools (MCP tools, bash, scripts) it needs.
 
-**Architecture:** Each butler is a persistent MCP server daemon with two layers of functionality: **core components** (state store, task scheduler, LLM CLI spawner, session log) that every butler gets automatically, and **modules** (email, telegram, calendar, etc.) that are opt-in per butler. When triggered — by the scheduler, heartbeat, or an external MCP call — the butler spawns an ephemeral LLM CLI instance via the Claude Code SDK. That instance receives a locked-down MCP config pointing exclusively to the butler's own MCP server, plus the butler's CLAUDE.md and skills. Claude Code runs, calls tools as needed, and exits. A **Switchboard Butler** routes external MCP requests to the correct butler. A **Heartbeat Butler** periodically calls each butler's `tick` tool, triggering the scheduler. Each butler owns a dedicated PostgreSQL database (strict isolation). Butler definitions are git-based directories.
+**Architecture:** Each butler is a persistent MCP server daemon with two layers of functionality: **core components** (state store, task scheduler, LLM CLI spawner, session log) that every butler gets automatically, and **modules** (email, telegram, calendar, etc.) that are opt-in per butler. When triggered — by the scheduler, heartbeat, or an external MCP call — the butler spawns an ephemeral LLM CLI instance via the Claude Agent SDK. That instance receives a locked-down MCP config pointing exclusively to the butler's own MCP server, plus the butler's CLAUDE.md and skills. Claude Code runs, calls tools as needed, and exits. A **Switchboard Butler** routes external MCP requests to the correct butler. A **Heartbeat Butler** periodically calls each butler's `tick` tool, triggering the scheduler. Each butler owns a dedicated PostgreSQL database (strict isolation). Butler definitions are git-based directories.
 
-**Tech Stack:** Python 3.12+, FastMCP (MCP server), Claude Code SDK (ephemeral runtimes), PostgreSQL (JSONB-heavy, one DB per butler), Docker, asyncio
+**Tech Stack:** Python 3.12+, FastMCP (MCP server), Claude Agent SDK (ephemeral runtimes), PostgreSQL (JSONB-heavy, one DB per butler), Docker, asyncio
 
 ---
 
@@ -325,7 +325,7 @@ Written to a temp directory: `/tmp/butler_assistant_<uuid>/mcp.json`
 2. **Spawns Claude Code via SDK:**
 
 ```python
-from claude_code_sdk import query
+from claude_agent_sdk import query
 
 result = await query(
     prompt=task_prompt,
@@ -1732,7 +1732,7 @@ butlers/
 
 | Question                                                | Status  | Notes                                                                                                       |
 | ------------------------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------- |
-| Claude Code SDK API for passing MCP config?             | TBD     | Need to investigate exact SDK options for `--mcp-config` equivalent                                         |
+| Claude Agent SDK API for passing MCP config?             | TBD     | Need to investigate exact SDK options for `--mcp-config` equivalent                                         |
 | MCP transport between butlers (SSE vs streamable HTTP)? | TBD     | SSE likely for daemon-to-daemon; need to test FastMCP SSE transport                                         |
 | Cron expression library?                                | TBD     | `croniter` is the standard Python choice                                                                    |
 | How are new butler databases provisioned?               | Decided | Auto-provision on startup: `CREATE DATABASE IF NOT EXISTS`, then apply migrations. No separate init script. |

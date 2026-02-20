@@ -40,7 +40,7 @@ An Alembic migration in the core revision chain SHALL add the `input_tokens`, `o
 
 ### Requirement: Session update includes token data
 
-When a runtime instance completes, the LLM CLI Spawner SHALL capture token usage data from the Claude Code SDK response and store it in the session record alongside the existing completion fields.
+When a runtime instance completes, the LLM CLI Spawner SHALL capture token usage data from the Claude Agent SDK response and store it in the session record alongside the existing completion fields.
 
 #### Scenario: Successful CC completion captures token usage
 

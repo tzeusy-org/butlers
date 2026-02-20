@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Butlers is an AI agent framework where each "butler" is a long-running MCP server daemon with core infrastructure (state store, scheduler, LLM CLI spawner, session log) and opt-in modules (email, telegram, calendar, etc.). When triggered, a butler spawns an ephemeral LLM CLI instance wired exclusively to itself via a locked-down MCP config.
 
-**Tech stack:** Python 3.12+, FastMCP, Claude Code SDK, PostgreSQL (JSONB-heavy; migrating to one DB with per-butler schemas + `shared`), Docker, asyncio
+**Tech stack:** Python 3.12+, FastMCP, Claude Agent SDK, PostgreSQL (JSONB-heavy; migrating to one DB with per-butler schemas + `shared`), Docker, asyncio
 
 ## Commands
 

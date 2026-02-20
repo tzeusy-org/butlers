@@ -44,7 +44,7 @@ The Butlers framework has a detailed project plan but no formal specifications. 
 ## Impact
 
 - **Code**: Entire `src/butlers/` package — core, modules, tools, CLI
-- **Dependencies**: FastMCP, claude-code-sdk, asyncpg/psycopg, croniter, opentelemetry-sdk, click/typer (CLI), testcontainers, docker
+- **Dependencies**: FastMCP, claude-agent-sdk, asyncpg/psycopg, croniter, opentelemetry-sdk, click/typer (CLI), testcontainers, docker
 - **Infrastructure**: PostgreSQL (one database per butler), Docker, LGTM stack (Grafana, Tempo, Loki)
 - **APIs**: Each butler exposes an MCP server (SSE transport) with core + module-specific tools
 - **External integrations**: Telegram Bot API, Gmail/IMAP (via modules on Switchboard)

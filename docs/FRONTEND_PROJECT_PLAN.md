@@ -865,7 +865,7 @@ ALTER TABLE sessions ADD COLUMN trace_id TEXT;                 -- OTel trace ID 
 ALTER TABLE sessions ADD COLUMN parent_session_id UUID;        -- for trace reconstruction
 ```
 
-The Claude Code SDK returns token usage in its response. The spawner should capture and store this alongside the session record. `trace_id` enables cross-butler trace correlation.
+The Claude Agent SDK returns token usage in its response. The spawner should capture and store this alongside the session record. `trace_id` enables cross-butler trace correlation.
 
 ### Switchboard — notifications table
 
@@ -1250,7 +1250,7 @@ UX polish and groundwork for real-time updates.
 | Frontend build integration?                      | `butlers dashboard` in production should serve the built frontend. Need a build step that copies `frontend/dist/` to a location the API can serve.                                                                                                                                  |
 | How to handle butler DB schema differences?      | API router for each butler type (relationship, health, general) hardcodes the schema knowledge. If a new butler type is added, a new router is needed.                                                                                                                              |
 | Real-time: WebSocket vs SSE?                     | SSE is simpler for server-push status updates. WebSocket if we want bidirectional (e.g., streaming runtime session output). Start with SSE.                                                                                                                                              |
-| Token usage from Claude Code SDK?                         | Need to verify the Claude Code SDK exposes input/output token counts in its response. If not, we may need to instrument at the MCP tool level or parse usage from session transcripts.                                                                                              |
+| Token usage from Claude Agent SDK?                         | Need to verify the Claude Agent SDK exposes input/output token counts in its response. If not, we may need to instrument at the MCP tool level or parse usage from session transcripts.                                                                                              |
 | Cost model pricing config?                       | Where does the per-model pricing live? Likely a simple YAML/TOML config file or env vars on the dashboard API. Needs to be updatable without redeployment.                                                                                                                          |
 | Module health checks — how?                      | Modules don't currently expose a `health()` method. We'd need to add an optional `health_check()` to the Module ABC, or the dashboard API probes externally (e.g., Telegram bot API ping, IMAP connect).                                                                            |
 | Global search performance?                       | Fan-out search across N butler DBs could be slow. Consider: background indexing, materialized views, or a lightweight search index (SQLite FTS) on the dashboard API side.                                                                                                          |

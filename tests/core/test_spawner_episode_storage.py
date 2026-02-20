@@ -88,7 +88,7 @@ class TestSpawnerEpisodeStorageIntegration:
         config = _make_config(modules={"memory": {}})
 
         async def fake_sdk(*, prompt: str, options: Any):
-            from claude_code_sdk import ResultMessage
+            from claude_agent_sdk import ResultMessage
 
             yield ResultMessage(
                 subtype="result",
@@ -132,7 +132,7 @@ class TestSpawnerEpisodeStorageIntegration:
         config = _make_config(modules={})
 
         async def fake_sdk(*, prompt: str, options: Any):
-            from claude_code_sdk import ResultMessage
+            from claude_agent_sdk import ResultMessage
 
             yield ResultMessage(
                 subtype="result",

@@ -1,7 +1,7 @@
 ## 1. Framework Changes — Schema & Core Tools
 
 - [ ] 1.1 Alembic migration: add `input_tokens` (INT nullable), `output_tokens` (INT nullable), `model` (TEXT nullable), `trace_id` (TEXT nullable), `parent_session_id` (UUID nullable) columns to `sessions` table in core chain
-- [ ] 1.2 Update LLM CLI spawner to extract token usage (`input_tokens`, `output_tokens`, `model`) from Claude Code SDK response and pass to `sessions.log_session()`
+- [ ] 1.2 Update LLM CLI spawner to extract token usage (`input_tokens`, `output_tokens`, `model`) from Claude Agent SDK response and pass to `sessions.log_session()`
 - [ ] 1.3 Update spawner to write session record with `completed_at = NULL` before spawning (active session detection), update on completion
 - [ ] 1.4 Alembic migration: add `notifications` table to Switchboard chain (id UUID PK, source_butler, channel, recipient, message, metadata JSONB, status, error, session_id, trace_id, created_at; indexes on source_butler+created_at, channel+created_at, status)
 - [ ] 1.5 Implement Switchboard `deliver(channel, message, recipient?, metadata?)` MCP tool — dispatches to telegram/email module, logs to notifications table, returns delivery result

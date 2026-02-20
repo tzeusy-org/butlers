@@ -39,7 +39,7 @@ class TestContextParameter:
         async def capturing_sdk(*, prompt: str, options: Any):
             nonlocal captured_prompt
             captured_prompt = prompt
-            from claude_code_sdk import ResultMessage
+            from claude_agent_sdk import ResultMessage
 
             yield ResultMessage(
                 subtype="result",
@@ -73,7 +73,7 @@ class TestContextParameter:
         async def capturing_sdk(*, prompt: str, options: Any):
             nonlocal captured_prompt
             captured_prompt = prompt
-            from claude_code_sdk import ResultMessage
+            from claude_agent_sdk import ResultMessage
 
             yield ResultMessage(
                 subtype="result",
@@ -111,7 +111,7 @@ class TestContextParameter:
         async def capturing_sdk(*, prompt: str, options: Any):
             nonlocal captured_prompt
             captured_prompt = prompt
-            from claude_code_sdk import ResultMessage
+            from claude_agent_sdk import ResultMessage
 
             yield ResultMessage(
                 subtype="result",

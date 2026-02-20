@@ -96,7 +96,7 @@ class TestSpawnerMemoryContextInjection:
         async def capturing_sdk(*, prompt: str, options: Any):
             nonlocal captured_system_prompt
             captured_system_prompt = getattr(options, "system_prompt", None)
-            from claude_code_sdk import ResultMessage
+            from claude_agent_sdk import ResultMessage
 
             yield ResultMessage(
                 subtype="result",
@@ -140,7 +140,7 @@ class TestSpawnerMemoryContextInjection:
         config = _make_config(modules={})
 
         async def fake_sdk(*, prompt: str, options: Any):
-            from claude_code_sdk import ResultMessage
+            from claude_agent_sdk import ResultMessage
 
             yield ResultMessage(
                 subtype="result",

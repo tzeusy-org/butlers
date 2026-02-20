@@ -115,7 +115,7 @@ class DatabaseManager:
 
 ### D6: Token Tracking — Spawner Captures from SDK Response
 
-**Decision:** Add `input_tokens`, `output_tokens`, `model`, `trace_id`, and `parent_session_id` columns to the `sessions` table. The LLM CLI spawner captures token usage from the Claude Code SDK response and stores it alongside the session record.
+**Decision:** Add `input_tokens`, `output_tokens`, `model`, `trace_id`, and `parent_session_id` columns to the `sessions` table. The LLM CLI spawner captures token usage from the Claude Agent SDK response and stores it alongside the session record.
 
 **Rationale:** Token counts are the raw data for cost estimation, usage trends, and anomaly detection. The CC SDK response includes usage data. Storing at session creation time is the natural point.
 
@@ -248,7 +248,7 @@ class DatabaseManager:
 
 | Question | Status |
 |----------|--------|
-| Does the Claude Code SDK expose `input_tokens` and `output_tokens` in its response? | Need to verify SDK response shape. If not available, fall back to parsing session transcripts or instrument at MCP level. |
+| Does the Claude Agent SDK expose `input_tokens` and `output_tokens` in its response? | Need to verify SDK response shape. If not available, fall back to parsing session transcripts or instrument at MCP level. |
 | How should the Switchboard connection be configured for `notify()`? | Each butler's `butler.toml` could have a `switchboard_url` field, or it could be derived from the Switchboard's butler.toml port. Config-based is simpler. |
 | Should the dashboard poll for status updates or use SSE? | Start with polling (TanStack Query's refetchInterval). Add SSE in M12 for real-time status indicators. |
 | Pricing config format and location? | Propose `pricing.toml` in the butlers config root, loaded by the dashboard API. Simple key-value: `model-id = {input = 0.000003, output = 0.000015}`. |

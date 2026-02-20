@@ -982,7 +982,7 @@ class TestSessionLogging:
 
 async def _result_sdk_query(*, prompt: str, options: Any):
     """Mock SDK query that returns a successful result."""
-    from claude_code_sdk import ResultMessage
+    from claude_agent_sdk import ResultMessage
 
     yield ResultMessage(
         subtype="result",
@@ -1011,7 +1011,7 @@ class TestModelPassthrough:
     """Model string from config is passed through to SDK options."""
 
     async def test_model_passed_to_sdk_options(self, tmp_path: Path):
-        """When model is set in config, it appears in ClaudeCodeOptions."""
+        """When model is set in config, it appears in ClaudeAgentOptions."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config(model="claude-sonnet-4-20250514")
@@ -1036,7 +1036,7 @@ class TestModelPassthrough:
         assert captured_options[0].model == "claude-sonnet-4-20250514"
 
     async def test_model_default_when_not_configured(self, tmp_path: Path):
-        """When model is not set, ClaudeCodeOptions.model defaults to Haiku."""
+        """When model is not set, ClaudeAgentOptions.model defaults to Haiku."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()  # model defaults to Haiku
@@ -1342,7 +1342,7 @@ class TestLegacySdkQueryCompat:
         config_dir.mkdir()
         config = _make_config()
 
-        from claude_code_sdk import ResultMessage
+        from claude_agent_sdk import ResultMessage
 
         async def mock_sdk(*, prompt: str, options: Any):
             yield ResultMessage(
@@ -1385,7 +1385,7 @@ class TestLegacySdkQueryCompat:
         async def capturing_sdk(*, prompt: str, options: Any):
             captured["prompt"] = prompt
             captured["options"] = options
-            from claude_code_sdk import ResultMessage
+            from claude_agent_sdk import ResultMessage
 
             yield ResultMessage(
                 subtype="result",
@@ -1543,13 +1543,13 @@ class TestTokenUsageCapture:
             assert kwargs["input_tokens"] is None
             assert kwargs["output_tokens"] is None
 
-    async def test_token_counts_from_claude_code_sdk(self, tmp_path: Path):
-        """End-to-end: token counts extracted from Claude Code SDK ResultMessage."""
+    async def test_token_counts_from_claude_agent_sdk(self, tmp_path: Path):
+        """End-to-end: token counts extracted from Claude Agent SDK ResultMessage."""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
-        from claude_code_sdk import ResultMessage
+        from claude_agent_sdk import ResultMessage
 
         async def sdk_with_usage(*, prompt: str, options: Any):
             yield ResultMessage(
@@ -1581,7 +1581,7 @@ class TestTokenUsageCapture:
         config_dir.mkdir()
         config = _make_config()
 
-        from claude_code_sdk import ResultMessage
+        from claude_agent_sdk import ResultMessage
 
         async def sdk_empty_usage(*, prompt: str, options: Any):
             yield ResultMessage(
@@ -1612,7 +1612,7 @@ class TestTokenUsageCapture:
         config_dir.mkdir()
         config = _make_config()
 
-        from claude_code_sdk import ResultMessage
+        from claude_agent_sdk import ResultMessage
 
         async def sdk_none_usage(*, prompt: str, options: Any):
             yield ResultMessage(
