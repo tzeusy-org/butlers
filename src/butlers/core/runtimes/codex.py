@@ -6,10 +6,10 @@ Encapsulates all Codex CLI-specific logic:
 - AGENTS.md system prompt reading (Codex convention)
 - Result parsing: extracts text output and tool call records
 
-The Codex CLI is invoked in ``--full-auto`` approval mode with
-``--quiet`` to suppress interactive UI. The system prompt (from
-AGENTS.md) is passed via ``--instructions`` flag. MCP server configs
-are written to a temporary config file pointed to by ``--config``.
+The Codex CLI is invoked in ``--full-auto`` approval mode. The system
+prompt (from AGENTS.md) is passed via ``--instructions`` flag. MCP
+server configs are written to a temporary config file pointed to by
+``--config``.
 
 If the Codex CLI binary is not installed on PATH, invoke() raises
 FileNotFoundError.
@@ -58,8 +58,8 @@ def _parse_codex_output(
 ) -> tuple[str | None, list[dict[str, Any]]]:
     """Parse Codex CLI output into (result_text, tool_calls).
 
-    The Codex CLI in quiet mode outputs JSON-lines to stdout. Each line
-    may be a JSON object with a ``type`` field. We look for:
+    The Codex CLI output may include JSON-lines on stdout. Each line may
+    be a JSON object with a ``type`` field. We look for:
     - ``type: "message"`` — contains the assistant's text response
     - ``type: "tool_use"`` or ``type: "function_call"`` — tool invocations
 
@@ -257,7 +257,6 @@ class CodexAdapter(RuntimeAdapter):
         cmd = [
             binary,
             "--full-auto",
-            "--quiet",
         ]
 
         if isinstance(model, str) and model.strip():

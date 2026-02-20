@@ -384,9 +384,45 @@ async def test_invoke_success():
     cmd = call_args[0]
     assert cmd[0] == "/usr/bin/codex"
     assert "--full-auto" in cmd
-    assert "--quiet" in cmd
+    assert "--quiet" not in cmd
     assert "--instructions" in cmd
     assert "do something" in cmd
+
+
+async def test_invoke_handles_cli_without_quiet_support():
+    """Regression: invocation succeeds when CLI rejects --quiet."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    def _mock_proc(returncode: int, stdout: str, stderr: str) -> AsyncMock:
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(stdout.encode(), stderr.encode()))
+        proc.returncode = returncode
+        return proc
+
+    async def _mock_create_subprocess_exec(*cmd: str, **_: object) -> AsyncMock:
+        if "--quiet" in cmd:
+            return _mock_proc(
+                returncode=2,
+                stdout="",
+                stderr="error: unexpected argument '--quiet' found",
+            )
+        return _mock_proc(
+            returncode=0,
+            stdout=json.dumps({"type": "result", "result": "Task done."}),
+            stderr="",
+        )
+
+    with patch(_EXEC, side_effect=_mock_create_subprocess_exec):
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="do something",
+            system_prompt="you are helpful",
+            mcp_servers={},
+            env={},
+        )
+
+    assert result_text == "Task done."
+    assert tool_calls == []
+    assert usage is None
 
 
 async def test_invoke_passes_model_flag():
