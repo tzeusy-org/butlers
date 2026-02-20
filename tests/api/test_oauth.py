@@ -236,7 +236,7 @@ class TestOAuthGoogleStart:
         assert _validate_and_consume_state(state) is False
 
     async def test_start_uses_default_scopes(self):
-        """Authorization URL includes Gmail and Calendar scopes by default."""
+        """Authorization URL includes fixed Gmail/Calendar/People scopes by default."""
         app = _make_app()
         env = {k: v for k, v in GOOGLE_ENV.items() if k != "GOOGLE_OAUTH_SCOPES"}
         with patch.dict("os.environ", env, clear=False):
@@ -250,6 +250,8 @@ class TestOAuthGoogleStart:
         location = resp.headers["location"]
         assert "gmail" in location.lower()
         assert "calendar" in location.lower()
+        assert "contacts" in location.lower()
+        assert "directory.readonly" in location.lower()
 
     async def test_start_ignores_custom_scopes_from_env(self):
         """GOOGLE_OAUTH_SCOPES env var does not override the fixed scope set."""
@@ -267,6 +269,8 @@ class TestOAuthGoogleStart:
         assert "drive" not in location
         assert "gmail" in location.lower()
         assert "calendar" in location.lower()
+        assert "contacts" in location.lower()
+        assert "directory.readonly" in location.lower()
 
 
 # ---------------------------------------------------------------------------
