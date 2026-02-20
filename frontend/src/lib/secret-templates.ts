@@ -15,6 +15,7 @@ export interface SecretTemplate {
 export const SECRET_TEMPLATES: SecretTemplate[] = [
   // Core — LLM API keys
   { key: "ANTHROPIC_API_KEY", description: "Anthropic Claude API key", category: "core" },
+  { key: "OPENAI_API_KEY", description: "OpenAI API key", category: "core" },
   { key: "GOOGLE_API_KEY", description: "Google API key (Maps, etc.)", category: "core" },
   { key: "GEMINI_API_KEY", description: "Google Gemini API key", category: "gemini" },
   // Telegram — bot and user-client credentials
@@ -49,7 +50,12 @@ export function categoryFromKey(key: string): SecretCategory {
   if (upper.includes("EMAIL") || upper.includes("SMTP") || upper.includes("IMAP")) return "email";
   if (upper.includes("GOOGLE") || upper.includes("GOOGLE_CLIENT")) return "google";
   if (upper.includes("GEMINI")) return "gemini";
-  if (upper.includes("ANTHROPIC") || upper.includes("DATABASE_URL") || upper.includes("SECRET_KEY")) {
+  if (
+    upper.includes("ANTHROPIC")
+    || upper.includes("OPENAI")
+    || upper.includes("DATABASE_URL")
+    || upper.includes("SECRET_KEY")
+  ) {
     return "core";
   }
   return "general";

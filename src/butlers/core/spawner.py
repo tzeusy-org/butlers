@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 _MEMORY_TABLE_NAMES = ("episodes", "facts", "rules", "memory_links", "memory_events")
 _missing_memory_table_warnings: set[tuple[str, str]] = set()
+_GLOBAL_CREDENTIAL_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
 
 
 def _is_missing_memory_table_error(exc: Exception) -> bool:
@@ -117,8 +118,8 @@ async def _build_env(
 
     Other than `PATH`, only declared variables are included — undeclared env
     vars do not leak through.
-    Always includes ANTHROPIC_API_KEY, plus butler-level required/optional
-    vars and module credential vars.
+    Always includes core API keys (ANTHROPIC/OPENAI), plus butler-level
+    required/optional vars and module credential vars.
 
     When *credential_store* is provided, credentials are resolved DB-first
     with automatic env-var fallback via ``CredentialStore.resolve()``.
@@ -138,10 +139,11 @@ async def _build_env(
             return await credential_store.resolve(key)
         return os.environ.get(key) or None
 
-    # Always include ANTHROPIC_API_KEY (DB-first, env fallback)
-    api_key = await _resolve("ANTHROPIC_API_KEY")
-    if api_key:
-        env["ANTHROPIC_API_KEY"] = api_key
+    # Always include core API keys (DB-first, env fallback).
+    for key in _GLOBAL_CREDENTIAL_KEYS:
+        value = await _resolve(key)
+        if value:
+            env[key] = value
 
     # Butler-level required + optional env vars
     for var in config.env_required + config.env_optional:

@@ -480,6 +480,12 @@ class TestCredentialPassthrough:
             env = await _build_env(config)
             assert env["ANTHROPIC_API_KEY"] == "sk-test-123"
 
+    async def test_openai_key_always_included(self):
+        config = _make_config()
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-openai-123"}, clear=False):
+            env = await _build_env(config)
+            assert env["OPENAI_API_KEY"] == "sk-openai-123"
+
     async def test_path_baseline_included(self):
         """PATH is passed through so runtime shebangs can resolve binaries."""
         config = _make_config()
@@ -554,6 +560,14 @@ class TestCredentialPassthrough:
             env = await _build_env(config)
             assert "ANTHROPIC_API_KEY" not in env
 
+    async def test_openai_key_missing_not_included(self):
+        config = _make_config()
+        env_copy = os.environ.copy()
+        env_copy.pop("OPENAI_API_KEY", None)
+        with patch.dict(os.environ, env_copy, clear=True):
+            env = await _build_env(config)
+            assert "OPENAI_API_KEY" not in env
+
     # ------------------------------------------------------------------
     # DB-first resolution path (with mocked CredentialStore)
     # ------------------------------------------------------------------
@@ -568,6 +582,17 @@ class TestCredentialPassthrough:
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "env-sk-key"}, clear=False):
             env = await _build_env(config, credential_store=store)
         assert env["ANTHROPIC_API_KEY"] == "db-sk-key"
+
+    async def test_db_resolution_openai_key(self):
+        """OPENAI_API_KEY resolved from DB takes precedence over env."""
+        config = _make_config()
+        store = AsyncMock()
+        store.resolve = AsyncMock(
+            side_effect=lambda key: "db-openai-key" if key == "OPENAI_API_KEY" else None
+        )
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "env-openai-key"}, clear=False):
+            env = await _build_env(config, credential_store=store)
+        assert env["OPENAI_API_KEY"] == "db-openai-key"
 
     async def test_db_resolution_env_fallback_when_db_miss(self):
         """When DB has no value, env var is used as fallback via CredentialStore.resolve()."""

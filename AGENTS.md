@@ -604,6 +604,8 @@ make test-qg
 - `frontend/src/pages/SecretsPage.tsx` no longer includes a dedicated "Configure App Credentials" form card; Google app credentials are managed through generic secrets rows (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`) and the OAuth section focuses on status/connect/delete actions.
 - `src/butlers/api/routers/oauth.py::_get_scopes()` uses the fixed `_DEFAULT_SCOPES` set for `/api/oauth/google/start`; `GOOGLE_OAUTH_SCOPES` is no longer a runtime override input.
 - Fixed OAuth scopes now include People-related scopes in addition to Gmail/Calendar: `contacts`, `contacts.readonly`, `contacts.other.readonly`, and `directory.readonly`.
+- `frontend/src/lib/secret-templates.ts` should include `OPENAI_API_KEY` under core templates so `/secrets` shows it as a first-class configurable key.
+- `src/butlers/core/spawner.py::_build_env` globally injects both `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` (CredentialStore DB-first, env fallback) for every runtime spawn, independent of `[butler.env]`.
 
 ### One-DB multi-schema migration planning contract
 - `docs/operations/one-db-multi-schema-migration.md` is the authoritative plan for epic `butlers-1003`: target topology (`shared` + per-butler schemas), role/ACL model, phased cutover + rollback, parity/isolation gates, and child-issue decomposition.
@@ -630,6 +632,11 @@ make test-qg
 - `src/butlers/connectors/gmail.py::_resolve_gmail_credentials_from_db` must perform layered DB-first lookup across local (`CONNECTOR_BUTLER_DB_NAME` + optional `CONNECTOR_BUTLER_DB_SCHEMA`) and shared (`BUTLER_SHARED_DB_NAME` + `BUTLER_SHARED_DB_SCHEMA`, default `shared`) contexts.
 - Each lookup pool must apply schema-scoped `server_settings={"search_path": ...}` (via `schema_search_path`) so `butler_secrets` resolves correctly in one-db/shared-schema topologies; otherwise startup can fall through to `GmailConnectorConfig.from_env()` and incorrectly raise missing env credential errors.
 - Regression coverage lives in `tests/test_gmail_connector.py::TestResolveGmailCredentialsFromDb::test_uses_shared_schema_fallback_with_schema_scoped_search_path`.
+
+### Gmail connector DB-first startup contract
+- `src/butlers/connectors/gmail.py::run_gmail_connector` is DB-only for Google OAuth credentials: it must require credentials from `butler_secrets` and must not fall back to credential env vars.
+- `GmailConnectorConfig.from_env(...)` accepts DB-injected credentials as explicit args and reads only non-secret runtime env config.
+- Regression coverage lives in `tests/test_gmail_connector.py::TestRunGmailConnectorStartup`.
 
 ### Butler runtime/model pinning contract
 - Runtime adapter selection is read from top-level `[runtime].type` in each `roster/*/butler.toml` (defaults to `"claude-code"` when omitted).
