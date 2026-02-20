@@ -547,16 +547,11 @@ _shared_refresh_token_count() {
 }
 
 _has_google_creds() {
-  # Check Calendar-style JSON blob (legacy — deprecated)
-  if [ -n "${BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON:-}" ]; then
-    return 0
-  fi
-
-  # Check individual env vars (mirrors GoogleCredentials.from_env order)
+  # Check canonical env vars (mirrors GoogleCredentials.from_env order).
   local client_id="" client_secret="" refresh_token=""
-  client_id="${GOOGLE_OAUTH_CLIENT_ID:-${GMAIL_CLIENT_ID:-}}"
-  client_secret="${GOOGLE_OAUTH_CLIENT_SECRET:-${GMAIL_CLIENT_SECRET:-}}"
-  refresh_token="${GOOGLE_REFRESH_TOKEN:-${GMAIL_REFRESH_TOKEN:-}}"
+  client_id="${GOOGLE_OAUTH_CLIENT_ID:-}"
+  client_secret="${GOOGLE_OAUTH_CLIENT_SECRET:-}"
+  refresh_token="${GOOGLE_REFRESH_TOKEN:-}"
 
   if [ -n "$client_id" ] && [ -n "$client_secret" ] && [ -n "$refresh_token" ]; then
     return 0
@@ -564,9 +559,9 @@ _has_google_creds() {
 
   # Check connector env file (sourced at connector startup)
   if [ -f "$GMAIL_CONNECTOR_ENV_FILE" ]; then
-    if grep -Eq '^(GOOGLE_OAUTH_CLIENT_ID|GMAIL_CLIENT_ID)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null \
-      && grep -Eq '^(GOOGLE_OAUTH_CLIENT_SECRET|GMAIL_CLIENT_SECRET)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null \
-      && grep -Eq '^(GOOGLE_REFRESH_TOKEN|GMAIL_REFRESH_TOKEN)=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null; then
+    if grep -Eq '^GOOGLE_OAUTH_CLIENT_ID=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null \
+      && grep -Eq '^GOOGLE_OAUTH_CLIENT_SECRET=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null \
+      && grep -Eq '^GOOGLE_REFRESH_TOKEN=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null; then
       return 0
     fi
   fi

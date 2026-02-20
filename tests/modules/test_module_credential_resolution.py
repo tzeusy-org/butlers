@@ -298,23 +298,11 @@ class TestCalendarModuleCredentialStore:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """With empty CredentialStore and no DB, falls back to env vars."""
-        import json
+        from butlers.modules.calendar import CalendarModule
 
-        from butlers.modules.calendar import (
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            CalendarModule,
-        )
-
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "client_id": "env-client-id",
-                    "client_secret": "env-client-secret",
-                    "refresh_token": "env-refresh-token",
-                }
-            ),
-        )
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "env-client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "env-client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "env-refresh-token")
         store = _make_credential_store()  # empty — will not find anything
         mod = CalendarModule()
         await mod.on_startup(
@@ -329,24 +317,12 @@ class TestCalendarModuleCredentialStore:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """CredentialStore value is used even when env vars are also set."""
-        import json
-
-        from butlers.modules.calendar import (
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            CalendarModule,
-        )
+        from butlers.modules.calendar import CalendarModule
 
         # Set env vars with different values
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "client_id": "env-client-id",
-                    "client_secret": "env-client-secret",
-                    "refresh_token": "env-refresh-token",
-                }
-            ),
-        )
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "env-client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "env-client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "env-refresh-token")
 
         store = _make_credential_store(
             GOOGLE_OAUTH_CLIENT_ID="db-client-id",
@@ -377,12 +353,8 @@ class TestCalendarModuleCredentialStore:
             if k
             not in (
                 "GOOGLE_OAUTH_CLIENT_ID",
-                "GMAIL_CLIENT_ID",
                 "GOOGLE_OAUTH_CLIENT_SECRET",
-                "GMAIL_CLIENT_SECRET",
                 "GOOGLE_REFRESH_TOKEN",
-                "GMAIL_REFRESH_TOKEN",
-                "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON",
             )
         }
         with patch.dict(os.environ, env, clear=True):
@@ -397,23 +369,11 @@ class TestCalendarModuleCredentialStore:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Without a CredentialStore, startup falls back to env vars (no DB)."""
-        import json
+        from butlers.modules.calendar import CalendarModule
 
-        from butlers.modules.calendar import (
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            CalendarModule,
-        )
-
-        monkeypatch.setenv(
-            GOOGLE_CALENDAR_CREDENTIALS_ENV,
-            json.dumps(
-                {
-                    "client_id": "env-client-id",
-                    "client_secret": "env-client-secret",
-                    "refresh_token": "env-refresh-token",
-                }
-            ),
-        )
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "env-client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "env-client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "env-refresh-token")
         mod = CalendarModule()
         await mod.on_startup(
             {"provider": "google", "calendar_id": "primary"},

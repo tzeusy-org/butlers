@@ -188,12 +188,26 @@ class TestGoogleOAuthCredentials:
 
     def test_from_env_missing_env_var_raises_credential_error(self):
         with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(CalendarCredentialError, match="must be set to a non-empty JSON"):
+            with pytest.raises(
+                CalendarCredentialError,
+                match="Missing required Google credential environment variable",
+            ):
                 _GoogleOAuthCredentials.from_env()
 
     def test_from_env_empty_env_var_raises_credential_error(self):
-        with patch.dict(os.environ, {"BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": "   "}):
-            with pytest.raises(CalendarCredentialError, match="must be set to a non-empty JSON"):
+        with patch.dict(
+            os.environ,
+            {
+                "GOOGLE_OAUTH_CLIENT_ID": "   ",
+                "GOOGLE_OAUTH_CLIENT_SECRET": "   ",
+                "GOOGLE_REFRESH_TOKEN": "   ",
+            },
+            clear=True,
+        ):
+            with pytest.raises(
+                CalendarCredentialError,
+                match="Missing required Google credential environment variable",
+            ):
                 _GoogleOAuthCredentials.from_env()
 
 

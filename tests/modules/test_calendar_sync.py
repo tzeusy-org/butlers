@@ -81,6 +81,7 @@ def _make_google_event_payload(event_id: str, status: str = "confirmed") -> dict
 def _make_mock_db(state_store: dict | None = None) -> MagicMock:
     """Return a mock Database object with a pool that stores state in-memory."""
     store: dict[str, Any] = state_store if state_store is not None else {}
+    versions: dict[str, int] = {}
 
     async def mock_fetchval(sql: str, key: str, *args: Any) -> Any:
         if "SELECT value FROM state" in sql:
@@ -88,6 +89,12 @@ def _make_mock_db(state_store: dict | None = None) -> MagicMock:
             if isinstance(val, dict):
                 return json.dumps(val)
             return val
+        if "INSERT INTO state" in sql and "RETURNING version" in sql:
+            value_str = args[0] if args else None
+            if value_str is not None:
+                store[key] = json.loads(value_str)
+            versions[key] = versions.get(key, 0) + 1
+            return versions[key]
         return None
 
     async def mock_execute(sql: str, key: str, *args: Any) -> None:
@@ -723,7 +730,9 @@ class TestCalendarModuleSyncCalendar:
 class TestCalendarModuleStartupPoller:
     async def test_poller_started_when_sync_enabled(self, monkeypatch):
         """When sync.enabled=True, a background task is started on_startup."""
-        monkeypatch.setenv("BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON", GOOGLE_CREDS_JSON)
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "test-refresh-token")
         mod = CalendarModule()
         config = {"provider": "google", "calendar_id": "primary", "sync": {"enabled": True}}
 
@@ -750,7 +759,9 @@ class TestCalendarModuleStartupPoller:
 
     async def test_poller_not_started_when_sync_disabled(self, monkeypatch):
         """When sync.enabled=False (default), no background task is created."""
-        monkeypatch.setenv("BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON", GOOGLE_CREDS_JSON)
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "test-refresh-token")
         mod = CalendarModule()
         config = {"provider": "google", "calendar_id": "primary"}
         await mod.on_startup(config, db=None)
@@ -761,7 +772,9 @@ class TestCalendarModuleStartupPoller:
 
     async def test_on_shutdown_cancels_poller(self, monkeypatch):
         """on_shutdown cancels the sync poller task."""
-        monkeypatch.setenv("BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON", GOOGLE_CREDS_JSON)
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "test-refresh-token")
         mod = CalendarModule()
         config = {"provider": "google", "calendar_id": "primary", "sync": {"enabled": True}}
 
@@ -782,7 +795,9 @@ class TestCalendarModuleStartupPoller:
 
     async def test_on_shutdown_without_poller_is_safe(self, monkeypatch):
         """on_shutdown when no poller was started should not raise."""
-        monkeypatch.setenv("BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON", GOOGLE_CREDS_JSON)
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
+        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret")
+        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "test-refresh-token")
         mod = CalendarModule()
         config = {"provider": "google", "calendar_id": "primary"}
         await mod.on_startup(config, db=None)

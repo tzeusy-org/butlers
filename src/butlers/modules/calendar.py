@@ -25,10 +25,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
-from butlers.google_credentials import (
-    MissingGoogleCredentialsError,
-    resolve_google_credentials,
-)
 from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
@@ -2970,15 +2966,13 @@ class CalendarModule(Module):
         db: Any,
         credential_store: Any,
     ) -> _GoogleOAuthCredentials:
-        """Resolve Google OAuth credentials using a three-tier lookup.
+        """Resolve Google OAuth credentials using canonical lookup sources.
 
         Resolution order:
         1. CredentialStore (``butler_secrets`` table) for individual keys
            ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``,
            ``GOOGLE_REFRESH_TOKEN``.
-        2. Dedicated ``google_oauth_credentials`` DB table via
-           ``resolve_google_credentials(pool)``.
-        3. Environment variables via ``_GoogleOAuthCredentials.from_env()``.
+        2. Environment variables via ``_GoogleOAuthCredentials.from_env()``.
 
         Parameters
         ----------
@@ -2996,7 +2990,7 @@ class CalendarModule(Module):
         Raises
         ------
         RuntimeError
-            If credentials cannot be resolved from any source.
+            If credentials cannot be resolved from either source.
         """
         # Step 1: Try CredentialStore (butler_secrets) for individual keys.
         if credential_store is not None:
@@ -3015,24 +3009,7 @@ class CalendarModule(Module):
                     refresh_token=refresh_token,
                 )
 
-        # Step 2: Try dedicated google_oauth_credentials DB table.
-        pool = getattr(db, "pool", None) if db is not None else None
-        if pool is not None:
-            try:
-                google_creds_shared = await resolve_google_credentials(pool, caller="calendar")
-                logger.debug(
-                    "CalendarModule: resolved Google credentials from"
-                    " google_oauth_credentials table"
-                )
-                return _GoogleOAuthCredentials(
-                    client_id=google_creds_shared.client_id,
-                    client_secret=google_creds_shared.client_secret,
-                    refresh_token=google_creds_shared.refresh_token,
-                )
-            except MissingGoogleCredentialsError:
-                pass  # Fall through to env vars.
-
-        # Step 3: Fall back to env vars.
+        # Step 2: Fall back to canonical env vars.
         try:
             return _GoogleOAuthCredentials.from_env()
         except RuntimeError as exc:
@@ -3050,8 +3027,7 @@ class CalendarModule(Module):
         Credential resolution order:
         1. CredentialStore (``butler_secrets`` table) — individual keys
            ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``, ``GOOGLE_REFRESH_TOKEN``.
-        2. Dedicated ``google_oauth_credentials`` DB table (via ``resolve_google_credentials``).
-        3. Environment variables (via ``_GoogleOAuthCredentials.from_env``).
+        2. Environment variables (via ``_GoogleOAuthCredentials.from_env``).
 
         Parameters
         ----------
@@ -3062,8 +3038,8 @@ class CalendarModule(Module):
         credential_store:
             Optional :class:`~butlers.credential_store.CredentialStore`.
             When provided, individual Google credential keys are checked in
-            ``butler_secrets`` first before falling through to the dedicated
-            Google credentials table or environment variables.
+            ``butler_secrets`` first before falling through to environment
+            variables.
         """
         self._config = self._coerce_config(config)
         self._db = db

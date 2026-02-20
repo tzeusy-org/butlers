@@ -141,18 +141,16 @@ class TestBuildStructuredError:
     def test_error_message_does_not_include_short_credential_values(self):
         # Short credentials (< 200 chars) would NOT be caught by truncation alone.
         # The redaction step must explicitly remove them from the error message.
-        import json as json_module
-
         short_token = "ya29.short20chars!"  # 18 chars — well under 200-char truncation limit
-        creds_json = json_module.dumps(
-            {
-                "client_id": "client-id-123",
-                "client_secret": short_token,
-                "refresh_token": "rt-abc",
-            }
-        )
         exc = CalendarAuthError(f"Auth failed: token={short_token}")
-        with patch.dict("os.environ", {"BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON": creds_json}):
+        with patch.dict(
+            "os.environ",
+            {
+                "GOOGLE_OAUTH_CLIENT_ID": "client-id-123",
+                "GOOGLE_OAUTH_CLIENT_SECRET": short_token,
+                "GOOGLE_REFRESH_TOKEN": "rt-abc",
+            },
+        ):
             result = _build_structured_error(exc, provider="google", calendar_id="primary")
         # The short credential value must be redacted, not present in the error output.
         assert short_token not in result["error"]
@@ -903,7 +901,7 @@ class TestNoCredentialLeakage:
     def test_credential_error_message_does_not_include_secret_values(self):
         # CalendarCredentialError is raised before credentials are stored
         exc = CalendarCredentialError(
-            "BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON must be set to a non-empty JSON object"
+            "Missing required Google credential environment variable(s): GOOGLE_OAUTH_CLIENT_ID"
         )
         result = _build_structured_error(exc, provider="google", calendar_id="primary")
         # The message should not contain actual secret values (env var name is OK)
