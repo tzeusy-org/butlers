@@ -83,7 +83,7 @@ automatically without any env var configuration.
 **Resolution order:**
 1. Local override DB: if `CONNECTOR_BUTLER_DB_NAME` is configured, that butler DB is queried first.
 2. Shared credential DB: `BUTLER_SHARED_DB_NAME` (default `butlers`).
-3. Environment variables (deprecated fallback for backward compatibility).
+3. Environment variables (canonical fallback).
 
 **DB-first variables (recommended):**
 - `DATABASE_URL` (optional; postgres connection URL, e.g., `postgres://user:pass@localhost:5432/butlers`)
@@ -95,10 +95,12 @@ automatically without any env var configuration.
 - `GOOGLE_OAUTH_CLIENT_ID` (required; OAuth client ID — used by dashboard OAuth flow)
 - `GOOGLE_OAUTH_CLIENT_SECRET` (required; OAuth client secret — used by dashboard OAuth flow)
 
-**Deprecated env-var fallback (legacy, will be removed in a future release):**
-- `GMAIL_CLIENT_ID` (deprecated alias for `GOOGLE_OAUTH_CLIENT_ID`)
-- `GMAIL_CLIENT_SECRET` (deprecated alias for `GOOGLE_OAUTH_CLIENT_SECRET`)
-- `GMAIL_REFRESH_TOKEN` or `GOOGLE_REFRESH_TOKEN` (deprecated; store credentials in DB instead)
+**Canonical env-var fallback (when DB credentials are unavailable):**
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `GOOGLE_REFRESH_TOKEN`
+
+Legacy aliases (`GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`) are not used.
 
 Optional runtime controls:
 - `GMAIL_POLL_INTERVAL_S` (polling interval in seconds, default 60)

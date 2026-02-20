@@ -473,9 +473,9 @@ Every provider adapter must implement the `CalendarProvider` abstract base class
 ### 14.2 Google Calendar adapter (v1)
 - Authentication: OAuth 2.0 refresh-token flow using DB-first credential resolution.
   Credentials are resolved at startup via `resolve_google_credentials(pool)`:
-  1. DB lookup (from `google_oauth_credentials` table, populated by the dashboard OAuth flow)
-  2. Env-var fallback: `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON` (deprecated)
-  App config env vars always required: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`.
+  1. DB lookup (from `butler_secrets` using keys `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`)
+  2. Env-var fallback: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`
+  Legacy `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON` is not used by runtime credential resolution.
 - API base: `https://www.googleapis.com/calendar/v3`.
 - Event mapping: Google event payloads are translated to/from canonical `CalendarEvent` shapes, including timezone resolution, attendee extraction, recurrence rule parsing, and extended property mapping.
 - Conflict detection: uses Google freeBusy API for efficient busy-window queries.
