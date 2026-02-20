@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.config import ButlerConfig
@@ -77,6 +79,25 @@ class TestStoreSessionEpisode:
             "my-butler",
             session_id="12345678-1234-5678-1234-567812345678",
         )
+
+    async def test_missing_memory_tables_returns_false_without_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        with (
+            patch(
+                "butlers.modules.memory.tools.writing.memory_store_episode",
+                new_callable=AsyncMock,
+                side_effect=asyncpg.UndefinedTableError('relation "episodes" does not exist'),
+            ),
+            caplog.at_level(logging.WARNING, logger="butlers.core.spawner"),
+        ):
+            result = await store_session_episode(AsyncMock(), "my-butler", "session output")
+
+        assert result is False
+        record = next(
+            r for r in caplog.records if "memory tables are missing" in r.getMessage()
+        )
+        assert record.exc_info is None
 
 
 class TestSpawnerEpisodeStorageIntegration:

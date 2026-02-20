@@ -41,6 +41,39 @@ from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
 
+_MEMORY_TABLE_NAMES = ("episodes", "facts", "rules", "memory_links", "memory_events")
+_missing_memory_table_warnings: set[tuple[str, str]] = set()
+
+
+def _is_missing_memory_table_error(exc: Exception) -> bool:
+    """Return whether an exception indicates missing memory module tables."""
+    if exc.__class__.__name__ == "UndefinedTableError":
+        return True
+    msg = str(exc).lower()
+    if "relation" not in msg or "does not exist" not in msg:
+        return False
+    return any(table in msg for table in _MEMORY_TABLE_NAMES)
+
+
+def _log_missing_memory_table_once(*, butler_name: str, operation: str) -> None:
+    """Log missing-memory-schema warning once per butler+operation."""
+    warning_key = (butler_name, operation)
+    if warning_key in _missing_memory_table_warnings:
+        logger.debug(
+            "Skipping memory %s for butler %s; memory tables are still missing",
+            operation,
+            butler_name,
+        )
+        return
+
+    _missing_memory_table_warnings.add(warning_key)
+    logger.warning(
+        "Skipping memory %s for butler %s because memory tables are missing. "
+        "Run migrations or disable [modules.memory].",
+        operation,
+        butler_name,
+    )
+
 
 @dataclass
 class SpawnerResult:
@@ -78,7 +111,12 @@ async def _build_env(
 ) -> dict[str, str]:
     """Build an explicit env dict for the runtime instance.
 
-    Only declared variables are included — no undeclared env vars leak through.
+    Includes a minimal runtime baseline (`PATH`) plus declared credentials.
+    This keeps runtime shebang resolution (for example ``#!/usr/bin/env node``)
+    working in spawned subprocesses without requiring machine-specific paths.
+
+    Other than `PATH`, only declared variables are included — undeclared env
+    vars do not leak through.
     Always includes ANTHROPIC_API_KEY, plus butler-level required/optional
     vars and module credential vars.
 
@@ -88,6 +126,11 @@ async def _build_env(
     resolution falls back directly to ``os.environ``.
     """
     env: dict[str, str] = {}
+
+    # Runtime baseline needed for CLI shebang resolution (e.g. /usr/bin/env node).
+    host_path = os.environ.get("PATH")
+    if host_path:
+        env["PATH"] = host_path
 
     async def _resolve(key: str) -> str | None:
         """Resolve a credential key: DB-first when store available, else env."""
@@ -170,7 +213,10 @@ async def fetch_memory_context(
         if isinstance(context, str) and context.strip():
             return context
         return None
-    except Exception:
+    except Exception as exc:
+        if _is_missing_memory_table_error(exc):
+            _log_missing_memory_table_once(butler_name=butler_name, operation="context fetch")
+            return None
         logger.warning(
             "Failed to fetch memory context for butler %s",
             butler_name,
@@ -199,7 +245,10 @@ async def store_session_episode(
             session_id=str(session_id) if session_id is not None else None,
         )
         return True
-    except Exception:
+    except Exception as exc:
+        if _is_missing_memory_table_error(exc):
+            _log_missing_memory_table_once(butler_name=butler_name, operation="episode storage")
+            return False
         logger.warning(
             "Failed to store session episode for butler %s",
             butler_name,

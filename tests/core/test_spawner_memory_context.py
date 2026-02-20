@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.config import ButlerConfig
@@ -82,6 +84,25 @@ class TestFetchMemoryContext:
         ):
             result = await fetch_memory_context(AsyncMock(), "my-butler", "hello")
         assert result is None
+
+    async def test_missing_memory_tables_returns_none_without_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        with (
+            patch(
+                "butlers.modules.memory.tools.context.memory_context",
+                new_callable=AsyncMock,
+                side_effect=asyncpg.UndefinedTableError('relation "facts" does not exist'),
+            ),
+            caplog.at_level(logging.WARNING, logger="butlers.core.spawner"),
+        ):
+            result = await fetch_memory_context(AsyncMock(), "my-butler", "hello")
+
+        assert result is None
+        record = next(
+            r for r in caplog.records if "memory tables are missing" in r.getMessage()
+        )
+        assert record.exc_info is None
 
 
 class TestSpawnerMemoryContextInjection:
