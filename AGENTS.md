@@ -175,6 +175,7 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - All DB tests use `testcontainers.postgres.PostgresContainer` with `asyncpg.create_pool()`
 - Tables created via direct SQL from migration files (not Alembic runner)
 - When tests create `sessions` manually, keep schema aligned with `core_003`+ columns (`model`, `success`, `error`, `input_tokens`, `output_tokens`, `parent_session_id`) to avoid `UndefinedColumnError` in `core.sessions` queries.
+- Integration test modules that create asyncpg pools in async fixtures must align asyncio loop scope under xdist (`@pytest.mark.asyncio(loop_scope="session")` on async test classes/modules) to avoid cross-loop `RuntimeError: ... Future ... attached to a different loop`.
 - Root `conftest.py` has `SpawnerResult` and `MockSpawner` (visible to all test trees)
 - `tests/conftest.py` re-exports from root for backward compat (`from tests.conftest import ...`)
 - CLI tests use Click's `CliRunner`
