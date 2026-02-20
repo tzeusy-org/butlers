@@ -1,308 +1,272 @@
-# One-DB Multi-Schema Migration Plan
+# One-DB Multi-Schema Operations Runbook
 
-Status: Planned
-Owner issue: `butlers-1003`
+Status: Active runbook for issue `butlers-1003`
 Last updated: 2026-02-20
 
 ## 1. Purpose
 
-This document is the target-state design and execution plan for migrating Butlers from
-multi-database topology to a single PostgreSQL database with per-butler schemas plus a
-shared schema.
+This runbook defines how to operate Butlers in the target topology:
 
-Target outcome:
-- One PostgreSQL database for all butlers.
-- One schema per butler plus a `shared` schema.
-- Least-privilege ACL where each butler runtime role can access only its own schema and
-  `shared`.
+- one PostgreSQL database (default: `butlers`)
+- one schema per butler (`switchboard`, `general`, `relationship`, `health`, `messenger`)
+- one shared schema (`shared`)
 
-## 2. Scope and Non-Goals
+It covers local development, CI, production cutover, rollback, and troubleshooting.
 
-In scope:
-- Target topology, naming, ownership, and runtime connection model.
-- ACL model and permission guarantees.
-- Phased migration and cutover/rollback procedure.
-- Data parity and isolation verification criteria.
-- Local-dev, CI, and production operator guidance.
+## 2. Security and Isolation Model (Normative)
 
-Non-goals:
-- Re-architecting MCP routing semantics.
-- Changing butler-facing tool contracts.
-- New product functionality unrelated to storage topology.
+All runtime access must follow this contract:
 
-## 3. Current vs Target Topology
-
-Current (as of 2026-02-20):
-- Each butler uses its own Postgres database (`butler_general`, `butler_health`, etc.).
-- Shared concerns (for example credential storage) may use separate compatibility stores.
-
-Target:
-- Single Postgres database, default name `butlers`.
-- Schemas:
+- Each runtime role can access only:
+  - its own schema (`<butler_schema>`)
   - `shared`
-  - `switchboard`
-  - `general`
-  - `relationship`
-  - `health`
-  - `messenger`
+- Cross-butler schema access is denied by default.
+- Runtime roles are non-owners.
+- Schema owners are migration/platform roles, not runtime roles.
 
-## 4. Naming, Ownership, and Role Model
+Required runtime connection behavior:
 
-### 4.1 Database and schema ownership
+- All butlers connect to the same database name (for example `butlers`).
+- Runtime role search path is constrained to `<butler_schema>,shared,public`.
 
-- Database owner role: `butlers_owner`.
-- Migration executor role: `butlers_migrator`.
-- Runtime roles:
-  - `butler_switchboard_rw`
-  - `butler_general_rw`
-  - `butler_relationship_rw`
-  - `butler_health_rw`
-  - `butler_messenger_rw`
+### Reference role naming
 
-Schema ownership:
-- `shared` owned by `butlers_owner`.
-- Each butler schema owned by `butlers_owner` (not by runtime roles).
+Use one runtime role per butler. Example names:
 
-Rationale: ownership centralized under platform role prevents runtime principals from
-self-escalating ACL.
+- `butler_switchboard_app`
+- `butler_general_app`
+- `butler_relationship_app`
+- `butler_health_app`
+- `butler_messenger_app`
 
-### 4.2 Runtime connection model
+If your environment uses a different suffix (for example `_rw`), keep policy semantics identical.
 
-- All daemon/API pools connect to one database DSN.
-- Butler runtime pool selects principal via role-specific credentials.
-- Connection `search_path` is constrained to:
-  - `<butler_schema>,shared,public` for butler runtimes.
-  - `switchboard,shared,public` for switchboard runtime.
-- SQL remains schema-qualified in migrations and sensitive runtime paths.
+## 3. Environment Configuration
 
-## 5. ACL and Isolation Guarantees
+### 3.1 Butler config (`butler.toml`)
 
-The model guarantees that each runtime role can access only its own schema plus `shared`.
+Set every butler to the same DB name:
 
-### 5.1 Baseline revokes
+```toml
+[butler.db]
+name = "butlers"
+```
 
-- `REVOKE ALL ON DATABASE butlers FROM PUBLIC;`
-- `REVOKE ALL ON SCHEMA public FROM PUBLIC;`
-- For each non-owned schema, no `USAGE` grant is provided to other butler roles.
+Notes:
 
-### 5.2 Per-role grants
+- `src/butlers/config.py` currently reads `butler.db.name` as the database selector.
+- Schema scoping is enforced at the DB-role level (`search_path`) in this release train.
 
-For a role `butler_<name>_rw`:
-- Own schema `<name>`:
-  - `USAGE, CREATE` on schema.
-  - `SELECT, INSERT, UPDATE, DELETE, TRIGGER, REFERENCES` on tables.
-  - `USAGE, SELECT, UPDATE` on sequences.
-  - `EXECUTE` on functions (schema-scoped as needed).
-- Shared schema `shared`:
-  - `USAGE` on schema.
-  - Only operation-minimum grants on shared tables/functions (least privilege),
-    defaulting to no access until explicitly granted.
-- Other butler schemas:
-  - No `USAGE`; all table/sequence/function access denied by default.
+### 3.2 Environment variables
 
-### 5.3 Default privileges for future objects
+Supported DB connection sources are:
 
-For each schema owner + schema pair:
-- `ALTER DEFAULT PRIVILEGES IN SCHEMA <schema> ...` is set so new objects inherit
-  intended grants automatically.
-- Cross-schema default grants are not configured.
+- `DATABASE_URL` (preferred)
+- `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
+- Optional SSL control: `POSTGRES_SSLMODE` or `sslmode` in `DATABASE_URL`
 
-### 5.4 Isolation proof requirements
+Reference implementation: `src/butlers/db.py::db_params_from_env`.
 
-For every butler role in CI integration tests:
-- Positive checks:
-  - Can read/write own schema tables.
-  - Can perform approved operations in `shared`.
-- Negative checks:
-  - Fails with permission error when reading/writing at least one table in another
-    butler schema.
+### 3.3 Legacy multi-DB deprecation
 
-## 6. Phased Migration Plan
+Legacy per-butler DB names (`butler_general`, `butler_health`, and peers) are deprecated for runtime traffic in one-DB mode.
 
-### Phase 0: Preflight and inventory
+Deprecation policy:
 
-Entry criteria:
-- Current migrations green.
-- Full schema/table inventory exported from all source DBs.
+- Allowed only as migration sources during cutover windows.
+- Must not be used as the active runtime target after one-DB cutover.
+- Any docs/scripts still referencing per-butler runtime DBs must be treated as historical and migrated to this runbook.
 
-Execution:
-- Freeze baseline table manifests and row counts.
-- Confirm mapping from source DB -> target schema.
+## 4. Local Development Setup
 
-Exit criteria:
-- Inventory artifact checked into migration records.
+### 4.1 Bootstrap local DB
 
-Rollback:
-- No-op (planning phase).
+1. Start Postgres:
+   - `docker compose up -d postgres`
+2. Set DB env vars (or `DATABASE_URL`) for local shell.
+3. Ensure butler configs use `[butler.db].name = "butlers"`.
+4. Provision DB (idempotent):
+   - `uv run butlers db provision --dir roster`
 
-### Phase 1: Bootstrap one-DB schemas
+### 4.2 Bootstrap schemas and migrations
 
-Entry criteria:
-- Approved schema/role naming.
+Run daemons once (or specific butlers) to apply startup migrations:
 
-Execution:
-- Add additive migrations to create `shared` and per-butler schemas idempotently.
-- Add role bootstrap and baseline ACL grants.
+- `uv run butlers up --only switchboard --only general --only relationship --only health --only messenger`
 
-Exit criteria:
-- Fresh install creates complete schema layout.
-- Existing install upgrades without migration chain divergence.
+Startup runs:
 
-Rollback:
-- Revert deployment to pre-bootstrap revision.
-- Drop newly-created schemas only in non-production dry-runs.
+- core migration chain (`core_*`)
+- enabled module chains
+- butler-specific chains
 
-### Phase 2: ACL hardening and runtime wiring
+### 4.3 Validate local schema layout
 
-Entry criteria:
-- Schema bootstrap complete.
+```sql
+SELECT schema_name
+FROM information_schema.schemata
+WHERE schema_name IN ('shared', 'switchboard', 'general', 'relationship', 'health', 'messenger')
+ORDER BY schema_name;
+```
 
-Execution:
-- Apply full per-role grant/revoke model and default privileges.
-- Refactor daemon/API DB config to schema-aware one-DB model.
+Expected: six rows.
 
-Exit criteria:
-- Runtime components use one DB with correct schema scoping.
-- Integration tests validate positive + negative access paths.
+## 5. CI Topology Contract
 
-Rollback:
-- Re-enable legacy multi-DB config path.
-- Retain one-DB schemas for reattempt (no destructive cleanup in prod).
+CI must run against one ephemeral PostgreSQL database per job and validate:
 
-### Phase 3: Data migration and parity verification
+- schema bootstrap success
+- ACL isolation behavior
+- regression safety for runtime data access
 
-Entry criteria:
-- ACL and runtime wiring validated in staging.
+Minimum CI checks:
 
-Execution:
-- Backfill data from each source DB into corresponding target schema.
-- Run deterministic parity checks (counts + checksums + sample record diff).
+1. Apply migrations in a fresh DB and verify required schemas exist.
+2. Run integration tests that confirm:
+   - own-schema + `shared` access succeeds
+   - cross-schema access is denied
+3. Run standard quality gate (`make test-qg`) on release-readiness runs.
 
-Exit criteria:
-- All parity checks pass.
-- No unresolved critical mismatches.
+## 6. Production Cutover Runbook
 
-Rollback:
-- Abort cutover.
-- Keep source DBs authoritative.
-- Discard/rebuild target schema data in staging before next attempt.
+### 6.1 Preflight checklist (required)
 
-### Phase 4: Cutover and observation window
+1. Backups and snapshots are verified for all source DBs.
+2. Freeze window approved.
+3. Rollback config artifact prepared:
+   - previous runtime env/config
+   - source DB endpoints/credentials
+4. Schema bootstrap verified in target DB:
+   - `shared`, `switchboard`, `general`, `relationship`, `health`, `messenger`
+5. Runtime roles exist and have own-schema + `shared` permissions only.
+6. Staging dry-run parity and ACL checks passed.
 
-Entry criteria:
-- Staging dry-run successful end-to-end.
-- Production parity checks green.
+### 6.2 Cutover steps
 
-Execution:
-- Flip runtime configuration to one-DB endpoints.
-- Monitor health, error rates, and data consistency during observation window.
+1. Quiesce writers on legacy topology.
+2. Run final incremental sync from legacy DBs to target schemas.
+3. Confirm parity gates (counts/checksums/sample reads).
+4. Switch runtime configs so all butlers target `[butler.db].name = "butlers"`.
+5. Restart daemons and dashboard API.
+6. Execute smoke checks:
+   - butlers start cleanly
+   - dashboard endpoints read/write expected data
+   - connector ingress succeeds
+7. Start observation window (recommended: 24h).
 
-Exit criteria:
-- Stable operation for one full observation window (recommended: 24h).
-- No Sev1/Sev2 migration regressions.
+### 6.3 Validation gates (must pass)
 
-Rollback:
-- Revert runtime config to legacy DB topology.
-- Preserve one-DB state for forensic comparison.
+Correctness:
 
-### Phase 5: Legacy decommission
+- row-count parity for required tables
+- deterministic checksum parity for selected high-risk tables
+- per-butler tool smoke checks
 
-Entry criteria:
-- Cutover stable.
+Isolation:
 
-Execution:
-- Mark legacy DBs read-only.
-- Snapshot backup and retention archive.
-- Remove legacy write paths and compatibility shims.
+- each runtime role can read/write own schema
+- each runtime role can use only approved `shared` objects
+- each runtime role is denied on at least one non-owned schema table
 
-Exit criteria:
-- Legacy DBs no longer used by runtime traffic.
+## 7. Rollback Runbook
 
-Rollback:
-- Restore from retained snapshots only if post-cutover latent loss is detected.
+Trigger rollback if any cutover gate fails or Sev1/Sev2 regression appears.
 
-## 7. Data Validation and Cutover Gates
+### 7.1 Rollback steps
 
-### 7.1 Correctness gates
+1. Stop or quiesce one-DB runtime writers.
+2. Restore last-known-good runtime config (legacy topology).
+3. Restart services against legacy DB endpoints.
+4. Validate core health and critical tools on legacy path.
+5. Preserve one-DB state for forensic comparison (do not destroy immediately).
+6. Record incident timeline, failed gate, and delta findings.
 
-Required checks (must pass):
-- Row-count parity for all core/module tables per butler schema.
-- Deterministic checksum parity for key business columns.
-- Spot-validation samples for high-risk tables.
-- Behavioral smoke tests for each butler's critical MCP tools.
+### 7.2 Rollback exit criteria
 
-Failure policy:
-- Any parity mismatch on required tables blocks cutover.
+- Production traffic stable on legacy topology.
+- Data integrity confirmed on legacy source of truth.
+- Root-cause issue captured for next migration attempt.
 
-### 7.2 Isolation gates
+## 8. Troubleshooting
 
-Required checks (must pass):
-- Each runtime role can use own schema + `shared` only.
-- Cross-butler schema reads/writes denied with permission errors.
-- Shared-schema operations limited to explicitly granted actions.
+### 8.1 `permission denied for schema <schema>`
 
-Failure policy:
-- Any unexpected cross-schema access blocks cutover.
+Likely cause:
 
-## 8. Rollback Strategy Summary
+- missing `USAGE` or table grants for runtime role
 
-Principles:
-- Keep source data authoritative until cutover signoff.
-- Do not perform destructive cleanup before parity verification.
-- Ensure config rollback path is fast and scripted.
+Checks:
 
-Minimum rollback artifacts:
-- Last-known-good runtime config.
-- Source DB snapshots.
-- Migration manifest + parity reports.
+```sql
+SELECT n.nspname AS schema, r.rolname AS role, has_schema_privilege(r.rolname, n.nspname, 'USAGE') AS has_usage
+FROM pg_namespace n
+CROSS JOIN pg_roles r
+WHERE n.nspname IN ('shared','switchboard','general','relationship','health','messenger')
+  AND r.rolname LIKE 'butler\\_%\\_app';
+```
 
-## 9. Work Decomposition (Child Issues)
+### 8.2 Unexpected cross-schema access success
 
-`butlers-1003` is decomposed into executable child tasks:
+Likely cause:
 
-- `butlers-1003.1` design and migration sequencing.
-- `butlers-1003.2` schema bootstrap migrations (`shared` + per-butler schemas).
-- `butlers-1003.3` ACL grants/revokes and default privileges.
-- `butlers-1003.4` data backfill + parity tooling.
-- `butlers-1003.5` runtime config refactor to one-DB schema semantics.
-- `butlers-1003.6` integration tests for ACL isolation and runtime behavior.
-- `butlers-1003.7` docs/runbooks for operations and deployment.
+- over-broad grant or inherited role
 
-## 10. Environment-Specific Guidance
+Checks:
 
-### 10.1 Local development
+```sql
+SELECT grantee, table_schema, table_name, privilege_type
+FROM information_schema.role_table_grants
+WHERE grantee LIKE 'butler\\_%\\_app'
+  AND table_schema IN ('switchboard','general','relationship','health','messenger','shared')
+ORDER BY grantee, table_schema, table_name, privilege_type;
+```
 
-- Run a single local Postgres instance/database for all butlers.
-- Provision role credentials per butler role for realistic ACL testing.
-- Use schema-qualified queries in manual debugging to avoid hidden `search_path`
-  assumptions.
+Expected:
 
-### 10.2 CI
+- each role has table privileges only in its own schema and explicitly approved `shared` tables.
 
-- Use one ephemeral Postgres database per CI run.
-- Run migration bootstrap + ACL tests in standard quality gates.
-- Block merges on parity/isolation test failures.
+### 8.3 Butler starts but queries wrong schema
 
-### 10.3 Production
+Likely cause:
 
-- Preflight: verify backups, snapshots, and rollback config are ready.
-- Execute staged cutover with explicit go/no-go checkpoints.
-- Keep a post-cutover observation window before legacy decommission.
+- role `search_path` not constrained
 
-## 11. Open Questions
+Checks:
 
-- Should `heartbeat` be migrated as a first-class butler schema in this epic, or
-  deferred until it is roster-managed?
-- Whether any shared tables need read-only vs read-write split by role.
-- Whether cross-schema analytics should run via dedicated reporting role instead of
-  runtime principals.
-- Whether temporary dual-write is required for all modules or only selected tables.
+```sql
+SELECT rolname, rolconfig
+FROM pg_roles
+WHERE rolname LIKE 'butler\\_%\\_app';
+```
 
-## 12. Definition of Done for Epic `butlers-1003`
+Expected role config contains:
 
-Epic is complete only when:
-- One-DB multi-schema topology is deployed.
-- ACL isolation guarantees are enforced and tested.
-- Data parity checks pass with no unresolved loss.
-- Runtime behavior is equivalent post-cutover.
-- Local/CI/production docs reflect the new operating model.
+- `search_path=<own_schema>,shared,public`
+
+### 8.4 OAuth/credentials store mismatch after cutover
+
+Symptoms:
+
+- OAuth appears complete but modules still cannot resolve credentials
+
+Checks:
+
+- verify `shared.butler_secrets` exists
+- verify runtime can read required secret keys
+- confirm legacy fallback DB vars are not unintentionally overriding one-DB behavior
+
+Relevant code paths:
+
+- `src/butlers/credential_store.py`
+- `src/butlers/daemon.py` (`_build_credential_store`)
+- `src/butlers/api/deps.py` (dashboard shared credential pool wiring)
+
+## 9. Operator Signoff Checklist
+
+A cutover attempt is complete only when all are true:
+
+1. Production is running on one DB (`butlers`) with per-butler schemas + `shared`.
+2. ACL isolation checks pass in production-like validation.
+3. Observability shows stable error rates during observation window.
+4. Rollback artifacts are archived and verified.
+5. Legacy per-butler DB runtime paths are marked deprecated or removed.

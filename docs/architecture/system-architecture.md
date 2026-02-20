@@ -153,10 +153,10 @@ graph TB
 
 ### Key constraints
 
-- **Database isolation**: Each butler owns a dedicated PostgreSQL database. No cross-butler DB access.
-- **Planned topology transition**: Migration target is one PostgreSQL database with per-butler
-  schemas plus `shared` (see `docs/operations/one-db-multi-schema-migration.md`, issue
-  `butlers-1003`).
+- **Database isolation**: Target-state is one PostgreSQL database with per-butler schemas plus
+  `shared`; each runtime role can access only its own schema + `shared`.
+- **Legacy note**: Any per-butler-database references in older diagrams/text are deprecated
+  migration context. Use `docs/operations/one-db-multi-schema-migration.md` as source of truth.
 - **MCP-only communication**: Butlers interact exclusively through MCP tool calls routed via the Switchboard.
 - **Serial dispatch**: Each butler processes one LLM session at a time (configurable concurrency planned).
 - **Channel egress ownership**: Only the Messenger butler holds bot-scoped send/reply tools.
@@ -486,10 +486,9 @@ episodes (batch) → LLM extraction → candidate facts/rules
 
 ## 7. Database Architecture
 
-Each butler has a dedicated PostgreSQL database for runtime state and tools.
-Exception: auth/secrets resolution uses a shared credential database (`butler_shared`)
-for cross-butler read-only fallback, while each butler's local `butler_secrets`
-table remains the highest-precedence override layer.
+This section is a legacy topology snapshot for historical context.
+For active operations and deployment topology, use:
+`docs/operations/one-db-multi-schema-migration.md`.
 
 ```mermaid
 graph LR
