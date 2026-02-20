@@ -13,6 +13,9 @@ docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    # Keep tests on the same loop as async fixtures/pools to avoid asyncpg
+    # "Future attached to a different loop" failures under xdist.
+    pytest.mark.asyncio(loop_scope="session"),
 ]
 
 

@@ -308,6 +308,7 @@ def mailbox(pool) -> MailboxModule:
 
 @pytest.mark.integration
 @db_tests
+@pytest.mark.asyncio(loop_scope="session")
 class TestMailboxPost:
     """Verify mailbox_post inserts messages correctly."""
 
@@ -396,6 +397,7 @@ class TestMailboxPost:
 
 @pytest.mark.integration
 @db_tests
+@pytest.mark.asyncio(loop_scope="session")
 class TestMailboxRead:
     """Verify mailbox_read fetches and auto-marks messages."""
 
@@ -452,6 +454,7 @@ class TestMailboxRead:
 
 @pytest.mark.integration
 @db_tests
+@pytest.mark.asyncio(loop_scope="session")
 class TestMailboxList:
     """Verify mailbox_list filtering and pagination."""
 
@@ -530,6 +533,7 @@ class TestMailboxList:
 
 @pytest.mark.integration
 @db_tests
+@pytest.mark.asyncio(loop_scope="session")
 class TestMailboxUpdateStatus:
     """Verify mailbox_update_status changes status and timestamps."""
 
@@ -578,6 +582,7 @@ class TestMailboxUpdateStatus:
 
 @pytest.mark.integration
 @db_tests
+@pytest.mark.asyncio(loop_scope="session")
 class TestMailboxStats:
     """Verify mailbox_stats returns correct counts."""
 
