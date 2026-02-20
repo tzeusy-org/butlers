@@ -29,8 +29,6 @@ Environment variables:
   GOOGLE_OAUTH_CLIENT_SECRET — OAuth client secret (required)
   GOOGLE_OAUTH_REDIRECT_URI  — Callback URL registered with Google
                                (default: http://localhost:40200/api/oauth/google/callback)
-  GOOGLE_OAUTH_SCOPES        — Space-separated scopes
-                               (default: Gmail + Calendar read/write)
   OAUTH_DASHBOARD_URL        — Where to redirect after a successful bootstrap
                                (default: not set; returns JSON payload instead)
   GOOGLE_REFRESH_TOKEN       — Stored refresh token (set after bootstrap; DB-stored by default)
@@ -220,8 +218,8 @@ def _get_redirect_uri() -> str:
 
 
 def _get_scopes() -> str:
-    """Read GOOGLE_OAUTH_SCOPES or use the default."""
-    return os.environ.get("GOOGLE_OAUTH_SCOPES", _DEFAULT_SCOPES).strip()
+    """Return the fixed OAuth scope set required by Butler integrations."""
+    return _DEFAULT_SCOPES
 
 
 def _get_dashboard_url() -> str | None:
@@ -499,7 +497,6 @@ async def oauth_google_callback(
         print(f"  GOOGLE_OAUTH_CLIENT_ID={client_id}")
         print("  GOOGLE_OAUTH_CLIENT_SECRET=<must be re-obtained via OAuth flow — never printed>")
         print("  GOOGLE_REFRESH_TOKEN=<must be re-obtained via OAuth flow — never printed>")
-        print(f"  GOOGLE_OAUTH_SCOPES={scope}")
         print(f"{'=' * 60}\n")
 
     success_payload = OAuthCallbackSuccess(

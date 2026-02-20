@@ -20,8 +20,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -37,7 +35,6 @@ import {
   useDeleteGoogleCredentials,
   useGoogleCredentialStatus,
   useSecrets,
-  useUpsertGoogleCredentials,
 } from "@/hooks/use-secrets";
 
 export const SHARED_SECRETS_TARGET = "shared";
@@ -126,79 +123,6 @@ function PresenceRow({
         </Badge>
       </div>
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Credential form
-// ---------------------------------------------------------------------------
-
-function CredentialForm() {
-  const upsertMutation = useUpsertGoogleCredentials();
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const [success, setSuccess] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setSuccess(false);
-
-    try {
-      await upsertMutation.mutateAsync({ client_id: clientId, client_secret: clientSecret });
-      setSuccess(true);
-      setClientId("");
-      setClientSecret("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save credentials.");
-    }
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="space-y-1.5">
-        <Label htmlFor="client-id">Client ID</Label>
-        <Input
-          id="client-id"
-          type="text"
-          placeholder="xxxxxxxx.apps.googleusercontent.com"
-          value={clientId}
-          onChange={(e) => setClientId(e.target.value)}
-          autoComplete="off"
-          required
-        />
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="client-secret">Client Secret</Label>
-        <Input
-          id="client-secret"
-          type="password"
-          placeholder="GOCSPX-..."
-          value={clientSecret}
-          onChange={(e) => setClientSecret(e.target.value)}
-          autoComplete="new-password"
-          required
-        />
-        <p className="text-xs text-muted-foreground">
-          Secret values are stored in the database and never echoed back.
-        </p>
-      </div>
-      {error && (
-        <p className="text-sm text-destructive">{error}</p>
-      )}
-      {success && (
-        <p className="text-sm text-green-600 dark:text-green-400">
-          Credentials saved successfully.
-        </p>
-      )}
-      <Button
-        type="submit"
-        disabled={upsertMutation.isPending || !clientId.trim() || !clientSecret.trim()}
-      >
-        {upsertMutation.isPending ? "Saving..." : "Save credentials"}
-      </Button>
-    </form>
   );
 }
 
@@ -373,7 +297,8 @@ function GoogleOAuthSection() {
           </a>
           {!canStartOAuth && !isLoading && (
             <p className="text-sm text-muted-foreground">
-              Configure client_id and client_secret below before connecting.
+              Configure GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in the Secrets
+              table before connecting.
             </p>
           )}
           {credStatus?.oauth_health === "connected" && (
@@ -381,21 +306,6 @@ function GoogleOAuthSection() {
               Google account is connected and credentials are valid.
             </p>
           )}
-        </CardContent>
-      </Card>
-
-      {/* Add/update credentials form */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Configure App Credentials</CardTitle>
-          <CardDescription>
-            Enter your Google Cloud OAuth client credentials.
-            These are stored in the database — not env vars.
-            An existing refresh token is preserved when updating app credentials.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <CredentialForm />
         </CardContent>
       </Card>
 

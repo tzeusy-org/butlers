@@ -251,8 +251,8 @@ class TestOAuthGoogleStart:
         assert "gmail" in location.lower()
         assert "calendar" in location.lower()
 
-    async def test_start_custom_scopes_from_env(self):
-        """GOOGLE_OAUTH_SCOPES env var overrides default scopes."""
+    async def test_start_ignores_custom_scopes_from_env(self):
+        """GOOGLE_OAUTH_SCOPES env var does not override the fixed scope set."""
         app = _make_app()
         env = {**GOOGLE_ENV, "GOOGLE_OAUTH_SCOPES": "https://www.googleapis.com/auth/drive"}
         with patch.dict("os.environ", env, clear=False):
@@ -264,7 +264,9 @@ class TestOAuthGoogleStart:
                 resp = await client.get("/api/oauth/google/start")
 
         location = resp.headers["location"]
-        assert "drive" in location
+        assert "drive" not in location
+        assert "gmail" in location.lower()
+        assert "calendar" in location.lower()
 
 
 # ---------------------------------------------------------------------------
