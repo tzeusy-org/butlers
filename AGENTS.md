@@ -391,6 +391,8 @@ make test-qg
 ### Beads worktree write guardrail
 - In git worktrees, `bd` operations can target the primary repo DB/JSONL instead of the worktree copy; verify with `bd --no-db show <id>` before write operations.
 - For worker-branch bead metadata commits, run `bd --no-db` for create/update/dep commands in the worktree so `.beads/issues.jsonl` changes are tracked on that branch.
+- `bd worktree create` may append per-worktree paths to repo `.gitignore`; strip those incidental lines before committing to avoid unrelated drift on `main`.
+- When integrating worker commits from `agent/*` branches, never carry `.beads/issues.jsonl` changes into `main`; restore/cherry-pick code-only to prevent reopened/rolled-back bead statuses.
 
 ### Beads dependency timestamp guardrail
 - In no-daemon worktree flows (`BEADS_NO_DAEMON=1`), `bd dep add` currently serializes new dependency records with `created_at="0001-01-01T00:00:00Z"` instead of wall-clock time; treat this as tooling debt (tracked in `butlers-865`) rather than a per-bead data-model change.
