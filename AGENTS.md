@@ -453,6 +453,8 @@ make test-qg
 - `src/butlers/core/sessions.py` canonical trigger-source allowlist includes `route` because daemon `route.execute` background and recovery flows dispatch `spawner.trigger(..., trigger_source="route")`.
 - `src/butlers/core/spawner.py::_run` should initialize duration timing before `session_create()` so early failures preserve original errors instead of masking with timer variable errors.
 - `src/butlers/core/spawner.py::trigger` should fail fast when `trigger_source=="trigger"` and the per-butler lock is already held, preventing runtime self-invocation deadlocks (`trigger` tool calling back into the same spawner while a session is active).
+- `src/butlers/core/runtimes/codex.py::CodexAdapter.invoke` must raise on non-zero CLI exit codes (instead of returning `"Error: ..."` as normal output) so spawner/session rows persist `success=false` and dashboard status matches runtime failures.
+- `src/butlers/core/spawner.py::_build_env` includes host `PATH` as a minimal runtime baseline before declared credentials so spawned CLIs can resolve shebang dependencies (for example `/usr/bin/env node`) without hardcoded machine-specific node paths.
 
 ### Spawner system prompt composition contract
 - `src/butlers/core/spawner.py::_compose_system_prompt` is the canonical composition path: runtime receives raw `CLAUDE.md` system prompt when memory context is unavailable, and appends memory context as a double-newline suffix when available.
@@ -555,6 +557,7 @@ make test-qg
 - `dev.sh` split routing defaults are `TAILSCALE_DASHBOARD_PATH_PREFIX=/butlers` (Vite frontend) and `TAILSCALE_API_PATH_PREFIX=/butlers-api` (dashboard API); non-root path routing uses `tailscale serve --set-path <prefix> ...`.
 - Dashboard mapping should proxy to `http://localhost:${FRONTEND_PORT}${TAILSCALE_DASHBOARD_PATH_PREFIX}` (not bare frontend root) so prefix paths are preserved end-to-end and Vite `--base` assets avoid redirect loops under tailscale path routing.
 - Frontend dev port is configurable via `FRONTEND_PORT` (default `40173`) and should be kept aligned with tailscale dashboard target and the Vite startup command (`--port ... --strictPort`).
+- `docker/Dockerfile` is the dev-suite image target for `dev.sh`: include `tmux`, `postgresql-client`, Docker CLI + compose plugin, tailscale CLI, Node.js, and global runtime CLIs (`@openai/codex`, `claude-code`, `opencode-ai`) so `dev.sh` can run in-container when host sockets are mounted.
 - Do not discard `tailscale serve` stderr in `dev.sh`; surfaced output is needed to diagnose operator/permission failures (for example `Access denied: serve config denied` and `sudo tailscale set --operator=$USER` remediation).
 - In `dev.sh` with `set -o pipefail`, avoid `grep ... | wc -l || echo 0` inside command substitutions; on no-match this can produce `0\n0` and break integer comparisons.
 
@@ -563,9 +566,9 @@ make test-qg
 - Switchboard `schedule:eligibility-sweep` is natively dispatched via the roster job loader (`_load_switchboard_eligibility_sweep_job`) and executes against the switchboard DB pool directly; non-native schedules still fall back to `spawner.trigger`.
 
 ### Issues aggregation contract
-- `src/butlers/api/routers/issues.py` now aggregates two sources: reachability checks and active audit failures from `dashboard_audit_log` (switchboard DB).
-- Audit-derived issues are stream-based: latest row per `(butler, operation, request_summary.trigger_source)` within the lookback window is considered active only when `result='error'`.
-- Schedule-triggered session failures (`trigger_source` starts with `schedule:`) surface as `critical` `scheduled_task_failure:*` issues; other audit errors surface as `warning` `audit_error:*` issues, linking to `/audit-log`.
+- `src/butlers/api/routers/issues.py` aggregates reachability checks plus grouped `dashboard_audit_log` failures.
+- Audit groups are keyed by normalized first-line error message and expose `occurrences`, `first_seen_at`, `last_seen_at`, and distinct `butlers`.
+- `GET /api/issues` is ordered by recency (`last_seen_at` desc), not severity-first; schedule-related groups (`operation=session` + `trigger_source` like `schedule:%`) are classified as `critical` `scheduled_task_failure:*`, all other audit groups are `warning` `audit_error_group:*`.
 
 ### State API JSON-shape contract
 - `src/butlers/api/models/state.py::StateEntry.value` and `StateSetRequest.value` are typed `Any` (widened from `dict[str, Any]` in PR #205); scalar/array/null JSON rows in `state.value` are now serialized correctly.
