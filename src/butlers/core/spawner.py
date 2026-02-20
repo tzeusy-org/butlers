@@ -358,6 +358,11 @@ class Spawner:
                 model=self._config.runtime.model,
             )
 
+        # Implementation note: queue-depth checks read Semaphore._waiters, which
+        # is also a CPython internal. We intentionally pair this with _value so
+        # backpressure only rejects when no active slot is available and the
+        # waiter queue has reached max_queued_sessions. Revisit if asyncio internals
+        # change or cross-interpreter portability becomes a requirement.
         raw_waiters = getattr(self._session_semaphore, "_waiters", None)
         queued_waiters = len(raw_waiters or ())
         if self._session_semaphore._value == 0 and queued_waiters >= self._max_queued_sessions:
