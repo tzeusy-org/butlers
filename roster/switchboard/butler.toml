@@ -8,7 +8,7 @@ max_concurrent_sessions = 3
 
 [buffer]
 queue_capacity = 100
-worker_count = 1
+worker_count = 3
 scanner_interval_s = 30
 scanner_grace_s = 10
 scanner_batch_size = 50

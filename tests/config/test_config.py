@@ -1282,17 +1282,25 @@ queue_capacity = 50
         assert cfg.buffer.scanner_batch_size == 50
 
     def test_switchboard_butler_toml_has_explicit_buffer_section(self):
-        """Switchboard butler.toml has an explicit [buffer] section with all defaults."""
+        """Switchboard butler.toml has explicit buffer tuning for pooled workers."""
         repo_root = Path(__file__).resolve().parent.parent.parent
         switchboard_config_dir = repo_root / "roster" / "switchboard"
         cfg = load_config(switchboard_config_dir)
 
         assert isinstance(cfg.buffer, BufferConfig)
         assert cfg.buffer.queue_capacity == 100
-        assert cfg.buffer.worker_count == 1
+        assert cfg.buffer.worker_count == 3
         assert cfg.buffer.scanner_interval_s == 30
         assert cfg.buffer.scanner_grace_s == 10
         assert cfg.buffer.scanner_batch_size == 50
+
+    def test_switchboard_buffer_workers_match_runtime_pool_size(self):
+        """Switchboard queue workers should match max_concurrent_sessions."""
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        switchboard_config_dir = repo_root / "roster" / "switchboard"
+        cfg = load_config(switchboard_config_dir)
+
+        assert cfg.buffer.worker_count == cfg.runtime.max_concurrent_sessions
 
 
 # ---------------------------------------------------------------------------
