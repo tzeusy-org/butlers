@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_STAGGER_SECONDS = 15 * 60
 
+
 def _cron_interval_seconds(cron: str, *, now: datetime | None = None) -> int:
     """Return the interval between the next two occurrences for ``cron``."""
     anchor = now or datetime.now(UTC)

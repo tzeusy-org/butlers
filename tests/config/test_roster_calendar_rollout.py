@@ -11,7 +11,9 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CALENDAR_ENABLED_BUTLERS = ("general", "health", "relationship")
-SHARED_BUTLER_CALENDAR_ID = "butler@group.calendar.google.com"
+SHARED_BUTLER_CALENDAR_ID = (
+    "07fd80d3b4464836e586759b1b8672f1f97f80a9d642a30482176246dff4510b@group.calendar.google.com"
+)
 
 
 def _load_butler_toml(butler_name: str) -> dict:

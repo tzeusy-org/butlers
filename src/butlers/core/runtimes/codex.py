@@ -6,10 +6,10 @@ Encapsulates all Codex CLI-specific logic:
 - AGENTS.md system prompt reading (Codex convention)
 - Result parsing: extracts text output and tool call records
 
-The Codex CLI is invoked in ``--full-auto`` approval mode. The system
-prompt (from AGENTS.md) is passed via ``--instructions`` flag. MCP
-server configs are written to a temporary config file pointed to by
-``--config``.
+The Codex CLI is invoked via ``codex exec --json --full-auto``. Since
+current Codex CLI releases do not support a dedicated system prompt
+flag, the butler ``system_prompt`` is prefixed into the initial
+instructions payload sent to ``exec``.
 
 If the Codex CLI binary is not installed on PATH, invoke() raises
 FileNotFoundError.
@@ -55,13 +55,16 @@ def _find_codex_binary() -> str:
 
 def _parse_codex_output(
     stdout: str, stderr: str, returncode: int
-) -> tuple[str | None, list[dict[str, Any]]]:
+) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
     """Parse Codex CLI output into (result_text, tool_calls).
 
-    The Codex CLI output may include JSON-lines on stdout. Each line may
-    be a JSON object with a ``type`` field. We look for:
-    - ``type: "message"`` — contains the assistant's text response
-    - ``type: "tool_use"`` or ``type: "function_call"`` — tool invocations
+    The Codex CLI output may include JSON-lines on stdout. We support
+    both legacy event objects and current ``codex exec --json`` events.
+    We look for:
+    - ``type: "message"`` or ``type: "result"`` (legacy text payloads)
+    - ``type: "item.completed"`` + ``item.type: "agent_message"``
+    - ``type: "tool_use"`` / ``type: "function_call"`` / command items
+    - ``type: "turn.completed"`` usage token counts
 
     If the output is not valid JSON-lines, we treat the entire stdout
     as plain text result.
@@ -77,21 +80,22 @@ def _parse_codex_output(
 
     Returns
     -------
-    tuple[str | None, list[dict[str, Any]]]
-        (result_text, tool_calls)
+    tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]
+        (result_text, tool_calls, usage)
     """
     if returncode != 0:
         error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
         logger.error("Codex CLI exited with code %d: %s", returncode, error_detail)
-        return (f"Error: {error_detail}", [])
+        return (f"Error: {error_detail}", [], None)
 
-    result_text: str | None = None
     tool_calls: list[dict[str, Any]] = []
     text_parts: list[str] = []
+    usage: dict[str, Any] | None = None
 
     # Try to parse as JSON-lines (one JSON object per line)
     lines = stdout.strip().splitlines()
     parsed_any_json = False
+    fallback_text_parts: list[str] = []
 
     for line in lines:
         line = line.strip()
@@ -101,12 +105,15 @@ def _parse_codex_output(
         try:
             obj = json.loads(line)
         except (json.JSONDecodeError, ValueError):
-            # Not JSON — accumulate as plain text
-            text_parts.append(line)
+            # Not JSON — only accumulate for pure plain-text output mode.
+            # codex exec --json can emit occasional non-JSON diagnostics.
+            if not parsed_any_json:
+                fallback_text_parts.append(line)
             continue
 
         if not isinstance(obj, dict):
-            text_parts.append(line)
+            if not parsed_any_json:
+                fallback_text_parts.append(line)
             continue
 
         parsed_any_json = True
@@ -134,6 +141,28 @@ def _parse_codex_output(
             if result_content:
                 text_parts.append(str(result_content))
 
+        elif obj_type == "item.completed":
+            item = obj.get("item")
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "agent_message":
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    text_parts.append(text)
+            elif item_type in ("command_execution", "tool_use", "function_call"):
+                tool_calls.append(_extract_tool_call(item))
+
+        elif obj_type == "turn.completed":
+            raw_usage = obj.get("usage")
+            if isinstance(raw_usage, dict):
+                input_tokens = raw_usage.get("input_tokens")
+                output_tokens = raw_usage.get("output_tokens")
+                usage = {
+                    "input_tokens": input_tokens if isinstance(input_tokens, int) else None,
+                    "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
+                }
+
         else:
             # Unknown type — check for text or content fields
             if "text" in obj:
@@ -143,10 +172,10 @@ def _parse_codex_output(
 
     # If we couldn't parse any JSON, treat entire stdout as result text
     if not parsed_any_json and not text_parts:
-        text_parts = [stdout.strip()] if stdout.strip() else []
+        text_parts = fallback_text_parts or ([stdout.strip()] if stdout.strip() else [])
 
     result_text = "\n".join(text_parts) if text_parts else None
-    return result_text, tool_calls
+    return result_text, tool_calls, usage
 
 
 def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
@@ -162,6 +191,19 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
     dict[str, Any]
         Normalized tool call with 'id', 'name', and 'input' keys.
     """
+    obj_type = obj.get("type", "")
+    if obj_type == "command_execution":
+        return {
+            "id": obj.get("id", ""),
+            "name": "command_execution",
+            "input": {
+                "command": obj.get("command", ""),
+                "status": obj.get("status"),
+                "exit_code": obj.get("exit_code"),
+                "aggregated_output": obj.get("aggregated_output", ""),
+            },
+        }
+
     return {
         "id": obj.get("id", ""),
         "name": obj.get("name", obj.get("function", {}).get("name", "")),
@@ -177,7 +219,8 @@ class CodexAdapter(RuntimeAdapter):
 
     Invokes the Codex CLI binary via subprocess. The adapter handles:
     - Locating the ``codex`` binary on PATH
-    - Passing system prompts via ``--instructions`` flag
+    - Running in non-interactive mode via ``codex exec --json``
+    - Embedding system prompts into the initial instructions payload
     - Writing MCP config in Codex-compatible JSON format
     - Parsing CLI output into (result_text, tool_calls)
 
@@ -205,6 +248,24 @@ class CodexAdapter(RuntimeAdapter):
             return self._codex_binary
         return _find_codex_binary()
 
+    @staticmethod
+    def _compose_exec_prompt(prompt: str, system_prompt: str) -> str:
+        """Compose the initial prompt payload for ``codex exec``.
+
+        Codex CLI no longer supports a dedicated system-prompt flag. We pass
+        butler instructions as a prefixed section in the initial prompt.
+        """
+        if not system_prompt:
+            return prompt
+        return (
+            "<system_instructions>\n"
+            f"{system_prompt}\n"
+            "</system_instructions>\n\n"
+            "<user_prompt>\n"
+            f"{prompt}\n"
+            "</user_prompt>"
+        )
+
     async def invoke(
         self,
         prompt: str,
@@ -218,9 +279,9 @@ class CodexAdapter(RuntimeAdapter):
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Invoke the Codex CLI with the given prompt and configuration.
 
-        Builds the command line, passes the system prompt via
-        ``--instructions``, writes MCP config if servers are provided,
-        and parses the output.
+        Builds the command line for ``codex exec --json --full-auto``,
+        injects system instructions into the initial prompt payload, and
+        parses JSON-line output events.
 
         Parameters
         ----------
@@ -240,8 +301,8 @@ class CodexAdapter(RuntimeAdapter):
         Returns
         -------
         tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]
-            A tuple of (result_text, tool_calls, usage). Usage is always
-            None for the Codex adapter (no token reporting).
+            A tuple of (result_text, tool_calls, usage). Usage is extracted
+            from ``turn.completed`` events when available.
 
         Raises
         ------
@@ -256,20 +317,28 @@ class CodexAdapter(RuntimeAdapter):
         # Build command
         cmd = [
             binary,
+            "exec",
+            "--json",
             "--full-auto",
         ]
 
         if isinstance(model, str) and model.strip():
             cmd.extend(["--model", model.strip()])
 
-        # Pass system prompt via --instructions flag
-        if system_prompt:
-            cmd.extend(["--instructions", system_prompt])
+        for server_name, server_cfg in mcp_servers.items():
+            if not isinstance(server_cfg, dict):
+                continue
+            url = server_cfg.get("url")
+            if not isinstance(url, str) or not url.strip():
+                continue
+            # -c value must be TOML-parseable; quote and escape URL.
+            escaped_url = url.strip().replace("\\", "\\\\").replace('"', '\\"')
+            cmd.extend(["-c", f'mcp_servers.{server_name}.url="{escaped_url}"'])
 
-        # Add the prompt as the final positional argument
-        cmd.append(prompt)
+        # Add the composed initial prompt as the final positional argument.
+        cmd.append(self._compose_exec_prompt(prompt=prompt, system_prompt=system_prompt))
 
-        logger.debug("Invoking Codex CLI: %s", " ".join(cmd[:3]) + " ...")
+        logger.debug("Invoking Codex CLI: %s", " ".join(cmd[:4]) + " ...")
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -297,8 +366,8 @@ class CodexAdapter(RuntimeAdapter):
                 logger.error("Codex CLI exited with code %d: %s", returncode, error_detail)
                 raise RuntimeError(f"Codex CLI exited with code {returncode}: {error_detail}")
 
-            result_text, tool_calls = _parse_codex_output(stdout, stderr, returncode)
-            return result_text, tool_calls, None
+            result_text, tool_calls, usage = _parse_codex_output(stdout, stderr, returncode)
+            return result_text, tool_calls, usage
 
         except TimeoutError:
             logger.error("Codex CLI timed out after %ds", effective_timeout)

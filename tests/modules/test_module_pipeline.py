@@ -27,6 +27,7 @@ from butlers.modules.pipeline import (
     MessagePipeline,
     RoutingResult,
     _build_routing_prompt,
+    _extract_route_to_butler_calls_from_text,
     _extract_routed_butlers,
     _routing_ctx_var,
 )
@@ -110,6 +111,39 @@ class TestExtractRoutedButlers:
         assert routed == ["health"]
         assert acked == ["health"]
         assert failed == []
+
+
+class TestExtractRouteToButlerCallsFromText:
+    """Verify text-mode route_to_butler recovery parser."""
+
+    def test_extracts_single_call_from_multiline_text(self):
+        output = (
+            "route_to_butler(\n"
+            '  butler="relationship",\n'
+            '  prompt="Store DOB as July 20, 1995",\n'
+            "  context=null\n"
+            ")"
+        )
+
+        calls = _extract_route_to_butler_calls_from_text(output)
+
+        assert len(calls) == 1
+        assert calls[0]["name"] == "route_to_butler"
+        assert calls[0]["input"]["butler"] == "relationship"
+        assert calls[0]["input"]["prompt"] == "Store DOB as July 20, 1995"
+
+    def test_extracts_single_quoted_call(self):
+        output = "route_to_butler(butler='health', prompt='Track breakfast', context=None)"
+
+        calls = _extract_route_to_butler_calls_from_text(output)
+
+        assert len(calls) == 1
+        assert calls[0]["input"]["butler"] == "health"
+        assert calls[0]["input"]["prompt"] == "Track breakfast"
+
+    def test_ignores_non_call_text(self):
+        calls = _extract_route_to_butler_calls_from_text("Routed to relationship.")
+        assert calls == []
 
     def test_extracts_failed_route(self):
         tool_calls = [
@@ -571,6 +605,48 @@ class TestMessagePipelineProcess:
         assert result.acked_targets == ["health"]
         assert result.failed_targets == ["general"]
         assert result.routing_error is not None
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch("butlers.tools.switchboard.routing.route.route", new_callable=AsyncMock)
+    async def test_recovered_text_route_invokes_target_instead_of_general(
+        self, mock_route, mock_load
+    ):
+        """Text-only route_to_butler output should execute recovered target route."""
+        mock_route.return_value = {"result": "accepted"}
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output=(
+                    "route_to_butler(\n"
+                    '  butler="relationship",\n'
+                    '  prompt="Store user DOB as 1995-07-20",\n'
+                    "  context=null\n"
+                    ")\n\n"
+                    "Routed to relationship."
+                ),
+                tool_calls=[],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=mock_dispatch,
+        )
+
+        result = await pipeline.process("I was born on 1995-07-20")
+
+        assert result.routed_targets == ["relationship"]
+        assert result.acked_targets == ["relationship"]
+        assert result.failed_targets == []
+        assert result.target_butler == "relationship"
+
+        mock_route.assert_awaited_once()
+        route_kwargs = mock_route.await_args.kwargs
+        assert route_kwargs["target_butler"] == "relationship"
+        assert route_kwargs["args"]["input"]["prompt"] == "Store user DOB as 1995-07-20"
 
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",

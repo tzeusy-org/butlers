@@ -94,9 +94,7 @@ class TestStoreSessionEpisode:
             result = await store_session_episode(AsyncMock(), "my-butler", "session output")
 
         assert result is False
-        record = next(
-            r for r in caplog.records if "memory tables are missing" in r.getMessage()
-        )
+        record = next(r for r in caplog.records if "memory tables are missing" in r.getMessage())
         assert record.exc_info is None
 
 

@@ -857,7 +857,7 @@ events. The Photos module integrates at the message handling layer:
 
 **Current Telegram flow:**
 ```
-Telegram update → TelegramModule.handle_message()
+Telegram update → TelegramModule.process_update()
     → message.text → pipeline injection
     → message.photo → [currently: log raw file_id, no processing]
     → message.voice → VoiceModule.transcribe() (if Voice module enabled)
@@ -865,7 +865,7 @@ Telegram update → TelegramModule.handle_message()
 
 **Extended flow with Photos module enabled:**
 ```
-Telegram update → TelegramModule.handle_message()
+Telegram update → TelegramModule.process_update()
     → message.photo → PhotosModule.ingest_telegram_photo()
         → download_file(file_id)
         → strip_exif_gps()

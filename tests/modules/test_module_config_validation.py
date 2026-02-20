@@ -190,6 +190,12 @@ def _patch_infra():
 
     mock_spawner = MagicMock()
 
+    class MockAdapter:
+        binary_name = "claude"
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
     return {
         "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
         "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
@@ -209,7 +215,7 @@ def _patch_infra():
         "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
         "get_adapter": patch(
             "butlers.daemon.get_adapter",
-            return_value=type("MockAdapter", (), {"binary_name": "claude"}),
+            return_value=MockAdapter,
         ),
         "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),

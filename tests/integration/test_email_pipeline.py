@@ -9,13 +9,15 @@ Verifies that:
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from butlers.modules.email import EmailModule, _build_classification_text
-from butlers.modules.pipeline import MessagePipeline
+from butlers.modules.pipeline import MessagePipeline, RoutingResult
 
 pytestmark = pytest.mark.unit
 
@@ -30,24 +32,46 @@ def _make_pipeline(
     classify_error: Exception | None = None,
     route_error: Exception | None = None,
 ) -> MessagePipeline:
-    """Build a MessagePipeline with mock classify/route functions."""
+    """Build a MessagePipeline with mock dispatch output."""
 
-    async def mock_classify(pool, message, dispatch_fn):
+    async def mock_dispatch_fn(*_args, **_kwargs):
         if classify_error:
             raise classify_error
-        return classify_result
 
-    async def mock_route(pool, target, tool_name, args, source):
+        result_payload = route_result or {"status": "ok", "result": "ok"}
         if route_error:
-            raise route_error
-        return route_result or {"result": "ok"}
+            result_payload = {"status": "error", "error": str(route_error)}
+
+        tool_calls = [
+            {
+                "name": "route_to_butler",
+                "input": {"butler": classify_result, "prompt": "forwarded"},
+                "result": result_payload,
+            }
+        ]
+        return SimpleNamespace(output="classification complete", tool_calls=tool_calls)
+
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=None)
+    conn.fetchrow = AsyncMock(return_value=None)
+    conn.fetch = AsyncMock(return_value=[])
+    conn.execute = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    pool = MagicMock()
+    pool.acquire = _acquire
+    pool.fetchval = AsyncMock(return_value=None)
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.fetch = AsyncMock(return_value=[])
+    pool.execute = AsyncMock(return_value=None)
 
     return MessagePipeline(
-        switchboard_pool=MagicMock(),
-        dispatch_fn=AsyncMock(),
+        switchboard_pool=pool,
+        dispatch_fn=mock_dispatch_fn,
         source_butler="test-butler",
-        classify_fn=mock_classify,
-        route_fn=mock_route,
     )
 
 
@@ -134,7 +158,7 @@ class TestProcessIncoming:
 
         assert result is not None
         assert result.target_butler == "health"
-        assert result.route_result == {"result": "ok"}
+        assert result.route_result == {"cc_summary": "classification complete"}
 
     async def test_returns_none_without_pipeline(self):
         """process_incoming returns None if no pipeline is set."""
@@ -151,21 +175,13 @@ class TestProcessIncoming:
 
     async def test_includes_email_metadata_in_tool_args(self, monkeypatch: pytest.MonkeyPatch):
         """process_incoming includes source and ingress dedupe metadata in route args."""
-        captured_args: dict = {}
         monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "bot-inbox@example.com")
-
-        async def capture_route(pool, target, tool_name, args, source):
-            captured_args.update(args)
-            return {"result": "ok"}
-
-        async def mock_classify(pool, message, dispatch_fn):
-            return "general"
-
-        pipeline = MessagePipeline(
-            switchboard_pool=MagicMock(),
-            dispatch_fn=AsyncMock(),
-            classify_fn=mock_classify,
-            route_fn=capture_route,
+        pipeline = MagicMock()
+        pipeline.process = AsyncMock(
+            return_value=RoutingResult(
+                target_butler="general",
+                route_result={"routed": True},
+            )
         )
 
         mod = EmailModule()
@@ -177,7 +193,11 @@ class TestProcessIncoming:
             "subject": "Important",
             "body": "Please handle this.",
         }
-        await mod.process_incoming(email_data)
+        result = await mod.process_incoming(email_data)
+
+        assert result is not None
+        pipeline.process.assert_awaited_once()
+        captured_args = pipeline.process.await_args.kwargs["tool_args"]
 
         assert captured_args["source"] == "email"
         assert captured_args["source_channel"] == "email"
@@ -191,7 +211,9 @@ class TestProcessIncoming:
         assert captured_args["external_event_id"] == "42"
         assert captured_args["source_id"] == "42"
         assert captured_args["raw_metadata"] == email_data
-        assert "message" in captured_args
+        assert pipeline.process.await_args.kwargs["message_text"] == (
+            "Subject: Important\nPlease handle this."
+        )
 
     async def test_records_routed_messages(self):
         """process_incoming appends results to _routed_messages."""

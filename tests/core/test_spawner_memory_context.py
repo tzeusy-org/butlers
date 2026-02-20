@@ -99,9 +99,7 @@ class TestFetchMemoryContext:
             result = await fetch_memory_context(AsyncMock(), "my-butler", "hello")
 
         assert result is None
-        record = next(
-            r for r in caplog.records if "memory tables are missing" in r.getMessage()
-        )
+        record = next(r for r in caplog.records if "memory tables are missing" in r.getMessage())
         assert record.exc_info is None
 
 

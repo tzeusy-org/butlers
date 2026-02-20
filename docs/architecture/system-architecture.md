@@ -286,7 +286,7 @@ Modules can access external services directly using their configured credentials
 
 - **Calendar module**: Google Calendar API (list, create, update events)
 - **Email module**: IMAP/SMTP for inbox reads (ingress is via connector, but runtime search tools also access IMAP)
-- **Telegram module**: Telegram API for get_updates calls during runtime sessions
+- **Telegram module**: Telegram API for `bot_telegram_get_updates` calls during runtime sessions
 
 These are read-oriented or bidirectional operations. Outbound **sending** of messages is exclusively owned by the Messenger butler.
 

@@ -115,7 +115,7 @@ class TestTelegramConnectorConformance:
             assert envelope["source"]["provider"] == "telegram"
             assert envelope["source"]["endpoint_identity"] == "test_bot"
             assert envelope["event"]["external_event_id"] == "12345"
-            assert envelope["event"]["external_thread_id"] == "987654321"
+            assert envelope["event"]["external_thread_id"] == "987654321:1"
             assert envelope["sender"]["identity"] == "987654321"
             assert envelope["payload"]["normalized_text"] == "Test message"
             assert envelope["control"]["idempotency_key"] == "telegram:test_bot:12345"
@@ -247,7 +247,7 @@ class TestGmailConnectorConformance:
             new_callable=AsyncMock,
             return_value=mock_result,
         ):
-            envelope = gmail_connector._build_ingest_envelope(gmail_message)
+            envelope = await gmail_connector._build_ingest_envelope(gmail_message)
             await gmail_connector._submit_to_ingest_api(envelope)
 
             # Verify envelope conforms to ingest.v1 contract
@@ -290,7 +290,7 @@ class TestGmailConnectorConformance:
             new_callable=AsyncMock,
             side_effect=[first_result, second_result],
         ):
-            envelope = gmail_connector._build_ingest_envelope(gmail_message)
+            envelope = await gmail_connector._build_ingest_envelope(gmail_message)
 
             # First submission
             await gmail_connector._submit_to_ingest_api(envelope)
@@ -317,7 +317,7 @@ class TestGmailConnectorConformance:
             },
         }
 
-        envelope = gmail_connector._build_ingest_envelope(gmail_message)
+        envelope = await gmail_connector._build_ingest_envelope(gmail_message)
 
         # Verify envelope has all required routing handoff fields
         assert "source" in envelope
@@ -435,7 +435,7 @@ class TestCrossConnectorConformance:
             new_callable=AsyncMock,
             side_effect=ConnectionError("Cannot reach switchboard"),
         ):
-            envelope = gmail_connector._build_ingest_envelope(gmail_message)
+            envelope = await gmail_connector._build_ingest_envelope(gmail_message)
 
             with pytest.raises(ConnectionError):
                 await gmail_connector._submit_to_ingest_api(envelope)

@@ -625,7 +625,7 @@ class TelegramBotConnector:
         - source.provider: "telegram"
         - source.endpoint_identity: receiving bot identity
         - event.external_event_id: update_id
-        - event.external_thread_id: chat.id
+        - event.external_thread_id: chat.id:message_id (fallback: chat.id)
         - event.observed_at: current timestamp (RFC3339)
         - sender.identity: message.from.id
         - payload.raw: full Telegram update JSON

@@ -12,6 +12,7 @@ import pytest
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 

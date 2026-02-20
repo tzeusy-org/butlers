@@ -6,7 +6,6 @@ import json
 import shutil
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 
@@ -14,6 +13,7 @@ import pytest
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
@@ -34,9 +34,8 @@ def postgres_container():
 @pytest.fixture
 async def pool(postgres_container):
     """Provision a fresh Switchboard database and return a pool."""
-    import importlib.util
-
     from butlers.db import Database
+    from butlers.migrations import run_migrations
 
     db = Database(
         db_name=_unique_db_name(),
@@ -50,31 +49,14 @@ async def pool(postgres_container):
     await db.provision()
     p = await db.connect()
 
-    # Apply switchboard migrations by importing and executing each one
-    migrations_dir = Path("roster/switchboard/migrations")
-    migration_files = sorted(
-        [f for f in migrations_dir.glob("*.py") if f.stem.startswith("0") and f.stem != "__init__"]
-    )
-
-    for migration_file in migration_files:
-        spec = importlib.util.spec_from_file_location(migration_file.stem, migration_file)
-        if spec and spec.loader:
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            # Call upgrade() directly with asyncpg pool (Alembic migrations use op.execute)
-            if hasattr(module, "upgrade"):
-                # Monkey-patch Alembic's op.execute to use our pool
-                import types
-
-                op_module = types.SimpleNamespace()
-                op_module.execute = lambda sql: p.execute(sql)
-                module.op = op_module
-                module.upgrade()
+    db_url = f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
+    await run_migrations(db_url, chain="core")
+    await run_migrations(db_url, chain="switchboard")
 
     yield p
 
     await p.close()
-    await db.disconnect()
+    await db.close()
 
 
 def _build_ingest_envelope(

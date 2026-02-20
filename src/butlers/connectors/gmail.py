@@ -228,8 +228,7 @@ class GmailConnectorConfig(BaseModel):
         missing = [key for key, value in sanitized_credentials.items() if not value]
         if missing:
             raise ValueError(
-                "DB-resolved Gmail credentials missing required value(s): "
-                + ", ".join(missing)
+                "DB-resolved Gmail credentials missing required value(s): " + ", ".join(missing)
             )
         config_kwargs.update(sanitized_credentials)
         if gmail_pubsub_webhook_token is not None:

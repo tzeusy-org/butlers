@@ -647,4 +647,6 @@ make test-qg
 - Runtime adapter selection is read from top-level `[runtime].type` in each `roster/*/butler.toml` (defaults to `"claude-code"` when omitted).
 - Runtime model selection is read from `[butler.runtime].model` (defaults to `src/butlers/config.py::DEFAULT_MODEL` when omitted).
 - Codex runtime system instructions are loaded from per-butler `AGENTS.md` (via `src/butlers/core/runtimes/codex.py::parse_system_prompt_file`), not `CLAUDE.md`.
+- `CodexAdapter.invoke()` must call `codex exec --json --full-auto` (non-interactive mode). Top-level `codex --full-auto` requires a TTY and should not be used by the spawner subprocess path.
+- Codex CLI no longer supports `--instructions`; butler/system prompt content must be embedded into the `exec` initial prompt payload, and MCP endpoints should be passed via `-c mcp_servers.<name>.url="..."`.
 - `CodexAdapter.invoke()` must forward configured model via CLI `--model <id>` when `model` is non-empty, so roster model pins (for example `gpt-5.3-codex-spark`) are actually enforced at launch time.

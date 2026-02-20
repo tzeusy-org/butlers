@@ -12,10 +12,12 @@ import pytest
 
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.asyncio(loop_scope="session"),
+]
 
 
-@pytest.mark.asyncio
 class TestApprovalEventsDatabaseImmutability:
     """Validate database-level immutability enforcement."""
 

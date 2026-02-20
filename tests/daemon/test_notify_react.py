@@ -20,11 +20,18 @@ def butler_dir(tmp_path: Path) -> Path:
     butler_path.mkdir()
     (butler_path / "butler.toml").write_text(
         """
-[identity]
+[butler]
 name = "test"
-slug = "test"
+port = 9100
+description = "Test butler"
 
-[schedule]
+[butler.db]
+name = "butler_test"
+
+[[butler.schedule]]
+name = "daily-check"
+cron = "0 9 * * *"
+prompt = "Do the daily check"
 """
     )
     (butler_path / "MANIFESTO.md").write_text("# Test Butler")
@@ -34,11 +41,58 @@ slug = "test"
 
 def _patch_infra() -> dict[str, Any]:
     """Patch infrastructure dependencies for daemon tests."""
+    mock_pool = AsyncMock()
+    mock_pool.fetchval = AsyncMock(return_value=None)
+
+    mock_db = MagicMock()
+    mock_db.provision = AsyncMock()
+    mock_db.connect = AsyncMock(return_value=mock_pool)
+    mock_db.close = AsyncMock()
+    mock_db.pool = mock_pool
+    mock_db.user = "postgres"
+    mock_db.password = "postgres"
+    mock_db.host = "localhost"
+    mock_db.port = 5432
+    mock_db.db_name = "butler_test"
+
+    mock_spawner = MagicMock()
+    mock_spawner.stop_accepting = MagicMock()
+    mock_spawner.drain = AsyncMock()
+
+    mock_adapter = MagicMock()
+    mock_adapter.binary_name = "claude"
+    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+
     return {
-        "get_pool": patch("butlers.daemon.get_pool", return_value=AsyncMock()),
-        "run_migrations": patch("butlers.daemon.run_migrations", return_value=None),
-        "init_registry": patch("butlers.daemon.init_registry", return_value=None),
-        "connect_switchboard": patch("butlers.daemon._connect_switchboard", return_value=None),
+        "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
+        "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
+        "validate_credentials": patch("butlers.daemon.validate_credentials"),
+        "validate_module_credentials": patch(
+            "butlers.daemon.validate_module_credentials_async",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        "validate_core_credentials": patch(
+            "butlers.daemon.validate_core_credentials_async",
+            new_callable=AsyncMock,
+        ),
+        "init_telemetry": patch("butlers.daemon.init_telemetry"),
+        "configure_logging": patch("butlers.core.logging.configure_logging"),
+        "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
+        "FastMCP": patch("butlers.daemon.FastMCP"),
+        "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
+        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
+        "connect_switchboard": patch.object(
+            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
+        ),
+        "create_audit_pool": patch.object(
+            ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
+        ),
+        "recover_route_inbox": patch.object(
+            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
+        ),
+        "get_adapter": patch("butlers.daemon.get_adapter", return_value=mock_adapter_cls),
+        "shutil_which": patch("butlers.daemon.shutil.which", return_value="/usr/bin/claude"),
     }
 
 
@@ -50,20 +104,40 @@ class TestNotifyReactIntent:
         self, butler_dir: Path, patches: dict[str, Any]
     ) -> tuple[ButlerDaemon, Any]:
         """Start daemon and extract notify tool function."""
+        notify_fn = None
+        mock_mcp = MagicMock()
+
+        def tool_decorator(*_decorator_args, **_decorator_kwargs):
+            def decorator(fn):
+                nonlocal notify_fn
+                if fn.__name__ == "notify":
+                    notify_fn = fn
+                return fn
+
+            return decorator
+
+        mock_mcp.tool = tool_decorator
+
         with (
-            patches["get_pool"],
+            patches["db_from_env"],
             patches["run_migrations"],
-            patches["init_registry"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["validate_core_credentials"],
+            patches["init_telemetry"],
+            patches["configure_logging"],
+            patches["sync_schedules"],
+            patch("butlers.daemon.FastMCP", return_value=mock_mcp),
+            patches["Spawner"],
+            patches["start_mcp_server"],
             patches["connect_switchboard"],
+            patches["create_audit_pool"],
+            patches["recover_route_inbox"],
+            patches["get_adapter"],
+            patches["shutil_which"],
         ):
-            daemon = ButlerDaemon(butler_dir, port=0)
+            daemon = ButlerDaemon(butler_dir)
             await daemon.start()
-            notify_fn = None
-            for tool in daemon._mcp_server.list_tools():
-                if tool.name == "notify":
-                    # Extract the actual function
-                    notify_fn = daemon._mcp_server._tool_manager._tools["notify"].fn
-                    break
             return daemon, notify_fn
 
     async def test_notify_react_intent_accepted(self, butler_dir: Path) -> None:

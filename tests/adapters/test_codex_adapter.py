@@ -170,39 +170,44 @@ def test_build_config_file_multiple_servers(tmp_path: Path):
 
 def test_parse_plain_text_output():
     """Plain text stdout is returned as result_text."""
-    result_text, tool_calls = _parse_codex_output("Hello, world!", "", 0)
+    result_text, tool_calls, usage = _parse_codex_output("Hello, world!", "", 0)
     assert result_text == "Hello, world!"
     assert tool_calls == []
+    assert usage is None
 
 
 def test_parse_empty_output():
     """Empty stdout returns None result_text."""
-    result_text, tool_calls = _parse_codex_output("", "", 0)
+    result_text, tool_calls, usage = _parse_codex_output("", "", 0)
     assert result_text is None
     assert tool_calls == []
+    assert usage is None
 
 
 def test_parse_nonzero_exit_code():
     """Non-zero exit code returns error message."""
-    result_text, tool_calls = _parse_codex_output("", "Something went wrong", 1)
+    result_text, tool_calls, usage = _parse_codex_output("", "Something went wrong", 1)
     assert result_text is not None
     assert "Something went wrong" in result_text
     assert tool_calls == []
+    assert usage is None
 
 
 def test_parse_nonzero_exit_code_with_stdout():
     """Non-zero exit code with stdout in error detail."""
-    result_text, tool_calls = _parse_codex_output("stdout error", "", 1)
+    result_text, tool_calls, usage = _parse_codex_output("stdout error", "", 1)
     assert result_text is not None
     assert "stdout error" in result_text
+    assert usage is None
 
 
 def test_parse_json_message():
     """JSON message objects are parsed for text content."""
     line = json.dumps({"type": "message", "content": "Hello from Codex"})
-    result_text, tool_calls = _parse_codex_output(line, "", 0)
+    result_text, tool_calls, usage = _parse_codex_output(line, "", 0)
     assert result_text == "Hello from Codex"
     assert tool_calls == []
+    assert usage is None
 
 
 def test_parse_json_message_with_content_blocks():
@@ -216,9 +221,10 @@ def test_parse_json_message_with_content_blocks():
             ],
         }
     )
-    result_text, tool_calls = _parse_codex_output(line, "", 0)
+    result_text, tool_calls, usage = _parse_codex_output(line, "", 0)
     assert "Part 1" in result_text
     assert "Part 2" in result_text
+    assert usage is None
 
 
 def test_parse_json_tool_use():
@@ -231,11 +237,12 @@ def test_parse_json_tool_use():
             "input": {"key": "foo"},
         }
     )
-    result_text, tool_calls = _parse_codex_output(line, "", 0)
+    result_text, tool_calls, usage = _parse_codex_output(line, "", 0)
     assert len(tool_calls) == 1
     assert tool_calls[0]["id"] == "t1"
     assert tool_calls[0]["name"] == "state_get"
     assert tool_calls[0]["input"] == {"key": "foo"}
+    assert usage is None
 
 
 def test_parse_json_function_call():
@@ -250,18 +257,20 @@ def test_parse_json_function_call():
             },
         }
     )
-    result_text, tool_calls = _parse_codex_output(line, "", 0)
+    result_text, tool_calls, usage = _parse_codex_output(line, "", 0)
     assert len(tool_calls) == 1
     assert tool_calls[0]["id"] == "fc1"
     assert tool_calls[0]["name"] == "my_tool"
     assert tool_calls[0]["input"] == {"arg1": "val1"}
+    assert usage is None
 
 
 def test_parse_json_result():
     """JSON result objects extract the result field."""
     line = json.dumps({"type": "result", "result": "Task completed."})
-    result_text, tool_calls = _parse_codex_output(line, "", 0)
+    result_text, tool_calls, usage = _parse_codex_output(line, "", 0)
     assert result_text == "Task completed."
+    assert usage is None
 
 
 def test_parse_mixed_json_lines():
@@ -279,10 +288,11 @@ def test_parse_mixed_json_lines():
             json.dumps({"type": "message", "content": "Done!"}),
         ]
     )
-    result_text, tool_calls = _parse_codex_output(lines, "", 0)
+    result_text, tool_calls, usage = _parse_codex_output(lines, "", 0)
     assert result_text == "Done!"
     assert len(tool_calls) == 1
     assert tool_calls[0]["name"] == "state_get"
+    assert usage is None
 
 
 def test_parse_tool_call_in_content_block():
@@ -300,16 +310,63 @@ def test_parse_tool_call_in_content_block():
             ],
         }
     )
-    result_text, tool_calls = _parse_codex_output(line, "", 0)
+    result_text, tool_calls, usage = _parse_codex_output(line, "", 0)
     assert len(tool_calls) == 1
     assert tool_calls[0]["name"] == "kv_set"
+    assert usage is None
 
 
 def test_parse_unknown_json_with_text_field():
     """Unknown JSON types with a 'text' field still yield text."""
     line = json.dumps({"type": "unknown", "text": "some text"})
-    result_text, tool_calls = _parse_codex_output(line, "", 0)
+    result_text, tool_calls, usage = _parse_codex_output(line, "", 0)
     assert result_text == "some text"
+    assert usage is None
+
+
+def test_parse_exec_json_agent_message_and_usage():
+    """codex exec --json events extract final agent message and usage."""
+    lines = "\n".join(
+        [
+            json.dumps({"type": "thread.started", "thread_id": "t1"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"id": "item_1", "type": "agent_message", "text": "pong"},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 123, "output_tokens": 45},
+                }
+            ),
+        ]
+    )
+    result_text, tool_calls, usage = _parse_codex_output(lines, "", 0)
+    assert result_text == "pong"
+    assert tool_calls == []
+    assert usage == {"input_tokens": 123, "output_tokens": 45}
+
+
+def test_parse_exec_json_ignores_non_json_diagnostics():
+    """Non-JSON diagnostics mixed into JSONL output are ignored."""
+    lines = "\n".join(
+        [
+            "2026-02-20T19:43:18Z ERROR rmcp startup failed",
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {"id": "item_1", "type": "agent_message", "text": "pong"},
+                }
+            ),
+        ]
+    )
+    result_text, tool_calls, usage = _parse_codex_output(lines, "", 0)
+    assert result_text == "pong"
+    assert tool_calls == []
+    assert usage is None
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +406,24 @@ def test_extract_tool_call_missing_fields():
     assert tc["name"] == ""
 
 
+def test_extract_tool_call_command_execution():
+    """command_execution events are normalized as tool calls."""
+    tc = _extract_tool_call(
+        {
+            "id": "cmd1",
+            "type": "command_execution",
+            "command": "ls -1",
+            "status": "completed",
+            "exit_code": 0,
+            "aggregated_output": "file.txt\n",
+        }
+    )
+    assert tc["id"] == "cmd1"
+    assert tc["name"] == "command_execution"
+    assert tc["input"]["command"] == "ls -1"
+    assert tc["input"]["exit_code"] == 0
+
+
 # ---------------------------------------------------------------------------
 # invoke() tests with mocked subprocess
 # ---------------------------------------------------------------------------
@@ -361,7 +436,22 @@ async def test_invoke_success():
     mock_proc = AsyncMock()
     mock_proc.communicate = AsyncMock(
         return_value=(
-            json.dumps({"type": "result", "result": "Task done."}).encode(),
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "item.completed",
+                            "item": {"id": "item_1", "type": "agent_message", "text": "Task done."},
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "turn.completed",
+                            "usage": {"input_tokens": 10, "output_tokens": 20},
+                        }
+                    ),
+                ]
+            ).encode(),
             b"",
         )
     )
@@ -377,52 +467,42 @@ async def test_invoke_success():
 
     assert result_text == "Task done."
     assert tool_calls == []
-    assert usage is None
+    assert usage == {"input_tokens": 10, "output_tokens": 20}
 
     # Verify subprocess was called with correct args
     call_args = mock_sub.call_args
     cmd = call_args[0]
     assert cmd[0] == "/usr/bin/codex"
+    assert cmd[1] == "exec"
+    assert "--json" in cmd
     assert "--full-auto" in cmd
     assert "--quiet" not in cmd
-    assert "--instructions" in cmd
-    assert "do something" in cmd
+    assert "--instructions" not in cmd
+    assert "-c" in cmd
+    assert 'mcp_servers.test.url="http://localhost:9100/sse"' in cmd
+    assert "<system_instructions>" in cmd[-1]
+    assert "you are helpful" in cmd[-1]
+    assert "<user_prompt>" in cmd[-1]
+    assert "do something" in cmd[-1]
 
 
-async def test_invoke_handles_cli_without_quiet_support():
-    """Regression: invocation succeeds when CLI rejects --quiet."""
+async def test_invoke_uses_exec_subcommand():
+    """invoke() uses codex exec non-interactive invocation."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
 
-    def _mock_proc(returncode: int, stdout: str, stderr: str) -> AsyncMock:
-        proc = AsyncMock()
-        proc.communicate = AsyncMock(return_value=(stdout.encode(), stderr.encode()))
-        proc.returncode = returncode
-        return proc
-
-    async def _mock_create_subprocess_exec(*cmd: str, **_: object) -> AsyncMock:
-        if "--quiet" in cmd:
-            return _mock_proc(
-                returncode=2,
-                stdout="",
-                stderr="error: unexpected argument '--quiet' found",
-            )
-        return _mock_proc(
-            returncode=0,
-            stdout=json.dumps({"type": "result", "result": "Task done."}),
-            stderr="",
-        )
-
-    with patch(_EXEC, side_effect=_mock_create_subprocess_exec):
-        result_text, tool_calls, usage = await adapter.invoke(
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
             prompt="do something",
             system_prompt="you are helpful",
             mcp_servers={},
             env={},
         )
 
-    assert result_text == "Task done."
-    assert tool_calls == []
-    assert usage is None
+    cmd = mock_sub.call_args[0]
+    assert cmd[:2] == ("/usr/bin/codex", "exec")
 
 
 async def test_invoke_passes_model_flag():
@@ -504,7 +584,7 @@ async def test_invoke_nonzero_exit():
 
 
 async def test_invoke_no_system_prompt():
-    """invoke() works without system prompt (omits --instructions)."""
+    """invoke() works without system prompt (no system wrapper tags)."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
 
     mock_proc = AsyncMock()
@@ -521,6 +601,7 @@ async def test_invoke_no_system_prompt():
 
     cmd = mock_sub.call_args[0]
     assert "--instructions" not in cmd
+    assert cmd[-1] == "test"
 
 
 async def test_invoke_passes_env():

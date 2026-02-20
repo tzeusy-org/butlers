@@ -10,6 +10,8 @@ import contextvars
 import hashlib
 import json
 import logging
+import re
+from ast import literal_eval
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -481,6 +483,94 @@ def _extract_routed_butlers(
             acked.append(butler)
 
     return routed, acked, failed
+
+
+def _extract_route_to_butler_calls_from_text(output: str) -> list[dict[str, Any]]:
+    """Recover route_to_butler calls from plain-text runtime output.
+
+    Some runtime/model combinations can emit textual call renderings (e.g.
+    ``route_to_butler(butler=..., prompt=...)``) without structured tool-call
+    events. This parser recovers those intents so pipeline fallback can execute
+    the intended routes instead of defaulting to ``general``.
+    """
+    if not output.strip():
+        return []
+
+    call_pattern = re.compile(r"route_to_butler\s*\((.*?)\)", re.DOTALL)
+    string_pattern = r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'"
+    butler_pattern = re.compile(rf"\bbutler\s*=\s*({string_pattern})", re.DOTALL)
+    prompt_pattern = re.compile(rf"\bprompt\s*=\s*({string_pattern})", re.DOTALL)
+
+    recovered: list[dict[str, Any]] = []
+    for call_idx, match in enumerate(call_pattern.finditer(output), start=1):
+        args_text = match.group(1)
+        butler_match = butler_pattern.search(args_text)
+        prompt_match = prompt_pattern.search(args_text)
+        if butler_match is None or prompt_match is None:
+            continue
+
+        try:
+            butler = literal_eval(butler_match.group(1))
+            prompt = literal_eval(prompt_match.group(1))
+        except (ValueError, SyntaxError):
+            continue
+
+        if not isinstance(butler, str) or not butler.strip():
+            continue
+        if not isinstance(prompt, str) or not prompt.strip():
+            continue
+
+        recovered.append(
+            {
+                "id": f"text_recovered_route_{call_idx}",
+                "name": "route_to_butler",
+                "input": {
+                    "butler": butler.strip(),
+                    "prompt": prompt,
+                },
+            }
+        )
+
+    return recovered
+
+
+def _build_route_envelope(
+    *,
+    request_id: str,
+    source: str,
+    message_text: str,
+    source_metadata: dict[str, str],
+    request_context: dict[str, Any] | None,
+    target_butler: str,
+    prompt: str,
+    segment_id: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "route.v1",
+        "request_context": {
+            "request_id": request_id,
+            "received_at": datetime.now(UTC).isoformat(),
+            "source_channel": source,
+            "source_endpoint_identity": "switchboard",
+            "source_sender_identity": source_metadata.get("identity", "unknown"),
+            "source_thread_identity": (
+                request_context.get("source_thread_identity") if request_context else None
+            ),
+            "trace_context": {},
+        },
+        "input": {"prompt": prompt or message_text},
+        "target": {
+            "butler": target_butler,
+            "tool": "route.execute",
+        },
+        "source_metadata": source_metadata,
+        "__switchboard_route_context": {
+            "request_id": request_id,
+            "fanout_mode": "tool_routed",
+            "segment_id": segment_id,
+            "attempt": 1,
+        },
+    }
 
 
 class MessagePipeline:
@@ -1127,10 +1217,69 @@ class MessagePipeline:
                     routed, acked, failed = _extract_routed_butlers(tool_calls)
                     failed_details = [f"{b}: routing failed" for b in failed]
 
-                    # Fallback: CC called no tools → route to general
+                    if not routed and cc_output:
+                        recovered_tool_calls = _extract_route_to_butler_calls_from_text(cc_output)
+                        if recovered_tool_calls:
+                            logger.warning(
+                                "Recovered route_to_butler intents from text output",
+                                extra=self._log_fields(
+                                    source=source,
+                                    chat_id=chat_id,
+                                    target_butler=None,
+                                    latency_ms=spawn_latency_ms,
+                                    request_id=request_id,
+                                    recovered_call_count=len(recovered_tool_calls),
+                                ),
+                            )
+                            tool_calls.extend(recovered_tool_calls)
+                            routed = []
+                            acked = []
+                            failed = []
+                            failed_details = []
+                            for index, call in enumerate(recovered_tool_calls, start=1):
+                                args_payload = call.get("input", {})
+                                target_butler = str(args_payload.get("butler", "")).strip()
+                                target_prompt = str(args_payload.get("prompt", "") or "")
+                                if not target_butler:
+                                    continue
+
+                                route_envelope = _build_route_envelope(
+                                    request_id=request_id,
+                                    source=source,
+                                    message_text=message_text,
+                                    source_metadata=source_metadata,
+                                    request_context=request_context,
+                                    target_butler=target_butler,
+                                    prompt=target_prompt,
+                                    segment_id=f"text-recovered-{index}",
+                                )
+                                try:
+                                    route_result = await _fallback_route(
+                                        self._pool,
+                                        target_butler=target_butler,
+                                        tool_name="route.execute",
+                                        args=route_envelope,
+                                        source_butler="switchboard",
+                                    )
+                                except Exception as route_exc:
+                                    routed.append(target_butler)
+                                    failed.append(target_butler)
+                                    failed_details.append(
+                                        f"{target_butler}: {type(route_exc).__name__}: {route_exc}"
+                                    )
+                                    continue
+
+                                routed.append(target_butler)
+                                if isinstance(route_result, dict) and route_result.get("error"):
+                                    failed.append(target_butler)
+                                    failed_details.append(f"{target_butler}: routing failed")
+                                else:
+                                    acked.append(target_butler)
+
+                    # Fallback: LLM called no tools → route to general
                     if not routed:
                         logger.warning(
-                            "CC called no route_to_butler tools; falling back to general",
+                            "LLM called no route_to_butler tools; falling back to general",
                             extra=self._log_fields(
                                 source=source,
                                 chat_id=chat_id,
@@ -1148,36 +1297,16 @@ class MessagePipeline:
                                 "outcome": "no_tool_calls",
                             },
                         )
-                        fallback_envelope: dict[str, Any] = {
-                            "schema_version": "route.v1",
-                            "request_context": {
-                                "request_id": request_id,
-                                "received_at": datetime.now(UTC).isoformat(),
-                                "source_channel": source,
-                                "source_endpoint_identity": "switchboard",
-                                "source_sender_identity": source_metadata.get(
-                                    "identity", "unknown"
-                                ),
-                                "source_thread_identity": (
-                                    request_context.get("source_thread_identity")
-                                    if request_context
-                                    else None
-                                ),
-                                "trace_context": {},
-                            },
-                            "input": {"prompt": message_text},
-                            "target": {
-                                "butler": "general",
-                                "tool": "route.execute",
-                            },
-                            "source_metadata": source_metadata,
-                            "__switchboard_route_context": {
-                                "request_id": request_id,
-                                "fanout_mode": "tool_routed",
-                                "segment_id": "fallback-general",
-                                "attempt": 1,
-                            },
-                        }
+                        fallback_envelope = _build_route_envelope(
+                            request_id=request_id,
+                            source=source,
+                            message_text=message_text,
+                            source_metadata=source_metadata,
+                            request_context=request_context,
+                            target_butler="general",
+                            prompt=message_text,
+                            segment_id="fallback-general",
+                        )
                         try:
                             fallback_result = await _fallback_route(
                                 self._pool,

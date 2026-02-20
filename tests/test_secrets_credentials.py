@@ -60,6 +60,7 @@ def _make_db_manager(row: dict | None = None, execute_result: str = "DELETE 0") 
     db_manager = MagicMock()
     db_manager.butler_names = ["test-butler"]
     db_manager.pool.return_value = pool
+    db_manager.credential_shared_pool.return_value = pool
     return db_manager, conn
 
 
@@ -241,6 +242,7 @@ class TestUpsertCredentialsEndpoint:
     def test_upsert_no_butler_pools_returns_503(self) -> None:
         db_manager = MagicMock()
         db_manager.butler_names = []
+        db_manager.credential_shared_pool.side_effect = KeyError("no shared pool")
         app = create_app()
         from butlers.api.routers import oauth
 
