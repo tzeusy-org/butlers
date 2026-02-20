@@ -323,6 +323,7 @@ def test_run_migrates_and_verifies_core_and_shared_tables(
     assert "VERIFY summary" in result.stdout
     report = json.loads(report_path.read_text())
     assert report["status"] == "ok"
+    assert report["summary"]["tables_total"] == 5
     assert report["summary"]["tables_failed"] == 0
 
     assert asyncio.run(_count_rows(target_db, "general", "state")) == 1

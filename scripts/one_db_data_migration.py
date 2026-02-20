@@ -948,9 +948,8 @@ async def _run_command(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             _print_results("verify", verify_results)
             mismatches = [result for result in verify_results if result.get("status") == "mismatch"]
             if mismatches:
-                combined = results + verify_results
-                raise ParityMismatchError(mismatches=combined)
-            return 0, _build_report(args, jobs, results + verify_results, status="ok")
+                raise ParityMismatchError(mismatches)
+            return 0, _build_report(args, jobs, verify_results, status="ok")
 
         if args.command == "rollback":
             if not args.dry_run and args.confirm_rollback != "ROLLBACK":
