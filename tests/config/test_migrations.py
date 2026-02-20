@@ -18,6 +18,7 @@ pytestmark = [
 ]
 
 REQUIRED_SCHEMAS = ("shared", "general", "health", "messenger", "relationship", "switchboard")
+CORE_HEAD_REVISION = "core_001"
 RUNTIME_ROLES = {
     "general": "butler_general_rw",
     "health": "butler_health_rw",
@@ -189,6 +190,9 @@ def test_core_migrations_create_tables(postgres_container):
     assert _table_exists(db_url, "sessions"), "sessions table should exist"
     assert _table_exists(db_url, "route_inbox"), "route_inbox table should exist"
     assert _table_exists(db_url, "butler_secrets"), "butler_secrets table should exist"
+    assert not _table_exists(db_url, "google_oauth_credentials"), (
+        "legacy google_oauth_credentials table should not exist in target-state baseline"
+    )
 
     for schema in REQUIRED_SCHEMAS:
         assert _schema_exists(db_url, schema), f"schema {schema!r} should exist"
@@ -226,8 +230,8 @@ def test_migrations_idempotent(postgres_container):
         assert _schema_exists(db_url, schema)
 
 
-def test_upgrade_from_core_009_creates_required_schemas(postgres_container):
-    """Upgrade path from previous core head creates one-db schemas cleanly."""
+def test_upgrade_to_core_head_creates_required_schemas(postgres_container):
+    """Upgrade to core head creates one-db schemas cleanly."""
     from alembic import command
     from butlers.migrations import _build_alembic_config
 
@@ -235,7 +239,6 @@ def test_upgrade_from_core_009_creates_required_schemas(postgres_container):
     db_url = _create_db(postgres_container, db_name)
 
     config = _build_alembic_config(db_url, chains=["core"])
-    command.upgrade(config, "core_009")
     command.upgrade(config, "core@head")
 
     for schema in REQUIRED_SCHEMAS:
@@ -355,7 +358,9 @@ def test_alembic_version_tracking(postgres_container):
         versions = [row[0] for row in result]
     engine.dispose()
 
-    assert "core_011" in versions, f"Expected revision 'core_011' (current head) in {versions}"
+    assert CORE_HEAD_REVISION in versions, (
+        f"Expected revision {CORE_HEAD_REVISION!r} (current head) in {versions}"
+    )
 
 
 def test_schema_scoped_alembic_version_tracking_isolated(postgres_container):
@@ -382,5 +387,5 @@ def test_schema_scoped_alembic_version_tracking_isolated(postgres_container):
         ]
     engine.dispose()
 
-    assert "core_011" in general_versions
-    assert "core_011" in health_versions
+    assert CORE_HEAD_REVISION in general_versions
+    assert CORE_HEAD_REVISION in health_versions

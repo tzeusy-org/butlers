@@ -194,6 +194,8 @@ Memory is a **common module** (`[modules.memory]`) enabled per butler, not a ded
 
 ### Migration naming/path convention
 Alembic revisions are chain-prefixed (`core_*`, `mem_*`, `sw_*`) rather than bare numeric IDs. Butler-specific migrations resolve from `roster/<butler>/migrations/` via `butlers.migrations._resolve_chain_dir()` (not legacy `butlers/<name>/migrations/` paths).
+- Core chain baseline is consolidated into `alembic/versions/core/core_001_target_state_baseline.py` (`revision = "core_001"`); legacy incremental core revisions (`001_create_core_tables.py` through `011_apply_schema_acl_for_runtime_roles.py`) were removed.
+- Core migration coverage is centralized in `tests/config/test_migrations.py`; do not reintroduce per-step core files under `tests/migrations/` for pre-baseline revision IDs.
 - Within a chain, set `branch_labels` only on the branch root revision (e.g. `rel_001`); repeating the same label on later revisions causes Alembic duplicate-branch errors.
 - Do not leave stray migration files in chain directories: even if chain tests only assert expected filenames, Alembic will still load every `*.py` in the versions path and fail on duplicate `revision` IDs.
 - Switchboard migrations already include `sw_005` as the latest linear revision; new switchboard revisions must continue from `sw_005` (for example `sw_006`) to avoid multi-head failures during `switchboard@head` upgrades.
