@@ -14,8 +14,8 @@ The bootstrap flow:
      - Validates the state parameter against the stored state token.
      - Exchanges the authorization code for tokens via Google's token endpoint.
      - Extracts and logs the refresh token (redacted) and persists credentials
-       to the shared credential store (``butler_shared.butler_secrets`` when
-       configured). Secret material is never printed or logged in plaintext.
+       to the shared credential store. Secret material is never printed or
+       logged in plaintext.
      - Redirects to the dashboard URL on success (if OAUTH_DASHBOARD_URL is set),
        or returns a JSON success payload.
 
@@ -97,12 +97,11 @@ def _make_credential_store(db_manager: Any) -> CredentialStore | None:
     Returns None when db_manager is None or no usable pool can be resolved.
     Resolution order:
     1. Dedicated shared credential pool from DatabaseManager.
-    2. Compatibility fallback to first butler pool (legacy behavior).
+    2. Compatibility fallback to first butler pool.
     """
     if db_manager is None:
         return None
 
-    fallback_pools = []
     try:
         pool = db_manager.credential_shared_pool()
     except Exception:
@@ -113,22 +112,14 @@ def _make_credential_store(db_manager: Any) -> CredentialStore | None:
         try:
             pool = db_manager.pool(butler_names[0])
             logger.warning(
-                "Shared credential pool unavailable; using legacy fallback pool from %s",
+                "Shared credential pool unavailable; using fallback pool from %s",
                 butler_names[0],
             )
         except Exception:
             logger.debug("Failed to obtain fallback DB pool; credential store unavailable.")
             return None
 
-    try:
-        legacy_pool = db_manager.legacy_shared_pool()
-        if legacy_pool is not None:
-            fallback_pools.append(legacy_pool)
-    except Exception:
-        # Optional compatibility pool; ignore lookup failures.
-        pass
-
-    return CredentialStore(pool, fallback_pools=fallback_pools)
+    return CredentialStore(pool)
 
 
 router = APIRouter(prefix="/api/oauth", tags=["oauth"])

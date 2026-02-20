@@ -18,11 +18,11 @@
 # OAuth Bootstrap:
 #   Before launching the Gmail connector and Calendar module, this script checks
 #   whether Google OAuth credentials are present in the DB or environment. When
-#   credentials are missing, the script polls the google_oauth_credentials table
+#   credentials are missing, the script polls the shared butler_secrets store
 #   (every 5s) until OAuth completes via the dashboard — no manual restart needed.
 #   All other services (backend, Telegram, dashboard) start normally while waiting.
 #
-#   The gate polls the google_oauth_credentials table for a non-null refresh_token.
+#   The gate polls for a non-null GOOGLE_REFRESH_TOKEN in butler_secrets.
 #   Once found, Layer 3 proceeds automatically.
 #
 #   To suppress the check and start anyway:  ./dev.sh --skip-oauth-check
@@ -166,7 +166,7 @@ OAUTH_CALLBACK_URL="${LOCAL_API_BASE_URL}/oauth/google/callback"
 POSTGRES_PORT=54320
 POSTGRES_HOST=127.0.0.1
 POSTGRES_USER=butlers
-POSTGRES_DB_DEFAULT=butler_general
+POSTGRES_DB_DEFAULT=butlers
 
 if [ "${TAILSCALE_DASHBOARD_PATH_PREFIX}" = "${TAILSCALE_API_PATH_PREFIX}" ]; then
   echo "Error: TAILSCALE_DASHBOARD_PATH_PREFIX and TAILSCALE_API_PATH_PREFIX must be different paths" >&2
@@ -509,6 +509,43 @@ _wait_for_postgres 30 || exit 1
 # This runs in the *outer* shell before tmux windows are created so that
 # developers see the warning immediately rather than only inside a pane.
 
+_is_valid_sql_identifier() {
+  local ident="$1"
+  [[ "$ident" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+}
+
+_shared_credentials_db_name() {
+  if [ -n "${BUTLER_SHARED_DB_NAME:-}" ]; then
+    printf '%s' "${BUTLER_SHARED_DB_NAME}"
+    return 0
+  fi
+  printf '%s' "butlers"
+}
+
+_shared_credentials_schema() {
+  local schema="${BUTLER_SHARED_DB_SCHEMA:-shared}"
+  if ! _is_valid_sql_identifier "$schema"; then
+    echo "Warning: invalid BUTLER_SHARED_DB_SCHEMA=${schema}; using 'shared'" >&2
+    schema="shared"
+  fi
+  printf '%s' "$schema"
+}
+
+_shared_refresh_token_count() {
+  local db_name="$1"
+  local schema="$2"
+  PGPASSWORD="${POSTGRES_PASSWORD:-butlers}" \
+  PGOPTIONS="-c search_path=${schema},public" \
+  psql \
+    -h "${POSTGRES_HOST:-localhost}" \
+    -p "${POSTGRES_PORT:-54320}" \
+    -U "${POSTGRES_USER:-butlers}" \
+    -d "$db_name" \
+    -tAc \
+    "SELECT COUNT(*) FROM butler_secrets WHERE secret_key='GOOGLE_REFRESH_TOKEN' AND secret_value IS NOT NULL AND length(secret_value) > 0;" \
+    2>/dev/null || echo "0"
+}
+
 _has_google_creds() {
   # Check Calendar-style JSON blob (legacy — deprecated)
   if [ -n "${BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON:-}" ]; then
@@ -535,70 +572,15 @@ _has_google_creds() {
   fi
 
   # Check DB for stored credentials using psql (requires DB to be reachable).
-  # This allows the OAuth dashboard flow to provide credentials without env vars.
-  # Mirror the same DB set used by the OAuth gate so pre-flight and gate agree.
-  local db_host db_port db_user db_pass
-  local db_name
-  local shared_db_candidates=()
-  local legacy_db_candidates=()
-  db_host="${POSTGRES_HOST:-localhost}"
-  db_port="${POSTGRES_PORT:-54320}"
-  db_user="${POSTGRES_USER:-butlers}"
-  db_pass="${POSTGRES_PASSWORD:-butlers}"
-  if [ -n "${BUTLER_SHARED_DB_NAME:-}" ]; then
-    shared_db_candidates+=("${BUTLER_SHARED_DB_NAME}")
-  fi
-  shared_db_candidates+=(
-    "butler_shared"
-    "butlers_shared"
-  )
-  if [ -n "${CONNECTOR_BUTLER_DB_NAME:-}" ]; then
-    legacy_db_candidates+=("${CONNECTOR_BUTLER_DB_NAME}")
-  fi
-  legacy_db_candidates+=(
-    "butler_general"
-    "butler_health"
-    "butler_heartbeat"
-    "butler_messenger"
-    "butler_relationship"
-    "butler_switchboard"
-    "butlers"
-  )
+  # Primary path: one-db shared schema (butlers.shared).
   if command -v psql >/dev/null 2>&1; then
-    local db_count
-    # Shared credential store (primary path): butler_secrets table
-    for db_name in "${shared_db_candidates[@]}"; do
-      db_count=$(
-        PGPASSWORD="$db_pass" psql \
-          -h "$db_host" \
-          -p "$db_port" \
-          -U "$db_user" \
-          -d "$db_name" \
-          -tAc \
-          "SELECT COUNT(*) FROM butler_secrets WHERE secret_key='GOOGLE_REFRESH_TOKEN' AND secret_value IS NOT NULL AND length(secret_value) > 0;" \
-          2>/dev/null || echo "0"
-      )
-      if [ "${db_count:-0}" -gt 0 ] 2>/dev/null; then
-        return 0
-      fi
-    done
-
-    # Legacy store fallback: google_oauth_credentials table
-    for db_name in "${legacy_db_candidates[@]}"; do
-      db_count=$(
-        PGPASSWORD="$db_pass" psql \
-          -h "$db_host" \
-          -p "$db_port" \
-          -U "$db_user" \
-          -d "$db_name" \
-          -tAc \
-          "SELECT COUNT(*) FROM google_oauth_credentials WHERE credential_key='google' AND (credentials->>'refresh_token') IS NOT NULL AND length(credentials->>'refresh_token') > 0;" \
-          2>/dev/null || echo "0"
-      )
-      if [ "${db_count:-0}" -gt 0 ] 2>/dev/null; then
-        return 0
-      fi
-    done
+    local shared_db shared_schema shared_count
+    shared_db="$(_shared_credentials_db_name)"
+    shared_schema="$(_shared_credentials_schema)"
+    shared_count="$(_shared_refresh_token_count "$shared_db" "$shared_schema")"
+    if [ "${shared_count:-0}" -gt 0 ] 2>/dev/null; then
+      return 0
+    fi
   fi
 
   return 1
@@ -606,32 +588,9 @@ _has_google_creds() {
 
 # ── DB-based Google credential check ──────────────────────────────────────
 # Poll for a non-null Google refresh token.
-# Checks the shared butler_secrets store first, then the legacy
-# google_oauth_credentials table in known per-butler DBs. Returns 0 on success.
+# Checks the one-db shared schema store. Returns 0 on success.
 
 _poll_db_for_refresh_token() {
-  # Shared credential DBs (CredentialStore path, default: butler_shared).
-  local shared_dbs=()
-  if [ -n "${BUTLER_SHARED_DB_NAME:-}" ]; then
-    shared_dbs+=("${BUTLER_SHARED_DB_NAME}")
-  fi
-  shared_dbs+=(
-    "butler_shared"
-    "butlers_shared"
-  )
-
-  # Known butler databases in alphabetical order (matches roster discovery order).
-  # Legacy fallback path for older deployments still using google_oauth_credentials.
-  local dbs=(
-    "butler_general"
-    "butler_health"
-    "butler_heartbeat"
-    "butler_messenger"
-    "butler_relationship"
-    "butler_switchboard"
-    "butlers"
-  )
-
   local psql_bin
   psql_bin=$(command -v psql 2>/dev/null || echo "")
 
@@ -641,55 +600,13 @@ _poll_db_for_refresh_token() {
     return 1
   fi
 
-  for db in "${shared_dbs[@]}"; do
-    local shared_result
-    shared_result=$(
-      PGPASSWORD="${POSTGRES_PASSWORD:-butlers}" \
-      psql \
-        -h "${POSTGRES_HOST}" \
-        -p "${POSTGRES_PORT}" \
-        -U "${POSTGRES_USER}" \
-        -d "$db" \
-        -t -c \
-        "SELECT secret_value FROM butler_secrets
-         WHERE secret_key = 'GOOGLE_REFRESH_TOKEN'
-           AND secret_value IS NOT NULL
-           AND secret_value != ''
-         LIMIT 1" \
-        2>/dev/null || echo ""
-    )
-    shared_result="${shared_result#"${shared_result%%[![:space:]]*}"}"
-    shared_result="${shared_result%"${shared_result##*[![:space:]]}"}"
-    if [ -n "$shared_result" ]; then
-      return 0
-    fi
-  done
-
-  # Legacy fallback: per-butler google_oauth_credentials table
-  for db in "${dbs[@]}"; do
-    local result
-    result=$(
-      PGPASSWORD="${POSTGRES_PASSWORD:-butlers}" \
-      psql \
-        -h "${POSTGRES_HOST}" \
-        -p "${POSTGRES_PORT}" \
-        -U "${POSTGRES_USER}" \
-        -d "$db" \
-        -t -c \
-        "SELECT credentials->>'refresh_token' FROM google_oauth_credentials
-         WHERE credential_key = 'google'
-           AND credentials->>'refresh_token' IS NOT NULL
-           AND credentials->>'refresh_token' != ''
-         LIMIT 1" \
-        2>/dev/null || echo ""
-    )
-    # Trim whitespace; non-empty means a valid refresh token was found
-    result="${result#"${result%%[![:space:]]*}"}"
-    result="${result%"${result##*[![:space:]]}"}"
-    if [ -n "$result" ]; then
-      return 0
-    fi
-  done
+  local shared_db shared_schema shared_count
+  shared_db="$(_shared_credentials_db_name)"
+  shared_schema="$(_shared_credentials_schema)"
+  shared_count="$(_shared_refresh_token_count "$shared_db" "$shared_schema")"
+  if [ "${shared_count:-0}" -gt 0 ] 2>/dev/null; then
+    return 0
+  fi
 
   return 1
 }
@@ -709,8 +626,7 @@ _poll_oauth_via_http() {
 # Pick the DB name the Gmail connector should use for DB-first OAuth credential lookup.
 # Preference order:
 # 1) Explicit connector override env vars
-# 2) First known butler DB containing a stored Google refresh token
-# 3) Fallback default (butler_general)
+# 2) Shared credential DB (default one-db canonical: butlers)
 _select_google_credentials_db() {
   if [ -n "${GMAIL_CONNECTOR_BUTLER_DB_NAME:-}" ]; then
     printf '%s' "${GMAIL_CONNECTOR_BUTLER_DB_NAME}"
@@ -721,42 +637,7 @@ _select_google_credentials_db() {
     return 0
   fi
 
-  local db_host db_port db_user db_pass
-  db_host="${POSTGRES_HOST:-localhost}"
-  db_port="${POSTGRES_PORT:-54320}"
-  db_user="${POSTGRES_USER:-butlers}"
-  db_pass="${POSTGRES_PASSWORD:-butlers}"
-
-  if command -v psql >/dev/null 2>&1; then
-    local db_count
-    local db
-    local dbs=(
-      "butler_general"
-      "butler_health"
-      "butler_messenger"
-      "butler_relationship"
-      "butler_switchboard"
-      "butlers"
-    )
-    for db in "${dbs[@]}"; do
-      db_count=$(
-        PGPASSWORD="$db_pass" psql \
-          -h "$db_host" \
-          -p "$db_port" \
-          -U "$db_user" \
-          -d "$db" \
-          -tAc \
-          "SELECT COUNT(*) FROM google_oauth_credentials WHERE credential_key='google' AND (credentials->>'refresh_token') IS NOT NULL AND length(credentials->>'refresh_token') > 0;" \
-          2>/dev/null || echo "0"
-      )
-      if [ "${db_count:-0}" -gt 0 ] 2>/dev/null; then
-        printf '%s' "$db"
-        return 0
-      fi
-    done
-  fi
-
-  printf '%s' "butler_general"
+  printf '%s' "$(_shared_credentials_db_name)"
 }
 
 # ── Layer 2: OAuth gate ────────────────────────────────────────────────────
@@ -884,12 +765,14 @@ fi
 _build_gmail_pane_cmd() {
   local gmail_cmd_base
   local gmail_creds_db
+  local gmail_creds_schema
   gmail_cmd_base="${ENV_LOADER} && if [ -f \"$GMAIL_CONNECTOR_ENV_FILE\" ]; then set -a && . \"$GMAIL_CONNECTOR_ENV_FILE\" && set +a; fi && mkdir -p .tmp/connectors"
   gmail_creds_db="$(_select_google_credentials_db)"
+  gmail_creds_schema="$(_shared_credentials_schema)"
 
   if [ "$SKIP_OAUTH_CHECK" = "true" ] || _has_google_creds; then
     # Credentials available — start connector with DB-first lookup enabled.
-    printf '%s' "${gmail_cmd_base} && POSTGRES_HOST=${POSTGRES_HOST} POSTGRES_PORT=${POSTGRES_PORT} POSTGRES_USER=${POSTGRES_USER} CONNECTOR_BUTLER_DB_NAME=${gmail_creds_db} CONNECTOR_PROVIDER=gmail CONNECTOR_CHANNEL=email CONNECTOR_ENDPOINT_IDENTITY=\${GMAIL_CONNECTOR_ENDPOINT_IDENTITY:-gmail:user:dev} CONNECTOR_CURSOR_PATH=\${GMAIL_CONNECTOR_CURSOR_PATH:-.tmp/connectors/gmail_checkpoint.json} uv run python -m butlers.connectors.gmail"
+    printf '%s' "${gmail_cmd_base} && POSTGRES_HOST=${POSTGRES_HOST} POSTGRES_PORT=${POSTGRES_PORT} POSTGRES_USER=${POSTGRES_USER} CONNECTOR_BUTLER_DB_NAME=${gmail_creds_db} CONNECTOR_BUTLER_DB_SCHEMA=${gmail_creds_schema} BUTLER_SHARED_DB_NAME=${gmail_creds_db} BUTLER_SHARED_DB_SCHEMA=${gmail_creds_schema} CONNECTOR_PROVIDER=gmail CONNECTOR_CHANNEL=email CONNECTOR_ENDPOINT_IDENTITY=\${GMAIL_CONNECTOR_ENDPOINT_IDENTITY:-gmail:user:dev} CONNECTOR_CURSOR_PATH=\${GMAIL_CONNECTOR_CURSOR_PATH:-.tmp/connectors/gmail_checkpoint.json} uv run python -m butlers.connectors.gmail"
     return 0
   fi
 
@@ -912,7 +795,7 @@ _pipe_pane_to_log "$PANE_DASHBOARD" "${LOGS_RUN_DIR}/uvicorn/dashboard.log"
 _pipe_pane_to_log "$PANE_FRONTEND" "${LOGS_RUN_DIR}/frontend/vite.log"
 
 tmux send-keys -t "$PANE_DASHBOARD" \
-  "GOOGLE_OAUTH_REDIRECT_URI=https://tzeusy.parrot-hen.ts.net/butlers-api/api/oauth/google/callback POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers dashboard --host 0.0.0.0 --port ${DASHBOARD_PORT}" Enter
+  "GOOGLE_OAUTH_REDIRECT_URI=${OAUTH_CALLBACK_URL} POSTGRES_PORT=${POSTGRES_PORT} BUTLERS_DISABLE_FILE_LOGGING=1 uv run butlers dashboard --host 0.0.0.0 --port ${DASHBOARD_PORT}" Enter
 # Brief wait for shell init in the split pane
 sleep 0.3
 tmux send-keys -t "$PANE_FRONTEND" \

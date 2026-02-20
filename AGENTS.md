@@ -141,7 +141,7 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 ### One-DB runtime topology contract (butlers-1003.5)
 - `[butler.db]` is schema-aware: when `name = "butlers"`, `schema` is required (explicit target schema, no implicit fallback).
 - `Database` / `DatabaseManager` apply schema-scoped `search_path` (`<schema>,shared,public`; shared pool uses `shared,public`) for one-db pool resolution.
-- API startup (`init_db_manager`) treats one-db topology as canonical shared-credentials path (`db=butlers`, schema `shared`) and suppresses default legacy fallback DB unless `BUTLER_LEGACY_SHARED_DB_NAME` is explicitly set.
+- API startup (`init_db_manager`) treats one-db topology as canonical shared-credentials path (`db=butlers`, schema `shared`).
 - Daemon migration URL generation includes libpq `options=-csearch_path=...` when a schema is configured so Alembic runs in the intended schema context.
 
 ### dev.sh Gmail OAuth rerun contract
@@ -151,7 +151,6 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 
 ### dev.sh OAuth shared-store contract
 - `dev.sh` OAuth preflight (`_has_google_creds`) and Layer 2 gate (`_poll_db_for_refresh_token`) must use the same canonical lookup path: `butler_secrets` in one-db mode (`db=butlers`, schema `shared` by default, overridable via `BUTLER_SHARED_DB_NAME`/`BUTLER_SHARED_DB_SCHEMA`).
-- Legacy `google_oauth_credentials` fallback should be opt-in only via `BUTLER_LEGACY_SHARED_DB_NAME`, not hardcoded per-butler DB-name scans.
 
 ### Code Layout
 - `src/butlers/core/` — state.py, scheduler.py, sessions.py, spawner.py, telemetry.py, telemetry_spans.py

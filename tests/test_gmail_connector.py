@@ -1290,7 +1290,6 @@ class TestResolveGmailCredentialsFromDb:
     ) -> None:
         monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", db_name)
         monkeypatch.setenv("BUTLER_SHARED_DB_NAME", db_name)
-        monkeypatch.setenv("BUTLER_LEGACY_SHARED_DB_NAME", db_name)
 
     @staticmethod
     def _make_secret_row(value: str):

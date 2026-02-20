@@ -42,10 +42,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TABLE = "butler_secrets"
-_DEFAULT_SHARED_DB_NAME = "butler_shared"
-_DEFAULT_LEGACY_DB_NAME = "butler_general"
+_DEFAULT_SHARED_DB_NAME = "butlers"
 _ENV_SHARED_DB_NAME = "BUTLER_SHARED_DB_NAME"
-_ENV_LEGACY_DB_NAME = "BUTLER_LEGACY_SHARED_DB_NAME"
 
 _SECRETS_TABLE_DDL = f"""
 CREATE TABLE IF NOT EXISTS {_TABLE} (
@@ -424,81 +422,11 @@ def shared_db_name_from_env() -> str:
     return name or _DEFAULT_SHARED_DB_NAME
 
 
-def legacy_shared_db_name_from_env() -> str:
-    """Resolve the legacy centralized credential DB name for compatibility."""
-    name = os.environ.get(_ENV_LEGACY_DB_NAME, _DEFAULT_LEGACY_DB_NAME).strip()
-    return name or _DEFAULT_LEGACY_DB_NAME
-
-
 async def ensure_secrets_schema(pool: asyncpg.Pool) -> None:
     """Ensure ``butler_secrets`` exists on the target database."""
     async with _acquire_conn(pool) as conn:
         await conn.execute(_SECRETS_TABLE_DDL)
         await conn.execute(_SECRETS_CATEGORY_INDEX_DDL)
-
-
-async def backfill_shared_secrets(
-    shared_pool: asyncpg.Pool,
-    legacy_pool: asyncpg.Pool | None,
-) -> int:
-    """Copy missing rows from legacy centralized secrets into shared DB.
-
-    Existing keys in the shared store are preserved; only missing keys are
-    inserted.  Returns the number of inserted rows.
-    """
-    if legacy_pool is None or legacy_pool is shared_pool:
-        return 0
-
-    async with _acquire_conn(legacy_pool) as legacy_conn:
-        try:
-            rows = await legacy_conn.fetch(
-                f"""
-                SELECT secret_key, secret_value, category, description,
-                       is_sensitive, created_at, updated_at, expires_at
-                FROM {_TABLE}
-                ORDER BY secret_key
-                """
-            )
-        except Exception as exc:
-            if _is_missing_table_error(exc):
-                logger.debug(
-                    "Legacy secrets table missing during shared backfill (table=%s); skipping",
-                    _TABLE,
-                )
-                return 0
-            raise
-
-    if not rows:
-        return 0
-
-    inserted = 0
-    async with _acquire_conn(shared_pool) as shared_conn:
-        await shared_conn.execute(_SECRETS_TABLE_DDL)
-        await shared_conn.execute(_SECRETS_CATEGORY_INDEX_DDL)
-        for row in rows:
-            result = await shared_conn.execute(
-                f"""
-                INSERT INTO {_TABLE}
-                    (secret_key, secret_value, category, description,
-                     is_sensitive, created_at, updated_at, expires_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                ON CONFLICT (secret_key) DO NOTHING
-                """,
-                row["secret_key"],
-                row["secret_value"],
-                row["category"],
-                row["description"],
-                row["is_sensitive"],
-                row["created_at"],
-                row["updated_at"],
-                row["expires_at"],
-            )
-            if result and result.split()[-1] != "0":
-                inserted += 1
-
-    if inserted:
-        logger.info("Backfilled %d secret(s) from legacy store into shared store", inserted)
-    return inserted
 
 
 async def _safe_fetch_secret_row(

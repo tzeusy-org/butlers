@@ -19,8 +19,7 @@ Environment Variables (from docs/connectors/telegram_bot.md):
     CONNECTOR_MAX_INFLIGHT: Max concurrent ingest submissions (optional, default 8)
     CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 40081)
     CONNECTOR_BUTLER_DB_NAME: Local butler DB for per-butler secret overrides (optional)
-    BUTLER_SHARED_DB_NAME: Shared credential DB name (optional, default butler_shared)
-    BUTLER_LEGACY_SHARED_DB_NAME: Legacy centralized credential DB fallback (optional)
+    BUTLER_SHARED_DB_NAME: Shared credential DB name (optional, default butlers)
     BUTLER_TELEGRAM_TOKEN: Telegram bot token (required; resolved from DB first, then env)
 """
 
@@ -49,7 +48,6 @@ from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
-    legacy_shared_db_name_from_env,
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env
@@ -830,9 +828,8 @@ async def _resolve_telegram_bot_token_from_db() -> str | None:
     db_params = db_params_from_env()
     local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "").strip()
     shared_db_name = shared_db_name_from_env()
-    legacy_db_name = legacy_shared_db_name_from_env()
     candidate_db_names: list[str] = []
-    for name in [local_db_name, shared_db_name, legacy_db_name]:
+    for name in [local_db_name, shared_db_name]:
         if name and name not in candidate_db_names:
             candidate_db_names.append(name)
 

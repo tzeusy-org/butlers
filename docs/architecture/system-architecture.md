@@ -494,7 +494,7 @@ For active operations and deployment topology, use:
 graph LR
     subgraph PG["PostgreSQL Server"]
         DB_SW[("butler_switchboard")]
-        DB_SHARED[("butler_shared<br/>credentials")]
+        DB_SHARED[("butlers.shared<br/>credentials")]
         DB_GEN[("butler_general")]
         DB_REL[("butler_relationship")]
         DB_HEALTH[("butler_health")]

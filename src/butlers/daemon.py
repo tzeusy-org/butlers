@@ -100,9 +100,7 @@ from butlers.core.state import state_set as _state_set
 from butlers.core.telemetry import extract_trace_context, init_telemetry, tool_span
 from butlers.credential_store import (
     CredentialStore,
-    backfill_shared_secrets,
     ensure_secrets_schema,
-    legacy_shared_db_name_from_env,
     shared_db_name_from_env,
 )
 from butlers.credentials import (
@@ -573,7 +571,6 @@ class ButlerDaemon:
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
         self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
         self._shared_credentials_db: Database | None = None
-        self._legacy_credentials_db: Database | None = None
         self.blob_store: LocalBlobStore | None = None
         # Background tasks spawned by route.execute accept phase (non-messenger butlers)
         self._route_inbox_tasks: set[asyncio.Task] = set()
@@ -1365,41 +1362,52 @@ class ButlerDaemon:
 
         payload = {"butler_name": butler_name}
 
+        async def _post_heartbeat(phase: str) -> bool:
+            """POST one heartbeat and return whether loop should continue.
+
+            A persistent 404 means the target service does not expose the
+            Switchboard heartbeat endpoint (wrong host/port/path). In that
+            case we stop retrying to avoid noisy, unproductive log spam.
+            """
+            try:
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 404:
+                    logger.warning(
+                        "Liveness reporter: %s heartbeat endpoint not found (404) "
+                        "for butler %s at %s; disabling reporter",
+                        phase,
+                        butler_name,
+                        url,
+                    )
+                    return False
+                resp.raise_for_status()
+                logger.debug(
+                    "Liveness reporter: %s heartbeat sent for butler %s (status %d)",
+                    phase,
+                    butler_name,
+                    resp.status_code,
+                )
+                return True
+            except Exception:
+                logger.warning(
+                    "Liveness reporter: %s heartbeat failed for butler %s",
+                    phase,
+                    butler_name,
+                    exc_info=True,
+                )
+                return True
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             try:
                 # Send initial heartbeat within 5 seconds of startup
                 await asyncio.sleep(5)
-                try:
-                    resp = await client.post(url, json=payload)
-                    resp.raise_for_status()
-                    logger.debug(
-                        "Liveness reporter: initial heartbeat sent for butler %s (status %d)",
-                        butler_name,
-                        resp.status_code,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Liveness reporter: initial heartbeat failed for butler %s",
-                        butler_name,
-                        exc_info=True,
-                    )
+                if not await _post_heartbeat("initial"):
+                    return
 
                 while True:
                     await asyncio.sleep(interval)
-                    try:
-                        resp = await client.post(url, json=payload)
-                        resp.raise_for_status()
-                        logger.debug(
-                            "Liveness reporter: heartbeat sent for butler %s (status %d)",
-                            butler_name,
-                            resp.status_code,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Liveness reporter: heartbeat failed for butler %s",
-                            butler_name,
-                            exc_info=True,
-                        )
+                    if not await _post_heartbeat("periodic"):
+                        return
             except asyncio.CancelledError:
                 logger.info("Liveness reporter cancelled for butler %s", butler_name)
 
@@ -3384,10 +3392,6 @@ class ButlerDaemon:
             self._audit_db = None
 
         # 8. Close credential-layer DB pools
-        if self._legacy_credentials_db is not None:
-            await self._legacy_credentials_db.close()
-            self._legacy_credentials_db = None
-
         if self._shared_credentials_db is not None:
             await self._shared_credentials_db.close()
             self._shared_credentials_db = None
@@ -3399,7 +3403,7 @@ class ButlerDaemon:
         logger.info("Butler shutdown complete")
 
     async def _build_credential_store(self, local_pool: asyncpg.Pool) -> CredentialStore:
-        """Build a credential store with local override + shared/legacy fallbacks."""
+        """Build a credential store with local override + shared fallback."""
         fallback_pools: list[asyncpg.Pool] = []
         schema_topology = bool(self.config.db_schema)
         configured_shared_db_name = shared_db_name_from_env()
@@ -3470,40 +3474,5 @@ class ButlerDaemon:
 
         if shared_pool is not None and shared_pool is not local_pool:
             fallback_pools.append(shared_pool)
-
-        legacy_db_name = legacy_shared_db_name_from_env()
-        if schema_topology and os.environ.get("BUTLER_LEGACY_SHARED_DB_NAME") is None:
-            legacy_db_name = ""
-        legacy_pool: asyncpg.Pool | None = None
-        excluded_db_names = {self.config.db_name, shared_db_name}
-        if self._shared_credentials_db is not None:
-            excluded_db_names.add(self._shared_credentials_db.db_name)
-
-        if legacy_db_name:
-            legacy_db = Database.from_env(legacy_db_name)
-            if legacy_db.db_name not in excluded_db_names:
-                try:
-                    legacy_pool = await legacy_db.connect()
-                    self._legacy_credentials_db = legacy_db
-                except Exception:
-                    logger.info(
-                        "Legacy credential DB not available (db=%s); "
-                        "skipping compatibility fallback",
-                        legacy_db_name,
-                    )
-                    await legacy_db.close()
-                    legacy_pool = None
-
-        if legacy_pool is not None and legacy_pool is not local_pool:
-            fallback_pools.append(legacy_pool)
-
-        if shared_pool is not None and legacy_pool is not None:
-            try:
-                await backfill_shared_secrets(shared_pool, legacy_pool)
-            except Exception:
-                logger.warning(
-                    "Failed to backfill shared credentials from legacy store",
-                    exc_info=True,
-                )
 
         return CredentialStore(local_pool, fallback_pools=fallback_pools)

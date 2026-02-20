@@ -101,7 +101,7 @@ Retain the logical "pool per butler key" API to minimize callsite churn, but eac
 - Keep existing host/auth inputs: `DATABASE_URL` or `POSTGRES_*`.
 - Standardize all butlers to `[butler.db].name = "butlers"`.
 - Add/require `[butler.db].schema` for all butlers.
-- Deprecate `BUTLER_SHARED_DB_NAME` and `BUTLER_LEGACY_SHARED_DB_NAME` after cutover; replace with fixed `shared` schema in the single DB.
+- Use `shared` schema in the single `butlers` DB for shared credentials.
 
 ## 5. Alembic and chain ordering constraints
 

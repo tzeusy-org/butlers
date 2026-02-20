@@ -724,7 +724,6 @@ class TestResolveTelegramBotTokenFromDb:
     ) -> None:
         monkeypatch.setenv("CONNECTOR_BUTLER_DB_NAME", db_name)
         monkeypatch.setenv("BUTLER_SHARED_DB_NAME", db_name)
-        monkeypatch.setenv("BUTLER_LEGACY_SHARED_DB_NAME", db_name)
 
     async def test_returns_none_when_db_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Returns None gracefully when DB connection fails."""

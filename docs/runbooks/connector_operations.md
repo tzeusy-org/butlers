@@ -116,8 +116,7 @@ export CONNECTOR_MAX_INFLIGHT="8"
 # Option 1: DB-first (recommended) — set DATABASE_URL and complete the dashboard OAuth flow
 export DATABASE_URL="postgres://butlers:butlers@localhost:5432/butlers"
 export CONNECTOR_BUTLER_DB_NAME="butler_general"  # optional local override DB
-export BUTLER_SHARED_DB_NAME="butler_shared"  # shared credential DB (default)
-export BUTLER_LEGACY_SHARED_DB_NAME="butler_general"  # optional legacy fallback
+export BUTLER_SHARED_DB_NAME="butlers"  # shared credential DB (default)
 # App config (always required for OAuth bootstrap):
 export GOOGLE_OAUTH_CLIENT_ID="your-client-id"
 export GOOGLE_OAUTH_CLIENT_SECRET="your-client-secret"
@@ -516,8 +515,7 @@ ERROR: Failed to fetch history changes: 401 Unauthorized
 | `GOOGLE_OAUTH_CLIENT_SECRET` | Yes | - | OAuth client secret (app config for bootstrap) |
 | `DATABASE_URL` | No | - | DB URL for DB-first credential resolution |
 | `CONNECTOR_BUTLER_DB_NAME` | No | - | Local butler DB name for per-butler override secrets |
-| `BUTLER_SHARED_DB_NAME` | No | `butler_shared` | Shared credential DB name |
-| `BUTLER_LEGACY_SHARED_DB_NAME` | No | `butler_general` | Legacy centralized credential DB fallback |
+| `BUTLER_SHARED_DB_NAME` | No | `butlers` | Shared credential DB name |
 | `GMAIL_CLIENT_ID` | No | - | **Deprecated** alias for `GOOGLE_OAUTH_CLIENT_ID` |
 | `GMAIL_CLIENT_SECRET` | No | - | **Deprecated** alias for `GOOGLE_OAUTH_CLIENT_SECRET` |
 | `GMAIL_REFRESH_TOKEN` | No | - | **Deprecated**; use DB-stored credentials |

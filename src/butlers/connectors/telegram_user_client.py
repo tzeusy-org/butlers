@@ -25,8 +25,7 @@ Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_BACKFILL_WINDOW_H (optional, bounded startup replay in hours)
 - CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
-- BUTLER_SHARED_DB_NAME (optional; shared credential DB, defaults to 'butler_shared')
-- BUTLER_LEGACY_SHARED_DB_NAME (optional; legacy centralized credential DB fallback)
+- BUTLER_SHARED_DB_NAME (optional; shared credential DB, defaults to 'butlers')
 - TELEGRAM_API_ID (required; resolved from DB first, then env; from my.telegram.org)
 - TELEGRAM_API_HASH (required; resolved from DB first, then env; from my.telegram.org)
 - TELEGRAM_USER_SESSION (required; resolved from DB first, then env; session string or
@@ -56,7 +55,6 @@ from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
-    legacy_shared_db_name_from_env,
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env
@@ -573,9 +571,8 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
     db_params = db_params_from_env()
     local_db_name = os.environ.get("CONNECTOR_BUTLER_DB_NAME", "").strip()
     shared_db_name = shared_db_name_from_env()
-    legacy_db_name = legacy_shared_db_name_from_env()
     candidate_db_names: list[str] = []
-    for name in [local_db_name, shared_db_name, legacy_db_name]:
+    for name in [local_db_name, shared_db_name]:
         if name and name not in candidate_db_names:
             candidate_db_names.append(name)
 

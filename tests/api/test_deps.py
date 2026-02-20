@@ -307,7 +307,6 @@ class TestInitDbManager:
         import butlers.api.deps as deps_mod
 
         monkeypatch.delenv("BUTLER_SHARED_DB_NAME", raising=False)
-        monkeypatch.delenv("BUTLER_LEGACY_SHARED_DB_NAME", raising=False)
 
         configs = [
             ButlerConnectionInfo(
@@ -324,10 +323,8 @@ class TestInitDbManager:
         mgr = MagicMock()
         mgr.add_butler = AsyncMock()
         mgr.set_credential_shared_pool = AsyncMock()
-        mgr.set_legacy_shared_pool = AsyncMock()
         shared_pool = AsyncMock()
         mgr.credential_shared_pool = MagicMock(return_value=shared_pool)
-        mgr.legacy_shared_pool = MagicMock(return_value=None)
 
         def _mk_db(db_name: str) -> MagicMock:
             db = MagicMock()
@@ -343,7 +340,6 @@ class TestInitDbManager:
                 patch("butlers.api.deps.DatabaseManager", return_value=mgr),
                 patch("butlers.api.deps.Database.from_env", side_effect=_mk_db),
                 patch("butlers.api.deps.ensure_secrets_schema", new_callable=AsyncMock),
-                patch("butlers.api.deps.backfill_shared_secrets", new_callable=AsyncMock),
             ):
                 await init_db_manager(configs)
         finally:
@@ -352,7 +348,6 @@ class TestInitDbManager:
         mgr.add_butler.assert_any_await("general", db_name="butlers", db_schema="general")
         mgr.add_butler.assert_any_await("switchboard", db_name="butlers", db_schema="switchboard")
         mgr.set_credential_shared_pool.assert_awaited_once_with("butlers", db_schema="shared")
-        mgr.set_legacy_shared_pool.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

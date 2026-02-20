@@ -458,6 +458,37 @@ class TestLivenessReporterBehavior:
         # Loop should have continued past connection failures
         assert call_count >= 3, f"Expected at least 3 calls, got {call_count}"
 
+    async def test_404_disables_reporter_without_retries(self, tmp_path: Path) -> None:
+        """A 404 endpoint response should stop the reporter loop after first attempt."""
+        daemon = self._make_daemon(tmp_path)
+        daemon.config.scheduler = SchedulerConfig(
+            heartbeat_interval_seconds=1,
+            switchboard_url="http://test-switchboard:40200",
+        )
+
+        call_count = 0
+
+        async def returns_404(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return httpx.Response(404)
+
+        mock_client = _make_mock_client(post_side_effect=returns_404)
+
+        _real_sleep = asyncio.sleep
+
+        async def fast_sleep(delay: float) -> None:
+            await _real_sleep(0)
+
+        with (
+            patch("butlers.daemon.httpx.AsyncClient", return_value=mock_client),
+            patch("butlers.daemon.asyncio.sleep", side_effect=fast_sleep),
+        ):
+            # Loop should self-terminate after initial 404 response.
+            await daemon._liveness_reporter_loop()
+
+        assert call_count == 1
+
     async def test_connection_failure_logged_at_warning_not_error(
         self, tmp_path: Path, caplog
     ) -> None:

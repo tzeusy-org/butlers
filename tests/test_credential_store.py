@@ -26,8 +26,6 @@ from butlers.credential_store import (
     SecretMetadata,
     _ensure_utc,
     _is_missing_table_error,
-    backfill_shared_secrets,
-    legacy_shared_db_name_from_env,
     shared_db_name_from_env,
 )
 
@@ -558,72 +556,12 @@ class TestConcurrency:
 class TestSharedDbHelpers:
     def test_shared_db_name_from_env_default(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            assert shared_db_name_from_env() == "butler_shared"
+            assert shared_db_name_from_env() == "butlers"
 
     def test_shared_db_name_from_env_custom(self) -> None:
         with patch.dict(os.environ, {"BUTLER_SHARED_DB_NAME": "my_shared"}):
             assert shared_db_name_from_env() == "my_shared"
 
-    def test_legacy_shared_db_name_default(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            assert legacy_shared_db_name_from_env() == "butler_general"
-
-    def test_legacy_shared_db_name_custom(self) -> None:
-        with patch.dict(os.environ, {"BUTLER_LEGACY_SHARED_DB_NAME": "legacy_db"}):
-            assert legacy_shared_db_name_from_env() == "legacy_db"
-
     def test_is_missing_table_error_detection(self) -> None:
         exc = RuntimeError('relation "butler_secrets" does not exist')
         assert _is_missing_table_error(exc) is True
-
-    async def test_backfill_shared_secrets_inserts_only_missing_keys(self) -> None:
-        legacy_row_existing = _make_row(
-            secret_key="KEEP",
-            secret_value="v1",
-            category="general",
-            description=None,
-            is_sensitive=True,
-            created_at=_NOW,
-            updated_at=_NOW,
-            expires_at=None,
-        )
-        legacy_row_new = _make_row(
-            secret_key="NEW",
-            secret_value="v2",
-            category="google",
-            description="desc",
-            is_sensitive=False,
-            created_at=_NOW,
-            updated_at=_NOW,
-            expires_at=None,
-        )
-        legacy_pool = _make_pool(fetch_return=[legacy_row_existing, legacy_row_new])
-
-        shared_conn = AsyncMock()
-        # First two execute calls are schema ensure DDL, then two inserts.
-        shared_conn.execute.side_effect = ["DDL", "DDL", "INSERT 0 0", "INSERT 0 1"]
-        shared_cm = AsyncMock()
-        shared_cm.__aenter__ = AsyncMock(return_value=shared_conn)
-        shared_cm.__aexit__ = AsyncMock(return_value=False)
-        shared_pool = MagicMock()
-        shared_pool.acquire.return_value = shared_cm
-
-        inserted = await backfill_shared_secrets(shared_pool, legacy_pool)
-
-        assert inserted == 1
-        assert legacy_pool.acquire.call_count == 1
-        assert shared_pool.acquire.call_count == 1
-
-    async def test_backfill_shared_secrets_handles_missing_legacy_table(self) -> None:
-        legacy_conn = AsyncMock()
-        legacy_conn.fetch.side_effect = RuntimeError('relation "butler_secrets" does not exist')
-        legacy_cm = AsyncMock()
-        legacy_cm.__aenter__ = AsyncMock(return_value=legacy_conn)
-        legacy_cm.__aexit__ = AsyncMock(return_value=False)
-        legacy_pool = MagicMock()
-        legacy_pool.acquire.return_value = legacy_cm
-
-        shared_pool = _make_pool()
-        inserted = await backfill_shared_secrets(shared_pool, legacy_pool)
-
-        assert inserted == 0

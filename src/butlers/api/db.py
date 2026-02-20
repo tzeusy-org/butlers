@@ -49,7 +49,6 @@ class DatabaseManager:
         self._max_pool_size = max_pool_size
         self._pools: dict[str, asyncpg.Pool] = {}
         self._shared_pool: asyncpg.Pool | None = None
-        self._legacy_shared_pool: asyncpg.Pool | None = None
 
     async def _create_pool(
         self,
@@ -133,27 +132,11 @@ class DatabaseManager:
         )
         logger.info("Configured shared credential pool (db=%s, schema=%s)", db_name, db_schema)
 
-    async def set_legacy_shared_pool(self, db_name: str, db_schema: str | None = None) -> None:
-        """Set optional legacy centralized credential DB pool."""
-        if self._legacy_shared_pool is not None:
-            await self._legacy_shared_pool.close()
-            self._legacy_shared_pool = None
-        self._legacy_shared_pool = await self._create_pool(
-            database=db_name,
-            log_name="legacy shared credentials",
-            schema=db_schema,
-        )
-        logger.info("Configured legacy credential pool (db=%s, schema=%s)", db_name, db_schema)
-
     def credential_shared_pool(self) -> asyncpg.Pool:
         """Return dedicated shared credential pool or raise KeyError."""
         if self._shared_pool is None:
             raise KeyError("Shared credential pool is not configured")
         return self._shared_pool
-
-    def legacy_shared_pool(self) -> asyncpg.Pool | None:
-        """Return legacy centralized credential pool when configured."""
-        return self._legacy_shared_pool
 
     def pool(self, butler_name: str) -> asyncpg.Pool:
         """Get the connection pool for a specific butler.
@@ -209,14 +192,6 @@ class DatabaseManager:
 
     async def close(self) -> None:
         """Close all connection pools."""
-        if self._legacy_shared_pool is not None:
-            try:
-                await self._legacy_shared_pool.close()
-                logger.info("Closed legacy shared credential pool")
-            except Exception:
-                logger.warning("Error closing legacy shared credential pool", exc_info=True)
-            self._legacy_shared_pool = None
-
         if self._shared_pool is not None:
             try:
                 await self._shared_pool.close()
