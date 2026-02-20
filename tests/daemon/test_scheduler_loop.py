@@ -247,7 +247,7 @@ class TestSchedulerLoopBehavior:
         """tick() should be called after sleeping for tick_interval_seconds."""
         tick_calls: list[int] = []
 
-        async def mock_tick(pool, dispatch_fn):
+        async def mock_tick(pool, dispatch_fn, *, stagger_key=None):
             tick_calls.append(1)
             return 0
 
@@ -280,15 +280,51 @@ class TestSchedulerLoopBehavior:
         # Should have been called at least once (probably twice in 2.5s with 1s interval)
         assert len(tick_calls) >= 1
 
+    async def test_tick_uses_butler_name_stagger_key(self, tmp_path: Path) -> None:
+        """_scheduler_loop should pass butler name as the scheduler stagger key."""
+        seen_stagger_keys: list[str | None] = []
+
+        async def mock_tick(pool, dispatch_fn, *, stagger_key=None):
+            seen_stagger_keys.append(stagger_key)
+            return 0
+
+        butler_dir = _make_butler_toml(tmp_path)
+        daemon = ButlerDaemon(butler_dir)
+        daemon.config = ButlerConfig(name="health", port=9100)
+        daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=1)
+
+        mock_pool = AsyncMock()
+        mock_db = MagicMock()
+        mock_db.pool = mock_pool
+        daemon.db = mock_db
+
+        mock_spawner = MagicMock()
+        mock_spawner.trigger = AsyncMock()
+        daemon.spawner = mock_spawner
+
+        with patch("butlers.daemon._tick", side_effect=mock_tick):
+            task = asyncio.create_task(daemon._scheduler_loop())
+            await asyncio.sleep(1.5)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert seen_stagger_keys
+        assert all(key == "health" for key in seen_stagger_keys)
+
     async def test_tick_exception_does_not_break_loop(self, tmp_path: Path) -> None:
         """tick() exception should be logged but the loop should continue."""
         tick_call_count = 0
+        second_tick_seen = asyncio.Event()
 
-        async def failing_then_ok_tick(pool, dispatch_fn):
+        async def failing_then_ok_tick(pool, dispatch_fn, *, stagger_key=None):
             nonlocal tick_call_count
             tick_call_count += 1
             if tick_call_count == 1:
                 raise RuntimeError("Simulated tick failure")
+            second_tick_seen.set()
             return 0
 
         butler_dir = _make_butler_toml(tmp_path)
@@ -307,8 +343,7 @@ class TestSchedulerLoopBehavior:
 
         with patch("butlers.daemon._tick", side_effect=failing_then_ok_tick):
             task = asyncio.create_task(daemon._scheduler_loop())
-            # Allow enough time for at least 2 ticks (first fails, second succeeds)
-            await asyncio.sleep(2.5)
+            await asyncio.wait_for(second_tick_seen.wait(), timeout=4.0)
             task.cancel()
             try:
                 await task
@@ -323,7 +358,7 @@ class TestSchedulerLoopBehavior:
         tick_started = asyncio.Event()
         tick_unblocked = asyncio.Event()
 
-        async def blocking_tick(pool, dispatch_fn):
+        async def blocking_tick(pool, dispatch_fn, *, stagger_key=None):
             tick_started.set()
             await tick_unblocked.wait()
             return 0
@@ -386,7 +421,7 @@ class TestSchedulerLoopBehavior:
 
         import time
 
-        async def recording_tick(pool, dispatch_fn):
+        async def recording_tick(pool, dispatch_fn, *, stagger_key=None):
             tick_times.append(time.monotonic())
             return 0
 
@@ -425,7 +460,7 @@ class TestSchedulerLoopBehavior:
         tick_completed = asyncio.Event()
         tick_started = asyncio.Event()
 
-        async def slow_tick(pool, dispatch_fn):
+        async def slow_tick(pool, dispatch_fn, *, stagger_key=None):
             tick_started.set()
             await asyncio.sleep(0.3)
             tick_completed.set()

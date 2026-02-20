@@ -876,7 +876,7 @@ class ButlerDaemon:
         schedules = [
             {"name": s.name, "cron": s.cron, "prompt": s.prompt} for s in self.config.schedules
         ]
-        await sync_schedules(pool, schedules)
+        await sync_schedules(pool, schedules, stagger_key=self.config.name)
 
         # 11b. Open MCP client connection to Switchboard (non-switchboard butlers)
         await self._connect_switchboard()
@@ -1303,7 +1303,9 @@ class ButlerDaemon:
         try:
             while True:
                 await asyncio.sleep(interval)
-                tick_task = asyncio.create_task(_tick(pool, dispatch_fn))
+                tick_task = asyncio.create_task(
+                    _tick(pool, dispatch_fn, stagger_key=self.config.name)
+                )
                 try:
                     dispatched = await asyncio.shield(tick_task)
                     logger.debug(
@@ -2475,7 +2477,11 @@ class ButlerDaemon:
             Primarily driven by the internal scheduler loop. Retained as an MCP tool
             for debugging and manual triggering.
             """
-            count = await _tick(pool, daemon._dispatch_scheduled_task)
+            count = await _tick(
+                pool,
+                daemon._dispatch_scheduled_task,
+                stagger_key=daemon.config.name,
+            )
             return {"dispatched": count}
 
         # State tools
@@ -2540,7 +2546,13 @@ class ButlerDaemon:
         @mcp.tool()
         async def schedule_create(name: str, cron: str, prompt: str) -> dict:
             """Create a new runtime scheduled task."""
-            task_id = await _schedule_create(pool, name, cron, prompt)
+            task_id = await _schedule_create(
+                pool,
+                name,
+                cron,
+                prompt,
+                stagger_key=daemon.config.name,
+            )
             return {"id": str(task_id), "status": "created"}
 
         @mcp.tool()
@@ -2559,7 +2571,12 @@ class ButlerDaemon:
                 "enabled": enabled,
             }
             fields = {k: v for k, v in update_fields.items() if v is not None}
-            await _schedule_update(pool, uuid.UUID(task_id), **fields)
+            await _schedule_update(
+                pool,
+                uuid.UUID(task_id),
+                stagger_key=daemon.config.name,
+                **fields,
+            )
             return {"id": task_id, "status": "updated"}
 
         @mcp.tool()
