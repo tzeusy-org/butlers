@@ -18,9 +18,9 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Ensure required extensions for vectors and UUID generation are available.
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    op.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"')
+    # Install extensions in public so schema-scoped runs share one canonical namespace.
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public")
+    op.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public')
 
     op.execute("""
         CREATE TABLE IF NOT EXISTS episodes (
