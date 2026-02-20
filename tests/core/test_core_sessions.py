@@ -259,10 +259,10 @@ async def test_duration_ms_stored_correctly(pool):
 
 
 async def test_trigger_source_valid_values(pool):
-    """All four valid trigger_source values are accepted."""
+    """All canonical trigger_source values are accepted."""
     from butlers.core.sessions import session_create
 
-    for source in ("schedule:daily-task", "trigger", "tick", "external"):
+    for source in ("schedule:daily-task", "trigger", "tick", "external", "route"):
         sid = await session_create(pool, prompt="test", trigger_source=source)
         assert isinstance(sid, uuid.UUID)
 

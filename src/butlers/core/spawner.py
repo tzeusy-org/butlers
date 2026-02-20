@@ -306,7 +306,7 @@ class Spawner:
             The prompt to send to the runtime instance.
         trigger_source:
             What caused this invocation. Expected values are ``tick``,
-            ``external``, ``trigger``, or ``schedule:<task-name>``.
+            ``external``, ``trigger``, ``route``, or ``schedule:<task-name>``.
         context:
             Optional text to prepend to the prompt. If provided and non-empty,
             this will be prepended to the prompt with two newlines separating them.

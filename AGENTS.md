@@ -149,9 +149,9 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - Build the Gmail pane startup command at Layer 3 launch time (after OAuth gate), not once during early preflight; otherwise reruns can keep showing the stale "waiting for OAuth" pane even when credentials already exist.
 - For pane logs, prefer wrapping the launched command with stdout/stderr tee capture (`_wrap_cmd_for_log`) instead of raw `tmux pipe-pane`, so log files contain process output rather than interactive shell prompt/control-sequence noise.
 
-### dev.sh OAuth shared-store mismatch guardrail
-- Layer 2 gate (`_poll_db_for_refresh_token`) currently polls legacy `google_oauth_credentials` rows in per-butler DBs, while dashboard OAuth writes to `butler_secrets` via `CredentialStore` on `BUTLER_SHARED_DB_NAME` (default `butler_shared`).
-- In environments using shared-store writes only, Layer 2 can wait forever despite completed OAuth unless the gate also checks `butler_secrets` in the shared DB (and/or uses `/api/oauth/status`).
+### dev.sh OAuth shared-store contract
+- `dev.sh` OAuth preflight (`_has_google_creds`) and Layer 2 gate (`_poll_db_for_refresh_token`) must use the same canonical lookup path: `butler_secrets` in one-db mode (`db=butlers`, schema `shared` by default, overridable via `BUTLER_SHARED_DB_NAME`/`BUTLER_SHARED_DB_SCHEMA`).
+- Legacy `google_oauth_credentials` fallback should be opt-in only via `BUTLER_LEGACY_SHARED_DB_NAME`, not hardcoded per-butler DB-name scans.
 
 ### Code Layout
 - `src/butlers/core/` — state.py, scheduler.py, sessions.py, spawner.py, telemetry.py, telemetry_spans.py
@@ -450,6 +450,7 @@ make test-qg
 
 ### Spawner trigger-source/failure contract
 - Core daemon `trigger` MCP tool should dispatch with `trigger_source="trigger"` (not `trigger_tool`) to stay aligned with `core.sessions` validation.
+- `src/butlers/core/sessions.py` canonical trigger-source allowlist includes `route` because daemon `route.execute` background and recovery flows dispatch `spawner.trigger(..., trigger_source="route")`.
 - `src/butlers/core/spawner.py::_run` should initialize duration timing before `session_create()` so early failures preserve original errors instead of masking with timer variable errors.
 - `src/butlers/core/spawner.py::trigger` should fail fast when `trigger_source=="trigger"` and the per-butler lock is already held, preventing runtime self-invocation deadlocks (`trigger` tool calling back into the same spawner while a session is active).
 
@@ -460,6 +461,10 @@ make test-qg
 ### Sessions summary contract
 - `src/butlers/daemon.py` core MCP registration should include `sessions_summary`; dashboard cost fan-out relies on declared tool metadata and will log `"Tool 'sessions_summary' not listed"` warnings if not advertised.
 - `src/butlers/core/sessions.py::sessions_summary` response payload should include `period`, and unsupported periods must raise `ValueError` with an `"Invalid period ..."` message.
+
+### Liveness reporter 404 contract
+- `src/butlers/daemon.py::_liveness_reporter_loop` must treat heartbeat endpoint `404 Not Found` as persistent misconfiguration (wrong host/port/path), log a single warning, and stop the reporter loop instead of retrying indefinitely with traceback spam.
+- Regression coverage lives in `tests/daemon/test_liveness_reporter.py::test_404_disables_reporter_without_retries`.
 
 ### MCP client lifecycle hotspot
 - `roster/switchboard/tools/routing/route.py::_call_butler_tool` currently opens a new `fastmcp.Client` (`async with`) per routed tool call, which can generate high `/sse` + `ListToolsRequest` log volume under heartbeat fanout.
