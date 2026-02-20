@@ -162,6 +162,18 @@ async def test_full_adapter_invoke():
     assert usage is None
 
 
+def test_runtime_adapter_default_create_worker_returns_self():
+    """RuntimeAdapter.create_worker() defaults to returning self."""
+    adapter = FullAdapter()
+    assert adapter.create_worker() is adapter
+
+
+async def test_runtime_adapter_default_reset_is_noop():
+    """RuntimeAdapter.reset() default implementation is a no-op."""
+    adapter = FullAdapter()
+    await adapter.reset()
+
+
 def test_full_adapter_build_config_file(tmp_path: Path):
     """build_config_file() returns a Path."""
     adapter = FullAdapter()
@@ -256,6 +268,26 @@ def test_claude_code_adapter_build_config_file(tmp_path: Path):
     assert config_path.exists()
     data = json.loads(config_path.read_text())
     assert data["mcpServers"]["my-butler"]["url"] == "http://localhost:9100/sse"
+
+
+def test_claude_code_adapter_create_worker_preserves_constructor_args(tmp_path: Path):
+    """create_worker() returns a new adapter with identical configuration."""
+
+    async def _fake_query(*args, **kwargs):  # pragma: no cover - not invoked
+        yield None
+
+    adapter = ClaudeCodeAdapter(
+        sdk_query=_fake_query,
+        butler_name="switchboard",
+        log_root=tmp_path,
+    )
+
+    worker = adapter.create_worker()
+    assert worker is not adapter
+    assert isinstance(worker, ClaudeCodeAdapter)
+    assert worker._sdk_query is _fake_query
+    assert worker._butler_name == "switchboard"
+    assert worker._log_root == tmp_path
 
 
 def test_claude_code_adapter_parse_system_prompt_file(tmp_path: Path):

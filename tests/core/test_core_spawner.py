@@ -70,6 +70,7 @@ class MockAdapter(RuntimeAdapter):
         self._usage = usage
         self.calls: list[dict[str, Any]] = []
         self._call_count = 0
+        self.reset_calls = 0
 
     @property
     def binary_name(self) -> str:
@@ -103,6 +104,9 @@ class MockAdapter(RuntimeAdapter):
         if self._error:
             raise RuntimeError(self._error)
         return self._result_text, list(self._tool_calls), self._usage
+
+    async def reset(self) -> None:
+        self.reset_calls += 1
 
     def build_config_file(
         self,
@@ -177,6 +181,88 @@ class TrackingMockAdapter(MockAdapter):
         return f"result-{prompt}", [], None
 
 
+class WorkerFactoryMockAdapter(RuntimeAdapter):
+    """Adapter that produces a fresh worker instance for each invocation."""
+
+    def __init__(self) -> None:
+        self.created_worker_ids: list[int] = []
+        self.invoked_worker_ids: list[int] = []
+        self._next_worker_id = 0
+
+    @property
+    def binary_name(self) -> str:
+        return "worker-factory-mock"
+
+    def create_worker(self) -> RuntimeAdapter:
+        self._next_worker_id += 1
+        worker_id = self._next_worker_id
+        self.created_worker_ids.append(worker_id)
+        return _WorkerAdapter(worker_id=worker_id, factory=self)
+
+    async def invoke(
+        self,
+        prompt: str,
+        system_prompt: str,
+        mcp_servers: dict[str, Any],
+        env: dict[str, str],
+        max_turns: int = 20,
+        model: str | None = None,
+        cwd: Path | None = None,
+        timeout: int | None = None,
+    ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+        raise AssertionError("Spawner should invoke worker adapters, not factory adapter")
+
+    def build_config_file(
+        self,
+        mcp_servers: dict[str, Any],
+        tmp_dir: Path,
+    ) -> Path:
+        config_path = tmp_dir / "mock_factory_config.json"
+        config_path.write_text(json.dumps({"mcpServers": mcp_servers}))
+        return config_path
+
+    def parse_system_prompt_file(self, config_dir: Path) -> str:
+        return ""
+
+
+class _WorkerAdapter(RuntimeAdapter):
+    """Concrete worker adapter emitted by WorkerFactoryMockAdapter."""
+
+    def __init__(self, worker_id: int, factory: WorkerFactoryMockAdapter) -> None:
+        self._worker_id = worker_id
+        self._factory = factory
+
+    @property
+    def binary_name(self) -> str:
+        return "worker-mock"
+
+    async def invoke(
+        self,
+        prompt: str,
+        system_prompt: str,
+        mcp_servers: dict[str, Any],
+        env: dict[str, str],
+        max_turns: int = 20,
+        model: str | None = None,
+        cwd: Path | None = None,
+        timeout: int | None = None,
+    ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+        self._factory.invoked_worker_ids.append(self._worker_id)
+        return f"worker-{self._worker_id}:{prompt}", [], None
+
+    def build_config_file(
+        self,
+        mcp_servers: dict[str, Any],
+        tmp_dir: Path,
+    ) -> Path:
+        config_path = tmp_dir / "mock_worker_config.json"
+        config_path.write_text(json.dumps({"mcpServers": mcp_servers}))
+        return config_path
+
+    def parse_system_prompt_file(self, config_dir: Path) -> str:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -193,11 +279,19 @@ def _make_config(
     modules: dict[str, dict] | None = None,
     model: str | None | object = _SENTINEL,
     max_concurrent_sessions: int = 1,
+    max_queued_sessions: int = 100,
 ) -> ButlerConfig:
     if model is not _SENTINEL:
-        runtime = RuntimeConfig(model=model, max_concurrent_sessions=max_concurrent_sessions)
+        runtime = RuntimeConfig(
+            model=model,
+            max_concurrent_sessions=max_concurrent_sessions,
+            max_queued_sessions=max_queued_sessions,
+        )
     else:
-        runtime = RuntimeConfig(max_concurrent_sessions=max_concurrent_sessions)
+        runtime = RuntimeConfig(
+            max_concurrent_sessions=max_concurrent_sessions,
+            max_queued_sessions=max_queued_sessions,
+        )
     return ButlerConfig(
         name=name,
         port=port,
@@ -311,6 +405,7 @@ class TestSpawnerInvocation:
         assert "adapter connection failed" in result.error
         assert result.output is None
         assert result.duration_ms >= 0
+        assert adapter.reset_calls == 1
 
     async def test_duration_measured(self, tmp_path: Path):
         config_dir = tmp_path / "config"
@@ -326,6 +421,41 @@ class TestSpawnerInvocation:
 
         result = await spawner.trigger("slow", "tick")
         assert result.duration_ms >= 40  # at least ~50ms sleep
+
+    async def test_runtime_not_reset_when_failure_before_invoke(self, tmp_path: Path):
+        """reset() is skipped when the exception occurs before runtime invocation."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+
+        adapter = MockAdapter()
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        with patch("butlers.core.spawner.read_system_prompt", side_effect=RuntimeError("boom")):
+            result = await spawner.trigger("hi", "tick")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "RuntimeError: boom" in result.error
+        assert adapter.calls == []
+        assert adapter.reset_calls == 0
+
+    async def test_runtime_worker_factory_used_per_trigger(self, tmp_path: Path):
+        """Spawner should invoke worker adapters returned by create_worker()."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(max_concurrent_sessions=2)
+
+        adapter = WorkerFactoryMockAdapter()
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        first = await spawner.trigger("first", "tick")
+        second = await spawner.trigger("second", "tick")
+
+        assert first.success is True
+        assert second.success is True
+        assert adapter.created_worker_ids == [1, 2]
+        assert adapter.invoked_worker_ids == [1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -797,6 +927,35 @@ class TestSemaphoreConcurrencyPool:
             assert spawner._session_semaphore._value == n, (
                 f"Expected semaphore value {n}, got {spawner._session_semaphore._value}"
             )
+
+    async def test_queue_backpressure_rejects_when_waiters_at_limit(self, tmp_path: Path):
+        """New triggers are rejected once max_queued_sessions is reached."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config(max_concurrent_sessions=1, max_queued_sessions=1)
+
+        adapter = MockAdapter(result_text="ok")
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+
+        # Occupy the only active slot so the next trigger becomes a waiter.
+        await spawner._session_semaphore.acquire()
+        try:
+            first_waiter = asyncio.create_task(spawner.trigger("queued-1", "tick"))
+            for _ in range(50):
+                waiters = len(getattr(spawner._session_semaphore, "_waiters", ()) or ())
+                if waiters == 1:
+                    break
+                await asyncio.sleep(0.01)
+
+            rejected = await spawner.trigger("queued-2", "tick")
+            assert rejected.success is False
+            assert rejected.error is not None
+            assert "spawner queue is full" in rejected.error
+        finally:
+            spawner._session_semaphore.release()
+
+        first_result = await first_waiter
+        assert first_result.success is True
 
 
 # ---------------------------------------------------------------------------

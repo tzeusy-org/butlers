@@ -52,6 +52,16 @@ def test_codex_adapter_with_custom_binary():
     assert adapter._get_binary() == "/usr/local/bin/codex"
 
 
+def test_codex_adapter_create_worker_preserves_binary():
+    """create_worker() returns a distinct adapter with the same binary config."""
+    adapter = CodexAdapter(codex_binary="/usr/local/bin/codex")
+    worker = adapter.create_worker()
+
+    assert worker is not adapter
+    assert isinstance(worker, CodexAdapter)
+    assert worker._codex_binary == "/usr/local/bin/codex"
+
+
 # ---------------------------------------------------------------------------
 # _find_codex_binary tests
 # ---------------------------------------------------------------------------
