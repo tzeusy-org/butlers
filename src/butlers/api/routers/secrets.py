@@ -43,6 +43,7 @@ from butlers.credential_store import CredentialStore
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/butlers", tags=["butlers", "secrets"])
+_SHARED_SECRETS_TARGET = "shared"
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -63,13 +64,23 @@ def _credential_store_for(db: DatabaseManager, butler_name: str) -> CredentialSt
     HTTPException(503)
         If the butler's database pool is not available.
     """
-    try:
-        pool = db.pool(butler_name)
-    except KeyError:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Butler '{butler_name}' database is not available",
-        )
+    normalized_name = butler_name.strip().lower()
+    if normalized_name == _SHARED_SECRETS_TARGET:
+        try:
+            pool = db.credential_shared_pool()
+        except KeyError:
+            raise HTTPException(
+                status_code=503,
+                detail="Shared credential database is not available",
+            )
+    else:
+        try:
+            pool = db.pool(butler_name)
+        except KeyError:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Butler '{butler_name}' database is not available",
+            )
     return CredentialStore(pool)
 
 

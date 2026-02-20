@@ -187,6 +187,48 @@ class TestListSecrets:
 
         assert resp.status_code == 503
 
+    async def test_shared_target_uses_shared_credential_pool(self):
+        """The reserved `shared` target must resolve via credential_shared_pool()."""
+        mock_pool = MagicMock()
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.return_value = mock_pool
+
+        mock_store = AsyncMock()
+        mock_store.list_secrets.return_value = []
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        with patch(
+            "butlers.api.routers.secrets.CredentialStore",
+            return_value=mock_store,
+        ) as store_ctor:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get("/api/butlers/shared/secrets")
+
+        assert resp.status_code == 200
+        mock_db.credential_shared_pool.assert_called_once_with()
+        mock_db.pool.assert_not_called()
+        store_ctor.assert_called_once_with(mock_pool)
+
+    async def test_shared_target_without_shared_pool_returns_503(self):
+        """`shared` target should return 503 when shared credential pool is unavailable."""
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.credential_shared_pool.side_effect = KeyError("no shared pool")
+
+        app = create_app()
+        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/shared/secrets")
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Shared credential database is not available"
+
     async def test_metadata_fields_returned(self):
         """Response entries contain category, description, is_sensitive, expires_at."""
         meta = _make_metadata(

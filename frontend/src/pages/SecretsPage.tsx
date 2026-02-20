@@ -40,6 +40,23 @@ import {
   useUpsertGoogleCredentials,
 } from "@/hooks/use-secrets";
 
+export const SHARED_SECRETS_TARGET = "shared";
+
+export function buildSecretsTargets(butlerNames: string[]): string[] {
+  const sharedTarget = SHARED_SECRETS_TARGET.toLowerCase();
+  const nonSharedButlers = butlerNames.filter(
+    (name) => name.trim().toLowerCase() !== sharedTarget,
+  );
+  return [SHARED_SECRETS_TARGET, ...nonSharedButlers];
+}
+
+function formatSecretsTargetLabel(target: string): string {
+  if (target.trim().toLowerCase() === SHARED_SECRETS_TARGET) {
+    return SHARED_SECRETS_TARGET;
+  }
+  return target;
+}
+
 // ---------------------------------------------------------------------------
 // Health badge helper
 // ---------------------------------------------------------------------------
@@ -399,7 +416,7 @@ function GoogleOAuthSection() {
 }
 
 // ---------------------------------------------------------------------------
-// Generic secrets section (per-butler)
+// Generic secrets section (shared + per-butler)
 // ---------------------------------------------------------------------------
 
 function GenericSecretsSection() {
@@ -411,16 +428,17 @@ function GenericSecretsSection() {
 
   const { data: butlersResponse, isLoading: butlersLoading } = useButlers();
   const butlerNames = butlersResponse?.data?.map((b) => b.name) ?? [];
+  const secretTargets = buildSecretsTargets(butlerNames);
 
-  const [selectedButler, setSelectedButler] = useState<string>("");
+  const [selectedTarget, setSelectedTarget] = useState<string>("");
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [addPrefill, setAddPrefill] = useState<SecretPrefill | null>(null);
   const [editSecret, setEditSecret] = useState<SecretEntry | null>(null);
 
-  // Pick first butler by default once loaded
-  const activeButler = selectedButler || (butlerNames[0] ?? "");
+  // Pick first available target by default once loaded.
+  const activeTarget = selectedTarget || (secretTargets[0] ?? "");
 
-  const { data: secretsResponse, isLoading, isError } = useSecrets(activeButler);
+  const { data: secretsResponse, isLoading, isError } = useSecrets(activeTarget);
   const secrets = secretsResponse?.data ?? [];
 
   function handleEdit(secret: SecretEntry) {
@@ -440,25 +458,25 @@ function GenericSecretsSection() {
             <CardTitle>Secrets</CardTitle>
             <CardDescription>
               Known secret requirements plus resolved values, grouped by category.
-              Add missing keys or create local overrides for inherited keys.
+              Manage shared defaults and local per-butler overrides.
             </CardDescription>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {/* Butler selector */}
             {butlersLoading ? (
               <Skeleton className="h-9 w-36" />
-            ) : butlerNames.length > 1 ? (
+            ) : secretTargets.length > 1 ? (
               <Select
-                value={activeButler}
-                onValueChange={setSelectedButler}
+                value={activeTarget}
+                onValueChange={setSelectedTarget}
               >
                 <SelectTrigger className="w-36">
-                  <SelectValue placeholder="Select butler" />
+                  <SelectValue placeholder="Select target" />
                 </SelectTrigger>
                 <SelectContent>
-                  {butlerNames.map((name) => (
+                  {secretTargets.map((name) => (
                     <SelectItem key={name} value={name}>
-                      {name}
+                      {formatSecretsTargetLabel(name)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -470,7 +488,7 @@ function GenericSecretsSection() {
                 setAddPrefill(null);
                 setAddModalOpen(true);
               }}
-              disabled={!activeButler}
+              disabled={!activeTarget}
             >
               Add Secret
             </Button>
@@ -478,13 +496,13 @@ function GenericSecretsSection() {
         </div>
       </CardHeader>
       <CardContent>
-        {!activeButler ? (
+        {!activeTarget ? (
           <p className="text-sm text-muted-foreground">
-            No butlers available. Start a butler to manage its secrets.
+            No secret target available. Check dashboard DB configuration.
           </p>
         ) : (
           <SecretsTable
-            butlerName={activeButler}
+            butlerName={activeTarget}
             secrets={secrets}
             isLoading={isLoading}
             isError={isError}
@@ -496,7 +514,7 @@ function GenericSecretsSection() {
 
       {/* Add modal */}
       <SecretFormModal
-        butlerName={activeButler}
+        butlerName={activeTarget}
         prefill={addPrefill}
         open={addModalOpen}
         onOpenChange={(open) => {
@@ -507,7 +525,7 @@ function GenericSecretsSection() {
 
       {/* Edit modal */}
       <SecretFormModal
-        butlerName={activeButler}
+        butlerName={activeTarget}
         editSecret={editSecret}
         open={!!editSecret}
         onOpenChange={(open) => {
