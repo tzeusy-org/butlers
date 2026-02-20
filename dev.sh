@@ -539,17 +539,26 @@ _has_google_creds() {
   # Mirror the same DB set used by the OAuth gate so pre-flight and gate agree.
   local db_host db_port db_user db_pass
   local db_name
-  local db_candidates=()
+  local shared_db_candidates=()
+  local legacy_db_candidates=()
   db_host="${POSTGRES_HOST:-localhost}"
   db_port="${POSTGRES_PORT:-54320}"
   db_user="${POSTGRES_USER:-butlers}"
   db_pass="${POSTGRES_PASSWORD:-butlers}"
-  if [ -n "${CONNECTOR_BUTLER_DB_NAME:-}" ]; then
-    db_candidates+=("${CONNECTOR_BUTLER_DB_NAME}")
+  if [ -n "${BUTLER_SHARED_DB_NAME:-}" ]; then
+    shared_db_candidates+=("${BUTLER_SHARED_DB_NAME}")
   fi
-  db_candidates+=(
+  shared_db_candidates+=(
+    "butler_shared"
+    "butlers_shared"
+  )
+  if [ -n "${CONNECTOR_BUTLER_DB_NAME:-}" ]; then
+    legacy_db_candidates+=("${CONNECTOR_BUTLER_DB_NAME}")
+  fi
+  legacy_db_candidates+=(
     "butler_general"
     "butler_health"
+    "butler_heartbeat"
     "butler_messenger"
     "butler_relationship"
     "butler_switchboard"
@@ -557,7 +566,25 @@ _has_google_creds() {
   )
   if command -v psql >/dev/null 2>&1; then
     local db_count
-    for db_name in "${db_candidates[@]}"; do
+    # Shared credential store (primary path): butler_secrets table
+    for db_name in "${shared_db_candidates[@]}"; do
+      db_count=$(
+        PGPASSWORD="$db_pass" psql \
+          -h "$db_host" \
+          -p "$db_port" \
+          -U "$db_user" \
+          -d "$db_name" \
+          -tAc \
+          "SELECT COUNT(*) FROM butler_secrets WHERE secret_key='GOOGLE_REFRESH_TOKEN' AND secret_value IS NOT NULL AND length(secret_value) > 0;" \
+          2>/dev/null || echo "0"
+      )
+      if [ "${db_count:-0}" -gt 0 ] 2>/dev/null; then
+        return 0
+      fi
+    done
+
+    # Legacy store fallback: google_oauth_credentials table
+    for db_name in "${legacy_db_candidates[@]}"; do
       db_count=$(
         PGPASSWORD="$db_pass" psql \
           -h "$db_host" \
@@ -578,18 +605,31 @@ _has_google_creds() {
 }
 
 # ── DB-based Google credential check ──────────────────────────────────────
-# Poll the google_oauth_credentials table for a non-null refresh_token.
-# Checks all known butler databases in order. Returns 0 on success.
+# Poll for a non-null Google refresh token.
+# Checks the shared butler_secrets store first, then the legacy
+# google_oauth_credentials table in known per-butler DBs. Returns 0 on success.
 
 _poll_db_for_refresh_token() {
+  # Shared credential DBs (CredentialStore path, default: butler_shared).
+  local shared_dbs=()
+  if [ -n "${BUTLER_SHARED_DB_NAME:-}" ]; then
+    shared_dbs+=("${BUTLER_SHARED_DB_NAME}")
+  fi
+  shared_dbs+=(
+    "butler_shared"
+    "butlers_shared"
+  )
+
   # Known butler databases in alphabetical order (matches roster discovery order).
-  # The dashboard API stores OAuth credentials to the first registered butler's DB.
+  # Legacy fallback path for older deployments still using google_oauth_credentials.
   local dbs=(
     "butler_general"
     "butler_health"
+    "butler_heartbeat"
     "butler_messenger"
     "butler_relationship"
     "butler_switchboard"
+    "butlers"
   )
 
   local psql_bin
@@ -601,6 +641,31 @@ _poll_db_for_refresh_token() {
     return 1
   fi
 
+  for db in "${shared_dbs[@]}"; do
+    local shared_result
+    shared_result=$(
+      PGPASSWORD="${POSTGRES_PASSWORD:-butlers}" \
+      psql \
+        -h "${POSTGRES_HOST}" \
+        -p "${POSTGRES_PORT}" \
+        -U "${POSTGRES_USER}" \
+        -d "$db" \
+        -t -c \
+        "SELECT secret_value FROM butler_secrets
+         WHERE secret_key = 'GOOGLE_REFRESH_TOKEN'
+           AND secret_value IS NOT NULL
+           AND secret_value != ''
+         LIMIT 1" \
+        2>/dev/null || echo ""
+    )
+    shared_result="${shared_result#"${shared_result%%[![:space:]]*}"}"
+    shared_result="${shared_result%"${shared_result##*[![:space:]]}"}"
+    if [ -n "$shared_result" ]; then
+      return 0
+    fi
+  done
+
+  # Legacy fallback: per-butler google_oauth_credentials table
   for db in "${dbs[@]}"; do
     local result
     result=$(
@@ -629,13 +694,16 @@ _poll_db_for_refresh_token() {
   return 1
 }
 
-# HTTP fallback: use /api/oauth/status endpoint if psql is unavailable
+# HTTP fallback: use dashboard credential status endpoint if psql is unavailable
 _poll_oauth_via_http() {
-  local status_url="http://localhost:${DASHBOARD_PORT}/api/oauth/status"
-  local state
-  state=$(curl -sf "$status_url" 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('state',''))" 2>/dev/null || echo "")
-  # OAuthCredentialState.OK is the value when credentials are present
-  [ "$state" = "ok" ]
+  local status_url="http://localhost:${DASHBOARD_PORT}/api/oauth/google/credentials"
+  local refresh_present
+  refresh_present=$(
+    curl -sf "$status_url" 2>/dev/null | python3 -c \
+      "import sys,json; d=json.load(sys.stdin); print('1' if d.get('refresh_token_present') else '')" \
+      2>/dev/null || echo ""
+  )
+  [ "$refresh_present" = "1" ]
 }
 
 # Pick the DB name the Gmail connector should use for DB-first OAuth credential lookup.

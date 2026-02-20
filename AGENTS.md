@@ -143,6 +143,10 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - Build the Gmail pane startup command at Layer 3 launch time (after OAuth gate), not once during early preflight; otherwise reruns can keep showing the stale "waiting for OAuth" pane even when credentials already exist.
 - For pane logs, prefer wrapping the launched command with stdout/stderr tee capture (`_wrap_cmd_for_log`) instead of raw `tmux pipe-pane`, so log files contain process output rather than interactive shell prompt/control-sequence noise.
 
+### dev.sh OAuth shared-store mismatch guardrail
+- Layer 2 gate (`_poll_db_for_refresh_token`) currently polls legacy `google_oauth_credentials` rows in per-butler DBs, while dashboard OAuth writes to `butler_secrets` via `CredentialStore` on `BUTLER_SHARED_DB_NAME` (default `butler_shared`).
+- In environments using shared-store writes only, Layer 2 can wait forever despite completed OAuth unless the gate also checks `butler_secrets` in the shared DB (and/or uses `/api/oauth/status`).
+
 ### Code Layout
 - `src/butlers/core/` — state.py, scheduler.py, sessions.py, spawner.py, telemetry.py, telemetry_spans.py
 - `src/butlers/modules/` — base.py (ABC), registry.py, telegram.py, email.py
