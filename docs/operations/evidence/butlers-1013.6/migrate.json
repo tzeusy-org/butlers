@@ -1,0 +1,66 @@
+{
+  "command": "migrate",
+  "details": {
+    "migrations": [
+      {
+        "chain": "core",
+        "expected_revision": "core_001",
+        "schema": "general",
+        "status": "ok"
+      },
+      {
+        "chain": "core",
+        "expected_revision": "core_001",
+        "schema": "health",
+        "status": "ok"
+      },
+      {
+        "chain": "core",
+        "expected_revision": "core_001",
+        "schema": "messenger",
+        "status": "ok"
+      },
+      {
+        "chain": "core",
+        "expected_revision": "core_001",
+        "schema": "relationship",
+        "status": "ok"
+      },
+      {
+        "chain": "core",
+        "expected_revision": "core_001",
+        "schema": "switchboard",
+        "status": "ok"
+      },
+      {
+        "chain": "memory",
+        "expected_revision": "mem_001",
+        "schema": "general",
+        "status": "ok"
+      },
+      {
+        "chain": "memory",
+        "expected_revision": "mem_001",
+        "schema": "health",
+        "status": "ok"
+      },
+      {
+        "chain": "memory",
+        "expected_revision": "mem_001",
+        "schema": "relationship",
+        "status": "ok"
+      },
+      {
+        "chain": "memory",
+        "expected_revision": "mem_001",
+        "schema": "switchboard",
+        "status": "ok"
+      }
+    ]
+  },
+  "error": null,
+  "generated_at": "2026-02-20T16:59:11.138922Z",
+  "status": "ok",
+  "target_db": "butlers",
+  "target_env_var": "BUTLERS_DATABASE_URL"
+}

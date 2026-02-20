@@ -1,0 +1,352 @@
+{
+  "command": "validate",
+  "details": {
+    "validation": {
+      "missing": {
+        "revisions": [],
+        "schemas": [],
+        "tables": []
+      },
+      "revision_checks": [
+        {
+          "expected_revision": "core_001",
+          "present": true,
+          "schema": "general",
+          "versions": [
+            "core_001",
+            "mem_001"
+          ]
+        },
+        {
+          "expected_revision": "core_001",
+          "present": true,
+          "schema": "health",
+          "versions": [
+            "core_001",
+            "mem_001"
+          ]
+        },
+        {
+          "expected_revision": "core_001",
+          "present": true,
+          "schema": "messenger",
+          "versions": [
+            "core_001"
+          ]
+        },
+        {
+          "expected_revision": "core_001",
+          "present": true,
+          "schema": "relationship",
+          "versions": [
+            "core_001",
+            "mem_001"
+          ]
+        },
+        {
+          "expected_revision": "core_001",
+          "present": true,
+          "schema": "switchboard",
+          "versions": [
+            "core_001",
+            "mem_001"
+          ]
+        },
+        {
+          "expected_revision": "mem_001",
+          "present": true,
+          "schema": "general",
+          "versions": [
+            "core_001",
+            "mem_001"
+          ]
+        },
+        {
+          "expected_revision": "mem_001",
+          "present": true,
+          "schema": "health",
+          "versions": [
+            "core_001",
+            "mem_001"
+          ]
+        },
+        {
+          "expected_revision": "mem_001",
+          "present": true,
+          "schema": "relationship",
+          "versions": [
+            "core_001",
+            "mem_001"
+          ]
+        },
+        {
+          "expected_revision": "mem_001",
+          "present": true,
+          "schema": "switchboard",
+          "versions": [
+            "core_001",
+            "mem_001"
+          ]
+        }
+      ],
+      "schema_results": [
+        {
+          "exists": true,
+          "schema": "shared"
+        },
+        {
+          "exists": true,
+          "schema": "general"
+        },
+        {
+          "exists": true,
+          "schema": "health"
+        },
+        {
+          "exists": true,
+          "schema": "messenger"
+        },
+        {
+          "exists": true,
+          "schema": "relationship"
+        },
+        {
+          "exists": true,
+          "schema": "switchboard"
+        }
+      ],
+      "status": "ok",
+      "summary": {
+        "missing_revisions": 0,
+        "missing_schemas": 0,
+        "missing_tables": 0,
+        "revisions_checked": 9,
+        "schemas_checked": 6,
+        "tables_checked": 36
+      },
+      "table_checks": [
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "general",
+          "table": "state"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "general",
+          "table": "scheduled_tasks"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "general",
+          "table": "sessions"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "general",
+          "table": "route_inbox"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "health",
+          "table": "state"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "health",
+          "table": "scheduled_tasks"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "health",
+          "table": "sessions"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "health",
+          "table": "route_inbox"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "messenger",
+          "table": "state"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "messenger",
+          "table": "scheduled_tasks"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "messenger",
+          "table": "sessions"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "messenger",
+          "table": "route_inbox"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "relationship",
+          "table": "state"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "relationship",
+          "table": "scheduled_tasks"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "relationship",
+          "table": "sessions"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "relationship",
+          "table": "route_inbox"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "switchboard",
+          "table": "state"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "switchboard",
+          "table": "scheduled_tasks"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "switchboard",
+          "table": "sessions"
+        },
+        {
+          "exists": true,
+          "group": "core",
+          "schema": "switchboard",
+          "table": "route_inbox"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "general",
+          "table": "episodes"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "general",
+          "table": "facts"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "general",
+          "table": "rules"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "general",
+          "table": "memory_links"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "health",
+          "table": "episodes"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "health",
+          "table": "facts"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "health",
+          "table": "rules"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "health",
+          "table": "memory_links"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "relationship",
+          "table": "episodes"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "relationship",
+          "table": "facts"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "relationship",
+          "table": "rules"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "relationship",
+          "table": "memory_links"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "switchboard",
+          "table": "episodes"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "switchboard",
+          "table": "facts"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "switchboard",
+          "table": "rules"
+        },
+        {
+          "exists": true,
+          "group": "memory",
+          "schema": "switchboard",
+          "table": "memory_links"
+        }
+      ]
+    }
+  },
+  "error": null,
+  "generated_at": "2026-02-20T16:59:11.691746Z",
+  "status": "ok",
+  "target_db": "butlers",
+  "target_env_var": "BUTLERS_DATABASE_URL"
+}
