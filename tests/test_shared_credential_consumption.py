@@ -156,15 +156,15 @@ class TestGoogleCredentialsFromJsonForCalendar:
 
 
 # ---------------------------------------------------------------------------
-# Gmail connector env var resolution using GOOGLE_OAUTH_* (post-OAuth bootstrap)
+# Gmail connector config consumes DB-injected credentials
 # ---------------------------------------------------------------------------
 
 
 class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
-    """Verify Gmail connector from_env() accepts GOOGLE_OAUTH_* vars from bootstrap."""
+    """Verify Gmail connector config uses explicit injected credentials."""
 
-    def test_gmail_connector_config_loads_google_oauth_prefix_vars(self) -> None:
-        """GmailConnectorConfig.from_env() accepts GOOGLE_OAUTH_* credential vars."""
+    def test_gmail_connector_config_uses_injected_credentials(self) -> None:
+        """GmailConnectorConfig.from_env() uses explicitly injected credential values."""
         from butlers.connectors.gmail import GmailConnectorConfig
 
         required_non_creds = {
@@ -172,21 +172,24 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
             "CONNECTOR_ENDPOINT_IDENTITY": "gmail:user:test@gmail.com",
             "CONNECTOR_CURSOR_PATH": "/tmp/test_cursor",
         }
-        # Use GOOGLE_OAUTH_* as would be set after OAuth bootstrap
         env = {
             **required_non_creds,
             **_OAUTH_BOOTSTRAP_ENV,
         }
 
         with mock.patch.dict("os.environ", env, clear=True):
-            config = GmailConnectorConfig.from_env()
+            config = GmailConnectorConfig.from_env(
+                gmail_client_id=_SHARED_CREDS["client_id"],
+                gmail_client_secret=_SHARED_CREDS["client_secret"],
+                gmail_refresh_token=_SHARED_CREDS["refresh_token"],
+            )
 
         assert config.gmail_client_id == _SHARED_CREDS["client_id"]
         assert config.gmail_client_secret == _SHARED_CREDS["client_secret"]
         assert config.gmail_refresh_token == _SHARED_CREDS["refresh_token"]
 
-    def test_gmail_connector_config_rejects_legacy_gmail_prefix_vars(self) -> None:
-        """GmailConnectorConfig.from_env() rejects legacy GMAIL_* credential vars."""
+    def test_gmail_connector_config_ignores_env_credential_vars(self) -> None:
+        """Injected credentials take precedence over any env credential values."""
         from butlers.connectors.gmail import GmailConnectorConfig
 
         required_non_creds = {
@@ -197,14 +200,21 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
         env = {
             **required_non_creds,
             **_LEGACY_GMAIL_ENV,
+            **_OAUTH_BOOTSTRAP_ENV,
         }
 
         with mock.patch.dict("os.environ", env, clear=True):
-            with pytest.raises(ValueError, match="Google OAuth credentials missing"):
-                GmailConnectorConfig.from_env()
+            config = GmailConnectorConfig.from_env(
+                gmail_client_id="db-client-id",
+                gmail_client_secret="db-client-secret",
+                gmail_refresh_token="db-refresh-token",
+            )
+        assert config.gmail_client_id == "db-client-id"
+        assert config.gmail_client_secret == "db-client-secret"
+        assert config.gmail_refresh_token == "db-refresh-token"
 
-    def test_gmail_connector_config_fails_without_credentials(self) -> None:
-        """GmailConnectorConfig.from_env() raises ValueError when credentials absent."""
+    def test_gmail_connector_config_fails_with_empty_injected_credentials(self) -> None:
+        """GmailConnectorConfig.from_env() raises when injected credentials are empty."""
         from butlers.connectors.gmail import GmailConnectorConfig
 
         required_non_creds = {
@@ -214,8 +224,12 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
         }
 
         with mock.patch.dict("os.environ", required_non_creds, clear=True):
-            with pytest.raises(ValueError, match="Google OAuth credentials missing"):
-                GmailConnectorConfig.from_env()
+            with pytest.raises(ValueError, match="DB-resolved Gmail credentials missing"):
+                GmailConnectorConfig.from_env(
+                    gmail_client_id="",
+                    gmail_client_secret="client-secret",
+                    gmail_refresh_token="refresh-token",
+                )
 
 
 # ---------------------------------------------------------------------------
