@@ -157,13 +157,22 @@ def _make_mock_client(*, ping_ok: bool = True) -> MagicMock:
     return client
 
 
-def _make_status_result(modules: list[str], health: str = "ok") -> MagicMock:
+def _make_status_result(
+    modules: list[str] | dict[str, dict[str, str]],
+    health: str = "ok",
+) -> MagicMock:
     """Create a mock CallToolResult from the status() MCP tool."""
+    modules_payload: list[str] | dict[str, dict[str, str]]
+    if isinstance(modules, list):
+        modules_payload = {name: {"status": "active"} for name in modules}
+    else:
+        modules_payload = modules
+
     data = {
         "name": "test",
         "description": "Test butler",
         "port": 40101,
-        "modules": modules,
+        "modules": modules_payload,
         "health": health,
         "uptime_seconds": 123.4,
     }

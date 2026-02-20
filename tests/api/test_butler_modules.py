@@ -77,13 +77,24 @@ def _make_roster_no_modules(tmp_path: Path, name: str = "bare", port: int = 4010
     return butler_dir
 
 
-def _mock_status_result(modules: list[str], health: str = "ok") -> MagicMock:
+def _mock_status_result(
+    modules: list[str] | dict[str, dict[str, str]],
+    health: str = "ok",
+    *,
+    canonicalize_module_list: bool = True,
+) -> MagicMock:
     """Create a mock CallToolResult from the status() MCP tool."""
+    modules_payload: list[str] | dict[str, dict[str, str]]
+    if canonicalize_module_list and isinstance(modules, list):
+        modules_payload = {name: {"status": "active"} for name in modules}
+    else:
+        modules_payload = modules
+
     data = {
         "name": "test",
         "description": "Test butler",
         "port": 40101,
-        "modules": modules,
+        "modules": modules_payload,
         "health": health,
         "uptime_seconds": 123.4,
     }
@@ -192,6 +203,22 @@ class TestGetModuleHealthViaMCP:
 
         assert len(modules) == 1
         assert modules[0].status == "unknown"
+
+    async def test_legacy_list_payload_no_longer_marks_modules_active(self):
+        """Legacy list payloads should not be interpreted as active module states."""
+        result = _mock_status_result(
+            ["telegram", "email"],
+            health="ok",
+            canonicalize_module_list=False,
+        )
+        mgr = _mock_mcp_manager_with_status(result)
+
+        modules = await _get_module_health_via_mcp("test", mgr, ["telegram", "email"])
+
+        assert len(modules) == 2
+        for module in modules:
+            assert module.status == "error"
+            assert module.error == "Module configured but not loaded by butler"
 
 
 # ---------------------------------------------------------------------------
