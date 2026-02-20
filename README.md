@@ -83,6 +83,7 @@ LLM CLI instances ── ephemeral, locked-down, reason + act
 - Butlers communicate only via MCP tools through the Switchboard
 - Butler configs are **git-based directories** with personality (`CLAUDE.md`), skills, and config (`butler.toml`)
 - Operator source-of-truth for migration/cutover: `docs/operations/one-db-multi-schema-migration.md`
+- Destructive reset rehearsal workflow: `docs/operations/migration-rewrite-reset-runbook.md`
 
 ### Detailed Architecture
 

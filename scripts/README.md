@@ -94,3 +94,46 @@ python scripts/one_db_data_migration.py rollback \
   --confirm-rollback ROLLBACK \
   --report-path .tmp/migration/rollback.json
 ```
+
+## one_db_migration_reset_workflow.py
+
+Destructive reset and validation workflow for migration rewrite rollout (`butlers-1013.4`).
+
+### What it provides
+
+- Explicit destructive reset steps with confirmation guard (`RESET`)
+- Reset scope options:
+  - `managed-schemas` (drop/recreate `shared` + butler schemas)
+  - `database` (drop/recreate full target DB)
+- Replays rewritten baseline migrations per schema (`core_001`, `mem_001`)
+- SQL-based schema/table/revision matrix validation with JSON artifacts
+
+### Example commands
+
+```bash
+# 1) Precheck destructive reset plan
+python scripts/one_db_migration_reset_workflow.py reset \
+  --scope managed-schemas \
+  --dry-run \
+  --report-path .tmp/migration-rewrite/reset-plan.json
+
+# 2) Execute destructive reset
+python scripts/one_db_migration_reset_workflow.py reset \
+  --scope managed-schemas \
+  --confirm-destructive-reset RESET \
+  --report-path .tmp/migration-rewrite/reset.json
+
+# 3) Replay rewritten migrations
+python scripts/one_db_migration_reset_workflow.py migrate \
+  --report-path .tmp/migration-rewrite/migrate.json
+
+# 4) Validate schema/table/revision matrix
+python scripts/one_db_migration_reset_workflow.py validate \
+  --report-path .tmp/migration-rewrite/validate.json
+
+# Optional end-to-end command
+python scripts/one_db_migration_reset_workflow.py run \
+  --scope managed-schemas \
+  --confirm-destructive-reset RESET \
+  --report-path .tmp/migration-rewrite/run.json
+```

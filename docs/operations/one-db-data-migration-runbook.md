@@ -6,6 +6,10 @@ Last updated: 2026-02-20
 This runbook is the executable procedure for backfill, parity verification, and
 rollback rehearsal when migrating from legacy multi-DB stores to one-DB multi-schema.
 
+For destructive reset rehearsal of rewritten schema-scoped migrations (drop/recreate +
+replay + schema matrix validation), use
+`docs/operations/migration-rewrite-reset-runbook.md`.
+
 ## 1. Prerequisites
 
 - One-DB target schemas already bootstrapped (`butlers-1003.2`).

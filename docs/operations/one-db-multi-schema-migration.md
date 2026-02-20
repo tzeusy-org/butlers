@@ -306,6 +306,8 @@ Minimum rollback artifacts:
 - Provision role credentials per butler role for realistic ACL testing.
 - Use schema-qualified queries in manual debugging to avoid hidden `search_path`
   assumptions.
+- For migration rewrite rehearsals that require destructive reset, follow
+  `docs/operations/migration-rewrite-reset-runbook.md`.
 
 ### 10.2 CI
 
@@ -318,6 +320,8 @@ Minimum rollback artifacts:
 - Preflight: verify backups, snapshots, and rollback config are ready.
 - Execute staged cutover with explicit go/no-go checkpoints.
 - Keep a post-cutover observation window before legacy decommission.
+- Do not use destructive reset workflow in production without dedicated
+  maintenance/rollback approval.
 
 ## 11. Open Questions
 
