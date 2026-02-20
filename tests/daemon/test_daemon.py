@@ -10,11 +10,14 @@ import logging
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from fastapi import FastAPI
+from fastmcp import FastMCP as RuntimeFastMCP
 from pydantic import BaseModel
 from starlette.requests import ClientDisconnect
+from starlette.testclient import TestClient
 
 from butlers.credentials import CredentialError
 from butlers.daemon import (
@@ -806,12 +809,18 @@ class TestMCPServerStartup:
     """Verify the MCP server is started as a background asyncio task."""
 
     async def test_start_mcp_server_creates_uvicorn_server(self, butler_dir: Path) -> None:
-        """_start_mcp_server should create a uvicorn server with SSE transport."""
+        """_start_mcp_server should build streamable HTTP + SSE routes and start uvicorn."""
         patches = _patch_infra()
 
         mock_mcp = MagicMock()
-        mock_app = MagicMock()
-        mock_mcp.http_app.return_value = mock_app
+        streamable_app = FastAPI()
+        streamable_app.add_api_route(
+            "/mcp", endpoint=lambda: None, methods=["GET", "POST", "DELETE"]
+        )
+        sse_app = FastAPI()
+        sse_app.add_api_route("/sse", endpoint=lambda: None, methods=["GET"])
+        sse_app.mount("/messages", app=FastAPI())
+        mock_mcp.http_app.side_effect = [streamable_app, sse_app]
 
         mock_uvicorn_server = MagicMock()
         mock_uvicorn_server.serve = AsyncMock()
@@ -834,16 +843,25 @@ class TestMCPServerStartup:
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
 
-            # Verify http_app was called with SSE transport
-            mock_mcp.http_app.assert_called_once_with(transport="sse")
+            # Verify both transport variants are wired.
+            assert mock_mcp.http_app.call_args_list == [
+                call(path="/mcp", transport="streamable-http"),
+                call(path="/sse", transport="sse"),
+            ]
 
-            # Verify uvicorn.Config was created with wrapped app and expected parameters
+            # Verify uvicorn.Config was created with wrapped app and expected parameters.
             mock_config_cls.assert_called_once()
             args, kwargs = mock_config_cls.call_args
             assert len(args) == 1
             wrapped_app = args[0]
             assert isinstance(wrapped_app, _McpSseDisconnectGuard)
-            assert wrapped_app._app is mock_app
+            route_map = {route.path: route for route in wrapped_app._app.routes}
+            assert "/mcp" in route_map
+            assert "/sse" in route_map
+            assert "/messages" in route_map
+            assert type(route_map["/messages"]).__name__ == "Mount"
+            assert route_map["/mcp"].methods.issuperset({"GET", "POST", "DELETE"})
+            assert route_map["/sse"].methods.issuperset({"GET"})
             assert wrapped_app._butler_name == "test-butler"
             assert kwargs == {
                 "host": "0.0.0.0",
@@ -876,8 +894,12 @@ class TestMCPServerStartup:
             await asyncio.sleep(999)  # Block indefinitely
 
         mock_mcp = MagicMock()
-        mock_app = MagicMock()
-        mock_mcp.http_app.return_value = mock_app
+        streamable_app = FastAPI()
+        streamable_app.add_api_route("/mcp", endpoint=lambda: None, methods=["GET", "POST"])
+        sse_app = FastAPI()
+        sse_app.add_api_route("/sse", endpoint=lambda: None, methods=["GET"])
+        sse_app.mount("/messages", app=FastAPI())
+        mock_mcp.http_app.side_effect = [streamable_app, sse_app]
 
         mock_uvicorn_server = MagicMock()
         mock_uvicorn_server.serve = mock_serve
@@ -914,6 +936,32 @@ class TestMCPServerStartup:
             await daemon._server_task
         except asyncio.CancelledError:
             pass
+
+    def test_build_mcp_http_app_exposes_routes_and_content_type_behavior(self) -> None:
+        """Combined app keeps SSE routes and serves streamable HTTP at /mcp."""
+        mcp = RuntimeFastMCP("test-butler")
+        app = ButlerDaemon._build_mcp_http_app(mcp, butler_name="test-butler")
+
+        assert isinstance(app, _McpSseDisconnectGuard)
+        route_map = {(type(route).__name__, route.path): route for route in app._app.routes}
+        assert ("Route", "/mcp") in route_map
+        assert ("Route", "/sse") in route_map
+        assert ("Mount", "/messages") in route_map
+        assert route_map[("Route", "/mcp")].methods is None
+        assert route_map[("Route", "/sse")].methods == {"GET", "HEAD"}
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/mcp",
+                headers={
+                    "accept": "application/json, text/event-stream",
+                    "content-type": "text/plain",
+                },
+                content="{}",
+            )
+
+        assert response.status_code == 400
+        assert "Content-Type" in response.text
 
 
 class TestSseDisconnectGuard:
