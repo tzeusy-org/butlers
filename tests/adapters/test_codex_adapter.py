@@ -450,7 +450,7 @@ async def test_invoke_with_tool_calls():
 
 
 async def test_invoke_nonzero_exit():
-    """invoke() handles non-zero exit code."""
+    """invoke() raises on non-zero exit code."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
 
     mock_proc = AsyncMock()
@@ -458,17 +458,13 @@ async def test_invoke_nonzero_exit():
     mock_proc.returncode = 1
 
     with patch(_EXEC, return_value=mock_proc):
-        result_text, tool_calls, usage = await adapter.invoke(
-            prompt="test",
-            system_prompt="",
-            mcp_servers={},
-            env={},
-        )
-
-    assert result_text is not None
-    assert "rate limit" in result_text
-    assert tool_calls == []
-    assert usage is None
+        with pytest.raises(RuntimeError, match="Codex CLI exited with code 1: Error: rate limit"):
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+            )
 
 
 async def test_invoke_no_system_prompt():

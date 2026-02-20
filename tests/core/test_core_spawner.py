@@ -480,6 +480,13 @@ class TestCredentialPassthrough:
             env = await _build_env(config)
             assert env["ANTHROPIC_API_KEY"] == "sk-test-123"
 
+    async def test_path_baseline_included(self):
+        """PATH is passed through so runtime shebangs can resolve binaries."""
+        config = _make_config()
+        with patch.dict(os.environ, {"PATH": "/tmp/node-bin"}, clear=True):
+            env = await _build_env(config)
+            assert env["PATH"] == "/tmp/node-bin"
+
     async def test_required_env_vars_included(self):
         config = _make_config(env_required=["MY_SECRET"])
         with patch.dict(

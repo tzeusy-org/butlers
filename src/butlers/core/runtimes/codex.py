@@ -292,7 +292,13 @@ class CodexAdapter(RuntimeAdapter):
             if stderr:
                 logger.debug("Codex stderr: %s", stderr[:500])
 
-            result_text, tool_calls = _parse_codex_output(stdout, stderr, proc.returncode or 0)
+            returncode = proc.returncode or 0
+            if returncode != 0:
+                error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                logger.error("Codex CLI exited with code %d: %s", returncode, error_detail)
+                raise RuntimeError(f"Codex CLI exited with code {returncode}: {error_detail}")
+
+            result_text, tool_calls = _parse_codex_output(stdout, stderr, returncode)
             return result_text, tool_calls, None
 
         except TimeoutError:
