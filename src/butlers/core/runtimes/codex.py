@@ -32,6 +32,34 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 300
 
 
+def _looks_like_tool_call_event(obj: dict[str, Any]) -> bool:
+    """Return True when an event object appears to encode a tool call."""
+    obj_type = str(obj.get("type", ""))
+    if obj_type in {
+        "command_execution",
+        "tool_use",
+        "function_call",
+        "tool_call",
+        "mcp_tool_call",
+        "mcp_tool_use",
+        "custom_tool_call",
+    }:
+        return True
+
+    # Some Codex event variants omit specific type names but still carry
+    # structured tool metadata as name + args.
+    name = obj.get("name") or obj.get("tool_name") or obj.get("function", {}).get("name")
+    has_args = (
+        "input" in obj
+        or "arguments" in obj
+        or (isinstance(obj.get("function"), dict) and "arguments" in obj.get("function", {}))
+    )
+    if isinstance(name, str) and name.strip() and has_args:
+        return True
+
+    return False
+
+
 def _find_codex_binary() -> str:
     """Locate the codex binary on PATH.
 
@@ -64,6 +92,7 @@ def _parse_codex_output(
     - ``type: "message"`` or ``type: "result"`` (legacy text payloads)
     - ``type: "item.completed"`` + ``item.type: "agent_message"``
     - ``type: "tool_use"`` / ``type: "function_call"`` / command items
+    - response/item wrapper events carrying nested tool-call items
     - ``type: "turn.completed"`` usage token counts
 
     If the output is not valid JSON-lines, we treat the entire stdout
@@ -132,7 +161,7 @@ def _parse_codex_output(
                         elif block.get("type") in ("tool_use", "function_call"):
                             tool_calls.append(_extract_tool_call(block))
 
-        elif obj_type in ("tool_use", "function_call"):
+        elif _looks_like_tool_call_event(obj):
             tool_calls.append(_extract_tool_call(obj))
 
         elif obj_type == "result":
@@ -141,7 +170,12 @@ def _parse_codex_output(
             if result_content:
                 text_parts.append(str(result_content))
 
-        elif obj_type == "item.completed":
+        elif obj_type in (
+            "item.completed",
+            "item.started",
+            "response.output_item.done",
+            "response.output_item.added",
+        ):
             item = obj.get("item")
             if not isinstance(item, dict):
                 continue
@@ -150,11 +184,17 @@ def _parse_codex_output(
                 text = item.get("text")
                 if isinstance(text, str) and text:
                     text_parts.append(text)
-            elif item_type in ("command_execution", "tool_use", "function_call"):
+            elif _looks_like_tool_call_event(item):
                 tool_calls.append(_extract_tool_call(item))
 
-        elif obj_type == "turn.completed":
+        elif obj_type in ("turn.completed", "response.completed"):
             raw_usage = obj.get("usage")
+            if not isinstance(raw_usage, dict):
+                response_obj = obj.get("response")
+                if isinstance(response_obj, dict):
+                    usage_obj = response_obj.get("usage")
+                    if isinstance(usage_obj, dict):
+                        raw_usage = usage_obj
             if isinstance(raw_usage, dict):
                 input_tokens = raw_usage.get("input_tokens")
                 output_tokens = raw_usage.get("output_tokens")
@@ -204,13 +244,21 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
             },
         }
 
+    input_payload = obj.get(
+        "input",
+        obj.get("arguments", obj.get("function", {}).get("arguments", {})),
+    )
+    if isinstance(input_payload, str):
+        try:
+            parsed_input = json.loads(input_payload)
+            input_payload = parsed_input if isinstance(parsed_input, dict) else input_payload
+        except (json.JSONDecodeError, ValueError):
+            pass
+
     return {
         "id": obj.get("id", ""),
-        "name": obj.get("name", obj.get("function", {}).get("name", "")),
-        "input": obj.get(
-            "input",
-            obj.get("arguments", obj.get("function", {}).get("arguments", {})),
-        ),
+        "name": obj.get("name", obj.get("tool_name", obj.get("function", {}).get("name", ""))),
+        "input": input_payload,
     }
 
 
@@ -335,7 +383,9 @@ class CodexAdapter(RuntimeAdapter):
             escaped_url = url.strip().replace("\\", "\\\\").replace('"', '\\"')
             cmd.extend(["-c", f'mcp_servers.{server_name}.url="{escaped_url}"'])
 
-        # Add the composed initial prompt as the final positional argument.
+        # Delimit options from positional prompt so prompts that start with
+        # '-'/'--' are never parsed as CLI flags by codex exec.
+        cmd.append("--")
         cmd.append(self._compose_exec_prompt(prompt=prompt, system_prompt=system_prompt))
 
         logger.debug("Invoking Codex CLI: %s", " ".join(cmd[:4]) + " ...")

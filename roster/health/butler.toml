@@ -20,6 +20,8 @@ prompt = """
 Check for active medications with scheduled times between 8:00 AM and 10:00 AM.
 For each medication, verify whether a dose has been logged for today covering that time window.
 Report any medications that are due but not yet logged.
+
+ONLY use tools available via your MCP server. Do not attempt to access the database directly or use any tools that are not explicitly provided to you.
 """
 
 [[butler.schedule]]
@@ -29,6 +31,8 @@ prompt = """
 Check for active medications with scheduled times between 12:00 PM and 2:00 PM.
 For each medication, verify whether a dose has been logged for today covering that time window.
 Report any medications that are due but not yet logged.
+
+ONLY use tools available via your MCP server. Do not attempt to access the database directly or use any tools that are not explicitly provided to you.
 """
 
 [[butler.schedule]]
@@ -38,6 +42,8 @@ prompt = """
 Check for active medications with scheduled times between 8:00 PM and 10:00 PM.
 For each medication, verify whether a dose has been logged for today covering that time window.
 Report any medications that are due but not yet logged.
+
+ONLY use tools available via your MCP server. Do not attempt to access the database directly or use any tools that are not explicitly provided to you.
 """
 
 [[butler.schedule]]

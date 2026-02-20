@@ -350,6 +350,70 @@ def test_parse_exec_json_agent_message_and_usage():
     assert usage == {"input_tokens": 123, "output_tokens": 45}
 
 
+def test_parse_response_output_item_done_function_call():
+    """response.output_item.done with nested function_call yields tool call."""
+    lines = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "id": "fc_1",
+                        "type": "function_call",
+                        "function": {
+                            "name": "route_to_butler",
+                            "arguments": {
+                                "butler": "relationship",
+                                "prompt": "Store DOB",
+                            },
+                        },
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "result": "Routed"}),
+        ]
+    )
+
+    result_text, tool_calls, usage = _parse_codex_output(lines, "", 0)
+
+    assert result_text == "Routed"
+    assert usage is None
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "route_to_butler"
+    assert tool_calls[0]["input"] == {"butler": "relationship", "prompt": "Store DOB"}
+
+
+def test_parse_response_completed_usage_nested_response_object():
+    """response.completed should extract usage from nested response.usage."""
+    lines = json.dumps(
+        {
+            "type": "response.completed",
+            "response": {"usage": {"input_tokens": 321, "output_tokens": 123}},
+        }
+    )
+
+    result_text, tool_calls, usage = _parse_codex_output(lines, "", 0)
+
+    assert result_text is None
+    assert tool_calls == []
+    assert usage == {"input_tokens": 321, "output_tokens": 123}
+
+
+def test_extract_tool_call_parses_json_string_arguments():
+    """Stringified JSON arguments are parsed into dict input when possible."""
+    tc = _extract_tool_call(
+        {
+            "id": "fc2",
+            "name": "route_to_butler",
+            "arguments": '{"butler":"health","prompt":"Track meal"}',
+        }
+    )
+
+    assert tc["id"] == "fc2"
+    assert tc["name"] == "route_to_butler"
+    assert tc["input"] == {"butler": "health", "prompt": "Track meal"}
+
+
 def test_parse_exec_json_ignores_non_json_diagnostics():
     """Non-JSON diagnostics mixed into JSONL output are ignored."""
     lines = "\n".join(
@@ -480,6 +544,8 @@ async def test_invoke_success():
     assert "--instructions" not in cmd
     assert "-c" in cmd
     assert 'mcp_servers.test.url="http://localhost:9100/sse"' in cmd
+    assert "--" in cmd
+    assert cmd[-2] == "--"
     assert "<system_instructions>" in cmd[-1]
     assert "you are helpful" in cmd[-1]
     assert "<user_prompt>" in cmd[-1]
@@ -601,7 +667,29 @@ async def test_invoke_no_system_prompt():
 
     cmd = mock_sub.call_args[0]
     assert "--instructions" not in cmd
+    assert cmd[-2] == "--"
     assert cmd[-1] == "test"
+
+
+async def test_invoke_prompt_starting_with_dash_delimited():
+    """Prompts that start with '--' are protected by option delimiter."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="--instructions",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
+
+    cmd = mock_sub.call_args[0]
+    assert cmd[-2] == "--"
+    assert cmd[-1] == "--instructions"
 
 
 async def test_invoke_passes_env():

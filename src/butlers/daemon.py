@@ -1079,14 +1079,14 @@ class ButlerDaemon:
             context_parts.append(
                 f"REQUEST CONTEXT (for reply targeting and audit traceability):\n{request_ctx_json}"
             )
-            _INTERACTIVE_CHANNELS = frozenset({"telegram", "email"})
+            _INTERACTIVE_CHANNELS = frozenset({"telegram", "whatsapp"})
             if parsed.request_context.source_channel in _INTERACTIVE_CHANNELS:
                 source_channel = parsed.request_context.source_channel
                 context_parts.append(
                     "INTERACTIVE DATA SOURCE:\n"
                     f"This message originated from an interactive channel ({source_channel}). "
-                    "The user expects a reply through the same channel. "
-                    "Use the notify() tool to send your response:\n"
+                    "The user expects a reply through the same channel. \n\n"
+                    "IMPORTANT: You MUST use the notify() tool on your MCP to send your response:\n"
                     f'- channel="{source_channel}"\n'
                     '- intent="reply" for contextual responses\n'
                     '- intent="react" with emoji for quick acknowledgments (telegram only)\n'
@@ -1787,14 +1787,14 @@ class ButlerDaemon:
                 )
 
                 # Inject interactive guidance when source is user-facing
-                _INTERACTIVE_CHANNELS = frozenset({"telegram", "email"})
+                _INTERACTIVE_CHANNELS = frozenset({"telegram", "whatsapp"})
                 source_channel = parsed_route.request_context.source_channel
                 if source_channel in _INTERACTIVE_CHANNELS:
                     context_parts.append(
                         "INTERACTIVE DATA SOURCE:\n"
                         f"This message originated from an interactive channel ({source_channel}). "
                         "The user expects a reply through the same channel. "
-                        "Use the notify() tool to send your response:\n"
+                        "IMPORTANT: You MUST use the notify() tool to send your response:\n"
                         f'- channel="{source_channel}"\n'
                         '- intent="reply" for contextual responses\n'
                         '- intent="react" with emoji for quick acknowledgments (telegram only)\n'
