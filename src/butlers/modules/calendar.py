@@ -12,7 +12,7 @@ import abc
 import asyncio
 import json
 import logging
-import os
+import re
 from collections.abc import Callable, Coroutine
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from enum import StrEnum
@@ -107,47 +107,6 @@ class _GoogleOAuthCredentials(BaseModel):
         if not normalized:
             raise ValueError(f"{info.field_name} must be a non-empty string")
         return normalized
-
-    @classmethod
-    def from_env(cls) -> _GoogleOAuthCredentials:
-        """Load credentials from canonical Google OAuth environment variables.
-
-        Reads ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``, and
-        ``GOOGLE_REFRESH_TOKEN``.  This method is a last-resort fallback when neither
-        CredentialStore nor the database contains credentials.  Prefer the dashboard
-        OAuth bootstrap flow which stores credentials in the database.
-
-        Raises
-        ------
-        CalendarCredentialError
-            If any required environment variable is not set.
-        """
-        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
-        client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
-        refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "").strip()
-
-        missing = [
-            name
-            for name, val in [
-                ("GOOGLE_OAUTH_CLIENT_ID", client_id),
-                ("GOOGLE_OAUTH_CLIENT_SECRET", client_secret),
-                ("GOOGLE_REFRESH_TOKEN", refresh_token),
-            ]
-            if not val
-        ]
-        if missing:
-            raise CalendarCredentialError(
-                f"Missing required Google credential environment variable(s): "
-                f"{', '.join(missing)}. "
-                f"Use the dashboard OAuth flow to store credentials in the database. "
-                f"Environment variables are only for legacy no-DB mode."
-            )
-
-        return cls(
-            client_id=client_id,
-            client_secret=client_secret,
-            refresh_token=refresh_token,
-        )
 
     @classmethod
     def from_json(cls, raw_value: str) -> _GoogleOAuthCredentials:
@@ -311,22 +270,29 @@ def _safe_google_error_message(response: httpx.Response) -> str:
 def _redact_credential_values(message: str) -> str:
     """Redact known credential values from an error message (spec section 15.3).
 
-    Reads canonical Google OAuth environment variables and replaces any credential
-    field values found in the message with ``[REDACTED]``.  This guards against
-    transitive leakage when a credential value appears in an exception message,
-    regardless of the credential length.
+    Calendar credentials are DB-managed, so redaction is pattern-based rather
+    than sourced from process env vars.
     """
-    # Collect values from canonical env vars to redact from error messages.
-    values_to_redact: list[str] = []
-    for var in ("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"):
-        val = os.environ.get(var, "").strip()
-        if val:
-            values_to_redact.append(val)
-
-    result = message
-    for secret in values_to_redact:
-        result = result.replace(secret, "[REDACTED]")
-    return result
+    redacted = message
+    # key=value style pairs
+    redacted = re.sub(
+        r"(?i)\b(client_secret|refresh_token|access_token|token)\s*=\s*([^\s,;]+)",
+        r"\1=[REDACTED]",
+        redacted,
+    )
+    # JSON/Python dict style quoted values
+    redacted = re.sub(
+        r"""(?i)(['"]?(?:client_secret|refresh_token|access_token|token)['"]?\s*:\s*)(['"]).*?\2""",
+        r'\1"[REDACTED]"',
+        redacted,
+    )
+    # key: value style pairs
+    redacted = re.sub(
+        r"(?i)\b(client_secret|refresh_token|access_token|token)\s*:\s*([^\s,;]+)",
+        r"\1: [REDACTED]",
+        redacted,
+    )
+    return redacted
 
 
 def _build_structured_error(
@@ -2238,7 +2204,7 @@ class CalendarModule(Module):
 
     @property
     def credentials_env(self) -> list[str]:
-        return ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"]
+        return []
 
     def migration_revisions(self) -> str | None:
         return None
@@ -2968,11 +2934,8 @@ class CalendarModule(Module):
     ) -> _GoogleOAuthCredentials:
         """Resolve Google OAuth credentials using canonical lookup sources.
 
-        Resolution order:
-        1. CredentialStore (``butler_secrets`` table) for individual keys
-           ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``,
-           ``GOOGLE_REFRESH_TOKEN``.
-        2. Environment variables via ``_GoogleOAuthCredentials.from_env()``.
+        Resolution:
+        1. CredentialStore (``butler_secrets`` table) for individual keys.
 
         Parameters
         ----------
@@ -2990,7 +2953,7 @@ class CalendarModule(Module):
         Raises
         ------
         RuntimeError
-            If credentials cannot be resolved from either source.
+            If credentials cannot be resolved from DB-backed credential storage.
         """
         # Step 1: Try CredentialStore (butler_secrets) for individual keys.
         if credential_store is not None:
@@ -3009,24 +2972,15 @@ class CalendarModule(Module):
                     refresh_token=refresh_token,
                 )
 
-        # Step 2: Fall back to canonical env vars.
-        try:
-            return _GoogleOAuthCredentials.from_env()
-        except RuntimeError as exc:
-            raise RuntimeError(
-                "CalendarModule: Google OAuth credentials are not available. "
-                "Store them via the dashboard OAuth flow (shared butler_secrets store). "
-                "Environment variables are only for legacy no-DB mode. "
-                f"Details: {exc}"
-            ) from exc
+        raise RuntimeError(
+            "CalendarModule: Google OAuth credentials are not available in butler_secrets. "
+            "Store them via the dashboard OAuth flow (shared credential store)."
+        )
 
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Initialize the calendar provider with resolved Google OAuth credentials.
 
-        Credential resolution order:
-        1. CredentialStore (``butler_secrets`` table) — individual keys
-           ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``, ``GOOGLE_REFRESH_TOKEN``.
-        2. Environment variables (via ``_GoogleOAuthCredentials.from_env``).
+        Credentials are resolved from CredentialStore (``butler_secrets``) only.
 
         Parameters
         ----------
@@ -3036,9 +2990,8 @@ class CalendarModule(Module):
             Butler database instance.
         credential_store:
             Optional :class:`~butlers.credential_store.CredentialStore`.
-            When provided, individual Google credential keys are checked in
-            ``butler_secrets`` first before falling through to environment
-            variables.
+            When provided, individual Google credential keys are resolved from
+            ``butler_secrets``.
         """
         self._config = self._coerce_config(config)
         self._db = db

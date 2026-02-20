@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import logging
 import unittest.mock as mock
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from butlers.api.routers import oauth as oauth_module
 from butlers.google_credentials import (
     GoogleCredentials,
     load_google_credentials,
@@ -60,6 +62,46 @@ FAKE_TOKEN_RESPONSE = {
     "token_type": "Bearer",
     "expires_in": 3600,
 }
+
+
+def _make_app(
+    *,
+    db_client_id: str = "test-client-id.apps.googleusercontent.com",
+    db_client_secret: str = "test-client-secret",
+    db_refresh_token: str | None = "1//fake-refresh-token",
+):
+    from butlers.api.app import create_app
+
+    app = create_app()
+    secrets = {
+        "GOOGLE_OAUTH_CLIENT_ID": db_client_id,
+        "GOOGLE_OAUTH_CLIENT_SECRET": db_client_secret,
+    }
+    if db_refresh_token is not None:
+        secrets["GOOGLE_REFRESH_TOKEN"] = db_refresh_token
+
+    conn = AsyncMock()
+
+    async def _fetchrow(_query: str, key: str):
+        value = secrets.get(key)
+        if not value:
+            return None
+        return {"secret_value": value}
+
+    conn.fetchrow.side_effect = _fetchrow
+    conn.execute = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    pool = MagicMock()
+    pool.acquire = _acquire
+
+    db_manager = MagicMock()
+    db_manager.credential_shared_pool.return_value = pool
+    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    return app
 
 
 # ---------------------------------------------------------------------------
@@ -188,15 +230,9 @@ class TestStartupGuardSecretRedaction:
         self, capsys: pytest.CaptureFixture
     ) -> None:
         """Startup guard stderr must not echo any partial credential values."""
-        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
-
-        all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
-        all_vars.append(_CALENDAR_JSON_ENV)
-        cleared = {v: "" for v in all_vars}
-        # Set a partial credential so guard sees it but it's still incomplete
         partial = {"GMAIL_CLIENT_ID": "PARTIAL-SECRET-CLIENT-ID-VALUE"}
 
-        with mock.patch.dict("os.environ", {**cleared, **partial}):
+        with mock.patch.dict("os.environ", partial, clear=True):
             with pytest.raises(SystemExit):
                 require_google_credentials_or_exit(caller="test")
 
@@ -206,17 +242,12 @@ class TestStartupGuardSecretRedaction:
 
     def test_check_does_not_include_secret_values_in_message(self) -> None:
         """check_google_credentials() message must not contain any env var values."""
-        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
-
-        all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
-        all_vars.append(_CALENDAR_JSON_ENV)
-        cleared = {v: "" for v in all_vars}
         partial = {
             "GMAIL_CLIENT_ID": "LEAKED-CLIENT-ID-VALUE",
             "GMAIL_CLIENT_SECRET": "LEAKED-SECRET-VALUE",
         }
 
-        with mock.patch.dict("os.environ", {**cleared, **partial}):
+        with mock.patch.dict("os.environ", partial, clear=True):
             result = check_google_credentials()
 
         assert "LEAKED-CLIENT-ID-VALUE" not in result.message
@@ -235,7 +266,6 @@ class TestOAuthCallbackResponseRedaction:
 
     async def test_callback_success_does_not_leak_access_token(self) -> None:
         """Successful callback response must not include the raw access_token."""
-        from butlers.api.app import create_app
         from butlers.api.routers.oauth import (
             _clear_state_store,
             _generate_state,
@@ -243,7 +273,7 @@ class TestOAuthCallbackResponseRedaction:
         )
 
         _clear_state_store()
-        app = create_app()
+        app = _make_app()
         state = _generate_state()
         _store_state(state)
 
@@ -273,7 +303,6 @@ class TestOAuthCallbackResponseRedaction:
 
     async def test_callback_success_does_not_leak_refresh_token(self) -> None:
         """Successful callback response must not include the raw refresh_token."""
-        from butlers.api.app import create_app
         from butlers.api.routers.oauth import (
             _clear_state_store,
             _generate_state,
@@ -281,7 +310,7 @@ class TestOAuthCallbackResponseRedaction:
         )
 
         _clear_state_store()
-        app = create_app()
+        app = _make_app()
         state = _generate_state()
         _store_state(state)
 

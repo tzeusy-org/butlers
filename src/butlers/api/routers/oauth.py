@@ -25,13 +25,10 @@ The bootstrap flow:
        remediation guidance for the dashboard UX.
 
 Environment variables:
-  GOOGLE_OAUTH_CLIENT_ID     — OAuth client ID (required)
-  GOOGLE_OAUTH_CLIENT_SECRET — OAuth client secret (required)
   GOOGLE_OAUTH_REDIRECT_URI  — Callback URL registered with Google
                                (default: http://localhost:40200/api/oauth/google/callback)
   OAUTH_DASHBOARD_URL        — Where to redirect after a successful bootstrap
                                (default: not set; returns JSON payload instead)
-  GOOGLE_REFRESH_TOKEN       — Stored refresh token (set after bootstrap; DB-stored by default)
 
 Security notes:
   - State tokens are one-time-use: consumed on first callback validation.
@@ -223,53 +220,29 @@ def _get_dashboard_url() -> str | None:
     return val or None
 
 
-def _get_stored_refresh_token() -> str | None:
-    """Read the stored Google refresh token from environment.
-
-    Checks GOOGLE_REFRESH_TOKEN. Returns None if not set.
-    Prefer DB-stored credentials (via the dashboard OAuth flow) over env vars.
-    """
-    val = os.environ.get("GOOGLE_REFRESH_TOKEN", "").strip()
-    return val or None
-
-
 async def _resolve_app_credentials(db_manager: Any = None) -> tuple[str, str]:
-    """Resolve client_id and client_secret from DB first, then env vars.
+    """Resolve client_id and client_secret from DB-backed secret storage.
 
-    Returns (client_id, client_secret). Raises HTTPException(503) if either
-    value is missing from both sources.
+    Returns (client_id, client_secret). Raises HTTPException(503) when the
+    shared credential store is unavailable or app credentials are missing.
     """
-    client_id = ""
-    client_secret = ""
-
-    # Try DB credentials first
     cred_store = _make_credential_store(db_manager)
-    if cred_store is not None:
-        try:
-            app_creds = await load_app_credentials(cred_store)
-            if app_creds:
-                client_id = app_creds.client_id or ""
-                client_secret = app_creds.client_secret or ""
-        except Exception:
-            logger.debug("DB credential lookup failed; falling back to env vars.")
-
-    # Fall back to env vars for any missing fields
-    if not client_id:
-        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
-    if not client_secret:
-        client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
-
-    if not client_id:
+    if cred_store is None:
         raise HTTPException(
             status_code=503,
-            detail="GOOGLE_OAUTH_CLIENT_ID is not configured on the server.",
+            detail="Shared credential database is unavailable.",
         )
-    if not client_secret:
+
+    app_creds = await load_app_credentials(cred_store)
+    if app_creds is None or not app_creds.client_id or not app_creds.client_secret:
         raise HTTPException(
             status_code=503,
-            detail="GOOGLE_OAUTH_CLIENT_SECRET is not configured on the server.",
+            detail=(
+                "Google OAuth app credentials are not configured in DB. "
+                "Configure client_id and client_secret on the Secrets page."
+            ),
         )
-    return client_id, client_secret
+    return app_creds.client_id, app_creds.client_secret
 
 
 # ---------------------------------------------------------------------------
@@ -438,66 +411,36 @@ async def oauth_google_callback(
         )
         return JSONResponse(status_code=400, content=error_payload.model_dump())
 
-    # --- Persist credentials to DB and emit to operator logs ---
+    # --- Persist credentials to DB ---
     # Secret material (client_secret, refresh_token) is NEVER logged in plaintext.
-    # The DB is the primary persistence mechanism; log output is supplementary.
-    creds_persisted = False
     cred_store = _make_credential_store(db_manager)
-    if cred_store is not None:
-        # Persist credentials to butler_secrets via CredentialStore.
-        # This enables both Gmail connector and Calendar module to share a single
-        # OAuth bootstrap without duplicating credentials in env vars.
-        try:
-            await store_google_credentials(
-                cred_store,
-                client_id=client_id,
-                client_secret=client_secret,
-                refresh_token=refresh_token,
-                scope=scope,
-            )
-            creds_persisted = True
-            logger.info(
-                "Google OAuth credentials persisted to butler_secrets (client_id=%s)",
-                client_id,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to persist Google credentials to DB; falling back to log-only mode.",
-                exc_info=True,
-            )
-    else:
-        logger.warning(
-            "Shared credential DB unavailable; credentials not persisted to DB. "
-            "Re-run OAuth bootstrap when shared credential DB is available."
+    if cred_store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Shared credential DB unavailable; cannot persist OAuth credentials.",
         )
 
+    await store_google_credentials(
+        cred_store,
+        client_id=client_id,
+        client_secret=client_secret,
+        refresh_token=refresh_token,
+        scope=scope,
+    )
     logger.info(
-        "Google OAuth bootstrap COMPLETE (client_id=%s, persisted=%s)",
+        "Google OAuth credentials persisted to butler_secrets (client_id=%s)",
         client_id,
-        creds_persisted,
+    )
+
+    logger.info(
+        "Google OAuth bootstrap COMPLETE (client_id=%s, persisted=true)",
+        client_id,
     )
     logger.info("Scope granted: %s", scope)
-    if not creds_persisted:
-        # DB is not wired; warn the operator. Secrets are never printed or logged.
-        logger.warning(
-            "[BOOTSTRAP] Google credentials could NOT be persisted to DB "
-            "(shared credential pool unavailable). "
-            "Re-run the OAuth bootstrap with a running shared credential database."
-        )
-        print(f"\n{'=' * 60}")
-        print("Google OAuth Bootstrap Complete")
-        print("WARNING: Credentials NOT persisted to DB.")
-        print("Re-run OAuth bootstrap with shared credential DB connectivity restored.")
-        print(f"Client ID used for this attempt: {client_id}")
-        print(f"{'=' * 60}\n")
 
     success_payload = OAuthCallbackSuccess(
         success=True,
-        message=(
-            "OAuth bootstrap complete. Credentials persisted to database."
-            if creds_persisted
-            else "OAuth bootstrap complete, but credentials were NOT persisted to DB."
-        ),
+        message="OAuth bootstrap complete. Credentials persisted to database.",
         provider="google",
         scope=scope,
     )
@@ -657,7 +600,7 @@ async def get_google_credential_status(
     scope = app_creds.scope if app_creds else None
 
     # Also probe the OAuth health
-    health = await _check_google_credential_status()
+    health = await _check_google_credential_status(db_manager=db_manager)
 
     return GoogleCredentialStatusResponse(
         client_id_configured=client_id_configured,
@@ -690,7 +633,7 @@ async def oauth_status(
 ) -> OAuthStatusResponse:
     """Report the current state of Google OAuth credentials.
 
-    Checks whether credentials are configured (DB first, then env vars) and,
+    Checks whether credentials are configured in DB and,
     when possible, probes Google's token-info endpoint to validate scope coverage.
 
     This endpoint is designed for dashboard polling (e.g. after completing the
@@ -710,45 +653,36 @@ async def _check_google_credential_status(db_manager: Any = None) -> OAuthCreden
 
     Performs the following checks in order:
 
-    1. Whether client_id/client_secret are available (DB first, then env vars).
-    2. Whether a refresh token is stored (DB first, then env vars).
+    1. Whether client_id/client_secret are available in DB.
+    2. Whether a refresh token is stored in DB.
     3. Probe Google's token-info endpoint to validate scope coverage.
 
     Parameters
     ----------
     db_manager:
         Optional DatabaseManager instance.  When provided, DB credentials
-        are checked before env vars.
+        are resolved from the shared credential store.
 
     Returns
     -------
     OAuthCredentialStatus
         Structured status including state, connected flag, and remediation text.
     """
-    # --- Resolution: DB first, env fallback ---
-    client_id: str = ""
-    client_secret: str = ""
-    refresh_token: str | None = None
-
-    # Try DB credentials
+    # --- Resolution: DB only ---
     cred_store = _make_credential_store(db_manager)
-    if cred_store is not None:
-        try:
-            app_creds = await load_app_credentials(cred_store)
-            if app_creds:
-                client_id = app_creds.client_id
-                client_secret = app_creds.client_secret
-                refresh_token = app_creds.refresh_token
-        except Exception:
-            pass  # Fall through to env vars
+    if cred_store is None:
+        return OAuthCredentialStatus(
+            state=OAuthCredentialState.unknown_error,
+            remediation=(
+                "Shared credential database is unavailable. Restore DB connectivity and retry."
+            ),
+            detail="Shared credential store unavailable.",
+        )
 
-    # Fall back to env vars for any missing fields
-    if not client_id:
-        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
-    if not client_secret:
-        client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
-    if not refresh_token:
-        refresh_token = _get_stored_refresh_token()
+    app_creds = await load_app_credentials(cred_store)
+    client_id = app_creds.client_id if app_creds is not None else ""
+    client_secret = app_creds.client_secret if app_creds is not None else ""
+    refresh_token = app_creds.refresh_token if app_creds is not None else None
 
     # --- Check 1: client credentials not configured ---
     if not client_id or not client_secret:
@@ -759,7 +693,7 @@ async def _check_google_credential_status(db_manager: Any = None) -> OAuthCreden
                 "Add your client_id and client_secret on the Secrets page, "
                 "then click 'Connect Google' to start the authorization flow."
             ),
-            detail="client_id or client_secret is missing (DB and env vars).",
+            detail="client_id or client_secret is missing in DB.",
         )
 
     # --- Check 2: no refresh token stored ---
@@ -770,7 +704,7 @@ async def _check_google_credential_status(db_manager: Any = None) -> OAuthCreden
                 "Google credentials have not been connected yet. "
                 "Click 'Connect Google' to start the OAuth authorization flow."
             ),
-            detail="No refresh token found in DB or GOOGLE_REFRESH_TOKEN env var.",
+            detail="No refresh token found in DB.",
         )
 
     # --- Check 3: probe Google to validate the refresh token ---
@@ -933,7 +867,7 @@ def _classify_token_refresh_error(response: httpx.Response) -> OAuthCredentialSt
             remediation=(
                 "OAuth client credentials are invalid or the redirect URI does not match "
                 "the one registered in the Google Cloud Console. "
-                "Verify GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and "
+                "Verify app credentials on the Secrets page and "
                 "GOOGLE_OAUTH_REDIRECT_URI, then re-run the OAuth flow."
             ),
             detail=(

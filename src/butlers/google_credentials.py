@@ -36,21 +36,11 @@ Usage — loading at module startup::
     client_id = creds.client_id
     refresh_token = creds.refresh_token
 
-Environment variable fallback (for bootstrap compatibility)::
-
-    creds = GoogleCredentials.from_env()
-
-Where the following env vars are consulted:
-- ``GOOGLE_OAUTH_CLIENT_ID`` (client_id)
-- ``GOOGLE_OAUTH_CLIENT_SECRET`` (client_secret)
-- ``GOOGLE_REFRESH_TOKEN`` (refresh_token)
-- ``GOOGLE_OAUTH_SCOPES`` (scope, optional)
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -100,55 +90,6 @@ class GoogleCredentials(BaseModel):
             return None
         normalized = value.strip()
         return normalized or None
-
-    # ------------------------------------------------------------------
-    # Env-var factory
-    # ------------------------------------------------------------------
-
-    @classmethod
-    def from_env(cls) -> GoogleCredentials:
-        """Build credentials from environment variables.
-
-        Reads canonical environment variable names only:
-
-        - client_id: ``GOOGLE_OAUTH_CLIENT_ID``
-        - client_secret: ``GOOGLE_OAUTH_CLIENT_SECRET``
-        - refresh_token: ``GOOGLE_REFRESH_TOKEN``
-        - scope: ``GOOGLE_OAUTH_SCOPES`` (optional)
-
-        Raises
-        ------
-        MissingGoogleCredentialsError
-            If required fields cannot be resolved from the environment.
-        """
-        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
-        client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
-        refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN", "").strip()
-        scope = os.environ.get("GOOGLE_OAUTH_SCOPES", "").strip() or None
-
-        missing = [
-            name
-            for name, val in [
-                ("client_id", client_id),
-                ("client_secret", client_secret),
-                ("refresh_token", refresh_token),
-            ]
-            if not val
-        ]
-        if missing:
-            raise MissingGoogleCredentialsError(
-                f"Missing required Google credential field(s) from environment: "
-                f"{', '.join(missing)}. "
-                f"Set GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and "
-                f"GOOGLE_REFRESH_TOKEN."
-            )
-
-        return cls(
-            client_id=client_id,
-            client_secret=client_secret,
-            refresh_token=refresh_token,
-            scope=scope,
-        )
 
     # ------------------------------------------------------------------
     # Safe repr
@@ -458,7 +399,7 @@ async def delete_google_credentials(store_or_conn: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Resolution helper (DB-first, env fallback)
+# Resolution helper (DB-only)
 # ---------------------------------------------------------------------------
 
 
@@ -467,11 +408,10 @@ async def resolve_google_credentials(
     *,
     caller: str = "unknown",
 ) -> GoogleCredentials:
-    """Resolve Google OAuth credentials from DB, falling back to env vars.
+    """Resolve Google OAuth credentials from DB-backed secret storage.
 
-    Resolution order:
+    Resolution:
     1. Database (``butler_secrets`` via ``load_google_credentials``).
-    2. Environment variables (via ``GoogleCredentials.from_env``).
 
     Parameters
     ----------
@@ -484,43 +424,31 @@ async def resolve_google_credentials(
     Returns
     -------
     GoogleCredentials
-        Resolved credentials (DB or env).
+        Resolved DB credentials.
 
     Raises
     ------
     MissingGoogleCredentialsError
-        If credentials cannot be found in either source.
+        If credentials cannot be found in DB.
     """
     # 1. Try DB
     try:
         creds = await load_google_credentials(store_or_conn)
     except InvalidGoogleCredentialsError as exc:
-        logger.warning(
-            "[%s] Stored Google credentials are invalid, falling back to env vars: %s",
-            caller,
-            exc,
-        )
-        creds = None
+        raise MissingGoogleCredentialsError(
+            f"[{caller}] Stored Google credentials are invalid. "
+            f"Re-run OAuth bootstrap to replace credentials in butler_secrets. "
+            f"Details: {exc}"
+        ) from exc
 
     if creds is not None:
         logger.debug("[%s] Resolved Google credentials from database", caller)
         return creds
 
-    # 2. Try env vars
-    try:
-        creds = GoogleCredentials.from_env()
-        logger.debug("[%s] Resolved Google credentials from environment variables", caller)
-        return creds
-    except MissingGoogleCredentialsError as env_exc:
-        raise MissingGoogleCredentialsError(
-            f"[{caller}] Google OAuth credentials are not available. "
-            f"Bootstrap via GET /api/oauth/google/start and persist credentials to "
-            f"the shared butler_secrets store. "
-            f"If running in legacy no-DB mode, set GOOGLE_OAUTH_CLIENT_ID, "
-            f"GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN environment "
-            f"variables. "
-            f"Details: {env_exc}"
-        ) from env_exc
+    raise MissingGoogleCredentialsError(
+        f"[{caller}] Google OAuth credentials are not available in butler_secrets. "
+        "Bootstrap via GET /api/oauth/google/start and persist credentials in DB."
+    )
 
 
 # ---------------------------------------------------------------------------

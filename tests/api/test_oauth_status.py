@@ -23,6 +23,7 @@ Mocking strategy:
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -33,6 +34,7 @@ from butlers.api.models.oauth import (
     OAuthCredentialState,
     OAuthCredentialStatus,
 )
+from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import _probe_google_token
 
 pytestmark = pytest.mark.unit
@@ -62,8 +64,45 @@ _PROBE_PATCH = "butlers.api.routers.oauth._probe_google_token"
 _HTTPX_CLIENT_PATCH = "butlers.api.routers.oauth.httpx.AsyncClient"
 
 
-def _make_app():
-    return create_app()
+def _make_app(
+    *,
+    db_client_id: str = "test-client-id.apps.googleusercontent.com",
+    db_client_secret: str = "test-client-secret",
+    db_refresh_token: str | None = "1//fake-refresh-token",
+    with_db_manager: bool = True,
+):
+    app = create_app()
+    if not with_db_manager:
+        return app
+
+    secrets = {
+        "GOOGLE_OAUTH_CLIENT_ID": db_client_id,
+        "GOOGLE_OAUTH_CLIENT_SECRET": db_client_secret,
+    }
+    if db_refresh_token is not None:
+        secrets["GOOGLE_REFRESH_TOKEN"] = db_refresh_token
+
+    conn = AsyncMock()
+
+    async def _fetchrow(_query: str, key: str):
+        value = secrets.get(key)
+        if not value:
+            return None
+        return {"secret_value": value}
+
+    conn.fetchrow.side_effect = _fetchrow
+
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    pool = MagicMock()
+    pool.acquire = _acquire
+
+    db_manager = MagicMock()
+    db_manager.credential_shared_pool.return_value = pool
+    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    return app
 
 
 def _connected_status() -> OAuthCredentialStatus:
@@ -120,9 +159,9 @@ def _mock_response(*, status_code: int = 200, body: dict) -> httpx.Response:
 
 class TestOAuthStatusNotConfigured:
     async def test_no_client_id_returns_not_configured(self):
-        """Missing GOOGLE_OAUTH_CLIENT_ID → not_configured."""
-        app = _make_app()
-        env = {**_BASE_ENV, "GOOGLE_OAUTH_CLIENT_ID": ""}
+        """Missing DB client_id → not_configured."""
+        app = _make_app(db_client_id="")
+        env = _BASE_ENV
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -136,9 +175,9 @@ class TestOAuthStatusNotConfigured:
         assert body["google"]["remediation"] is not None
 
     async def test_no_client_secret_returns_not_configured(self):
-        """Missing GOOGLE_OAUTH_CLIENT_SECRET → not_configured."""
-        app = _make_app()
-        env = {**_BASE_ENV, "GOOGLE_OAUTH_CLIENT_SECRET": ""}
+        """Missing DB client_secret → not_configured."""
+        app = _make_app(db_client_secret="")
+        env = _BASE_ENV
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -151,9 +190,9 @@ class TestOAuthStatusNotConfigured:
         assert body["google"]["connected"] is False
 
     async def test_no_refresh_token_returns_not_configured(self):
-        """No stored refresh token → not_configured with connect guidance."""
-        app = _make_app()
-        env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": ""}
+        """No DB refresh token → not_configured with connect guidance."""
+        app = _make_app(db_refresh_token=None)
+        env = _BASE_ENV
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -167,9 +206,9 @@ class TestOAuthStatusNotConfigured:
         remediation = body["google"]["remediation"].lower()
         assert "connect" in remediation or "authorize" in remediation or "oauth" in remediation
 
-    async def test_google_refresh_token_env_var_accepted(self):
-        """GOOGLE_REFRESH_TOKEN is an accepted fallback for the stored token."""
-        app = _make_app()
+    async def test_google_refresh_token_env_var_not_used(self):
+        """Env refresh token does not bypass missing DB refresh token."""
+        app = _make_app(db_refresh_token=None)
         env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": "1//fallback"}
 
         mock_probe = AsyncMock(return_value=_connected_status())
@@ -181,12 +220,8 @@ class TestOAuthStatusNotConfigured:
 
         assert resp.status_code == 200
         body = resp.json()
-        # Should NOT be not_configured since GOOGLE_REFRESH_TOKEN is set
-        assert body["google"]["state"] != OAuthCredentialState.not_configured
-        # Probe must have been called with the fallback token
-        mock_probe.assert_awaited_once()
-        call_kwargs = mock_probe.call_args.kwargs
-        assert call_kwargs["refresh_token"] == "1//fallback"
+        assert body["google"]["state"] == OAuthCredentialState.not_configured
+        mock_probe.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

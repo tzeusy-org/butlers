@@ -425,38 +425,25 @@ class TestResolveGoogleCredentialsWithCredentialStore:
         creds = await resolve_google_credentials(store, caller="test")
         assert creds.client_id == "db-cid"
 
-    async def test_falls_back_to_env_when_no_db_data(self) -> None:
+    async def test_raises_when_no_db_data(self) -> None:
         pool = _make_empty_pool()
         store = CredentialStore(pool)
-        env = {
-            "GOOGLE_OAUTH_CLIENT_ID": "env-cid",
-            "GOOGLE_OAUTH_CLIENT_SECRET": "env-csecret",
-            "GOOGLE_REFRESH_TOKEN": "env-rtoken",
-        }
-        with mock.patch.dict("os.environ", env, clear=True):
-            creds = await resolve_google_credentials(store, caller="test")
-        assert creds.client_id == "env-cid"
+        with pytest.raises(MissingGoogleCredentialsError):
+            await resolve_google_credentials(store, caller="test")
 
-    async def test_raises_when_neither_db_nor_env(self) -> None:
+    async def test_raises_when_missing_db_data_includes_caller(self) -> None:
         pool = _make_empty_pool()
         store = CredentialStore(pool)
-        with mock.patch.dict("os.environ", {}, clear=True):
-            with pytest.raises(MissingGoogleCredentialsError) as exc_info:
-                await resolve_google_credentials(store, caller="test-caller")
+        with pytest.raises(MissingGoogleCredentialsError) as exc_info:
+            await resolve_google_credentials(store, caller="test-caller")
         assert "test-caller" in str(exc_info.value)
 
-    async def test_falls_back_to_env_when_db_has_partial_data(self) -> None:
-        """When DB has only client_id (InvalidGoogleCredentialsError), fall back to env."""
+    async def test_raises_when_db_has_partial_data(self) -> None:
+        """When DB has only client_id, resolution should fail without env fallback."""
         pool = _make_pool_with_values({KEY_CLIENT_ID: "cid"})
         store = CredentialStore(pool)
-        env = {
-            "GOOGLE_OAUTH_CLIENT_ID": "env-cid",
-            "GOOGLE_OAUTH_CLIENT_SECRET": "env-csecret",
-            "GOOGLE_REFRESH_TOKEN": "env-rtoken",
-        }
-        with mock.patch.dict("os.environ", env, clear=True):
-            creds = await resolve_google_credentials(store, caller="test")
-        assert creds.client_id == "env-cid"
+        with pytest.raises(MissingGoogleCredentialsError):
+            await resolve_google_credentials(store, caller="test")
 
     async def test_db_takes_priority_over_env(self) -> None:
         pool = _make_pool_with_values(

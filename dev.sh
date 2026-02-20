@@ -505,7 +505,7 @@ _wait_for_postgres() {
 _wait_for_postgres 30 || exit 1
 
 # ── OAuth credential pre-flight check ─────────────────────────────────────
-# Check whether Google credentials are available via env or secrets file.
+# Check whether Google credentials are available in the shared DB secrets store.
 # This runs in the *outer* shell before tmux windows are created so that
 # developers see the warning immediately rather than only inside a pane.
 
@@ -547,25 +547,6 @@ _shared_refresh_token_count() {
 }
 
 _has_google_creds() {
-  # Check canonical env vars (mirrors GoogleCredentials.from_env order).
-  local client_id="" client_secret="" refresh_token=""
-  client_id="${GOOGLE_OAUTH_CLIENT_ID:-}"
-  client_secret="${GOOGLE_OAUTH_CLIENT_SECRET:-}"
-  refresh_token="${GOOGLE_REFRESH_TOKEN:-}"
-
-  if [ -n "$client_id" ] && [ -n "$client_secret" ] && [ -n "$refresh_token" ]; then
-    return 0
-  fi
-
-  # Check connector env file (sourced at connector startup)
-  if [ -f "$GMAIL_CONNECTOR_ENV_FILE" ]; then
-    if grep -Eq '^GOOGLE_OAUTH_CLIENT_ID=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null \
-      && grep -Eq '^GOOGLE_OAUTH_CLIENT_SECRET=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null \
-      && grep -Eq '^GOOGLE_REFRESH_TOKEN=.+' "$GMAIL_CONNECTOR_ENV_FILE" 2>/dev/null; then
-      return 0
-    fi
-  fi
-
   # Check DB for stored credentials using psql (requires DB to be reachable).
   # Primary path: one-db shared schema (butlers.shared).
   if command -v psql >/dev/null 2>&1; then
@@ -637,7 +618,7 @@ _select_google_credentials_db() {
 
 # ── Layer 2: OAuth gate ────────────────────────────────────────────────────
 # Block the outer shell until Google OAuth credentials are available.
-# Credentials are resolved from env vars first (fast path), then via DB polling.
+# Credentials are resolved from DB-backed secrets only.
 # When credentials are missing, displays actionable instructions covering both
 # the Gmail connector and Calendar module — they share the same OAuth bootstrap.
 #
@@ -656,13 +637,13 @@ _oauth_gate() {
     return 0
   fi
 
-  # Fast path: credentials already available via env/file/DB checks
+  # Fast path: credentials already available in shared DB secrets
   if _has_google_creds; then
-    echo "Layer 2: Google OAuth credentials detected (env or DB)."
+    echo "Layer 2: Google OAuth credentials detected in DB."
     return 0
   fi
 
-  # Slow path: credentials not in env — poll the DB
+  # Slow path: credentials missing — poll the DB
   echo ""
   echo "======================================================================"
   echo "  Layer 2: Waiting for Google OAuth credentials"

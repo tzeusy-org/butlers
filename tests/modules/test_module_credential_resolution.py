@@ -294,35 +294,22 @@ class TestCalendarModuleCredentialStore:
         # Verify provider initialised — this would fail if credentials were wrong
         assert mod._provider is not None
 
-    async def test_startup_falls_back_to_env_when_store_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """With empty CredentialStore and no DB, falls back to env vars."""
+    async def test_startup_raises_when_store_empty(self) -> None:
+        """With empty CredentialStore, startup fails under DB-only contract."""
         from butlers.modules.calendar import CalendarModule
 
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "env-client-id")
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "env-client-secret")
-        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "env-refresh-token")
         store = _make_credential_store()  # empty — will not find anything
         mod = CalendarModule()
-        await mod.on_startup(
-            {"provider": "google", "calendar_id": "primary"},
-            db=None,
-            credential_store=store,
-        )
+        with pytest.raises(RuntimeError):
+            await mod.on_startup(
+                {"provider": "google", "calendar_id": "primary"},
+                db=None,
+                credential_store=store,
+            )
 
-        assert mod._provider is not None
-
-    async def test_resolve_credentials_store_takes_priority_over_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """CredentialStore value is used even when env vars are also set."""
+    async def test_resolve_credentials_uses_store_values(self) -> None:
+        """CredentialStore values are used for startup resolution."""
         from butlers.modules.calendar import CalendarModule
-
-        # Set env vars with different values
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "env-client-id")
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "env-client-secret")
-        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "env-refresh-token")
 
         store = _make_credential_store(
             GOOGLE_OAUTH_CLIENT_ID="db-client-id",
@@ -342,43 +329,26 @@ class TestCalendarModuleCredentialStore:
         store.resolve.assert_called()
 
     async def test_startup_raises_when_no_credentials_available(self) -> None:
-        """RuntimeError is raised when credentials are not in store, DB, or env."""
+        """RuntimeError is raised when credentials are not in store/DB."""
         from butlers.modules.calendar import CalendarModule
 
         store = _make_credential_store()  # empty
         mod = CalendarModule()
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if k
-            not in (
-                "GOOGLE_OAUTH_CLIENT_ID",
-                "GOOGLE_OAUTH_CLIENT_SECRET",
-                "GOOGLE_REFRESH_TOKEN",
+        with pytest.raises(RuntimeError):
+            await mod.on_startup(
+                {"provider": "google", "calendar_id": "primary"},
+                db=None,
+                credential_store=store,
             )
-        }
-        with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(RuntimeError):
-                await mod.on_startup(
-                    {"provider": "google", "calendar_id": "primary"},
-                    db=None,
-                    credential_store=store,
-                )
 
-    async def test_startup_without_store_falls_back_to_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without a CredentialStore, startup falls back to env vars (no DB)."""
+    async def test_startup_without_store_raises(self) -> None:
+        """Without CredentialStore, startup fails under DB-only contract."""
         from butlers.modules.calendar import CalendarModule
 
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "env-client-id")
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "env-client-secret")
-        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "env-refresh-token")
         mod = CalendarModule()
-        await mod.on_startup(
-            {"provider": "google", "calendar_id": "primary"},
-            db=None,
-            credential_store=None,
-        )
-
-        assert mod._provider is not None
+        with pytest.raises(RuntimeError):
+            await mod.on_startup(
+                {"provider": "google", "calendar_id": "primary"},
+                db=None,
+                credential_store=None,
+            )

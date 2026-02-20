@@ -155,6 +155,10 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 ### dev.sh OAuth shared-store contract
 - `dev.sh` OAuth preflight (`_has_google_creds`) and Layer 2 gate (`_poll_db_for_refresh_token`) must use the same canonical lookup path: `butler_secrets` in one-db mode (`db=butlers`, schema `shared` by default, overridable via `BUTLER_SHARED_DB_NAME`/`BUTLER_SHARED_DB_SCHEMA`).
 
+### Google OAuth DB-only contract
+- Runtime Google credential resolution is DB-only via `CredentialStore`/`butler_secrets`; env fallback for `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_REFRESH_TOKEN` has been removed from `google_credentials`, Calendar module startup, OAuth router status/callback resolution, and startup guard messaging.
+- `dev.sh` OAuth preflight and Layer 2 gate now both check only DB-backed `GOOGLE_REFRESH_TOKEN` presence (shared one-db store) so shell gating and runtime behavior cannot drift.
+
 ### Code Layout
 - `src/butlers/core/` — state.py, scheduler.py, sessions.py, spawner.py, telemetry.py, telemetry_spans.py
 - `src/butlers/modules/` — base.py (ABC), registry.py, telegram.py, email.py
@@ -596,6 +600,7 @@ make test-qg
 - `GmailConnectorConfig` is a Pydantic `BaseModel` with `frozen=True`; use `config.model_copy(update={...})` for partial updates.
 - Pydantic v2 auto-coerces `str` to `pathlib.Path` for `Path`-typed fields, but prefer explicit `Path(cursor_path_str)` at construction sites to satisfy static type checkers and remove `type: ignore` suppressions.
 - `bd close` from worktrees silently fails to persist due to redirect/sharing issues; always re-close beads from the main repo after worktree operations.
+- When a worker branch carries stale `.beads/issues.jsonl` snapshots, merging that branch can reopen or regress bead status metadata; immediately re-normalize affected bead states from `main` and commit `.beads/issues.jsonl`.
 
 ### Secrets shared-target contract
 - `src/butlers/api/routers/secrets.py` treats `/api/butlers/shared/secrets` as a reserved target that resolves via `DatabaseManager.credential_shared_pool()` (not `db.pool("shared")`), returning 503 with `"Shared credential database is not available"` when unset.

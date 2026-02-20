@@ -143,15 +143,7 @@ class TestBuildStructuredError:
         # The redaction step must explicitly remove them from the error message.
         short_token = "ya29.short20chars!"  # 18 chars — well under 200-char truncation limit
         exc = CalendarAuthError(f"Auth failed: token={short_token}")
-        with patch.dict(
-            "os.environ",
-            {
-                "GOOGLE_OAUTH_CLIENT_ID": "client-id-123",
-                "GOOGLE_OAUTH_CLIENT_SECRET": short_token,
-                "GOOGLE_REFRESH_TOKEN": "rt-abc",
-            },
-        ):
-            result = _build_structured_error(exc, provider="google", calendar_id="primary")
+        result = _build_structured_error(exc, provider="google", calendar_id="primary")
         # The short credential value must be redacted, not present in the error output.
         assert short_token not in result["error"]
         assert "[REDACTED]" in result["error"]

@@ -136,12 +136,6 @@ def create_app(
     butler_routers = discover_butler_routers()
     app.state.butler_routers = butler_routers  # Store for wire_db_dependencies
 
-    for butler_name, router_module in butler_routers:
-        app.include_router(router_module.router)
-        logger.info(
-            "Mounted butler router: %s (prefix=%s)", butler_name, router_module.router.prefix
-        )
-
     # --- Core Static Routers ---
     app.include_router(approvals_router)
     app.include_router(butlers_router)
@@ -162,6 +156,15 @@ def create_app(
     app.include_router(memory_router)
     app.include_router(oauth_router)
     app.include_router(sse_router)
+
+    # --- Auto-discovered Butler Routers ---
+    # Mount after static/core routers so dynamic routes cannot shadow
+    # fixed API paths like /api/oauth/*.
+    for butler_name, router_module in butler_routers:
+        app.include_router(router_module.router)
+        logger.info(
+            "Mounted butler router: %s (prefix=%s)", butler_name, router_module.router.prefix
+        )
 
     @app.get("/api/health")
     @app.get("/health")

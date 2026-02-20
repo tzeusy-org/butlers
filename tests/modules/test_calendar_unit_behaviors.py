@@ -15,9 +15,8 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, date, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -186,29 +185,8 @@ class TestGoogleOAuthCredentials:
         ):
             _GoogleOAuthCredentials.from_json(raw)
 
-    def test_from_env_missing_env_var_raises_credential_error(self):
-        with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(
-                CalendarCredentialError,
-                match="Missing required Google credential environment variable",
-            ):
-                _GoogleOAuthCredentials.from_env()
-
-    def test_from_env_empty_env_var_raises_credential_error(self):
-        with patch.dict(
-            os.environ,
-            {
-                "GOOGLE_OAUTH_CLIENT_ID": "   ",
-                "GOOGLE_OAUTH_CLIENT_SECRET": "   ",
-                "GOOGLE_REFRESH_TOKEN": "   ",
-            },
-            clear=True,
-        ):
-            with pytest.raises(
-                CalendarCredentialError,
-                match="Missing required Google credential environment variable",
-            ):
-                _GoogleOAuthCredentials.from_env()
+    def test_from_env_is_removed(self):
+        assert not hasattr(_GoogleOAuthCredentials, "from_env")
 
 
 # ============================================================================

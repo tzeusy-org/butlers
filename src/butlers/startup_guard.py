@@ -26,7 +26,6 @@ Typical usage to get a status without exiting::
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from dataclasses import dataclass
 
@@ -59,49 +58,14 @@ class GoogleCredentialCheckResult:
     remediation: str
 
 
-# ---------------------------------------------------------------------------
-# Credential check logic
-# ---------------------------------------------------------------------------
-
-# Variables checked in priority order (mirrors GoogleCredentials.from_env).
-_CREDENTIAL_FIELD_ALIASES: list[tuple[str, list[str]]] = [
-    ("client_id", ["GOOGLE_OAUTH_CLIENT_ID"]),
-    ("client_secret", ["GOOGLE_OAUTH_CLIENT_SECRET"]),
-    ("refresh_token", ["GOOGLE_REFRESH_TOKEN"]),
-]
-
-
 def check_google_credentials() -> GoogleCredentialCheckResult:
-    """Check whether Google OAuth credentials are available from environment.
-
-    This is an env-only check — it does NOT connect to the database or
-    make any network calls. It mirrors the priority order used by
-    ``GoogleCredentials.from_env()``.
+    """Return a DB-only remediation result for sync-only call sites.
 
     Returns
     -------
     GoogleCredentialCheckResult
-        A result object describing credential availability and, if missing,
-        actionable remediation guidance.
+        A remediation result directing callers to DB-backed OAuth bootstrap.
     """
-    # Check individual env vars
-    missing_vars: list[str] = []
-    for field_name, aliases in _CREDENTIAL_FIELD_ALIASES:
-        found = any(os.environ.get(v, "").strip() for v in aliases)
-        if not found:
-            # Report the canonical var name for clarity
-            missing_vars.append(aliases[0])
-
-    if not missing_vars:
-        return GoogleCredentialCheckResult(
-            ok=True,
-            missing_vars=[],
-            message="Google credentials are available from environment variables.",
-            remediation="",
-        )
-
-    # Build helpful remediation message
-    missing_list = ", ".join(missing_vars)
     remediation = (
         "Google OAuth credentials are required by:\n"
         "  - Gmail connector      (outbound email delivery)\n"
@@ -113,22 +77,16 @@ def check_google_credentials() -> GoogleCredentialCheckResult:
         "  3. Click 'Connect Google' and follow the OAuth flow.\n"
         "  4. After successful authorization, the refresh token is stored in the DB.\n"
         "\n"
-        "Then restart this connector.\n"
-        "\n"
-        "Legacy no-DB mode only: set GOOGLE_OAUTH_CLIENT_ID,\n"
-        "GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN env vars."
-    )
-
-    message = (
-        f"Google OAuth credentials are not available. "
-        f"Missing: {missing_list}. "
-        f"Google-dependent services (Gmail connector, Calendar module) will not start."
+        "Then restart this connector."
     )
 
     return GoogleCredentialCheckResult(
         ok=False,
-        missing_vars=missing_vars,
-        message=message,
+        missing_vars=[],
+        message=(
+            "Google OAuth credential availability is DB-managed. "
+            "Use check_google_credentials_with_db() to validate runtime readiness."
+        ),
         remediation=remediation,
     )
 
@@ -143,10 +101,7 @@ async def check_google_credentials_with_db(
     *,
     caller: str = "unknown",
 ) -> GoogleCredentialCheckResult:
-    """Check whether Google OAuth credentials are available from DB or environment.
-
-    This is an async check that queries the database first (DB-first resolution),
-    then falls back to environment variables if the DB has no stored credentials.
+    """Check whether Google OAuth credentials are available from DB.
 
     Parameters
     ----------
@@ -159,7 +114,7 @@ async def check_google_credentials_with_db(
     -------
     GoogleCredentialCheckResult
         A result object describing credential availability. When ok=True,
-        credentials are present in either the DB or environment variables.
+        credentials are present in DB-backed secret storage.
     """
     from butlers.google_credentials import (
         MissingGoogleCredentialsError,
@@ -171,17 +126,15 @@ async def check_google_credentials_with_db(
         return GoogleCredentialCheckResult(
             ok=True,
             missing_vars=[],
-            message="Google credentials are available (DB or environment).",
+            message="Google credentials are available in DB-backed secret storage.",
             remediation="",
         )
     except MissingGoogleCredentialsError as exc:
-        env_result = check_google_credentials()
-        # Use the env check's missing_vars and remediation (they are always populated)
         return GoogleCredentialCheckResult(
             ok=False,
-            missing_vars=env_result.missing_vars,
+            missing_vars=[],
             message=str(exc),
-            remediation=env_result.remediation,
+            remediation=check_google_credentials().remediation,
         )
 
 
@@ -242,9 +195,4 @@ def _print_credential_error(
     print(f"    1. Open the Butlers dashboard: {dashboard_url}", file=sys.stderr)
     print("    2. Click 'Connect Google' and complete the OAuth flow.", file=sys.stderr)
     print("    3. Once authorized, restart this connector.", file=sys.stderr)
-    print(
-        "\n  Legacy no-DB mode only: set GOOGLE_OAUTH_CLIENT_ID, "
-        "GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN.",
-        file=sys.stderr,
-    )
     print(f"\n{separator}\n", file=sys.stderr)

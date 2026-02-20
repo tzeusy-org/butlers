@@ -113,6 +113,22 @@ def _make_mock_db(state_store: dict | None = None) -> MagicMock:
     return db
 
 
+def _make_credential_store() -> AsyncMock:
+    store = AsyncMock()
+
+    async def _resolve(key: str, env_fallback: bool = False) -> str | None:
+        assert env_fallback is False
+        values = {
+            "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
+            "GOOGLE_REFRESH_TOKEN": "test-refresh-token",
+        }
+        return values.get(key)
+
+    store.resolve.side_effect = _resolve
+    return store
+
+
 class _StubMCP:
     """Minimal MCP stub that records registered tool functions."""
 
@@ -728,12 +744,10 @@ class TestCalendarModuleSyncCalendar:
 
 
 class TestCalendarModuleStartupPoller:
-    async def test_poller_started_when_sync_enabled(self, monkeypatch):
+    async def test_poller_started_when_sync_enabled(self):
         """When sync.enabled=True, a background task is started on_startup."""
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret")
-        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "test-refresh-token")
         mod = CalendarModule()
+        credential_store = _make_credential_store()
         config = {"provider": "google", "calendar_id": "primary", "sync": {"enabled": True}}
 
         # Patch _run_sync_poller to prevent it from actually running.
@@ -748,7 +762,7 @@ class TestCalendarModuleStartupPoller:
                 pass
 
         with patch.object(mod, "_run_sync_poller", side_effect=fake_poller):
-            await mod.on_startup(config, db=None)
+            await mod.on_startup(config, db=None, credential_store=credential_store)
 
         try:
             assert mod._sync_task is not None
@@ -757,25 +771,21 @@ class TestCalendarModuleStartupPoller:
                 mod._sync_task.cancel()
             await mod.on_shutdown()
 
-    async def test_poller_not_started_when_sync_disabled(self, monkeypatch):
+    async def test_poller_not_started_when_sync_disabled(self):
         """When sync.enabled=False (default), no background task is created."""
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret")
-        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "test-refresh-token")
         mod = CalendarModule()
+        credential_store = _make_credential_store()
         config = {"provider": "google", "calendar_id": "primary"}
-        await mod.on_startup(config, db=None)
+        await mod.on_startup(config, db=None, credential_store=credential_store)
         try:
             assert mod._sync_task is None
         finally:
             await mod.on_shutdown()
 
-    async def test_on_shutdown_cancels_poller(self, monkeypatch):
+    async def test_on_shutdown_cancels_poller(self):
         """on_shutdown cancels the sync poller task."""
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret")
-        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "test-refresh-token")
         mod = CalendarModule()
+        credential_store = _make_credential_store()
         config = {"provider": "google", "calendar_id": "primary", "sync": {"enabled": True}}
 
         async def fake_poller():
@@ -785,7 +795,7 @@ class TestCalendarModuleStartupPoller:
                 pass
 
         with patch.object(mod, "_run_sync_poller", side_effect=fake_poller):
-            await mod.on_startup(config, db=None)
+            await mod.on_startup(config, db=None, credential_store=credential_store)
 
         task = mod._sync_task
         assert task is not None
@@ -793,14 +803,12 @@ class TestCalendarModuleStartupPoller:
         assert task.done()
         assert mod._sync_task is None
 
-    async def test_on_shutdown_without_poller_is_safe(self, monkeypatch):
+    async def test_on_shutdown_without_poller_is_safe(self):
         """on_shutdown when no poller was started should not raise."""
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "test-client-id")
-        monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "test-client-secret")
-        monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "test-refresh-token")
         mod = CalendarModule()
+        credential_store = _make_credential_store()
         config = {"provider": "google", "calendar_id": "primary"}
-        await mod.on_startup(config, db=None)
+        await mod.on_startup(config, db=None, credential_store=credential_store)
         # Should not raise.
         await mod.on_shutdown()
 

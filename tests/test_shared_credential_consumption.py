@@ -1,22 +1,10 @@
 """Tests for shared Google credential consumption by Gmail and Calendar startup paths.
 
-Verifies that credentials stored in the shared GoogleCredentials store
-(google_credentials.py) can be consumed by:
-- The Gmail connector (GmailConnectorConfig.from_env via canonical GOOGLE_OAUTH_* env vars)
-- The Calendar module (_GoogleOAuthCredentials.from_env via canonical GOOGLE_OAUTH_* env vars)
-
-Also verifies the shared resolve_google_credentials() DB-first + env fallback
-path that both modules can use at startup.
-
-Note: GmailConnectorConfig and the Calendar _GoogleOAuthCredentials each have
-their own env-var resolution. The shared GoogleCredentials.from_env() covers
-all the same variable names. Tests here verify that:
-1. Credentials stored via the OAuth bootstrap flow (GOOGLE_OAUTH_* vars) are
-   accepted by both Gmail connector's from_env() and the shared from_env().
-2. Legacy aliases/legacy blob env vars are rejected by from_env() fallbacks.
-3. Calendar JSON payloads are parseable via _GoogleOAuthCredentials.from_json().
-3. resolve_google_credentials() DB-first + env fallback works end-to-end.
-4. Both callers (gmail, calendar) get the same credentials from a shared DB store.
+Verifies DB-backed credential behavior for:
+- Shared credential persistence helpers (`store_google_credentials`, `load_google_credentials`)
+- Google credential resolution (`resolve_google_credentials`) with no env fallback
+- Gmail connector config hydration from explicitly injected DB-resolved secrets
+- Calendar module startup with CredentialStore-backed resolution
 """
 
 from __future__ import annotations
@@ -89,47 +77,13 @@ def _make_db_conn_with_creds(creds: dict) -> AsyncMock:
 
 
 # ---------------------------------------------------------------------------
-# Shared GoogleCredentials.from_env: accepts both Gmail and Google OAuth vars
+# Shared GoogleCredentials model contract
 # ---------------------------------------------------------------------------
 
 
-class TestGoogleCredentialsFromEnv:
-    """Verify canonical env-var behavior for GoogleCredentials.from_env()."""
-
-    def test_from_env_accepts_google_oauth_prefix_env_vars(self) -> None:
-        """GOOGLE_OAUTH_* env vars (set by OAuth bootstrap) resolve via shared from_env()."""
-        with mock.patch.dict("os.environ", _OAUTH_BOOTSTRAP_ENV, clear=True):
-            creds = GoogleCredentials.from_env()
-
-        assert creds.client_id == _SHARED_CREDS["client_id"]
-        assert creds.client_secret == _SHARED_CREDS["client_secret"]
-        assert creds.refresh_token == _SHARED_CREDS["refresh_token"]
-
-    def test_from_env_accepts_optional_scope(self) -> None:
-        """GOOGLE_OAUTH_SCOPES is captured when present."""
-        with mock.patch.dict(
-            "os.environ",
-            {
-                **_OAUTH_BOOTSTRAP_ENV,
-                "GOOGLE_OAUTH_SCOPES": _SHARED_CREDS["scope"],
-            },
-            clear=True,
-        ):
-            creds = GoogleCredentials.from_env()
-
-        assert creds.scope == _SHARED_CREDS["scope"]
-
-    def test_from_env_rejects_legacy_gmail_prefix_env_vars(self) -> None:
-        """Legacy GMAIL_* aliases are not accepted by from_env()."""
-        with mock.patch.dict("os.environ", _LEGACY_GMAIL_ENV, clear=True):
-            with pytest.raises(MissingGoogleCredentialsError):
-                GoogleCredentials.from_env()
-
-    def test_from_env_rejects_legacy_calendar_json_blob_env_var(self) -> None:
-        """Legacy calendar JSON blob env var is not accepted by from_env()."""
-        with mock.patch.dict("os.environ", _LEGACY_CALENDAR_JSON_BLOB_ENV, clear=True):
-            with pytest.raises(MissingGoogleCredentialsError):
-                GoogleCredentials.from_env()
+class TestGoogleCredentialsModelContract:
+    def test_from_env_factory_is_removed(self) -> None:
+        assert not hasattr(GoogleCredentials, "from_env")
 
 
 class TestGoogleCredentialsFromJsonForCalendar:
@@ -240,24 +194,10 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
 class TestCalendarModuleAcceptsSharedCredentialsFormat:
     """Verify Calendar module credential resolution against shared credential format."""
 
-    def test_calendar_from_env_resolves_all_required_fields(self) -> None:
-        """Calendar's _GoogleOAuthCredentials.from_env() parses canonical env vars."""
+    def test_calendar_from_env_factory_is_removed(self) -> None:
         from butlers.modules.calendar import _GoogleOAuthCredentials
 
-        with mock.patch.dict("os.environ", _OAUTH_BOOTSTRAP_ENV, clear=True):
-            creds = _GoogleOAuthCredentials.from_env()
-
-        assert creds.client_id == _SHARED_CREDS["client_id"]
-        assert creds.client_secret == _SHARED_CREDS["client_secret"]
-        assert creds.refresh_token == _SHARED_CREDS["refresh_token"]
-
-    def test_calendar_raises_when_env_vars_missing(self) -> None:
-        """Calendar's from_env() raises CalendarCredentialError when vars are not set."""
-        from butlers.modules.calendar import CalendarCredentialError, _GoogleOAuthCredentials
-
-        with mock.patch.dict("os.environ", {}, clear=True):
-            with pytest.raises(CalendarCredentialError):
-                _GoogleOAuthCredentials.from_env()
+        assert not hasattr(_GoogleOAuthCredentials, "from_env")
 
     def test_shared_blob_is_compatible_with_calendar_json_parser(self) -> None:
         """A shared credential blob is parseable via Calendar's from_json parser."""
@@ -329,23 +269,20 @@ class TestResolveSharedCredentialsBothCallers:
             with pytest.raises(MissingGoogleCredentialsError):
                 await resolve_google_credentials(conn, caller="gmail")
 
-    async def test_resolve_falls_back_to_google_oauth_env_vars_when_db_empty(self) -> None:
-        """resolve_google_credentials falls back to GOOGLE_OAUTH_* vars (OAuth bootstrap)."""
+    async def test_resolve_raises_when_db_empty_even_if_env_is_populated(self) -> None:
+        """resolve_google_credentials is DB-only and ignores env variables."""
         conn = _make_conn(row_data=None)  # Empty DB
 
         with mock.patch.dict("os.environ", _OAUTH_BOOTSTRAP_ENV, clear=True):
-            result = await resolve_google_credentials(conn, caller="calendar")
-
-        assert result.client_id == _SHARED_CREDS["client_id"]
-        assert result.refresh_token == _SHARED_CREDS["refresh_token"]
+            with pytest.raises(MissingGoogleCredentialsError):
+                await resolve_google_credentials(conn, caller="calendar")
 
     async def test_resolve_raises_when_db_empty_and_no_env_vars(self) -> None:
         """resolve_google_credentials raises MissingGoogleCredentialsError when fully unset."""
         conn = _make_conn(row_data=None)  # Empty DB
 
-        with mock.patch.dict("os.environ", {}, clear=True):
-            with pytest.raises(MissingGoogleCredentialsError) as exc_info:
-                await resolve_google_credentials(conn, caller="gmail")
+        with pytest.raises(MissingGoogleCredentialsError) as exc_info:
+            await resolve_google_credentials(conn, caller="gmail")
 
         msg = str(exc_info.value)
         # Must explain how to fix the problem
@@ -484,14 +421,10 @@ class TestCalendarModuleOnStartupDbFirst:
         assert provider._oauth._credentials.client_id == _SHARED_CREDS["client_id"]
         assert provider._oauth._credentials.refresh_token == _SHARED_CREDS["refresh_token"]
 
-    async def test_on_startup_falls_back_to_env_when_db_pool_is_none(self) -> None:
-        """CalendarModule falls back to env vars when db=None (no pool)."""
+    async def test_on_startup_raises_when_no_credential_store_is_provided(self) -> None:
+        """CalendarModule startup fails without a DB-backed credential store."""
         from butlers.modules.calendar import CalendarModule
 
         mod = CalendarModule()
-        with mock.patch.dict("os.environ", _OAUTH_BOOTSTRAP_ENV, clear=True):
+        with pytest.raises(RuntimeError):
             await mod.on_startup({"provider": "google", "calendar_id": "primary"}, db=None)
-
-        provider = getattr(mod, "_provider")
-        assert provider is not None
-        assert provider._oauth._credentials.client_id == _SHARED_CREDS["client_id"]

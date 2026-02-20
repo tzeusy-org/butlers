@@ -11,6 +11,7 @@ Google OAuth network requests are made.
 from __future__ import annotations
 
 import time
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -27,6 +28,7 @@ from butlers.api.routers.oauth import (
     _TokenExchangeError,
     _validate_and_consume_state,
 )
+from butlers.google_credentials import GoogleAppCredentials
 
 pytestmark = pytest.mark.unit
 
@@ -59,9 +61,47 @@ def clear_states():
     _clear_state_store()
 
 
-def _make_app():
-    """Create a FastAPI test app."""
-    return create_app()
+def _make_app(
+    *,
+    db_client_id: str = "test-client-id.apps.googleusercontent.com",
+    db_client_secret: str = "test-client-secret",
+    db_refresh_token: str | None = "1//fake-refresh-token-from-db",
+    with_db_manager: bool = True,
+):
+    """Create a FastAPI test app with optional DB-backed OAuth credentials."""
+    app = create_app()
+    if not with_db_manager:
+        return app
+
+    secrets = {
+        "GOOGLE_OAUTH_CLIENT_ID": db_client_id,
+        "GOOGLE_OAUTH_CLIENT_SECRET": db_client_secret,
+    }
+    if db_refresh_token is not None:
+        secrets["GOOGLE_REFRESH_TOKEN"] = db_refresh_token
+
+    conn = AsyncMock()
+
+    async def _fetchrow(_query: str, key: str):
+        value = secrets.get(key)
+        if not value:
+            return None
+        return {"secret_value": value}
+
+    conn.fetchrow.side_effect = _fetchrow
+    conn.execute = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    pool = MagicMock()
+    pool.acquire = _acquire
+
+    db_manager = MagicMock()
+    db_manager.credential_shared_pool.return_value = pool
+    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    return app
 
 
 # ---------------------------------------------------------------------------
@@ -202,10 +242,9 @@ class TestOAuthGoogleStart:
         assert len(_state_store) == 1
 
     async def test_start_missing_client_id_returns_503(self):
-        """When GOOGLE_OAUTH_CLIENT_ID is not set, start returns 503."""
-        app = _make_app()
-        env = {**GOOGLE_ENV, "GOOGLE_OAUTH_CLIENT_ID": ""}
-        with patch.dict("os.environ", env, clear=False):
+        """When DB app credentials are missing client_id, start returns 503."""
+        app = _make_app(db_client_id="")
+        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://test",
@@ -594,13 +633,12 @@ class TestOAuthGoogleCallback:
         assert "oauth_error=provider_error" in resp.headers["location"]
 
     async def test_callback_missing_client_secret_returns_503(self):
-        """When GOOGLE_OAUTH_CLIENT_SECRET is missing, callback returns 503."""
-        app = _make_app()
+        """When DB app credentials are missing client_secret, callback returns 503."""
+        app = _make_app(db_client_secret="")
         state = _generate_state()
         _store_state(state)
 
-        env = {**GOOGLE_ENV, "GOOGLE_OAUTH_CLIENT_SECRET": ""}
-        with patch.dict("os.environ", env, clear=False):
+        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://test",
@@ -677,6 +715,15 @@ class TestOAuthCallbackCredentialPersistence:
         with (
             patch.dict("os.environ", GOOGLE_ENV, clear=False),
             patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
+            patch(
+                "butlers.api.routers.oauth.load_app_credentials",
+                AsyncMock(
+                    return_value=GoogleAppCredentials(
+                        client_id=GOOGLE_ENV["GOOGLE_OAUTH_CLIENT_ID"],
+                        client_secret=GOOGLE_ENV["GOOGLE_OAUTH_CLIENT_SECRET"],
+                    )
+                ),
+            ),
             patch("butlers.api.routers.oauth.store_google_credentials", mock_store),
         ):
             async with httpx.AsyncClient(
@@ -695,8 +742,8 @@ class TestOAuthCallbackCredentialPersistence:
         mock_store.assert_awaited_once()
 
     async def test_callback_success_message_indicates_db_unavailable_when_no_manager(self):
-        """When no DB manager, success message clearly reports DB persistence failure."""
-        app = _make_app()
+        """When no DB manager is wired, callback returns 503."""
+        app = _make_app(with_db_manager=False)
         state = _generate_state()
         _store_state(state)
 
@@ -705,6 +752,15 @@ class TestOAuthCallbackCredentialPersistence:
         with (
             patch.dict("os.environ", GOOGLE_ENV, clear=False),
             patch(_EXCHANGE_PATCH_TARGET, mock_exchange),
+            patch(
+                "butlers.api.routers.oauth.load_app_credentials",
+                AsyncMock(
+                    return_value=GoogleAppCredentials(
+                        client_id=GOOGLE_ENV["GOOGLE_OAUTH_CLIENT_ID"],
+                        client_secret=GOOGLE_ENV["GOOGLE_OAUTH_CLIENT_SECRET"],
+                    )
+                ),
+            ),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -715,13 +771,10 @@ class TestOAuthCallbackCredentialPersistence:
                     params={"code": "4/code", "state": state},
                 )
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["success"] is True
-        assert "not persisted to db" in body["message"].lower()
+        assert resp.status_code == 503
 
-    async def test_callback_success_still_returns_200_when_db_persist_fails(self):
-        """DB persistence failure is non-fatal; callback still succeeds."""
+    async def test_callback_returns_503_when_db_store_unavailable(self):
+        """DB-only contract: callback fails if credential store is unavailable."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from butlers.api.routers import oauth as oauth_module
@@ -732,6 +785,7 @@ class TestOAuthCallbackCredentialPersistence:
 
         mock_db_manager = MagicMock()
         mock_db_manager.butler_names = ["switchboard"]
+        mock_db_manager.credential_shared_pool.side_effect = RuntimeError("shared DB unavailable")
         mock_db_manager.pool.side_effect = RuntimeError("DB not available")
 
         # Override FastAPI dependency so callback receives the mock DB manager
@@ -751,6 +805,4 @@ class TestOAuthCallbackCredentialPersistence:
                     params={"code": "4/code", "state": state},
                 )
 
-        # Must succeed even when DB persistence fails
-        assert resp.status_code == 200
-        assert resp.json()["success"] is True
+        assert resp.status_code == 503

@@ -15,12 +15,14 @@ Scenarios:
 from __future__ import annotations
 
 import unittest.mock as mock
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
 from butlers.api.app import create_app
+from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
     _clear_state_store,
     _generate_state,
@@ -67,8 +69,46 @@ def clear_states():
     _clear_state_store()
 
 
-def _make_app():
-    return create_app()
+def _make_app(
+    *,
+    db_client_id: str = "test-client-id.apps.googleusercontent.com",
+    db_client_secret: str = "test-client-secret",
+    db_refresh_token: str | None = "1//fake-refresh-token-from-db",
+    with_db_manager: bool = True,
+):
+    app = create_app()
+    if not with_db_manager:
+        return app
+
+    secrets = {
+        "GOOGLE_OAUTH_CLIENT_ID": db_client_id,
+        "GOOGLE_OAUTH_CLIENT_SECRET": db_client_secret,
+    }
+    if db_refresh_token is not None:
+        secrets["GOOGLE_REFRESH_TOKEN"] = db_refresh_token
+
+    conn = AsyncMock()
+
+    async def _fetchrow(_query: str, key: str):
+        value = secrets.get(key)
+        if not value:
+            return None
+        return {"secret_value": value}
+
+    conn.fetchrow.side_effect = _fetchrow
+    conn.execute = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    pool = MagicMock()
+    pool.acquire = _acquire
+
+    db_manager = MagicMock()
+    db_manager.credential_shared_pool.return_value = pool
+    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    return app
 
 
 # ---------------------------------------------------------------------------
@@ -160,28 +200,13 @@ class TestFullOAuthFlowHappyPath:
 
     async def test_full_flow_credentials_persisted_on_success(self):
         """Successful callback stores credentials in DB via store_google_credentials."""
-        from butlers.api.routers import oauth as oauth_module
-
         app = _make_app()
-
-        # Wire a mock DB manager so credential storage can be verified
-        mock_pool = MagicMock()
-        mock_conn = AsyncMock()
-        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_conn.__aexit__ = AsyncMock(return_value=False)
-        mock_pool.acquire.return_value = mock_conn
-
-        mock_db_manager = MagicMock()
-        mock_db_manager.butler_names = ["switchboard"]
-        mock_db_manager.pool.return_value = mock_pool
 
         state = _generate_state()
         _store_state(state)
 
         mock_exchange = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
         mock_store = AsyncMock()
-
-        app.dependency_overrides[oauth_module._get_db_manager] = lambda: mock_db_manager
 
         with (
             patch.dict("os.environ", GOOGLE_ENV, clear=False),
@@ -342,81 +367,39 @@ class TestPreStartEnforcement:
     """Tests that check startup guard behavior in the context of the OAuth flow."""
 
     def test_startup_guard_blocks_when_no_oauth_credentials(self):
-        """require_google_credentials_or_exit() exits (code 1) when credentials absent."""
-        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
-
-        all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
-        all_vars.append(_CALENDAR_JSON_ENV)
-        cleared = {v: "" for v in all_vars}
-
-        with mock.patch.dict("os.environ", cleared, clear=True):
-            with pytest.raises(SystemExit) as exc_info:
-                require_google_credentials_or_exit(caller="gmail-connector")
+        """require_google_credentials_or_exit() exits under DB-only contract."""
+        with pytest.raises(SystemExit) as exc_info:
+            require_google_credentials_or_exit(caller="gmail-connector")
 
         assert exc_info.value.code == 1
 
-    def test_startup_guard_passes_after_oauth_credentials_set_via_env(self):
-        """After credentials are in env (as if set by OAuth flow), guard passes."""
-        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
-
-        all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
-        all_vars.append(_CALENDAR_JSON_ENV)
-        cleared = {v: "" for v in all_vars}
+    def test_startup_guard_still_blocks_even_with_env_credentials(self):
+        """Env credentials do not bypass DB-only startup guard behavior."""
         good_creds = {
             "GOOGLE_OAUTH_CLIENT_ID": "client-id-123",
             "GOOGLE_OAUTH_CLIENT_SECRET": "client-secret-abc",
             "GOOGLE_REFRESH_TOKEN": "1//refresh-token-xyz",
         }
+        with mock.patch.dict("os.environ", good_creds, clear=True):
+            with pytest.raises(SystemExit):
+                require_google_credentials_or_exit(caller="gmail-connector")
 
-        with mock.patch.dict("os.environ", {**cleared, **good_creds}):
-            # Should not raise SystemExit
-            require_google_credentials_or_exit(caller="gmail-connector")
-
-    def test_startup_guard_reports_which_vars_are_missing(self):
-        """check_google_credentials() reports the canonical missing var names."""
-        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
-
-        all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
-        all_vars.append(_CALENDAR_JSON_ENV)
-        cleared = {v: "" for v in all_vars}
-        # Only client_id is present
-        partial = {"GOOGLE_OAUTH_CLIENT_ID": "present-id"}
-
-        with mock.patch.dict("os.environ", {**cleared, **partial}):
-            result = check_google_credentials()
-
+    def test_startup_guard_reports_db_only_remediation(self):
+        """check_google_credentials() returns DB-only remediation guidance."""
+        result = check_google_credentials()
         assert result.ok is False
-        assert "GOOGLE_OAUTH_CLIENT_SECRET" in result.missing_vars
-        assert "GOOGLE_REFRESH_TOKEN" in result.missing_vars
-        assert "GOOGLE_OAUTH_CLIENT_ID" not in result.missing_vars
+        assert result.missing_vars == []
+        assert "db-managed" in result.message.lower()
 
     def test_startup_guard_skip_mode_does_not_call_exit(self):
         """Simulates --skip-oauth-check: guard check returns result but caller skips exit."""
-        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
-
-        all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
-        all_vars.append(_CALENDAR_JSON_ENV)
-        cleared = {v: "" for v in all_vars}
-
-        # When "skip" mode, caller should use check_google_credentials (not require_or_exit)
-        # to decide whether to proceed. This simulates the --skip-oauth-check flag behavior.
-        with mock.patch.dict("os.environ", cleared, clear=True):
-            result = check_google_credentials()
-
+        # In skip mode the caller checks and decides to continue.
+        result = check_google_credentials()
         assert result.ok is False
-        # In skip mode, the caller would proceed despite result.ok being False.
-        # The key point: check_google_credentials never calls sys.exit().
 
     def test_startup_guard_remediation_mentions_dashboard_oauth(self):
         """Remediation text for missing creds should mention the dashboard OAuth flow."""
-        from butlers.startup_guard import _CALENDAR_JSON_ENV, _CREDENTIAL_FIELD_ALIASES
-
-        all_vars = [v for _, aliases in _CREDENTIAL_FIELD_ALIASES for v in aliases]
-        all_vars.append(_CALENDAR_JSON_ENV)
-        cleared = {v: "" for v in all_vars}
-
-        with mock.patch.dict("os.environ", cleared, clear=True):
-            result = check_google_credentials()
+        result = check_google_credentials()
 
         assert result.ok is False
         remediation = result.remediation.lower()
@@ -434,15 +417,9 @@ class TestDevWorkflowWithMissingCredentials:
 
     async def test_oauth_status_endpoint_reflects_not_configured_when_no_creds(self):
         """GET /api/oauth/status shows not_configured when no credentials are set."""
-        app = _make_app()
-        env = {
-            "GOOGLE_OAUTH_CLIENT_ID": "",
-            "GOOGLE_OAUTH_CLIENT_SECRET": "",
-            "GMAIL_REFRESH_TOKEN": "",
-            "GOOGLE_REFRESH_TOKEN": "",
-        }
+        app = _make_app(db_client_id="", db_client_secret="", db_refresh_token=None)
 
-        with patch.dict("os.environ", env, clear=False):
+        with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://test",
@@ -456,7 +433,7 @@ class TestDevWorkflowWithMissingCredentials:
 
     async def test_oauth_start_still_works_without_stored_refresh_token(self):
         """GET /api/oauth/google/start works even when no token is stored yet."""
-        app = _make_app()
+        app = _make_app(db_refresh_token=None)
 
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
@@ -472,7 +449,7 @@ class TestDevWorkflowWithMissingCredentials:
 
     async def test_multiple_start_calls_create_distinct_states(self):
         """Multiple concurrent /start calls each produce a unique state token."""
-        app = _make_app()
+        app = _make_app(db_refresh_token=None)
 
         states = []
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
@@ -489,14 +466,10 @@ class TestDevWorkflowWithMissingCredentials:
         assert len(set(states)) == 5
 
     async def test_oauth_status_shows_connected_after_credentials_configured(self):
-        """Status changes to connected once credentials are in env (post-OAuth)."""
+        """Status changes to connected once credentials are configured in DB."""
         from butlers.api.models.oauth import OAuthCredentialState, OAuthCredentialStatus
 
         app = _make_app()
-        env_with_token = {
-            **GOOGLE_ENV,
-            "GMAIL_REFRESH_TOKEN": "1//fake-token",
-        }
 
         connected_status = OAuthCredentialStatus(
             state=OAuthCredentialState.connected,
@@ -508,7 +481,7 @@ class TestDevWorkflowWithMissingCredentials:
 
         mock_probe = AsyncMock(return_value=connected_status)
         with (
-            patch.dict("os.environ", env_with_token, clear=False),
+            patch.dict("os.environ", GOOGLE_ENV, clear=False),
             patch("butlers.api.routers.oauth._probe_google_token", mock_probe),
         ):
             async with httpx.AsyncClient(
