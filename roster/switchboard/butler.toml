@@ -4,7 +4,11 @@ port = 40100
 description = "Routes incoming messages to specialist butlers"
 
 [butler.runtime]
+model = "gpt-5.3-codex-spark"
 max_concurrent_sessions = 3
+
+[runtime]
+type = "codex"
 
 [buffer]
 queue_capacity = 100

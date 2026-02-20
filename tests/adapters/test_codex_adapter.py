@@ -389,6 +389,29 @@ async def test_invoke_success():
     assert "do something" in cmd
 
 
+async def test_invoke_passes_model_flag():
+    """invoke() forwards model to Codex CLI when provided."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="run",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            model="gpt-5.3-codex-spark",
+        )
+
+    cmd = mock_sub.call_args[0]
+    assert "--model" in cmd
+    model_idx = cmd.index("--model")
+    assert cmd[model_idx + 1] == "gpt-5.3-codex-spark"
+
+
 async def test_invoke_with_tool_calls():
     """invoke() captures tool calls from Codex output."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")

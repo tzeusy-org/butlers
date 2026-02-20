@@ -3,6 +3,12 @@ name = "general"
 port = 40101
 description = "Flexible catch-all assistant for freeform data"
 
+[butler.runtime]
+model = "gpt-5.3-codex-spark"
+
+[runtime]
+type = "codex"
+
 [butler.db]
 name = "butlers"
 schema = "general"

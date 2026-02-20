@@ -260,6 +260,9 @@ class CodexAdapter(RuntimeAdapter):
             "--quiet",
         ]
 
+        if isinstance(model, str) and model.strip():
+            cmd.extend(["--model", model.strip()])
+
         # Pass system prompt via --instructions flag
         if system_prompt:
             cmd.extend(["--instructions", system_prompt])
