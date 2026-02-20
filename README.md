@@ -79,9 +79,10 @@ Butler Butler Butler ──── each a persistent MCP server daemon
 LLM CLI instances ── ephemeral, locked-down, reason + act
 ```
 
-- Each butler owns a **dedicated PostgreSQL database** (strict isolation)
+- Runtime topology target is **one PostgreSQL database with per-butler schemas + `shared`**
 - Butlers communicate only via MCP tools through the Switchboard
 - Butler configs are **git-based directories** with personality (`CLAUDE.md`), skills, and config (`butler.toml`)
+- Operator source-of-truth for migration/cutover: `docs/operations/one-db-multi-schema-migration.md`
 
 ### Detailed Architecture
 
@@ -163,7 +164,7 @@ graph TB
 
     Spawner --> T1
 
-    subgraph DB["PostgreSQL (per butler)"]
+    subgraph DB["PostgreSQL (one DB, multi-schema)"]
         StateTable[state]
         TasksTable[scheduled_tasks]
         SessionsTable[sessions]
@@ -321,7 +322,7 @@ Each butler service mounts its config directory read-only from `butlers/<name>/`
 | Messenger     | 40104 | Delivery relay — Telegram and email channel outputs    |
 | Dashboard API | 40200 | Web UI backend for monitoring and managing butlers     |
 | Frontend      | 40173 | Vite dev server (development only)                     |
-| PostgreSQL    | 5432 | Shared database server (one DB per butler)             |
+| PostgreSQL    | 5432 | Shared database server (one DB, per-butler schemas)    |
 
 **Note:** OTLP HTTP traces (port 4318) are sent to an external Alloy instance (not exposed locally).
 
@@ -348,6 +349,15 @@ butlers/mybutler/
 ├── AGENTS.md      # Runtime agent notes
 └── skills/        # Skill definitions (future)
 ```
+
+For one-db/multi-schema deployments, update the scaffolded DB target:
+
+```toml
+[butler.db]
+name = "butlers"
+```
+
+Legacy per-butler DB names (for example `butler_<name>`) are migration-only and should not be used for post-cutover runtime traffic.
 
 ## Environment Variables
 
