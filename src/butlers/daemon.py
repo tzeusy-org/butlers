@@ -1150,8 +1150,7 @@ class ButlerDaemon:
         Creates a uvicorn server bound to the configured port and launches it
         in a background task so that ``start()`` returns immediately.
         """
-        app = self.mcp.http_app(transport="sse")
-        app = _McpSseDisconnectGuard(app, butler_name=self.config.name)
+        app = self._build_mcp_http_app(self.mcp, butler_name=self.config.name)
         config = uvicorn.Config(
             app,
             host="0.0.0.0",
@@ -1161,6 +1160,30 @@ class ButlerDaemon:
         )
         self._server = uvicorn.Server(config)
         self._server_task = asyncio.create_task(self._server.serve())
+
+    @staticmethod
+    def _route_signature(route: Any) -> tuple[str, str | None, tuple[str, ...] | None]:
+        methods = getattr(route, "methods", None)
+        normalized_methods = tuple(sorted(str(method) for method in methods)) if methods else None
+        return (type(route).__name__, getattr(route, "path", None), normalized_methods)
+
+    @classmethod
+    def _build_mcp_http_app(cls, mcp: FastMCP, *, butler_name: str) -> Any:
+        """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
+        # Codex and other modern MCP clients use streamable HTTP at /mcp.
+        streamable_app = mcp.http_app(path="/mcp", transport="streamable-http")
+        # Existing internal clients still use SSE at /sse + /messages.
+        sse_app = mcp.http_app(path="/sse", transport="sse")
+
+        seen_routes = {cls._route_signature(route) for route in streamable_app.routes}
+        for route in sse_app.routes:
+            signature = cls._route_signature(route)
+            if signature in seen_routes:
+                continue
+            streamable_app.router.routes.append(route)
+            seen_routes.add(signature)
+
+        return _McpSseDisconnectGuard(streamable_app, butler_name=butler_name)
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
         """Create or reuse a connection pool for daemon-side audit logging.
