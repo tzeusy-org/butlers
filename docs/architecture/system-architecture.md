@@ -154,6 +154,9 @@ graph TB
 ### Key constraints
 
 - **Database isolation**: Each butler owns a dedicated PostgreSQL database. No cross-butler DB access.
+- **Planned topology transition**: Migration target is one PostgreSQL database with per-butler
+  schemas plus `shared` (see `docs/operations/one-db-multi-schema-migration.md`, issue
+  `butlers-1003`).
 - **MCP-only communication**: Butlers interact exclusively through MCP tool calls routed via the Switchboard.
 - **Serial dispatch**: Each butler processes one LLM session at a time (configurable concurrency planned).
 - **Channel egress ownership**: Only the Messenger butler holds bot-scoped send/reply tools.
