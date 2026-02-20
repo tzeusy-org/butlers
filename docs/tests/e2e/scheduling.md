@@ -45,6 +45,23 @@ On startup, the daemon syncs these to the `scheduled_tasks` table:
 await sync_schedules(pool, config.schedules)
 ```
 
+### Cross-Butler Cron Staggering
+
+To reduce synchronized LLM bursts, scheduler next-run timestamps are
+deterministically staggered per butler (using the butler name as the key).
+The offset is cadence-safe:
+
+- It is bounded to at most 15 minutes.
+- It is always less than the cron interval for that task.
+- The task cadence stays unchanged (for example, `*/5` remains every 5 minutes).
+
+Operator guidance:
+
+- Keep canonical cron expressions in `butler.toml` (for example `0 * * * *`,
+  `*/5 * * * *`).
+- Do not manually minute-offset equivalent schedules across butlers unless you
+  intentionally want a specific phase.
+
 ### Task State Machine
 
 ```

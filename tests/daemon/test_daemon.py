@@ -1307,6 +1307,7 @@ class TestScheduleSync:
         assert schedules_arg[0]["name"] == "daily-check"
         assert schedules_arg[0]["cron"] == "0 9 * * *"
         assert schedules_arg[0]["prompt"] == "Do the daily check"
+        assert args[1]["stagger_key"] == "test-butler"
 
 
 class TestModuleCredentials:

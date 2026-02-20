@@ -7,10 +7,11 @@ croniter and dispatches due task prompts to the LLM CLI spawner serially.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -19,11 +20,57 @@ from opentelemetry import trace
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_MAX_STAGGER_SECONDS = 15 * 60
 
-def _next_run(cron: str) -> datetime:
+def _cron_interval_seconds(cron: str, *, now: datetime | None = None) -> int:
+    """Return the interval between the next two occurrences for ``cron``."""
+    anchor = now or datetime.now(UTC)
+    it = croniter(cron, anchor)
+    first = it.get_next(datetime).replace(tzinfo=UTC)
+    second = it.get_next(datetime).replace(tzinfo=UTC)
+    return max(1, int((second - first).total_seconds()))
+
+
+def _stagger_offset_seconds(
+    cron: str,
+    *,
+    stagger_key: str | None = None,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+    now: datetime | None = None,
+) -> int:
+    """Compute a deterministic offset that never exceeds the cron cadence."""
+    if not stagger_key or max_stagger_seconds <= 0:
+        return 0
+
+    cadence_seconds = _cron_interval_seconds(cron, now=now)
+    max_safe_offset = min(max_stagger_seconds, cadence_seconds - 1)
+    if max_safe_offset <= 0:
+        return 0
+
+    digest = hashlib.sha256(stagger_key.encode("utf-8")).digest()
+    bucket = int.from_bytes(digest[:8], byteorder="big", signed=False)
+    return bucket % (max_safe_offset + 1)
+
+
+def _next_run(
+    cron: str,
+    *,
+    stagger_key: str | None = None,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+    now: datetime | None = None,
+) -> datetime:
     """Compute the next run time for a cron expression from now (UTC)."""
-    now = datetime.now(UTC)
-    return croniter(cron, now).get_next(datetime).replace(tzinfo=UTC)
+    anchor = now or datetime.now(UTC)
+    next_run = croniter(cron, anchor).get_next(datetime).replace(tzinfo=UTC)
+    offset_seconds = _stagger_offset_seconds(
+        cron,
+        stagger_key=stagger_key,
+        max_stagger_seconds=max_stagger_seconds,
+        now=anchor,
+    )
+    if offset_seconds:
+        return next_run + timedelta(seconds=offset_seconds)
+    return next_run
 
 
 def _result_to_jsonb(result: Any) -> str | None:
@@ -41,7 +88,13 @@ def _result_to_jsonb(result: Any) -> str | None:
     return json.dumps({"result": str(result)}, default=str)
 
 
-async def sync_schedules(pool: asyncpg.Pool, schedules: list[dict[str, str]]) -> None:
+async def sync_schedules(
+    pool: asyncpg.Pool,
+    schedules: list[dict[str, str]],
+    *,
+    stagger_key: str | None = None,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+) -> None:
     """Sync TOML ``[[butler.schedule]]`` entries to the ``scheduled_tasks`` DB table.
 
     - Insert new tasks with ``source='toml'``
@@ -66,7 +119,11 @@ async def sync_schedules(pool: asyncpg.Pool, schedules: list[dict[str, str]]) ->
         name = entry["name"]
         cron = entry["cron"]
         prompt = entry["prompt"]
-        next_run_at = _next_run(cron)
+        next_run_at = _next_run(
+            cron,
+            stagger_key=stagger_key,
+            max_stagger_seconds=max_stagger_seconds,
+        )
 
         if name in db_by_name:
             existing = db_by_name[name]
@@ -112,7 +169,13 @@ async def sync_schedules(pool: asyncpg.Pool, schedules: list[dict[str, str]]) ->
             logger.info("Disabled removed TOML schedule: %s", name)
 
 
-async def tick(pool: asyncpg.Pool, dispatch_fn) -> int:
+async def tick(
+    pool: asyncpg.Pool,
+    dispatch_fn,
+    *,
+    stagger_key: str | None = None,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+) -> int:
     """Evaluate due tasks and dispatch them.
 
     Queries ``scheduled_tasks`` WHERE ``enabled=true AND next_run_at <= now()``.
@@ -165,7 +228,11 @@ async def tick(pool: asyncpg.Pool, dispatch_fn) -> int:
                 result_json = _result_to_jsonb({"error": str(exc)})
 
             # Always advance next_run_at whether dispatch succeeded or failed
-            next_run_at = _next_run(cron)
+            next_run_at = _next_run(
+                cron,
+                stagger_key=stagger_key,
+                max_stagger_seconds=max_stagger_seconds,
+            )
             await pool.execute(
                 """
                 UPDATE scheduled_tasks
@@ -201,7 +268,15 @@ async def schedule_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-async def schedule_create(pool: asyncpg.Pool, name: str, cron: str, prompt: str) -> uuid.UUID:
+async def schedule_create(
+    pool: asyncpg.Pool,
+    name: str,
+    cron: str,
+    prompt: str,
+    *,
+    stagger_key: str | None = None,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+) -> uuid.UUID:
     """Create a runtime scheduled task.
 
     Validates cron syntax via croniter. Sets ``source='db'``.
@@ -222,7 +297,11 @@ async def schedule_create(pool: asyncpg.Pool, name: str, cron: str, prompt: str)
     if not croniter.is_valid(cron):
         raise ValueError(f"Invalid cron expression: {cron!r}")
 
-    next_run_at = _next_run(cron)
+    next_run_at = _next_run(
+        cron,
+        stagger_key=stagger_key,
+        max_stagger_seconds=max_stagger_seconds,
+    )
     try:
         task_id: uuid.UUID = await pool.fetchval(
             """
@@ -241,7 +320,14 @@ async def schedule_create(pool: asyncpg.Pool, name: str, cron: str, prompt: str)
     return task_id
 
 
-async def schedule_update(pool: asyncpg.Pool, task_id: uuid.UUID, **fields) -> None:
+async def schedule_update(
+    pool: asyncpg.Pool,
+    task_id: uuid.UUID,
+    *,
+    stagger_key: str | None = None,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+    **fields,
+) -> None:
     """Update fields on a scheduled task.
 
     Allowed fields: ``name``, ``cron``, ``prompt``, ``enabled``.
@@ -290,7 +376,11 @@ async def schedule_update(pool: asyncpg.Pool, task_id: uuid.UUID, **fields) -> N
     if "enabled" in fields:
         if fields["enabled"]:
             # Enabling: recompute next_run_at from current cron
-            next_run_at = _next_run(cron)
+            next_run_at = _next_run(
+                cron,
+                stagger_key=stagger_key,
+                max_stagger_seconds=max_stagger_seconds,
+            )
             set_clauses.append(f"next_run_at = ${idx}")
             params.append(next_run_at)
             idx += 1
@@ -301,7 +391,11 @@ async def schedule_update(pool: asyncpg.Pool, task_id: uuid.UUID, **fields) -> N
             idx += 1
     elif "cron" in fields:
         # Cron changed (and enabled not explicitly set): recompute next_run_at
-        next_run_at = _next_run(fields["cron"])
+        next_run_at = _next_run(
+            fields["cron"],
+            stagger_key=stagger_key,
+            max_stagger_seconds=max_stagger_seconds,
+        )
         set_clauses.append(f"next_run_at = ${idx}")
         params.append(next_run_at)
         idx += 1

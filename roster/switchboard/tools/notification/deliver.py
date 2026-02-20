@@ -84,31 +84,6 @@ def _default_notify_request_context(source_butler: str) -> RouteRequestContextV1
     )
 
 
-def _build_notify_request_from_legacy_args(
-    *,
-    channel: str,
-    message: str,
-    recipient: str | None,
-    metadata: dict[str, Any] | None,
-    source_butler: str,
-) -> dict[str, Any]:
-    notify_request: dict[str, Any] = {
-        "schema_version": "notify.v1",
-        "origin_butler": source_butler,
-        "delivery": {
-            "intent": "send",
-            "channel": channel,
-            "message": message,
-        },
-    }
-    if recipient not in (None, ""):
-        notify_request["delivery"]["recipient"] = recipient
-    subject = (metadata or {}).get("subject")
-    if isinstance(subject, str) and subject.strip():
-        notify_request["delivery"]["subject"] = subject.strip()
-    return notify_request
-
-
 def _build_notify_route_envelope(
     notify_request: NotifyRequestV1,
     *,
@@ -334,11 +309,11 @@ async def deliver(
     pool:
         Database connection pool.
     channel:
-        Legacy delivery channel field. Prefer ``notify_request`` envelope input.
+        Direct delivery channel field for switchboard-initiated dispatch.
     message:
-        Legacy notification message body. Prefer ``notify_request`` envelope input.
+        Direct notification message body for switchboard-initiated dispatch.
     recipient:
-        Legacy recipient identifier for direct channel delivery.
+        Recipient identifier for direct channel delivery.
     metadata:
         Optional metadata dict.
     source_butler:
@@ -363,21 +338,12 @@ async def deliver(
 
         envelope_payload: dict[str, Any] | None = notify_request
         if envelope_payload is None and source_butler != "switchboard":
-            if channel in (None, "") or message in (None, ""):
-                error_msg = (
-                    "notify.v1 envelope required for specialist delivery. "
-                    "Provide notify_request with schema_version='notify.v1'."
-                )
-                span.set_status(trace.StatusCode.ERROR, error_msg)
-                return {"error": error_msg, "status": "failed"}
-
-            envelope_payload = _build_notify_request_from_legacy_args(
-                channel=channel,
-                message=message,
-                recipient=recipient,
-                metadata=metadata,
-                source_butler=source_butler,
+            error_msg = (
+                "notify.v1 envelope required for specialist delivery. "
+                "Provide notify_request with schema_version='notify.v1'."
             )
+            span.set_status(trace.StatusCode.ERROR, error_msg)
+            return {"error": error_msg, "status": "failed"}
 
         if envelope_payload is not None:
             try:
