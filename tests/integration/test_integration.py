@@ -37,7 +37,8 @@ CORE_TABLES_SQL = """
     CREATE TABLE IF NOT EXISTS state (
         key TEXT PRIMARY KEY,
         value JSONB NOT NULL DEFAULT '{}',
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        version INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS scheduled_tasks (
@@ -157,6 +158,7 @@ async def _make_pool(postgres_container, sql: str) -> asyncpg.Pool:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestButlerStartupIntegration:
     """Integration test for the complete butler core subsystem lifecycle."""
 
@@ -356,6 +358,7 @@ class TestButlerStartupIntegration:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestSchedulerTickIntegration:
     """Integration test for scheduler tick + dispatch + session logging."""
 
@@ -515,6 +518,7 @@ class TestSchedulerTickIntegration:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestSwitchboardRoutingIntegration:
     """Integration test for switchboard butler registry and routing with real DB."""
 

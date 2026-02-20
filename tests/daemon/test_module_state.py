@@ -136,12 +136,22 @@ def _make_registry(*module_classes: type[Module]) -> ModuleRegistry:
 def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     """Return a mock pool whose fetchval respects a simple in-memory state store."""
     store = state_store if state_store is not None else {}
+    versions: dict[str, int] = {}
     pool = AsyncMock()
 
     async def _fetchval(sql, key, *args):
         if "SELECT value FROM state" in sql:
             val = store.get(key)
             return val  # None if not present
+        if "INSERT INTO state" in sql:
+            # state_set() upserts via fetchval(... RETURNING version)
+            value_str = args[0] if args else None
+            if value_str is not None:
+                store[key] = json.loads(value_str)
+            versions[key] = versions.get(key, 0) + 1
+            return versions[key]
+        if "SELECT version FROM state" in sql:
+            return versions.get(key)
         return MagicMock()
 
     async def _execute(sql, key, *args):
