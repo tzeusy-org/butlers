@@ -133,7 +133,8 @@ class TestInitCommand:
         butler_dir = butlers_dir / "mybot"
         toml_text = (butler_dir / "butler.toml").read_text()
         assert "port = 40100" in toml_text
-        assert 'name = "butler_mybot"' in toml_text
+        assert 'name = "butlers"' in toml_text
+        assert 'schema = "mybot"' in toml_text
 
     def test_init_existing_dir_fails(self, runner, tmp_path):
         butlers_dir = tmp_path / "butlers"

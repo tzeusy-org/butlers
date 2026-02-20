@@ -14,7 +14,8 @@ scanner_grace_s = 10
 scanner_batch_size = 50
 
 [butler.db]
-name = "butler_switchboard"
+name = "butlers"
+schema = "switchboard"
 
 [modules.telegram]
 

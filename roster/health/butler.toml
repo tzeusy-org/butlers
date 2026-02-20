@@ -4,7 +4,8 @@ port = 40103
 description = "Health tracking assistant for measurements, medications, diet, food preferences, nutrition, meals, and symptoms"
 
 [butler.db]
-name = "butler_health"
+name = "butlers"
+schema = "health"
 
 [[butler.schedule]]
 name = "medication-reminder-morning"

@@ -161,6 +161,7 @@ async def get_butler_detail(
         status=status,
         description=config.description,
         db_name=config.db_name,
+        db_schema=config.db_schema,
         modules=modules,
         schedules=schedules,
         skills=skills,

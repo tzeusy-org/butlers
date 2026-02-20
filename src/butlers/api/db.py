@@ -1,8 +1,7 @@
-"""Multi-database connection manager for the dashboard API.
+"""Database connection manager for the dashboard API.
 
-Each butler owns a dedicated PostgreSQL database. The dashboard API needs
-concurrent access to all butler databases. DatabaseManager maintains one
-asyncpg pool per butler and provides utilities for cross-butler queries.
+Maintains one asyncpg pool per butler key and supports both legacy multi-DB
+and one-DB/multi-schema topologies through schema-scoped search_path settings.
 """
 
 from __future__ import annotations
@@ -13,19 +12,19 @@ from typing import Any
 
 import asyncpg
 
-from butlers.db import should_retry_with_ssl_disable
+from butlers.db import schema_search_path, should_retry_with_ssl_disable
 
 logger = logging.getLogger(__name__)
 
 
 class DatabaseManager:
-    """Manages asyncpg connection pools for multiple butler databases.
+    """Manages asyncpg connection pools for multiple butler DB contexts.
 
     Usage::
 
         mgr = DatabaseManager(host="localhost", port=5432, user="postgres", password="postgres")
-        await mgr.add_butler("switchboard")
-        await mgr.add_butler("atlas")
+        await mgr.add_butler("switchboard", db_name="butlers", db_schema="switchboard")
+        await mgr.add_butler("atlas", db_name="butlers", db_schema="general")
 
         pool = mgr.pool("switchboard")
         results = await mgr.fan_out("SELECT count(*) FROM sessions")
@@ -52,7 +51,13 @@ class DatabaseManager:
         self._shared_pool: asyncpg.Pool | None = None
         self._legacy_shared_pool: asyncpg.Pool | None = None
 
-    async def _create_pool(self, *, database: str, log_name: str) -> asyncpg.Pool:
+    async def _create_pool(
+        self,
+        *,
+        database: str,
+        log_name: str,
+        schema: str | None = None,
+    ) -> asyncpg.Pool:
         """Create an asyncpg pool with configured retry behavior."""
         pool_kwargs: dict[str, Any] = {
             "host": self._host,
@@ -63,6 +68,9 @@ class DatabaseManager:
             "min_size": self._min_pool_size,
             "max_size": self._max_pool_size,
         }
+        search_path = schema_search_path(schema)
+        if search_path is not None:
+            pool_kwargs["server_settings"] = {"search_path": search_path}
         if self._ssl is not None:
             pool_kwargs["ssl"] = self._ssl
         try:
@@ -78,7 +86,12 @@ class DatabaseManager:
             )
             return await asyncpg.create_pool(**retry_kwargs)
 
-    async def add_butler(self, butler_name: str, db_name: str | None = None) -> None:
+    async def add_butler(
+        self,
+        butler_name: str,
+        db_name: str | None = None,
+        db_schema: str | None = None,
+    ) -> None:
         """Add a butler database connection pool.
 
         Parameters
@@ -87,33 +100,50 @@ class DatabaseManager:
             The butler's name (used as key for pool lookup).
         db_name:
             The database name. Defaults to butler_name if not provided.
+        db_schema:
+            Optional schema name for one-db multi-schema topology.
         """
         if butler_name in self._pools:
             logger.warning("Butler %s already has a pool; skipping", butler_name)
             return
 
         effective_db = db_name or butler_name
-        pool = await self._create_pool(database=effective_db, log_name=f"butler {butler_name}")
+        pool = await self._create_pool(
+            database=effective_db,
+            log_name=f"butler {butler_name}",
+            schema=db_schema,
+        )
         self._pools[butler_name] = pool
-        logger.info("Added pool for butler: %s (db=%s)", butler_name, effective_db)
+        logger.info(
+            "Added pool for butler: %s (db=%s, schema=%s)",
+            butler_name,
+            effective_db,
+            db_schema or "<default>",
+        )
 
-    async def set_credential_shared_pool(self, db_name: str) -> None:
+    async def set_credential_shared_pool(self, db_name: str, db_schema: str | None = None) -> None:
         """Set the dedicated shared credential DB pool."""
         if self._shared_pool is not None:
             await self._shared_pool.close()
             self._shared_pool = None
-        self._shared_pool = await self._create_pool(database=db_name, log_name="shared credentials")
-        logger.info("Configured shared credential pool (db=%s)", db_name)
+        self._shared_pool = await self._create_pool(
+            database=db_name,
+            log_name="shared credentials",
+            schema=db_schema,
+        )
+        logger.info("Configured shared credential pool (db=%s, schema=%s)", db_name, db_schema)
 
-    async def set_legacy_shared_pool(self, db_name: str) -> None:
+    async def set_legacy_shared_pool(self, db_name: str, db_schema: str | None = None) -> None:
         """Set optional legacy centralized credential DB pool."""
         if self._legacy_shared_pool is not None:
             await self._legacy_shared_pool.close()
             self._legacy_shared_pool = None
         self._legacy_shared_pool = await self._create_pool(
-            database=db_name, log_name="legacy shared credentials"
+            database=db_name,
+            log_name="legacy shared credentials",
+            schema=db_schema,
         )
-        logger.info("Configured legacy credential pool (db=%s)", db_name)
+        logger.info("Configured legacy credential pool (db=%s, schema=%s)", db_name, db_schema)
 
     def credential_shared_pool(self) -> asyncpg.Pool:
         """Return dedicated shared credential pool or raise KeyError."""

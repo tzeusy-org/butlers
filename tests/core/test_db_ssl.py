@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.db import Database
+from butlers.db import Database, schema_search_path
 
 pytestmark = pytest.mark.unit
 
@@ -58,6 +58,29 @@ async def test_connect_passes_ssl_to_asyncpg_pool(mock_create_pool: AsyncMock) -
     assert out is pool
     assert mock_create_pool.await_args is not None
     assert mock_create_pool.await_args.kwargs["ssl"] == "require"
+
+
+@patch("butlers.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_connect_sets_search_path_when_schema_is_configured(
+    mock_create_pool: AsyncMock,
+) -> None:
+    """connect() sets server search_path for schema-scoped topology."""
+    pool = AsyncMock()
+    mock_create_pool.return_value = pool
+
+    db = Database(db_name="butlers", schema="general")
+    out = await db.connect()
+
+    assert out is pool
+    assert mock_create_pool.await_args is not None
+    assert mock_create_pool.await_args.kwargs["server_settings"] == {
+        "search_path": "general,shared,public"
+    }
+
+
+def test_schema_search_path_for_shared_schema() -> None:
+    """Shared schema omits duplicate entries in search_path."""
+    assert schema_search_path("shared") == "shared,public"
 
 
 @patch("butlers.db.asyncpg.connect", new_callable=AsyncMock)
