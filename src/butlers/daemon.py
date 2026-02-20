@@ -50,7 +50,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qs, quote_plus
+from urllib.parse import parse_qs, quote, quote_plus
 
 import asyncpg
 import httpx
@@ -1486,8 +1486,11 @@ class ButlerDaemon:
     def _build_db_url(self) -> str:
         """Build SQLAlchemy-compatible DB URL from Database config."""
         db = self.db
-        base = f"postgresql://{db.user}:{db.password}@{db.host}:{db.port}/{db.db_name}"
-        schema = db.schema if isinstance(getattr(db, "schema", None), str) else None
+        user = quote(db.user, safe="")
+        password = quote(db.password, safe="")
+        db_name = quote(db.db_name, safe="")
+        base = f"postgresql://{user}:{password}@{db.host}:{db.port}/{db_name}"
+        schema = db.schema if isinstance(db.schema, str) else None
         search_path = schema_search_path(schema)
         if search_path is None:
             return base

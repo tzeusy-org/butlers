@@ -40,3 +40,23 @@ def test_build_db_url_legacy_mode_has_no_search_path_options(tmp_path):
     url = daemon._build_db_url()
 
     assert url == "postgresql://butlers:butlers@localhost:5432/butler_general"
+
+
+def test_build_db_url_encodes_credentials_and_db_name(tmp_path):
+    """Special characters in user/password/db name are URL-encoded."""
+    daemon = ButlerDaemon(tmp_path)
+    daemon.db = Database(
+        db_name="butlers prod",
+        schema="general",
+        host="db.internal",
+        port=5432,
+        user="alice+ops",
+        password="s ec/re:t@#",
+    )
+
+    url = daemon._build_db_url()
+
+    assert url.startswith(
+        "postgresql://alice%2Bops:s%20ec%2Fre%3At%40%23@db.internal:5432/butlers%20prod"
+    )
+    assert url.endswith("?options=-csearch_path%3Dgeneral%2Cshared%2Cpublic")
