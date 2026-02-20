@@ -112,18 +112,13 @@ export CONNECTOR_ENDPOINT_IDENTITY="gmail:user:your-email@gmail.com"
 export CONNECTOR_CURSOR_PATH="/path/to/gmail_cursor.json"
 export CONNECTOR_MAX_INFLIGHT="8"
 
-# Gmail OAuth credentials (DB-first resolution recommended)
-# Option 1: DB-first (recommended) — set DATABASE_URL and complete the dashboard OAuth flow
+# Gmail OAuth credentials (DB-managed)
+# Set DB connectivity and complete the dashboard OAuth flow before starting connector
 export DATABASE_URL="postgres://butlers:butlers@localhost:5432/butlers"
 export CONNECTOR_BUTLER_DB_NAME="butler_general"  # optional local override DB
 export BUTLER_SHARED_DB_NAME="butlers"  # shared credential DB (default)
-# App config (always required for OAuth bootstrap):
-export GOOGLE_OAUTH_CLIENT_ID="your-client-id"
-export GOOGLE_OAUTH_CLIENT_SECRET="your-client-secret"
-# After completing the dashboard OAuth flow, no refresh token env var is needed.
-
-# Legacy `GMAIL_*` aliases were removed; use canonical `GOOGLE_OAUTH_*`
-# keys and the dashboard OAuth flow (DB-first credential storage).
+# OAuth app credentials are managed by the dashboard/API side; connector reads
+# runtime Gmail credentials from DB (`butler_secrets`) only.
 
 # Optional: watch renewal and polling intervals
 export GMAIL_WATCH_RENEW_INTERVAL_S="86400"  # 1 day
@@ -133,12 +128,8 @@ export GMAIL_POLL_INTERVAL_S="60"  # 1 minute
 **OAuth Setup (First Time):**
 1. Create OAuth 2.0 credentials in Google Cloud Console
 2. Set redirect URI to `http://localhost:8080` (or your callback URL)
-3. Run OAuth flow to obtain refresh token:
-   ```bash
-   # Use Google OAuth 2.0 Playground or custom script
-   # Scopes needed: https://www.googleapis.com/auth/gmail.readonly
-   ```
-4. Store refresh token in secure secret manager (never commit to repo)
+3. Complete the dashboard OAuth flow to persist credentials in DB-backed secrets
+4. Verify connector has DB connectivity to the shared/local credential schema
 
 **Startup:**
 ```bash
@@ -509,8 +500,6 @@ ERROR: Failed to fetch history changes: 401 Unauthorized
 | `CONNECTOR_ENDPOINT_IDENTITY` | Yes | - | Mailbox identity (e.g., `gmail:user:email@example.com`) |
 | `CONNECTOR_CURSOR_PATH` | Yes | - | Checkpoint file path |
 | `CONNECTOR_MAX_INFLIGHT` | No | `8` | Max concurrent ingest submissions |
-| `GOOGLE_OAUTH_CLIENT_ID` | Yes | - | OAuth client ID (app config for bootstrap) |
-| `GOOGLE_OAUTH_CLIENT_SECRET` | Yes | - | OAuth client secret (app config for bootstrap) |
 | `DATABASE_URL` | No | - | DB URL for DB-first credential resolution |
 | `CONNECTOR_BUTLER_DB_NAME` | No | - | Local butler DB name for per-butler override secrets |
 | `BUTLER_SHARED_DB_NAME` | No | `butlers` | Shared credential DB name |

@@ -74,16 +74,16 @@ Base connector variables:
 - `CONNECTOR_MAX_INFLIGHT` (optional, recommended default `8`)
 - `CONNECTOR_CURSOR_PATH` (required; stores last processed Gmail `historyId`)
 
-Gmail API auth variables (OAuth-based, DB-first resolution):
+Gmail API auth variables (OAuth-based, DB-managed):
 
-The connector resolves Google OAuth credentials using DB-first resolution with env-var
-fallback. This allows credentials stored via the dashboard OAuth flow to be used
-automatically without any env var configuration.
+The connector resolves Google OAuth credentials from DB-backed secret storage
+(`butler_secrets`) only. This allows credentials stored via the dashboard OAuth
+flow to be used automatically without connector credential env vars.
 
 **Resolution order:**
 1. Local override DB: if `CONNECTOR_BUTLER_DB_NAME` is configured, that butler DB is queried first.
 2. Shared credential DB: `BUTLER_SHARED_DB_NAME` (default `butlers`).
-3. Environment variables (canonical fallback).
+3. Startup fails if credentials are missing in DB.
 
 **DB-first variables (recommended):**
 - `DATABASE_URL` (optional; postgres connection URL, e.g., `postgres://user:pass@localhost:5432/butlers`)
@@ -91,16 +91,9 @@ automatically without any env var configuration.
 - `CONNECTOR_BUTLER_DB_NAME` (optional; local butler DB name for per-butler override secrets)
 - `BUTLER_SHARED_DB_NAME` (optional; shared credential DB name, default: `butlers`)
 
-**App config variables (always required for OAuth bootstrap):**
-- `GOOGLE_OAUTH_CLIENT_ID` (required; OAuth client ID — used by dashboard OAuth flow)
-- `GOOGLE_OAUTH_CLIENT_SECRET` (required; OAuth client secret — used by dashboard OAuth flow)
-
-**Canonical env-var fallback (when DB credentials are unavailable):**
-- `GOOGLE_OAUTH_CLIENT_ID`
-- `GOOGLE_OAUTH_CLIENT_SECRET`
-- `GOOGLE_REFRESH_TOKEN`
-
-Legacy aliases (`GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`) are not used.
+**OAuth bootstrap requirement:**
+- Complete dashboard OAuth bootstrap before starting the connector so required
+  Google credentials are stored in DB.
 
 Optional runtime controls:
 - `GMAIL_POLL_INTERVAL_S` (polling interval in seconds, default 60)
