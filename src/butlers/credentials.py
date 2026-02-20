@@ -145,20 +145,39 @@ async def validate_module_credentials_async(
     return failures
 
 
+_RUNTIME_CORE_CREDENTIALS: dict[str, list[str]] = {
+    "claude-code": ["ANTHROPIC_API_KEY"],
+    "gemini": ["GOOGLE_API_KEY"],
+    # "codex" has no core credential requirement (key is in env / adapter config)
+}
+
+
 async def validate_core_credentials_async(
     credential_store: CredentialStore,
+    runtime_type: str = "claude-code",
 ) -> None:
-    """Validate that core credentials (e.g. ANTHROPIC_API_KEY) are resolvable.
+    """Validate that core credentials for the configured runtime are resolvable.
 
     Uses ``CredentialStore.resolve()`` (DB-first, env fallback) so that
     secrets stored in the ``butler_secrets`` table are visible.
+
+    Parameters
+    ----------
+    credential_store:
+        An initialised :class:`~butlers.credential_store.CredentialStore`.
+    runtime_type:
+        The runtime type string (e.g. ``"claude-code"``, ``"codex"``,
+        ``"gemini"``).  Only credentials required by the given runtime
+        are checked.
 
     Raises
     ------
     CredentialError
         If any required core credential cannot be resolved from DB or env.
     """
-    core_keys = ["ANTHROPIC_API_KEY"]
+    core_keys = _RUNTIME_CORE_CREDENTIALS.get(runtime_type, [])
+    if not core_keys:
+        return
     missing = []
     for key in core_keys:
         value = await credential_store.resolve(key)

@@ -813,9 +813,9 @@ class ButlerDaemon:
             logger.warning("Module '%s' disabled: %s", root_mod, error_msg)
         self._cascade_module_failures()
 
-        # 8c. Validate core credentials (ANTHROPIC_API_KEY) via DB-first resolution.
-        # This is fatal — the butler cannot spawn LLM CLI sessions without an API key.
-        await validate_core_credentials_async(credential_store)
+        # 8c. Validate core credentials via DB-first resolution (runtime-aware).
+        # Only credentials required by the configured runtime are checked.
+        await validate_core_credentials_async(credential_store, self.config.runtime.type)
 
         # Filter module_creds to exclude failed modules for spawner.
         active_module_creds = {
