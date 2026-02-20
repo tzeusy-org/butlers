@@ -1,16 +1,15 @@
-"""Active issues aggregation endpoint.
+"""Issues aggregation endpoint.
 
-Scans all butlers for problems: unreachable services, module failures,
-and other anomalies. Returns a sorted list of active issues.
+Aggregates live reachability problems and grouped audit-log error history
+into a single issues feed.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 
@@ -30,8 +29,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/issues", tags=["issues"])
 
 _STATUS_TIMEOUT_S = 5.0
-_AUDIT_LOOKBACK_HOURS = 24
-_AUDIT_MAX_ACTIVE_ISSUES = 200
 _ISSUE_TYPE_MAX_LEN = 80
 
 
@@ -45,20 +42,6 @@ def _get_db_manager_optional() -> DatabaseManager | None:
         return get_db_manager()
     except RuntimeError:
         return None
-
-
-def _safe_request_summary(value: object) -> dict:
-    """Normalize ``request_summary`` payload to a dict."""
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            return {}
-    return {}
 
 
 def _slug(value: str) -> str:
@@ -81,49 +64,64 @@ def _summarize_error(error: str | None) -> str | None:
     return line
 
 
-def _issue_from_audit_row(row) -> Issue | None:
-    """Map one failed audit stream row into an active issue."""
-    butler = str(row["butler"])
-    operation = str(row["operation"])
-    request_summary = _safe_request_summary(row["request_summary"])
-    trigger_source = str(request_summary.get("trigger_source") or "")
-    error_summary = _summarize_error(row["error"])
+def _issue_from_audit_group_row(row) -> Issue:
+    """Map one grouped audit row into an issue entry."""
+    error_message = str(row["error_summary"])
+    butlers = [str(b) for b in (row["butlers"] or [])]
+    if not butlers:
+        butlers = ["unknown"]
 
-    if operation == "session" and trigger_source.startswith("schedule:"):
-        schedule_name = trigger_source.split(":", 1)[1] or "unknown"
-        description = f"Scheduled task '{schedule_name}' failed on '{butler}'"
-        if error_summary:
-            description += f": {error_summary}"
-        return Issue(
-            severity="critical",
-            type=f"scheduled_task_failure:{_slug(schedule_name)}",
-            butler=butler,
-            description=description,
-            link="/audit-log",
+    schedule_names = [str(name) for name in (row["schedule_names"] or [])]
+    has_schedule = bool(row["has_schedule"])
+
+    if has_schedule:
+        severity = "critical"
+        issue_type = (
+            f"scheduled_task_failure:{_slug(schedule_names[0])}"
+            if len(schedule_names) == 1
+            else "scheduled_task_failure:multiple"
         )
+        if len(schedule_names) == 1 and len(butlers) == 1:
+            description = (
+                f"Scheduled task '{schedule_names[0]}' failure on '{butlers[0]}': {error_message}"
+            )
+        elif len(schedule_names) == 1:
+            description = (
+                f"Scheduled task '{schedule_names[0]}' failures across "
+                f"{len(butlers)} butlers: {error_message}"
+            )
+        elif len(butlers) == 1:
+            description = f"Scheduled task failures on '{butlers[0]}': {error_message}"
+        else:
+            description = f"Scheduled task failures across {len(butlers)} butlers: {error_message}"
+    else:
+        severity = "warning"
+        issue_type = f"audit_error_group:{_slug(error_message)}"
+        if len(butlers) == 1:
+            description = f"{error_message} ({butlers[0]})"
+        else:
+            description = f"{error_message} ({len(butlers)} butlers)"
 
-    stream = operation
-    if trigger_source:
-        stream = f"{operation} ({trigger_source})"
-    description = f"Recent '{stream}' error on '{butler}'"
-    if error_summary:
-        description += f": {error_summary}"
-
-    trigger_slug = _slug(trigger_source) if trigger_source else "default"
+    butler = butlers[0] if len(butlers) == 1 else "multiple"
     return Issue(
-        severity="warning",
-        type=f"audit_error:{_slug(operation)}:{trigger_slug}",
+        severity=severity,
+        type=issue_type,
         butler=butler,
         description=description,
         link="/audit-log",
+        error_message=error_message,
+        occurrences=int(row["occurrences"] or 1),
+        first_seen_at=row["first_seen_at"],
+        last_seen_at=row["last_seen_at"],
+        butlers=butlers,
     )
 
 
 async def _list_audit_error_issues(db: DatabaseManager | None) -> list[Issue]:
-    """Return active issues derived from failed audit-log streams.
+    """Return grouped error issues derived from the audit log.
 
-    Active = latest row per ``(butler, operation, trigger_source)`` stream is
-    ``result='error'`` within the lookback window.
+    Grouping key is normalized first-line error message. Each group exposes
+    first/last timestamps and total occurrences.
     """
     if db is None:
         return []
@@ -133,49 +131,58 @@ async def _list_audit_error_issues(db: DatabaseManager | None) -> list[Issue]:
     except KeyError:
         return []
 
-    cutoff = datetime.now(UTC) - timedelta(hours=_AUDIT_LOOKBACK_HOURS)
     try:
         rows = await pool.fetch(
             """
-            WITH latest_stream_events AS (
-                SELECT DISTINCT ON (
+            WITH normalized_errors AS (
+                SELECT
                     butler,
-                    operation,
-                    COALESCE(request_summary->>'trigger_source', '')
-                )
-                    butler,
-                    operation,
-                    request_summary,
-                    result,
-                    error,
-                    created_at
+                    created_at,
+                    COALESCE(
+                        NULLIF(BTRIM(SPLIT_PART(error, E'\n', 1)), ''),
+                        'Unknown error'
+                    ) AS error_summary,
+                    (
+                        operation = 'session'
+                        AND COALESCE(request_summary->>'trigger_source', '') LIKE 'schedule:%'
+                    ) AS is_schedule,
+                    NULLIF(
+                        SPLIT_PART(COALESCE(request_summary->>'trigger_source', ''), ':', 2),
+                        ''
+                    ) AS schedule_name
                 FROM dashboard_audit_log
-                WHERE created_at >= $1
-                ORDER BY
-                    butler,
-                    operation,
-                    COALESCE(request_summary->>'trigger_source', ''),
-                    created_at DESC
+                WHERE result = 'error'
             )
-            SELECT butler, operation, request_summary, result, error, created_at
-            FROM latest_stream_events
-            WHERE result = 'error'
-            ORDER BY created_at DESC
-            LIMIT $2
-            """,
-            cutoff,
-            _AUDIT_MAX_ACTIVE_ISSUES,
+            SELECT
+                error_summary,
+                MIN(created_at) AS first_seen_at,
+                MAX(created_at) AS last_seen_at,
+                COUNT(*)::int AS occurrences,
+                ARRAY_AGG(DISTINCT butler ORDER BY butler) AS butlers,
+                BOOL_OR(is_schedule) AS has_schedule,
+                ARRAY_REMOVE(
+                    ARRAY_AGG(DISTINCT schedule_name ORDER BY schedule_name),
+                    NULL
+                ) AS schedule_names
+            FROM normalized_errors
+            GROUP BY error_summary
+            ORDER BY last_seen_at DESC
+            """
         )
     except Exception:
         logger.warning("Failed to query audit-derived issues", exc_info=True)
         return []
 
-    issues: list[Issue] = []
-    for row in rows:
-        issue = _issue_from_audit_row(row)
-        if issue is not None:
-            issues.append(issue)
-    return issues
+    return [_issue_from_audit_group_row(row) for row in rows]
+
+
+def _last_seen_epoch(ts: datetime | None) -> float:
+    """Return a sortable epoch value for optional timestamps."""
+    if ts is None:
+        return 0.0
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts.timestamp()
 
 
 async def _check_butler_reachability(
@@ -215,14 +222,13 @@ async def list_issues(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     db: DatabaseManager | None = Depends(_get_db_manager_optional),
 ) -> ApiResponse[list[Issue]]:
-    """Return all active issues across butler infrastructure.
+    """Return grouped issues across butler infrastructure.
 
     Checks all butlers in parallel for:
-    - Unreachable services (critical)
-    - Module failures (warning) — stub for now
-    - Notification failures (warning) — stub for now
+    - Unreachable services (critical, live)
+    - Grouped audit failures (warning/critical with first/last seen + count)
 
-    Results sorted by severity (critical first), then butler name.
+    Results are sorted by recency (most recent ``last_seen_at`` first).
     """
     tasks = [_check_butler_reachability(mgr, info) for info in configs]
     reachability_results, audit_issues = await asyncio.gather(
@@ -230,11 +236,28 @@ async def list_issues(
         _list_audit_error_issues(db),
     )
 
-    issues: list[Issue] = [r for r in reachability_results if r is not None]
+    now = datetime.now(UTC)
+    issues: list[Issue] = []
+    for issue in reachability_results:
+        if issue is None:
+            continue
+        issue.error_message = issue.description
+        issue.occurrences = 1
+        issue.first_seen_at = now
+        issue.last_seen_at = now
+        issue.butlers = [issue.butler]
+        issues.append(issue)
+
     issues.extend(audit_issues)
 
-    # Sort: critical first, then by butler name
     severity_order = {"critical": 0, "warning": 1}
-    issues.sort(key=lambda i: (severity_order.get(i.severity, 2), i.butler))
+    issues.sort(
+        key=lambda i: (
+            -_last_seen_epoch(i.last_seen_at),
+            severity_order.get(i.severity, 2),
+            i.butler,
+            i.type,
+        )
+    )
 
     return ApiResponse[list[Issue]](data=issues)

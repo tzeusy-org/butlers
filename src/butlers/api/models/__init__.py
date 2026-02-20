@@ -179,6 +179,11 @@ class Issue(BaseModel):
     butler: str
     description: str
     link: str | None = None
+    error_message: str | None = None
+    occurrences: int = 1
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    butlers: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

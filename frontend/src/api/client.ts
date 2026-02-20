@@ -287,7 +287,7 @@ export function getButlerNotifications(
 // Issues
 // ---------------------------------------------------------------------------
 
-/** Fetch active issues across all butlers. */
+/** Fetch grouped issues across all butlers. */
 export function getIssues(): Promise<ApiResponse<Issue[]>> {
   return apiFetch<ApiResponse<Issue[]>>("/issues");
 }

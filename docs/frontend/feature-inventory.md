@@ -163,9 +163,11 @@ This inventory describes what is implemented today in `frontend/src/**`.
 
 ## Issues (`/issues`)
 
-- Active issues list with severity/butler context.
+- Grouped error/warning list across butlers (grouped by error message).
+- Chronology metadata per group: occurrences + first seen + last seen.
+- Newest-first ordering by latest occurrence time.
 - Dismiss support with local persistence.
-- Polling-backed feed of current operational alerts.
+- Polling-backed feed from `/api/issues`.
 
 ## Audit Log (`/audit-log`)
 

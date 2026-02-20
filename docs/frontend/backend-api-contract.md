@@ -88,6 +88,16 @@ Required query support:
 
 - `GET /api/issues` -> `ApiResponse<Issue[]>`
 
+`Issue` payload requirements:
+
+- Grouped by normalized error message across butlers.
+- Includes chronology metadata:
+  - `occurrences` (aggregate count)
+  - `first_seen_at` (earliest observed timestamp)
+  - `last_seen_at` (latest observed timestamp)
+- Includes `butlers` (distinct butler names participating in the group).
+- Endpoint response ordering is newest-first by `last_seen_at`.
+
 ## Costs Contract
 
 - `GET /api/costs/summary?period={today|7d|30d|90d}` -> `ApiResponse<CostSummary>`

@@ -214,6 +214,11 @@ export interface Issue {
   butler: string;
   description: string;
   link: string | null;
+  error_message?: string | null;
+  occurrences?: number;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  butlers?: string[];
 }
 
 // ---------------------------------------------------------------------------

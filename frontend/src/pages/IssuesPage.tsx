@@ -10,7 +10,7 @@ export default function IssuesPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Issues</h1>
         <p className="text-muted-foreground mt-1">
-          Active operational alerts detected across butlers.
+          Grouped errors and warnings across all butlers, newest first.
         </p>
       </div>
 

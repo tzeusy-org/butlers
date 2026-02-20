@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { formatDistanceToNow } from 'date-fns'
 import { Link } from 'react-router'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
@@ -18,7 +19,15 @@ function getDismissedIssues(): Set<string> {
 }
 
 function issueKey(issue: Issue): string {
-  return `${issue.type}:${issue.butler}`
+  return `${issue.type}:${issue.error_message ?? issue.description}`
+}
+
+function formatWhen(iso: string | null | undefined): string {
+  if (!iso) return 'unknown'
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return 'unknown'
+  const relative = formatDistanceToNow(date, { addSuffix: true })
+  return `${relative} (${date.toLocaleString()})`
 }
 
 interface IssuesPanelProps {
@@ -39,7 +48,7 @@ export default function IssuesPanel({ issues, isLoading }: IssuesPanelProps) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Active Issues</CardTitle>
+          <CardTitle>Issues</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
@@ -56,10 +65,10 @@ export default function IssuesPanel({ issues, isLoading }: IssuesPanelProps) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Active Issues</CardTitle>
+          <CardTitle>Issues</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted-foreground">No active issues</p>
+          <p className="text-sm text-muted-foreground">No issues recorded</p>
         </CardContent>
       </Card>
     )
@@ -72,7 +81,7 @@ export default function IssuesPanel({ issues, isLoading }: IssuesPanelProps) {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Active Issues</CardTitle>
+        <CardTitle>Issues</CardTitle>
         <Badge variant="destructive">{visibleIssues.length}</Badge>
       </CardHeader>
       <CardContent>
@@ -87,9 +96,17 @@ export default function IssuesPanel({ issues, isLoading }: IssuesPanelProps) {
                   <Badge variant={issue.severity === 'critical' ? 'destructive' : 'secondary'}>
                     {issue.severity}
                   </Badge>
-                  <span className="text-sm font-medium">{issue.butler}</span>
+                  <span className="text-sm font-medium">
+                    {issue.butlers && issue.butlers.length > 1
+                      ? `${issue.butlers.length} butlers`
+                      : issue.butler}
+                  </span>
                 </div>
                 <p className="text-sm text-muted-foreground">{issue.description}</p>
+                <p className="text-xs text-muted-foreground">
+                  Seen {issue.occurrences ?? 1}x · First: {formatWhen(issue.first_seen_at)} · Last:{' '}
+                  {formatWhen(issue.last_seen_at)}
+                </p>
               </div>
               <div className="flex items-center gap-1">
                 {issue.link && (

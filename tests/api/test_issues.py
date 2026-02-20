@@ -6,6 +6,7 @@ and graceful handling of edge cases (empty roster, mixed reachability).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -347,15 +348,13 @@ class TestListIssuesEndpoint:
         mock_pool.fetch = AsyncMock(
             return_value=[
                 {
-                    "butler": "switchboard",
-                    "operation": "session",
-                    "request_summary": {
-                        "trigger_source": "schedule:eligibility-sweep",
-                        "session_id": "s-1",
-                    },
-                    "result": "error",
-                    "error": "RuntimeError: sweep failed",
-                    "created_at": "2026-02-20T00:00:00+00:00",
+                    "error_summary": "RuntimeError: sweep failed",
+                    "first_seen_at": datetime(2026, 2, 19, 23, 55, tzinfo=UTC),
+                    "last_seen_at": datetime(2026, 2, 20, 0, 0, tzinfo=UTC),
+                    "occurrences": 3,
+                    "butlers": ["switchboard"],
+                    "has_schedule": True,
+                    "schedule_names": ["eligibility-sweep"],
                 }
             ]
         )
@@ -376,6 +375,9 @@ class TestListIssuesEndpoint:
         assert issues[0]["severity"] == "critical"
         assert issues[0]["type"] == "scheduled_task_failure:eligibility-sweep"
         assert issues[0]["butler"] == "switchboard"
+        assert issues[0]["occurrences"] == 3
+        assert issues[0]["first_seen_at"] == "2026-02-19T23:55:00Z"
+        assert issues[0]["last_seen_at"] == "2026-02-20T00:00:00Z"
         assert "eligibility-sweep" in issues[0]["description"]
 
     async def test_audit_non_schedule_error_surfaces_as_warning(self):
@@ -387,12 +389,13 @@ class TestListIssuesEndpoint:
         mock_pool.fetch = AsyncMock(
             return_value=[
                 {
-                    "butler": "general",
-                    "operation": "trigger",
-                    "request_summary": {"session_id": "s-2"},
-                    "result": "error",
-                    "error": "ValueError: invalid payload",
-                    "created_at": "2026-02-20T00:00:00+00:00",
+                    "error_summary": "ValueError: invalid payload",
+                    "first_seen_at": datetime(2026, 2, 19, 23, 55, tzinfo=UTC),
+                    "last_seen_at": datetime(2026, 2, 20, 0, 0, tzinfo=UTC),
+                    "occurrences": 2,
+                    "butlers": ["general"],
+                    "has_schedule": False,
+                    "schedule_names": [],
                 }
             ]
         )
@@ -411,6 +414,54 @@ class TestListIssuesEndpoint:
         issues = response.json()["data"]
         assert len(issues) == 1
         assert issues[0]["severity"] == "warning"
-        assert issues[0]["type"] == "audit_error:trigger:default"
+        assert issues[0]["type"] == "audit_error_group:valueerror-invalid-payload"
         assert issues[0]["butler"] == "general"
-        assert "trigger" in issues[0]["description"]
+        assert issues[0]["occurrences"] == 2
+        assert "invalid payload" in issues[0]["description"]
+
+    async def test_grouped_errors_sorted_by_most_recent_last_seen(self):
+        """Grouped issues should be ordered by last_seen_at descending."""
+        configs: list[ButlerConnectionInfo] = []
+        mgr = MagicMock(spec=MCPClientManager)
+
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "error_summary": "TimeoutError: upstream slow",
+                    "first_seen_at": datetime(2026, 2, 19, 8, 0, tzinfo=UTC),
+                    "last_seen_at": datetime(2026, 2, 19, 8, 30, tzinfo=UTC),
+                    "occurrences": 7,
+                    "butlers": ["general", "switchboard"],
+                    "has_schedule": False,
+                    "schedule_names": [],
+                },
+                {
+                    "error_summary": "ConnectionError: broker down",
+                    "first_seen_at": datetime(2026, 2, 20, 9, 0, tzinfo=UTC),
+                    "last_seen_at": datetime(2026, 2, 20, 9, 45, tzinfo=UTC),
+                    "occurrences": 4,
+                    "butlers": ["switchboard"],
+                    "has_schedule": False,
+                    "schedule_names": [],
+                },
+            ]
+        )
+        mock_db = MagicMock()
+        mock_db.pool = MagicMock(return_value=mock_pool)
+
+        app = create_app()
+        _override_deps(app, mgr, configs, db=mock_db)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/issues")
+
+        assert response.status_code == 200
+        issues = response.json()["data"]
+        assert len(issues) == 2
+        assert issues[0]["error_message"] == "ConnectionError: broker down"
+        assert issues[0]["last_seen_at"] == "2026-02-20T09:45:00Z"
+        assert issues[1]["error_message"] == "TimeoutError: upstream slow"
+        assert issues[1]["last_seen_at"] == "2026-02-19T08:30:00Z"
