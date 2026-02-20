@@ -2,7 +2,7 @@
 
 Encapsulates all Claude Agent SDK-specific logic:
 - claude_agent_sdk imports (ClaudeAgentOptions, ResultMessage, ToolUseBlock,
-  McpSSEServerConfig, query)
+  McpHttpServerConfig, McpSSEServerConfig, query)
 - MCP config file writing (JSON format with mcpServers key)
 - SDK invocation (building ClaudeAgentOptions, calling query(),
   parsing ResultMessage/ToolUseBlock)
@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, ToolUseBlock, query
-from claude_agent_sdk.types import McpSSEServerConfig
+from claude_agent_sdk.types import McpHttpServerConfig, McpSSEServerConfig
 
+from butlers.core.mcp_urls import resolve_runtime_mcp_transport
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
 logger = logging.getLogger(__name__)
@@ -92,13 +93,20 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             token counts extracted from the SDK's ResultMessage.
         """
         # Build MCP server config objects for SDK
-        sdk_mcp_servers: dict[str, McpSSEServerConfig] = {}
+        sdk_mcp_servers: dict[str, McpHttpServerConfig | McpSSEServerConfig] = {}
         for name, server_cfg in mcp_servers.items():
             if isinstance(server_cfg, dict):
-                sdk_mcp_servers[name] = McpSSEServerConfig(
-                    type="sse",
-                    url=server_cfg["url"],
-                )
+                transport = resolve_runtime_mcp_transport(server_cfg)
+                if transport == "sse":
+                    sdk_mcp_servers[name] = McpSSEServerConfig(
+                        type="sse",
+                        url=server_cfg["url"],
+                    )
+                else:
+                    sdk_mcp_servers[name] = McpHttpServerConfig(
+                        type="http",
+                        url=server_cfg["url"],
+                    )
             else:
                 # Already an McpSSEServerConfig or compatible object
                 sdk_mcp_servers[name] = server_cfg

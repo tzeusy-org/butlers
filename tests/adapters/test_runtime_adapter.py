@@ -262,12 +262,12 @@ def test_claude_code_adapter_build_config_file(tmp_path: Path):
     import json
 
     adapter = ClaudeCodeAdapter()
-    mcp_servers = {"my-butler": {"url": "http://localhost:9100/sse"}}
+    mcp_servers = {"my-butler": {"url": "http://localhost:9100/mcp"}}
     config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
     assert config_path == tmp_path / "mcp.json"
     assert config_path.exists()
     data = json.loads(config_path.read_text())
-    assert data["mcpServers"]["my-butler"]["url"] == "http://localhost:9100/sse"
+    assert data["mcpServers"]["my-butler"]["url"] == "http://localhost:9100/mcp"
 
 
 def test_claude_code_adapter_create_worker_preserves_constructor_args(tmp_path: Path):
@@ -336,7 +336,7 @@ async def test_claude_code_adapter_invoke_with_mock():
     result_text, tool_calls, usage = await adapter.invoke(
         prompt="hi",
         system_prompt="you are helpful",
-        mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
         env={"ANTHROPIC_API_KEY": "sk-test"},
     )
     assert result_text == "Hello!"
@@ -369,7 +369,7 @@ async def test_claude_code_adapter_invoke_with_tool_calls():
     result_text, tool_calls, usage = await adapter.invoke(
         prompt="use tools",
         system_prompt="you are helpful",
-        mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
         env={},
     )
     assert result_text == "Done"
@@ -399,7 +399,7 @@ async def test_claude_code_adapter_invoke_captures_usage():
     result_text, tool_calls, usage = await adapter.invoke(
         prompt="test",
         system_prompt="you are helpful",
-        mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
         env={},
     )
     assert result_text == "With usage!"
@@ -429,11 +429,73 @@ async def test_claude_code_adapter_invoke_none_usage():
     result_text, tool_calls, usage = await adapter.invoke(
         prompt="test",
         system_prompt="you are helpful",
-        mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
         env={},
     )
     assert result_text == "No usage"
     assert usage is None
+
+
+async def test_claude_code_adapter_uses_http_transport_for_streamable_mcp():
+    """ClaudeCodeAdapter uses MCP HTTP transport for streamable endpoints."""
+    from claude_agent_sdk import ResultMessage
+
+    captured_options = {}
+
+    async def mock_query(*, prompt, options):
+        captured_options["mcp_servers"] = options.mcp_servers
+        yield ResultMessage(
+            subtype="result",
+            duration_ms=10,
+            duration_api_ms=8,
+            is_error=False,
+            num_turns=1,
+            session_id="test",
+            total_cost_usd=0.0,
+            usage={},
+            result="ok",
+        )
+
+    adapter = ClaudeCodeAdapter(sdk_query=mock_query)
+    await adapter.invoke(
+        prompt="test",
+        system_prompt="sys",
+        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
+        env={},
+    )
+
+    assert captured_options["mcp_servers"]["test"]["type"] == "http"
+
+
+async def test_claude_code_adapter_keeps_sse_transport_for_legacy_sse_url():
+    """ClaudeCodeAdapter keeps SSE transport for legacy `/sse` endpoints."""
+    from claude_agent_sdk import ResultMessage
+
+    captured_options = {}
+
+    async def mock_query(*, prompt, options):
+        captured_options["mcp_servers"] = options.mcp_servers
+        yield ResultMessage(
+            subtype="result",
+            duration_ms=10,
+            duration_api_ms=8,
+            is_error=False,
+            num_turns=1,
+            session_id="test",
+            total_cost_usd=0.0,
+            usage={},
+            result="ok",
+        )
+
+    adapter = ClaudeCodeAdapter(sdk_query=mock_query)
+    await adapter.invoke(
+        prompt="test",
+        system_prompt="sys",
+        mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+        env={},
+    )
+
+    assert captured_options["mcp_servers"]["test"]["type"] == "sse"
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +528,7 @@ async def test_claude_code_adapter_passes_stderr_options_when_butler_name_set(tm
     await adapter.invoke(
         prompt="hi",
         system_prompt="sys",
-        mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
         env={},
     )
 
@@ -508,7 +570,7 @@ async def test_claude_code_adapter_no_stderr_without_butler_name():
     await adapter.invoke(
         prompt="hi",
         system_prompt="sys",
-        mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+        mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
         env={},
     )
 
@@ -530,7 +592,7 @@ async def test_claude_code_adapter_stderr_closed_on_error(tmp_path: Path):
         await adapter.invoke(
             prompt="hi",
             system_prompt="sys",
-            mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+            mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
             env={},
         )
 

@@ -205,12 +205,12 @@ def test_parse_system_prompt_both_empty(tmp_path: Path):
 def test_build_config_file_writes_gemini_mcp_json(tmp_path: Path):
     """build_config_file() writes gemini_mcp.json with mcpServers key."""
     adapter = GeminiAdapter()
-    mcp_servers = {"my-butler": {"url": "http://localhost:9100/sse"}}
+    mcp_servers = {"my-butler": {"url": "http://localhost:9100/mcp"}}
     config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
     assert config_path == tmp_path / "gemini_mcp.json"
     assert config_path.exists()
     data = json.loads(config_path.read_text())
-    assert data["mcpServers"]["my-butler"]["url"] == "http://localhost:9100/sse"
+    assert data["mcpServers"]["my-butler"]["url"] == "http://localhost:9100/mcp"
 
 
 def test_build_config_file_empty_servers(tmp_path: Path):
@@ -225,8 +225,8 @@ def test_build_config_file_multiple_servers(tmp_path: Path):
     """build_config_file() handles multiple MCP servers."""
     adapter = GeminiAdapter()
     mcp_servers = {
-        "butler-a": {"url": "http://localhost:9100/sse"},
-        "butler-b": {"url": "http://localhost:9200/sse"},
+        "butler-a": {"url": "http://localhost:9100/mcp"},
+        "butler-b": {"url": "http://localhost:9200/mcp"},
     }
     config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
     data = json.loads(config_path.read_text())
@@ -481,7 +481,7 @@ async def test_invoke_success():
         result_text, tool_calls, usage = await adapter.invoke(
             prompt="do something",
             system_prompt="you are helpful",
-            mcp_servers={"test": {"url": "http://localhost:9100/sse"}},
+            mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
             env={"GOOGLE_API_KEY": "gk-test"},
         )
 
