@@ -38,3 +38,59 @@ Fixing issue butlers-2bq.7:
 
 Summary: scanned 746 issues, modified 9 issues, fixed 9 dependencies
 ```
+
+## one_db_data_migration.py
+
+Backfill and parity utility for the one-DB multi-schema migration (`butlers-1003.4`).
+
+### What it provides
+
+- Deterministic source -> target data copy with upsert semantics (`migrate`/`run`)
+- Staged dry-run support (`plan` and `migrate --dry-run`)
+- Strict parity verification over required tables (`verify`)
+- JSON report artifacts for migration records (`--report-path`)
+- Rollback helper that truncates migrated target tables (`rollback`)
+
+### Required DSN environment variables
+
+- Target one-DB DSN (default env key): `BUTLERS_DATABASE_URL`
+- Source per-butler DSNs (provided via `--source-env`, e.g. `general=BUTLER_GENERAL_DATABASE_URL`)
+- Shared source DSN (default env key): `BUTLER_SHARED_DATABASE_URL`
+
+### Example commands
+
+```bash
+# 1) Staging dry-run (no writes)
+python scripts/one_db_data_migration.py plan \
+  --target-env BUTLERS_DATABASE_URL \
+  --source-env general=BUTLER_GENERAL_DATABASE_URL \
+  --source-env relationship=BUTLER_RELATIONSHIP_DATABASE_URL \
+  --shared-source-env BUTLER_SHARED_DATABASE_URL \
+  --report-path .tmp/migration/plan.json
+
+python scripts/one_db_data_migration.py migrate \
+  --target-env BUTLERS_DATABASE_URL \
+  --source-env general=BUTLER_GENERAL_DATABASE_URL \
+  --source-env relationship=BUTLER_RELATIONSHIP_DATABASE_URL \
+  --shared-source-env BUTLER_SHARED_DATABASE_URL \
+  --dry-run \
+  --report-path .tmp/migration/migrate-dry-run.json
+
+# 2) Execute backfill + parity checks
+python scripts/one_db_data_migration.py run \
+  --target-env BUTLERS_DATABASE_URL \
+  --source-env general=BUTLER_GENERAL_DATABASE_URL \
+  --source-env relationship=BUTLER_RELATIONSHIP_DATABASE_URL \
+  --shared-source-env BUTLER_SHARED_DATABASE_URL \
+  --replace-target \
+  --report-path .tmp/migration/run.json
+
+# 3) If cutover attempt fails, clear migrated target data
+python scripts/one_db_data_migration.py rollback \
+  --target-env BUTLERS_DATABASE_URL \
+  --source-env general=BUTLER_GENERAL_DATABASE_URL \
+  --source-env relationship=BUTLER_RELATIONSHIP_DATABASE_URL \
+  --shared-source-env BUTLER_SHARED_DATABASE_URL \
+  --confirm-rollback ROLLBACK \
+  --report-path .tmp/migration/rollback.json
+```
