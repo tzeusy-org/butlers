@@ -444,6 +444,38 @@ class TestRouteExecuteRequestContextInjection:
         assert 'intent="reply"' in context_arg
         assert "notify()" in context_arg
 
+    async def test_interactive_channel_guidance_requires_request_context_for_notify(
+        self, tmp_path: Path
+    ) -> None:
+        """Interactive guidance should require passing request_context to notify()."""
+        patches = _patch_infra()
+        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
+        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+        assert route_execute_fn is not None
+
+        mock_trigger_result = MagicMock()
+        mock_trigger_result.output = "ok"
+        mock_trigger_result.success = True
+        mock_trigger_result.error = None
+        mock_trigger_result.duration_ms = 10
+        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+
+        result = await route_execute_fn(
+            schema_version="route.v1",
+            request_context=_route_request_context(source_channel="telegram"),
+            input={"prompt": "Follow up with the user."},
+        )
+
+        await asyncio.sleep(0.05)
+        assert result["status"] == "accepted"
+        context_arg = daemon.spawner.trigger.call_args.kwargs.get("context")
+        assert "INTERACTIVE DATA SOURCE" in context_arg
+        assert 'channel="telegram"' in context_arg
+        assert 'intent="reply"' in context_arg
+        assert "notify()" in context_arg
+        assert "Pass the request_context" in context_arg
+        assert "telegram only" in context_arg
+
     async def test_non_interactive_channel_omits_guidance(self, tmp_path: Path) -> None:
         """MCP source_channel does NOT inject INTERACTIVE DATA SOURCE block."""
         patches = _patch_infra()
