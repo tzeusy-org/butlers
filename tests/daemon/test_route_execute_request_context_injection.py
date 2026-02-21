@@ -475,6 +475,11 @@ class TestRouteExecuteRequestContextInjection:
         assert "notify()" in context_arg
         assert "Pass the request_context" in context_arg
         assert "telegram only" in context_arg
+        assert "request_id" in context_arg
+        assert "source_channel" in context_arg
+        assert "source_endpoint_identity" in context_arg
+        assert "source_sender_identity" in context_arg
+        assert "source_thread_identity" in context_arg
 
     async def test_non_interactive_channel_omits_guidance(self, tmp_path: Path) -> None:
         """MCP source_channel does NOT inject INTERACTIVE DATA SOURCE block."""
