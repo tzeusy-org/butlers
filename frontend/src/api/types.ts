@@ -563,6 +563,18 @@ export interface ContactListResponse {
   total: number;
 }
 
+/** Response payload for a manual contacts sync trigger. */
+export interface ContactsSyncTriggerResponse {
+  provider: string;
+  mode: "incremental" | "full";
+  created: number | null;
+  updated: number | null;
+  skipped: number | null;
+  errors: number | null;
+  summary: Record<string, unknown>;
+  message: string | null;
+}
+
 /** Paginated group list response. */
 export interface GroupListResponse {
   groups: Group[];

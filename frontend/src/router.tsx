@@ -50,6 +50,7 @@ export const router = createBrowserRouter(
         { path: '/audit-log', element: <AuditLogPage /> },
         { path: '/approvals', element: <ApprovalsPage /> },
         { path: '/approvals/rules', element: <ApprovalRulesPage /> },
+        { path: '/butlers/contacts', element: <ContactsPage /> },
         { path: '/contacts', element: <ContactsPage /> },
         { path: '/contacts/:contactId', element: <ContactDetailPage /> },
         { path: '/groups', element: <GroupsPage /> },

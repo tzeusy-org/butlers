@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { toast } from "sonner";
 
+import { triggerContactsSync } from "@/api/index.ts";
 import type { ContactParams } from "@/api/types";
 import ContactTable from "@/components/relationship/ContactTable";
 import { Button } from "@/components/ui/button";
@@ -26,6 +28,7 @@ export default function ContactsPage() {
   const [search, setSearch] = useState("");
   const [activeLabel, setActiveLabel] = useState("");
   const [page, setPage] = useState(0);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const params: ContactParams = {
     q: search || undefined,
@@ -34,7 +37,7 @@ export default function ContactsPage() {
     limit: PAGE_SIZE,
   };
 
-  const { data, isLoading } = useContacts(params);
+  const { data, isLoading, refetch } = useContacts(params);
   const { data: labels } = useLabels();
 
   const contacts = data?.contacts ?? [];
@@ -54,14 +57,50 @@ export default function ContactsPage() {
     setPage(0);
   }
 
+  async function handleSyncFromGoogle() {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    try {
+      const result = await triggerContactsSync("incremental");
+      await refetch();
+      const stats = [
+        result.created != null ? `${result.created} created` : null,
+        result.updated != null ? `${result.updated} updated` : null,
+        result.skipped != null ? `${result.skipped} skipped` : null,
+        result.errors != null ? `${result.errors} errors` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+
+      toast.success(
+        result.message ?? (stats ? `Google sync complete: ${stats}` : "Google sync complete"),
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Google sync failed: ${message}`);
+    } finally {
+      setIsSyncing(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Page heading */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Contacts</h1>
-        <p className="text-muted-foreground mt-1">
-          Manage your personal and professional contacts.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Contacts</h1>
+          <p className="text-muted-foreground mt-1">
+            Manage your personal and professional contacts.
+          </p>
+        </div>
+        <Button
+          onClick={handleSyncFromGoogle}
+          disabled={isSyncing}
+          aria-label="Sync From Google"
+        >
+          {isSyncing ? "Syncing..." : "Sync From Google"}
+        </Button>
       </div>
 
       {/* Contact table */}
