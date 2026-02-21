@@ -83,7 +83,7 @@ class TestSpawnerMcpServers:
             await spawner.trigger(prompt="test", trigger_source="trigger")
 
         mcp_servers = adapter.calls[0]["mcp_servers"]
-        assert mcp_servers == {"test-butler": {"url": "http://localhost:9100/sse"}}
+        assert mcp_servers == {"test-butler": {"url": "http://localhost:9100/mcp"}}
 
     async def test_only_butler_mcp_server_is_present_with_memory_disabled(self, tmp_path: Path):
         config = _make_config(modules={})
@@ -98,7 +98,7 @@ class TestSpawnerMcpServers:
             mock_fetch.assert_not_called()
 
         mcp_servers = adapter.calls[0]["mcp_servers"]
-        assert mcp_servers == {"test-butler": {"url": "http://localhost:9100/sse"}}
+        assert mcp_servers == {"test-butler": {"url": "http://localhost:9100/mcp"}}
 
 
 class TestMemoryFetchGating:

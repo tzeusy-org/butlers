@@ -28,6 +28,7 @@ from opentelemetry.context import Context
 from butlers.config import ButlerConfig
 from butlers.core.audit import write_audit_entry
 from butlers.core.logging import resolve_log_root
+from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.sessions import session_complete, session_create
@@ -583,7 +584,7 @@ class Spawner:
             # Build MCP server config for the adapter
             mcp_servers: dict[str, Any] = {
                 self._config.name: {
-                    "url": f"http://localhost:{self._config.port}/sse",
+                    "url": runtime_mcp_url(self._config.port),
                 },
             }
 
