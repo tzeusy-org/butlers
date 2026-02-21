@@ -21,6 +21,67 @@ from opentelemetry import trace
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_STAGGER_SECONDS = 15 * 60
+_DISPATCH_MODE_PROMPT = "prompt"
+_DISPATCH_MODE_JOB = "job"
+_ALLOWED_DISPATCH_MODES = {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
+
+
+def _normalize_dispatch_mode(value: Any, *, context: str) -> str:
+    """Normalize and validate a schedule dispatch mode value."""
+    if not isinstance(value, str):
+        raise ValueError(f"{context}.dispatch_mode must be a string")
+    normalized = value.strip().lower()
+    if normalized not in _ALLOWED_DISPATCH_MODES:
+        raise ValueError(
+            f"Invalid {context}.dispatch_mode: {value!r}. "
+            f"Expected one of {sorted(_ALLOWED_DISPATCH_MODES)!r}."
+        )
+    return normalized
+
+
+def _normalize_schedule_dispatch(
+    *,
+    dispatch_mode: Any,
+    prompt: Any,
+    job_name: Any,
+    job_args: Any,
+    context: str,
+) -> tuple[str, str | None, str | None, dict[str, Any] | None]:
+    """Validate mode-specific dispatch fields and return normalized values."""
+    mode = _normalize_dispatch_mode(dispatch_mode, context=context)
+
+    if prompt is not None and not isinstance(prompt, str):
+        raise ValueError(f"{context}.prompt must be a string when set")
+    if job_name is not None and not isinstance(job_name, str):
+        raise ValueError(f"{context}.job_name must be a string when set")
+    if job_args is not None and not isinstance(job_args, dict):
+        raise ValueError(f"{context}.job_args must be a dict/object when set")
+
+    if mode == _DISPATCH_MODE_PROMPT:
+        if prompt is None or not prompt.strip():
+            raise ValueError(
+                f"{context} with dispatch_mode={_DISPATCH_MODE_PROMPT!r} requires non-empty prompt"
+            )
+        if job_name is not None:
+            raise ValueError(
+                f"{context}.job_name is only valid when dispatch_mode={_DISPATCH_MODE_JOB!r}"
+            )
+        if job_args is not None:
+            raise ValueError(
+                f"{context}.job_args is only valid when dispatch_mode={_DISPATCH_MODE_JOB!r}"
+            )
+        return mode, prompt, None, None
+
+    if prompt is not None:
+        raise ValueError(
+            f"{context}.prompt is not allowed when dispatch_mode={_DISPATCH_MODE_JOB!r}"
+        )
+    if job_name is None or not job_name.strip():
+        raise ValueError(
+            f"{context} with dispatch_mode={_DISPATCH_MODE_JOB!r} requires non-empty job_name"
+        )
+
+    return mode, None, job_name.strip(), dict(job_args) if job_args is not None else None
 
 
 def _cron_interval_seconds(cron: str, *, now: datetime | None = None) -> int:
@@ -89,9 +150,32 @@ def _result_to_jsonb(result: Any) -> str | None:
     return json.dumps({"result": str(result)}, default=str)
 
 
+def _dict_to_jsonb(value: dict[str, Any] | None) -> str | None:
+    """Convert a dict payload to a JSON string suitable for JSONB binding."""
+    if value is None:
+        return None
+    return json.dumps(value, default=str)
+
+
+def _jsonb_to_dict(value: Any, *, context: str) -> dict[str, Any] | None:
+    """Normalize JSONB payloads that may come back as dicts or JSON strings."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{context}.job_args contains invalid JSON") from exc
+        if isinstance(decoded, dict):
+            return decoded
+    raise ValueError(f"{context}.job_args must decode to an object")
+
+
 async def sync_schedules(
     pool: asyncpg.Pool,
-    schedules: list[dict[str, str]],
+    schedules: list[dict[str, Any]],
     *,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
@@ -106,20 +190,61 @@ async def sync_schedules(
 
     Args:
         pool: asyncpg connection pool.
-        schedules: List of dicts with keys ``name``, ``cron``, ``prompt``.
+        schedules: List of dicts with schedule fields.
     """
-    toml_names = {s["name"] for s in schedules}
+    normalized_schedules: list[dict[str, Any]] = []
+    for i, schedule in enumerate(schedules):
+        schedule_path = f"schedules[{i}]"
+        if not isinstance(schedule, dict):
+            raise ValueError(f"{schedule_path} must be a dict/object")
+
+        name = schedule.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{schedule_path}.name must be a non-empty string")
+
+        cron = schedule.get("cron")
+        if not isinstance(cron, str) or not cron.strip():
+            raise ValueError(f"{schedule_path}.cron must be a non-empty string")
+        if not croniter.is_valid(cron):
+            raise ValueError(f"Invalid {schedule_path}.cron: {cron!r}")
+
+        dispatch_mode, prompt, job_name, job_args = _normalize_schedule_dispatch(
+            dispatch_mode=schedule.get("dispatch_mode", _DISPATCH_MODE_PROMPT),
+            prompt=schedule.get("prompt"),
+            job_name=schedule.get("job_name"),
+            job_args=schedule.get("job_args"),
+            context=schedule_path,
+        )
+        normalized_schedules.append(
+            {
+                "name": name,
+                "cron": cron,
+                "dispatch_mode": dispatch_mode,
+                "prompt": prompt,
+                "job_name": job_name,
+                "job_args": job_args,
+            }
+        )
+
+    toml_names = {s["name"] for s in normalized_schedules}
 
     # Fetch existing TOML-sourced tasks
     rows = await pool.fetch(
-        "SELECT id, name, cron, prompt, enabled FROM scheduled_tasks WHERE source = 'toml'"
+        """
+        SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args, enabled
+        FROM scheduled_tasks
+        WHERE source = 'toml'
+        """
     )
     db_by_name: dict[str, asyncpg.Record] = {row["name"]: row for row in rows}
 
-    for entry in schedules:
+    for entry in normalized_schedules:
         name = entry["name"]
         cron = entry["cron"]
         prompt = entry["prompt"]
+        dispatch_mode = entry["dispatch_mode"]
+        job_name = entry["job_name"]
+        job_args = entry["job_args"]
         next_run_at = _next_run(
             cron,
             stagger_key=stagger_key,
@@ -128,18 +253,38 @@ async def sync_schedules(
 
         if name in db_by_name:
             existing = db_by_name[name]
-            # Update if cron or prompt changed, or if task was disabled
-            if existing["cron"] != cron or existing["prompt"] != prompt or not existing["enabled"]:
+            existing_job_args = _jsonb_to_dict(
+                existing["job_args"],
+                context=f"scheduled_tasks[{name}]",
+            )
+            # Update if schedule payload changed, or if task was disabled.
+            if (
+                existing["cron"] != cron
+                or existing["dispatch_mode"] != dispatch_mode
+                or existing["prompt"] != prompt
+                or existing["job_name"] != job_name
+                or existing_job_args != job_args
+                or not existing["enabled"]
+            ):
                 await pool.execute(
                     """
                     UPDATE scheduled_tasks
-                    SET cron = $2, prompt = $3, next_run_at = $4,
-                        enabled = true, updated_at = now()
+                    SET cron = $2,
+                        dispatch_mode = $3,
+                        prompt = $4,
+                        job_name = $5,
+                        job_args = $6,
+                        next_run_at = $7,
+                        enabled = true,
+                        updated_at = now()
                     WHERE id = $1
                     """,
                     existing["id"],
                     cron,
+                    dispatch_mode,
                     prompt,
+                    job_name,
+                    _dict_to_jsonb(job_args),
                     next_run_at,
                 )
                 logger.info("Updated TOML schedule: %s", name)
@@ -147,12 +292,25 @@ async def sync_schedules(
             # Insert new TOML task
             await pool.execute(
                 """
-                INSERT INTO scheduled_tasks (name, cron, prompt, source, enabled, next_run_at)
-                VALUES ($1, $2, $3, 'toml', true, $4)
+                INSERT INTO scheduled_tasks (
+                    name,
+                    cron,
+                    dispatch_mode,
+                    prompt,
+                    job_name,
+                    job_args,
+                    source,
+                    enabled,
+                    next_run_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, 'toml', true, $7)
                 """,
                 name,
                 cron,
+                dispatch_mode,
                 prompt,
+                job_name,
+                _dict_to_jsonb(job_args),
                 next_run_at,
             )
             logger.info("Inserted TOML schedule: %s", name)
@@ -200,7 +358,7 @@ async def tick(
         now = datetime.now(UTC)
         rows = await pool.fetch(
             """
-            SELECT id, name, cron, prompt
+            SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args
             FROM scheduled_tasks
             WHERE enabled = true AND next_run_at <= $1
             ORDER BY next_run_at
@@ -217,10 +375,24 @@ async def tick(
             name = row["name"]
             prompt = row["prompt"]
             cron = row["cron"]
+            dispatch_mode = row["dispatch_mode"]
+            job_name = row["job_name"]
+            job_args = _jsonb_to_dict(row["job_args"], context=f"scheduled_tasks[{name}]")
 
             result_json: str | None = None
             try:
-                result = await dispatch_fn(prompt=prompt, trigger_source=f"schedule:{name}")
+                if dispatch_mode == _DISPATCH_MODE_PROMPT:
+                    result = await dispatch_fn(prompt=prompt, trigger_source=f"schedule:{name}")
+                elif dispatch_mode == _DISPATCH_MODE_JOB:
+                    result = await dispatch_fn(
+                        job_name=job_name,
+                        job_args=job_args,
+                        trigger_source=f"schedule:{name}",
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Unsupported dispatch_mode {dispatch_mode!r} for scheduled task {name!r}"
+                    )
                 result_json = _result_to_jsonb(result)
                 dispatched += 1
                 logger.info("Dispatched scheduled task: %s", name)
@@ -259,22 +431,33 @@ async def schedule_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     """
     rows = await pool.fetch(
         """
-        SELECT id, name, cron, prompt, source, enabled,
+        SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args, source, enabled,
                next_run_at, last_run_at, last_result,
                created_at, updated_at
         FROM scheduled_tasks
         ORDER BY name
         """
     )
-    return [dict(row) for row in rows]
+    tasks: list[dict[str, Any]] = []
+    for row in rows:
+        task = dict(row)
+        task["job_args"] = _jsonb_to_dict(
+            task.get("job_args"),
+            context=f"scheduled_tasks[{task['name']}]",
+        )
+        tasks.append(task)
+    return tasks
 
 
 async def schedule_create(
     pool: asyncpg.Pool,
     name: str,
     cron: str,
-    prompt: str,
+    prompt: str | None = None,
     *,
+    dispatch_mode: str = _DISPATCH_MODE_PROMPT,
+    job_name: str | None = None,
+    job_args: dict[str, Any] | None = None,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
 ) -> uuid.UUID:
@@ -287,7 +470,7 @@ async def schedule_create(
         pool: asyncpg connection pool.
         name: Human-readable task name.
         cron: Cron expression (5-field).
-        prompt: Prompt text for the runtime instance.
+        prompt: Prompt text for prompt-mode schedules.
 
     Returns:
         The new task's UUID.
@@ -297,6 +480,13 @@ async def schedule_create(
     """
     if not croniter.is_valid(cron):
         raise ValueError(f"Invalid cron expression: {cron!r}")
+    dispatch_mode, prompt, job_name, job_args = _normalize_schedule_dispatch(
+        dispatch_mode=dispatch_mode,
+        prompt=prompt,
+        job_name=job_name,
+        job_args=job_args,
+        context="schedule_create",
+    )
 
     next_run_at = _next_run(
         cron,
@@ -306,13 +496,26 @@ async def schedule_create(
     try:
         task_id: uuid.UUID = await pool.fetchval(
             """
-            INSERT INTO scheduled_tasks (name, cron, prompt, source, enabled, next_run_at)
-            VALUES ($1, $2, $3, 'db', true, $4)
+            INSERT INTO scheduled_tasks (
+                name,
+                cron,
+                dispatch_mode,
+                prompt,
+                job_name,
+                job_args,
+                source,
+                enabled,
+                next_run_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, 'db', true, $7)
             RETURNING id
             """,
             name,
             cron,
+            dispatch_mode,
             prompt,
+            job_name,
+            _dict_to_jsonb(job_args),
             next_run_at,
         )
     except asyncpg.UniqueViolationError:
@@ -331,7 +534,8 @@ async def schedule_update(
 ) -> None:
     """Update fields on a scheduled task.
 
-    Allowed fields: ``name``, ``cron``, ``prompt``, ``enabled``.
+    Allowed fields: ``name``, ``cron``, ``dispatch_mode``, ``prompt``,
+    ``job_name``, ``job_args``, ``enabled``.
     If ``cron`` is updated, recomputes ``next_run_at``.
     If ``enabled`` is set to ``true``, recomputes ``next_run_at``.
     If ``enabled`` is set to ``false``, sets ``next_run_at`` to ``NULL``.
@@ -345,7 +549,7 @@ async def schedule_update(
         ValueError: If ``task_id`` is not found or if an invalid field is provided,
             or if the new cron expression is invalid.
     """
-    allowed = {"name", "cron", "prompt", "enabled"}
+    allowed = {"name", "cron", "dispatch_mode", "prompt", "job_name", "job_args", "enabled"}
     invalid = set(fields.keys()) - allowed
     if invalid:
         raise ValueError(f"Invalid fields: {invalid}")
@@ -355,27 +559,71 @@ async def schedule_update(
     # Validate cron if provided
     if "cron" in fields and not croniter.is_valid(fields["cron"]):
         raise ValueError(f"Invalid cron expression: {fields['cron']!r}")
+    if "dispatch_mode" in fields:
+        fields["dispatch_mode"] = _normalize_dispatch_mode(
+            fields["dispatch_mode"],
+            context="schedule_update",
+        )
 
     # Check task exists and fetch current state
     existing = await pool.fetchrow(
-        "SELECT id, cron, enabled FROM scheduled_tasks WHERE id = $1", task_id
+        """
+        SELECT id, cron, enabled, dispatch_mode, prompt, job_name, job_args
+        FROM scheduled_tasks
+        WHERE id = $1
+        """,
+        task_id,
     )
     if existing is None:
         raise ValueError(f"Task {task_id} not found")
+    existing_job_args = _jsonb_to_dict(existing["job_args"], context=f"scheduled_tasks[{task_id}]")
+
+    normalized_fields: dict[str, Any] = dict(fields)
+    dispatch_related = bool(
+        {"dispatch_mode", "prompt", "job_name", "job_args"} & normalized_fields.keys()
+    )
+
+    if dispatch_related:
+        requested_mode = normalized_fields.get("dispatch_mode")
+        if requested_mode == _DISPATCH_MODE_PROMPT:
+            normalized_fields.setdefault("job_name", None)
+            normalized_fields.setdefault("job_args", None)
+        elif requested_mode == _DISPATCH_MODE_JOB:
+            normalized_fields.setdefault("prompt", None)
+
+        merged = {
+            "dispatch_mode": normalized_fields.get("dispatch_mode", existing["dispatch_mode"]),
+            "prompt": normalized_fields.get("prompt", existing["prompt"]),
+            "job_name": normalized_fields.get("job_name", existing["job_name"]),
+            "job_args": normalized_fields.get("job_args", existing_job_args),
+        }
+        dispatch_mode, prompt, job_name, job_args = _normalize_schedule_dispatch(
+            dispatch_mode=merged["dispatch_mode"],
+            prompt=merged["prompt"],
+            job_name=merged["job_name"],
+            job_args=merged["job_args"],
+            context="schedule_update",
+        )
+        normalized_fields["dispatch_mode"] = dispatch_mode
+        normalized_fields["prompt"] = prompt
+        normalized_fields["job_name"] = job_name
+        normalized_fields["job_args"] = job_args
 
     # Build dynamic UPDATE with all fields including next_run_at if cron changed
     set_clauses = []
     params: list[Any] = [task_id]
     idx = 2
-    for key, value in fields.items():
+    for key, value in normalized_fields.items():
+        if key == "job_args":
+            value = _dict_to_jsonb(value)
         set_clauses.append(f"{key} = ${idx}")
         params.append(value)
         idx += 1
 
     # Handle next_run_at based on enabled toggle or cron change
-    cron = fields.get("cron", existing["cron"])
-    if "enabled" in fields:
-        if fields["enabled"]:
+    cron = normalized_fields.get("cron", existing["cron"])
+    if "enabled" in normalized_fields:
+        if normalized_fields["enabled"]:
             # Enabling: recompute next_run_at from current cron
             next_run_at = _next_run(
                 cron,
@@ -390,10 +638,10 @@ async def schedule_update(
             set_clauses.append(f"next_run_at = ${idx}")
             params.append(None)
             idx += 1
-    elif "cron" in fields:
+    elif "cron" in normalized_fields:
         # Cron changed (and enabled not explicitly set): recompute next_run_at
         next_run_at = _next_run(
-            fields["cron"],
+            normalized_fields["cron"],
             stagger_key=stagger_key,
             max_stagger_seconds=max_stagger_seconds,
         )
@@ -407,7 +655,7 @@ async def schedule_update(
     query = f"UPDATE scheduled_tasks SET {', '.join(set_clauses)} WHERE id = $1"
     await pool.execute(query, *params)
 
-    logger.info("Updated schedule %s: %s", task_id, list(fields.keys()))
+    logger.info("Updated schedule %s: %s", task_id, list(normalized_fields.keys()))
 
 
 async def schedule_delete(pool: asyncpg.Pool, task_id: uuid.UUID) -> None:
