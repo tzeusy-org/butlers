@@ -64,6 +64,7 @@ This inventory describes what is implemented today in `frontend/src/**`.
 ### Schedules Tab
 
 - Schedule table: cron/prompt/source/enabled/next-run/last-run.
+- Schedule rows are mode-agnostic: runtime schedules and native schedules share the same UI surfaces; native runs may not have a matching session row.
 - Mutations:
   - create schedule
   - edit schedule

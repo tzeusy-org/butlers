@@ -146,6 +146,14 @@ Grouped result keys required by frontend:
 - `DELETE /api/butlers/{name}/schedules/{scheduleId}` -> `ApiResponse<...>`
 - `PATCH /api/butlers/{name}/schedules/{scheduleId}/toggle` -> `ApiResponse<...>`
 
+Schedule execution semantics (dashboard-facing):
+
+- `Schedule.source` describes schedule origin (`toml` vs `db`); it is not the execution mode.
+- Runtime mode schedules execute through `spawner.trigger(..., trigger_source="schedule:<task-name>")` and typically correlate with session rows.
+- Native mode schedules execute deterministic daemon jobs directly and may not create `sessions` rows.
+- The dashboard MUST treat schedule status fields (`enabled`, `next_run_at`, `last_run_at`) as authoritative regardless of execution mode.
+- Schedule failures for both execution modes surface through `/api/issues` as `scheduled_task_failure:<schedule-name>`.
+
 ## Butler State Contract
 
 - `GET /api/butlers/{name}/state` -> `ApiResponse<StateEntry[]>`

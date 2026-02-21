@@ -1,7 +1,7 @@
 # Switchboard Butler: Permanent Definition
 
 Status: Normative
-Last updated: 2026-02-16
+Last updated: 2026-02-21
 Primary owner: Platform/Core
 
 ## 1. Role
@@ -335,6 +335,15 @@ Rules:
 - Non-messenger butlers must not expose direct user-channel tools for external delivery and must use `notify.v1` intents routed through Switchboard.
 - Switchboard must enforce this ownership boundary in routing/registry policy and reject or quarantine non-messenger channel-tool surfaces when detected.
 - Identity-scoped channel tool naming conventions (for example `user_*` / `bot_*`) are defined for messenger/channel integration surfaces and are not a generic base-butler requirement.
+
+### 10.11 Scheduled Execution Mode Contract
+Switchboard scheduled tasks use dual-mode dispatch via the scheduler hook.
+
+Rules:
+- `schedule:eligibility-sweep` MUST execute in native mode by running the deterministic eligibility sweep job directly against the Switchboard DB pool.
+- Native `eligibility-sweep` execution MUST bypass runtime/LLM invocation (`spawner.trigger`).
+- Any Switchboard schedule without a native handler MUST fall back to runtime mode through `spawner.trigger(prompt, trigger_source="schedule:<task-name>")`.
+- Schedule execution mode MUST NOT change schedule identity surfaces (`name`, `cron`, `enabled`, `next_run_at`, `last_run_at`) exposed to dashboard/operator tooling.
 
 ## 11. Persistence Surfaces
 Switchboard persistence has two classes: long-term durable storage and short-lived ingress lifecycle storage.

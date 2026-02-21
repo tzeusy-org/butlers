@@ -12,11 +12,22 @@ Scheduling E2E tests validate the full lifecycle of timer-driven flows.
 | Origin | Entry Point | Trigger Source | How It Starts |
 |--------|-------------|----------------|---------------|
 | External message | `ingest_v1()` → classify → dispatch | `"external"` | User sends Telegram/Email/API message |
-| Scheduled task | `_tick(pool)` on any butler | `"scheduled"` | Butler's own cron schedules |
+| Scheduled task | `_tick(pool)` on any butler | `"schedule:<task-name>"` | Butler's own cron schedules |
 | Test harness | Direct `spawner.trigger()` | `"test"` | E2E test code |
 
 Scheduling E2E tests focus on the second row (scheduled tasks) — triggers that
 originate from within the system rather than from external input.
+
+## Dual-Mode Dispatch Contract
+
+`_tick()` dispatches due schedules through the daemon's schedule-dispatch hook,
+which supports two execution modes:
+
+- Native mode: deterministic Python jobs execute directly (no runtime/LLM spawn).
+- Runtime mode: tasks dispatch through `spawner.trigger(prompt, trigger_source="schedule:<task-name>")`.
+
+Switchboard's `eligibility-sweep` is the canonical native schedule. Schedules
+without a native handler must use runtime mode.
 
 ## Scheduled Task Lifecycle
 
@@ -77,7 +88,14 @@ TOML schedule ──────────────────► schedule
                                      │  status: "running"
                                      │
                                      ▼
-                              spawner.trigger()
+      _dispatch_scheduled_task(prompt, "schedule:<task-name>")
+                              ┌──────┴──────┐
+                              │             │
+                       (native mode)  (runtime mode)
+                              │             │
+                              │      spawner.trigger()
+                              │             │
+                              └──────┬──────┘
                                      │
                               ┌──────┴──────┐
                               │             │
@@ -124,8 +142,9 @@ async def test_schedule_sync(butler_ecosystem):
 
 ### Serial Dispatch Lock Interaction
 
-The spawner's serial dispatch lock means that timer-triggered and
-externally-triggered sessions cannot run concurrently on the same butler:
+For runtime-dispatched schedules, the spawner's serial dispatch lock means that
+timer-triggered and externally-triggered sessions cannot run concurrently on
+the same butler. Native schedules bypass this runtime lock path.
 
 ```
 Timeline:
