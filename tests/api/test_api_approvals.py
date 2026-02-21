@@ -15,8 +15,10 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from butlers.api import deps as api_deps
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import wire_db_dependencies
 from butlers.api.routers.approvals import _clear_table_cache, _get_db_manager
 
 pytestmark = pytest.mark.unit
@@ -185,6 +187,27 @@ async def test_list_actions_empty():
     assert data["meta"]["total"] == 0
     assert data["meta"]["offset"] == 0
     assert data["meta"]["limit"] == 50
+
+
+@pytest.mark.asyncio
+async def test_list_actions_uses_global_db_dependency_wiring(monkeypatch):
+    """Approvals actions endpoint should use wire_db_dependencies override path."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = []
+
+    app = create_app()
+    wire_db_dependencies(app)
+    monkeypatch.setattr(api_deps, "_db_manager", mock_db)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/actions")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"] == []
+    assert data["meta"]["total"] == 0
 
 
 @pytest.mark.asyncio
