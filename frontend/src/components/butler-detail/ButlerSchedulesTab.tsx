@@ -3,6 +3,7 @@ import { toast } from "sonner";
 
 import type { Schedule } from "@/api/types.ts";
 import { ScheduleForm } from "@/components/schedules/ScheduleForm";
+import type { ScheduleFormValues } from "@/components/schedules/ScheduleForm";
 import { ScheduleTable } from "@/components/schedules/ScheduleTable";
 import { Button } from "@/components/ui/button";
 import {
@@ -102,7 +103,7 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
     });
   }
 
-  function handleFormSubmit(values: { name: string; cron: string; prompt: string }) {
+  function handleFormSubmit(values: ScheduleFormValues) {
     if (editingSchedule) {
       updateMutation.mutate(
         { scheduleId: editingSchedule.id, body: values },
