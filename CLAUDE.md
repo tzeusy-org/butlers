@@ -119,7 +119,7 @@ tests/               # pytest tests
 
 ## Issue Tracking (Beads)
 
-This project uses `bd` (beads) for issue tracking. **Critical:** `.beads/config.yaml` sets `no-db: true`, meaning `.beads/issues.jsonl` is the sole source of truth — there is no SQLite database. All `bd` commands read/write the JSONL directly. Do not run `bd migrate`, `bd sync --import-only`, or attempt to fix SQLite state. See `AGENTS.md` for full beads workflow details.
+This project uses `bd` (beads) for issue tracking. `.beads/config.yaml` sets `no-db: false`, meaning beads uses its SQLite database with auto-import/export from `.beads/issues.jsonl`. If the SQLite DB becomes corrupt, delete `.beads/beads.db` and run `bd init` to reimport from JSONL. See `AGENTS.md` for full beads workflow details.
 
 ## Implementation Plan
 

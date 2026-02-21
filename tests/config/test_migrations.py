@@ -18,7 +18,7 @@ pytestmark = [
 ]
 
 REQUIRED_SCHEMAS = ("shared", "general", "health", "messenger", "relationship", "switchboard")
-CORE_HEAD_REVISION = "core_001"
+CORE_HEAD_REVISION = "core_002"
 RUNTIME_ROLES = {
     "general": "butler_general_rw",
     "health": "butler_health_rw",
@@ -273,6 +273,151 @@ def test_core_scheduled_task_dispatch_mode_columns_and_constraints(postgres_cont
                         """
                     )
                 )
+    finally:
+        engine.dispose()
+
+
+def test_core_002_adds_dispatch_mode_to_existing_table(postgres_container):
+    """core_002 should add dispatch_mode columns to a pre-existing scheduled_tasks table."""
+    from alembic import command
+    from butlers.migrations import _build_alembic_config
+
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
+
+    # Simulate a legacy database: create the table WITHOUT dispatch_mode columns,
+    # then stamp as core_001 so Alembic thinks core_001 already ran.
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE scheduled_tasks (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        name TEXT NOT NULL UNIQUE,
+                        cron TEXT NOT NULL,
+                        prompt TEXT NOT NULL,
+                        source TEXT NOT NULL DEFAULT 'db',
+                        enabled BOOLEAN NOT NULL DEFAULT true,
+                        next_run_at TIMESTAMPTZ,
+                        last_run_at TIMESTAMPTZ,
+                        last_result JSONB,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )
+                    """
+                )
+            )
+            # Also create the other core tables so core_001 stamp is valid.
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE state (
+                        key TEXT PRIMARY KEY,
+                        value JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        version INTEGER NOT NULL DEFAULT 1
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE sessions (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        prompt TEXT NOT NULL,
+                        trigger_source TEXT NOT NULL,
+                        model TEXT,
+                        success BOOLEAN,
+                        error TEXT,
+                        result TEXT,
+                        tool_calls JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        duration_ms INTEGER,
+                        trace_id TEXT,
+                        request_id TEXT,
+                        cost JSONB,
+                        input_tokens INTEGER,
+                        output_tokens INTEGER,
+                        parent_session_id UUID,
+                        started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        completed_at TIMESTAMPTZ
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE route_inbox (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        route_envelope JSONB NOT NULL,
+                        lifecycle_state TEXT NOT NULL DEFAULT 'accepted',
+                        processed_at TIMESTAMPTZ,
+                        session_id UUID,
+                        error TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE butler_secrets (
+                        secret_key TEXT PRIMARY KEY,
+                        secret_value TEXT NOT NULL,
+                        category TEXT NOT NULL DEFAULT 'general',
+                        description TEXT,
+                        is_sensitive BOOLEAN NOT NULL DEFAULT true,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        expires_at TIMESTAMPTZ
+                    )
+                    """
+                )
+            )
+    finally:
+        engine.dispose()
+
+    # Stamp as core_001 so Alembic thinks it already ran.
+    config = _build_alembic_config(db_url, chains=["core"])
+    command.stamp(config, "core_001")
+
+    # Now upgrade to head — core_002 should add the missing columns.
+    command.upgrade(config, "core@head")
+
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'scheduled_tasks'
+                    """
+                )
+            )
+            columns = {str(row[0]) for row in rows}
+            assert "dispatch_mode" in columns, "dispatch_mode column should be added"
+            assert "job_name" in columns, "job_name column should be added"
+            assert "job_args" in columns, "job_args column should be added"
+
+            # Verify constraints work.
+            default_mode = conn.execute(
+                text(
+                    """
+                    INSERT INTO scheduled_tasks (name, cron, prompt)
+                    VALUES ('upgrade-test', '*/5 * * * *', 'test prompt')
+                    RETURNING dispatch_mode
+                    """
+                )
+            ).scalar_one()
+            assert default_mode == "prompt"
     finally:
         engine.dispose()
 
