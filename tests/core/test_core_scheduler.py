@@ -102,9 +102,17 @@ class _Dispatch:
 
     async def __call__(self, **kwargs):
         self.calls.append(kwargs)
-        if kwargs.get("prompt") in self._fail_on:
-            raise RuntimeError(f"Simulated failure for: {kwargs['prompt']}")
+        dispatch_target = kwargs.get("prompt") or kwargs.get("job_name")
+        if dispatch_target in self._fail_on:
+            raise RuntimeError(f"Simulated failure for: {dispatch_target}")
         return self._result
+
+
+def _decode_json_field(value):
+    """Decode JSONB fields that asyncpg may return as JSON strings."""
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +194,44 @@ async def test_sync_updates_changed_prompt(pool):
     assert row["prompt"] == "new prompt"
 
 
+async def test_sync_updates_changed_dispatch_payload(pool):
+    """Second sync can migrate an existing TOML task between prompt and job modes."""
+    from butlers.core.scheduler import sync_schedules
+
+    original = [
+        {
+            "name": "dispatch-mode-change",
+            "cron": "0 9 * * *",
+            "prompt": "old prompt mode task",
+        }
+    ]
+    await sync_schedules(pool, original)
+
+    updated = [
+        {
+            "name": "dispatch-mode-change",
+            "cron": "*/5 * * * *",
+            "dispatch_mode": "job",
+            "job_name": "eligibility_sweep",
+            "job_args": {"dry_run": True},
+        }
+    ]
+    await sync_schedules(pool, updated)
+
+    row = await pool.fetchrow(
+        """
+        SELECT cron, dispatch_mode, prompt, job_name, job_args
+        FROM scheduled_tasks
+        WHERE name = 'dispatch-mode-change' AND source = 'toml'
+        """
+    )
+    assert row["cron"] == "*/5 * * * *"
+    assert row["dispatch_mode"] == "job"
+    assert row["prompt"] is None
+    assert row["job_name"] == "eligibility_sweep"
+    assert _decode_json_field(row["job_args"]) == {"dry_run": True}
+
+
 # ---------------------------------------------------------------------------
 # sync_schedules — removal disables
 # ---------------------------------------------------------------------------
@@ -252,6 +298,35 @@ async def test_tick_dispatches_due_tasks(pool):
     assert len(dispatch.calls) == 1
     assert dispatch.calls[0]["prompt"] == "run this"
     assert dispatch.calls[0]["trigger_source"] == "schedule:due-task"
+
+
+async def test_tick_dispatches_job_mode_tasks(pool):
+    """tick() dispatches job-mode tasks through the deterministic job call path."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    task_id = await schedule_create(
+        pool,
+        "due-job-task",
+        "*/1 * * * *",
+        dispatch_mode="job",
+        job_name="eligibility_sweep",
+        job_args={"batch_size": 25},
+    )
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+        task_id,
+        datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+    dispatch = _Dispatch()
+    count = await tick(pool, dispatch)
+
+    assert count == 1
+    assert len(dispatch.calls) == 1
+    assert dispatch.calls[0]["job_name"] == "eligibility_sweep"
+    assert dispatch.calls[0]["job_args"] == {"batch_size": 25}
+    assert dispatch.calls[0]["trigger_source"] == "schedule:due-job-task"
+    assert "prompt" not in dispatch.calls[0]
 
 
 async def test_tick_noop_when_nothing_due(pool):
@@ -422,6 +497,36 @@ async def test_tick_writes_error_to_last_result_on_failure(pool):
     assert "Simulated failure" in result_data["error"]
 
 
+async def test_tick_writes_error_to_last_result_on_job_failure(pool):
+    """tick() stores deterministic job dispatch errors in last_result."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    task_id = await schedule_create(
+        pool,
+        "error-job-task",
+        "*/1 * * * *",
+        dispatch_mode="job",
+        job_name="eligibility_sweep",
+    )
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+        task_id,
+        datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+    dispatch = _Dispatch(fail_on={"eligibility_sweep"})
+    await tick(pool, dispatch)
+
+    row = await pool.fetchrow(
+        "SELECT last_result FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert row["last_result"] is not None
+    result_data = json.loads(row["last_result"])
+    assert "error" in result_data
+    assert "Simulated failure for: eligibility_sweep" in result_data["error"]
+
+
 async def test_last_result_null_for_new_tasks(pool):
     """Newly created tasks have last_result as NULL."""
     from butlers.core.scheduler import schedule_create
@@ -471,6 +576,33 @@ async def test_schedule_list_last_result_null_for_unrun_task(pool):
     task = next(t for t in tasks if t["name"] == "unrun-task")
     assert "last_result" in task
     assert task["last_result"] is None
+
+
+async def test_schedule_list_includes_dispatch_fields(pool):
+    """schedule_list includes dispatch mode and deterministic job metadata."""
+    from butlers.core.scheduler import schedule_create, schedule_list
+
+    await schedule_create(pool, "prompt-list-task", "0 9 * * *", "prompt task")
+    await schedule_create(
+        pool,
+        "job-list-task",
+        "*/10 * * * *",
+        dispatch_mode="job",
+        job_name="eligibility_sweep",
+        job_args={"dry_run": True},
+    )
+
+    tasks = await schedule_list(pool)
+    prompt_task = next(t for t in tasks if t["name"] == "prompt-list-task")
+    job_task = next(t for t in tasks if t["name"] == "job-list-task")
+
+    assert prompt_task["dispatch_mode"] == "prompt"
+    assert prompt_task["job_name"] is None
+    assert prompt_task["job_args"] is None
+    assert job_task["dispatch_mode"] == "job"
+    assert job_task["prompt"] is None
+    assert job_task["job_name"] == "eligibility_sweep"
+    assert job_task["job_args"] == {"dry_run": True}
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +669,37 @@ async def test_create_invalid_cron_raises(pool):
         await schedule_create(pool, "bad-cron", "not a cron", "test")
 
 
+async def test_create_job_mode_persists_dispatch_metadata(pool):
+    """schedule_create supports deterministic job-mode payloads."""
+    from butlers.core.scheduler import schedule_create
+
+    task_id = await schedule_create(
+        pool,
+        "runtime-job",
+        "*/10 * * * *",
+        dispatch_mode="job",
+        job_name="eligibility_sweep",
+        job_args={"batch_size": 50},
+    )
+
+    row = await pool.fetchrow(
+        "SELECT dispatch_mode, prompt, job_name, job_args FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert row["dispatch_mode"] == "job"
+    assert row["prompt"] is None
+    assert row["job_name"] == "eligibility_sweep"
+    assert _decode_json_field(row["job_args"]) == {"batch_size": 50}
+
+
+async def test_create_job_mode_requires_job_name(pool):
+    """Job-mode schedule_create requires job_name."""
+    from butlers.core.scheduler import schedule_create
+
+    with pytest.raises(ValueError, match="requires non-empty job_name"):
+        await schedule_create(pool, "missing-job-name", "*/10 * * * *", dispatch_mode="job")
+
+
 # ---------------------------------------------------------------------------
 # CRUD — schedule_update
 # ---------------------------------------------------------------------------
@@ -584,6 +747,66 @@ async def test_update_invalid_cron_raises(pool):
     task_id = await schedule_create(pool, "cron-upd-fail", "0 9 * * *", "test")
     with pytest.raises(ValueError, match="Invalid cron"):
         await schedule_update(pool, task_id, cron="bad cron")
+
+
+async def test_update_prompt_to_job_mode(pool):
+    """schedule_update supports transitioning a task from prompt mode to job mode."""
+    from butlers.core.scheduler import schedule_create, schedule_update
+
+    task_id = await schedule_create(pool, "mode-flip-task", "0 9 * * *", "old prompt")
+    await schedule_update(
+        pool,
+        task_id,
+        dispatch_mode="job",
+        job_name="eligibility_sweep",
+        job_args={"dry_run": True},
+    )
+
+    row = await pool.fetchrow(
+        "SELECT dispatch_mode, prompt, job_name, job_args FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert row["dispatch_mode"] == "job"
+    assert row["prompt"] is None
+    assert row["job_name"] == "eligibility_sweep"
+    assert _decode_json_field(row["job_args"]) == {"dry_run": True}
+
+
+async def test_update_job_to_prompt_mode(pool):
+    """schedule_update supports transitioning a task from job mode to prompt mode."""
+    from butlers.core.scheduler import schedule_create, schedule_update
+
+    task_id = await schedule_create(
+        pool,
+        "mode-flip-back-task",
+        "0 9 * * *",
+        dispatch_mode="job",
+        job_name="eligibility_sweep",
+    )
+    await schedule_update(
+        pool,
+        task_id,
+        dispatch_mode="prompt",
+        prompt="new prompt mode payload",
+    )
+
+    row = await pool.fetchrow(
+        "SELECT dispatch_mode, prompt, job_name, job_args FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert row["dispatch_mode"] == "prompt"
+    assert row["prompt"] == "new prompt mode payload"
+    assert row["job_name"] is None
+    assert row["job_args"] is None
+
+
+async def test_update_rejects_job_name_for_prompt_mode(pool):
+    """schedule_update rejects deterministic job metadata on prompt-mode tasks."""
+    from butlers.core.scheduler import schedule_create, schedule_update
+
+    task_id = await schedule_create(pool, "invalid-update-task", "0 9 * * *", "prompt")
+    with pytest.raises(ValueError, match="job_name is only valid"):
+        await schedule_update(pool, task_id, job_name="eligibility_sweep")
 
 
 # ---------------------------------------------------------------------------
