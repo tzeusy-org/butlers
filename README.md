@@ -84,6 +84,7 @@ LLM CLI instances ── ephemeral, locked-down, reason + act
 - Butler configs are **git-based directories** with personality (`CLAUDE.md`), skills, and config (`butler.toml`)
 - Operator source-of-truth for migration/cutover: `docs/operations/one-db-multi-schema-migration.md`
 - Destructive reset rehearsal workflow: `docs/operations/migration-rewrite-reset-runbook.md`
+- Runtime MCP transport rollout/fallback runbook: `docs/operations/spawner-streamable-http-rollout.md`
 
 ### Detailed Architecture
 

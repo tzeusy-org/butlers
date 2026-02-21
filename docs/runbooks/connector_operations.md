@@ -14,12 +14,17 @@ This runbook covers deployment, monitoring, recovery, and rollback operations fo
 - Idempotent submission: replays are safe
 - At-least-once delivery from connector to Switchboard
 - Exactly-once effect at canonical request layer (via Switchboard dedupe)
+- Connector MCP transport remains SSE (`/sse`) during spawner runtime
+  streamable HTTP (`/mcp`) rollout; do not migrate connector URLs as part of
+  this change.
 
 **Related Documentation:**
 - `docs/connectors/interface.md` - Connector contract
 - `docs/connectors/telegram_bot.md` - Telegram connector spec
 - `docs/connectors/gmail.md` - Gmail connector spec
 - `docs/connectors/connector_ingestion_migration_delta_matrix.md` - Migration plan
+- `docs/operations/spawner-streamable-http-rollout.md` - Runtime transport
+  cutover and rollback procedure
 
 ---
 
