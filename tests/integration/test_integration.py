@@ -251,6 +251,54 @@ class TestButlerStartupIntegration:
         assert len(dispatch_calls) == 1
         assert dispatch_calls[0]["prompt"] == "Run daily check"
 
+    async def test_scheduler_job_mode_crud_and_tick(self, pool):
+        """Scheduler supports job-mode create/list/tick with real DB persistence."""
+        from butlers.core.scheduler import schedule_create, schedule_list, tick
+
+        task_id = await schedule_create(
+            pool,
+            "job-check",
+            "*/5 * * * *",
+            dispatch_mode="job",
+            job_name="eligibility_sweep",
+            job_args={"batch_size": 10},
+        )
+        assert isinstance(task_id, uuid.UUID)
+
+        tasks = await schedule_list(pool)
+        task = next(t for t in tasks if t["name"] == "job-check")
+        assert task["dispatch_mode"] == "job"
+        assert task["prompt"] is None
+        assert task["job_name"] == "eligibility_sweep"
+        assert task["job_args"] == {"batch_size": 10}
+
+        await pool.execute(
+            "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+            task_id,
+            datetime.now(UTC) - timedelta(minutes=10),
+        )
+
+        dispatch_calls: list[dict] = []
+
+        async def dispatch_fn(**kwargs):
+            dispatch_calls.append(kwargs)
+            return {"status": "ok", "job_name": kwargs.get("job_name")}
+
+        count = await tick(pool, dispatch_fn)
+        assert count == 1
+        assert len(dispatch_calls) == 1
+        assert dispatch_calls[0]["job_name"] == "eligibility_sweep"
+        assert dispatch_calls[0]["job_args"] == {"batch_size": 10}
+        assert dispatch_calls[0]["trigger_source"] == "schedule:job-check"
+        assert "prompt" not in dispatch_calls[0]
+
+        row = await pool.fetchrow(
+            "SELECT last_result FROM scheduled_tasks WHERE id = $1",
+            task_id,
+        )
+        assert row is not None
+        assert row["last_result"] is not None
+
     async def test_sessions_crud(self, pool):
         """Sessions create/list/get work with a real database."""
         from butlers.core.sessions import (
