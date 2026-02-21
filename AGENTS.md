@@ -291,6 +291,11 @@ make test-qg
 - `notify` tool metadata (description + parameter schema) should explicitly document required/optional fields, include a valid JSON example, constrain `channel`/`intent` enums, and describe `request_context` required keys (`request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`) plus `source_thread_identity` for telegram reply/react.
 - `memory_store_fact` tool metadata should explicitly document required/optional fields, include a valid JSON example, keep `permanence` as enum (`permanent|stable|standard|volatile|ephemeral`), and state that `tags` must be a JSON array of strings (not a comma-separated string).
 
+### Telegram scheduled notify targeting contract
+- `notify(channel="telegram", intent="send")` must resolve recipient chat ID from `BUTLER_TELEGRAM_CHAT_ID` (DB-backed secret via `CredentialStore`, `env_fallback=False`) when `recipient` is omitted.
+- If no explicit recipient and no configured `BUTLER_TELEGRAM_CHAT_ID`, `notify` should return: `No bot <-> user telegram chat has been configured - please set BUTLER_TELEGRAM_CHAT_ID in /secrets`.
+- Scheduled prompts that are not replying to ingress context (for example `roster/general/butler.toml` `eod-tomorrow-prep`) should use `intent="send"` instead of `intent="reply"`.
+
 ### Switchboard registry liveness/compat contract
 - `butler_registry` includes liveness + compatibility metadata: `eligibility_state`, `liveness_ttl_seconds`, quarantine fields, `route_contract_min/max`, and `capabilities`.
 - `resolve_routing_target()` in `roster/switchboard/tools/registry/registry.py` is the canonical gate for route eligibility: it reconciles TTL staleness, enforces stale/quarantine policy overrides, and validates route contract/capability requirements.

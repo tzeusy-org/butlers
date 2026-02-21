@@ -157,10 +157,17 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
+_DEFAULT_TELEGRAM_CHAT_SECRET = "BUTLER_TELEGRAM_CHAT_ID"
+_NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
+    "No bot <-> user telegram chat has been configured - please set "
+    "BUTLER_TELEGRAM_CHAT_ID in /secrets"
+)
+
 
 type _DeterministicScheduleJobHandler = Callable[
     [asyncpg.Pool, dict[str, Any] | None], Awaitable[Any]
 ]
+
 
 class NotifyRequestContextInput(TypedDict):
     """notify.request_context contract passed through to notify.v1."""
@@ -818,6 +825,7 @@ class ButlerDaemon:
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
         self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
         self._shared_credentials_db: Database | None = None
+        self._credential_store: CredentialStore | None = None
         self.blob_store: LocalBlobStore | None = None
         # Background tasks spawned by route.execute accept phase (non-messenger butlers)
         self._route_inbox_tasks: set[asyncio.Task] = set()
@@ -1044,6 +1052,7 @@ class ButlerDaemon:
         # migration errors), to avoid redundant DB queries and overwriting earlier failure
         # statuses with spurious credential failures.
         credential_store = await self._build_credential_store(pool)
+        self._credential_store = credential_store
         active_module_creds_for_validation = {
             k: v for k, v in module_creds.items() if k.split(".")[0] not in self._module_statuses
         }
@@ -1562,6 +1571,31 @@ class ButlerDaemon:
                 logger.warning("Error closing Switchboard client", exc_info=True)
             finally:
                 self.switchboard_client = None
+
+    async def _resolve_default_notify_recipient(
+        self, *, channel: str, intent: str, recipient: str | None
+    ) -> str | None:
+        """Resolve notify recipient, including schedule-safe Telegram default chat mapping."""
+        resolved_recipient = recipient.strip() if isinstance(recipient, str) else None
+        if resolved_recipient:
+            return resolved_recipient
+
+        if channel != "telegram" or intent != "send":
+            return None
+
+        credential_store = self._credential_store
+        if credential_store is None:
+            return None
+
+        configured_chat_id = await credential_store.resolve(
+            _DEFAULT_TELEGRAM_CHAT_SECRET,
+            env_fallback=False,
+        )
+        if not isinstance(configured_chat_id, str):
+            return None
+
+        normalized_chat_id = configured_chat_id.strip()
+        return normalized_chat_id or None
 
     async def _dispatch_scheduled_task(
         self,
@@ -3159,6 +3193,17 @@ class ButlerDaemon:
                     "error": ("Switchboard is not connected. Cannot deliver notification."),
                 }
 
+            resolved_recipient = await daemon._resolve_default_notify_recipient(
+                channel=channel,
+                intent=intent,
+                recipient=recipient,
+            )
+            if channel == "telegram" and intent == "send" and resolved_recipient is None:
+                return {
+                    "status": "error",
+                    "error": _NO_TELEGRAM_CHAT_CONFIGURED_ERROR,
+                }
+
             delivery_message = message if message is not None else ""
             notify_request: dict[str, Any] = {
                 "schema_version": "notify.v1",
@@ -3171,8 +3216,8 @@ class ButlerDaemon:
             }
             if emoji is not None:
                 notify_request["delivery"]["emoji"] = emoji
-            if recipient is not None:
-                notify_request["delivery"]["recipient"] = recipient
+            if resolved_recipient is not None:
+                notify_request["delivery"]["recipient"] = resolved_recipient
             if subject is not None:
                 notify_request["delivery"]["subject"] = subject
             if request_context is not None:

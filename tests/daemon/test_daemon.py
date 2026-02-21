@@ -6,6 +6,7 @@ Uses extensive mocking to avoid real DB, FastMCP, and runtime dependencies.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
@@ -2606,8 +2607,8 @@ class TestNotifyTool:
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
 
-        tools = await runtime_mcp.list_tools()
-        notify_tool = next(tool for tool in tools if tool.name == "notify").model_dump()
+        tools = await runtime_mcp.get_tools()
+        notify_tool = tools["notify"].model_dump()
 
         description = notify_tool["description"] or ""
         assert "notify.v1" in description
@@ -2622,15 +2623,14 @@ class TestNotifyTool:
         intent_prop = params["properties"]["intent"]
         assert set(intent_prop["enum"]) == {"send", "reply", "react"}
 
-        request_context_schema = params["properties"]["request_context"]["anyOf"][0]
-        assert set(request_context_schema["required"]) >= {
-            "request_id",
-            "source_channel",
-            "source_endpoint_identity",
-            "source_sender_identity",
-        }
-        thread_desc = request_context_schema["properties"]["source_thread_identity"]["description"]
-        assert "telegram reply" in thread_desc.lower()
+        request_context_param = params["properties"]["request_context"]
+        request_context_json = json.dumps(request_context_param)
+        assert "request_id" in request_context_json
+        assert "source_channel" in request_context_json
+        assert "source_endpoint_identity" in request_context_json
+        assert "source_sender_identity" in request_context_json
+        assert "source_thread_identity" in request_context_json
+        assert "telegram reply" in request_context_json.lower()
 
     async def test_notify_unsupported_channel_returns_error(self, butler_dir: Path) -> None:
         """notify with an unsupported channel should return error result."""
@@ -2693,7 +2693,7 @@ class TestNotifyTool:
         mock_client.call_tool = AsyncMock(return_value=mock_call_result)
         daemon.switchboard_client = mock_client
 
-        result = await notify_fn(channel="telegram", message="Hello world")
+        result = await notify_fn(channel="email", message="Hello world")
 
         assert result["status"] == "ok"
         assert result["result"] == {"notification_id": "abc-123", "status": "sent"}
@@ -2708,7 +2708,7 @@ class TestNotifyTool:
         assert payload["notify_request"]["origin_butler"] == "test-butler"
         assert payload["notify_request"]["delivery"] == {
             "intent": "send",
-            "channel": "telegram",
+            "channel": "email",
             "message": "Hello world",
         }
 
@@ -2744,7 +2744,7 @@ class TestNotifyTool:
         assert delivery["recipient"] == "user@example.com"
 
     async def test_notify_without_recipient(self, butler_dir: Path) -> None:
-        """notify without recipient should omit it from the Switchboard call."""
+        """notify send without recipient should omit it for non-telegram channels."""
         patches = _patch_infra()
         daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
         assert notify_fn is not None
@@ -2757,7 +2757,7 @@ class TestNotifyTool:
         mock_client.call_tool = AsyncMock(return_value=mock_call_result)
         daemon.switchboard_client = mock_client
 
-        result = await notify_fn(channel="telegram", message="Alert")
+        result = await notify_fn(channel="email", message="Alert")
 
         assert result["status"] == "ok"
 
@@ -2765,6 +2765,59 @@ class TestNotifyTool:
         call_args = mock_client.call_tool.call_args
         deliver_args = call_args[0][1]
         assert "recipient" not in deliver_args
+
+    async def test_notify_telegram_send_uses_default_chat_id_from_secret(
+        self, butler_dir: Path
+    ) -> None:
+        """Telegram send without recipient should resolve BUTLER_TELEGRAM_CHAT_ID."""
+        patches = _patch_infra()
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+
+        mock_call_result = MagicMock()
+        mock_call_result.is_error = False
+        mock_call_result.data = {"notification_id": "jkl-012", "status": "sent"}
+
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(return_value=mock_call_result)
+        daemon.switchboard_client = mock_client
+
+        daemon._credential_store = AsyncMock()
+        daemon._credential_store.resolve = AsyncMock(return_value="123456789")
+
+        result = await notify_fn(channel="telegram", message="Scheduled update", intent="send")
+
+        assert result["status"] == "ok"
+        daemon._credential_store.resolve.assert_awaited_once_with(
+            "BUTLER_TELEGRAM_CHAT_ID", env_fallback=False
+        )
+        call_args = mock_client.call_tool.await_args
+        payload = call_args.args[1]
+        assert payload["notify_request"]["delivery"]["recipient"] == "123456789"
+
+    async def test_notify_telegram_send_errors_when_no_default_chat_id(
+        self, butler_dir: Path
+    ) -> None:
+        """Telegram send without recipient should fail when default chat is not configured."""
+        patches = _patch_infra()
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock()
+        daemon.switchboard_client = mock_client
+
+        daemon._credential_store = AsyncMock()
+        daemon._credential_store.resolve = AsyncMock(return_value=None)
+
+        result = await notify_fn(channel="telegram", message="Scheduled update", intent="send")
+
+        assert result["status"] == "error"
+        assert (
+            result["error"] == "No bot <-> user telegram chat has been configured - please set "
+            "BUTLER_TELEGRAM_CHAT_ID in /secrets"
+        )
+        mock_client.call_tool.assert_not_awaited()
 
     async def test_notify_switchboard_returns_error(self, butler_dir: Path) -> None:
         """notify should return error when Switchboard's deliver() returns error."""
@@ -2784,7 +2837,7 @@ class TestNotifyTool:
         mock_client.call_tool = AsyncMock(return_value=mock_call_result)
         daemon.switchboard_client = mock_client
 
-        result = await notify_fn(channel="telegram", message="Hello")
+        result = await notify_fn(channel="email", message="Hello")
 
         assert result["status"] == "error"
         assert "No module available" in result["error"]
@@ -2800,7 +2853,7 @@ class TestNotifyTool:
         daemon.switchboard_client = mock_client
 
         # Should NOT raise — returns error result
-        result = await notify_fn(channel="telegram", message="Hello")
+        result = await notify_fn(channel="email", message="Hello")
 
         assert result["status"] == "error"
         assert "Switchboard call failed" in result["error"]
@@ -2816,7 +2869,7 @@ class TestNotifyTool:
         mock_client.call_tool = AsyncMock(side_effect=TimeoutError("Request timed out"))
         daemon.switchboard_client = mock_client
 
-        result = await notify_fn(channel="telegram", message="Hello")
+        result = await notify_fn(channel="email", message="Hello")
 
         assert result["status"] == "error"
         assert "timed out" in result["error"].lower()
@@ -2835,7 +2888,7 @@ class TestNotifyTool:
         mock_client.call_tool = AsyncMock(return_value=mock_call_result)
         daemon.switchboard_client = mock_client
 
-        await notify_fn(channel="telegram", message="Test")
+        await notify_fn(channel="email", message="Test")
 
         call_args = mock_client.call_tool.call_args
         deliver_args = call_args[0][1]
@@ -2873,7 +2926,7 @@ class TestNotifyTool:
         # The timeout is a local variable inside notify, so we mock
         # asyncio.wait_for to raise TimeoutError directly.
         with patch("butlers.daemon.asyncio.wait_for", side_effect=TimeoutError()):
-            result = await notify_fn(channel="telegram", message="Hello")
+            result = await notify_fn(channel="email", message="Hello")
 
         assert result["status"] == "error"
         assert "timed out" in result["error"].lower()
@@ -2889,7 +2942,7 @@ class TestNotifyTool:
         mock_client.call_tool = AsyncMock(side_effect=ConnectionError("Connection refused"))
         daemon.switchboard_client = mock_client
 
-        result = await notify_fn(channel="telegram", message="Hello")
+        result = await notify_fn(channel="email", message="Hello")
         assert result["status"] == "error"
         assert "unreachable" in result["error"].lower()
         assert "Connection refused" in result["error"]
@@ -2897,7 +2950,7 @@ class TestNotifyTool:
         # Test with OSError (parent class of ConnectionError)
         mock_client.call_tool = AsyncMock(side_effect=OSError("Network is down"))
 
-        result = await notify_fn(channel="telegram", message="Hello")
+        result = await notify_fn(channel="email", message="Hello")
         assert result["status"] == "error"
         assert "unreachable" in result["error"].lower()
         assert "Network is down" in result["error"]

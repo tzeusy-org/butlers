@@ -56,7 +56,7 @@ Steps:
    - Gaps between events (highlight free blocks)
    - A short "heads-up" section for anything unusual (early starts, back-to-back meetings, travel)
 5. If there are no events, send a simple "No events scheduled for tomorrow" note.
-6. Send the summary via notify(channel="telegram", intent="reply").
+6. Send the summary via notify(channel="telegram", intent="send").
 """
 
 [modules.memory]
