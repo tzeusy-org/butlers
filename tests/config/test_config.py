@@ -17,6 +17,7 @@ from butlers.config import (
     LoggingConfig,
     RuntimeConfig,
     ScheduleConfig,
+    ScheduleDispatchMode,
     load_config,
     parse_approval_config,
     validate_approval_config,
@@ -244,6 +245,113 @@ prompt = "Do a tick"
     assert sched.name == "tick"
     assert sched.cron == "*/10 * * * *"
     assert sched.prompt == "Do a tick"
+    assert sched.dispatch_mode == ScheduleDispatchMode.PROMPT
+    assert sched.job_name is None
+    assert sched.job_args is None
+
+
+def test_schedule_parsing_job_mode(tmp_path: Path):
+    """Parses a deterministic job-mode schedule with optional job args."""
+    toml = """\
+[butler]
+name = "cronbot"
+port = 7001
+
+[[butler.schedule]]
+name = "eligibility-sweep"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "eligibility_sweep"
+job_args = {batch_size = 100}
+"""
+    config_dir = _write_toml(tmp_path, toml)
+    cfg = load_config(config_dir)
+
+    assert len(cfg.schedules) == 1
+    sched = cfg.schedules[0]
+    assert sched.name == "eligibility-sweep"
+    assert sched.cron == "*/5 * * * *"
+    assert sched.dispatch_mode == ScheduleDispatchMode.JOB
+    assert sched.prompt is None
+    assert sched.job_name == "eligibility_sweep"
+    assert sched.job_args == {"batch_size": 100}
+
+
+def test_schedule_rejects_invalid_dispatch_mode(tmp_path: Path):
+    """Unknown dispatch_mode values fail fast with clear errors."""
+    toml = """\
+[butler]
+name = "cronbot"
+port = 7001
+
+[[butler.schedule]]
+name = "bad-mode"
+cron = "*/5 * * * *"
+dispatch_mode = "native"
+prompt = "run"
+"""
+    config_dir = _write_toml(tmp_path, toml)
+    with pytest.raises(ConfigError, match=r"Invalid butler\.schedule\[0\]\.dispatch_mode"):
+        load_config(config_dir)
+
+
+def test_prompt_mode_rejects_job_fields(tmp_path: Path):
+    """Prompt mode schedules must not include deterministic job metadata."""
+    toml = """\
+[butler]
+name = "cronbot"
+port = 7001
+
+[[butler.schedule]]
+name = "daily"
+cron = "0 9 * * *"
+dispatch_mode = "prompt"
+prompt = "run report"
+job_name = "eligibility_sweep"
+"""
+    config_dir = _write_toml(tmp_path, toml)
+    with pytest.raises(
+        ConfigError, match=r"butler\.schedule\[0\]\.job_name is only valid when dispatch_mode='job'"
+    ):
+        load_config(config_dir)
+
+
+def test_job_mode_requires_job_name(tmp_path: Path):
+    """Job mode schedules require a non-empty job_name."""
+    toml = """\
+[butler]
+name = "cronbot"
+port = 7001
+
+[[butler.schedule]]
+name = "missing-job-name"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+"""
+    config_dir = _write_toml(tmp_path, toml)
+    with pytest.raises(ConfigError, match=r"dispatch_mode='job' requires non-empty job_name"):
+        load_config(config_dir)
+
+
+def test_job_mode_rejects_prompt_field(tmp_path: Path):
+    """Job mode schedules must not include prompt text."""
+    toml = """\
+[butler]
+name = "cronbot"
+port = 7001
+
+[[butler.schedule]]
+name = "bad-job"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "eligibility_sweep"
+prompt = "do not use"
+"""
+    config_dir = _write_toml(tmp_path, toml)
+    with pytest.raises(
+        ConfigError, match=r"butler\.schedule\[0\]\.prompt is not allowed when dispatch_mode='job'"
+    ):
+        load_config(config_dir)
 
 
 def test_modules_parsing(tmp_path: Path):
