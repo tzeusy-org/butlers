@@ -561,16 +561,11 @@ class _SpanWrappingMCP:
                     for k in ("butler", "target_butler", "butler_name", "prompt", "context")
                     if k in kwargs
                 }
-                capture_tool_call(
-                    tool_name=resolved_tool_name,
-                    module_name=self._module_name,
-                    input_payload=capture_input,
-                )
                 # Check module enabled state at call time to support live toggling.
                 if runtime_states_ref is not None:
                     state = runtime_states_ref.get(module_name_for_gate)
                     if state is not None and not state.enabled:
-                        return {
+                        disabled_result = {
                             "error": "module_disabled",
                             "module": module_name_for_gate,
                             "message": (
@@ -578,8 +573,36 @@ class _SpanWrappingMCP:
                                 "Enable it from the dashboard."
                             ),
                         }
-                with tool_span(resolved_tool_name, butler_name=self._butler_name):
-                    return await fn(*args, **kwargs)
+                        capture_tool_call(
+                            tool_name=resolved_tool_name,
+                            module_name=self._module_name,
+                            input_payload=capture_input,
+                            outcome="module_disabled",
+                            result_payload=disabled_result,
+                        )
+                        return disabled_result
+
+                try:
+                    with tool_span(resolved_tool_name, butler_name=self._butler_name):
+                        result = await fn(*args, **kwargs)
+                except Exception as exc:
+                    capture_tool_call(
+                        tool_name=resolved_tool_name,
+                        module_name=self._module_name,
+                        input_payload=capture_input,
+                        outcome="error",
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    raise
+
+                capture_tool_call(
+                    tool_name=resolved_tool_name,
+                    module_name=self._module_name,
+                    input_payload=capture_input,
+                    outcome="success",
+                    result_payload=result,
+                )
+                return result
 
             return original_decorator(instrumented)
 
@@ -628,7 +651,30 @@ class _ToolCallLoggingMCP:
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
                 self._log_tool_call(resolved_tool_name)
-                return await fn(*args, **kwargs)
+                capture_input = {
+                    k: kwargs.get(k)
+                    for k in ("butler", "target_butler", "butler_name", "prompt", "context")
+                    if k in kwargs
+                }
+                try:
+                    result = await fn(*args, **kwargs)
+                except Exception as exc:
+                    capture_tool_call(
+                        tool_name=resolved_tool_name,
+                        module_name=self._module_name,
+                        input_payload=capture_input,
+                        outcome="error",
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    raise
+                capture_tool_call(
+                    tool_name=resolved_tool_name,
+                    module_name=self._module_name,
+                    input_payload=capture_input,
+                    outcome="success",
+                    result_payload=result,
+                )
+                return result
 
             return original_decorator(instrumented)
 

@@ -243,4 +243,38 @@ describe("SessionDetailDrawer", () => {
     expect(document.body.textContent).not.toContain("Tool #1");
     expect(document.body.textContent).not.toContain("Tool #2");
   });
+
+  it("surfaces failed-then-retried tool call outcomes as separate timeline entries", () => {
+    setQueryState({
+      data: {
+        data: {
+          ...SESSION_DETAIL,
+          tool_calls: [
+            {
+              name: "route_to_butler",
+              input: { butler: "relationship", prompt: "Store birthday" },
+              outcome: "error",
+              error: "TimeoutError: target unavailable",
+            },
+            {
+              name: "route_to_butler",
+              input: { butler: "relationship", prompt: "Store birthday" },
+              outcome: "success",
+              result: { status: "accepted", butler: "relationship" },
+            },
+          ],
+        },
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    expect(document.body.textContent).toContain("Outcome:");
+    expect(document.body.textContent).toContain("error");
+    expect(document.body.textContent).toContain("success");
+    expect(document.body.textContent).toContain("Error");
+    expect(document.body.textContent).toContain("Result");
+    expect(document.body.textContent?.match(/route_to_butler/g)?.length).toBe(2);
+  });
 });

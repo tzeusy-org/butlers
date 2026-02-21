@@ -37,3 +37,31 @@ def test_capture_without_runtime_session_is_ignored():
     capture_tool_call(tool_name="route_to_butler", module_name="core", input_payload={})
     calls = consume_runtime_session_tool_calls("unknown-session")
     assert calls == []
+
+
+def test_capture_persists_outcome_result_and_error():
+    ensure_runtime_session_capture("sess-2")
+    token = set_current_runtime_session_id("sess-2")
+    try:
+        capture_tool_call(
+            tool_name="route_to_butler",
+            module_name="core",
+            input_payload={"butler": "general"},
+            outcome="error",
+            result_payload={"payload": b"abc", "nested": (1, 2)},
+            error="RuntimeError: routing failed",
+        )
+    finally:
+        reset_current_runtime_session_id(token)
+
+    calls = consume_runtime_session_tool_calls("sess-2")
+    assert calls == [
+        {
+            "name": "route_to_butler",
+            "module": "core",
+            "input": {"butler": "general"},
+            "outcome": "error",
+            "result": {"payload": "abc", "nested": [1, 2]},
+            "error": "RuntimeError: routing failed",
+        }
+    ]
