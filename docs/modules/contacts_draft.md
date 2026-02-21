@@ -1,7 +1,7 @@
 # Contacts Module: Target-State Specification (Google-First, Provider-Agnostic)
 
 Status: Draft (Target-State Design)
-Last updated: 2026-02-19
+Last updated: 2026-02-21
 Primary owner: Platform/Modules + Relationship Domain
 Depends on: `src/butlers/modules/base.py`, `src/butlers/google_credentials.py`, `docs/roles/relationship_butler.md`
 
@@ -240,6 +240,15 @@ Backfill must create `activity_feed` entries:
 Each entry includes provider/account/external ID references in details.
 
 ## 8. Scheduling and Operational Semantics
+
+Module-vs-connector decision (v1 contract):
+
+- Incremental contacts sync runs inside the Butler module runtime as an internal
+  poll loop.
+- There is no standalone contacts connector process.
+- Local dev bootstrap remains unchanged: `scripts/dev.sh` starts `butlers up`,
+  and that process owns contacts sync polling when `[modules.contacts]` is
+  configured.
 
 Default schedule:
 

@@ -1,7 +1,9 @@
 """Contacts sync core primitives (provider, state, and sync engine)."""
 
 from .sync import (
+    DEFAULT_FORCED_FULL_SYNC_DAYS,
     DEFAULT_GOOGLE_PERSON_FIELDS,
+    DEFAULT_INCREMENTAL_SYNC_INTERVAL_MINUTES,
     GOOGLE_OAUTH_TOKEN_URL,
     GOOGLE_PEOPLE_API_CONNECTIONS_URL,
     CanonicalContact,
@@ -11,8 +13,10 @@ from .sync import (
     ContactsProvider,
     ContactsRequestError,
     ContactsSyncEngine,
+    ContactsSyncError,
     ContactsSyncMode,
     ContactsSyncResult,
+    ContactsSyncRuntime,
     ContactsSyncState,
     ContactsSyncStateStore,
     ContactsSyncTokenExpiredError,
@@ -20,7 +24,9 @@ from .sync import (
 )
 
 __all__ = [
+    "DEFAULT_FORCED_FULL_SYNC_DAYS",
     "DEFAULT_GOOGLE_PERSON_FIELDS",
+    "DEFAULT_INCREMENTAL_SYNC_INTERVAL_MINUTES",
     "GOOGLE_OAUTH_TOKEN_URL",
     "GOOGLE_PEOPLE_API_CONNECTIONS_URL",
     "CanonicalContact",
@@ -30,7 +36,9 @@ __all__ = [
     "ContactsProvider",
     "ContactsRequestError",
     "ContactsSyncEngine",
+    "ContactsSyncError",
     "ContactsSyncMode",
+    "ContactsSyncRuntime",
     "ContactsSyncResult",
     "ContactsSyncState",
     "ContactsSyncStateStore",

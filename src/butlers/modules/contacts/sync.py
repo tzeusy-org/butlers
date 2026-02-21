@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 
@@ -33,6 +34,8 @@ DEFAULT_GOOGLE_PERSON_FIELDS = (
 )
 DEFAULT_GOOGLE_PAGE_SIZE = 500
 SYNC_STATE_KEY_PREFIX = "contacts::sync::"
+DEFAULT_INCREMENTAL_SYNC_INTERVAL_MINUTES = 15
+DEFAULT_FORCED_FULL_SYNC_DAYS = 6
 
 ContactsSyncMode = Literal["incremental", "full"]
 
@@ -832,3 +835,126 @@ def _contact_version(contact: CanonicalContact) -> str:
     serialized = json.dumps(raw_payload, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     return f"hash:{digest}:deleted={int(contact.deleted)}"
+
+
+def _parse_iso_utc(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+class ContactsSyncRuntime:
+    """Module-internal polling runtime for recurring contacts sync.
+
+    Contract:
+    - Run one sync immediately when started.
+    - Continue incremental polling on a fixed cadence (default 15 minutes).
+    - Force periodic full sync before Google token-expiry risk (default 6 days).
+    - Allow immediate out-of-band trigger requests.
+    """
+
+    def __init__(
+        self,
+        *,
+        sync_engine: ContactsSyncEngine,
+        state_store: ContactsSyncStateRepository,
+        provider_name: str,
+        account_id: str,
+        incremental_interval: timedelta | None = None,
+        forced_full_interval: timedelta | None = None,
+        now_fn: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._sync_engine = sync_engine
+        self._state_store = state_store
+        self._provider_name = provider_name.strip().lower()
+        self._account_id = account_id.strip()
+        self._incremental_interval = incremental_interval or timedelta(
+            minutes=DEFAULT_INCREMENTAL_SYNC_INTERVAL_MINUTES
+        )
+        self._forced_full_interval = forced_full_interval or timedelta(
+            days=DEFAULT_FORCED_FULL_SYNC_DAYS
+        )
+        self._now_fn = now_fn or (lambda: datetime.now(UTC))
+        self._force_sync_event = asyncio.Event()
+        self._stopping = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        """Start background polling loop."""
+        if self._task is not None and not self._task.done():
+            return
+        self._stopping.clear()
+        self._task = asyncio.create_task(self._run_loop(), name="contacts-sync-poller")
+
+    async def stop(self) -> None:
+        """Stop background polling loop and wait for shutdown."""
+        self._stopping.set()
+        self._force_sync_event.set()
+        if self._task is None:
+            return
+        if not self._task.done():
+            self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+
+    def trigger_immediate_sync(self) -> None:
+        """Wake the poller to run sync immediately."""
+        self._force_sync_event.set()
+
+    async def run_sync_cycle(self) -> ContactsSyncResult:
+        """Run one sync cycle with mode selected from persisted sync state."""
+        mode = await self._next_mode()
+        return await self._sync_engine.sync(account_id=self._account_id, mode=mode)
+
+    async def _run_loop(self) -> None:
+        interval_seconds = max(self._incremental_interval.total_seconds(), 1.0)
+
+        while not self._stopping.is_set():
+            try:
+                await self.run_sync_cycle()
+            except Exception as exc:  # pragma: no cover - caller observes via logs/state
+                logger.warning("Contacts sync poll cycle failed: %s", exc, exc_info=True)
+
+            if self._stopping.is_set():
+                break
+
+            try:
+                await asyncio.wait_for(self._force_sync_event.wait(), timeout=interval_seconds)
+                self._force_sync_event.clear()
+            except TimeoutError:
+                continue
+
+    async def _next_mode(self) -> ContactsSyncMode:
+        state = await self._state_store.load(
+            provider=self._provider_name,
+            account_id=self._account_id,
+        )
+
+        if state.sync_cursor is None:
+            return "full"
+
+        reference_time = _parse_iso_utc(state.last_full_sync_at) or _parse_iso_utc(
+            state.cursor_issued_at
+        )
+        if reference_time is None:
+            return "full"
+
+        if self._now_utc() - reference_time >= self._forced_full_interval:
+            return "full"
+
+        return "incremental"
+
+    def _now_utc(self) -> datetime:
+        value = self._now_fn()
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
