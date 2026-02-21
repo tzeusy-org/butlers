@@ -992,7 +992,15 @@ class ButlerDaemon:
 
         # 11. Sync TOML schedules to DB
         schedules = [
-            {"name": s.name, "cron": s.cron, "prompt": s.prompt} for s in self.config.schedules
+            {
+                "name": s.name,
+                "cron": s.cron,
+                "dispatch_mode": s.dispatch_mode.value,
+                "prompt": s.prompt,
+                "job_name": s.job_name,
+                "job_args": s.job_args,
+            }
+            for s in self.config.schedules
         ]
         await sync_schedules(pool, schedules, stagger_key=self.config.name)
 
@@ -1422,7 +1430,14 @@ class ButlerDaemon:
             finally:
                 self.switchboard_client = None
 
-    async def _dispatch_scheduled_task(self, prompt: str, trigger_source: str) -> Any:
+    async def _dispatch_scheduled_task(
+        self,
+        *,
+        trigger_source: str,
+        prompt: str | None = None,
+        job_name: str | None = None,
+        job_args: dict[str, Any] | None = None,
+    ) -> Any:
         """Dispatch one scheduled task, using native handlers when available.
 
         For deterministic, rules-based schedules we can bypass runtime/LLM
@@ -1435,18 +1450,32 @@ class ButlerDaemon:
             else None
         )
 
-        if self.config.name == "switchboard" and schedule_name == "eligibility-sweep":
+        if self.config.name == "switchboard" and (
+            job_name == "eligibility_sweep" or schedule_name == "eligibility-sweep"
+        ):
             pool = self.db.pool if self.db is not None else None
             if pool is None:
                 raise RuntimeError(
                     "Scheduler native job dispatch requires an initialized switchboard DB pool"
                 )
             run_eligibility_sweep_job = _load_switchboard_eligibility_sweep_job()
-            logger.debug("Dispatching native scheduled task: %s", schedule_name)
+            logger.debug(
+                "Dispatching native scheduled task: %s (job_name=%s, job_args=%s)",
+                schedule_name,
+                job_name,
+                job_args,
+            )
             return await run_eligibility_sweep_job(pool)
 
+        if job_name is not None:
+            raise RuntimeError(
+                f"No deterministic scheduler handler for job_name={job_name!r} "
+                f"on butler {self.config.name!r}"
+            )
         if self.spawner is None:
             raise RuntimeError("Scheduler dispatch requires an initialized spawner")
+        if prompt is None:
+            raise RuntimeError("Prompt-mode scheduler dispatch requires a non-empty prompt payload")
         return await self.spawner.trigger(prompt=prompt, trigger_source=trigger_source)
 
     async def _scheduler_loop(self) -> None:
