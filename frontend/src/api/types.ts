@@ -304,11 +304,20 @@ export interface TopSession {
 // ---------------------------------------------------------------------------
 
 /** A scheduled task belonging to a butler. */
+export type ScheduleDispatchMode = "prompt" | "job";
+
+/** Shared job arguments payload shape for deterministic schedule mode. */
+export type ScheduleJobArgs = Record<string, unknown>;
+
+/** A scheduled task belonging to a butler. */
 export interface Schedule {
   id: string;
   name: string;
   cron: string;
-  prompt: string;
+  prompt: string | null;
+  dispatch_mode?: ScheduleDispatchMode | null;
+  job_name?: string | null;
+  job_args?: ScheduleJobArgs | null;
   source: string;
   enabled: boolean;
   next_run_at: string | null;
@@ -318,17 +327,33 @@ export interface Schedule {
 }
 
 /** Payload for creating a new schedule. */
-export interface ScheduleCreate {
+export interface PromptScheduleCreate {
   name: string;
   cron: string;
+  dispatch_mode?: "prompt";
   prompt: string;
 }
+
+/** Payload for creating a new deterministic job schedule. */
+export interface JobScheduleCreate {
+  name: string;
+  cron: string;
+  dispatch_mode: "job";
+  job_name: string;
+  job_args?: ScheduleJobArgs;
+}
+
+/** Payload for creating a schedule (prompt or deterministic job mode). */
+export type ScheduleCreate = PromptScheduleCreate | JobScheduleCreate;
 
 /** Payload for updating an existing schedule (all fields optional). */
 export interface ScheduleUpdate {
   name?: string;
   cron?: string;
-  prompt?: string;
+  prompt?: string | null;
+  dispatch_mode?: ScheduleDispatchMode;
+  job_name?: string | null;
+  job_args?: ScheduleJobArgs | null;
   enabled?: boolean;
 }
 
