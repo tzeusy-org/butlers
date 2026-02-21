@@ -36,7 +36,10 @@ def _make_schedule_record(
     schedule_id=None,
     name="daily-digest",
     cron="0 9 * * *",
+    dispatch_mode="prompt",
     prompt="Send a daily digest",
+    job_name=None,
+    job_args=None,
     source="db",
     enabled=True,
     next_run_at=None,
@@ -49,7 +52,10 @@ def _make_schedule_record(
         "id": schedule_id or _SCHEDULE_ID,
         "name": name,
         "cron": cron,
+        "dispatch_mode": dispatch_mode,
         "prompt": prompt,
+        "job_name": job_name,
+        "job_args": job_args,
         "source": source,
         "enabled": enabled,
         "next_run_at": next_run_at,
@@ -189,11 +195,64 @@ class TestListSchedules:
         assert schedule["id"] == str(_SCHEDULE_ID)
         assert schedule["name"] == "daily-digest"
         assert schedule["cron"] == "0 9 * * *"
+        assert schedule["dispatch_mode"] == "prompt"
         assert schedule["prompt"] == "Send a daily digest"
+        assert schedule["job_name"] is None
+        assert schedule["job_args"] is None
         assert schedule["source"] == "db"
         assert schedule["enabled"] is True
         assert "created_at" in schedule
         assert "updated_at" in schedule
+
+    async def test_schedule_fields_for_job_mode(self):
+        """Job-mode schedules include deterministic dispatch metadata."""
+        row = _make_schedule_record(
+            schedule_id=uuid4(),
+            name="eligibility-sweep",
+            dispatch_mode="job",
+            prompt=None,
+            job_name="eligibility_sweep",
+            job_args={"dry_run": True},
+        )
+        app = _app_with_mock_db(fetch_rows=[row])
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/atlas/schedules")
+
+        assert resp.status_code == 200
+        schedule = resp.json()["data"][0]
+        assert schedule["dispatch_mode"] == "job"
+        assert schedule["prompt"] is None
+        assert schedule["job_name"] == "eligibility_sweep"
+        assert schedule["job_args"] == {"dry_run": True}
+
+    async def test_legacy_schedule_row_defaults_to_prompt_mode(self):
+        """Legacy DB rows without mode columns remain readable."""
+        row = {
+            "id": uuid4(),
+            "name": "legacy-task",
+            "cron": "0 8 * * *",
+            "prompt": "Run legacy task",
+            "source": "db",
+            "enabled": True,
+            "next_run_at": None,
+            "last_run_at": None,
+            "created_at": _NOW,
+            "updated_at": _NOW,
+        }
+        app = _app_with_mock_db(fetch_rows=[row])
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/atlas/schedules")
+
+        assert resp.status_code == 200
+        schedule = resp.json()["data"][0]
+        assert schedule["dispatch_mode"] == "prompt"
+        assert schedule["prompt"] == "Run legacy task"
+        assert schedule["job_name"] is None
+        assert schedule["job_args"] is None
 
     async def test_butler_db_unavailable_returns_503(self):
         """When the butler's DB pool doesn't exist, return 503."""
@@ -240,6 +299,49 @@ class TestCreateSchedule:
             {"name": "new-task", "cron": "*/5 * * * *", "prompt": "do stuff"},
         )
 
+    async def test_creates_job_schedule_via_mcp(self):
+        """POST supports deterministic job-mode schedule creation."""
+        app, mock_client = _app_with_mock_mcp(
+            call_tool_result=_mock_mcp_result(
+                {
+                    "id": str(uuid4()),
+                    "dispatch_mode": "job",
+                    "job_name": "eligibility_sweep",
+                    "job_args": {"dry_run": True},
+                }
+            )
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/butlers/atlas/schedules",
+                json={
+                    "name": "eligibility-sweep",
+                    "cron": "*/5 * * * *",
+                    "dispatch_mode": "job",
+                    "job_name": "eligibility_sweep",
+                    "job_args": {"dry_run": True},
+                },
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["data"]["dispatch_mode"] == "job"
+        assert body["data"]["job_name"] == "eligibility_sweep"
+        assert body["data"]["job_args"] == {"dry_run": True}
+
+        mock_client.call_tool.assert_called_once_with(
+            "schedule_create",
+            {
+                "name": "eligibility-sweep",
+                "cron": "*/5 * * * *",
+                "dispatch_mode": "job",
+                "job_name": "eligibility_sweep",
+                "job_args": {"dry_run": True},
+            },
+        )
+
     async def test_butler_unreachable_returns_503(self):
         """When butler is unreachable, POST returns 503."""
         app = _app_with_unreachable_butler()
@@ -283,6 +385,47 @@ class TestUpdateSchedule:
         mock_client.call_tool.assert_called_once_with(
             "schedule_update",
             {"id": str(sid), "cron": "0 12 * * *", "prompt": "updated prompt"},
+        )
+
+    async def test_updates_schedule_job_fields_via_mcp(self):
+        """PUT supports dispatch mode and deterministic metadata updates."""
+        sid = uuid4()
+        app, mock_client = _app_with_mock_mcp(
+            call_tool_result=_mock_mcp_result(
+                {
+                    "id": str(sid),
+                    "dispatch_mode": "job",
+                    "job_name": "eligibility_sweep",
+                    "job_args": {"dry_run": True},
+                }
+            )
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.put(
+                f"/api/butlers/atlas/schedules/{sid}",
+                json={
+                    "dispatch_mode": "job",
+                    "job_name": "eligibility_sweep",
+                    "job_args": {"dry_run": True},
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["dispatch_mode"] == "job"
+        assert body["data"]["job_name"] == "eligibility_sweep"
+        assert body["data"]["job_args"] == {"dry_run": True}
+
+        mock_client.call_tool.assert_called_once_with(
+            "schedule_update",
+            {
+                "id": str(sid),
+                "dispatch_mode": "job",
+                "job_name": "eligibility_sweep",
+                "job_args": {"dry_run": True},
+            },
         )
 
     async def test_butler_unreachable_returns_503(self):
@@ -359,6 +502,32 @@ class TestToggleSchedule:
             "schedule_toggle",
             {"id": str(sid)},
         )
+
+    async def test_toggles_job_schedule_via_mcp(self):
+        """PATCH toggle keeps job-mode payloads round-trippable."""
+        sid = uuid4()
+        app, mock_client = _app_with_mock_mcp(
+            call_tool_result=_mock_mcp_result(
+                {
+                    "enabled": True,
+                    "dispatch_mode": "job",
+                    "job_name": "eligibility_sweep",
+                    "job_args": {"dry_run": True},
+                }
+            )
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.patch(f"/api/butlers/atlas/schedules/{sid}/toggle")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["enabled"] is True
+        assert body["data"]["dispatch_mode"] == "job"
+        assert body["data"]["job_name"] == "eligibility_sweep"
+        assert body["data"]["job_args"] == {"dry_run": True}
+        mock_client.call_tool.assert_called_once_with("schedule_toggle", {"id": str(sid)})
 
     async def test_butler_unreachable_returns_503(self):
         """When butler is unreachable, PATCH toggle returns 503."""
