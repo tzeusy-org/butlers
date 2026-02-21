@@ -7,16 +7,26 @@ directly from the relationship butler's PostgreSQL database via asyncpg.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import json
 import logging
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import (
+    ButlerConnectionInfo,
+    ButlerUnreachableError,
+    MCPClientManager,
+    get_butler_configs,
+    get_mcp_manager,
+)
 
 # Load local models module
 _api_dir = Path(__file__).parent
@@ -33,6 +43,7 @@ if _models_path.exists():
         ContactDetail = _models_module.ContactDetail
         ContactListResponse = _models_module.ContactListResponse
         ContactSummary = _models_module.ContactSummary
+        ContactsSyncTriggerResponse = _models_module.ContactsSyncTriggerResponse
         Gift = _models_module.Gift
         Group = _models_module.Group
         GroupListResponse = _models_module.GroupListResponse
@@ -47,6 +58,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/relationship", tags=["relationship"])
 
 BUTLER_DB = "relationship"
+_CONTACTS_SYNC_TIMEOUT_S = 120.0
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -90,6 +102,76 @@ def _group_select_fragments(group_columns: set[str]) -> tuple[str, str]:
         "g.updated_at" if "updated_at" in group_columns else "g.created_at AS updated_at"
     )
     return description_sql, updated_at_sql
+
+
+def _extract_mcp_result_text(result: object) -> str | None:
+    """Extract text content from an MCP tool result."""
+    content = getattr(result, "content", None)
+    if not isinstance(content, list):
+        return None
+
+    parts: list[str] = []
+    for block in content:
+        text = getattr(block, "text", None)
+        if isinstance(text, str) and text:
+            parts.append(text)
+    if not parts:
+        return None
+    return "\n".join(parts)
+
+
+def _parse_mcp_result_payload(raw_text: str | None) -> object:
+    """Parse MCP text payload as JSON when possible, else return raw text."""
+    if raw_text is None:
+        return None
+    try:
+        return json.loads(raw_text)
+    except (json.JSONDecodeError, TypeError):
+        return raw_text
+
+
+def _extract_sync_summary(payload: object) -> dict[str, Any]:
+    """Best-effort summary normalization from tool payload."""
+    if not isinstance(payload, dict):
+        return {}
+    summary = payload.get("summary")
+    if isinstance(summary, dict):
+        return summary
+    return payload
+
+
+def _coerce_count(value: Any) -> int | None:
+    """Coerce summary counts to int when possible."""
+    if isinstance(value, int):
+        return value
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _is_credential_error(payload: object, raw_text: str | None) -> bool:
+    """Detect credential-related failures from tool error payload."""
+    samples: list[str] = []
+    if raw_text:
+        samples.append(raw_text.lower())
+    if isinstance(payload, dict):
+        for key in ("error", "detail", "message", "reason"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                samples.append(value.lower())
+    joined = " ".join(samples)
+    markers = (
+        "credential",
+        "oauth",
+        "refresh token",
+        "access token",
+        "invalid_grant",
+        "not configured",
+        "missing",
+    )
+    return any(marker in joined for marker in markers)
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +279,95 @@ async def list_contacts(
     ]
 
     return ContactListResponse(contacts=contacts, total=total)
+
+
+# ---------------------------------------------------------------------------
+# POST /contacts/sync — manual contacts sync trigger
+# ---------------------------------------------------------------------------
+
+
+@router.post("/contacts/sync", response_model=ContactsSyncTriggerResponse)
+async def trigger_contacts_sync(
+    mode: Literal["incremental", "full"] = Query(
+        "incremental",
+        description="Sync mode: incremental for routine refresh, full for backfill",
+    ),
+    mcp_manager: MCPClientManager = Depends(get_mcp_manager),
+    configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
+) -> ContactsSyncTriggerResponse:
+    """Trigger contacts sync via the relationship butler's MCP tool."""
+    if not any(cfg.name == BUTLER_DB for cfg in configs):
+        raise HTTPException(status_code=404, detail="Relationship butler is not configured")
+
+    try:
+        client = await asyncio.wait_for(
+            mcp_manager.get_client(BUTLER_DB),
+            timeout=_CONTACTS_SYNC_TIMEOUT_S,
+        )
+        result = await asyncio.wait_for(
+            client.call_tool(
+                "contacts_sync_now",
+                {"provider": "google", "mode": mode},
+            ),
+            timeout=_CONTACTS_SYNC_TIMEOUT_S,
+        )
+    except ButlerUnreachableError:
+        raise HTTPException(
+            status_code=503,
+            detail="Relationship butler is unreachable; contacts sync cannot start",
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=503,
+            detail="Contacts sync request timed out before completion",
+        )
+    except Exception as exc:
+        logger.warning("Unexpected contacts sync trigger failure", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Failed to start contacts sync: {exc}")
+
+    raw_text = _extract_mcp_result_text(result)
+    payload = _parse_mcp_result_payload(raw_text)
+    is_error = bool(getattr(result, "is_error", False))
+
+    if is_error:
+        if _is_credential_error(payload, raw_text):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Google credentials are missing or invalid. "
+                    "Complete OAuth setup at /api/oauth/google/start "
+                    "or update credentials at /api/oauth/google/credentials."
+                ),
+            )
+
+        detail = raw_text or "Contacts sync failed"
+        if isinstance(payload, dict):
+            for key in ("detail", "error", "message"):
+                value = payload.get(key)
+                if isinstance(value, str) and value:
+                    detail = value
+                    break
+        raise HTTPException(status_code=502, detail=f"Contacts sync failed: {detail}")
+
+    summary = _extract_sync_summary(payload)
+    created = _coerce_count(summary.get("created")) if isinstance(summary, dict) else None
+    updated = _coerce_count(summary.get("updated")) if isinstance(summary, dict) else None
+    skipped = _coerce_count(summary.get("skipped")) if isinstance(summary, dict) else None
+    errors = _coerce_count(summary.get("errors")) if isinstance(summary, dict) else None
+    message = summary.get("message") if isinstance(summary, dict) else None
+    if not isinstance(message, str):
+        message = None
+
+    return ContactsSyncTriggerResponse(
+        provider="google",
+        mode=mode,
+        created=created,
+        updated=updated,
+        skipped=skipped,
+        errors=errors,
+        summary=summary if isinstance(summary, dict) else {},
+        message=message,
+    )
 
 
 # ---------------------------------------------------------------------------

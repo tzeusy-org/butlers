@@ -9,6 +9,7 @@ Issue: butlers-26h.10.3
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
@@ -21,6 +22,13 @@ from fastapi.testclient import TestClient
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import (
+    ButlerConnectionInfo,
+    ButlerUnreachableError,
+    MCPClientManager,
+    get_butler_configs,
+    get_mcp_manager,
+)
 
 # Load relationship router module dynamically
 _roster_root = Path(__file__).resolve().parents[2] / "roster"
@@ -47,6 +55,8 @@ def _app_with_mock_db(
     fetchval_result: int = 0,
     fetchrow_result: dict | None = None,
     fetchrow_side_effect: list | None = None,
+    mcp_manager: MCPClientManager | None = None,
+    butler_configs: list[ButlerConnectionInfo] | None = None,
     include_mock_pool: bool = False,
 ):
     """Create a FastAPI app with a mocked DatabaseManager.
@@ -76,10 +86,50 @@ def _app_with_mock_db(
 
     app.router.lifespan_context = _null_lifespan
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    if mcp_manager is not None:
+        app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
+    if butler_configs is not None:
+        app.dependency_overrides[get_butler_configs] = lambda: butler_configs
 
     if include_mock_pool:
         return app, mock_db, mock_pool
     return app
+
+
+def _mock_contacts_sync_result(payload: object, *, is_error: bool = False) -> MagicMock:
+    """Create a mock MCP contacts_sync_now tool result."""
+    block = MagicMock()
+    block.text = json.dumps(payload) if not isinstance(payload, str) else payload
+    result = MagicMock()
+    result.content = [block]
+    result.is_error = is_error
+    return result
+
+
+def _mock_mcp_manager(
+    *,
+    call_result: MagicMock | None = None,
+    unreachable: bool = False,
+    timeout: bool = False,
+) -> MCPClientManager:
+    """Create a mock MCP manager for contacts sync endpoint tests."""
+    mgr = MagicMock(spec=MCPClientManager)
+    if unreachable:
+        mgr.get_client = AsyncMock(
+            side_effect=ButlerUnreachableError(
+                "relationship",
+                cause=ConnectionRefusedError("refused"),
+            )
+        )
+        return mgr
+    if timeout:
+        mgr.get_client = AsyncMock(side_effect=TimeoutError("timed out"))
+        return mgr
+
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(return_value=call_result)
+    mgr.get_client = AsyncMock(return_value=mock_client)
+    return mgr
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +194,104 @@ def test_list_contacts_search():
     assert resp.status_code == 200
     # Verify the pool was called with search filter
     assert mock_pool.fetch.called
+
+
+# ---------------------------------------------------------------------------
+# POST /api/relationship/contacts/sync
+# ---------------------------------------------------------------------------
+
+
+def test_contacts_sync_incremental_dispatch():
+    """POST /contacts/sync dispatches incremental mode to MCP tool."""
+    result = _mock_contacts_sync_result(
+        {"created": 2, "updated": 1, "skipped": 5, "errors": 0, "message": "ok"}
+    )
+    mcp_manager = _mock_mcp_manager(call_result=result)
+    app = _app_with_mock_db(
+        mcp_manager=mcp_manager,
+        butler_configs=[ButlerConnectionInfo("relationship", 40102)],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.post("/api/relationship/contacts/sync?mode=incremental")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["provider"] == "google"
+    assert data["mode"] == "incremental"
+    assert data["created"] == 2
+    assert data["updated"] == 1
+    assert data["skipped"] == 5
+    assert data["errors"] == 0
+
+    mock_client = mcp_manager.get_client.return_value
+    mock_client.call_tool.assert_awaited_once_with(
+        "contacts_sync_now",
+        {"provider": "google", "mode": "incremental"},
+    )
+
+
+def test_contacts_sync_full_dispatch():
+    """POST /contacts/sync dispatches full mode to MCP tool."""
+    result = _mock_contacts_sync_result(
+        {"summary": {"created": 7, "updated": 4, "skipped": 0, "errors": 0}}
+    )
+    mcp_manager = _mock_mcp_manager(call_result=result)
+    app = _app_with_mock_db(
+        mcp_manager=mcp_manager,
+        butler_configs=[ButlerConnectionInfo("relationship", 40102)],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.post("/api/relationship/contacts/sync?mode=full")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "full"
+    assert data["created"] == 7
+    assert data["updated"] == 4
+    assert data["errors"] == 0
+
+    mock_client = mcp_manager.get_client.return_value
+    mock_client.call_tool.assert_awaited_once_with(
+        "contacts_sync_now",
+        {"provider": "google", "mode": "full"},
+    )
+
+
+def test_contacts_sync_invalid_mode():
+    """POST /contacts/sync rejects invalid mode."""
+    mcp_manager = _mock_mcp_manager(call_result=_mock_contacts_sync_result({"created": 0}))
+    app = _app_with_mock_db(
+        mcp_manager=mcp_manager,
+        butler_configs=[ButlerConnectionInfo("relationship", 40102)],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.post("/api/relationship/contacts/sync?mode=weekly")
+
+    assert resp.status_code == 422
+
+
+def test_contacts_sync_credential_error_actionable():
+    """POST /contacts/sync maps credential failures to actionable non-2xx response."""
+    result = _mock_contacts_sync_result(
+        {"error": "Google OAuth credentials are missing"},
+        is_error=True,
+    )
+    mcp_manager = _mock_mcp_manager(call_result=result)
+    app = _app_with_mock_db(
+        mcp_manager=mcp_manager,
+        butler_configs=[ButlerConnectionInfo("relationship", 40102)],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.post("/api/relationship/contacts/sync?mode=incremental")
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"].lower()
+    assert "oauth" in detail
+    assert "/api/oauth/google/start" in detail
 
 
 # ---------------------------------------------------------------------------

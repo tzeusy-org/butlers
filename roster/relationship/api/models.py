@@ -8,6 +8,7 @@ dashboard endpoints.
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -140,3 +141,16 @@ class ActivityFeedItem(BaseModel):
     action: str
     details: dict = Field(default_factory=dict)
     created_at: datetime
+
+
+class ContactsSyncTriggerResponse(BaseModel):
+    """Response payload for manual contacts sync trigger."""
+
+    provider: str = "google"
+    mode: str
+    created: int | None = None
+    updated: int | None = None
+    skipped: int | None = None
+    errors: int | None = None
+    summary: dict[str, Any] = Field(default_factory=dict)
+    message: str | None = None
