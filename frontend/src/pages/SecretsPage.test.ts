@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSecretsTargets, SHARED_SECRETS_TARGET } from "@/pages/SecretsPage";
+import { buildSecretsTargets, SHARED_SECRETS_TARGET } from "@/pages/secretsTargets";
 
 describe("buildSecretsTargets", () => {
   it("always includes shared as the first target", () => {
