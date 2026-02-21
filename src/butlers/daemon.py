@@ -49,7 +49,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 from urllib.parse import parse_qs, quote, quote_plus
 
 import asyncpg
@@ -61,7 +61,7 @@ from fastmcp import FastMCP
 from opentelemetry import trace
 from opentelemetry.context import Context as OtelContext
 from opentelemetry.trace import Link as OtelLink
-from pydantic import ConfigDict, ValidationError
+from pydantic import ConfigDict, Field, ValidationError
 from starlette.requests import ClientDisconnect
 from starlette.routing import Mount, Route
 
@@ -161,6 +161,33 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
 type _DeterministicScheduleJobHandler = Callable[
     [asyncpg.Pool, dict[str, Any] | None], Awaitable[Any]
 ]
+
+class NotifyRequestContextInput(TypedDict):
+    """notify.request_context contract passed through to notify.v1."""
+
+    request_id: Annotated[str, Field(description="UUID7 request ID from REQUEST CONTEXT.")]
+    source_channel: Annotated[
+        str, Field(description="Source channel from REQUEST CONTEXT (for example telegram).")
+    ]
+    source_endpoint_identity: Annotated[
+        str, Field(description="Source endpoint identity from REQUEST CONTEXT.")
+    ]
+    source_sender_identity: Annotated[
+        str, Field(description="Source sender identity from REQUEST CONTEXT.")
+    ]
+    source_thread_identity: NotRequired[
+        Annotated[
+            str,
+            Field(
+                description=(
+                    "Required for telegram reply/react intents; identifies the source thread/chat."
+                )
+            ),
+        ]
+    ]
+    received_at: NotRequired[
+        Annotated[str, Field(description="Optional RFC3339 source receive timestamp.")]
+    ]
 
 
 @functools.lru_cache(maxsize=1)
@@ -1272,7 +1299,10 @@ class ButlerDaemon:
                     f'- channel="{source_channel}"\n'
                     '- intent="reply" for contextual responses\n'
                     '- intent="react" with emoji for quick acknowledgments (telegram only)\n'
-                    "- Pass the request_context from above as the request_context parameter"
+                    "- Pass the request_context from above as the request_context parameter\n"
+                    "- reply/react request_context requires: request_id, source_channel, "
+                    "source_endpoint_identity, source_sender_identity\n"
+                    "- telegram reply/react additionally requires: source_thread_identity"
                 )
             if parsed.input.conversation_history:
                 context_parts.append(
@@ -2069,7 +2099,10 @@ class ButlerDaemon:
                         f'- channel="{source_channel}"\n'
                         '- intent="reply" for contextual responses\n'
                         '- intent="react" with emoji for quick acknowledgments (telegram only)\n'
-                        "- Pass the request_context from above as the request_context parameter"
+                        "- Pass the request_context from above as the request_context parameter\n"
+                        "- reply/react request_context requires: request_id, source_channel, "
+                        "source_endpoint_identity, source_sender_identity\n"
+                        "- telegram reply/react additionally requires: source_thread_identity"
                     )
 
                 # Add conversation history if forwarded from switchboard
@@ -2944,40 +2977,70 @@ class ButlerDaemon:
         @mcp.tool()
         @tool_span("notify", butler_name=butler_name)
         async def notify(
-            channel: str,
-            message: str | None = None,
-            recipient: str | None = None,
-            subject: str | None = None,
-            intent: str = "send",
-            emoji: str | None = None,
-            request_context: dict[str, Any] | None = None,
+            channel: Annotated[
+                Literal["telegram", "email"],
+                Field(description="Delivery channel. Allowed values: telegram | email."),
+            ],
+            message: Annotated[
+                str | None,
+                Field(description="Message text. Required for send/reply intents."),
+            ] = None,
+            recipient: Annotated[
+                str | None,
+                Field(description="Optional explicit recipient identity (for example email)."),
+            ] = None,
+            subject: Annotated[
+                str | None,
+                Field(description="Optional subject line (email channel)."),
+            ] = None,
+            intent: Annotated[
+                Literal["send", "reply", "react"],
+                Field(description="Delivery intent. Allowed values: send | reply | react."),
+            ] = "send",
+            emoji: Annotated[
+                str | None,
+                Field(description="Required when intent=react."),
+            ] = None,
+            request_context: Annotated[
+                NotifyRequestContextInput | None,
+                Field(
+                    description=(
+                        "Context lineage for reply/react targeting. Required keys for reply/react: "
+                        "request_id, source_channel, source_endpoint_identity, "
+                        "source_sender_identity. For telegram reply/react include "
+                        "source_thread_identity."
+                    )
+                ),
+            ] = None,
         ) -> dict:
-            """Send an outbound notification via the Switchboard.
+            """Send a `notify.v1` envelope through Switchboard `deliver()`.
 
-            Forwards a versioned ``notify.v1`` envelope to the Switchboard's
-            ``deliver()`` tool over the MCP client connection. Blocks until
-            delivered or fails. Returns an error result (not an exception) if
-            the Switchboard is unreachable or the payload is invalid.
+            Required fields:
+            - `channel` (string enum): `telegram` or `email`
+            - `message` (string): required for `send`/`reply`, omitted for `react`
 
-            Parameters
-            ----------
-            channel:
-                Notification channel — currently 'telegram' or 'email'.
-            message:
-                The message text to deliver (required for send/reply intents).
-            recipient:
-                Optional explicit recipient identifier.
-            subject:
-                Optional channel-specific subject (for example email).
-            intent:
-                Delivery intent. Supported values: ``"send"`` (default),
-                ``"reply"``, and ``"react"``.
-            emoji:
-                Optional emoji for react intent. Required when intent is
-                ``"react"``.
-            request_context:
-                Optional routed request-context metadata for reply targeting and
-                lineage propagation.
+            Optional fields:
+            - `recipient` (string)
+            - `subject` (string)
+            - `intent` (string enum): `send` | `reply` | `react`
+            - `emoji` (string): required when `intent="react"`
+            - `request_context` (object): required for `reply`/`react` and must include
+              `request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`
+              plus `source_thread_identity` for telegram `reply`/`react`.
+
+            Valid JSON example:
+            {
+              "channel": "telegram",
+              "intent": "reply",
+              "message": "Done. I logged it.",
+              "request_context": {
+                "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+                "source_channel": "telegram",
+                "source_endpoint_identity": "switchboard",
+                "source_sender_identity": "health",
+                "source_thread_identity": "12345"
+              }
+            }
             """
             # Validate message is present (not required for react intent)
             if intent != "react" and message is None:
@@ -3017,7 +3080,7 @@ class ButlerDaemon:
             if intent not in {"send", "reply", "react"}:
                 return {
                     "status": "error",
-                    "error": "Unsupported notify intent. Supported intents: send, reply",
+                    "error": "Unsupported notify intent. Supported intents: send, reply, react",
                 }
 
             # React intent validation

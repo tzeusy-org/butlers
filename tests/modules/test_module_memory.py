@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP as RuntimeFastMCP
 from pydantic import BaseModel
 
 from butlers.modules.base import Module
@@ -175,6 +176,39 @@ class TestRegisterTools:
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
 
         assert mcp.tool.call_count == 14
+
+    async def test_memory_store_fact_tool_description_and_schema_contract(self):
+        """memory_store_fact metadata should document strict fields and tags shape."""
+        mod = MemoryModule()
+        runtime_mcp = RuntimeFastMCP("test-memory")
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock()
+
+        await mod.register_tools(mcp=runtime_mcp, config=None, db=fake_db)
+
+        tools = await runtime_mcp.list_tools()
+        fact_tool = next(tool for tool in tools if tool.name == "memory_store_fact").model_dump()
+
+        description = fact_tool["description"] or ""
+        assert "required fields" in description.lower()
+        assert '"subject": "user"' in description
+        assert '"tags": [' in description
+        assert "JSON array of strings" in description
+
+        params = fact_tool["parameters"]
+        permanence_prop = params["properties"]["permanence"]
+        assert set(permanence_prop["enum"]) == {
+            "permanent",
+            "stable",
+            "standard",
+            "volatile",
+            "ephemeral",
+        }
+
+        tags_prop = params["properties"]["tags"]
+        tags_desc = tags_prop["description"]
+        assert "JSON array of strings" in tags_desc
+        assert tags_prop["anyOf"][0]["type"] == "array"
 
 
 # ---------------------------------------------------------------------------

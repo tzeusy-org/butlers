@@ -12,6 +12,8 @@ Call `notify()` to send responses back to the user via the channel they messaged
 - **`message`** (REQUIRED for reply/send intents): Your response text. This is the most important parameter — never omit it.
 - **`channel`** (REQUIRED): Extract from `request_context.source_channel` (e.g., "telegram")
 - **`request_context`** (REQUIRED): Pass through the exact REQUEST CONTEXT object from your context above. Do NOT rename this to `trace_context` or anything else.
+  - Reply/react `request_context` MUST include: `request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`.
+  - For Telegram reply/react, `request_context.source_thread_identity` is also required.
 
 **Optional parameters:**
 - `intent`: One of "send", "reply", "react"

@@ -2581,6 +2581,57 @@ class TestNotifyTool:
         daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
         assert notify_fn is not None, "notify tool was not registered"
 
+    async def test_notify_tool_description_and_schema_contract(self, butler_dir: Path) -> None:
+        """notify tool metadata should document request_context and strict enum types."""
+        patches = _patch_infra()
+        runtime_mcp = RuntimeFastMCP("test-butler")
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["validate_core_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patch("butlers.daemon.FastMCP", return_value=runtime_mcp),
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+            patches["create_audit_pool"],
+            patches["recover_route_inbox"],
+        ):
+            daemon = ButlerDaemon(butler_dir)
+            await daemon.start()
+
+        tools = await runtime_mcp.list_tools()
+        notify_tool = next(tool for tool in tools if tool.name == "notify").model_dump()
+
+        description = notify_tool["description"] or ""
+        assert "notify.v1" in description
+        assert '"intent": "reply"' in description
+        assert '"request_context"' in description
+        assert '"source_thread_identity"' in description
+
+        params = notify_tool["parameters"]
+        channel_prop = params["properties"]["channel"]
+        assert set(channel_prop["enum"]) == {"telegram", "email"}
+
+        intent_prop = params["properties"]["intent"]
+        assert set(intent_prop["enum"]) == {"send", "reply", "react"}
+
+        request_context_schema = params["properties"]["request_context"]["anyOf"][0]
+        assert set(request_context_schema["required"]) >= {
+            "request_id",
+            "source_channel",
+            "source_endpoint_identity",
+            "source_sender_identity",
+        }
+        thread_desc = request_context_schema["properties"]["source_thread_identity"]["description"]
+        assert "telegram reply" in thread_desc.lower()
+
     async def test_notify_unsupported_channel_returns_error(self, butler_dir: Path) -> None:
         """notify with an unsupported channel should return error result."""
         patches = _patch_infra()

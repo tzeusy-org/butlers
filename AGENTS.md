@@ -285,6 +285,10 @@ make test-qg
 - Switchboard MCP URLs include `runtime_session_id=<session_uuid>` query params so daemon request middleware (`_McpRuntimeSessionGuard` in `src/butlers/daemon.py`) can bind incoming tool invocations to the active runtime session and capture ground-truth tool calls for fallback decisions.
 - `_McpRuntimeSessionGuard` should proxy unknown attributes to the wrapped ASGI app (for example `.routes`) so middleware layering remains transparent to startup/tests that introspect the combined MCP app.
 
+### notify + memory_store_fact tool metadata contract
+- `notify` tool metadata (description + parameter schema) should explicitly document required/optional fields, include a valid JSON example, constrain `channel`/`intent` enums, and describe `request_context` required keys (`request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`) plus `source_thread_identity` for telegram reply/react.
+- `memory_store_fact` tool metadata should explicitly document required/optional fields, include a valid JSON example, keep `permanence` as enum (`permanent|stable|standard|volatile|ephemeral`), and state that `tags` must be a JSON array of strings (not a comma-separated string).
+
 ### Switchboard registry liveness/compat contract
 - `butler_registry` includes liveness + compatibility metadata: `eligibility_state`, `liveness_ttl_seconds`, quarantine fields, `route_contract_min/max`, and `capabilities`.
 - `resolve_routing_target()` in `roster/switchboard/tools/registry/registry.py` is the canonical gate for route eligibility: it reconciles TTL staleness, enforces stale/quarantine policy overrides, and validates route contract/capability requirements.

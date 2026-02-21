@@ -9,7 +9,7 @@ module state at call time.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -125,15 +125,56 @@ class MemoryModule(Module):
 
         @mcp.tool()
         async def memory_store_fact(
-            subject: str,
-            predicate: str,
-            content: str,
-            importance: float = 5.0,
-            permanence: str = "standard",
-            scope: str = "global",
-            tags: list[str] | None = None,
+            subject: Annotated[str, Field(description="Required subject entity key.")],
+            predicate: Annotated[str, Field(description="Required predicate key.")],
+            content: Annotated[str, Field(description="Required fact content text.")],
+            importance: Annotated[
+                float, Field(description="Importance score (float, default 5.0).")
+            ] = 5.0,
+            permanence: Annotated[
+                Literal["permanent", "stable", "standard", "volatile", "ephemeral"],
+                Field(
+                    description=(
+                        "Permanence level: permanent | stable | standard | volatile | ephemeral."
+                    )
+                ),
+            ] = "standard",
+            scope: Annotated[
+                str, Field(description="Scope namespace (default `global`).")
+            ] = "global",
+            tags: Annotated[
+                list[str] | None,
+                Field(
+                    description=(
+                        "Optional tags as a JSON array of strings (not a comma-separated string)."
+                    )
+                ),
+            ] = None,
         ) -> dict[str, Any]:
-            """Store a fact, automatically superseding any existing match."""
+            """Store a fact and supersede any active `(subject, predicate)` match.
+
+            Required fields:
+            - `subject` (string)
+            - `predicate` (string)
+            - `content` (string)
+
+            Optional fields:
+            - `importance` (float)
+            - `permanence` (enum): `permanent|stable|standard|volatile|ephemeral`
+            - `scope` (string)
+            - `tags` (array[string]) — must be a JSON array of strings
+
+            Valid JSON example:
+            {
+              "subject": "user",
+              "predicate": "favorite_coffee",
+              "content": "drinks espresso",
+              "importance": 6.5,
+              "permanence": "standard",
+              "scope": "global",
+              "tags": ["preferences", "coffee"]
+            }
+            """
             return await _writing.memory_store_fact(
                 module._get_pool(),
                 module._get_embedding_engine(),

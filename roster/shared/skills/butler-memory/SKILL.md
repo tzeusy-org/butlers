@@ -15,5 +15,6 @@ Extract facts from conversational messages and store them using the butler's dom
 - `volatile`: Temporary states or rapidly changing information (acute symptoms, time-sensitive reminders)
 
 **Tags** enable cross-cutting queries and discovery. Choose tags that support finding facts across different contexts.
+For `memory_store_fact`, `tags` must be a JSON array of strings (for example `["work", "project-x"]`), not a comma-separated string.
 
 **Extraction philosophy**: Capture facts proactively from conversational messages, even if tangential to the main request. Use appropriate permanence and importance levels to ensure useful recall later.
