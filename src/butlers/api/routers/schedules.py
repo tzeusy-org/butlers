@@ -17,6 +17,7 @@ import json
 import logging
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 
 from butlers.api.db import DatabaseManager
@@ -40,21 +41,62 @@ def _get_db_manager() -> DatabaseManager:
 # ---------------------------------------------------------------------------
 
 _SCHEDULE_COLUMNS = (
+    "id, name, cron, dispatch_mode, prompt, job_name, job_args, "
+    "source, enabled, next_run_at, last_run_at, created_at, updated_at"
+)
+_SCHEDULE_COLUMNS_LEGACY = (
     "id, name, cron, prompt, source, enabled, next_run_at, last_run_at, created_at, updated_at"
 )
+_DISPATCH_MODE_PROMPT = "prompt"
+_DISPATCH_MODE_JOB = "job"
+
+
+def _row_value(row, key: str, default=None):
+    """Read a mapping key with compatibility for asyncpg Record and plain dict."""
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def _normalize_job_args(value):
+    """Normalize JSONB-like job args to a dict-or-null."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            logger.warning("Ignoring malformed schedule.job_args payload")
+            return None
+        if isinstance(decoded, dict):
+            return decoded
+    logger.warning("Ignoring non-object schedule.job_args payload type=%s", type(value).__name__)
+    return None
 
 
 def _row_to_schedule(row) -> Schedule:
     """Convert an asyncpg Record to a Schedule model."""
+    raw_mode = _row_value(row, "dispatch_mode", _DISPATCH_MODE_PROMPT)
+    dispatch_mode = (
+        str(raw_mode).strip().lower()
+        if str(raw_mode).strip().lower() in {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
+        else _DISPATCH_MODE_PROMPT
+    )
     return Schedule(
         id=row["id"],
         name=row["name"],
         cron=row["cron"],
-        prompt=row["prompt"],
-        source=row["source"],
-        enabled=row["enabled"],
-        next_run_at=row["next_run_at"],
-        last_run_at=row["last_run_at"],
+        dispatch_mode=dispatch_mode,
+        prompt=_row_value(row, "prompt"),
+        job_name=_row_value(row, "job_name"),
+        job_args=_normalize_job_args(_row_value(row, "job_args")),
+        source=_row_value(row, "source", "db"),
+        enabled=bool(_row_value(row, "enabled", True)),
+        next_run_at=_row_value(row, "next_run_at"),
+        last_run_at=_row_value(row, "last_run_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -118,7 +160,14 @@ async def list_schedules(
             detail=f"Butler '{name}' database is not available",
         )
 
-    rows = await pool.fetch(f"SELECT {_SCHEDULE_COLUMNS} FROM scheduled_tasks ORDER BY created_at")
+    try:
+        rows = await pool.fetch(
+            f"SELECT {_SCHEDULE_COLUMNS} FROM scheduled_tasks ORDER BY created_at"
+        )
+    except asyncpg.UndefinedColumnError:
+        rows = await pool.fetch(
+            f"SELECT {_SCHEDULE_COLUMNS_LEGACY} FROM scheduled_tasks ORDER BY created_at"
+        )
     schedules = [_row_to_schedule(row) for row in rows]
     return ApiResponse[list[Schedule]](data=schedules)
 
@@ -140,14 +189,20 @@ async def create_schedule(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[dict]:
     """Create a new scheduled task via MCP tool call to the butler."""
-    summary = {"name": body.name, "cron": body.cron}
+    arguments: dict = {"name": body.name, "cron": body.cron}
+    if body.dispatch_mode == _DISPATCH_MODE_JOB:
+        arguments["dispatch_mode"] = body.dispatch_mode
+        arguments["job_name"] = body.job_name
+        if body.job_args is not None:
+            arguments["job_args"] = body.job_args
+    else:
+        arguments["prompt"] = body.prompt
+
+    summary = {"name": body.name, "cron": body.cron, "dispatch_mode": body.dispatch_mode}
+    if body.job_name is not None:
+        summary["job_name"] = body.job_name
     try:
-        result = await _call_mcp_tool(
-            mgr,
-            name,
-            "schedule_create",
-            {"name": body.name, "cron": body.cron, "prompt": body.prompt},
-        )
+        result = await _call_mcp_tool(mgr, name, "schedule_create", arguments)
         await log_audit_entry(db, name, "schedule.create", summary)
         return ApiResponse[dict](data=result)
     except HTTPException:

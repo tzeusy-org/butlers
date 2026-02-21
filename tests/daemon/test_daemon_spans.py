@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from opentelemetry import trace
@@ -396,6 +397,80 @@ class TestCoreToolSpans:
         assert spans[0].status.status_code == trace.StatusCode.ERROR
         exception_events = [e for e in spans[0].events if e.name == "exception"]
         assert len(exception_events) == 1
+
+    async def test_schedule_create_accepts_job_mode_fields(self, tmp_path):
+        """schedule_create forwards dispatch_mode/job metadata to scheduler core."""
+        butler_dir = _make_butler_toml(tmp_path)
+        patches = _patch_infra()
+        _, tools = await self._start_daemon_capture_tools(butler_dir, patches)
+
+        task_id = uuid4()
+        with patch(
+            "butlers.daemon._schedule_create", new_callable=AsyncMock, return_value=task_id
+        ) as m:
+            result = await tools["schedule_create"](
+                name="eligibility-sweep",
+                cron="*/5 * * * *",
+                dispatch_mode="job",
+                job_name="eligibility_sweep",
+                job_args={"dry_run": True},
+            )
+
+        assert result["id"] == str(task_id)
+        assert result["dispatch_mode"] == "job"
+        assert result["job_name"] == "eligibility_sweep"
+        assert result["job_args"] == {"dry_run": True}
+        m.assert_awaited_once_with(
+            patches["mock_pool"],
+            "eligibility-sweep",
+            "*/5 * * * *",
+            None,
+            dispatch_mode="job",
+            job_name="eligibility_sweep",
+            job_args={"dry_run": True},
+            stagger_key="test-butler",
+        )
+
+    async def test_schedule_update_accepts_legacy_id_alias(self, tmp_path):
+        """schedule_update accepts both legacy id and task_id for compatibility."""
+        butler_dir = _make_butler_toml(tmp_path)
+        patches = _patch_infra()
+        _, tools = await self._start_daemon_capture_tools(butler_dir, patches)
+
+        schedule_id = uuid4()
+        with patch("butlers.daemon._schedule_update", new_callable=AsyncMock) as m:
+            result = await tools["schedule_update"](
+                id=str(schedule_id),
+                dispatch_mode="job",
+                job_name="eligibility_sweep",
+                job_args={"dry_run": True},
+            )
+
+        assert result["id"] == str(schedule_id)
+        assert result["dispatch_mode"] == "job"
+        assert result["job_name"] == "eligibility_sweep"
+        assert result["job_args"] == {"dry_run": True}
+        m.assert_awaited_once_with(
+            patches["mock_pool"],
+            schedule_id,
+            stagger_key="test-butler",
+            dispatch_mode="job",
+            job_name="eligibility_sweep",
+            job_args={"dry_run": True},
+        )
+
+    async def test_schedule_delete_accepts_legacy_id_alias(self, tmp_path):
+        """schedule_delete accepts legacy id field for MCP compatibility."""
+        butler_dir = _make_butler_toml(tmp_path)
+        patches = _patch_infra()
+        _, tools = await self._start_daemon_capture_tools(butler_dir, patches)
+
+        schedule_id = uuid4()
+        with patch("butlers.daemon._schedule_delete", new_callable=AsyncMock) as m:
+            result = await tools["schedule_delete"](id=str(schedule_id))
+
+        assert result == {"id": str(schedule_id), "status": "deleted"}
+        m.assert_awaited_once_with(patches["mock_pool"], schedule_id)
 
 
 # ---------------------------------------------------------------------------

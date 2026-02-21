@@ -2754,46 +2754,92 @@ class ButlerDaemon:
             return tasks
 
         @mcp.tool()
-        async def schedule_create(name: str, cron: str, prompt: str) -> dict:
+        async def schedule_create(
+            name: str,
+            cron: str,
+            prompt: str | None = None,
+            dispatch_mode: str = "prompt",
+            job_name: str | None = None,
+            job_args: dict[str, Any] | None = None,
+        ) -> dict:
             """Create a new runtime scheduled task."""
             task_id = await _schedule_create(
                 pool,
                 name,
                 cron,
                 prompt,
+                dispatch_mode=dispatch_mode,
+                job_name=job_name,
+                job_args=job_args,
                 stagger_key=daemon.config.name,
             )
-            return {"id": str(task_id), "status": "created"}
+            return {
+                "id": str(task_id),
+                "status": "created",
+                "dispatch_mode": dispatch_mode,
+                "prompt": prompt,
+                "job_name": job_name,
+                "job_args": job_args,
+            }
+
+        def _resolve_schedule_tool_id(
+            task_id: str | None,
+            legacy_id: str | None,
+            tool_name: str,
+        ) -> str:
+            """Accept both task_id and legacy id fields for MCP compatibility."""
+            if task_id and legacy_id and task_id != legacy_id:
+                raise ValueError(f"{tool_name} received both task_id and id with different values")
+            resolved = task_id or legacy_id
+            if resolved is None:
+                raise ValueError(f"{tool_name} requires task_id or id")
+            return resolved
 
         @mcp.tool()
         async def schedule_update(
-            task_id: str,
+            task_id: str | None = None,
+            id: str | None = None,
             name: str | None = None,
             cron: str | None = None,
+            dispatch_mode: str | None = None,
             prompt: str | None = None,
+            job_name: str | None = None,
+            job_args: dict[str, Any] | None = None,
             enabled: bool | None = None,
         ) -> dict:
             """Update a scheduled task. Only provided fields are changed."""
+            resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_update")
             update_fields = {
                 "name": name,
                 "cron": cron,
+                "dispatch_mode": dispatch_mode,
                 "prompt": prompt,
+                "job_name": job_name,
+                "job_args": job_args,
                 "enabled": enabled,
             }
             fields = {k: v for k, v in update_fields.items() if v is not None}
             await _schedule_update(
                 pool,
-                uuid.UUID(task_id),
+                uuid.UUID(resolved_id),
                 stagger_key=daemon.config.name,
                 **fields,
             )
-            return {"id": task_id, "status": "updated"}
+            return {
+                "id": resolved_id,
+                "status": "updated",
+                "dispatch_mode": dispatch_mode,
+                "prompt": prompt,
+                "job_name": job_name,
+                "job_args": job_args,
+            }
 
         @mcp.tool()
-        async def schedule_delete(task_id: str) -> dict:
+        async def schedule_delete(task_id: str | None = None, id: str | None = None) -> dict:
             """Delete a runtime scheduled task."""
-            await _schedule_delete(pool, uuid.UUID(task_id))
-            return {"id": task_id, "status": "deleted"}
+            resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_delete")
+            await _schedule_delete(pool, uuid.UUID(resolved_id))
+            return {"id": resolved_id, "status": "deleted"}
 
         # Session tools
         @mcp.tool()
