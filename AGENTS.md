@@ -145,6 +145,10 @@ Each butler has a `MANIFESTO.md` that defines its public identity and value prop
 - The contacts module is expected to run its incremental sync as an internal poll loop, not as a standalone connector (see `docs/modules/contacts_draft.md` §8); the default cadence is an immediate incremental run on startup, recurring polling every 15 minutes, and a forced full refresh every 6 days before the sync token expires.
 - Modules load inside `butlers up` via `ButlerDaemon.start()` (`src/butlers/daemon.py:852-931`), so the poller will live in the butler process. `scripts/dev.sh` already launches `uv run butlers up` and the needed connector panes (telegram + Gmail) around lines 768‑840, so no extra dev bootstrap step is required for contact sync. To actually exercise the module once it exists, add a `[modules.contacts]` block (and provider-specific fields) to `roster/relationship/butler.toml` so the daemon validates and configures it when `butlers up` runs.
 
+### Relationship contacts sync trigger API contract
+- `POST /api/relationship/contacts/sync` is the manual dashboard/API trigger for contacts sync and dispatches to the relationship butler MCP tool `contacts_sync_now` with args `{"provider":"google","mode":"incremental|full"}`.
+- The `mode` query parameter is strict (`incremental` or `full` only), and credential-related MCP failures are surfaced as actionable `400` errors pointing operators to `/api/oauth/google/start` or `/api/oauth/google/credentials`.
+
 ### v1 MVP Status (2026-02-09)
 All 122 beads closed. 449 tests passing on main. Full implementation complete.
 
