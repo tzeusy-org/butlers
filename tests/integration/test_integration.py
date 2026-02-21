@@ -6,9 +6,11 @@ verify that core subsystems work together end-to-end.
 
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
@@ -298,6 +300,58 @@ class TestButlerStartupIntegration:
         )
         assert row is not None
         assert row["last_result"] is not None
+
+    async def test_scheduler_job_mode_tick_avoids_spawner_sessions(self, pool, tmp_path):
+        """Job-mode schedules dispatch through deterministic handlers without session spawn."""
+        from butlers.config import ButlerConfig
+        from butlers.core.scheduler import schedule_create, tick
+        from butlers.daemon import ButlerDaemon
+
+        task_id = await schedule_create(
+            pool,
+            "native-job-check",
+            "*/5 * * * *",
+            dispatch_mode="job",
+            job_name="eligibility_sweep",
+            job_args={"dry_run": True},
+        )
+
+        await pool.execute(
+            "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+            task_id,
+            datetime.now(UTC) - timedelta(minutes=10),
+        )
+
+        initial_session_count = await pool.fetchval("SELECT COUNT(*) FROM sessions")
+
+        daemon = ButlerDaemon(tmp_path)
+        daemon.config = ButlerConfig(name="switchboard", port=40100)
+        daemon.db = MagicMock()
+        daemon.db.pool = pool
+        daemon.spawner = MagicMock()
+        daemon.spawner.trigger = AsyncMock()
+
+        native_result = {"evaluated": 2, "skipped": 1, "transitioned": 1, "transitions": []}
+        mock_native_job = AsyncMock(return_value=native_result)
+        with patch(
+            "butlers.daemon._load_switchboard_eligibility_sweep_job",
+            return_value=mock_native_job,
+        ):
+            dispatched = await tick(pool, daemon._dispatch_scheduled_task)
+
+        assert dispatched == 1
+        mock_native_job.assert_awaited_once_with(pool)
+        daemon.spawner.trigger.assert_not_awaited()
+
+        final_session_count = await pool.fetchval("SELECT COUNT(*) FROM sessions")
+        assert final_session_count == initial_session_count
+
+        row = await pool.fetchrow("SELECT last_result FROM scheduled_tasks WHERE id = $1", task_id)
+        assert row is not None
+        stored_result = row["last_result"]
+        if isinstance(stored_result, str):
+            stored_result = json.loads(stored_result)
+        assert stored_result == native_result
 
     async def test_sessions_crud(self, pool):
         """Sessions create/list/get work with a real database."""
