@@ -32,6 +32,13 @@ class ConfigError(Exception):
     """Raised when butler configuration is missing, malformed, or invalid."""
 
 
+class ScheduleDispatchMode(enum.StrEnum):
+    """Execution mode for scheduled tasks."""
+
+    PROMPT = "prompt"
+    JOB = "job"
+
+
 @dataclass
 class LoggingConfig:
     """Logging configuration from [butler.logging] section."""
@@ -47,7 +54,10 @@ class ScheduleConfig:
 
     name: str
     cron: str
-    prompt: str
+    prompt: str | None = None
+    dispatch_mode: ScheduleDispatchMode = ScheduleDispatchMode.PROMPT
+    job_name: str | None = None
+    job_args: dict[str, Any] | None = None
 
 
 @dataclass
@@ -305,6 +315,75 @@ def _parse_runtime(butler_section: dict) -> RuntimeConfig:
     return RuntimeConfig(
         max_concurrent_sessions=max_concurrent_sessions,
         max_queued_sessions=max_queued_sessions,
+    )
+
+
+def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
+    """Parse and validate one ``[[butler.schedule]]`` entry."""
+    entry_path = f"butler.schedule[{index}]"
+    if not isinstance(entry, dict):
+        raise ConfigError(f"{entry_path} must be a TOML table")
+
+    name = entry.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ConfigError(f"{entry_path}.name must be a non-empty string")
+
+    cron = entry.get("cron")
+    if not isinstance(cron, str) or not cron.strip():
+        raise ConfigError(f"{entry_path}.cron must be a non-empty string")
+
+    raw_mode = entry.get("dispatch_mode", ScheduleDispatchMode.PROMPT.value)
+    if not isinstance(raw_mode, str):
+        raise ConfigError(
+            f"{entry_path}.dispatch_mode must be a string: "
+            f"{ScheduleDispatchMode.PROMPT.value!r} or {ScheduleDispatchMode.JOB.value!r}"
+        )
+    normalized_mode = raw_mode.strip().lower()
+    try:
+        dispatch_mode = ScheduleDispatchMode(normalized_mode)
+    except ValueError as exc:
+        raise ConfigError(
+            f"Invalid {entry_path}.dispatch_mode: {raw_mode!r}. "
+            f"Expected {ScheduleDispatchMode.PROMPT.value!r} or {ScheduleDispatchMode.JOB.value!r}."
+        ) from exc
+
+    prompt = entry.get("prompt")
+    if prompt is not None and not isinstance(prompt, str):
+        raise ConfigError(f"{entry_path}.prompt must be a string when set")
+
+    job_name = entry.get("job_name")
+    if job_name is not None and not isinstance(job_name, str):
+        raise ConfigError(f"{entry_path}.job_name must be a string when set")
+
+    job_args = entry.get("job_args")
+    if job_args is not None and not isinstance(job_args, dict):
+        raise ConfigError(f"{entry_path}.job_args must be a table/object when set")
+
+    if dispatch_mode == ScheduleDispatchMode.PROMPT:
+        if prompt is None or not prompt.strip():
+            raise ConfigError(f"{entry_path} with dispatch_mode='prompt' requires non-empty prompt")
+        if job_name is not None:
+            raise ConfigError(f"{entry_path}.job_name is only valid when dispatch_mode='job'")
+        if job_args is not None:
+            raise ConfigError(f"{entry_path}.job_args is only valid when dispatch_mode='job'")
+        return ScheduleConfig(
+            name=name,
+            cron=cron,
+            prompt=prompt,
+            dispatch_mode=dispatch_mode,
+        )
+
+    if prompt is not None:
+        raise ConfigError(f"{entry_path}.prompt is not allowed when dispatch_mode='job'")
+    if job_name is None or not job_name.strip():
+        raise ConfigError(f"{entry_path} with dispatch_mode='job' requires non-empty job_name")
+
+    return ScheduleConfig(
+        name=name,
+        cron=cron,
+        dispatch_mode=dispatch_mode,
+        job_name=job_name.strip(),
+        job_args=dict(job_args) if job_args is not None else None,
     )
 
 
@@ -631,14 +710,8 @@ def load_config(config_dir: Path) -> ButlerConfig:
     # --- [[butler.schedule]] array ---
     raw_schedules = butler_section.get("schedule", [])
     schedules: list[ScheduleConfig] = []
-    for entry in raw_schedules:
-        schedules.append(
-            ScheduleConfig(
-                name=entry["name"],
-                cron=entry["cron"],
-                prompt=entry["prompt"],
-            )
-        )
+    for i, entry in enumerate(raw_schedules):
+        schedules.append(_parse_schedule_entry(entry, i))
 
     # --- [modules.*] sections ---
     modules: dict[str, dict] = {}
