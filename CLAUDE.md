@@ -119,7 +119,19 @@ tests/               # pytest tests
 
 ## Issue Tracking (Beads)
 
-This project uses `bd` (beads) for issue tracking. `.beads/config.yaml` sets `no-db: false`, meaning beads uses its SQLite database with auto-import/export from `.beads/issues.jsonl`. If the SQLite DB becomes corrupt, delete `.beads/beads.db` and run `bd init` to reimport from JSONL. See `AGENTS.md` for full beads workflow details.
+This project uses `bd` (beads) for issue tracking with SQLite DB mode (`no-db: false`) and a `beads-sync` branch for protected-branch compatibility.
+
+**Data flow:** `bd create/update/close` write to SQLite only. Run `bd export -o .beads/issues.jsonl` to flush DB → main JSONL. Run `bd sync` to commit main JSONL → `beads-sync` branch. Run `bd sync --merge` to merge `beads-sync` → `main`.
+
+**Key gotcha:** `bd sync` does NOT auto-export from DB to main JSONL. Without a prior `bd export`, it syncs stale JSONL. Always `bd export` before `bd sync`.
+
+**If SQLite becomes corrupt:** delete `.beads/beads.db` and run `bd init` to reimport from JSONL, then run the DB repair below. `bd init` imports issues but can leave `dependencies.metadata` and `dependencies.thread_id` columns with empty strings that break the blocked_issues_cache rebuild (`sqlite3: SQL logic error: malformed JSON`). Fix with:
+```sql
+UPDATE dependencies SET metadata = NULL WHERE metadata = '';
+UPDATE dependencies SET thread_id = NULL WHERE thread_id = '';
+```
+
+See `AGENTS.md` for full beads workflow details.
 
 ## Implementation Plan
 

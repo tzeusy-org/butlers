@@ -55,14 +55,25 @@ This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_view
 
 ### Beads DB Mode (SQLite + beads-sync branch)
 
-This repo uses `no-db: false` (see `.beads/config.yaml`) with a `beads-sync` branch for protected-branch compatibility. This means:
+This repo uses `no-db: false` (see `.beads/config.yaml`) with a `beads-sync` branch for protected-branch compatibility.
 
-- **SQLite is the working database.** `bd` reads/writes `.beads/beads.db` for all operations.
-- **`.beads/issues.jsonl` is the git-portable export.** The daemon auto-flushes DB state to JSONL.
-- **`bd sync` commits JSONL to the `beads-sync` branch** (via a sparse-checkout worktree at `.git/beads-worktrees/beads-sync/`), not to `main`.
-- **`bd sync --merge`** merges `beads-sync` into `main` when you want issue state on the main branch.
-- **If SQLite becomes corrupt**, delete `.beads/beads.db` and run `bd init` to reimport from JSONL.
+**Data flow (mutations write to SQLite only, not JSONL):**
+```
+bd create/update/close  →  SQLite DB (.beads/beads.db)
+bd export -o .beads/issues.jsonl  →  Main JSONL (flushes DB to file)
+bd sync  →  Sync worktree JSONL (.git/beads-worktrees/beads-sync/.beads/issues.jsonl)
+bd sync --merge  →  Merges beads-sync branch into main
+```
+
+**Critical:** `bd sync` does NOT auto-export from DB to main JSONL. It only copies the main JSONL to the sync worktree. Without a prior `bd export`, `bd sync` propagates stale JSONL. Always run `bd export -o .beads/issues.jsonl` before `bd sync`.
+
+**Other notes:**
 - **`bd sync --import-only`** reimports JSONL into the DB (useful after pulling changes from others).
+- **If SQLite becomes corrupt**, delete `.beads/beads.db` and run `bd init` to reimport from JSONL, then repair (see below).
+- **`bd init` reimport bug:** leaves `dependencies.metadata` and `dependencies.thread_id` as empty strings, which breaks all mutations with `sqlite3: SQL logic error: malformed JSON` during blocked_issues_cache rebuild. Fix with: `python3 -c "import sqlite3; c=sqlite3.connect('.beads/beads.db'); c.execute(\"UPDATE dependencies SET metadata=NULL WHERE metadata=''\"); c.execute(\"UPDATE dependencies SET thread_id=NULL WHERE thread_id=''\"); c.commit()"`.
+- **`bd init` status import bug:** importing from JSONL may not faithfully restore `status`/`close_reason`. Verify with `bd doctor` and fix mismatches with direct SQL if needed.
+- **`skip-worktree` flags:** beads may set `skip-worktree` or `assume-unchanged` on `issues.jsonl`, hiding modifications from git. Clear with `git update-index --no-skip-worktree --no-assume-unchanged .beads/issues.jsonl`.
+- **v0.49.6 pinned:** v0.55.4 requires `libicui18n.so.74` (ICU 74), not available on Ubuntu 22.04 (has ICU 70).
 
 ### Essential Commands
 
@@ -87,7 +98,7 @@ bd sync               # Commit and push changes
 2. **Claim**: Use `bd update <id> --status=in_progress`
 3. **Work**: Implement the task
 4. **Complete**: Use `bd close <id>`
-5. **Sync**: Always run `bd sync` at session end
+5. **Export + Sync**: `bd export -o .beads/issues.jsonl && bd sync`
 
 ### Worktree Hydration
 
@@ -111,9 +122,9 @@ bd sync               # Commit and push changes
 ```bash
 git status              # Check what changed
 git add <files>         # Stage code changes
-bd sync                 # Commit beads changes
 git commit -m "..."     # Commit code
-bd sync                 # Commit any new beads changes
+bd export -o .beads/issues.jsonl  # Flush DB → main JSONL
+bd sync                 # Commit JSONL → beads-sync branch
 git push                # Push to remote
 ```
 
@@ -123,7 +134,7 @@ git push                # Push to remote
 - Update status as you work (in_progress → closed)
 - Create new issues with `bd create` when you discover tasks
 - Use descriptive titles and set appropriate priority/type
-- Always `bd sync` before ending session
+- Always `bd export -o .beads/issues.jsonl && bd sync` before ending session
 
 <!-- end-bv-agent-instructions -->
 
@@ -419,8 +430,9 @@ make test-qg
 
 ### Beads worktree JSONL contract
 - `.beads/config.yaml` uses `no-db: false` with SQLite as the working database and `sync-branch: "beads-sync"` for protected-branch workflows.
-- `bd sync` commits JSONL to the `beads-sync` branch; `bd sync --merge` merges into `main`.
-- If SQLite becomes corrupt, delete `.beads/beads.db` and `bd init` to reimport from JSONL.
+- Mutations (`bd create/update/close`) write only to SQLite. `bd export -o .beads/issues.jsonl` flushes DB to main JSONL. `bd sync` copies main JSONL to the beads-sync worktree and commits.
+- `bd sync` does NOT auto-export from DB. Without a prior `bd export`, it syncs stale JSONL.
+- If SQLite becomes corrupt, delete `.beads/beads.db`, run `bd init`, then fix empty-string `dependencies.metadata`/`thread_id` (see CLAUDE.md).
 - Regression coverage lives in `tests/tools/test_beads_worktree_sync.py` and must keep worktree `bd close`/`bd show`/`bd export`/`bd import` aligned with branch-local `.beads/issues.jsonl`.
 
 ### Beads PR-review strip guardrail
