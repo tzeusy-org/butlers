@@ -12,6 +12,7 @@ from butlers.core.runtimes import CodexAdapter, get_adapter
 from butlers.core.runtimes.codex import (
     _extract_tool_call,
     _find_codex_binary,
+    _infer_mcp_transport_from_url,
     _parse_codex_output,
 )
 
@@ -161,6 +162,13 @@ def test_build_config_file_multiple_servers(tmp_path: Path):
     assert len(data["mcpServers"]) == 2
     assert "butler-a" in data["mcpServers"]
     assert "butler-b" in data["mcpServers"]
+
+
+def test_infer_mcp_transport_from_url():
+    """URL conventions infer expected MCP transport."""
+    assert _infer_mcp_transport_from_url("http://localhost:40100/mcp") == "streamable_http"
+    assert _infer_mcp_transport_from_url("http://localhost:40100/sse") == "sse"
+    assert _infer_mcp_transport_from_url("http://localhost:40100/events") is None
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +560,53 @@ async def test_invoke_success():
     assert "do something" in cmd[-1]
 
 
+async def test_invoke_adds_streamable_http_transport_for_mcp_url():
+    """Streamable HTTP URLs emit explicit transport override for Codex."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="do something",
+            system_prompt="you are helpful",
+            mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
+            env={"OPENAI_API_KEY": "sk-test"},
+        )
+
+    cmd = mock_sub.call_args[0]
+    assert 'mcp_servers.test.url="http://localhost:9100/mcp"' in cmd
+    assert 'mcp_servers.test.transport="streamable_http"' in cmd
+
+
+async def test_invoke_skips_unsafe_mcp_server_name():
+    """Unsafe MCP server names are ignored to avoid TOML key injection."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="do something",
+            system_prompt="you are helpful",
+            mcp_servers={
+                "safe_name": {"url": "http://localhost:9100/mcp"},
+                'unsafe".transport="sse': {"url": "http://localhost:9200/mcp"},
+            },
+            env={"OPENAI_API_KEY": "sk-test"},
+        )
+
+    cmd = mock_sub.call_args[0]
+    assert 'mcp_servers.safe_name.url="http://localhost:9100/mcp"' in cmd
+    assert not any(
+        token.startswith("mcp_servers.unsafe") or 'transport="sse' in token for token in cmd
+    )
+
+
 async def test_invoke_uses_exec_subcommand():
     """invoke() uses codex exec non-interactive invocation."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")
@@ -647,6 +702,31 @@ async def test_invoke_nonzero_exit():
                 mcp_servers={},
                 env={},
             )
+
+
+async def test_invoke_nonzero_exit_adds_transport_diagnostics_for_sse_endpoint():
+    """Transport-related failures include actionable endpoint diagnostics."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(
+        return_value=(b"", b"rmcp startup failed: 405 Method Not Allowed")
+    )
+    mock_proc.returncode = 1
+
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(RuntimeError) as exc_info:
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers={"switchboard": {"url": "http://localhost:40100/sse"}},
+                env={},
+            )
+
+    message = str(exc_info.value)
+    assert "MCP transport diagnostics" in message
+    assert "/mcp" in message
+    assert "streamable HTTP" in message
 
 
 async def test_invoke_no_system_prompt():
