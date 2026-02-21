@@ -97,6 +97,57 @@ SUPPORTED_ATTACHMENT_TYPES = frozenset(
 MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024
 
 
+def _format_google_error(response: httpx.Response) -> str | None:
+    """Extract a compact Google API/OAuth error summary from response JSON."""
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    # Gmail/Google API error shape:
+    # {"error": {"code": 404, "message": "...", "status": "...", "errors": [{"reason": "..."}]}}
+    nested_error = payload.get("error")
+    if isinstance(nested_error, dict):
+        parts: list[str] = []
+
+        code = nested_error.get("code")
+        if code is not None:
+            parts.append(f"code={code}")
+
+        status = nested_error.get("status")
+        if isinstance(status, str) and status:
+            parts.append(f"status={status}")
+
+        reason = None
+        nested_errors = nested_error.get("errors")
+        if isinstance(nested_errors, list):
+            for item in nested_errors:
+                if isinstance(item, dict) and item.get("reason"):
+                    reason = item["reason"]
+                    break
+        if isinstance(reason, str) and reason:
+            parts.append(f"reason={reason}")
+
+        message = nested_error.get("message")
+        if isinstance(message, str) and message:
+            parts.append(f"message={message}")
+
+        return ", ".join(parts) if parts else None
+
+    # OAuth token endpoint error shape:
+    # {"error": "invalid_grant", "error_description": "..."}
+    if isinstance(nested_error, str) and nested_error:
+        error_description = payload.get("error_description")
+        if isinstance(error_description, str) and error_description:
+            return f"error={nested_error}, description={error_description}"
+        return f"error={nested_error}"
+
+    return None
+
+
 class GmailConnectorConfig(BaseModel):
     """Configuration for Gmail connector runtime."""
 
@@ -693,6 +744,16 @@ class GmailConnectorRuntime:
                     "grant_type": "refresh_token",
                 },
             )
+            if response.is_error:
+                google_error = _format_google_error(response)
+                if google_error:
+                    logger.error(
+                        "OAuth token refresh failed status=%s details=%s",
+                        response.status_code,
+                        google_error,
+                    )
+                else:
+                    logger.error("OAuth token refresh failed status=%s", response.status_code)
             response.raise_for_status()
             token_data = response.json()
 
@@ -812,6 +873,9 @@ class GmailConnectorRuntime:
             if response.status_code == 404:
                 # History ID too old, reset to current
                 logger.warning("History ID %s is too old, resetting to current", start_history_id)
+                google_error = _format_google_error(response)
+                if google_error:
+                    logger.warning("Gmail history.list 404 details: %s", google_error)
                 self._metrics.record_source_api_call(api_method="history.list", status="reset")
                 profile = await self._gmail_get_profile()
                 new_history_id = profile.get("historyId", start_history_id)
@@ -822,6 +886,22 @@ class GmailConnectorRuntime:
                     )
                 )
                 return []
+
+            if response.is_error:
+                google_error = _format_google_error(response)
+                if google_error:
+                    logger.error(
+                        "Gmail history.list failed status=%s startHistoryId=%s details=%s",
+                        response.status_code,
+                        start_history_id,
+                        google_error,
+                    )
+                else:
+                    logger.error(
+                        "Gmail history.list failed status=%s startHistoryId=%s",
+                        response.status_code,
+                        start_history_id,
+                    )
 
             response.raise_for_status()
             data = response.json()

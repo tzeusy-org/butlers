@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from butlers.connectors.gmail import (
@@ -264,6 +266,7 @@ class TestGmailConnectorRuntime:
     async def test_get_access_token_refresh(self, gmail_runtime: GmailConnectorRuntime) -> None:
         """Test OAuth token refresh when expired."""
         mock_response = MagicMock()
+        mock_response.is_error = False
         mock_response.json.return_value = {
             "access_token": "new-token",
             "expires_in": 3600,
@@ -285,6 +288,7 @@ class TestGmailConnectorRuntime:
         """Test fetching history changes from Gmail API."""
         mock_response = MagicMock()
         mock_response.status_code = 200
+        mock_response.is_error = False
         mock_response.json.return_value = {
             "history": [
                 {"id": "100", "messagesAdded": [{"message": {"id": "msg1"}}]},
@@ -306,11 +310,22 @@ class TestGmailConnectorRuntime:
             assert history[1]["id"] == "101"
 
     async def test_fetch_history_changes_404_resets_cursor(
-        self, gmail_runtime: GmailConnectorRuntime, temp_cursor_path: Path
+        self,
+        gmail_runtime: GmailConnectorRuntime,
+        temp_cursor_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Test history fetch handles 404 (history too old) by resetting cursor."""
         mock_404_response = MagicMock()
         mock_404_response.status_code = 404
+        mock_404_response.json.return_value = {
+            "error": {
+                "code": 404,
+                "message": "Requested entity was not found.",
+                "status": "NOT_FOUND",
+                "errors": [{"reason": "notFound"}],
+            }
+        }
 
         mock_profile_response = MagicMock()
         mock_profile_response.json.return_value = {"historyId": "200"}
@@ -321,14 +336,78 @@ class TestGmailConnectorRuntime:
             patch.object(gmail_runtime, "_get_access_token", new=AsyncMock(return_value="token")),
         ):
             mock_client.get = AsyncMock(side_effect=[mock_404_response, mock_profile_response])
-
-            history = await gmail_runtime._fetch_history_changes("1")
+            with caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"):
+                history = await gmail_runtime._fetch_history_changes("1")
 
             assert history == []
             # Verify cursor was updated
             assert temp_cursor_path.exists()
             cursor_data = json.loads(temp_cursor_path.read_text())
             assert cursor_data["history_id"] == "200"
+            assert "Gmail history.list 404 details" in caplog.text
+            assert "reason=notFound" in caplog.text
+
+    async def test_fetch_history_changes_error_logs_google_details(
+        self, gmail_runtime: GmailConnectorRuntime, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Non-404 history errors should log structured Google details."""
+        mock_error_response = MagicMock()
+        mock_error_response.status_code = 401
+        mock_error_response.is_error = True
+        mock_error_response.json.return_value = {
+            "error": {
+                "code": 401,
+                "message": "Request had invalid authentication credentials.",
+                "status": "UNAUTHENTICATED",
+                "errors": [{"reason": "authError"}],
+            }
+        }
+        mock_error_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "401 Unauthorized",
+            request=httpx.Request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/history"),
+            response=mock_error_response,
+        )
+
+        with (
+            patch.object(gmail_runtime, "_http_client", new=AsyncMock()) as mock_client,
+            patch.object(gmail_runtime, "_get_access_token", new=AsyncMock(return_value="token")),
+        ):
+            mock_client.get = AsyncMock(return_value=mock_error_response)
+
+            with caplog.at_level(logging.ERROR, logger="butlers.connectors.gmail"):
+                with pytest.raises(httpx.HTTPStatusError):
+                    await gmail_runtime._fetch_history_changes("123")
+
+            assert "Gmail history.list failed status=401" in caplog.text
+            assert "status=UNAUTHENTICATED" in caplog.text
+            assert "reason=authError" in caplog.text
+
+    async def test_get_access_token_error_logs_google_details(
+        self, gmail_runtime: GmailConnectorRuntime, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """OAuth refresh failures should log Google OAuth error details."""
+        mock_error_response = MagicMock()
+        mock_error_response.status_code = 400
+        mock_error_response.is_error = True
+        mock_error_response.json.return_value = {
+            "error": "invalid_grant",
+            "error_description": "Token has been expired or revoked.",
+        }
+        mock_error_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "400 Bad Request",
+            request=httpx.Request("POST", "https://oauth2.googleapis.com/token"),
+            response=mock_error_response,
+        )
+
+        with patch.object(gmail_runtime, "_http_client", new=AsyncMock()) as mock_client:
+            mock_client.post = AsyncMock(return_value=mock_error_response)
+
+            with caplog.at_level(logging.ERROR, logger="butlers.connectors.gmail"):
+                with pytest.raises(httpx.HTTPStatusError):
+                    await gmail_runtime._get_access_token()
+
+            assert "OAuth token refresh failed status=400" in caplog.text
+            assert "error=invalid_grant" in caplog.text
 
     def test_extract_message_ids_from_history(self, gmail_runtime: GmailConnectorRuntime) -> None:
         """Test extracting message IDs from history records."""

@@ -644,6 +644,11 @@ make test-qg
 - `GmailConnectorConfig.from_env(...)` accepts DB-injected credentials as explicit args and reads only non-secret runtime env config.
 - Regression coverage lives in `tests/test_gmail_connector.py::TestRunGmailConnectorStartup`.
 
+### Gmail connector error-detail logging contract
+- `src/butlers/connectors/gmail.py::_format_google_error` is the canonical parser for Google API/OAuth JSON error payloads; keep logs compact (`code/status/reason/message` or `error/error_description`) and avoid dumping full payloads.
+- `GmailConnectorRuntime._fetch_history_changes()` must log parsed Google details for `history.list` 404 cursor resets and for other non-2xx `history.list` responses before `raise_for_status()`.
+- `GmailConnectorRuntime._get_access_token()` must log parsed OAuth error details on non-2xx token refresh responses (for example `invalid_grant`) before raising.
+
 ### Butler runtime/model pinning contract
 - Runtime adapter selection is read from top-level `[runtime].type` in each `roster/*/butler.toml` (defaults to `"claude-code"` when omitted).
 - Runtime model selection is read from `[butler.runtime].model` (defaults to `src/butlers/config.py::DEFAULT_MODEL` when omitted).
