@@ -268,6 +268,8 @@ _CHANNEL_EGRESS_RE = re.compile(
 
 _TOOL_NAME_RE = re.compile(r"^(user|bot)_[a-z0-9_]+_[a-z0-9_]+$")
 
+_MCP_TOOL_CALL_LOG_LINE = "MCP tool called (butler=%s module=%s tool=%s)"
+
 
 @dataclass
 class ModuleStartupStatus:
@@ -437,7 +439,7 @@ def _extract_identity_scope_credentials(
 
 
 class _SpanWrappingMCP:
-    """Proxy around FastMCP that auto-wraps tool handlers with tool_span.
+    """Proxy around FastMCP that logs and span-wraps module tool handlers.
 
     When modules call ``mcp.tool()`` to register their tools, this proxy
     intercepts the registration and wraps the handler with a
@@ -469,6 +471,15 @@ class _SpanWrappingMCP:
         # Used for call-time module enabled/disabled gating.
         self._module_runtime_states: dict[str, ModuleRuntimeState] | None = module_runtime_states
 
+    def _log_tool_call(self, tool_name: str) -> None:
+        """Emit one info log per MCP tool invocation."""
+        logger.info(
+            _MCP_TOOL_CALL_LOG_LINE,
+            self._butler_name,
+            self._module_name,
+            tool_name,
+        )
+
     def tool(self, *args, **kwargs):
         """Return a decorator that wraps the handler with tool_span."""
         declared_name = kwargs.get("name")
@@ -494,6 +505,7 @@ class _SpanWrappingMCP:
 
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                self._log_tool_call(resolved_tool_name)
                 # Check module enabled state at call time to support live toggling.
                 if runtime_states_ref is not None:
                     state = runtime_states_ref.get(module_name_for_gate)
@@ -518,6 +530,49 @@ class _SpanWrappingMCP:
         if not self._declared_tool_names:
             return set()
         return self._declared_tool_names - self._registered_tool_names
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._mcp, name)
+
+
+class _ToolCallLoggingMCP:
+    """Proxy around FastMCP that logs every registered tool invocation."""
+
+    def __init__(
+        self,
+        mcp: FastMCP,
+        butler_name: str,
+        *,
+        module_name: str,
+    ) -> None:
+        self._mcp = mcp
+        self._butler_name = butler_name
+        self._module_name = module_name
+
+    def _log_tool_call(self, tool_name: str) -> None:
+        logger.info(
+            _MCP_TOOL_CALL_LOG_LINE,
+            self._butler_name,
+            self._module_name,
+            tool_name,
+        )
+
+    def tool(self, *args, **kwargs):
+        """Return a decorator that logs each call into a registered tool."""
+        declared_name = kwargs.get("name")
+        original_decorator = self._mcp.tool(*args, **kwargs)
+
+        def wrapper(fn):  # noqa: ANN001, ANN202
+            resolved_tool_name = declared_name or fn.__name__
+
+            @functools.wraps(fn)
+            async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                self._log_tool_call(resolved_tool_name)
+                return await fn(*args, **kwargs)
+
+            return original_decorator(instrumented)
+
+        return wrapper
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._mcp, name)
@@ -1598,11 +1653,11 @@ class ButlerDaemon:
         Every tool handler is wrapped with a ``tool_span`` that creates a
         ``butler.tool.<name>`` span with a ``butler.name`` attribute.
         """
-        mcp = self.mcp
         pool = self.db.pool
         spawner = self.spawner
         daemon = self
         butler_name = self.config.name
+        mcp = _ToolCallLoggingMCP(self.mcp, butler_name, module_name="core")
         _route_metrics = ButlerMetrics(butler_name=butler_name)
 
         @mcp.tool()

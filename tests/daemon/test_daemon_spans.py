@@ -290,6 +290,22 @@ class TestCoreToolSpans:
         assert spans[0].name == "butler.tool.state_set"
         assert spans[0].attributes["butler.name"] == "test-butler"
 
+    async def test_core_tool_call_is_logged(self, tmp_path):
+        """Core tool invocation emits a structured MCP tool call log."""
+        butler_dir = _make_butler_toml(tmp_path)
+        daemon, tools = await self._start_daemon_capture_tools(butler_dir)
+        daemon._started_at = time.monotonic()
+
+        with patch("butlers.daemon.logger") as mock_logger:
+            await tools["status"]()
+
+        mock_logger.info.assert_any_call(
+            "MCP tool called (butler=%s module=%s tool=%s)",
+            "test-butler",
+            "core",
+            "status",
+        )
+
     async def test_all_core_tools_have_span_names(self, tmp_path, otel_provider):
         """Every core tool produces a span named butler.tool.<tool_name>."""
         butler_dir = _make_butler_toml(tmp_path)
@@ -482,6 +498,37 @@ class TestSpanWrappingMCP:
         spans = otel_provider.get_finished_spans()
         assert len(spans) == 1
         assert spans[0].status.status_code == trace.StatusCode.ERROR
+
+    async def test_wraps_tool_logs_invocation(self, otel_provider):
+        """Wrapped module tools emit a call log line on invocation."""
+        mock_mcp = MagicMock()
+        registered_fns = {}
+
+        def tool_decorator(*_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
+            def decorator(fn):
+                registered_fns[declared_name or fn.__name__] = fn
+                return fn
+
+            return decorator
+
+        mock_mcp.tool = tool_decorator
+        wrapper = _SpanWrappingMCP(mock_mcp, "test-butler", module_name="stub_span")
+
+        @wrapper.tool()
+        async def stub_action() -> dict:
+            return {"ok": True}
+
+        with patch("butlers.daemon.logger") as mock_logger:
+            await registered_fns["stub_action"]()
+
+        mock_logger.info.assert_any_call(
+            "MCP tool called (butler=%s module=%s tool=%s)",
+            "test-butler",
+            "stub_span",
+            "stub_action",
+        )
 
 
 # ---------------------------------------------------------------------------
