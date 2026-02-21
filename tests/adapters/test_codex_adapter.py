@@ -391,6 +391,43 @@ def test_parse_response_output_item_done_function_call():
     assert tool_calls[0]["input"] == {"butler": "relationship", "prompt": "Store DOB"}
 
 
+def test_parse_item_completed_mcp_tool_call_with_nested_call_payload():
+    """Nested mcp_tool_call payloads should normalize to name + input."""
+    lines = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "mcp_1",
+                        "type": "mcp_tool_call",
+                        "call": {
+                            "name": "route_to_butler",
+                            "arguments": {
+                                "butler": "relationship",
+                                "prompt": "Store Chloe DOB",
+                            },
+                        },
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "result": "Routed"}),
+        ]
+    )
+
+    result_text, tool_calls, usage = _parse_codex_output(lines, "", 0)
+
+    assert result_text == "Routed"
+    assert usage is None
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "mcp_1"
+    assert tool_calls[0]["name"] == "route_to_butler"
+    assert tool_calls[0]["input"] == {
+        "butler": "relationship",
+        "prompt": "Store Chloe DOB",
+    }
+
+
 def test_parse_response_completed_usage_nested_response_object():
     """response.completed should extract usage from nested response.usage."""
     lines = json.dumps(
@@ -420,6 +457,24 @@ def test_extract_tool_call_parses_json_string_arguments():
     assert tc["id"] == "fc2"
     assert tc["name"] == "route_to_butler"
     assert tc["input"] == {"butler": "health", "prompt": "Track meal"}
+
+
+def test_extract_tool_call_with_nested_call_payload():
+    """Nested call payloads from mcp_tool_call objects are extracted."""
+    tc = _extract_tool_call(
+        {
+            "type": "mcp_tool_call",
+            "call_id": "call_1",
+            "call": {
+                "name": "route_to_butler",
+                "arguments": '{"butler":"health","prompt":"Track breakfast"}',
+            },
+        }
+    )
+
+    assert tc["id"] == "call_1"
+    assert tc["name"] == "route_to_butler"
+    assert tc["input"] == {"butler": "health", "prompt": "Track breakfast"}
 
 
 def test_parse_exec_json_ignores_non_json_diagnostics():

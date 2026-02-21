@@ -13,6 +13,7 @@ The spawner is responsible for:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -20,6 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import asyncpg
 from opentelemetry import trace
@@ -37,6 +39,11 @@ from butlers.core.telemetry import (
     clear_active_session_context,
     get_traceparent_env,
     set_active_session_context,
+)
+from butlers.core.tool_call_capture import (
+    consume_runtime_session_tool_calls,
+    discard_runtime_session_tool_calls,
+    ensure_runtime_session_capture,
 )
 from butlers.credential_store import CredentialStore
 
@@ -90,6 +97,38 @@ class SpawnerResult:
     session_id: uuid.UUID | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+
+
+def _append_runtime_session_query(url: str, runtime_session_id: str | None) -> str:
+    """Append runtime_session_id query param to MCP URL when available."""
+    if not runtime_session_id:
+        return url
+
+    parsed = urlsplit(url)
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    query_items.append(("runtime_session_id", runtime_session_id))
+    new_query = urlencode(query_items)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, new_query, parsed.fragment))
+
+
+def _merge_tool_call_records(
+    parsed_calls: list[dict[str, Any]],
+    executed_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge parser + executed call records with stable ordering and de-dupe."""
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for call in [*parsed_calls, *executed_calls]:
+        name = str(call.get("name", "") or "")
+        payload = call.get("input") or call.get("args") or {}
+        signature = f"{name}|{json.dumps(payload, sort_keys=True, default=str)}"
+        if signature in seen:
+            continue
+        seen.add(signature)
+        merged.append(call)
+
+    return merged
 
 
 def _compose_system_prompt(base_system_prompt: str, memory_context: str | None) -> str:
@@ -521,6 +560,7 @@ class Spawner:
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
+        runtime_session_id: str | None = None
         runtime = self._runtime.create_worker()
         runtime_invoked = False
 
@@ -561,6 +601,8 @@ class Spawner:
                 )
                 # Set session_id on span
                 span.set_attribute("session_id", str(session_id))
+                runtime_session_id = str(session_id)
+                ensure_runtime_session_capture(runtime_session_id)
 
             # Read system prompt
             system_prompt = read_system_prompt(self._config_dir, self._config.name)
@@ -582,9 +624,11 @@ class Spawner:
             )
 
             # Build MCP server config for the adapter
+            mcp_url = runtime_mcp_url(self._config.port)
+            mcp_url = _append_runtime_session_query(mcp_url, runtime_session_id)
             mcp_servers: dict[str, Any] = {
                 self._config.name: {
-                    "url": runtime_mcp_url(self._config.port),
+                    "url": mcp_url,
                 },
             }
 
@@ -599,6 +643,9 @@ class Spawner:
                 model=model,
                 cwd=str(self._config_dir),
             )
+            if runtime_session_id:
+                executed_tool_calls = consume_runtime_session_tool_calls(runtime_session_id)
+                tool_calls = _merge_tool_call_records(tool_calls, executed_tool_calls)
 
             duration_ms = int((time.monotonic() - t0) * 1000)
 
@@ -662,6 +709,8 @@ class Spawner:
             return spawner_result
 
         except Exception as exc:
+            if runtime_session_id:
+                discard_runtime_session_tool_calls(runtime_session_id)
             duration_ms = int((time.monotonic() - t0) * 1000)
             error_msg = f"{type(exc).__name__}: {exc}"
             logger.error("Runtime invocation failed: %s", error_msg, exc_info=True)

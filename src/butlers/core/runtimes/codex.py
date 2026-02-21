@@ -135,13 +135,40 @@ def _looks_like_tool_call_event(obj: dict[str, Any]) -> bool:
     }:
         return True
 
-    # Some Codex event variants omit specific type names but still carry
-    # structured tool metadata as name + args.
-    name = obj.get("name") or obj.get("tool_name") or obj.get("function", {}).get("name")
-    has_args = (
-        "input" in obj
-        or "arguments" in obj
-        or (isinstance(obj.get("function"), dict) and "arguments" in obj.get("function", {}))
+    # Some Codex event variants omit specific type names or nest call payloads
+    # under fields like "call" / "tool_call".
+    nested_containers = [
+        container
+        for container in (
+            obj.get("function"),
+            obj.get("call"),
+            obj.get("tool_call"),
+            obj.get("toolCall"),
+        )
+        if isinstance(container, dict)
+    ]
+    name = (
+        obj.get("name")
+        or obj.get("tool_name")
+        or obj.get("toolName")
+        or next(
+            (
+                container.get("name")
+                or container.get("tool_name")
+                or container.get("toolName")
+                for container in nested_containers
+                if (
+                    container.get("name")
+                    or container.get("tool_name")
+                    or container.get("toolName")
+                )
+            ),
+            None,
+        )
+    )
+    has_args = any(
+        any(key in container for key in ("input", "arguments", "args", "parameters"))
+        for container in [obj, *nested_containers]
     )
     if isinstance(name, str) and name.strip() and has_args:
         return True
@@ -333,10 +360,35 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
             },
         }
 
-    input_payload = obj.get(
-        "input",
-        obj.get("arguments", obj.get("function", {}).get("arguments", {})),
-    )
+    nested_containers = [
+        container
+        for container in (
+            obj.get("function"),
+            obj.get("call"),
+            obj.get("tool_call"),
+            obj.get("toolCall"),
+        )
+        if isinstance(container, dict)
+    ]
+
+    input_payload: Any = obj.get("input")
+    if input_payload is None:
+        input_payload = obj.get("args")
+    if input_payload is None:
+        input_payload = obj.get("arguments")
+    if input_payload is None:
+        input_payload = obj.get("parameters")
+    if input_payload is None:
+        for container in nested_containers:
+            for key in ("input", "args", "arguments", "parameters"):
+                if key in container:
+                    input_payload = container.get(key)
+                    break
+            if input_payload is not None:
+                break
+    if input_payload is None:
+        input_payload = {}
+
     if isinstance(input_payload, str):
         try:
             parsed_input = json.loads(input_payload)
@@ -344,9 +396,43 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
         except (json.JSONDecodeError, ValueError):
             pass
 
+    tool_name = (
+        obj.get("name")
+        or obj.get("tool_name")
+        or obj.get("toolName")
+        or next(
+            (
+                container.get("name")
+                or container.get("tool_name")
+                or container.get("toolName")
+                for container in nested_containers
+                if (
+                    container.get("name")
+                    or container.get("tool_name")
+                    or container.get("toolName")
+                )
+            ),
+            "",
+        )
+    )
+
+    tool_id = obj.get("id")
+    if not isinstance(tool_id, str) or not tool_id:
+        tool_id = obj.get("call_id")
+    if (not isinstance(tool_id, str) or not tool_id) and nested_containers:
+        nested_id = next(
+            (
+                container.get("id") or container.get("call_id")
+                for container in nested_containers
+                if container.get("id") or container.get("call_id")
+            ),
+            "",
+        )
+        tool_id = nested_id
+
     return {
-        "id": obj.get("id", ""),
-        "name": obj.get("name", obj.get("tool_name", obj.get("function", {}).get("name", ""))),
+        "id": tool_id if isinstance(tool_id, str) else "",
+        "name": tool_name if isinstance(tool_name, str) else "",
         "input": input_payload,
     }
 

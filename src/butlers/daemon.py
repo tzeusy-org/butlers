@@ -100,6 +100,11 @@ from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_list as _state_list
 from butlers.core.state import state_set as _state_set
 from butlers.core.telemetry import extract_trace_context, init_telemetry, tool_span
+from butlers.core.tool_call_capture import (
+    capture_tool_call,
+    reset_current_runtime_session_id,
+    set_current_runtime_session_id,
+)
 from butlers.credential_store import (
     CredentialStore,
     ensure_secrets_schema,
@@ -233,6 +238,47 @@ class _McpSseDisconnectGuard:
                 await send({"type": "http.response.body", "body": b""})
             except Exception:
                 logger.debug("MCP SSE disconnect response not sent; client already disconnected")
+
+
+class _McpRuntimeSessionGuard:
+    """Bind runtime session IDs from MCP query params into request context."""
+
+    _MAX_SESSION_MAP_SIZE = 4096
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+        self._mcp_session_to_runtime_session: dict[str, str] = {}
+
+    def _resolve_runtime_session_id(self, scope: dict[str, Any]) -> str | None:
+        query_string = scope.get("query_string")
+        if not isinstance(query_string, (bytes, bytearray)):
+            return None
+
+        parsed = parse_qs(query_string.decode("utf-8", errors="replace"))
+        runtime_values = parsed.get("runtime_session_id")
+        runtime_session_id = runtime_values[0].strip() if runtime_values else None
+        mcp_values = parsed.get("session_id")
+        mcp_session_id = mcp_values[0].strip() if mcp_values else None
+
+        if runtime_session_id and mcp_session_id:
+            self._mcp_session_to_runtime_session[mcp_session_id] = runtime_session_id
+            if len(self._mcp_session_to_runtime_session) > self._MAX_SESSION_MAP_SIZE:
+                oldest = next(iter(self._mcp_session_to_runtime_session))
+                self._mcp_session_to_runtime_session.pop(oldest, None)
+
+        if runtime_session_id:
+            return runtime_session_id
+        if mcp_session_id:
+            return self._mcp_session_to_runtime_session.get(mcp_session_id)
+        return None
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        runtime_session_id = self._resolve_runtime_session_id(scope)
+        token = set_current_runtime_session_id(runtime_session_id)
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            reset_current_runtime_session_id(token)
 
 
 class ModuleConfigError(Exception):
@@ -506,6 +552,16 @@ class _SpanWrappingMCP:
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
                 self._log_tool_call(resolved_tool_name)
+                capture_input = {
+                    k: kwargs.get(k)
+                    for k in ("butler", "target_butler", "butler_name", "prompt", "context")
+                    if k in kwargs
+                }
+                capture_tool_call(
+                    tool_name=resolved_tool_name,
+                    module_name=self._module_name,
+                    input_payload=capture_input,
+                )
                 # Check module enabled state at call time to support live toggling.
                 if runtime_states_ref is not None:
                     state = runtime_states_ref.get(module_name_for_gate)
@@ -1278,7 +1334,8 @@ class ButlerDaemon:
         if sse_router is not None:
             streamable_app.include_router(sse_router)
 
-        return _McpSseDisconnectGuard(streamable_app, butler_name=butler_name)
+        guarded_app = _McpRuntimeSessionGuard(streamable_app)
+        return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
         """Create or reuse a connection pool for daemon-side audit logging.
@@ -1912,7 +1969,8 @@ class ButlerDaemon:
                         "INTERACTIVE DATA SOURCE:\n"
                         f"This message originated from an interactive channel ({source_channel}). "
                         "The user expects a reply through the same channel. "
-                        "IMPORTANT: You MUST use the notify() tool to send your response:\n"
+                        "IMPORTANT: You MUST use the notify() tool on your MCP to send "
+                        "your response:\n"
                         f'- channel="{source_channel}"\n'
                         '- intent="reply" for contextual responses\n'
                         '- intent="react" with emoji for quick acknowledgments (telegram only)\n'
@@ -2851,13 +2909,14 @@ class ButlerDaemon:
                     "error": ("Switchboard is not connected. Cannot deliver notification."),
                 }
 
+            delivery_message = message if message is not None else ""
             notify_request: dict[str, Any] = {
                 "schema_version": "notify.v1",
                 "origin_butler": butler_name,
                 "delivery": {
                     "intent": intent,
                     "channel": channel,
-                    "message": message,
+                    "message": delivery_message,
                 },
             }
             if emoji is not None:

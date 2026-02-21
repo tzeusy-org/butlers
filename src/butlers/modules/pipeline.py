@@ -10,6 +10,7 @@ import contextvars
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -25,6 +26,8 @@ from butlers.tools.switchboard.routing.telemetry import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ROUTE_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])route_to_butler$", re.IGNORECASE)
 
 # Per-task routing context for concurrent pipeline sessions.
 # Each asyncio task (pipeline.process() call) sets its own isolated copy,
@@ -364,7 +367,7 @@ def _build_routing_prompt(
 
     # Build prompt with optional conversation history
     prompt_parts = [
-        "Analyze the following message and route it to the appropriate butler(s) "
+        "Analyze the following message and route relevant components to the appropriate butler(s) "
         "by calling the `route_to_butler` tool on your configured MCP.\n\n"
         "IMPORTANT: You MUST call your MCP's route_to_butler to AT LEAST ONE Butler!\n\n"
     ]
@@ -451,13 +454,31 @@ def _extract_routed_butlers(
     failed: list[str] = []
 
     for call in tool_calls:
-        name = call.get("name", "")
-        # Match both bare name and MCP-namespaced (e.g. mcp__switchboard__route_to_butler)
-        if name != "route_to_butler" and not name.endswith("__route_to_butler"):
+        name = str(call.get("name", "") or "").strip()
+        # Match bare + namespaced formats, including dotted/slashed names.
+        if not _ROUTE_TOOL_NAME_RE.search(name):
             continue
-        # CC SDK stores args under "input"; other runtimes may use "args"
-        args = call.get("input") or call.get("args") or {}
-        butler = str(args.get("butler", "")).strip()
+        # CC SDK stores args under "input"; other runtimes may use
+        # args/arguments/parameters/params and may stringify JSON.
+        args: Any = (
+            call.get("input")
+            or call.get("args")
+            or call.get("arguments")
+            or call.get("parameters")
+            or call.get("params")
+            or {}
+        )
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, ValueError):
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+
+        butler = str(
+            args.get("butler") or args.get("target_butler") or args.get("butler_name") or ""
+        ).strip()
         if not butler:
             continue
         routed.append(butler)
@@ -482,6 +503,30 @@ def _extract_routed_butlers(
             acked.append(butler)
 
     return routed, acked, failed
+
+
+def _infer_fallback_target_from_cc_output(
+    cc_output: str,
+    available_butlers: list[dict[str, Any]],
+) -> str | None:
+    """Infer fallback target when model text indicates an explicit route target."""
+    if not cc_output.strip():
+        return None
+
+    output = cc_output.lower()
+    candidates: list[str] = []
+    for butler in available_butlers:
+        name = str(butler.get("name", "")).strip()
+        if not name:
+            continue
+        escaped_name = re.escape(name.lower())
+        if re.search(rf"\brouted?\s+(?:to|for)\s+`?{escaped_name}`?\b", output):
+            candidates.append(name)
+
+    unique_candidates = list(dict.fromkeys(candidates))
+    if len(unique_candidates) == 1:
+        return unique_candidates[0]
+    return None
 
 
 class MessagePipeline:
@@ -1128,14 +1173,17 @@ class MessagePipeline:
                     routed, acked, failed = _extract_routed_butlers(tool_calls)
                     failed_details = [f"{b}: routing failed" for b in failed]
 
-                    # Fallback: LLM called no tools → route to general
+                    # Fallback: LLM called no tools → infer from summary text, else general.
                     if not routed:
+                        fallback_target = (
+                            _infer_fallback_target_from_cc_output(cc_output, butlers) or "general"
+                        )
                         logger.warning(
-                            "LLM called no route_to_butler tools; falling back to general",
+                            "LLM called no route_to_butler tools; applying fallback route",
                             extra=self._log_fields(
                                 source=source,
                                 chat_id=chat_id,
-                                target_butler="general",
+                                target_butler=fallback_target,
                                 latency_ms=spawn_latency_ms,
                                 request_id=request_id,
                                 lifecycle_state="fallback",
@@ -1145,7 +1193,7 @@ class MessagePipeline:
                             1,
                             {
                                 **request_attrs,
-                                "destination_butler": "general",
+                                "destination_butler": fallback_target,
                                 "outcome": "no_tool_calls",
                             },
                         )
@@ -1168,36 +1216,36 @@ class MessagePipeline:
                             },
                             "input": {"prompt": message_text},
                             "target": {
-                                "butler": "general",
+                                "butler": fallback_target,
                                 "tool": "route.execute",
                             },
                             "source_metadata": source_metadata,
                             "__switchboard_route_context": {
                                 "request_id": request_id,
                                 "fanout_mode": "tool_routed",
-                                "segment_id": "fallback-general",
+                                "segment_id": f"fallback-{fallback_target}",
                                 "attempt": 1,
                             },
                         }
                         try:
                             fallback_result = await _fallback_route(
                                 self._pool,
-                                target_butler="general",
+                                target_butler=fallback_target,
                                 tool_name="route.execute",
                                 args=fallback_envelope,
                                 source_butler="switchboard",
                             )
-                            routed = ["general"]
+                            routed = [fallback_target]
                             if isinstance(fallback_result, dict) and fallback_result.get("error"):
-                                failed = ["general"]
+                                failed = [fallback_target]
                             else:
-                                acked = ["general"]
+                                acked = [fallback_target]
                         except Exception as fallback_exc:
-                            logger.exception("Fallback route to general failed")
-                            routed = ["general"]
-                            failed = ["general"]
+                            logger.exception("Fallback route failed")
+                            routed = [fallback_target]
+                            failed = [fallback_target]
                             failed_details = [
-                                f"general: {type(fallback_exc).__name__}: {fallback_exc}"
+                                f"{fallback_target}: {type(fallback_exc).__name__}: {fallback_exc}"
                             ]
 
                     # Determine target butler label

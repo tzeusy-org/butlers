@@ -30,10 +30,38 @@ from butlers.core.spawner import (
     CCSpawner,
     Spawner,
     SpawnerResult,
+    _append_runtime_session_query,
     _build_env,
+    _merge_tool_call_records,
 )
 
 pytestmark = pytest.mark.unit
+
+
+def test_append_runtime_session_query_adds_param():
+    url = _append_runtime_session_query("http://localhost:9100/mcp", "sess-123")
+    assert url == "http://localhost:9100/mcp?runtime_session_id=sess-123"
+
+
+def test_append_runtime_session_query_preserves_existing_query():
+    url = _append_runtime_session_query("http://localhost:9100/mcp?x=1", "sess-123")
+    assert url in (
+        "http://localhost:9100/mcp?x=1&runtime_session_id=sess-123",
+        "http://localhost:9100/mcp?runtime_session_id=sess-123&x=1",
+    )
+
+
+def test_merge_tool_call_records_dedupes_same_name_and_payload():
+    parsed = [{"name": "route_to_butler", "input": {"butler": "relationship"}}]
+    executed = [
+        {"name": "route_to_butler", "input": {"butler": "relationship"}},
+        {"name": "route_to_butler", "input": {"butler": "health"}},
+    ]
+    merged = _merge_tool_call_records(parsed, executed)
+    assert merged == [
+        {"name": "route_to_butler", "input": {"butler": "relationship"}},
+        {"name": "route_to_butler", "input": {"butler": "health"}},
+    ]
 
 # ---------------------------------------------------------------------------
 # MockAdapter — runtime-agnostic adapter for orchestration tests

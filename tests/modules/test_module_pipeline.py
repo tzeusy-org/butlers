@@ -213,6 +213,32 @@ class TestExtractRoutedButlers:
         assert acked == ["health"]
         assert failed == []
 
+    def test_dotted_tool_name_and_string_arguments(self):
+        """Dotted MCP tool names and stringified arguments are parsed."""
+        tool_calls = [
+            {
+                "name": "switchboard.route_to_butler",
+                "arguments": '{"target_butler":"relationship","prompt":"Store birthday"}',
+            }
+        ]
+        routed, acked, failed = _extract_routed_butlers(tool_calls)
+        assert routed == ["relationship"]
+        assert acked == ["relationship"]
+        assert failed == []
+
+    def test_slashed_tool_name_and_params_key(self):
+        """Slashed tool names and params payloads are parsed."""
+        tool_calls = [
+            {
+                "name": "mcp/switchboard/route_to_butler",
+                "params": {"butler_name": "health", "prompt": "Track meal"},
+            }
+        ]
+        routed, acked, failed = _extract_routed_butlers(tool_calls)
+        assert routed == ["health"]
+        assert acked == ["health"]
+        assert failed == []
+
     def test_input_key_instead_of_args(self):
         """CC SDK uses 'input' key; older code used 'args'."""
         tool_calls = [
@@ -599,6 +625,36 @@ class TestMessagePipelineProcess:
         assert result.acked_targets == ["general"]
         assert result.failed_targets == []
         mock_route.assert_awaited_once()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    @patch("butlers.tools.switchboard.routing.route.route", new_callable=AsyncMock)
+    async def test_fallback_uses_cc_indicated_target_when_unambiguous(
+        self, mock_route, mock_load
+    ):
+        """No-tool fallback uses explicit 'routed to <butler>' summary when present."""
+        mock_route.return_value = {"result": "handled by relationship"}
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Routed to `relationship` for contact details.",
+                tool_calls=[],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(),
+            dispatch_fn=mock_dispatch,
+        )
+
+        result = await pipeline.process("Phoebe was born on 1997-01-22")
+
+        assert result.routed_targets == ["relationship"]
+        assert result.acked_targets == ["relationship"]
+        assert result.failed_targets == []
+        assert mock_route.await_args.kwargs["target_butler"] == "relationship"
 
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",
