@@ -48,4 +48,14 @@ calendar_id = "07fd80d3b4464836e586759b1b8672f1f97f80a9d642a30482176246dff4510b@
 [modules.calendar.conflicts]
 policy = "suggest"
 
+[modules.contacts]
+provider = "google"
+include_other_contacts = false
+
+[modules.contacts.sync]
+enabled = true
+run_on_startup = true
+interval_minutes = 15
+full_sync_interval_days = 6
+
 [modules.memory]
