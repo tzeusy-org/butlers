@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.config import ButlerConfig
+from butlers.config import ButlerConfig, ScheduleConfig
 from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
@@ -16,7 +16,18 @@ class TestNativeScheduleDispatch:
     async def test_switchboard_eligibility_sweep_uses_native_job(self, tmp_path):
         """Switchboard eligibility sweep should bypass spawner/LLM dispatch."""
         daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=40100)
+        daemon.config = ButlerConfig(
+            name="switchboard",
+            port=40100,
+            schedules=[
+                ScheduleConfig(
+                    name="eligibility-sweep",
+                    cron="*/5 * * * *",
+                    prompt="ignored",
+                    mode="job",
+                )
+            ],
+        )
 
         mock_pool = AsyncMock()
         mock_db = MagicMock()
@@ -30,8 +41,8 @@ class TestNativeScheduleDispatch:
         native_result = {"evaluated": 4, "skipped": 1, "transitioned": 2, "transitions": []}
         mock_native_job = AsyncMock(return_value=native_result)
         with patch(
-            "butlers.daemon._load_switchboard_eligibility_sweep_job",
-            return_value=mock_native_job,
+            "butlers.daemon._load_switchboard_schedule_jobs",
+            return_value={"eligibility-sweep": mock_native_job},
         ):
             result = await daemon._dispatch_scheduled_task(
                 prompt="ignored",
@@ -42,10 +53,95 @@ class TestNativeScheduleDispatch:
         mock_native_job.assert_awaited_once_with(mock_pool)
         mock_spawner.trigger.assert_not_awaited()
 
+    async def test_switchboard_connector_stats_job_mode_uses_native_job(self, tmp_path):
+        """Job-mode connector stats schedules should execute native handlers."""
+        daemon = ButlerDaemon(tmp_path)
+        daemon.config = ButlerConfig(
+            name="switchboard",
+            port=40100,
+            schedules=[
+                ScheduleConfig(
+                    name="connector-stats-hourly-rollup",
+                    cron="5 * * * *",
+                    prompt="ignored",
+                    mode="job",
+                )
+            ],
+        )
+
+        mock_pool = AsyncMock()
+        mock_db = MagicMock()
+        mock_db.pool = mock_pool
+        daemon.db = mock_db
+
+        mock_spawner = MagicMock()
+        mock_spawner.trigger = AsyncMock()
+        daemon.spawner = mock_spawner
+
+        native_result = {"rows_processed": 5, "connectors_updated": 5}
+        mock_native_job = AsyncMock(return_value=native_result)
+        with patch(
+            "butlers.daemon._load_switchboard_schedule_jobs",
+            return_value={"connector-stats-hourly-rollup": mock_native_job},
+        ):
+            result = await daemon._dispatch_scheduled_task(
+                prompt="ignored",
+                trigger_source="schedule:connector-stats-hourly-rollup",
+            )
+
+        assert result == native_result
+        mock_native_job.assert_awaited_once_with(mock_pool)
+        mock_spawner.trigger.assert_not_awaited()
+
+    async def test_job_mode_schedule_without_handler_fails_fast(self, tmp_path):
+        """Job-mode schedules should error if no native handler exists."""
+        daemon = ButlerDaemon(tmp_path)
+        daemon.config = ButlerConfig(
+            name="switchboard",
+            port=40100,
+            schedules=[
+                ScheduleConfig(
+                    name="missing-job",
+                    cron="*/30 * * * *",
+                    prompt="ignored",
+                    mode="job",
+                )
+            ],
+        )
+
+        mock_pool = AsyncMock()
+        mock_db = MagicMock()
+        mock_db.pool = mock_pool
+        daemon.db = mock_db
+
+        mock_spawner = MagicMock()
+        mock_spawner.trigger = AsyncMock()
+        daemon.spawner = mock_spawner
+
+        with patch("butlers.daemon._load_switchboard_schedule_jobs", return_value={}):
+            with pytest.raises(RuntimeError, match="No native job handler"):
+                await daemon._dispatch_scheduled_task(
+                    prompt="ignored",
+                    trigger_source="schedule:missing-job",
+                )
+
+        mock_spawner.trigger.assert_not_awaited()
+
     async def test_non_native_schedule_falls_back_to_spawner(self, tmp_path):
         """Schedules without native handlers should continue using spawner.trigger."""
         daemon = ButlerDaemon(tmp_path)
-        daemon.config = ButlerConfig(name="switchboard", port=40100)
+        daemon.config = ButlerConfig(
+            name="switchboard",
+            port=40100,
+            schedules=[
+                ScheduleConfig(
+                    name="memory-episode-cleanup",
+                    cron="0 4 * * *",
+                    prompt="run memory cleanup",
+                    mode="session",
+                )
+            ],
+        )
 
         mock_pool = AsyncMock()
         mock_db = MagicMock()

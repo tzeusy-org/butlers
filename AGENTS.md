@@ -613,6 +613,9 @@ make test-qg
 ### Scheduler native-dispatch contract
 - `ButlerDaemon._dispatch_scheduled_task()` is the scheduler dispatch hook used by both the background scheduler loop and MCP `tick` tool; deterministic schedules can bypass runtime/LLM calls here.
 - Switchboard `schedule:eligibility-sweep` is natively dispatched via the roster job loader (`_load_switchboard_eligibility_sweep_job`) and executes against the switchboard DB pool directly; non-native schedules still fall back to `spawner.trigger`.
+- `ScheduleConfig` now carries `mode` (`session` default, `job` for deterministic/native execution); config loading must reject unknown `[[butler.schedule]].mode` values.
+- Switchboard deterministic schedules (`connector-stats-hourly-rollup`, `connector-stats-daily-rollup`, `connector-stats-pruning`, `eligibility-sweep`) should be declared with `mode = "job"` in `roster/switchboard/butler.toml` so scheduler dispatch bypasses LLM sessions.
+- `ButlerDaemon._dispatch_scheduled_task()` resolves schedule mode from `self.config.schedules`; `mode="job"` schedules use `_load_switchboard_schedule_jobs()` handlers and fail fast when no handler is registered (no fallback `spawner.trigger` call).
 
 ### Issues aggregation contract
 - `src/butlers/api/routers/issues.py` aggregates reachability checks plus grouped `dashboard_audit_log` failures.

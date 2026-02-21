@@ -244,6 +244,45 @@ prompt = "Do a tick"
     assert sched.name == "tick"
     assert sched.cron == "*/10 * * * *"
     assert sched.prompt == "Do a tick"
+    assert sched.mode == "session"
+
+
+def test_schedule_job_mode_parsing(tmp_path: Path):
+    """Parses explicit schedule mode for deterministic job dispatch."""
+    toml = """\
+[butler]
+name = "cronbot"
+port = 7002
+
+[[butler.schedule]]
+name = "connector-stats-hourly-rollup"
+cron = "5 * * * *"
+prompt = "Run hourly rollup"
+mode = "job"
+"""
+    config_dir = _write_toml(tmp_path, toml)
+    cfg = load_config(config_dir)
+
+    assert len(cfg.schedules) == 1
+    sched = cfg.schedules[0]
+    assert sched.mode == "job"
+
+
+def test_schedule_mode_rejects_invalid_value(tmp_path: Path):
+    """Schedule mode must be either 'session' or 'job'."""
+    toml = """\
+[butler]
+name = "cronbot"
+port = 7003
+
+[[butler.schedule]]
+name = "bad-mode"
+cron = "*/10 * * * *"
+prompt = "Do a tick"
+mode = "invalid-mode"
+"""
+    with pytest.raises(ConfigError, match="Invalid butler.schedule mode"):
+        load_config(_write_toml(tmp_path, toml))
 
 
 def test_modules_parsing(tmp_path: Path):

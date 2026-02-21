@@ -52,16 +52,19 @@ password_env = "BUTLER_EMAIL_PASSWORD"
 name = "connector-stats-hourly-rollup"
 cron = "5 * * * *"
 prompt = "Run the hourly connector statistics rollup job by calling the appropriate Python function to aggregate heartbeat data from the previous hour."
+mode = "job"
 
 [[butler.schedule]]
 name = "connector-stats-daily-rollup"
 cron = "15 0 * * *"
 prompt = "Run the daily connector statistics rollup job by calling the appropriate Python function to aggregate hourly data and compute uptime percentages for the previous day."
+mode = "job"
 
 [[butler.schedule]]
 name = "connector-stats-pruning"
 cron = "30 1 * * *"
 prompt = "Run the connector statistics pruning job to remove old heartbeat partitions, hourly stats, and daily stats according to retention policies."
+mode = "job"
 
 [[butler.schedule]]
 name = "memory-consolidation"
@@ -78,3 +81,4 @@ prompt = "Run memory episode cleanup to delete expired episodes and enforce capa
 name = "eligibility-sweep"
 cron = "*/5 * * * *"
 prompt = "Run the eligibility sweep by calling run_eligibility_sweep to evaluate butler liveness and transition eligibility states (active→stale→quarantined) based on liveness_ttl_seconds. Log a summary of any transitions."
+mode = "job"

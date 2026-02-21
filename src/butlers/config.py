@@ -48,6 +48,7 @@ class ScheduleConfig:
     name: str
     cron: str
     prompt: str
+    mode: str = "session"
 
 
 @dataclass
@@ -632,11 +633,22 @@ def load_config(config_dir: Path) -> ButlerConfig:
     raw_schedules = butler_section.get("schedule", [])
     schedules: list[ScheduleConfig] = []
     for entry in raw_schedules:
+        raw_mode = entry.get("mode", "session")
+        if not isinstance(raw_mode, str):
+            raise ConfigError(
+                "Invalid butler.schedule mode: expected string 'session' or 'job'."
+            )
+        mode = raw_mode.strip().lower()
+        if mode not in ("session", "job"):
+            raise ConfigError(
+                f"Invalid butler.schedule mode: {raw_mode!r}. Expected 'session' or 'job'."
+            )
         schedules.append(
             ScheduleConfig(
                 name=entry["name"],
                 cron=entry["cron"],
                 prompt=entry["prompt"],
+                mode=mode,
             )
         )
 

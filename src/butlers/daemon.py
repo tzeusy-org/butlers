@@ -157,12 +157,12 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
+ScheduleJobHandler = Callable[[asyncpg.Pool], Awaitable[dict[str, Any]]]
+
 
 @functools.lru_cache(maxsize=1)
-def _load_switchboard_eligibility_sweep_job() -> Callable[
-    [asyncpg.Pool], Awaitable[dict[str, Any]]
-]:
-    """Load the switchboard eligibility sweep job from roster/ by file path."""
+def _load_switchboard_schedule_jobs() -> dict[str, ScheduleJobHandler]:
+    """Load switchboard-native scheduled job handlers from roster/ by file path."""
     import importlib.util as _ilu
 
     module_path = (
@@ -170,15 +170,30 @@ def _load_switchboard_eligibility_sweep_job() -> Callable[
         / "roster"
         / "switchboard"
         / "jobs"
-        / "eligibility_sweep.py"
+        / "__init__.py"
     )
-    module_name = "roster_switchboard_eligibility_sweep_job"
+    module_name = "roster_switchboard_schedule_jobs"
     spec = _ilu.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load switchboard eligibility sweep job from {module_path}")
+        raise RuntimeError(f"Unable to load switchboard schedule jobs from {module_path}")
+
     module = _ilu.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.run_eligibility_sweep_job
+
+    return {
+        "connector-stats-hourly-rollup": module.run_connector_stats_hourly_rollup,
+        "connector-stats-daily-rollup": module.run_connector_stats_daily_rollup,
+        "connector-stats-pruning": module.run_connector_stats_pruning,
+        "eligibility-sweep": module.run_eligibility_sweep_job,
+    }
+
+
+@functools.lru_cache(maxsize=1)
+def _load_switchboard_eligibility_sweep_job() -> Callable[
+    [asyncpg.Pool], Awaitable[dict[str, Any]]
+]:
+    """Backward-compatible loader for the eligibility sweep schedule job."""
+    return _load_switchboard_schedule_jobs()["eligibility-sweep"]
 
 
 class _McpSseDisconnectGuard:
@@ -992,7 +1007,8 @@ class ButlerDaemon:
 
         # 11. Sync TOML schedules to DB
         schedules = [
-            {"name": s.name, "cron": s.cron, "prompt": s.prompt} for s in self.config.schedules
+            {"name": s.name, "cron": s.cron, "prompt": s.prompt, "mode": s.mode}
+            for s in self.config.schedules
         ]
         await sync_schedules(pool, schedules, stagger_key=self.config.name)
 
@@ -1425,8 +1441,8 @@ class ButlerDaemon:
     async def _dispatch_scheduled_task(self, prompt: str, trigger_source: str) -> Any:
         """Dispatch one scheduled task, using native handlers when available.
 
-        For deterministic, rules-based schedules we can bypass runtime/LLM
-        invocation and execute Python job functions directly.
+        ``[[butler.schedule]]`` entries with ``mode="job"`` bypass runtime/LLM
+        invocation and execute deterministic Python job functions directly.
         """
         schedule_prefix = "schedule:"
         schedule_name = (
@@ -1435,15 +1451,36 @@ class ButlerDaemon:
             else None
         )
 
-        if self.config.name == "switchboard" and schedule_name == "eligibility-sweep":
+        schedule_mode = "session"
+        if schedule_name is not None:
+            for schedule in self.config.schedules:
+                if schedule.name == schedule_name:
+                    schedule_mode = schedule.mode
+                    break
+
+        if schedule_mode == "job":
+            if schedule_name is None:
+                raise RuntimeError(
+                    "Job-mode schedule dispatch requires schedule:<name> trigger_source"
+                )
+            if self.config.name != "switchboard":
+                raise RuntimeError(
+                    f"Schedule {schedule_name!r} is configured as mode='job' "
+                    f"but no native jobs are registered for butler {self.config.name!r}"
+                )
             pool = self.db.pool if self.db is not None else None
             if pool is None:
                 raise RuntimeError(
                     "Scheduler native job dispatch requires an initialized switchboard DB pool"
                 )
-            run_eligibility_sweep_job = _load_switchboard_eligibility_sweep_job()
+            native_jobs = _load_switchboard_schedule_jobs()
+            run_eligible_job = native_jobs.get(schedule_name)
+            if run_eligible_job is None:
+                raise RuntimeError(
+                    f"No native job handler configured for schedule {schedule_name!r}"
+                )
             logger.debug("Dispatching native scheduled task: %s", schedule_name)
-            return await run_eligibility_sweep_job(pool)
+            return await run_eligible_job(pool)
 
         if self.spawner is None:
             raise RuntimeError("Scheduler dispatch requires an initialized spawner")
