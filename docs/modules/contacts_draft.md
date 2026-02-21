@@ -283,6 +283,27 @@ tools are operational/sync controls.
 5. Add CardDAV provider prototype (Apple/iCloud path) using the same canonical
    contracts and link/state tables.
 
+### 11.1 Roster enablement contract
+
+Enabled by default in:
+
+- `roster/general/butler.toml`
+- `roster/health/butler.toml`
+- `roster/relationship/butler.toml`
+
+Intentionally excluded:
+
+- `roster/switchboard/butler.toml` (routing/control plane; does not own CRM sync execution)
+- `roster/messenger/butler.toml` (delivery plane only; does not own CRM sync execution)
+
+Provider assumption for rollout: `provider = "google"` only.
+
+Required secrets for Google sync (DB-backed `butler_secrets`, not plain env fallback):
+
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `GOOGLE_REFRESH_TOKEN`
+
 ## 12. References (Primary Sources)
 
 - Google People API `people.connections.list`:
