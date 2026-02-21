@@ -53,6 +53,10 @@ function findCloseButton(container: HTMLElement): HTMLButtonElement | undefined 
   );
 }
 
+function toolOutcomeDots(): Element[] {
+  return Array.from(document.body.querySelectorAll("[data-tool-call-outcome]"));
+}
+
 describe("SessionDetailDrawer", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -244,6 +248,44 @@ describe("SessionDetailDrawer", () => {
     expect(document.body.textContent).not.toContain("Tool #2");
   });
 
+  it("colorizes tool-call dots by deterministic outcome state with accessible labels", () => {
+    setQueryState({
+      data: {
+        data: {
+          ...SESSION_DETAIL,
+          tool_calls: [
+            { name: "state_get", success: true, result: { value: "ok" } },
+            { name: "state_set", error: "write failed" },
+            { name: "route_to_butler", status: "pending" },
+            { name: "state_list", args: { prefix: "x" } },
+          ],
+        },
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    const dots = toolOutcomeDots();
+    expect(dots).toHaveLength(4);
+
+    expect(dots[0]?.getAttribute("data-tool-call-outcome")).toBe("success");
+    expect(dots[0]?.className).toContain("bg-emerald-500");
+    expect(dots[0]?.getAttribute("aria-label")).toBe("Tool call outcome: Success");
+
+    expect(dots[1]?.getAttribute("data-tool-call-outcome")).toBe("failed");
+    expect(dots[1]?.className).toContain("bg-destructive");
+    expect(dots[1]?.getAttribute("aria-label")).toBe("Tool call outcome: Failed");
+
+    expect(dots[2]?.getAttribute("data-tool-call-outcome")).toBe("pending");
+    expect(dots[2]?.className).toContain("bg-amber-500");
+    expect(dots[2]?.getAttribute("aria-label")).toBe("Tool call outcome: Pending");
+
+    expect(dots[3]?.getAttribute("data-tool-call-outcome")).toBe("unknown");
+    expect(dots[3]?.className).toContain("bg-muted-foreground/40");
+    expect(dots[3]?.getAttribute("aria-label")).toBe("Tool call outcome: Unknown");
+  });
+
   it("surfaces failed-then-retried tool call outcomes as separate timeline entries", () => {
     setQueryState({
       data: {
@@ -271,7 +313,7 @@ describe("SessionDetailDrawer", () => {
     renderDrawer();
 
     expect(document.body.textContent).toContain("Outcome:");
-    expect(document.body.textContent).toContain("error");
+    expect(document.body.textContent).toContain("failed");
     expect(document.body.textContent).toContain("success");
     expect(document.body.textContent).toContain("Error");
     expect(document.body.textContent).toContain("Result");

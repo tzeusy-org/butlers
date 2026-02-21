@@ -193,17 +193,154 @@ function extractToolName(value: unknown, depth = 0): string | undefined {
 interface NormalizedToolCall {
   key: string;
   name: string;
+  outcome: ToolCallOutcome;
   args?: unknown;
   result?: unknown;
-  outcome?: string;
   error?: unknown;
   raw: unknown;
 }
 
-function normalizeOutcome(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+type ToolCallOutcome = "success" | "failed" | "pending" | "unknown";
+
+const TOOL_CALL_OUTCOME_STYLES: Record<ToolCallOutcome, { dotClass: string; label: string }> = {
+  success: { dotClass: "bg-emerald-500", label: "Success" },
+  failed: { dotClass: "bg-destructive", label: "Failed" },
+  pending: { dotClass: "bg-amber-500", label: "Pending" },
+  unknown: { dotClass: "bg-muted-foreground/40", label: "Unknown" },
+};
+
+const SUCCESS_TOOL_OUTCOME_STATUSES = new Set([
+  "accepted",
+  "acknowledged",
+  "complete",
+  "completed",
+  "done",
+  "executed",
+  "ok",
+  "sent",
+  "success",
+  "succeeded",
+]);
+
+const FAILED_TOOL_OUTCOME_STATUSES = new Set([
+  "aborted",
+  "cancelled",
+  "canceled",
+  "denied",
+  "error",
+  "expired",
+  "failed",
+  "failure",
+  "rejected",
+  "timed_out",
+  "timeout",
+]);
+
+const PENDING_TOOL_OUTCOME_STATUSES = new Set([
+  "in_progress",
+  "partial",
+  "pending",
+  "processing",
+  "queued",
+  "running",
+  "started",
+]);
+
+function hasErrorPayload(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+function normalizeOutcomeStatus(value: string): ToolCallOutcome | undefined {
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (!normalized) return undefined;
+  if (FAILED_TOOL_OUTCOME_STATUSES.has(normalized) || normalized.startsWith("error")) {
+    return "failed";
+  }
+  if (PENDING_TOOL_OUTCOME_STATUSES.has(normalized)) {
+    return "pending";
+  }
+  if (SUCCESS_TOOL_OUTCOME_STATUSES.has(normalized)) {
+    return "success";
+  }
+  return undefined;
+}
+
+function outcomeFromRecord(record: Record<string, unknown>): ToolCallOutcome | undefined {
+  if (hasErrorPayload(record.error)) return "failed";
+
+  for (const key of ["is_error", "isError"] as const) {
+    const value = record[key];
+    if (typeof value === "boolean") {
+      return value ? "failed" : "success";
+    }
+  }
+
+  for (const key of ["success", "ok"] as const) {
+    const value = record[key];
+    if (typeof value === "boolean") {
+      return value ? "success" : "failed";
+    }
+  }
+
+  for (const key of ["exit_code", "exitCode"] as const) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value === 0 ? "success" : "failed";
+    }
+  }
+
+  for (const key of ["status", "state", "outcome", "result_status", "resultStatus"] as const) {
+    const value = record[key];
+    if (typeof value === "string") {
+      const mapped = normalizeOutcomeStatus(value);
+      if (mapped != null) return mapped;
+    }
+  }
+
+  return undefined;
+}
+
+function outcomeCandidateRecords(
+  call: Record<string, unknown>,
+  args: unknown,
+  result: unknown,
+): Record<string, unknown>[] {
+  const candidates: Record<string, unknown>[] = [call, ...nestedToolCallContainers(call)];
+
+  for (const key of ["input", "output", "response", "result", "return", "value"] as const) {
+    const value = getNestedValue(call, [key]);
+    if (isRecord(value)) {
+      candidates.push(value);
+    }
+  }
+  if (isRecord(args)) {
+    candidates.push(args);
+  }
+  if (isRecord(result)) {
+    candidates.push(result);
+  }
+
+  return candidates;
+}
+
+function inferToolCallOutcome(
+  call: Record<string, unknown>,
+  args: unknown,
+  result: unknown,
+): ToolCallOutcome {
+  const outcomes = new Set<ToolCallOutcome>();
+  for (const record of outcomeCandidateRecords(call, args, result)) {
+    const outcome = outcomeFromRecord(record);
+    if (outcome != null) outcomes.add(outcome);
+  }
+
+  if (outcomes.has("failed")) return "failed";
+  if (outcomes.has("pending")) return "pending";
+  if (outcomes.has("success")) return "success";
+  return "unknown";
 }
 
 function normalizeToolCall(call: unknown, idx: number): NormalizedToolCall {
@@ -211,6 +348,7 @@ function normalizeToolCall(call: unknown, idx: number): NormalizedToolCall {
     return {
       key: `tool-${idx + 1}`,
       name: `Tool #${idx + 1}`,
+      outcome: "unknown",
       raw: call,
     };
   }
@@ -219,7 +357,6 @@ function normalizeToolCall(call: unknown, idx: number): NormalizedToolCall {
 
   const argsRaw = getNestedValue(call, ["input", "args", "arguments", "parameters", "payload"]);
   const resultRaw = getNestedValue(call, ["result", "output", "response", "return", "value"]);
-  const outcomeRaw = getNestedValue(call, ["outcome", "status", "state"]);
   const errorRaw = getNestedValue(call, ["error", "exception", "failure", "failure_reason"]);
   const idRaw = getNestedValue(call, ["id", "call_id", "callId"]);
   const key = typeof idRaw === "string" && idRaw.trim().length > 0 ? idRaw : `tool-${idx + 1}`;
@@ -229,7 +366,11 @@ function normalizeToolCall(call: unknown, idx: number): NormalizedToolCall {
     name,
     args: argsRaw == null ? undefined : parseJsonIfString(argsRaw),
     result: resultRaw == null ? undefined : parseJsonIfString(resultRaw),
-    outcome: normalizeOutcome(outcomeRaw),
+    outcome: inferToolCallOutcome(
+      call,
+      argsRaw == null ? undefined : parseJsonIfString(argsRaw),
+      resultRaw == null ? undefined : parseJsonIfString(resultRaw),
+    ),
     error: errorRaw == null ? undefined : parseJsonIfString(errorRaw),
     raw: call,
   };
@@ -336,9 +477,19 @@ function ToolCallTimeline({
   return (
     <ol className="relative border-l border-border/60 ml-2 space-y-3">
       {hydrated.map((tc, idx) => {
+        const outcomeStyle = TOOL_CALL_OUTCOME_STYLES[tc.outcome];
         return (
           <li key={`${tc.key}-${idx}`} className="ml-4">
-            <div className="absolute -left-1.5 mt-1 size-3 rounded-full border border-background bg-muted-foreground/40" />
+            <span
+              role="img"
+              aria-label={`Tool call outcome: ${outcomeStyle.label}`}
+              title={`Tool call outcome: ${outcomeStyle.label}`}
+              data-tool-call-outcome={tc.outcome}
+              className={cn(
+                "absolute -left-1.5 mt-1 size-3 rounded-full border border-background",
+                outcomeStyle.dotClass,
+              )}
+            />
             <p className="text-xs font-semibold">{tc.name}</p>
             {tc.outcome && (
               <p className="text-[11px] text-muted-foreground">
