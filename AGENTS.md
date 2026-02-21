@@ -140,6 +140,7 @@ Each butler has a `MANIFESTO.md` that defines its public identity and value prop
 
 ### Contacts module sync contract
 - The contacts module is expected to run its incremental sync as an internal poll loop, not as a standalone connector (see `docs/modules/contacts_draft.md` §8); the default cadence is an immediate incremental run on startup, recurring polling every 15 minutes, and a forced full refresh every 6 days before the sync token expires.
+- The concrete runtime contract lives in `src/butlers/modules/contacts/sync.py::ContactsSyncRuntime`; mode selection is state-driven (`full` when no cursor or stale >=6 days, otherwise `incremental`) and poller trigger surface is `trigger_immediate_sync()`.
 - Modules load inside `butlers up` via `ButlerDaemon.start()` (`src/butlers/daemon.py:852-931`), so the poller will live in the butler process. `scripts/dev.sh` already launches `uv run butlers up` and the needed connector panes (telegram + Gmail) around lines 768‑840, so no extra dev bootstrap step is required for contact sync. To actually exercise the module once it exists, add a `[modules.contacts]` block (and provider-specific fields) to `roster/relationship/butler.toml` so the daemon validates and configures it when `butlers up` runs.
 
 ### v1 MVP Status (2026-02-09)

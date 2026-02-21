@@ -6,6 +6,10 @@ Utility scripts for repository maintenance and fixes.
 
 Bootstraps the full local Butlers development stack in `tmux` (dashboard, frontend, connectors, backend, OAuth gate, and postgres preflight).
 
+Contacts sync contract: contacts incremental sync is a module-internal poller
+inside `uv run butlers up`. `dev.sh` does not launch a standalone contacts
+connector process.
+
 ### Usage
 
 ```bash

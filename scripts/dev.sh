@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 # Bootstrap a full Butlers dev environment in tmux.
 # Creates three windows:
-#   backend     — butlers up (starts after OAuth gate)
+#   backend     — butlers up (starts after OAuth gate; includes module pollers)
 #   connectors  — telegram bot connector (top-left) + gmail connector (top-right) + telegram user-client connector (bottom)
 #   dashboard   — dashboard API (top) + Vite frontend (bottom)
+#   NOTE: Contacts sync runs as a module-internal poller in butlers up; there is
+#   no standalone contacts connector process.
 #
 # Startup DAG:
 #   Layer 0  — postgres starts + tailscale serve check (outer shell)
 #   Layer 1a — dashboard API starts (postgres healthy)
 #   Layer 1b — telegram connectors + frontend start (no OAuth dependency)
 #   Layer 2  — OAuth gate: wait for dashboard responsive, then poll DB for valid
-#              Google refresh token (Gmail connector + Calendar module dependency)
+#              Google refresh token (Gmail connector + Google modules dependency)
 #   Layer 3  — butlers up + Gmail connector start (OAuth gate passed)
 #
 # Usage: ./dev.sh [--skip-oauth-check] [--skip-tailscale-check]
 #
 # OAuth Bootstrap:
-#   Before launching the Gmail connector and Calendar module, this script checks
+#   Before launching the Gmail connector and Google-backed modules, this script checks
 #   whether Google OAuth credentials are present in the DB or environment. When
 #   credentials are missing, the script polls the shared butler_secrets store
 #   (every 5s) until OAuth completes via the dashboard — no manual restart needed.
@@ -621,7 +623,7 @@ _select_google_credentials_db() {
 # Block the outer shell until Google OAuth credentials are available.
 # Credentials are resolved from DB-backed secrets only.
 # When credentials are missing, displays actionable instructions covering both
-# the Gmail connector and Calendar module — they share the same OAuth bootstrap.
+# the Gmail connector and Google-backed modules (Calendar/Contacts).
 #
 # The gate polls at most every OAUTH_POLL_INTERVAL seconds. If OAUTH_GATE_TIMEOUT
 # is set to a positive integer, the gate gives up after that many seconds and
@@ -653,6 +655,7 @@ _oauth_gate() {
   echo "  Google OAuth credentials are required by:"
   echo "    - Gmail connector      (outbound email delivery)"
   echo "    - Calendar module      (calendar read/write for all butlers)"
+  echo "    - Contacts module      (incremental contact sync poller)"
   echo ""
   echo "  To complete OAuth bootstrap:"
   echo "    1. Open ${OAUTH_BROWSER_URL} in your browser"
@@ -683,7 +686,7 @@ _oauth_gate() {
       echo "======================================================================" >&2
       echo "" >&2
       echo "  Continuing startup without Google credentials." >&2
-      echo "  Gmail connector and Calendar module will be unavailable." >&2
+      echo "  Gmail connector and Google-backed modules will be unavailable." >&2
       echo "" >&2
       return 1
     fi
@@ -705,8 +708,9 @@ if [ "$GOOGLE_CREDS_AVAILABLE" = "false" ] && [ "$SKIP_OAUTH_CHECK" = "false" ];
   echo "  WARNING: Google OAuth credentials not found yet"
   echo "======================================================================"
   echo ""
-  echo "  The Gmail connector and Calendar module require Google OAuth"
-  echo "  credentials to start. The OAuth gate (Layer 2) will wait for"
+  echo "  The Gmail connector and Google-backed modules (Calendar/Contacts)"
+  echo "  require Google OAuth credentials to start."
+  echo "  The OAuth gate (Layer 2) will wait for"
   echo "  credentials to be stored in the DB via the dashboard."
   echo ""
   echo "  Option A — Dashboard OAuth flow (recommended):"
@@ -714,7 +718,7 @@ if [ "$GOOGLE_CREDS_AVAILABLE" = "false" ] && [ "$SKIP_OAUTH_CHECK" = "false" ];
   echo "    2. Click 'Connect Google' and complete the OAuth flow"
   echo "    3. Credentials are stored in the DB — Layer 3 starts automatically"
   echo ""
-  echo "  Affected components: Gmail connector, Calendar module"
+  echo "  Affected components: Gmail connector, Calendar module, Contacts module"
   echo "  All other services (backend, Telegram, dashboard) start normally."
   echo ""
   echo "  To suppress this check: ./dev.sh --skip-oauth-check"

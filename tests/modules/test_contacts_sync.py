@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -16,6 +18,8 @@ from butlers.modules.contacts.sync import (
     ContactsProvider,
     ContactsSyncEngine,
     ContactsSyncError,
+    ContactsSyncResult,
+    ContactsSyncRuntime,
     ContactsSyncState,
     ContactsSyncStateStore,
     ContactsSyncTokenExpiredError,
@@ -80,6 +84,22 @@ class _ProviderDouble(ContactsProvider):
 
     async def shutdown(self) -> None:
         return None
+
+
+class _SyncEngineDouble:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    async def sync(self, *, account_id: str, mode: str = "incremental") -> ContactsSyncResult:
+        self.calls.append({"account_id": account_id, "mode": mode})
+        return ContactsSyncResult(
+            mode=mode,
+            fetched_contacts=0,
+            applied_contacts=0,
+            skipped_contacts=0,
+            deleted_contacts=0,
+            next_sync_cursor="cursor-next",
+        )
 
 
 def _contact(external_id: str, etag: str, *, deleted: bool = False) -> CanonicalContact:
@@ -348,3 +368,100 @@ class TestContactsSyncEngine:
         saved = await store.load(provider="double", account_id="acct-1")
         assert saved.last_error is not None
         assert "failed apply for people/1" in saved.last_error
+
+
+class TestContactsSyncRuntime:
+    async def test_no_cursor_forces_full_sync_cycle(self):
+        engine = _SyncEngineDouble()
+        store = _InMemorySyncStore()
+        runtime = ContactsSyncRuntime(
+            sync_engine=engine,
+            state_store=store,
+            provider_name="double",
+            account_id="acct-1",
+        )
+
+        await runtime.run_sync_cycle()
+        assert engine.calls == [{"account_id": "acct-1", "mode": "full"}]
+
+    async def test_recent_full_sync_uses_incremental_mode(self):
+        now = datetime(2026, 2, 21, 12, 0, tzinfo=UTC)
+        engine = _SyncEngineDouble()
+        store = _InMemorySyncStore()
+        await store.save(
+            provider="double",
+            account_id="acct-1",
+            state=ContactsSyncState(
+                sync_cursor="cursor-existing",
+                last_full_sync_at=(now - timedelta(days=1)).isoformat(),
+            ),
+        )
+        runtime = ContactsSyncRuntime(
+            sync_engine=engine,
+            state_store=store,
+            provider_name="double",
+            account_id="acct-1",
+            now_fn=lambda: now,
+        )
+
+        await runtime.run_sync_cycle()
+        assert engine.calls == [{"account_id": "acct-1", "mode": "incremental"}]
+
+    async def test_stale_cursor_age_forces_full_sync(self):
+        now = datetime(2026, 2, 21, 12, 0, tzinfo=UTC)
+        engine = _SyncEngineDouble()
+        store = _InMemorySyncStore()
+        await store.save(
+            provider="double",
+            account_id="acct-1",
+            state=ContactsSyncState(
+                sync_cursor="cursor-existing",
+                cursor_issued_at=(now - timedelta(days=7)).isoformat(),
+            ),
+        )
+        runtime = ContactsSyncRuntime(
+            sync_engine=engine,
+            state_store=store,
+            provider_name="double",
+            account_id="acct-1",
+            now_fn=lambda: now,
+        )
+
+        await runtime.run_sync_cycle()
+        assert engine.calls == [{"account_id": "acct-1", "mode": "full"}]
+
+    async def test_poller_runs_immediately_and_supports_force_trigger(self):
+        engine = _SyncEngineDouble()
+        store = _InMemorySyncStore()
+        await store.save(
+            provider="double",
+            account_id="acct-1",
+            state=ContactsSyncState(
+                sync_cursor="cursor-existing",
+                last_full_sync_at=datetime.now(UTC).isoformat(),
+            ),
+        )
+        runtime = ContactsSyncRuntime(
+            sync_engine=engine,
+            state_store=store,
+            provider_name="double",
+            account_id="acct-1",
+            incremental_interval=timedelta(hours=1),
+        )
+
+        try:
+            await runtime.start()
+            for _ in range(40):
+                if len(engine.calls) >= 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(engine.calls) >= 1
+
+            runtime.trigger_immediate_sync()
+            for _ in range(40):
+                if len(engine.calls) >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(engine.calls) >= 2
+        finally:
+            await runtime.stop()
