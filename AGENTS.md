@@ -275,6 +275,8 @@ make test-qg
 - `src/butlers/core/spawner.py` augments adapter-parsed `tool_calls` with daemon-observed MCP executions captured via `src/butlers/core/tool_call_capture.py`, keyed by `runtime_session_id`.
 - Switchboard MCP URLs include `runtime_session_id=<session_uuid>` query params so daemon request middleware (`_McpRuntimeSessionGuard` in `src/butlers/daemon.py`) can bind incoming tool invocations to the active runtime session and capture ground-truth tool calls for fallback decisions.
 - `_McpRuntimeSessionGuard` should proxy unknown attributes to the wrapped ASGI app (for example `.routes`) so middleware layering remains transparent to startup/tests that introspect the combined MCP app.
+- Daemon-side wrappers (`_SpanWrappingMCP` and `_ToolCallLoggingMCP`) must capture tool-call outcomes (`success`/`error`/`module_disabled`) plus result/error payloads in `tool_call_capture` so session `tool_calls` preserve execution outcomes, not just invocation names/inputs.
+- Spawner merge logic should preserve failed-then-retried attempts with identical inputs in chronological order; avoid signature-only dedupe that collapses retry history.
 
 ### Switchboard registry liveness/compat contract
 - `butler_registry` includes liveness + compatibility metadata: `eligibility_state`, `liveness_ttl_seconds`, quarantine fields, `route_contract_min/max`, and `capabilities`.
