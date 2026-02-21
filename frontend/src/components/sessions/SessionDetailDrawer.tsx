@@ -195,7 +195,15 @@ interface NormalizedToolCall {
   name: string;
   args?: unknown;
   result?: unknown;
+  outcome?: string;
+  error?: unknown;
   raw: unknown;
+}
+
+function normalizeOutcome(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function normalizeToolCall(call: unknown, idx: number): NormalizedToolCall {
@@ -211,6 +219,8 @@ function normalizeToolCall(call: unknown, idx: number): NormalizedToolCall {
 
   const argsRaw = getNestedValue(call, ["input", "args", "arguments", "parameters", "payload"]);
   const resultRaw = getNestedValue(call, ["result", "output", "response", "return", "value"]);
+  const outcomeRaw = getNestedValue(call, ["outcome", "status", "state"]);
+  const errorRaw = getNestedValue(call, ["error", "exception", "failure", "failure_reason"]);
   const idRaw = getNestedValue(call, ["id", "call_id", "callId"]);
   const key = typeof idRaw === "string" && idRaw.trim().length > 0 ? idRaw : `tool-${idx + 1}`;
 
@@ -219,6 +229,8 @@ function normalizeToolCall(call: unknown, idx: number): NormalizedToolCall {
     name,
     args: argsRaw == null ? undefined : parseJsonIfString(argsRaw),
     result: resultRaw == null ? undefined : parseJsonIfString(resultRaw),
+    outcome: normalizeOutcome(outcomeRaw),
+    error: errorRaw == null ? undefined : parseJsonIfString(errorRaw),
     raw: call,
   };
 }
@@ -328,11 +340,31 @@ function ToolCallTimeline({
           <li key={`${tc.key}-${idx}`} className="ml-4">
             <div className="absolute -left-1.5 mt-1 size-3 rounded-full border border-background bg-muted-foreground/40" />
             <p className="text-xs font-semibold">{tc.name}</p>
+            {tc.outcome && (
+              <p className="text-[11px] text-muted-foreground">
+                Outcome:{" "}
+                <span
+                  className={cn(
+                    "font-medium",
+                    /error|fail/i.test(tc.outcome)
+                      ? "text-destructive"
+                      : /success|accepted|ok/i.test(tc.outcome)
+                        ? "text-emerald-600"
+                        : "text-muted-foreground",
+                  )}
+                >
+                  {tc.outcome}
+                </span>
+              </p>
+            )}
             {tc.args !== undefined && (
               <CollapsibleJson label="Arguments" data={tc.args} />
             )}
             {tc.result !== undefined && (
               <CollapsibleJson label="Result" data={tc.result} />
+            )}
+            {tc.error !== undefined && (
+              <CollapsibleJson label="Error" data={tc.error} />
             )}
             {tc.args === undefined && tc.result === undefined && (
               <CollapsibleJson label="Raw Payload" data={tc.raw} />

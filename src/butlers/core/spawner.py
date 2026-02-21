@@ -115,18 +115,62 @@ def _merge_tool_call_records(
     parsed_calls: list[dict[str, Any]],
     executed_calls: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Merge parser + executed call records with stable ordering and de-dupe."""
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    """Merge parser + executed call records while preserving retry attempts."""
+    if not executed_calls:
+        return list(parsed_calls)
+    if not parsed_calls:
+        return list(executed_calls)
 
-    for call in [*parsed_calls, *executed_calls]:
+    def _payload_for_signature(call: dict[str, Any]) -> Any:
+        payload = call.get("input")
+        if payload is None:
+            payload = call.get("args")
+        if payload is None:
+            payload = call.get("arguments")
+        if payload is None:
+            payload = call.get("parameters")
+        if isinstance(payload, str):
+            stripped = payload.strip()
+            if stripped:
+                try:
+                    return json.loads(stripped)
+                except Exception:
+                    return payload
+        return payload
+
+    def _signature(call: dict[str, Any]) -> str:
         name = str(call.get("name", "") or "")
-        payload = call.get("input") or call.get("args") or {}
-        signature = f"{name}|{json.dumps(payload, sort_keys=True, default=str)}"
-        if signature in seen:
+        payload = _payload_for_signature(call)
+        return f"{name}|{json.dumps(payload, sort_keys=True, default=str)}"
+
+    merged: list[dict[str, Any]] = []
+    matched_parsed_indexes: set[int] = set()
+
+    for executed_call in executed_calls:
+        executed_signature = _signature(executed_call)
+        parsed_index = next(
+            (
+                idx
+                for idx, parsed_call in enumerate(parsed_calls)
+                if (
+                    idx not in matched_parsed_indexes
+                    and _signature(parsed_call) == executed_signature
+                )
+            ),
+            None,
+        )
+        if parsed_index is None:
+            merged.append(executed_call)
             continue
-        seen.add(signature)
-        merged.append(call)
+        matched_parsed_indexes.add(parsed_index)
+        merged_record = dict(parsed_calls[parsed_index])
+        merged_record.update(executed_call)
+        merged.append(merged_record)
+
+    for idx, parsed_call in enumerate(parsed_calls):
+        if idx in matched_parsed_indexes:
+            continue
+        merged.append(parsed_call)
 
     return merged
 

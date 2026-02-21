@@ -64,6 +64,48 @@ def test_merge_tool_call_records_dedupes_same_name_and_payload():
     ]
 
 
+def test_merge_tool_call_records_preserves_failed_then_retried_sequence():
+    parsed = [
+        {
+            "id": "tool_1",
+            "name": "route_to_butler",
+            "input": {"butler": "relationship"},
+        }
+    ]
+    executed = [
+        {
+            "name": "route_to_butler",
+            "input": {"butler": "relationship"},
+            "outcome": "error",
+            "error": "TimeoutError: target unavailable",
+        },
+        {
+            "name": "route_to_butler",
+            "input": {"butler": "relationship"},
+            "outcome": "success",
+            "result": {"status": "accepted", "butler": "relationship"},
+        },
+    ]
+
+    merged = _merge_tool_call_records(parsed, executed)
+
+    assert merged == [
+        {
+            "id": "tool_1",
+            "name": "route_to_butler",
+            "input": {"butler": "relationship"},
+            "outcome": "error",
+            "error": "TimeoutError: target unavailable",
+        },
+        {
+            "name": "route_to_butler",
+            "input": {"butler": "relationship"},
+            "outcome": "success",
+            "result": {"status": "accepted", "butler": "relationship"},
+        },
+    ]
+
+
 # ---------------------------------------------------------------------------
 # MockAdapter — runtime-agnostic adapter for orchestration tests
 # ---------------------------------------------------------------------------
@@ -1547,6 +1589,68 @@ class TestParametrizedSessionLogging:
                 assert kwargs["duration_ms"] >= 0
                 assert kwargs["success"] is True
 
+
+class TestToolOutcomePersistence:
+    async def test_session_complete_persists_failed_then_retried_tool_outcomes(
+        self, tmp_path: Path
+    ):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        config = _make_config()
+        mock_pool = AsyncMock()
+
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
+            patch(
+                "butlers.core.spawner.consume_runtime_session_tool_calls",
+                return_value=[
+                    {
+                        "name": "route_to_butler",
+                        "input": {"butler": "relationship"},
+                        "outcome": "error",
+                        "error": "TimeoutError: target unavailable",
+                    },
+                    {
+                        "name": "route_to_butler",
+                        "input": {"butler": "relationship"},
+                        "outcome": "success",
+                        "result": {"status": "accepted", "butler": "relationship"},
+                    },
+                ],
+            ),
+        ):
+            import uuid
+
+            fake_session_id = uuid.UUID("00000000-0000-0000-0000-000000000199")
+            mock_create.return_value = fake_session_id
+
+            adapter = MockAdapter(
+                result_text="done",
+                tool_calls=[
+                    {
+                        "id": "tool_1",
+                        "name": "route_to_butler",
+                        "input": {"butler": "relationship"},
+                    }
+                ],
+            )
+            spawner = Spawner(config=config, config_dir=config_dir, pool=mock_pool, runtime=adapter)
+
+            result = await spawner.trigger("test", "tick")
+
+            assert result.error is None
+            assert [call["outcome"] for call in result.tool_calls] == ["error", "success"]
+
+            mock_complete.assert_called_once()
+            _, kwargs = mock_complete.call_args
+            assert [call["outcome"] for call in kwargs["tool_calls"]] == ["error", "success"]
+            assert kwargs["tool_calls"][0]["id"] == "tool_1"
+            assert kwargs["tool_calls"][0]["error"] == "TimeoutError: target unavailable"
+            assert kwargs["tool_calls"][1]["result"] == {
+                "status": "accepted",
+                "butler": "relationship",
+            }
 
 # ---------------------------------------------------------------------------
 # Legacy sdk_query compat test
