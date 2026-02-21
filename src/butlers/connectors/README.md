@@ -17,6 +17,13 @@ Connectors do NOT:
 
 All classification and routing happens downstream in Switchboard after ingest acceptance.
 
+Connector transport compatibility note:
+
+- Connectors continue to use the Switchboard SSE endpoint (`/sse`) during the
+  spawner/runtime streamable HTTP rollout.
+- Runtime sessions launched by butler spawners use `/mcp`; this is a separate
+  transport path and does not require connector URL changes.
+
 ## Telegram Bot Connector
 
 ### Running in Polling Mode (Dev)

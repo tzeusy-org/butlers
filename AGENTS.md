@@ -657,8 +657,9 @@ make test-qg
 - Dashboard API exposes per-butler MCP debug endpoints in `src/butlers/api/routers/butlers.py`: `GET /api/butlers/{name}/mcp/tools` (normalized `name`/`description`/`input_schema`) and `POST /api/butlers/{name}/mcp/call` (tool name + arguments passthrough with parsed `result`, `raw_text`, `is_error`).
 - Frontend contracts are typed in `frontend/src/api/types.ts` (`ButlerMcpTool`, `ButlerMcpToolCallRequest`, `ButlerMcpToolCallResponse`) and wired through `frontend/src/api/client.ts` + `frontend/src/api/index.ts`.
 
-### Codex MCP transport mismatch contract
-- Butler daemons currently expose MCP over SSE only (`src/butlers/daemon.py` uses `http_app(transport="sse")`) and spawner runtime config points spawned runtimes at `http://localhost:<port>/sse` (`src/butlers/core/spawner.py`).
-- Codex CLI MCP URL configuration (`-c mcp_servers.<name>.url="..."`) is handled by a streamable-HTTP client; against `/sse` it fails with `unexpected content type` (for example 405 `text/plain`) and drops external MCP tools.
-- Symptom: Codex sessions may succeed with plain-text responses but record zero MCP tool calls (including missing `notify()`), even when prompt instructions require tool usage.
-- To restore Codex tool availability, provide a streamable HTTP endpoint (for example `/mcp`) for runtime sessions or add a transport bridge compatible with Codex MCP.
+### Runtime MCP transport rollout contract
+- Butler daemons now expose dual MCP transports via `_build_mcp_http_app()` in `src/butlers/daemon.py`: streamable HTTP at `/mcp` and legacy SSE compatibility at `/sse` + `/messages`.
+- Spawner runtime sessions use canonical streamable MCP URLs from `src/butlers/core/mcp_urls.py::runtime_mcp_url()` (`http://localhost:<port>/mcp`) and `src/butlers/core/spawner.py` should not regress to hardcoded `/sse`.
+- `src/butlers/core/runtimes/claude_code.py` resolves transport with `resolve_runtime_mcp_transport()`: default `http` for `/mcp`, explicit/URL-inferred `sse` for legacy endpoints.
+- Connector ingest clients are still SSE-based (`SWITCHBOARD_MCP_URL=.../sse`) and are intentionally out of scope for spawner runtime transport cutover.
+- Operator cutover/fallback procedure is documented in `docs/operations/spawner-streamable-http-rollout.md`; keep this runbook aligned with transport behavior and rollback guidance.
