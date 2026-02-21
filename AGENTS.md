@@ -261,6 +261,16 @@ make test-qg
 - When `butler_registry` is empty, `classify_message()` auto-discovers butlers from `roster/` (see `roster/switchboard/tools/routing/classify.py`) before composing the "Available butlers" prompt.
 - Classification uses `list_butlers(..., routable_only=True)` so stale/quarantined targets are excluded from planner prompt context by default.
 
+### Switchboard Codex tool-call parsing contract
+- `src/butlers/core/runtimes/codex.py` must normalize nested Codex MCP tool-call payloads (`item.type="mcp_tool_call"` with `call`/`tool_call` sub-objects) so `route_to_butler` name + arguments are preserved in `tool_calls`; otherwise switchboard can mis-detect "no route_to_butler tools" and incorrectly fall back to `general`.
+
+### Switchboard no-tool fallback routing contract
+- In `src/butlers/modules/pipeline.py`, when LLM output includes no recognized `route_to_butler` calls, fallback routing should first attempt unambiguous target inference from CC summary text patterns like `routed to <butler>` (restricted to currently available butlers) before defaulting to `general`.
+
+### Runtime tool-call capture contract
+- `src/butlers/core/spawner.py` augments adapter-parsed `tool_calls` with daemon-observed MCP executions captured via `src/butlers/core/tool_call_capture.py`, keyed by `runtime_session_id`.
+- Switchboard MCP URLs include `runtime_session_id=<session_uuid>` query params so daemon request middleware (`_McpRuntimeSessionGuard` in `src/butlers/daemon.py`) can bind incoming tool invocations to the active runtime session and capture ground-truth tool calls for fallback decisions.
+
 ### Switchboard registry liveness/compat contract
 - `butler_registry` includes liveness + compatibility metadata: `eligibility_state`, `liveness_ttl_seconds`, quarantine fields, `route_contract_min/max`, and `capabilities`.
 - `resolve_routing_target()` in `roster/switchboard/tools/registry/registry.py` is the canonical gate for route eligibility: it reconciles TTL staleness, enforces stale/quarantine policy overrides, and validates route contract/capability requirements.
@@ -458,6 +468,9 @@ make test-qg
 - `src/butlers/daemon.py` imports `parse_notify_request` from `butlers.tools.switchboard.routing.contracts` at module import time; keep that parser exported in `roster/switchboard/tools/routing/contracts.py`.
 - `RouteInputV1.context` must accept structured objects (`dict`) in addition to text so Messenger `route.execute` can receive `input.context.notify_request` payloads.
 
+### Notify react message normalization contract
+- `src/butlers/daemon.py::notify` must normalize omitted `message` to `""` before building `notify_request.delivery` so `intent="react"` payloads remain valid through downstream `notify.v1` validation paths that require a string-typed `delivery.message`.
+
 ### Pipeline identity-routing contract
 - `src/butlers/modules/pipeline.py` should route inbound channel messages with identity-prefixed tool names (default `bot_switchboard_handle_message`) and include `source_metadata` (`channel`, `identity`, `tool_name`, optional `source_id`) in routed args.
 - `roster/switchboard/tools/routing/dispatch.py::dispatch_decomposed` should pass through identity-aware source metadata and the prefixed logical `tool_name` for each sub-route.
@@ -567,6 +580,10 @@ make test-qg
 - `dev.sh` connectors window runs three connector processes: Telegram bot, Telegram user-client, and Gmail.
 - Each connector pane may source a local-only env file under `secrets/connectors/` (`telegram_bot`, `telegram_user_client`, `gmail`) using `set -a` so values only affect that pane process.
 - Connector identity/cursor env overrides should be per-connector (`TELEGRAM_BOT_CONNECTOR_*`, `TELEGRAM_USER_CONNECTOR_*`, `GMAIL_CONNECTOR_*`) to avoid shared `CONNECTOR_ENDPOINT_IDENTITY` / `CONNECTOR_CURSOR_PATH` collisions.
+
+### Dev script location + process-clear contract
+- Canonical bootstrap implementation now lives at `scripts/dev.sh`; repository-root `dev.sh` is a compatibility shim that delegates to `scripts/dev.sh`.
+- `scripts/clear-processes.sh` is the canonical pre-bootstrap cleanup helper: by default it targets listeners on `POSTGRES_PORT` (`54320`), `FRONTEND_PORT` (`40173`), and `DASHBOARD_PORT` (`40200`), with explicit override via `EXPECTED_PORTS`.
 
 ### Telemetry span concurrency guardrail
 - `src/butlers/core/telemetry.py::tool_span` decorator usage is unsafe if per-invocation span/token state is stored on the decorator instance (`self._span`, `self._token`): concurrent calls to one decorated async handler can trigger OpenTelemetry `Failed to detach context` / `Token ... created in a different Context`.

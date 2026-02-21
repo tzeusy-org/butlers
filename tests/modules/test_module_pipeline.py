@@ -632,9 +632,7 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     @patch("butlers.tools.switchboard.routing.route.route", new_callable=AsyncMock)
-    async def test_fallback_uses_cc_indicated_target_when_unambiguous(
-        self, mock_route, mock_load
-    ):
+    async def test_fallback_uses_cc_indicated_target_when_unambiguous(self, mock_route, mock_load):
         """No-tool fallback uses explicit 'routed to <butler>' summary when present."""
         mock_route.return_value = {"result": "handled by relationship"}
 

@@ -153,14 +153,10 @@ def _looks_like_tool_call_event(obj: dict[str, Any]) -> bool:
         or obj.get("toolName")
         or next(
             (
-                container.get("name")
-                or container.get("tool_name")
-                or container.get("toolName")
+                container.get("name") or container.get("tool_name") or container.get("toolName")
                 for container in nested_containers
                 if (
-                    container.get("name")
-                    or container.get("tool_name")
-                    or container.get("toolName")
+                    container.get("name") or container.get("tool_name") or container.get("toolName")
                 )
             ),
             None,
@@ -402,14 +398,10 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
         or obj.get("toolName")
         or next(
             (
-                container.get("name")
-                or container.get("tool_name")
-                or container.get("toolName")
+                container.get("name") or container.get("tool_name") or container.get("toolName")
                 for container in nested_containers
                 if (
-                    container.get("name")
-                    or container.get("tool_name")
-                    or container.get("toolName")
+                    container.get("name") or container.get("tool_name") or container.get("toolName")
                 )
             ),
             "",

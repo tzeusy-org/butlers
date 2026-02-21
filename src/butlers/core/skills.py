@@ -68,19 +68,28 @@ def _resolve_includes(content: str, roster_dir: Path) -> str:
     return "\n".join(out)
 
 
-def _append_shared_skills(content: str, roster_dir: Path) -> str:
-    """Append ``BUTLER_SKILLS.md`` from the shared directory if it exists.
+def _append_shared_markdown(content: str, roster_dir: Path, filename: str) -> str:
+    """Append ``shared/<filename>`` contents if the file exists and is non-empty."""
+    shared_file = roster_dir / "shared" / filename
+    if not shared_file.is_file():
+        return content
 
-    The file is expected at ``roster_dir / "shared" / "BUTLER_SKILLS.md"``.
-    When present, its contents are appended to *content* separated by two
-    newlines.  Otherwise *content* is returned unchanged.
+    shared_content = shared_file.read_text(encoding="utf-8").rstrip("\n")
+    if not shared_content:
+        return content
+
+    return content + "\n\n" + shared_content
+
+
+def _append_shared_files(content: str, roster_dir: Path) -> str:
+    """Append shared prompt snippets after include resolution.
+
+    Order is intentional and stable:
+    1. ``BUTLER_SKILLS.md``
+    2. ``MCP_LOGGING.md``
     """
-    butler_skills = roster_dir / "shared" / "BUTLER_SKILLS.md"
-    if butler_skills.is_file():
-        skills_content = butler_skills.read_text(encoding="utf-8").rstrip("\n")
-        if skills_content:
-            return content + "\n\n" + skills_content
-    return content
+    content = _append_shared_markdown(content, roster_dir, "BUTLER_SKILLS.md")
+    return _append_shared_markdown(content, roster_dir, "MCP_LOGGING.md")
 
 
 def read_system_prompt(config_dir: Path, butler_name: str) -> str:
@@ -90,8 +99,9 @@ def read_system_prompt(config_dir: Path, butler_name: str) -> str:
     sensible default incorporating the butler's name.
 
     Any ``<!-- @include ... -->`` directives are resolved relative to the
-    roster directory (``config_dir.parent``).  After include resolution,
-    ``BUTLER_SKILLS.md`` from the shared directory is appended if present.
+    roster directory (``config_dir.parent``). After include resolution,
+    shared snippets are appended if present (currently ``BUTLER_SKILLS.md``
+    and ``MCP_LOGGING.md``).
     """
     claude_md = config_dir / "CLAUDE.md"
     if claude_md.is_file():
@@ -99,7 +109,7 @@ def read_system_prompt(config_dir: Path, butler_name: str) -> str:
         if content:
             roster_dir = config_dir.parent
             content = _resolve_includes(content, roster_dir)
-            return _append_shared_skills(content, roster_dir)
+            return _append_shared_files(content, roster_dir)
     default = _DEFAULT_PROMPT_TEMPLATE.format(butler_name=butler_name)
     logger.debug("CLAUDE.md missing or empty in %s — using default prompt", config_dir)
     return default

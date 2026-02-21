@@ -178,6 +178,45 @@ def test_read_system_prompt_default_no_butler_skills(tmp_path: Path) -> None:
     assert "Skills" not in result
 
 
+def test_read_system_prompt_appends_mcp_logging(tmp_path: Path) -> None:
+    """MCP_LOGGING.md from shared/ is auto-appended to the system prompt."""
+    config_dir = _setup_roster(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "MCP_LOGGING.md").write_text(
+        "# MCP Logging Requirements\n1. List tools.\n2. Report errors.",
+        encoding="utf-8",
+    )
+    (config_dir / "CLAUDE.md").write_text("# Butler prompt", encoding="utf-8")
+    result = read_system_prompt(config_dir, "test")
+    assert (
+        result == "# Butler prompt\n\n# MCP Logging Requirements\n1. List tools.\n2. Report errors."
+    )
+
+
+def test_read_system_prompt_appends_skills_then_mcp_logging(tmp_path: Path) -> None:
+    """Shared append order remains stable: skills first, then MCP logging."""
+    config_dir = _setup_roster(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "BUTLER_SKILLS.md").write_text("## Skills", encoding="utf-8")
+    (shared / "MCP_LOGGING.md").write_text("# MCP Logging", encoding="utf-8")
+    (config_dir / "CLAUDE.md").write_text("# Butler prompt", encoding="utf-8")
+    result = read_system_prompt(config_dir, "test")
+    assert result == "# Butler prompt\n\n## Skills\n\n# MCP Logging"
+
+
+def test_read_system_prompt_default_no_mcp_logging(tmp_path: Path) -> None:
+    """Default prompt (no CLAUDE.md) does not get MCP_LOGGING.md appended."""
+    config_dir = _setup_roster(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "MCP_LOGGING.md").write_text("# MCP Logging Requirements", encoding="utf-8")
+    result = read_system_prompt(config_dir, "test")
+    assert result == "You are the test butler."
+    assert "MCP Logging Requirements" not in result
+
+
 # ---------------------------------------------------------------------------
 # 9.1 — get_skills_dir
 # ---------------------------------------------------------------------------

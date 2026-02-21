@@ -249,6 +249,10 @@ class _McpRuntimeSessionGuard:
         self._app = app
         self._mcp_session_to_runtime_session: dict[str, str] = {}
 
+    def __getattr__(self, name: str) -> Any:
+        """Proxy unknown attributes to wrapped ASGI app for compatibility."""
+        return getattr(self._app, name)
+
     def _resolve_runtime_session_id(self, scope: dict[str, Any]) -> str | None:
         query_string = scope.get("query_string")
         if not isinstance(query_string, (bytes, bytearray)):

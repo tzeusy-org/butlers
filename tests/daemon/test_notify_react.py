@@ -246,6 +246,35 @@ class TestNotifyReactIntent:
         # Should succeed (not fail with empty message validation)
         assert result["status"] == "ok"
 
+    async def test_notify_react_omitted_message_normalized_to_empty(self, butler_dir: Path) -> None:
+        """notify with intent='react' should normalize omitted message to empty string."""
+        patches = _patch_infra()
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(
+            return_value=MagicMock(
+                is_error=False,
+                data={"status": "ok"},
+                content=[MagicMock(text='{"status":"ok"}')],
+            )
+        )
+
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        daemon.switchboard_client = mock_client
+        assert notify_fn is not None
+
+        result = await notify_fn(
+            channel="telegram",
+            intent="react",
+            emoji="✅",
+            request_context={"source_thread_identity": "123:456"},
+        )
+        assert result["status"] == "ok"
+
+        mock_client.call_tool.assert_called_once()
+        call_args = mock_client.call_tool.call_args
+        notify_request = call_args[0][1]["notify_request"]
+        assert notify_request["delivery"]["message"] == ""
+
     async def test_notify_react_forwards_emoji_to_switchboard(self, butler_dir: Path) -> None:
         """notify with intent='react' should include emoji in notify_request."""
         patches = _patch_infra()

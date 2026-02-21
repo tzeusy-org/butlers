@@ -63,6 +63,7 @@ def test_merge_tool_call_records_dedupes_same_name_and_payload():
         {"name": "route_to_butler", "input": {"butler": "health"}},
     ]
 
+
 # ---------------------------------------------------------------------------
 # MockAdapter — runtime-agnostic adapter for orchestration tests
 # ---------------------------------------------------------------------------

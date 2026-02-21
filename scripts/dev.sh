@@ -46,7 +46,8 @@
 
 set -euo pipefail
 
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SKIP_OAUTH_CHECK=false
 SKIP_TAILSCALE_CHECK=false
