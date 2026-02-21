@@ -25,6 +25,35 @@ _DISPATCH_MODE_PROMPT = "prompt"
 _DISPATCH_MODE_JOB = "job"
 _ALLOWED_DISPATCH_MODES = {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
 
+_BACKFILL_DISPATCH_MODE_SQL = """
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'scheduled_tasks' AND column_name = 'dispatch_mode'
+              AND table_schema = current_schema()
+    ) THEN
+        ALTER TABLE scheduled_tasks
+            ADD COLUMN dispatch_mode TEXT NOT NULL DEFAULT 'prompt';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'scheduled_tasks' AND column_name = 'job_name'
+              AND table_schema = current_schema()
+    ) THEN
+        ALTER TABLE scheduled_tasks ADD COLUMN job_name TEXT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'scheduled_tasks' AND column_name = 'job_args'
+              AND table_schema = current_schema()
+    ) THEN
+        ALTER TABLE scheduled_tasks ADD COLUMN job_args JSONB;
+    END IF;
+END
+$$;
+"""
+
 
 def _normalize_dispatch_mode(value: Any, *, context: str) -> str:
     """Normalize and validate a schedule dispatch mode value."""
@@ -228,14 +257,26 @@ async def sync_schedules(
 
     toml_names = {s["name"] for s in normalized_schedules}
 
-    # Fetch existing TOML-sourced tasks
-    rows = await pool.fetch(
-        """
-        SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args, enabled
-        FROM scheduled_tasks
-        WHERE source = 'toml'
-        """
-    )
+    # Fetch existing TOML-sourced tasks.  If the dispatch_mode column is
+    # missing (legacy schema predating core_002), backfill it on the fly.
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args, enabled
+            FROM scheduled_tasks
+            WHERE source = 'toml'
+            """
+        )
+    except asyncpg.UndefinedColumnError:
+        logger.warning("dispatch_mode column missing — backfilling scheduled_tasks schema")
+        await pool.execute(_BACKFILL_DISPATCH_MODE_SQL)
+        rows = await pool.fetch(
+            """
+            SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args, enabled
+            FROM scheduled_tasks
+            WHERE source = 'toml'
+            """
+        )
     db_by_name: dict[str, asyncpg.Record] = {row["name"]: row for row in rows}
 
     for entry in normalized_schedules:
