@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 # Skip all tests if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -196,6 +196,85 @@ def test_core_migrations_create_tables(postgres_container):
 
     for schema in REQUIRED_SCHEMAS:
         assert _schema_exists(db_url, schema), f"schema {schema!r} should exist"
+
+
+def test_core_scheduled_task_dispatch_mode_columns_and_constraints(postgres_container):
+    """scheduled_tasks should persist dispatch metadata and enforce mode constraints."""
+    from butlers.migrations import run_migrations
+
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
+
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT column_name, column_default
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'scheduled_tasks'
+                    """
+                )
+            )
+            columns = {str(name): default for name, default in rows}
+            assert "dispatch_mode" in columns
+            assert "job_name" in columns
+            assert "job_args" in columns
+            assert "prompt" in str(columns["dispatch_mode"])
+
+            default_mode = conn.execute(
+                text(
+                    """
+                    INSERT INTO scheduled_tasks (name, cron, prompt)
+                    VALUES ('dispatch-default-check', '*/5 * * * *', 'default prompt')
+                    RETURNING dispatch_mode
+                    """
+                )
+            ).scalar_one()
+            assert default_mode == "prompt"
+
+            dry_run = conn.execute(
+                text(
+                    """
+                    INSERT INTO scheduled_tasks (name, cron, dispatch_mode, job_name, job_args)
+                    VALUES (
+                        'dispatch-job-check',
+                        '0 * * * *',
+                        'job',
+                        'eligibility_sweep',
+                        '{"dry_run": true}'::jsonb
+                    )
+                    RETURNING job_args ->> 'dry_run'
+                    """
+                )
+            ).scalar_one()
+            assert dry_run == "true"
+
+            with pytest.raises(IntegrityError):
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO scheduled_tasks (name, cron, dispatch_mode)
+                        VALUES ('dispatch-job-missing-name', '0 1 * * *', 'job')
+                        """
+                    )
+                )
+
+            with pytest.raises(IntegrityError):
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO scheduled_tasks (name, cron, prompt, dispatch_mode)
+                        VALUES ('dispatch-bad-mode', '0 2 * * *', 'bad', 'bad')
+                        """
+                    )
+                )
+    finally:
+        engine.dispose()
 
 
 def test_core_schema_bootstrap_owner_baseline(postgres_container):

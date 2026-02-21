@@ -132,11 +132,21 @@ async def _create_core_and_shared_tables(dsn: str, schema: str) -> None:
                 id UUID PRIMARY KEY,
                 name TEXT NOT NULL,
                 cron TEXT NOT NULL,
-                prompt TEXT NOT NULL,
+                prompt TEXT,
+                dispatch_mode TEXT NOT NULL DEFAULT 'prompt',
+                job_name TEXT,
+                job_args JSONB,
                 source TEXT NOT NULL DEFAULT 'db',
                 enabled BOOLEAN NOT NULL DEFAULT true,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CONSTRAINT scheduled_tasks_dispatch_mode_check
+                    CHECK (dispatch_mode IN ('prompt', 'job')),
+                CONSTRAINT scheduled_tasks_dispatch_payload_check
+                    CHECK (
+                        (dispatch_mode = 'prompt' AND prompt IS NOT NULL AND job_name IS NULL)
+                        OR (dispatch_mode = 'job' AND job_name IS NOT NULL)
+                    )
             )
             """
         )
