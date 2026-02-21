@@ -349,6 +349,7 @@ make test-qg
 - Butler detail tab validation must include health-only tabs so `?tab=health` deep-links resolve on `/butlers/health`.
 - `/settings` now provides browser-local controls for theme, default live-refresh behavior (used by Sessions/Timeline), and clearing command-palette recent-search history.
 - Frontend router must set `createBrowserRouter(..., { basename: import.meta.env.BASE_URL })` (sanitized) so `dev.sh` subpath deployments (`--base /butlers/`) behave consistently for direct loads and in-app links (for example `/butlers/secrets`), while root-origin paths like `/secrets` correctly 404 under split Tailscale path mapping.
+- Contacts sync UI contract: dashboard contacts surface includes a header `Sync From Google` action that calls `POST /api/relationship/contacts/sync?mode=incremental`, shows in-flight (`Syncing...`) + toast success/error feedback, and refreshes contacts data after success. Router exposes both `/contacts` and `/butlers/contacts` to the same page.
 
 ### Session tool-call rendering contract
 - `frontend/src/components/sessions/SessionDetailDrawer.tsx` must normalize tool-call records before rendering: tool names can appear as `name|tool|tool_name` (including nested `call`/`tool_call`/`toolCall`/`function` objects), arguments can appear as `input|args|arguments|parameters`, and result payloads can appear as `result|output|response`.

@@ -26,6 +26,7 @@ import type {
   ContactDetail,
   ContactListResponse,
   ContactParams,
+  ContactsSyncTriggerResponse,
   CostSummary,
   DailyCost,
   ErrorResponse,
@@ -559,6 +560,17 @@ export function getContacts(params?: ContactParams): Promise<ContactListResponse
   const qs = contactSearchParams(params).toString();
   const path = qs ? `/relationship/contacts?${qs}` : "/relationship/contacts";
   return apiFetch<ContactListResponse>(path);
+}
+
+/** Trigger a manual Google contacts sync. */
+export function triggerContactsSync(
+  mode: "incremental" | "full" = "incremental",
+): Promise<ContactsSyncTriggerResponse> {
+  const sp = new URLSearchParams({ mode });
+  return apiFetch<ContactsSyncTriggerResponse>(
+    `/relationship/contacts/sync?${sp.toString()}`,
+    { method: "POST" },
+  );
 }
 
 /** Fetch a single contact by ID. */

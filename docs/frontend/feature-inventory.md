@@ -185,6 +185,7 @@ This inventory describes what is implemented today in `frontend/src/**`.
 ## Contacts (`/contacts`)
 
 - Search + label-filterable contacts table.
+- Header action: `Sync From Google` triggers manual incremental Google contacts sync and refreshes the list on success.
 - Pagination.
 - Row click navigation to detail.
 
