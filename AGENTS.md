@@ -601,8 +601,7 @@ make test-qg
 - `TelegramBotConnectorConfig` and `TelegramUserClientConnectorConfig` are Python **dataclasses** (not Pydantic models); use `dataclasses.replace(config, field=value)` for partial updates — `model_copy()` is Pydantic-only.
 - `GmailConnectorConfig` is a Pydantic `BaseModel` with `frozen=True`; use `config.model_copy(update={...})` for partial updates.
 - Pydantic v2 auto-coerces `str` to `pathlib.Path` for `Path`-typed fields, but prefer explicit `Path(cursor_path_str)` at construction sites to satisfy static type checkers and remove `type: ignore` suppressions.
-- `bd close` from worktrees silently fails to persist due to redirect/sharing issues; always re-close beads from the main repo after worktree operations.
-- When a worker branch carries stale `.beads/issues.jsonl` snapshots, merging that branch can reopen or regress bead status metadata; immediately re-normalize affected bead states from `main` and commit `.beads/issues.jsonl`.
+- `bd close` from worktrees silently fails to persist due to redirect/sharing issues; always re-close beads from the `beads-sync` branch after worktree operations.
 
 ### Secrets shared-target contract
 - `src/butlers/api/routers/secrets.py` treats `/api/butlers/shared/secrets` as a reserved target that resolves via `DatabaseManager.credential_shared_pool()` (not `db.pool("shared")`), returning 503 with `"Shared credential database is not available"` when unset.
