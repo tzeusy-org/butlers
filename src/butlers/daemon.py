@@ -158,6 +158,11 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
 )
 
 
+type _DeterministicScheduleJobHandler = Callable[
+    [asyncpg.Pool, dict[str, Any] | None], Awaitable[Any]
+]
+
+
 @functools.lru_cache(maxsize=1)
 def _load_switchboard_eligibility_sweep_job() -> Callable[
     [asyncpg.Pool], Awaitable[dict[str, Any]]
@@ -179,6 +184,58 @@ def _load_switchboard_eligibility_sweep_job() -> Callable[
     module = _ilu.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.run_eligibility_sweep_job
+
+
+async def _run_switchboard_eligibility_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the switchboard eligibility sweep deterministic schedule job."""
+    del job_args
+    run_eligibility_sweep_job = _load_switchboard_eligibility_sweep_job()
+    return await run_eligibility_sweep_job(pool)
+
+
+_DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicScheduleJobHandler]] = {
+    "switchboard": {
+        "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
+    }
+}
+
+# Backward compatibility for legacy prompt-mode schedule names that now map
+# to deterministic jobs.
+_DETERMINISTIC_SCHEDULE_LEGACY_ALIASES: dict[str, dict[str, str]] = {
+    "switchboard": {
+        "eligibility-sweep": "eligibility_sweep",
+    }
+}
+
+
+def _resolve_deterministic_schedule_job_name(
+    *,
+    butler_name: str,
+    trigger_source: str,
+    job_name: str | None,
+) -> str | None:
+    """Resolve deterministic schedule job name from explicit job or legacy alias."""
+    if job_name is not None:
+        normalized_job_name = job_name.strip()
+        if not normalized_job_name:
+            raise RuntimeError(
+                "Deterministic scheduler job_name must be a non-empty string "
+                f"(butler={butler_name!r})"
+            )
+        return normalized_job_name
+
+    schedule_prefix = "schedule:"
+    if not trigger_source.startswith(schedule_prefix):
+        return None
+
+    schedule_name = trigger_source[len(schedule_prefix) :].strip()
+    if not schedule_name:
+        return None
+    aliases = _DETERMINISTIC_SCHEDULE_LEGACY_ALIASES.get(butler_name, {})
+    return aliases.get(schedule_name)
 
 
 class _McpSseDisconnectGuard:
@@ -1438,43 +1495,48 @@ class ButlerDaemon:
         job_name: str | None = None,
         job_args: dict[str, Any] | None = None,
     ) -> Any:
-        """Dispatch one scheduled task, using native handlers when available.
+        """Dispatch one scheduled task via deterministic jobs or prompt fallback.
 
-        For deterministic, rules-based schedules we can bypass runtime/LLM
-        invocation and execute Python job functions directly.
+        Deterministic schedules are resolved through an explicit per-butler
+        job registry. Prompt-mode schedules fall back to runtime/LLM dispatch.
         """
-        schedule_prefix = "schedule:"
-        schedule_name = (
-            trigger_source[len(schedule_prefix) :]
-            if trigger_source.startswith(schedule_prefix)
-            else None
+        resolved_job_name = _resolve_deterministic_schedule_job_name(
+            butler_name=self.config.name,
+            trigger_source=trigger_source,
+            job_name=job_name,
         )
-
-        if self.config.name == "switchboard" and (
-            job_name == "eligibility_sweep" or schedule_name == "eligibility-sweep"
-        ):
+        if resolved_job_name is not None:
             pool = self.db.pool if self.db is not None else None
             if pool is None:
                 raise RuntimeError(
-                    "Scheduler native job dispatch requires an initialized switchboard DB pool"
+                    "Deterministic scheduler dispatch requires an initialized DB pool "
+                    f"(butler={self.config.name!r}, job_name={resolved_job_name!r})"
                 )
-            run_eligibility_sweep_job = _load_switchboard_eligibility_sweep_job()
+
+            jobs_for_butler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get(self.config.name, {})
+            handler = jobs_for_butler.get(resolved_job_name)
+            if handler is None:
+                registered_jobs = ", ".join(sorted(jobs_for_butler)) or "<none>"
+                raise RuntimeError(
+                    "Unknown deterministic scheduler job "
+                    f"(butler={self.config.name!r}, job_name={resolved_job_name!r}). "
+                    f"Registered jobs: {registered_jobs}. "
+                    "Use prompt dispatch mode for LLM-backed schedules."
+                )
+
             logger.debug(
-                "Dispatching native scheduled task: %s (job_name=%s, job_args=%s)",
-                schedule_name,
-                job_name,
+                "Dispatching deterministic scheduled task "
+                "(butler=%s, job_name=%s, trigger_source=%s, job_args=%s)",
+                self.config.name,
+                resolved_job_name,
+                trigger_source,
                 job_args,
             )
-            return await run_eligibility_sweep_job(pool)
+            return await handler(pool, job_args)
 
-        if job_name is not None:
-            raise RuntimeError(
-                f"No deterministic scheduler handler for job_name={job_name!r} "
-                f"on butler {self.config.name!r}"
-            )
         if self.spawner is None:
             raise RuntimeError("Scheduler dispatch requires an initialized spawner")
-        if prompt is None:
+        if prompt is None or not prompt.strip():
             raise RuntimeError("Prompt-mode scheduler dispatch requires a non-empty prompt payload")
         return await self.spawner.trigger(prompt=prompt, trigger_source=trigger_source)
 
