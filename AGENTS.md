@@ -138,6 +138,10 @@ Each butler has a `MANIFESTO.md` that defines its public identity and value prop
 ### Calendar module config reminder
 - Calendar configs run through `src/butlers/daemon.py::_validate_module_configs`, which loads the module's `config_schema` and rejects extra/missing fields; `CalendarConfig` in `src/butlers/modules/calendar.py:906-925` demands `provider` + `calendar_id`, so any butler must populate them before the module can enable.
 
+### Contacts module sync contract
+- The contacts module is expected to run its incremental sync as an internal poll loop, not as a standalone connector (see `docs/modules/contacts_draft.md` §8); the default cadence is an immediate incremental run on startup, recurring polling every 15 minutes, and a forced full refresh every 6 days before the sync token expires.
+- Modules load inside `butlers up` via `ButlerDaemon.start()` (`src/butlers/daemon.py:852-931`), so the poller will live in the butler process. `scripts/dev.sh` already launches `uv run butlers up` and the needed connector panes (telegram + Gmail) around lines 768‑840, so no extra dev bootstrap step is required for contact sync. To actually exercise the module once it exists, add a `[modules.contacts]` block (and provider-specific fields) to `roster/relationship/butler.toml` so the daemon validates and configures it when `butlers up` runs.
+
 ### v1 MVP Status (2026-02-09)
 All 122 beads closed. 449 tests passing on main. Full implementation complete.
 
@@ -338,6 +342,12 @@ make test-qg
 - Butler detail tab validation must include health-only tabs so `?tab=health` deep-links resolve on `/butlers/health`.
 - `/settings` now provides browser-local controls for theme, default live-refresh behavior (used by Sessions/Timeline), and clearing command-palette recent-search history.
 - Frontend router must set `createBrowserRouter(..., { basename: import.meta.env.BASE_URL })` (sanitized) so `dev.sh` subpath deployments (`--base /butlers/`) behave consistently for direct loads and in-app links (for example `/butlers/secrets`), while root-origin paths like `/secrets` correctly 404 under split Tailscale path mapping.
+
+### Session tool-call rendering contract
+- `frontend/src/components/sessions/SessionDetailDrawer.tsx` must normalize tool-call records before rendering: tool names can appear as `name|tool|tool_name` (including nested `call`/`tool_call`/`toolCall`/`function` objects), arguments can appear as `input|args|arguments|parameters`, and result payloads can appear as `result|output|response`.
+- When normalized arguments/results are absent, render a fallback raw payload block so `Tool Calls (N)` never appears empty for unknown record shapes.
+- For legacy unnamed rows, `SessionDetailDrawer` should infer fallback tool labels from session result summaries like ``MCP tools called: - `tool_name(...)` `` so UI labels remain informative even when stored call records lack `name`.
+- `src/butlers/core/runtimes/codex.py::_extract_tool_call` and `_looks_like_tool_call_event` must treat nested `tool` objects like other containers (`function`/`call`/`tool_call`/`toolCall`) when extracting tool name + arguments, preventing name loss for this Codex event shape.
 
 ### Quality-gate command contract
 - `make test-qg` is the default full-scope pytest gate and runs with xdist parallelization (`-n auto`).

@@ -131,6 +131,122 @@ function CollapsibleJson({ label, data }: { label: string; data: unknown }) {
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function parseJsonIfString(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function nestedToolCallContainers(tc: Record<string, unknown>): Record<string, unknown>[] {
+  const containers: Record<string, unknown>[] = [];
+  for (const key of ["function", "call", "tool_call", "toolCall"]) {
+    const candidate = tc[key];
+    if (isRecord(candidate)) {
+      containers.push(candidate);
+    }
+  }
+  return containers;
+}
+
+function getNestedValue(
+  tc: Record<string, unknown>,
+  keys: string[],
+): unknown {
+  for (const key of keys) {
+    if (key in tc) return tc[key];
+  }
+  for (const container of nestedToolCallContainers(tc)) {
+    for (const key of keys) {
+      if (key in container) return container[key];
+    }
+  }
+  return undefined;
+}
+
+function extractToolName(value: unknown, depth = 0): string | undefined {
+  if (!isRecord(value) || depth > 4) return undefined;
+
+  for (const key of ["name", "tool", "tool_name", "toolName"]) {
+    const candidate = value[key];
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+
+  for (const key of ["function", "call", "tool", "tool_call", "toolCall"]) {
+    const nestedName = extractToolName(value[key], depth + 1);
+    if (nestedName != null) return nestedName;
+  }
+
+  return undefined;
+}
+
+interface NormalizedToolCall {
+  key: string;
+  name: string;
+  args?: unknown;
+  result?: unknown;
+  raw: unknown;
+}
+
+function normalizeToolCall(call: unknown, idx: number): NormalizedToolCall {
+  if (!isRecord(call)) {
+    return {
+      key: `tool-${idx + 1}`,
+      name: `Tool #${idx + 1}`,
+      raw: call,
+    };
+  }
+
+  const name = extractToolName(call) ?? `Tool #${idx + 1}`;
+
+  const argsRaw = getNestedValue(call, ["input", "args", "arguments", "parameters", "payload"]);
+  const resultRaw = getNestedValue(call, ["result", "output", "response", "return", "value"]);
+  const idRaw = getNestedValue(call, ["id", "call_id", "callId"]);
+  const key = typeof idRaw === "string" && idRaw.trim().length > 0 ? idRaw : `tool-${idx + 1}`;
+
+  return {
+    key,
+    name,
+    args: argsRaw == null ? undefined : parseJsonIfString(argsRaw),
+    result: resultRaw == null ? undefined : parseJsonIfString(resultRaw),
+    raw: call,
+  };
+}
+
+function extractToolNamesFromResult(result: string | null): string[] {
+  if (typeof result !== "string" || result.length === 0) {
+    return [];
+  }
+
+  const names: string[] = [];
+  const patterns = [
+    /`([A-Za-z0-9_./-]+)\(/g, // `tool_name(...)
+    /-\s*`([A-Za-z0-9_./-]+)`\s*:/g, // - `tool_name`:
+  ];
+
+  for (const regex of patterns) {
+    let match: RegExpExecArray | null = regex.exec(result);
+    while (match != null) {
+      const name = match[1];
+      if (name && name.trim().length > 0) {
+        names.push(name);
+      }
+      match = regex.exec(result);
+    }
+  }
+  return names;
+}
+
 // ---------------------------------------------------------------------------
 // Metadata grid
 // ---------------------------------------------------------------------------
@@ -167,27 +283,59 @@ function DrawerSkeleton() {
 // Tool calls timeline
 // ---------------------------------------------------------------------------
 
-function ToolCallTimeline({ toolCalls }: { toolCalls: unknown[] }) {
+function ToolCallTimeline({
+  toolCalls,
+  resultText,
+}: {
+  toolCalls: unknown[];
+  resultText: string | null;
+}) {
   if (toolCalls.length === 0) {
     return (
       <p className="text-xs text-muted-foreground italic">No tool calls recorded.</p>
     );
   }
 
+  const parsedNames = extractToolNamesFromResult(resultText);
+  const normalized = toolCalls.map((call, idx) => normalizeToolCall(call, idx));
+  const hydrated = normalized.reduce(
+    (state, call, idx) => {
+      const defaultName = `Tool #${idx + 1}`;
+      if (call.name !== defaultName || state.nextNameIndex >= parsedNames.length) {
+        return {
+          calls: [...state.calls, call],
+          nextNameIndex: state.nextNameIndex,
+        };
+      }
+      return {
+        calls: [
+          ...state.calls,
+          {
+            ...call,
+            name: parsedNames[state.nextNameIndex],
+          },
+        ],
+        nextNameIndex: state.nextNameIndex + 1,
+      };
+    },
+    { calls: [] as NormalizedToolCall[], nextNameIndex: 0 },
+  ).calls;
+
   return (
     <ol className="relative border-l border-border/60 ml-2 space-y-3">
-      {toolCalls.map((call, idx) => {
-        const tc = call as Record<string, unknown>;
-        const name = (tc.name ?? tc.tool ?? `Tool #${idx + 1}`) as string;
+      {hydrated.map((tc, idx) => {
         return (
-          <li key={idx} className="ml-4">
+          <li key={`${tc.key}-${idx}`} className="ml-4">
             <div className="absolute -left-1.5 mt-1 size-3 rounded-full border border-background bg-muted-foreground/40" />
-            <p className="text-xs font-semibold">{name}</p>
-            {tc.args != null && (
+            <p className="text-xs font-semibold">{tc.name}</p>
+            {tc.args !== undefined && (
               <CollapsibleJson label="Arguments" data={tc.args} />
             )}
-            {tc.result != null && (
+            {tc.result !== undefined && (
               <CollapsibleJson label="Result" data={tc.result} />
+            )}
+            {tc.args === undefined && tc.result === undefined && (
+              <CollapsibleJson label="Raw Payload" data={tc.raw} />
             )}
           </li>
         );
@@ -268,7 +416,7 @@ export function SessionDetailDrawer({
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
                   Tool Calls ({session.tool_calls.length})
                 </h3>
-                <ToolCallTimeline toolCalls={session.tool_calls} />
+                <ToolCallTimeline toolCalls={session.tool_calls} resultText={session.result} />
               </section>
 
               {/* Result */}

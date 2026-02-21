@@ -57,6 +57,16 @@ describe("SessionDetailDrawer", () => {
   let container: HTMLDivElement;
   let root: Root;
 
+  function renderDrawer() {
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <SessionDetailDrawer butler="switchboard" sessionId="sess-123" onClose={() => {}} />
+        </MemoryRouter>,
+      );
+    });
+  }
+
   beforeEach(() => {
     vi.resetAllMocks();
     container = document.createElement("div");
@@ -106,5 +116,131 @@ describe("SessionDetailDrawer", () => {
     expect(refWarnings).toHaveLength(0);
 
     consoleError.mockRestore();
+  });
+
+  it("shows tool-call arguments for runtime records using input payloads", () => {
+    setQueryState({
+      data: {
+        data: {
+          ...SESSION_DETAIL,
+          tool_calls: [
+            {
+              id: "tc-1",
+              name: "route_to_butler",
+              input: { butler: "general", prompt: "Roll up stats" },
+            },
+          ],
+        },
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    expect(document.body.textContent).toContain("route_to_butler");
+    expect(document.body.textContent).toContain("Arguments");
+  });
+
+  it("normalizes nested mcp tool-call payloads", () => {
+    setQueryState({
+      data: {
+        data: {
+          ...SESSION_DETAIL,
+          tool_calls: [
+            {
+              type: "mcp_tool_call",
+              call: {
+                id: "mcp-1",
+                name: "route_to_butler",
+                arguments: JSON.stringify({ butler: "general", prompt: "Roll up stats" }),
+              },
+              output: { status: "accepted", butler: "general" },
+            },
+          ],
+        },
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    expect(document.body.textContent).toContain("route_to_butler");
+    expect(document.body.textContent).toContain("Arguments");
+    expect(document.body.textContent).toContain("Result");
+  });
+
+  it("shows tool name when payload nests it under tool object", () => {
+    setQueryState({
+      data: {
+        data: {
+          ...SESSION_DETAIL,
+          tool_calls: [
+            {
+              tool: { name: "route_to_butler" },
+              args: { butler: "general", prompt: "Roll up stats" },
+            },
+          ],
+        },
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    expect(document.body.textContent).toContain("route_to_butler");
+    expect(document.body.textContent).not.toContain("Tool #1");
+  });
+
+  it("uses session result summary to label unnamed tool calls", () => {
+    setQueryState({
+      data: {
+        data: {
+          ...SESSION_DETAIL,
+          result: [
+            "MCP tools called:",
+            "- `route_to_butler({\"butler\":\"general\",\"prompt\":\"Roll up stats\"})`",
+            "- `route_to_butler({\"butler\":\"general\",\"prompt\":\"Roll up stats\"})`",
+          ].join("\n"),
+          tool_calls: [
+            { args: { butler: "general", prompt: "Roll up stats" } },
+            { args: { butler: "general", prompt: "Roll up stats" } },
+          ],
+        },
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    expect(document.body.textContent).toContain("route_to_butler");
+    expect(document.body.textContent).not.toContain("Tool #1");
+    expect(document.body.textContent).not.toContain("Tool #2");
+  });
+
+  it("uses colon summary format to label unnamed tool calls", () => {
+    setQueryState({
+      data: {
+        data: {
+          ...SESSION_DETAIL,
+          result: [
+            "MCP tools called:",
+            "- `memory_store_fact`: `subject=...`",
+            "- `notify`: `channel=telegram`",
+          ].join("\n"),
+          tool_calls: [
+            { args: { subject: "Chloe", predicate: "birthday" } },
+            { args: { channel: "telegram", intent: "reply" } },
+          ],
+        },
+        meta: {},
+      },
+    });
+
+    renderDrawer();
+
+    expect(document.body.textContent).toContain("memory_store_fact");
+    expect(document.body.textContent).toContain("notify");
+    expect(document.body.textContent).not.toContain("Tool #1");
+    expect(document.body.textContent).not.toContain("Tool #2");
   });
 });

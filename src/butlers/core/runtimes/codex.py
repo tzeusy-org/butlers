@@ -141,6 +141,7 @@ def _looks_like_tool_call_event(obj: dict[str, Any]) -> bool:
         container
         for container in (
             obj.get("function"),
+            obj.get("tool"),
             obj.get("call"),
             obj.get("tool_call"),
             obj.get("toolCall"),
@@ -360,6 +361,7 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
         container
         for container in (
             obj.get("function"),
+            obj.get("tool"),
             obj.get("call"),
             obj.get("tool_call"),
             obj.get("toolCall"),

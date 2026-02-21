@@ -477,6 +477,24 @@ def test_extract_tool_call_with_nested_call_payload():
     assert tc["input"] == {"butler": "health", "prompt": "Track breakfast"}
 
 
+def test_extract_tool_call_with_nested_tool_payload():
+    """Nested tool payloads should resolve name + arguments."""
+    tc = _extract_tool_call(
+        {
+            "type": "mcp_tool_call",
+            "id": "tool_1",
+            "tool": {
+                "name": "route_to_butler",
+                "arguments": {"butler": "general", "prompt": "Roll up stats"},
+            },
+        }
+    )
+
+    assert tc["id"] == "tool_1"
+    assert tc["name"] == "route_to_butler"
+    assert tc["input"] == {"butler": "general", "prompt": "Roll up stats"}
+
+
 def test_parse_exec_json_ignores_non_json_diagnostics():
     """Non-JSON diagnostics mixed into JSONL output are ignored."""
     lines = "\n".join(
