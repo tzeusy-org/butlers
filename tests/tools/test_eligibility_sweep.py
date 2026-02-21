@@ -72,9 +72,17 @@ def test_butler_toml_has_eligibility_sweep_schedule():
 
     sweep = next(s for s in schedules if s["name"] == "eligibility-sweep")
     assert sweep["cron"] == "*/5 * * * *", f"Unexpected cron: {sweep['cron']}"
-    assert "run_eligibility_sweep" in sweep["prompt"], (
-        f"Prompt does not mention run_eligibility_sweep: {sweep['prompt']}"
-    )
+    if "prompt" in sweep:
+        assert "run_eligibility_sweep" in sweep["prompt"], (
+            f"Prompt does not mention run_eligibility_sweep: {sweep['prompt']}"
+        )
+    else:
+        assert sweep.get("dispatch_mode") == "job", (
+            f"Eligibility sweep should use job dispatch mode: {sweep}"
+        )
+        assert sweep.get("job_name") == "eligibility_sweep", (
+            f"Eligibility sweep should target eligibility_sweep job: {sweep}"
+        )
 
 
 # ---------------------------------------------------------------------------

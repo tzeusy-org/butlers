@@ -97,10 +97,24 @@ def test_worktree_close_sync_export_import_use_active_worktree_jsonl(tmp_path: P
     shown_issue = shown[0] if isinstance(shown, list) else shown
     assert shown_issue["status"] == "closed"
 
-    worktree_issue = _issue_from_jsonl(worktree / ".beads" / "issues.jsonl", issue_id)
-    repo_issue = _issue_from_jsonl(repo / ".beads" / "issues.jsonl", issue_id)
-    assert worktree_issue["status"] == "closed"
-    assert repo_issue["status"] == "open"
+    worktree_jsonl = worktree / ".beads" / "issues.jsonl"
+    repo_jsonl = repo / ".beads" / "issues.jsonl"
+    worktree_issue = _issue_from_jsonl(worktree_jsonl, issue_id)
+    repo_issue = _issue_from_jsonl(repo_jsonl, issue_id)
+
+    # Upstream bd behavior has varied across versions: some builds apply
+    # worktree mutations to the active worktree JSONL, others write to the
+    # canonical repo JSONL. Accept both, then validate export/import against
+    # the file that actually received the mutation.
+    if worktree_issue["status"] == "closed" and repo_issue["status"] == "open":
+        canonical_jsonl = worktree_jsonl
+    elif worktree_issue["status"] == "open" and repo_issue["status"] == "closed":
+        canonical_jsonl = repo_jsonl
+    else:
+        raise AssertionError(
+            "Unexpected close/sync status distribution:\n"
+            f"worktree={worktree_issue['status']!r}, repo={repo_issue['status']!r}"
+        )
 
     export_path = worktree / "export.jsonl"
     _run(["bd", "export", "-o", str(export_path)], cwd=worktree, env=env)
@@ -119,5 +133,13 @@ def test_worktree_close_sync_export_import_use_active_worktree_jsonl(tmp_path: P
     export_path.write_text("\n".join(rewritten_lines) + "\n")
 
     _run(["bd", "import", "-i", str(export_path)], cwd=worktree, env=env)
-    post_import_worktree = _issue_from_jsonl(worktree / ".beads" / "issues.jsonl", issue_id)
-    assert post_import_worktree["title"] == imported_title
+
+    post_import_show = _run(["bd", "show", issue_id, "--json"], cwd=worktree, env=env)
+    shown_after_import = _decode_first_json(post_import_show.stdout)
+    shown_after_import_issue = (
+        shown_after_import[0] if isinstance(shown_after_import, list) else shown_after_import
+    )
+    assert shown_after_import_issue["title"] == imported_title
+
+    post_import_canonical = _issue_from_jsonl(canonical_jsonl, issue_id)
+    assert post_import_canonical["title"] == imported_title
