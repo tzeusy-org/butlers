@@ -803,3 +803,8 @@ make test-qg
 - Range-window queries are supported by GiST indexes on `tstzrange(starts_at, ends_at, '[)')` for both events and instances; source lookups use `(source_id, starts_at)` indexes.
 - Deterministic source linkage/idempotency guarantees are enforced by `UNIQUE (source_id, origin_ref)` on `calendar_events`, `UNIQUE (event_id, origin_instance_ref)` on `calendar_event_instances`, and `UNIQUE (idempotency_key)` on `calendar_action_log`.
 - Keep migration tests aligned: `tests/config/test_migrations.py::CORE_HEAD_REVISION` should track `core_005`, and `tests/config/test_schema_matrix_migrations.py::CORE_TABLES` must include the calendar projection tables.
+
+### Calendar workspace API contract
+- Dashboard API now exposes `/api/calendar/workspace` (range query), `/api/calendar/workspace/meta` (capabilities + connected sources + writable calendars + lane definitions), and `/api/calendar/workspace/sync` (global or source-targeted sync trigger).
+- `POST /api/calendar/workspace/sync` delegates to each target butler MCP `calendar_force_sync`; source-targeted provider rows pass `{"calendar_id": <calendar_id>}`, while internal-source rows call with `{}`.
+- Workspace read payload shape is `ApiResponse[CalendarWorkspaceReadResponse]` with `data.entries` (normalized `UnifiedCalendarEntry[]`), `data.source_freshness`, and `data.lanes`.

@@ -154,6 +154,40 @@ Schedule execution semantics (dashboard-facing):
 - The dashboard MUST treat schedule status fields (`enabled`, `next_run_at`, `last_run_at`) as authoritative regardless of execution mode.
 - Schedule failures for both execution modes surface through `/api/issues` as `scheduled_task_failure:<schedule-name>`.
 
+## Calendar Workspace Contract
+
+- `GET /api/calendar/workspace` -> `ApiResponse<CalendarWorkspaceReadResponse>`
+- `GET /api/calendar/workspace/meta` -> `ApiResponse<CalendarWorkspaceMetaResponse>`
+- `POST /api/calendar/workspace/sync` -> `ApiResponse<CalendarWorkspaceSyncResponse>`
+
+Required query support for `GET /api/calendar/workspace`:
+
+- `view` (`user|butler`) — required
+- `start` (ISO timestamp) — required
+- `end` (ISO timestamp) — required
+- `timezone` (IANA timezone, optional display conversion)
+- repeated `butlers` filter
+- repeated `sources` (`calendar_sources.source_key`) filter
+
+Read response requirements:
+
+- `data.entries` is a normalized `UnifiedCalendarEntry[]` list for direct calendar rendering.
+- `data.source_freshness` includes per-source sync freshness metadata (`sync_state`, `staleness_ms`, timestamps, last error).
+- `data.lanes` includes butler-lane metadata (`lane_id`, `butler_name`, `title`, `source_keys`).
+
+Meta response requirements:
+
+- `capabilities` contains view/filter/sync capability flags.
+- `connected_sources` lists source registry rows with freshness and writeability metadata.
+- `writable_calendars` lists user-lane writable provider calendars.
+- `lane_definitions` lists butler-lane descriptors for workspace layout.
+- `default_timezone` is required.
+
+Sync response requirements:
+
+- Supports global refresh (`{"all": true}`) and source-targeted refresh (`source_key` or `source_id`).
+- Returns per-target trigger outcomes in `data.targets`.
+
 ## Butler State Contract
 
 - `GET /api/butlers/{name}/state` -> `ApiResponse<StateEntry[]>`
