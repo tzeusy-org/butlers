@@ -468,28 +468,27 @@ async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, A
     """
     result = await _call_tool_with_router_client(endpoint_url, tool_name, args)
 
-    if getattr(result, "is_error", False):
+    # CallToolResult uses 'isError' (not 'is_error') per MCP spec.
+    if getattr(result, "isError", False):
         error_text = _extract_mcp_error_text(result)
         if not error_text:
             error_text = f"Tool '{tool_name}' returned an error."
         raise RuntimeError(error_text)
 
-    # FastMCP 2.x CallToolResult carries structured data directly.
-    if hasattr(result, "data"):
-        return result.data
-
-    # Backward-compat fallback for list-of-block results.
-    if result and hasattr(result, "__iter__"):
-        for block in result:
-            text = getattr(block, "text", None)
-            if text is None:
-                continue
-            if isinstance(text, str):
-                try:
-                    return json.loads(text)
-                except json.JSONDecodeError:
-                    return text
-            return text
+    # Extract text from CallToolResult.content blocks.
+    # Note: iterating over CallToolResult itself yields Pydantic field tuples,
+    # NOT content blocks — we must access result.content explicitly.
+    content = getattr(result, "content", None) or []
+    for block in content:
+        text = getattr(block, "text", None)
+        if text is None:
+            continue
+        if isinstance(text, str):
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return text
+        return text
 
     return result
 

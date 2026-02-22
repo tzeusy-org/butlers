@@ -262,3 +262,49 @@ class TestRouteToButlerAcceptedStatusPassthrough:
 
         assert result["status"] == "ok"
         assert result["butler"] == "general"
+
+    async def test_inner_error_status_propagated(self, tmp_path: Path) -> None:
+        """When target butler's route.execute returns {status: 'error'}, propagate it."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        mock_route = AsyncMock(
+            return_value={
+                "result": {
+                    "schema_version": "route_response.v1",
+                    "status": "error",
+                    "error": {
+                        "class": "internal_error",
+                        "message": "route.execute: failed to persist to "
+                        "route_inbox: connection lost",
+                    },
+                }
+            }
+        )
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        result = await route_to_butler_fn(butler="relationship", prompt="test")
+
+        assert result["status"] == "error"
+        assert result["butler"] == "relationship"
+        assert "route_inbox" in result["error"]
+
+    async def test_inner_error_status_with_string_error(self, tmp_path: Path) -> None:
+        """When error detail is a plain string, it is still propagated."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        mock_route = AsyncMock(
+            return_value={"result": {"status": "error", "error": "something went wrong"}}
+        )
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        result = await route_to_butler_fn(butler="health", prompt="test")
+
+        assert result["status"] == "error"
+        assert result["butler"] == "health"
+        assert "something went wrong" in result["error"]

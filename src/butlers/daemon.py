@@ -2271,6 +2271,12 @@ class ButlerDaemon:
                 try:
                     inbox_id = await route_inbox_insert(pool, route_envelope=route_payload)
                 except Exception as exc:
+                    logger.warning(
+                        "route.execute: route_inbox_insert failed: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                        exc_info=True,
+                    )
                     return _route_error_response(
                         context_payload=route_context,
                         error_class="internal_error",
@@ -2365,11 +2371,11 @@ class ButlerDaemon:
                     ) as _process_span:
                         _process_span.set_attribute("butler.name", butler_name)
                         _process_span.set_attribute("request_id", _request_id)
-                        await route_inbox_mark_processing(_pool, _inbox_id)
-                        # Decrement after the DB mark so the gauge stays accurate if
-                        # mark_processing fails (row would still be in accepted state).
-                        _route_metrics.route_queue_depth_dec()
                         try:
+                            await route_inbox_mark_processing(_pool, _inbox_id)
+                            # Decrement after the DB mark so the gauge stays accurate if
+                            # mark_processing fails (row would still be in accepted state).
+                            _route_metrics.route_queue_depth_dec()
                             result = await _spawner.trigger(
                                 prompt=_prompt,
                                 context=_context,
@@ -2913,11 +2919,29 @@ class ButlerDaemon:
                             "butler": butler,
                             "error": str(result["error"]),
                         }
-                    # Pass through 'accepted' status from the target butler so that
-                    # telemetry can distinguish async-accepted routes from sync-ok routes.
+                    # Pass through 'accepted' or 'error' status from the target butler so
+                    # that telemetry and the runtime can see actual outcomes.
                     inner = result.get("result") if isinstance(result, dict) else None
-                    if isinstance(inner, dict) and inner.get("status") == "accepted":
-                        return {"status": "accepted", "butler": butler}
+                    if isinstance(inner, dict):
+                        if inner.get("status") == "accepted":
+                            return {"status": "accepted", "butler": butler}
+                        if inner.get("status") == "error":
+                            error_detail = inner.get("error", {})
+                            error_msg = (
+                                error_detail.get("message", str(error_detail))
+                                if isinstance(error_detail, dict)
+                                else str(error_detail)
+                            )
+                            logger.warning(
+                                "route_to_butler: target %s returned error: %s",
+                                butler,
+                                error_msg,
+                            )
+                            return {
+                                "status": "error",
+                                "butler": butler,
+                                "error": error_msg,
+                            }
                     return {"status": "ok", "butler": butler}
                 except Exception as exc:
                     logger.warning(
