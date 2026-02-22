@@ -71,13 +71,39 @@ def upgrade() -> None:
             provider TEXT NOT NULL,
             account_id TEXT NOT NULL,
             external_contact_id TEXT NOT NULL,
-            local_contact_id UUID REFERENCES contacts(id) ON DELETE SET NULL,
+            local_contact_id UUID,
             source_etag TEXT,
             first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             deleted_at TIMESTAMPTZ,
             PRIMARY KEY (provider, account_id, external_contact_id)
         )
+    """)
+
+    # Some schemas (e.g. general/health) do not own a local contacts table.
+    # Add the FK only when contacts exists in the current schema so this
+    # migration can run safely everywhere contacts module is enabled.
+    op.execute("""
+        DO $$
+        BEGIN
+            IF to_regclass(format('%I.contacts', current_schema())) IS NOT NULL
+               AND NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'contacts_source_links_local_contact_id_fkey'
+                      AND conrelid = to_regclass(
+                            format('%I.contacts_source_links', current_schema())
+                      )
+               )
+            THEN
+                ALTER TABLE contacts_source_links
+                    ADD CONSTRAINT contacts_source_links_local_contact_id_fkey
+                    FOREIGN KEY (local_contact_id)
+                    REFERENCES contacts(id)
+                    ON DELETE SET NULL;
+            END IF;
+        END
+        $$;
     """)
 
     # Index on local_contact_id for reverse-lookup (local → sources).

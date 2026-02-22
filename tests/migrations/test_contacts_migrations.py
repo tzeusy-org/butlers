@@ -145,9 +145,11 @@ class TestUpgradeSQL:
         assert "PRIMARY KEY (provider, account_id, external_contact_id)" in source
 
     def test_source_links_fk_to_contacts(self) -> None:
-        """contacts_source_links has FK to contacts(id) ON DELETE SET NULL."""
+        """contacts_source_links FK to contacts(id) is applied conditionally."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
+        assert "to_regclass(format('%I.contacts', current_schema()))" in source
+        assert "ADD CONSTRAINT contacts_source_links_local_contact_id_fkey" in source
         assert "REFERENCES contacts(id)" in source
         assert "ON DELETE SET NULL" in source
 

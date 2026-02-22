@@ -88,6 +88,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "routing_log",
     },
     "approvals": {"approval_events", "approval_rules", "pending_actions"},
+    "contacts": {"contacts_source_accounts", "contacts_source_links", "contacts_sync_state"},
     "mailbox": {"mailbox"},
     "memory": {"episodes", "facts", "rules", "memory_links"},
 }

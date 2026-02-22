@@ -759,3 +759,8 @@ make test-qg
 - `upsert_source_link` accepts `local_id: uuid.UUID | None`; returns early without creating a link when `local_id is None` (tombstone with no known local contact).
 - Activity feed event types: `contact_synced`, `contact_sync_updated`, `contact_sync_conflict`, `contact_sync_deleted_source`.
 - Tests use `pytestmark = pytest.mark.integration` with `provisioned_postgres_pool` fixture and create all CRM tables inline in the `crm_pool` fixture.
+
+### Contacts migration cross-schema FK contract
+- `src/butlers/modules/contacts/migrations/001_contacts_sync_tables.py` must create `contacts_source_links.local_contact_id` without an inline FK and add `contacts_source_links_local_contact_id_fkey` only when `contacts` exists in the current schema (`to_regclass(format('%I.contacts', current_schema()))`).
+- This guard keeps module migration `contacts_001` safe for schemas that enable contacts but do not own CRM `contacts` (for example `general` and `health`).
+- `tests/config/test_schema_matrix_migrations.py` `CHAIN_TABLES` must include `contacts` module tables so one-db schema-matrix runs exercise contacts migrations across all enabled schemas.
