@@ -768,6 +768,14 @@ def _parse_google_contact(payload: dict[str, Any]) -> CanonicalContact | None:
     memberships = payload.get("memberships")
     group_memberships = _parse_group_memberships(memberships)
 
+    addresses = _parse_addresses(payload.get("addresses"))
+    organizations = _parse_organizations(payload.get("organizations"))
+    birthdays, anniversaries = _parse_birthdays_and_events(
+        payload.get("birthdays"), payload.get("events")
+    )
+    urls = _parse_urls(payload.get("urls"))
+    photos = _parse_photos(payload.get("photos"))
+
     return CanonicalContact(
         external_id=external_id,
         etag=_as_non_empty_string(payload.get("etag")),
@@ -778,6 +786,12 @@ def _parse_google_contact(payload: dict[str, Any]) -> CanonicalContact | None:
         nickname=nickname,
         emails=emails,
         phones=phones,
+        addresses=addresses,
+        organizations=organizations,
+        birthdays=birthdays,
+        anniversaries=anniversaries,
+        urls=urls,
+        photos=photos,
         group_memberships=group_memberships,
         deleted=deleted,
         raw=payload,
@@ -858,6 +872,126 @@ def _parse_group_memberships(raw: Any) -> list[str]:
         if resource is not None:
             groups.append(resource)
     return groups
+
+
+def _parse_addresses(raw: Any) -> list[ContactAddress]:
+    if not isinstance(raw, list):
+        return []
+    parsed: list[ContactAddress] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("metadata")
+        primary = bool(metadata.get("primary")) if isinstance(metadata, dict) else False
+        parsed.append(
+            ContactAddress(
+                street=_as_non_empty_string(item.get("streetAddress")),
+                city=_as_non_empty_string(item.get("city")),
+                region=_as_non_empty_string(item.get("region")),
+                postal_code=_as_non_empty_string(item.get("postalCode")),
+                country=_as_non_empty_string(item.get("country")),
+                label=_as_non_empty_string(item.get("formattedType")),
+                primary=primary,
+            )
+        )
+    return parsed
+
+
+def _parse_organizations(raw: Any) -> list[ContactOrganization]:
+    if not isinstance(raw, list):
+        return []
+    parsed: list[ContactOrganization] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        company = _as_non_empty_string(item.get("name"))
+        title = _as_non_empty_string(item.get("title"))
+        department = _as_non_empty_string(item.get("department"))
+        if company is None and title is None and department is None:
+            continue
+        parsed.append(
+            ContactOrganization(
+                company=company,
+                title=title,
+                department=department,
+            )
+        )
+    return parsed
+
+
+def _parse_date_entry(item: dict[str, Any], label: str | None) -> ContactDate | None:
+    date_obj = item.get("date")
+    if not isinstance(date_obj, dict):
+        return None
+    year_raw = date_obj.get("year")
+    month_raw = date_obj.get("month")
+    day_raw = date_obj.get("day")
+    year = int(year_raw) if isinstance(year_raw, int) else None
+    month = int(month_raw) if isinstance(month_raw, int) else None
+    day = int(day_raw) if isinstance(day_raw, int) else None
+    if year is None and month is None and day is None:
+        return None
+    return ContactDate(year=year, month=month, day=day, label=label)
+
+
+def _parse_birthdays_and_events(
+    birthdays_raw: Any, events_raw: Any
+) -> tuple[list[ContactDate], list[ContactDate]]:
+    birthdays: list[ContactDate] = []
+    if isinstance(birthdays_raw, list):
+        for item in birthdays_raw:
+            if not isinstance(item, dict):
+                continue
+            entry = _parse_date_entry(item, label="birthday")
+            if entry is not None:
+                birthdays.append(entry)
+
+    anniversaries: list[ContactDate] = []
+    if isinstance(events_raw, list):
+        for item in events_raw:
+            if not isinstance(item, dict):
+                continue
+            label = _as_non_empty_string(item.get("formattedType"))
+            entry = _parse_date_entry(item, label=label)
+            if entry is not None:
+                anniversaries.append(entry)
+
+    return birthdays, anniversaries
+
+
+def _parse_urls(raw: Any) -> list[ContactUrl]:
+    if not isinstance(raw, list):
+        return []
+    parsed: list[ContactUrl] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        value = _as_non_empty_string(item.get("value"))
+        if value is None:
+            continue
+        parsed.append(
+            ContactUrl(
+                value=value,
+                label=_as_non_empty_string(item.get("formattedType")),
+            )
+        )
+    return parsed
+
+
+def _parse_photos(raw: Any) -> list[ContactPhoto]:
+    if not isinstance(raw, list):
+        return []
+    parsed: list[ContactPhoto] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        url = _as_non_empty_string(item.get("url"))
+        if url is None:
+            continue
+        metadata = item.get("metadata")
+        primary = bool(metadata.get("primary")) if isinstance(metadata, dict) else False
+        parsed.append(ContactPhoto(url=url, primary=primary))
+    return parsed
 
 
 class ContactsSyncStateRepository(Protocol):
