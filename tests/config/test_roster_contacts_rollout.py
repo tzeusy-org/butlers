@@ -50,7 +50,7 @@ def test_contacts_excluded_butlers_documented_as_not_enabled() -> None:
 
 def test_contacts_rollout_docs_state_provider_and_required_secrets() -> None:
     """Docs should capture rollout assumptions and secret requirements."""
-    guidance = (REPO_ROOT / "docs/modules/contacts_draft.md").read_text().lower()
+    guidance = (REPO_ROOT / "docs/modules/contacts.md").read_text().lower()
     required_fragments = (
         'provider = "google"',
         "roster/general/butler.toml",
