@@ -275,6 +275,7 @@ class TestHelpers:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestContactBackfillResolver:
     async def test_resolve_returns_new_when_no_match(self, crm_pool) -> None:
         resolver = ContactBackfillResolver(crm_pool, provider="google", account_id="acc1")
@@ -405,6 +406,7 @@ class TestContactBackfillResolver:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestContactBackfillWriter:
     async def test_create_contact_basic_fields(self, crm_pool) -> None:
         writer = ContactBackfillWriter(crm_pool, provider="google", account_id="acc1")
@@ -676,6 +678,7 @@ class TestContactBackfillWriter:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestContactBackfillEngine:
     async def test_new_contact_created_with_all_tables(self, crm_pool) -> None:
         """New sync contact creates CRM records in all relevant tables."""
