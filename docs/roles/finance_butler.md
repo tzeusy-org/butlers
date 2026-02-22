@@ -23,10 +23,10 @@ Inherits unchanged:
 Overrides: none.
 
 Additions:
-- This role defines a dedicated finance-domain persistence schema (section 6) in addition to base core tables.
-- This role defines finance-specific MCP tools (section 5) for transactions, bills, subscriptions, and spend summaries.
-- This role defines explicit Switchboard classification signals for finance routing (section 8).
-- This role requires calendar integration for due-date and renewal reminder workflows (section 9).
+- This role defines a dedicated finance-domain persistence schema (section 5) in addition to base core tables.
+- This role defines finance-specific MCP tools (section 4) for transactions, bills, subscriptions, and spend summaries.
+- This role defines explicit Switchboard classification signals for finance routing (section 7).
+- This role requires calendar integration for due-date and renewal reminder workflows (section 8).
 
 ## 3. Scope and Boundaries
 ### In scope
@@ -51,7 +51,7 @@ All tools below are additive to base core tools.
 
 ### 4.1 `record_transaction`
 Signature:
-`record_transaction(posted_at, merchant, amount, currency, category?, payment_method?, account_id?, receipt_url?, source_message_id?, metadata?) -> TransactionRecord`
+`record_transaction(posted_at, merchant, amount, currency, category?, description?, payment_method?, account_id?, receipt_url?, external_ref?, source_message_id?, metadata?) -> TransactionRecord`
 
 Behavior:
 - Creates a normalized transaction row in `finance.transactions`.
@@ -75,7 +75,7 @@ Return type:
 
 ### 4.3 `track_bill`
 Signature:
-`track_bill(payee, amount, currency, due_date, frequency?, status?, payment_method?, account_id?, source_message_id?, metadata?) -> BillRecord`
+`track_bill(payee, amount, currency, due_date, frequency?, status?, payment_method?, account_id?, statement_period_start?, statement_period_end?, paid_at?, source_message_id?, metadata?) -> BillRecord`
 
 Behavior:
 - Creates or updates bill obligations in `finance.bills`.
@@ -126,6 +126,7 @@ Return type:
 - `id: uuid`
 - `posted_at: timestamptz`
 - `merchant: text`
+- `description: text | null`
 - `amount: numeric(14,2)`
 - `currency: char(3)`
 - `direction: text` (`debit` | `credit`)
@@ -133,6 +134,7 @@ Return type:
 - `payment_method: text | null`
 - `account_id: uuid | null`
 - `receipt_url: text | null`
+- `external_ref: text | null`
 - `source_message_id: text | null`
 - `metadata: jsonb`
 - `created_at: timestamptz`
@@ -150,6 +152,9 @@ Return type:
 - `payment_method: text | null`
 - `account_id: uuid | null`
 - `source_message_id: text | null`
+- `statement_period_start: date | null`
+- `statement_period_end: date | null`
+- `paid_at: timestamptz | null`
 - `metadata: jsonb`
 - `created_at: timestamptz`
 - `updated_at: timestamptz`
