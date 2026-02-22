@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -608,7 +610,7 @@ class ContactBackfillWriter:
 
     async def upsert_source_link(
         self,
-        local_id: uuid.UUID,
+        local_id: uuid.UUID | None,
         contact: CanonicalContact,
     ) -> None:
         """Create or update the contacts_source_links provenance row."""
@@ -624,6 +626,10 @@ class ContactBackfillWriter:
                 self._account_id,
                 contact.external_id,
             )
+            return
+
+        if local_id is None:
+            # No local contact to link; skip creating the source link.
             return
 
         await self._pool.execute(
@@ -676,8 +682,6 @@ class ContactBackfillWriter:
             _deep_set(metadata, _provenance_key(provider, "avatar_url"), primary_photo.url)
 
         # Record the sync timestamp
-        from datetime import UTC, datetime
-
         _deep_set(
             metadata,
             f"{_PROVENANCE_NS}.{provider}.last_synced_at",
@@ -794,10 +798,7 @@ class ContactBackfillEngine:
         local_id: uuid.UUID | None,
     ) -> None:
         """Handle a source-deleted contact (tombstone)."""
-        await self._writer.upsert_source_link(
-            local_id or uuid.UUID("00000000-0000-0000-0000-000000000000"),
-            contact,
-        )
+        await self._writer.upsert_source_link(local_id, contact)
         if local_id is not None:
             await self._log_activity(
                 local_id,
@@ -915,7 +916,5 @@ def _normalize_group_label(group_resource: str) -> str:
         return ""
     segment = group_resource.rstrip("/").rsplit("/", 1)[-1]
     # Convert camelCase or underscore to spaced title case
-    import re
-
     spaced = re.sub(r"([A-Z])", r" \1", segment).replace("_", " ").strip()
     return spaced.title() if spaced else segment
