@@ -142,6 +142,10 @@ git push                # Push to remote
 
 ## Notes to self
 
+### Calendar projection linkage schema contract
+- Core `scheduled_tasks` now includes calendar-linkage columns (`timezone`, `start_at`, `end_at`, `until_at`, `display_title`, `calendar_event_id`) with bounds checks and a partial unique index on `calendar_event_id`.
+- Relationship `reminders` now includes projection fields (`timezone`, `until_at`, `updated_at`, `calendar_event_id`), and reminder writes/dismissals must preserve `updated_at` for deterministic projector upserts.
+
 ### Required-schema module startup gate
 - `ButlerDaemon` now filters `load_all()` results via `_select_startup_modules`: if a module defines required `config_schema` fields and its `[modules.<name>]` section is absent, startup skips that module (info log) instead of config-failing on missing required fields.
 - This keeps intentionally omitted modules (for example `contacts` on `messenger`/`switchboard`) out of migrations/startup/tool registration and prevents provider-required warning noise.
