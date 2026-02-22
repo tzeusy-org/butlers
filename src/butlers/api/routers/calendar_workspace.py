@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -16,6 +17,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
 from butlers.api.models import ApiResponse
+from butlers.api.models.calendar import (
+    CalendarWorkspaceButlerMutationRequest,
+    CalendarWorkspaceUserMutationRequest,
+)
 from butlers.api.models.calendar_workspace import (
     CalendarWorkspaceLaneDefinition,
     CalendarWorkspaceMetaResponse,
@@ -27,8 +32,10 @@ from butlers.api.models.calendar_workspace import (
     CalendarWorkspaceWritableCalendar,
     UnifiedCalendarEntry,
 )
+from butlers.api.routers.audit import log_audit_entry
 
 router = APIRouter(prefix="/api/calendar/workspace", tags=["calendar", "workspace"])
+logger = logging.getLogger(__name__)
 
 _WORKSPACE_STALE_THRESHOLD = timedelta(minutes=10)
 _WORKSPACE_MAX_RANGE = timedelta(days=90)
@@ -698,3 +705,199 @@ async def sync_workspace(
         triggered_count=sum(1 for target in targets if target.status != "failed"),
     )
     return ApiResponse[CalendarWorkspaceSyncResponse](data=data)
+
+
+async def _call_mcp_tool(
+    mgr: MCPClientManager,
+    butler_name: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    """Call a butler MCP tool and coerce response content into a dict payload."""
+    try:
+        client = await mgr.get_client(butler_name)
+        result = await client.call_tool(tool_name, arguments)
+    except ButlerUnreachableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Butler '{butler_name}' is unreachable: {exc}",
+        ) from exc
+    except Exception as exc:  # pragma: no cover - defensive transport fallback
+        logger.exception(
+            "Unexpected MCP call failure for butler '%s' tool '%s'",
+            butler_name,
+            tool_name,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"MCP call to '{butler_name}' failed: {exc}",
+        ) from exc
+
+    parsed = _parse_mcp_payload(_extract_mcp_result_text(result))
+    if isinstance(parsed, dict):
+        return parsed
+    return {"result": parsed if parsed is not None else str(result)}
+
+
+def _projection_meta(
+    projection_freshness: dict[str, Any] | None,
+) -> tuple[str | None, int | None]:
+    if not isinstance(projection_freshness, dict):
+        return None, None
+    projection_version = projection_freshness.get("last_refreshed_at")
+    staleness_ms = projection_freshness.get("staleness_ms")
+    return (
+        str(projection_version) if isinstance(projection_version, str) else None,
+        int(staleness_ms) if isinstance(staleness_ms, int) else None,
+    )
+
+
+async def _projection_freshness_after_mutation(
+    *,
+    mgr: MCPClientManager,
+    butler_name: str,
+    mutation_result: dict[str, Any],
+    calendar_id: str | None = None,
+) -> dict[str, Any] | None:
+    existing = mutation_result.get("projection_freshness")
+    if isinstance(existing, dict):
+        return existing
+
+    status_args: dict[str, Any] = {}
+    if isinstance(calendar_id, str) and calendar_id.strip():
+        status_args["calendar_id"] = calendar_id.strip()
+
+    try:
+        status = await _call_mcp_tool(mgr, butler_name, "calendar_sync_status", status_args)
+    except HTTPException as exc:
+        logger.warning(
+            "Unable to fetch projection freshness for butler '%s': %s",
+            butler_name,
+            exc.detail,
+            exc_info=True,
+        )
+        return None
+    freshness = status.get("projection_freshness")
+    return freshness if isinstance(freshness, dict) else None
+
+
+@router.post("/user-events", response_model=ApiResponse[dict[str, Any]])
+async def mutate_user_event(
+    body: CalendarWorkspaceUserMutationRequest,
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict[str, Any]]:
+    """Create/update/delete user-view provider events through calendar MCP tools."""
+    tool_name = {
+        "create": "calendar_create_event",
+        "update": "calendar_update_event",
+        "delete": "calendar_delete_event",
+    }[body.action]
+
+    arguments = dict(body.payload)
+    if body.request_id is not None:
+        arguments["request_id"] = body.request_id
+
+    summary = {
+        "action": body.action,
+        "tool_name": tool_name,
+        "request_id": body.request_id,
+    }
+    try:
+        mutation_result = await _call_mcp_tool(mgr, body.butler_name, tool_name, arguments)
+        freshness = await _projection_freshness_after_mutation(
+            mgr=mgr,
+            butler_name=body.butler_name,
+            mutation_result=mutation_result,
+            calendar_id=arguments.get("calendar_id")
+            if isinstance(arguments.get("calendar_id"), str)
+            else None,
+        )
+        projection_version, staleness_ms = _projection_meta(freshness)
+        response_payload = {
+            "action": body.action,
+            "tool_name": tool_name,
+            "request_id": body.request_id,
+            "result": mutation_result,
+            "projection_version": projection_version,
+            "staleness_ms": staleness_ms,
+            "projection_freshness": freshness,
+        }
+        await log_audit_entry(
+            db,
+            body.butler_name,
+            "calendar.workspace.user_events.mutate",
+            summary,
+        )
+        return ApiResponse[dict[str, Any]](data=response_payload)
+    except HTTPException:
+        await log_audit_entry(
+            db,
+            body.butler_name,
+            "calendar.workspace.user_events.mutate",
+            summary,
+            result="error",
+            error="MCP call failed",
+        )
+        raise
+
+
+@router.post("/butler-events", response_model=ApiResponse[dict[str, Any]])
+async def mutate_butler_event(
+    body: CalendarWorkspaceButlerMutationRequest,
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict[str, Any]]:
+    """Create/update/delete/toggle butler-view events through calendar MCP tools."""
+    tool_name = {
+        "create": "calendar_create_butler_event",
+        "update": "calendar_update_butler_event",
+        "delete": "calendar_delete_butler_event",
+        "toggle": "calendar_toggle_butler_event",
+    }[body.action]
+
+    arguments = dict(body.payload)
+    if body.action == "create":
+        arguments.setdefault("butler_name", body.butler_name)
+    if body.request_id is not None:
+        arguments["request_id"] = body.request_id
+
+    summary = {
+        "action": body.action,
+        "tool_name": tool_name,
+        "request_id": body.request_id,
+    }
+    try:
+        mutation_result = await _call_mcp_tool(mgr, body.butler_name, tool_name, arguments)
+        freshness = await _projection_freshness_after_mutation(
+            mgr=mgr,
+            butler_name=body.butler_name,
+            mutation_result=mutation_result,
+        )
+        projection_version, staleness_ms = _projection_meta(freshness)
+        response_payload = {
+            "action": body.action,
+            "tool_name": tool_name,
+            "request_id": body.request_id,
+            "result": mutation_result,
+            "projection_version": projection_version,
+            "staleness_ms": staleness_ms,
+            "projection_freshness": freshness,
+        }
+        await log_audit_entry(
+            db,
+            body.butler_name,
+            "calendar.workspace.butler_events.mutate",
+            summary,
+        )
+        return ApiResponse[dict[str, Any]](data=response_payload)
+    except HTTPException:
+        await log_audit_entry(
+            db,
+            body.butler_name,
+            "calendar.workspace.butler_events.mutate",
+            summary,
+            result="error",
+            error="MCP call failed",
+        )
+        raise

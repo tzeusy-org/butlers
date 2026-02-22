@@ -24,6 +24,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from butlers.core.scheduler import schedule_create as _schedule_create
+from butlers.core.scheduler import schedule_delete as _schedule_delete
+from butlers.core.scheduler import schedule_update as _schedule_update
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
 from butlers.modules.base import Module
@@ -76,6 +79,16 @@ SOURCE_KIND_INTERNAL_REMINDERS = "internal_reminders"
 PROJECTION_STATUS_FRESH = "fresh"
 PROJECTION_STATUS_STALE = "stale"
 PROJECTION_STATUS_FAILED = "failed"
+MUTATION_STATUS_PENDING = "pending"
+MUTATION_STATUS_APPLIED = "applied"
+MUTATION_STATUS_FAILED = "failed"
+MUTATION_STATUS_NOOP = "noop"
+BUTLER_EVENT_SOURCE_SCHEDULED = "scheduled_task"
+BUTLER_EVENT_SOURCE_REMINDER = "butler_reminder"
+MUTATION_HIGH_IMPACT_ACTIONS = {
+    "workspace_butler_delete",
+    "workspace_butler_toggle",
+}
 
 CalendarConflictPolicy = Literal["suggest", "fail", "allow_overlap"]
 
@@ -2372,6 +2385,7 @@ class CalendarModule(Module):
             color_id: str | None = None,
             calendar_id: str | None = None,
             conflict_policy: CalendarConflictPolicy | None = None,
+            request_id: str | None = None,
         ) -> dict[str, Any]:
             """Create an event and mark it as Butler-generated.
 
@@ -2383,6 +2397,36 @@ class CalendarModule(Module):
             provider = module._require_provider()
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
             resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
+            normalized_request_id = module._normalize_request_id(request_id)
+            action_payload = {
+                "title": title,
+                "start_at": start_at,
+                "end_at": end_at,
+                "all_day": all_day,
+                "timezone": timezone,
+                "description": description,
+                "location": location,
+                "attendees": attendees or [],
+                "recurrence_rule": recurrence_rule,
+                "status": status,
+                "visibility": visibility,
+                "notes": notes,
+                "color_id": color_id,
+                "calendar_id": resolved_calendar_id,
+                "conflict_policy": resolved_conflict_policy,
+            }
+            idempotency_key, replay = await module._prepare_workspace_mutation(
+                action_type="workspace_user_create",
+                request_id=normalized_request_id,
+                action_payload=action_payload,
+            )
+            if replay is not None:
+                return replay
+            source_id = await module._resolve_action_source_id(
+                source_kind=SOURCE_KIND_PROVIDER,
+                lane="user",
+                calendar_id=resolved_calendar_id,
+            )
 
             try:
                 create_payload = CalendarEventCreate(
@@ -2417,13 +2461,25 @@ class CalendarModule(Module):
                     exc,
                     exc_info=True,
                 )
-                return _build_structured_error(
+                error_payload = _build_structured_error(
                     exc,
                     provider=provider.name,
                     calendar_id=resolved_calendar_id,
                 )
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_create",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result=error_payload,
+                    source_id=source_id,
+                    origin_ref=None,
+                    error=error_payload.get("error"),
+                )
+                return error_payload
             if conflict_result["status"] == "conflict":
-                return {
+                conflict_response = {
                     "status": "conflict",
                     "policy": resolved_conflict_policy,
                     "provider": provider.name,
@@ -2431,6 +2487,17 @@ class CalendarModule(Module):
                     "conflicts": conflict_result["conflicts"],
                     "suggested_slots": conflict_result["suggested_slots"],
                 }
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_create",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_NOOP,
+                    action_payload=action_payload,
+                    action_result=conflict_response,
+                    source_id=source_id,
+                    origin_ref=None,
+                )
+                return conflict_response
 
             # Gate overlap override with conditional approval when configured.
             if conflict_result["status"] == "allow_overlap":
@@ -2459,6 +2526,16 @@ class CalendarModule(Module):
                     resolved_calendar_id=resolved_calendar_id,
                 )
                 if approval_result is not None:
+                    await module._finalize_workspace_mutation(
+                        idempotency_key=idempotency_key,
+                        action_type="workspace_user_create",
+                        request_id=normalized_request_id,
+                        action_status=MUTATION_STATUS_PENDING,
+                        action_payload=action_payload,
+                        action_result=approval_result,
+                        source_id=source_id,
+                        origin_ref=None,
+                    )
                     return approval_result
 
             try:
@@ -2473,11 +2550,23 @@ class CalendarModule(Module):
                     exc,
                     exc_info=True,
                 )
-                return _build_structured_error(
+                error_payload = _build_structured_error(
                     exc,
                     provider=provider.name,
                     calendar_id=resolved_calendar_id,
                 )
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_create",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result=error_payload,
+                    source_id=source_id,
+                    origin_ref=None,
+                    error=error_payload.get("error"),
+                )
+                return error_payload
             result: dict[str, Any] = {
                 "status": "created",
                 "provider": provider.name,
@@ -2488,6 +2577,19 @@ class CalendarModule(Module):
                 result["policy"] = resolved_conflict_policy
                 result["conflicts"] = conflict_result["conflicts"]
                 result["suggested_slots"] = []
+            result["projection_freshness"] = await module._refresh_user_projection(
+                resolved_calendar_id
+            )
+            await module._finalize_workspace_mutation(
+                idempotency_key=idempotency_key,
+                action_type="workspace_user_create",
+                request_id=normalized_request_id,
+                action_status=MUTATION_STATUS_APPLIED,
+                action_payload=action_payload,
+                action_result=result,
+                source_id=source_id,
+                origin_ref=event.event_id,
+            )
             return result
 
         @mcp.tool()
@@ -2505,6 +2607,7 @@ class CalendarModule(Module):
             color_id: str | None = None,
             calendar_id: str | None = None,
             conflict_policy: CalendarConflictPolicy | None = None,
+            request_id: str | None = None,
         ) -> dict[str, Any]:
             """Update an event and preserve Butler tags for Butler-generated entries.
 
@@ -2519,6 +2622,34 @@ class CalendarModule(Module):
             provider = module._require_provider()
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
             resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
+            normalized_request_id = module._normalize_request_id(request_id)
+            action_payload = {
+                "event_id": normalized_event_id,
+                "title": title,
+                "start_at": start_at,
+                "end_at": end_at,
+                "timezone": timezone,
+                "description": description,
+                "location": location,
+                "attendees": attendees,
+                "recurrence_rule": recurrence_rule,
+                "recurrence_scope": recurrence_scope,
+                "color_id": color_id,
+                "calendar_id": resolved_calendar_id,
+                "conflict_policy": resolved_conflict_policy,
+            }
+            idempotency_key, replay = await module._prepare_workspace_mutation(
+                action_type="workspace_user_update",
+                request_id=normalized_request_id,
+                action_payload=action_payload,
+            )
+            if replay is not None:
+                return replay
+            source_id = await module._resolve_action_source_id(
+                source_kind=SOURCE_KIND_PROVIDER,
+                lane="user",
+                calendar_id=resolved_calendar_id,
+            )
             try:
                 existing_event = await provider.get_event(
                     calendar_id=resolved_calendar_id,
@@ -2533,13 +2664,41 @@ class CalendarModule(Module):
                     exc,
                     exc_info=True,
                 )
-                return _build_structured_error(
+                error_payload = _build_structured_error(
                     exc,
                     provider=provider.name,
                     calendar_id=resolved_calendar_id,
                 )
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_update",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result=error_payload,
+                    source_id=source_id,
+                    origin_ref=normalized_event_id,
+                    error=error_payload.get("error"),
+                )
+                return error_payload
             if existing_event is None:
-                raise ValueError(f"event_id '{normalized_event_id}' was not found")
+                not_found_result = {
+                    "status": "not_found",
+                    "provider": provider.name,
+                    "calendar_id": resolved_calendar_id,
+                    "event_id": normalized_event_id,
+                }
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_update",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_NOOP,
+                    action_payload=action_payload,
+                    action_result=not_found_result,
+                    source_id=source_id,
+                    origin_ref=normalized_event_id,
+                )
+                return not_found_result
 
             normalized_title = title.strip() if isinstance(title, str) else None
             update_title = normalized_title
@@ -2601,13 +2760,25 @@ class CalendarModule(Module):
                         exc,
                         exc_info=True,
                     )
-                    return _build_structured_error(
+                    error_payload = _build_structured_error(
                         exc,
                         provider=provider.name,
                         calendar_id=resolved_calendar_id,
                     )
+                    await module._finalize_workspace_mutation(
+                        idempotency_key=idempotency_key,
+                        action_type="workspace_user_update",
+                        request_id=normalized_request_id,
+                        action_status=MUTATION_STATUS_FAILED,
+                        action_payload=action_payload,
+                        action_result=error_payload,
+                        source_id=source_id,
+                        origin_ref=normalized_event_id,
+                        error=error_payload.get("error"),
+                    )
+                    return error_payload
                 if conflict_result["status"] == "conflict":
-                    return {
+                    conflict_response = {
                         "status": "conflict",
                         "policy": resolved_conflict_policy,
                         "provider": provider.name,
@@ -2615,6 +2786,17 @@ class CalendarModule(Module):
                         "conflicts": conflict_result["conflicts"],
                         "suggested_slots": conflict_result["suggested_slots"],
                     }
+                    await module._finalize_workspace_mutation(
+                        idempotency_key=idempotency_key,
+                        action_type="workspace_user_update",
+                        request_id=normalized_request_id,
+                        action_status=MUTATION_STATUS_NOOP,
+                        action_payload=action_payload,
+                        action_result=conflict_response,
+                        source_id=source_id,
+                        origin_ref=normalized_event_id,
+                    )
+                    return conflict_response
 
                 # Gate overlap override with conditional approval when configured.
                 if conflict_result["status"] == "allow_overlap":
@@ -2640,6 +2822,16 @@ class CalendarModule(Module):
                         resolved_calendar_id=resolved_calendar_id,
                     )
                     if approval_result is not None:
+                        await module._finalize_workspace_mutation(
+                            idempotency_key=idempotency_key,
+                            action_type="workspace_user_update",
+                            request_id=normalized_request_id,
+                            action_status=MUTATION_STATUS_PENDING,
+                            action_payload=action_payload,
+                            action_result=approval_result,
+                            source_id=source_id,
+                            origin_ref=normalized_event_id,
+                        )
                         return approval_result
 
             update_patch = CalendarEventUpdate(
@@ -2670,11 +2862,23 @@ class CalendarModule(Module):
                     exc,
                     exc_info=True,
                 )
-                return _build_structured_error(
+                error_payload = _build_structured_error(
                     exc,
                     provider=provider.name,
                     calendar_id=resolved_calendar_id,
                 )
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_update",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result=error_payload,
+                    source_id=source_id,
+                    origin_ref=normalized_event_id,
+                    error=error_payload.get("error"),
+                )
+                return error_payload
             result = {
                 "status": "updated",
                 "provider": provider.name,
@@ -2685,6 +2889,19 @@ class CalendarModule(Module):
                 result["policy"] = resolved_conflict_policy
                 result["conflicts"] = conflict_result["conflicts"]
                 result["suggested_slots"] = []
+            result["projection_freshness"] = await module._refresh_user_projection(
+                resolved_calendar_id
+            )
+            await module._finalize_workspace_mutation(
+                idempotency_key=idempotency_key,
+                action_type="workspace_user_update",
+                request_id=normalized_request_id,
+                action_status=MUTATION_STATUS_APPLIED,
+                action_payload=action_payload,
+                action_result=result,
+                source_id=source_id,
+                origin_ref=normalized_event_id,
+            )
             return result
 
         @mcp.tool()
@@ -2693,6 +2910,7 @@ class CalendarModule(Module):
             calendar_id: str | None = None,
             recurrence_scope: Literal["series"] = "series",
             send_updates: str | None = None,
+            request_id: str | None = None,
         ) -> dict[str, Any]:
             """Delete or cancel a calendar event.
 
@@ -2713,32 +2931,720 @@ class CalendarModule(Module):
 
             provider = module._require_provider()
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
+            normalized_request_id = module._normalize_request_id(request_id)
+            action_payload = {
+                "event_id": normalized_event_id,
+                "calendar_id": resolved_calendar_id,
+                "recurrence_scope": recurrence_scope,
+                "send_updates": send_updates,
+            }
+            idempotency_key, replay = await module._prepare_workspace_mutation(
+                action_type="workspace_user_delete",
+                request_id=normalized_request_id,
+                action_payload=action_payload,
+            )
+            if replay is not None:
+                return replay
+            source_id = await module._resolve_action_source_id(
+                source_kind=SOURCE_KIND_PROVIDER,
+                lane="user",
+                calendar_id=resolved_calendar_id,
+            )
 
             # Fetch the event first to confirm existence and capture metadata.
             # 404 from the provider is treated as success (idempotent delete).
-            existing_event = await provider.get_event(
-                calendar_id=resolved_calendar_id,
-                event_id=normalized_event_id,
-            )
+            try:
+                existing_event = await provider.get_event(
+                    calendar_id=resolved_calendar_id,
+                    event_id=normalized_event_id,
+                )
+            except CalendarAuthError as exc:
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_delete",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result={
+                        "status": "error",
+                        "error_type": type(exc).__name__,
+                        "provider": provider.name,
+                        "calendar_id": resolved_calendar_id,
+                    },
+                    source_id=source_id,
+                    origin_ref=normalized_event_id,
+                    error=str(exc),
+                )
+                raise
             if existing_event is None:
-                return {
+                result = {
                     "status": "not_found",
                     "provider": provider.name,
                     "calendar_id": resolved_calendar_id,
                     "event_id": normalized_event_id,
                 }
+                result["projection_freshness"] = await module._refresh_user_projection(
+                    resolved_calendar_id
+                )
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_delete",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_NOOP,
+                    action_payload=action_payload,
+                    action_result=result,
+                    source_id=source_id,
+                    origin_ref=normalized_event_id,
+                )
+                return result
 
-            await provider.delete_event(
-                calendar_id=resolved_calendar_id,
-                event_id=normalized_event_id,
-                send_updates=send_updates,
-            )
-            return {
+            try:
+                await provider.delete_event(
+                    calendar_id=resolved_calendar_id,
+                    event_id=normalized_event_id,
+                    send_updates=send_updates,
+                )
+            except CalendarAuthError as exc:
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_delete",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result={
+                        "status": "error",
+                        "error_type": type(exc).__name__,
+                        "provider": provider.name,
+                        "calendar_id": resolved_calendar_id,
+                    },
+                    source_id=source_id,
+                    origin_ref=normalized_event_id,
+                    error=str(exc),
+                )
+                raise
+            result = {
                 "status": "deleted",
                 "provider": provider.name,
                 "calendar_id": resolved_calendar_id,
                 "event_id": normalized_event_id,
             }
+            result["projection_freshness"] = await module._refresh_user_projection(
+                resolved_calendar_id
+            )
+            await module._finalize_workspace_mutation(
+                idempotency_key=idempotency_key,
+                action_type="workspace_user_delete",
+                request_id=normalized_request_id,
+                action_status=MUTATION_STATUS_APPLIED,
+                action_payload=action_payload,
+                action_result=result,
+                source_id=source_id,
+                origin_ref=normalized_event_id,
+            )
+            return result
+
+        @mcp.tool()
+        async def calendar_create_butler_event(
+            butler_name: str,
+            title: str,
+            start_at: datetime,
+            end_at: datetime | None = None,
+            timezone: str | None = None,
+            recurrence_rule: str | None = None,
+            cron: str | None = None,
+            until_at: datetime | None = None,
+            action: str = "Run butler event",
+            action_args: dict[str, Any] | None = None,
+            source_hint: str | None = None,
+            request_id: str | None = None,
+            _approval_bypass: bool = False,
+        ) -> dict[str, Any]:
+            """Create a butler-view workspace event as schedule or reminder."""
+            normalized_butler = butler_name.strip()
+            if not normalized_butler:
+                raise ValueError("butler_name must be a non-empty string")
+            if normalized_butler != module._butler_name:
+                raise ValueError(
+                    f"butler_name '{normalized_butler}' does not match current butler "
+                    f"'{module._butler_name}'"
+                )
+            if start_at.tzinfo is None:
+                raise ValueError("start_at must be timezone-aware")
+            normalized_title = title.strip()
+            if not normalized_title:
+                raise ValueError("title must be a non-empty string")
+            effective_timezone = (timezone or module._require_config().timezone).strip()
+            _ensure_valid_timezone(effective_timezone)
+            effective_end = end_at or (start_at + timedelta(minutes=15))
+            if effective_end.tzinfo is None:
+                raise ValueError("end_at must be timezone-aware when provided")
+            if effective_end <= start_at:
+                raise ValueError("end_at must be after start_at")
+            normalized_rule = _normalize_recurrence_rule(recurrence_rule)
+            if until_at is None and normalized_rule is not None:
+                until_at = module._rrule_until(normalized_rule)
+
+            normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
+            reminders_available = await module._table_exists("reminders")
+            source_kind = normalized_source_hint
+            if source_kind is None:
+                if normalized_rule is None and cron is None and reminders_available:
+                    source_kind = BUTLER_EVENT_SOURCE_REMINDER
+                else:
+                    source_kind = BUTLER_EVENT_SOURCE_SCHEDULED
+            if source_kind == BUTLER_EVENT_SOURCE_REMINDER and not reminders_available:
+                raise ValueError("Reminder source is not available on this butler")
+
+            normalized_request_id = module._normalize_request_id(request_id)
+            action_payload = {
+                "butler_name": normalized_butler,
+                "title": normalized_title,
+                "start_at": start_at,
+                "end_at": effective_end,
+                "timezone": effective_timezone,
+                "recurrence_rule": normalized_rule,
+                "cron": cron,
+                "until_at": until_at,
+                "action": action,
+                "action_args": action_args,
+                "source_hint": source_kind,
+            }
+            idempotency_key, replay = await module._prepare_workspace_mutation(
+                action_type="workspace_butler_create",
+                request_id=normalized_request_id,
+                action_payload=action_payload,
+                allow_pending_replay=_approval_bypass,
+            )
+            if replay is not None:
+                return replay
+
+            pool = getattr(module._db, "pool", None) if module._db is not None else None
+            if pool is None:
+                raise RuntimeError("Database pool is not available")
+
+            projection_source_kind = (
+                SOURCE_KIND_INTERNAL_REMINDERS
+                if source_kind == BUTLER_EVENT_SOURCE_REMINDER
+                else SOURCE_KIND_INTERNAL_SCHEDULER
+            )
+            source_id = await module._resolve_action_source_id(
+                source_kind=projection_source_kind,
+                lane="butler",
+            )
+
+            try:
+                event_link_id = uuid.uuid4()
+                if source_kind == BUTLER_EVENT_SOURCE_REMINDER:
+                    reminder = await module._create_reminder_event(
+                        title=normalized_title,
+                        start_at=start_at,
+                        timezone=effective_timezone,
+                        until_at=until_at,
+                        recurrence_rule=normalized_rule,
+                        cron=cron,
+                        action=action,
+                        action_args=action_args,
+                        calendar_event_id=event_link_id,
+                    )
+                    origin_ref = str(reminder["id"])
+                    result: dict[str, Any] = {
+                        "status": "created",
+                        "source_type": BUTLER_EVENT_SOURCE_REMINDER,
+                        "butler_name": module._butler_name,
+                        "event_id": str(reminder.get("calendar_event_id") or reminder["id"]),
+                        "reminder_id": str(reminder["id"]),
+                        "reminder": reminder,
+                    }
+                else:
+                    effective_cron = cron
+                    if effective_cron is None:
+                        if normalized_rule is None:
+                            raise ValueError(
+                                "cron or recurrence_rule is required for scheduled_task events"
+                            )
+                        effective_cron = module._rrule_to_cron(start_at, normalized_rule)
+                    args = action_args or {}
+                    dispatch_mode = str(args.get("dispatch_mode") or "prompt").strip().lower()
+                    if dispatch_mode not in {"prompt", "job"}:
+                        raise ValueError("dispatch_mode must be 'prompt' or 'job'")
+                    schedule_name = str(
+                        args.get("name") or f"calendar-event-{uuid.uuid4().hex[:8]}"
+                    )
+                    if dispatch_mode == "job":
+                        job_name = str(args.get("job_name") or action).strip()
+                        if not job_name:
+                            raise ValueError("job_name must be non-empty for job dispatch mode")
+                        job_args = args.get("job_args")
+                        if job_args is None:
+                            job_args = {}
+                        if not isinstance(job_args, dict):
+                            raise ValueError("job_args must be an object when provided")
+                        task_id = await _schedule_create(
+                            pool,
+                            schedule_name,
+                            effective_cron,
+                            None,
+                            dispatch_mode="job",
+                            job_name=job_name,
+                            job_args=job_args,
+                            timezone=effective_timezone,
+                            start_at=start_at,
+                            end_at=effective_end,
+                            until_at=until_at,
+                            display_title=normalized_title,
+                            calendar_event_id=str(event_link_id),
+                            stagger_key=module._butler_name,
+                        )
+                    else:
+                        task_id = await _schedule_create(
+                            pool,
+                            schedule_name,
+                            effective_cron,
+                            action,
+                            dispatch_mode="prompt",
+                            timezone=effective_timezone,
+                            start_at=start_at,
+                            end_at=effective_end,
+                            until_at=until_at,
+                            display_title=normalized_title,
+                            calendar_event_id=str(event_link_id),
+                            stagger_key=module._butler_name,
+                        )
+                    origin_ref = str(task_id)
+                    result = {
+                        "status": "created",
+                        "source_type": BUTLER_EVENT_SOURCE_SCHEDULED,
+                        "butler_name": module._butler_name,
+                        "event_id": str(event_link_id),
+                        "schedule_id": str(task_id),
+                        "cron": effective_cron,
+                    }
+
+                result["projection_freshness"] = await module._refresh_butler_projection()
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_butler_create",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_APPLIED,
+                    action_payload=action_payload,
+                    action_result=result,
+                    source_id=source_id,
+                    origin_ref=origin_ref,
+                )
+                return result
+            except Exception as exc:
+                error_payload = {"status": "error", "error": str(exc)}
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_butler_create",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result=error_payload,
+                    source_id=source_id,
+                    origin_ref=None,
+                    error=str(exc),
+                )
+                return error_payload
+
+        @mcp.tool()
+        async def calendar_update_butler_event(
+            event_id: str,
+            title: str | None = None,
+            start_at: datetime | None = None,
+            end_at: datetime | None = None,
+            timezone: str | None = None,
+            recurrence_rule: str | None = None,
+            cron: str | None = None,
+            until_at: datetime | None = None,
+            enabled: bool | None = None,
+            source_hint: str | None = None,
+            request_id: str | None = None,
+            _approval_bypass: bool = False,
+        ) -> dict[str, Any]:
+            """Update a butler schedule/reminder event."""
+            normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
+            normalized_request_id = module._normalize_request_id(request_id)
+            action_payload = {
+                "event_id": event_id,
+                "title": title,
+                "start_at": start_at,
+                "end_at": end_at,
+                "timezone": timezone,
+                "recurrence_rule": recurrence_rule,
+                "cron": cron,
+                "until_at": until_at,
+                "enabled": enabled,
+                "source_hint": normalized_source_hint,
+            }
+            idempotency_key, replay = await module._prepare_workspace_mutation(
+                action_type="workspace_butler_update",
+                request_id=normalized_request_id,
+                action_payload=action_payload,
+                allow_pending_replay=_approval_bypass,
+            )
+            if replay is not None:
+                return replay
+
+            try:
+                source_type, target_id = await module._resolve_butler_event_target(
+                    event_id=event_id,
+                    source_hint=normalized_source_hint,
+                )
+                source_kind = (
+                    SOURCE_KIND_INTERNAL_REMINDERS
+                    if source_type == BUTLER_EVENT_SOURCE_REMINDER
+                    else SOURCE_KIND_INTERNAL_SCHEDULER
+                )
+                source_id = await module._resolve_action_source_id(
+                    source_kind=source_kind,
+                    lane="butler",
+                )
+                pool = getattr(module._db, "pool", None) if module._db is not None else None
+                if pool is None:
+                    raise RuntimeError("Database pool is not available")
+
+                if source_type == BUTLER_EVENT_SOURCE_REMINDER:
+                    reminder = await module._update_reminder_event(
+                        reminder_id=target_id,
+                        title=title,
+                        start_at=start_at,
+                        timezone=timezone,
+                        until_at=until_at,
+                        recurrence_rule=recurrence_rule,
+                        cron=cron,
+                        enabled=enabled,
+                    )
+                    origin_ref = str(target_id)
+                    result: dict[str, Any] = {
+                        "status": "updated",
+                        "source_type": BUTLER_EVENT_SOURCE_REMINDER,
+                        "butler_name": module._butler_name,
+                        "event_id": str(reminder.get("calendar_event_id") or reminder["id"]),
+                        "reminder_id": str(target_id),
+                        "reminder": reminder,
+                    }
+                else:
+                    update_fields: dict[str, Any] = {}
+                    if title is not None:
+                        update_fields["display_title"] = title
+                    if start_at is not None:
+                        update_fields["start_at"] = start_at
+                    if end_at is not None:
+                        update_fields["end_at"] = end_at
+                    if timezone is not None:
+                        _ensure_valid_timezone(timezone)
+                        update_fields["timezone"] = timezone
+                    if until_at is not None:
+                        update_fields["until_at"] = until_at
+                    effective_cron = cron
+                    normalized_rule = _normalize_recurrence_rule(recurrence_rule)
+                    if effective_cron is None and normalized_rule is not None:
+                        if start_at is None:
+                            raise ValueError(
+                                "start_at is required when recurrence_rule is provided without cron"
+                            )
+                        effective_cron = module._rrule_to_cron(start_at, normalized_rule)
+                    if effective_cron is not None:
+                        update_fields["cron"] = effective_cron
+                    if enabled is not None:
+                        update_fields["enabled"] = enabled
+                    await _schedule_update(
+                        pool,
+                        target_id,
+                        stagger_key=module._butler_name,
+                        **update_fields,
+                    )
+                    schedule_row = await pool.fetchrow(
+                        "SELECT calendar_event_id FROM scheduled_tasks WHERE id = $1",
+                        target_id,
+                    )
+                    event_link = (
+                        str(schedule_row["calendar_event_id"])
+                        if schedule_row is not None
+                        and schedule_row["calendar_event_id"] is not None
+                        else str(target_id)
+                    )
+                    origin_ref = str(target_id)
+                    result = {
+                        "status": "updated",
+                        "source_type": BUTLER_EVENT_SOURCE_SCHEDULED,
+                        "butler_name": module._butler_name,
+                        "event_id": event_link,
+                        "schedule_id": str(target_id),
+                    }
+
+                result["projection_freshness"] = await module._refresh_butler_projection()
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_butler_update",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_APPLIED,
+                    action_payload=action_payload,
+                    action_result=result,
+                    source_id=source_id,
+                    origin_ref=origin_ref,
+                )
+                return result
+            except Exception as exc:
+                error_payload = {"status": "error", "error": str(exc)}
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_butler_update",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result=error_payload,
+                    source_id=None,
+                    origin_ref=None,
+                    error=str(exc),
+                )
+                return error_payload
+
+        @mcp.tool()
+        async def calendar_delete_butler_event(
+            event_id: str,
+            scope: Literal["series"] = "series",
+            source_hint: str | None = None,
+            request_id: str | None = None,
+            _approval_bypass: bool = False,
+        ) -> dict[str, Any]:
+            """Delete a butler schedule/reminder event."""
+            if scope != "series":
+                raise ValueError("Only scope='series' is supported in v1")
+            normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
+            normalized_request_id = module._normalize_request_id(request_id)
+            action_payload = {
+                "event_id": event_id,
+                "scope": scope,
+                "source_hint": normalized_source_hint,
+            }
+            idempotency_key, replay = await module._prepare_workspace_mutation(
+                action_type="workspace_butler_delete",
+                request_id=normalized_request_id,
+                action_payload=action_payload,
+                allow_pending_replay=_approval_bypass,
+            )
+            if replay is not None:
+                return replay
+
+            tentative_source_kind = (
+                SOURCE_KIND_INTERNAL_REMINDERS
+                if normalized_source_hint == BUTLER_EVENT_SOURCE_REMINDER
+                else SOURCE_KIND_INTERNAL_SCHEDULER
+            )
+            if not _approval_bypass:
+                approval_result = await module._gate_high_impact_mutation(
+                    action_type="workspace_butler_delete",
+                    tool_name="calendar_delete_butler_event",
+                    tool_args={
+                        "event_id": event_id,
+                        "scope": scope,
+                        "source_hint": source_hint,
+                        "request_id": normalized_request_id,
+                    },
+                    request_id=normalized_request_id,
+                    idempotency_key=idempotency_key,
+                    action_payload=action_payload,
+                    source_kind=tentative_source_kind,
+                )
+                if approval_result is not None:
+                    return approval_result
+
+            try:
+                source_type, target_id = await module._resolve_butler_event_target(
+                    event_id=event_id,
+                    source_hint=normalized_source_hint,
+                )
+                source_kind = (
+                    SOURCE_KIND_INTERNAL_REMINDERS
+                    if source_type == BUTLER_EVENT_SOURCE_REMINDER
+                    else SOURCE_KIND_INTERNAL_SCHEDULER
+                )
+                source_id = await module._resolve_action_source_id(
+                    source_kind=source_kind,
+                    lane="butler",
+                )
+                if source_type == BUTLER_EVENT_SOURCE_REMINDER:
+                    deleted = await module._delete_reminder_event(target_id)
+                else:
+                    pool = getattr(module._db, "pool", None) if module._db is not None else None
+                    if pool is None:
+                        raise RuntimeError("Database pool is not available")
+                    await _schedule_delete(pool, target_id)
+                    deleted = True
+
+                if deleted:
+                    result: dict[str, Any] = {
+                        "status": "deleted",
+                        "source_type": source_type,
+                        "butler_name": module._butler_name,
+                        "event_id": event_id,
+                    }
+                    mutation_status = MUTATION_STATUS_APPLIED
+                else:
+                    result = {
+                        "status": "not_found",
+                        "source_type": source_type,
+                        "butler_name": module._butler_name,
+                        "event_id": event_id,
+                    }
+                    mutation_status = MUTATION_STATUS_NOOP
+                result["projection_freshness"] = await module._refresh_butler_projection()
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_butler_delete",
+                    request_id=normalized_request_id,
+                    action_status=mutation_status,
+                    action_payload=action_payload,
+                    action_result=result,
+                    source_id=source_id,
+                    origin_ref=str(target_id),
+                )
+                return result
+            except Exception as exc:
+                error_payload = {"status": "error", "error": str(exc)}
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_butler_delete",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result=error_payload,
+                    source_id=None,
+                    origin_ref=None,
+                    error=str(exc),
+                )
+                return error_payload
+
+        @mcp.tool()
+        async def calendar_toggle_butler_event(
+            event_id: str,
+            enabled: bool,
+            source_hint: str | None = None,
+            request_id: str | None = None,
+            _approval_bypass: bool = False,
+        ) -> dict[str, Any]:
+            """Pause/resume a butler schedule/reminder event."""
+            normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
+            normalized_request_id = module._normalize_request_id(request_id)
+            action_payload = {
+                "event_id": event_id,
+                "enabled": enabled,
+                "source_hint": normalized_source_hint,
+            }
+            idempotency_key, replay = await module._prepare_workspace_mutation(
+                action_type="workspace_butler_toggle",
+                request_id=normalized_request_id,
+                action_payload=action_payload,
+                allow_pending_replay=_approval_bypass,
+            )
+            if replay is not None:
+                return replay
+
+            tentative_source_kind = (
+                SOURCE_KIND_INTERNAL_REMINDERS
+                if normalized_source_hint == BUTLER_EVENT_SOURCE_REMINDER
+                else SOURCE_KIND_INTERNAL_SCHEDULER
+            )
+            if not _approval_bypass:
+                approval_result = await module._gate_high_impact_mutation(
+                    action_type="workspace_butler_toggle",
+                    tool_name="calendar_toggle_butler_event",
+                    tool_args={
+                        "event_id": event_id,
+                        "enabled": enabled,
+                        "source_hint": source_hint,
+                        "request_id": normalized_request_id,
+                    },
+                    request_id=normalized_request_id,
+                    idempotency_key=idempotency_key,
+                    action_payload=action_payload,
+                    source_kind=tentative_source_kind,
+                )
+                if approval_result is not None:
+                    return approval_result
+
+            try:
+                source_type, target_id = await module._resolve_butler_event_target(
+                    event_id=event_id,
+                    source_hint=normalized_source_hint,
+                )
+                source_kind = (
+                    SOURCE_KIND_INTERNAL_REMINDERS
+                    if source_type == BUTLER_EVENT_SOURCE_REMINDER
+                    else SOURCE_KIND_INTERNAL_SCHEDULER
+                )
+                source_id = await module._resolve_action_source_id(
+                    source_kind=source_kind,
+                    lane="butler",
+                )
+                if source_type == BUTLER_EVENT_SOURCE_REMINDER:
+                    reminder = await module._toggle_reminder_event(target_id, enabled)
+                    event_link = str(reminder.get("calendar_event_id") or reminder["id"])
+                    result: dict[str, Any] = {
+                        "status": "updated",
+                        "source_type": source_type,
+                        "butler_name": module._butler_name,
+                        "event_id": event_link,
+                        "reminder_id": str(target_id),
+                        "enabled": enabled,
+                        "reminder": reminder,
+                    }
+                else:
+                    pool = getattr(module._db, "pool", None) if module._db is not None else None
+                    if pool is None:
+                        raise RuntimeError("Database pool is not available")
+                    await _schedule_update(
+                        pool,
+                        target_id,
+                        stagger_key=module._butler_name,
+                        enabled=enabled,
+                    )
+                    row = await pool.fetchrow(
+                        "SELECT calendar_event_id FROM scheduled_tasks WHERE id = $1",
+                        target_id,
+                    )
+                    event_link = (
+                        str(row["calendar_event_id"])
+                        if row is not None and row["calendar_event_id"] is not None
+                        else str(target_id)
+                    )
+                    result = {
+                        "status": "updated",
+                        "source_type": source_type,
+                        "butler_name": module._butler_name,
+                        "event_id": event_link,
+                        "schedule_id": str(target_id),
+                        "enabled": enabled,
+                    }
+
+                result["projection_freshness"] = await module._refresh_butler_projection()
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_butler_toggle",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_APPLIED,
+                    action_payload=action_payload,
+                    action_result=result,
+                    source_id=source_id,
+                    origin_ref=str(target_id),
+                )
+                return result
+            except Exception as exc:
+                error_payload = {"status": "error", "error": str(exc)}
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_butler_toggle",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result=error_payload,
+                    source_id=None,
+                    origin_ref=None,
+                    error=str(exc),
+                )
+                return error_payload
 
         @mcp.tool()
         async def calendar_add_attendees(
@@ -4315,6 +5221,595 @@ class CalendarModule(Module):
         if not normalized:
             raise ValueError("calendar_id must be a non-empty string when provided")
         return normalized
+
+    @staticmethod
+    def _normalize_request_id(request_id: str | None) -> str | None:
+        if request_id is None:
+            return None
+        normalized = request_id.strip()
+        return normalized or None
+
+    @staticmethod
+    def _mutation_idempotency_key(action_type: str, request_id: str | None) -> str:
+        normalized_request_id = CalendarModule._normalize_request_id(request_id)
+        if normalized_request_id is not None:
+            return f"{action_type}:request:{normalized_request_id}"
+        return f"{action_type}:generated:{uuid.uuid4()}"
+
+    async def _table_columns(self, table_name: str) -> set[str]:
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return set()
+        rows = await pool.fetch(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = $1
+            """,
+            table_name,
+        )
+        return {str(row["column_name"]) for row in rows}
+
+    async def _load_projection_action(
+        self, idempotency_key: str
+    ) -> tuple[str, dict[str, Any] | None, str | None] | None:
+        if not await self._projection_tables_available():
+            return None
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return None
+        row = await pool.fetchrow(
+            """
+            SELECT action_status, action_result, error
+            FROM calendar_action_log
+            WHERE idempotency_key = $1
+            """,
+            idempotency_key,
+        )
+        if row is None:
+            return None
+        status = str(row["action_status"])
+        result = None
+        if row["action_result"] is not None:
+            normalized = self._normalize_json_object(row["action_result"])
+            if normalized:
+                result = normalized
+        error = row["error"]
+        return status, result, None if error is None else str(error)
+
+    async def _prepare_workspace_mutation(
+        self,
+        *,
+        action_type: str,
+        request_id: str | None,
+        action_payload: dict[str, Any],
+        allow_pending_replay: bool = False,
+    ) -> tuple[str, dict[str, Any] | None]:
+        idempotency_key = self._mutation_idempotency_key(action_type, request_id)
+        existing = await self._load_projection_action(idempotency_key)
+        if existing is not None:
+            status, existing_result, error = existing
+            if (
+                status in {MUTATION_STATUS_APPLIED, MUTATION_STATUS_NOOP}
+                and existing_result is not None
+            ):
+                replay_result = dict(existing_result)
+                replay_result["idempotent_replay"] = True
+                return idempotency_key, replay_result
+            if status == MUTATION_STATUS_FAILED:
+                return idempotency_key, {
+                    "status": "error",
+                    "error": error or "Mutation failed",
+                    "idempotent_replay": True,
+                }
+            if status == MUTATION_STATUS_PENDING and not allow_pending_replay:
+                return idempotency_key, {
+                    "status": "pending",
+                    "message": "Mutation already queued for processing",
+                    "idempotent_replay": True,
+                }
+
+        await self._record_projection_action(
+            idempotency_key=idempotency_key,
+            action_type=action_type,
+            action_status=MUTATION_STATUS_PENDING,
+            source_id=None,
+            origin_ref=None,
+            action_payload=action_payload,
+            request_id=self._normalize_request_id(request_id),
+        )
+        return idempotency_key, None
+
+    async def _finalize_workspace_mutation(
+        self,
+        *,
+        idempotency_key: str,
+        action_type: str,
+        request_id: str | None,
+        action_status: Literal["pending", "applied", "failed", "noop"],
+        action_payload: dict[str, Any],
+        action_result: dict[str, Any] | None,
+        source_id: uuid.UUID | None = None,
+        origin_ref: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        await self._record_projection_action(
+            idempotency_key=idempotency_key,
+            action_type=action_type,
+            action_status=action_status,
+            source_id=source_id,
+            origin_ref=origin_ref,
+            action_payload=action_payload,
+            action_result=action_result,
+            request_id=self._normalize_request_id(request_id),
+            error=error,
+        )
+
+    async def _refresh_user_projection(self, calendar_id: str) -> dict[str, Any]:
+        if not await self._projection_tables_available():
+            return await self._projection_freshness_metadata()
+        await self._sync_calendar(calendar_id)
+        return await self._projection_freshness_metadata()
+
+    async def _refresh_butler_projection(self) -> dict[str, Any]:
+        await self._project_internal_sources()
+        return await self._projection_freshness_metadata()
+
+    async def _resolve_action_source_id(
+        self,
+        *,
+        source_kind: str,
+        lane: Literal["user", "butler"],
+        calendar_id: str | None = None,
+    ) -> uuid.UUID | None:
+        if source_kind == SOURCE_KIND_PROVIDER:
+            provider = self._require_provider()
+            resolved_calendar = calendar_id or self._require_config().calendar_id
+            return await self._ensure_calendar_source(
+                source_key=f"provider:{provider.name}:{resolved_calendar}",
+                source_kind=SOURCE_KIND_PROVIDER,
+                lane="user",
+                provider=provider.name,
+                calendar_id=resolved_calendar,
+                display_name=resolved_calendar,
+                writable=True,
+                metadata={"projection": "provider_sync"},
+            )
+        if source_kind == SOURCE_KIND_INTERNAL_SCHEDULER:
+            return await self._ensure_calendar_source(
+                source_key=f"internal_scheduler:{self._butler_name}",
+                source_kind=SOURCE_KIND_INTERNAL_SCHEDULER,
+                lane="butler",
+                provider="internal",
+                butler_name=self._butler_name,
+                display_name=f"{self._butler_name} schedules",
+                writable=True,
+                metadata={"projection": "scheduler"},
+            )
+        if source_kind == SOURCE_KIND_INTERNAL_REMINDERS:
+            return await self._ensure_calendar_source(
+                source_key=f"internal_reminders:{self._butler_name}",
+                source_kind=SOURCE_KIND_INTERNAL_REMINDERS,
+                lane="butler",
+                provider="internal",
+                butler_name=self._butler_name,
+                display_name=f"{self._butler_name} reminders",
+                writable=True,
+                metadata={"projection": "reminders"},
+            )
+        return None
+
+    async def _gate_high_impact_mutation(
+        self,
+        *,
+        action_type: str,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        request_id: str | None,
+        idempotency_key: str,
+        action_payload: dict[str, Any],
+        source_kind: str,
+    ) -> dict[str, Any] | None:
+        if action_type not in MUTATION_HIGH_IMPACT_ACTIONS:
+            return None
+        if self._approval_enqueuer is None:
+            return None
+
+        gated_tool_args = dict(tool_args)
+        gated_tool_args["_approval_bypass"] = True
+        agent_summary = (
+            f"Calendar workspace high-impact action requested: {tool_name} "
+            f"(butler={self._butler_name})"
+        )
+        action_id = await self._approval_enqueuer(tool_name, gated_tool_args, agent_summary)
+        response = {
+            "status": "approval_required",
+            "action_id": action_id,
+            "message": "This workspace mutation has been queued for approval.",
+        }
+        source_id = await self._resolve_action_source_id(source_kind=source_kind, lane="butler")
+        await self._finalize_workspace_mutation(
+            idempotency_key=idempotency_key,
+            action_type=action_type,
+            request_id=request_id,
+            action_status=MUTATION_STATUS_PENDING,
+            action_payload=action_payload,
+            action_result=response,
+            source_id=source_id,
+            origin_ref=None,
+            error=None,
+        )
+        return response
+
+    @staticmethod
+    def _rrule_components(recurrence_rule: str) -> dict[str, str]:
+        normalized = recurrence_rule.removeprefix("RRULE:")
+        values: dict[str, str] = {}
+        for part in normalized.split(";"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            values[key.strip().upper()] = value.strip()
+        return values
+
+    @staticmethod
+    def _rrule_until(recurrence_rule: str) -> datetime | None:
+        components = CalendarModule._rrule_components(recurrence_rule)
+        until_raw = components.get("UNTIL")
+        if not until_raw:
+            return None
+        if until_raw.endswith("Z"):
+            until_raw = f"{until_raw[:-1]}+00:00"
+        for pattern in ("%Y%m%dT%H%M%S%z", "%Y%m%d"):
+            try:
+                parsed = datetime.strptime(until_raw, pattern)
+            except ValueError:
+                continue
+            if pattern == "%Y%m%d":
+                return datetime(parsed.year, parsed.month, parsed.day, tzinfo=UTC)
+            return parsed.astimezone(UTC)
+        return None
+
+    @staticmethod
+    def _rrule_to_cron(start_at: datetime, recurrence_rule: str) -> str:
+        components = CalendarModule._rrule_components(recurrence_rule)
+        freq = components.get("FREQ")
+        if freq is None:
+            raise ValueError("recurrence_rule must include FREQ")
+
+        minute = start_at.minute
+        hour = start_at.hour
+        if freq == "DAILY":
+            return f"{minute} {hour} * * *"
+        if freq == "WEEKLY":
+            byday = components.get("BYDAY")
+            day_lookup = {
+                "SU": "0",
+                "MO": "1",
+                "TU": "2",
+                "WE": "3",
+                "TH": "4",
+                "FR": "5",
+                "SA": "6",
+            }
+            if byday:
+                parts = [day_lookup[item] for item in byday.split(",") if item in day_lookup]
+                if not parts:
+                    raise ValueError("recurrence_rule BYDAY must contain at least one valid day")
+                day_of_week = ",".join(parts)
+            else:
+                day_of_week = str((start_at.weekday() + 1) % 7)
+            return f"{minute} {hour} * * {day_of_week}"
+        if freq == "MONTHLY":
+            day_of_month = components.get("BYMONTHDAY") or str(start_at.day)
+            return f"{minute} {hour} {day_of_month} * *"
+        if freq == "YEARLY":
+            return f"{minute} {hour} {start_at.day} {start_at.month} *"
+        raise ValueError("Unsupported recurrence_rule frequency for scheduler projection")
+
+    @staticmethod
+    def _normalize_butler_event_source_hint(
+        source_hint: str | None,
+    ) -> Literal["scheduled_task", "butler_reminder"] | None:
+        if source_hint is None:
+            return None
+        normalized = source_hint.strip().lower()
+        if normalized in {"scheduled_task", "schedule", "scheduler"}:
+            return BUTLER_EVENT_SOURCE_SCHEDULED
+        if normalized in {"butler_reminder", "reminder", "reminders"}:
+            return BUTLER_EVENT_SOURCE_REMINDER
+        raise ValueError("source_hint must be one of: scheduled_task | butler_reminder")
+
+    @staticmethod
+    def _normalize_reminder_row(row: Mapping[str, Any]) -> dict[str, Any]:
+        result = dict(row)
+        if "label" not in result and "message" in result:
+            result["label"] = result["message"]
+        if "message" not in result and "label" in result:
+            result["message"] = result["label"]
+        if "next_trigger_at" not in result and "due_at" in result:
+            result["next_trigger_at"] = result["due_at"]
+        if "due_at" not in result and "next_trigger_at" in result:
+            result["due_at"] = result["next_trigger_at"]
+        return result
+
+    async def _find_scheduled_task_target(self, event_uuid: uuid.UUID) -> uuid.UUID | None:
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None or not await self._table_exists("scheduled_tasks"):
+            return None
+
+        columns = await self._table_columns("scheduled_tasks")
+        if "calendar_event_id" in columns:
+            row = await pool.fetchrow(
+                """
+                SELECT id
+                FROM scheduled_tasks
+                WHERE id = $1 OR calendar_event_id = $1
+                LIMIT 1
+                """,
+                event_uuid,
+            )
+        else:
+            row = await pool.fetchrow(
+                "SELECT id FROM scheduled_tasks WHERE id = $1 LIMIT 1",
+                event_uuid,
+            )
+        if row is None:
+            return None
+        return row["id"]
+
+    async def _find_reminder_target(self, event_uuid: uuid.UUID) -> uuid.UUID | None:
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None or not await self._table_exists("reminders"):
+            return None
+
+        columns = await self._table_columns("reminders")
+        if "calendar_event_id" in columns:
+            row = await pool.fetchrow(
+                """
+                SELECT id
+                FROM reminders
+                WHERE id = $1 OR calendar_event_id = $1
+                LIMIT 1
+                """,
+                event_uuid,
+            )
+        else:
+            row = await pool.fetchrow(
+                "SELECT id FROM reminders WHERE id = $1 LIMIT 1",
+                event_uuid,
+            )
+        if row is None:
+            return None
+        return row["id"]
+
+    async def _resolve_butler_event_target(
+        self,
+        *,
+        event_id: str,
+        source_hint: Literal["scheduled_task", "butler_reminder"] | None,
+    ) -> tuple[Literal["scheduled_task", "butler_reminder"], uuid.UUID]:
+        normalized = event_id.strip()
+        if not normalized:
+            raise ValueError("event_id must be a non-empty string")
+
+        event_uuid = uuid.UUID(normalized)
+        if source_hint == BUTLER_EVENT_SOURCE_SCHEDULED:
+            schedule_id = await self._find_scheduled_task_target(event_uuid)
+            if schedule_id is None:
+                raise ValueError(f"No scheduled task found for event_id '{event_id}'")
+            return BUTLER_EVENT_SOURCE_SCHEDULED, schedule_id
+        if source_hint == BUTLER_EVENT_SOURCE_REMINDER:
+            reminder_id = await self._find_reminder_target(event_uuid)
+            if reminder_id is None:
+                raise ValueError(f"No reminder found for event_id '{event_id}'")
+            return BUTLER_EVENT_SOURCE_REMINDER, reminder_id
+
+        schedule_id = await self._find_scheduled_task_target(event_uuid)
+        if schedule_id is not None:
+            return BUTLER_EVENT_SOURCE_SCHEDULED, schedule_id
+        reminder_id = await self._find_reminder_target(event_uuid)
+        if reminder_id is not None:
+            return BUTLER_EVENT_SOURCE_REMINDER, reminder_id
+        raise ValueError(f"No butler event found for event_id '{event_id}'")
+
+    async def _create_reminder_event(
+        self,
+        *,
+        title: str,
+        start_at: datetime,
+        timezone: str,
+        until_at: datetime | None,
+        recurrence_rule: str | None,
+        cron: str | None,
+        action: str,
+        action_args: dict[str, Any] | None,
+        calendar_event_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError("Database pool is not available")
+        if not await self._table_exists("reminders"):
+            raise ValueError("Reminder-backed butler events are not available on this butler")
+
+        columns = await self._table_columns("reminders")
+        args = dict(action_args or {})
+        insert_columns: list[str] = []
+        insert_values: list[Any] = []
+
+        def add(column: str, value: Any) -> None:
+            insert_columns.append(column)
+            insert_values.append(value)
+
+        reminder_type = "one_time"
+        reminder_legacy_type = "one_time"
+        normalized_rule = _normalize_recurrence_rule(recurrence_rule)
+        if normalized_rule is not None or cron is not None:
+            reminder_type = "recurring"
+            reminder_legacy_type = "recurring_monthly"
+            if normalized_rule and "FREQ=YEARLY" in normalized_rule.upper():
+                reminder_legacy_type = "recurring_yearly"
+
+        if "label" in columns:
+            add("label", title)
+        if "message" in columns:
+            add("message", action)
+        if "type" in columns:
+            add("type", reminder_legacy_type)
+        if "reminder_type" in columns:
+            add("reminder_type", reminder_type)
+        if "next_trigger_at" in columns:
+            add("next_trigger_at", start_at)
+        if "due_at" in columns:
+            add("due_at", start_at)
+        if "timezone" in columns:
+            add("timezone", timezone)
+        if "until_at" in columns:
+            add("until_at", until_at)
+        if "recurrence_rule" in columns:
+            add("recurrence_rule", normalized_rule)
+        if "cron" in columns:
+            add("cron", cron)
+        if "dismissed" in columns:
+            add("dismissed", False)
+        if "calendar_event_id" in columns:
+            add("calendar_event_id", calendar_event_id)
+        if "updated_at" in columns:
+            add("updated_at", datetime.now(UTC))
+        if "contact_id" in columns and "contact_id" in args:
+            contact_id_value = args.get("contact_id")
+            if contact_id_value is None:
+                add("contact_id", None)
+            else:
+                add("contact_id", uuid.UUID(str(contact_id_value)))
+
+        placeholders = [f"${idx}" for idx in range(1, len(insert_values) + 1)]
+        row = await pool.fetchrow(
+            f"""
+            INSERT INTO reminders ({", ".join(insert_columns)})
+            VALUES ({", ".join(placeholders)})
+            RETURNING *
+            """,
+            *insert_values,
+        )
+        if row is None:
+            raise RuntimeError("Failed to create reminder-backed event")
+        return self._normalize_reminder_row(dict(row))
+
+    async def _update_reminder_event(
+        self,
+        *,
+        reminder_id: uuid.UUID,
+        title: str | None,
+        start_at: datetime | None,
+        timezone: str | None,
+        until_at: datetime | None,
+        recurrence_rule: str | None,
+        cron: str | None,
+        enabled: bool | None,
+    ) -> dict[str, Any]:
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError("Database pool is not available")
+
+        row = await pool.fetchrow("SELECT * FROM reminders WHERE id = $1", reminder_id)
+        if row is None:
+            raise ValueError(f"Reminder {reminder_id} not found")
+        existing = self._normalize_reminder_row(dict(row))
+        columns = await self._table_columns("reminders")
+
+        updates: list[str] = []
+        params: list[Any] = [reminder_id]
+        idx = 2
+
+        def add(column: str, value: Any) -> None:
+            nonlocal idx
+            updates.append(f"{column} = ${idx}")
+            params.append(value)
+            idx += 1
+
+        normalized_rule = _normalize_recurrence_rule(recurrence_rule) if recurrence_rule else None
+        effective_trigger = start_at if start_at is not None else existing.get("next_trigger_at")
+        if title is not None:
+            if "label" in columns:
+                add("label", title)
+            if "message" in columns:
+                add("message", title)
+        if effective_trigger is not None:
+            if "next_trigger_at" in columns:
+                add("next_trigger_at", effective_trigger)
+            if "due_at" in columns:
+                add("due_at", effective_trigger)
+        if timezone is not None and "timezone" in columns:
+            add("timezone", timezone)
+        if "until_at" in columns:
+            add("until_at", until_at)
+        if recurrence_rule is not None and "recurrence_rule" in columns:
+            add("recurrence_rule", normalized_rule)
+        if cron is not None and "cron" in columns:
+            add("cron", cron)
+        if enabled is not None:
+            if "dismissed" in columns:
+                add("dismissed", not enabled)
+            if "next_trigger_at" in columns and not enabled:
+                add("next_trigger_at", None)
+        if "updated_at" in columns:
+            add("updated_at", datetime.now(UTC))
+
+        if not updates:
+            return existing
+
+        query = f"UPDATE reminders SET {', '.join(updates)} WHERE id = $1 RETURNING *"
+        updated = await pool.fetchrow(query, *params)
+        if updated is None:
+            raise ValueError(f"Reminder {reminder_id} not found")
+        return self._normalize_reminder_row(dict(updated))
+
+    async def _delete_reminder_event(self, reminder_id: uuid.UUID) -> bool:
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError("Database pool is not available")
+        deleted = await pool.fetchval(
+            "DELETE FROM reminders WHERE id = $1 RETURNING id",
+            reminder_id,
+        )
+        return deleted is not None
+
+    async def _toggle_reminder_event(self, reminder_id: uuid.UUID, enabled: bool) -> dict[str, Any]:
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError("Database pool is not available")
+        row = await pool.fetchrow("SELECT * FROM reminders WHERE id = $1", reminder_id)
+        if row is None:
+            raise ValueError(f"Reminder {reminder_id} not found")
+        existing = self._normalize_reminder_row(dict(row))
+        columns = await self._table_columns("reminders")
+        updates: list[str] = []
+        params: list[Any] = [reminder_id]
+        idx = 2
+
+        def add(column: str, value: Any) -> None:
+            nonlocal idx
+            updates.append(f"{column} = ${idx}")
+            params.append(value)
+            idx += 1
+
+        if "dismissed" in columns:
+            add("dismissed", not enabled)
+        if "next_trigger_at" in columns:
+            if enabled:
+                next_trigger = existing.get("next_trigger_at") or existing.get("due_at")
+                add("next_trigger_at", next_trigger)
+            else:
+                add("next_trigger_at", None)
+        if "updated_at" in columns:
+            add("updated_at", datetime.now(UTC))
+
+        query = f"UPDATE reminders SET {', '.join(updates)} WHERE id = $1 RETURNING *"
+        updated = await pool.fetchrow(query, *params)
+        if updated is None:
+            raise ValueError(f"Reminder {reminder_id} not found")
+        return self._normalize_reminder_row(dict(updated))
 
     @staticmethod
     def _resolve_butler_name(db: Any) -> str:

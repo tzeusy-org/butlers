@@ -695,6 +695,11 @@ API behavior contract:
 - Writes are source-routed and idempotent by `request_id`.
 - Every mutation response includes refreshed projection metadata (`projection_version`, `staleness_ms`).
 
+Current implementation details (v1 mutation surface):
+- `POST /api/calendar/workspace/user-events` accepts `{butler_name, action, request_id?, payload}` where `action` is `create|update|delete` and routes to provider-backed MCP tools (`calendar_create_event`, `calendar_update_event`, `calendar_delete_event`).
+- `POST /api/calendar/workspace/butler-events` accepts `{butler_name, action, request_id?, payload}` where `action` is `create|update|delete|toggle` and routes to butler-event MCP tools (`calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`).
+- Mutation responses include both the underlying tool result and projection freshness metadata (`projection_version`, `staleness_ms`, `projection_freshness`) for workspace refresh logic.
+
 ## 18. Non-Goals
 
 - Full replacement of native provider applications (settings/ACL UX, rooms/resources, conference lifecycle, offline merge semantics).

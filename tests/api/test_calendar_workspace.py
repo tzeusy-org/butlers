@@ -416,3 +416,164 @@ class TestWorkspaceSync:
         assert resp.status_code == 200
         target = resp.json()["data"]["targets"][0]
         assert target["detail"] == "[\"ok\", 1]"
+
+
+def _mcp_result(payload: dict | str) -> list:
+    block = MagicMock()
+    block.text = json.dumps(payload)
+    return [block]
+
+
+def _app_with_mcp(call_side_effect):
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(side_effect=call_side_effect)
+
+    mock_mgr = AsyncMock(spec=MCPClientManager)
+    mock_mgr.get_client = AsyncMock(return_value=mock_client)
+
+    mock_pool = AsyncMock()
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = mock_pool
+    mock_db.butler_names = ["general", "relationship"]
+
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
+    return app, mock_client
+
+
+class TestCalendarWorkspaceUserEvents:
+    async def test_user_event_create_routes_to_calendar_create_event(self):
+        async def _call(tool_name: str, arguments: dict):
+            if tool_name == "calendar_create_event":
+                return _mcp_result({"status": "created", "event": {"event_id": "evt-1"}})
+            if tool_name == "calendar_sync_status":
+                return _mcp_result(
+                    {
+                        "status": "ok",
+                        "projection_freshness": {
+                            "last_refreshed_at": "2026-03-01T10:00:00+00:00",
+                            "staleness_ms": 42,
+                            "sources": [],
+                        },
+                    }
+                )
+            raise AssertionError(f"Unexpected tool call: {tool_name}")
+
+        app, mock_client = _app_with_mcp(_call)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/calendar/workspace/user-events",
+                json={
+                    "butler_name": "general",
+                    "action": "create",
+                    "request_id": "req-123",
+                    "payload": {
+                        "title": "Plan day",
+                        "start_at": "2026-03-01T10:00:00+00:00",
+                        "end_at": "2026-03-01T11:00:00+00:00",
+                    },
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()["data"]
+        assert body["tool_name"] == "calendar_create_event"
+        assert body["request_id"] == "req-123"
+        assert body["result"]["status"] == "created"
+        assert body["projection_version"] == "2026-03-01T10:00:00+00:00"
+        assert body["staleness_ms"] == 42
+        assert mock_client.call_tool.await_count == 2
+        first_call = mock_client.call_tool.await_args_list[0]
+        assert first_call.args[0] == "calendar_create_event"
+        assert first_call.args[1]["request_id"] == "req-123"
+
+
+class TestCalendarWorkspaceButlerEvents:
+    async def test_butler_event_create_sets_butler_name_and_request_id(self):
+        async def _call(tool_name: str, arguments: dict):
+            assert tool_name == "calendar_create_butler_event"
+            return _mcp_result(
+                {
+                    "status": "created",
+                    "event_id": "9adf0d14-2adf-4d67-8c43-5f62ffe5d7be",
+                    "projection_freshness": {
+                        "last_refreshed_at": "2026-03-01T12:00:00+00:00",
+                        "staleness_ms": 0,
+                        "sources": [],
+                    },
+                }
+            )
+
+        app, mock_client = _app_with_mcp(_call)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/calendar/workspace/butler-events",
+                json={
+                    "butler_name": "general",
+                    "action": "create",
+                    "request_id": "req-butler-1",
+                    "payload": {
+                        "title": "Daily prep",
+                        "start_at": "2026-03-02T09:00:00+00:00",
+                        "end_at": "2026-03-02T09:15:00+00:00",
+                        "cron": "0 9 * * *",
+                    },
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()["data"]
+        assert body["tool_name"] == "calendar_create_butler_event"
+        assert body["result"]["status"] == "created"
+        assert body["projection_version"] == "2026-03-01T12:00:00+00:00"
+        assert mock_client.call_tool.await_count == 1
+        first_call = mock_client.call_tool.await_args_list[0]
+        assert first_call.args[1]["butler_name"] == "general"
+        assert first_call.args[1]["request_id"] == "req-butler-1"
+
+    async def test_butler_event_toggle_fetches_sync_status_when_projection_missing(self):
+        async def _call(tool_name: str, arguments: dict):
+            if tool_name == "calendar_toggle_butler_event":
+                return _mcp_result({"status": "updated", "enabled": False})
+            if tool_name == "calendar_sync_status":
+                return _mcp_result(
+                    {
+                        "status": "ok",
+                        "projection_freshness": {
+                            "last_refreshed_at": "2026-03-02T08:00:00+00:00",
+                            "staleness_ms": 150,
+                            "sources": [],
+                        },
+                    }
+                )
+            raise AssertionError(f"Unexpected tool call: {tool_name}")
+
+        app, mock_client = _app_with_mcp(_call)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/calendar/workspace/butler-events",
+                json={
+                    "butler_name": "relationship",
+                    "action": "toggle",
+                    "request_id": "toggle-1",
+                    "payload": {
+                        "event_id": "7a001205-1ef2-4f53-95f9-b9ac6801a0b7",
+                        "enabled": False,
+                    },
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()["data"]
+        assert body["tool_name"] == "calendar_toggle_butler_event"
+        assert body["staleness_ms"] == 150
+        assert mock_client.call_tool.await_count == 2
+        assert mock_client.call_tool.await_args_list[0].args[0] == "calendar_toggle_butler_event"
+        assert mock_client.call_tool.await_args_list[1].args[0] == "calendar_sync_status"

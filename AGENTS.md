@@ -802,9 +802,16 @@ make test-qg
 - Core migration `core_005` adds app-native calendar projection tables in each migrated schema: `calendar_sources`, `calendar_events`, `calendar_event_instances`, `calendar_sync_cursors`, and `calendar_action_log`.
 - Range-window queries are supported by GiST indexes on `tstzrange(starts_at, ends_at, '[)')` for both events and instances; source lookups use `(source_id, starts_at)` indexes.
 - Deterministic source linkage/idempotency guarantees are enforced by `UNIQUE (source_id, origin_ref)` on `calendar_events`, `UNIQUE (event_id, origin_instance_ref)` on `calendar_event_instances`, and `UNIQUE (idempotency_key)` on `calendar_action_log`.
-- Keep migration tests aligned: `tests/config/test_migrations.py::CORE_HEAD_REVISION` should track `core_005`, and `tests/config/test_schema_matrix_migrations.py::CORE_TABLES` must include the calendar projection tables.
+- Scheduler calendar-linkage migration is linearized as `core_006` (`down_revision="core_005"`), so `tests/config/test_migrations.py::CORE_HEAD_REVISION` should track `core_006`.
+- `tests/config/test_schema_matrix_migrations.py::CORE_TABLES` must include the calendar projection tables.
 
 ### Calendar workspace API contract
 - Dashboard API now exposes `/api/calendar/workspace` (range query), `/api/calendar/workspace/meta` (capabilities + connected sources + writable calendars + lane definitions), and `/api/calendar/workspace/sync` (global or source-targeted sync trigger).
 - `POST /api/calendar/workspace/sync` delegates to each target butler MCP `calendar_force_sync`; source-targeted provider rows pass `{"calendar_id": <calendar_id>}`, while internal-source rows call with `{}`.
 - Workspace read payload shape is `ApiResponse[CalendarWorkspaceReadResponse]` with `data.entries` (normalized `UnifiedCalendarEntry[]`), `data.source_freshness`, and `data.lanes`.
+
+### Calendar workspace mutation contract
+- Dashboard workspace mutation routes live in `src/butlers/api/routers/calendar_workspace.py`: `POST /api/calendar/workspace/user-events` (`create|update|delete`) and `POST /api/calendar/workspace/butler-events` (`create|update|delete|toggle`), with request envelope `{butler_name, action, request_id?, payload}`.
+- Mutation routes proxy to MCP tools and must return projection freshness metadata (`projection_version`, `staleness_ms`, `projection_freshness`) by using tool-returned freshness or falling back to `calendar_sync_status`.
+- Calendar module mutation idempotency uses `calendar_action_log.idempotency_key` keyed by action + `request_id`; repeat requests should replay stored applied/noop results instead of re-executing side effects.
+- Butler-event MCP tools are `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, and `calendar_toggle_butler_event`; high-impact delete/toggle operations integrate with approval enqueueing and set `_approval_bypass=True` on queued replays.
