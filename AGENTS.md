@@ -746,3 +746,12 @@ make test-qg
 
 ### Butler runtime concurrency baseline
 - All current roster butlers (`switchboard`, `general`, `relationship`, `health`, `messenger`) should explicitly set `[butler.runtime].max_concurrent_sessions = 3` in their `roster/*/butler.toml` to avoid unintended fallback to the serial default (`1`) for scheduled/tool-trigger workloads.
+
+### CRM backfill pipeline (contacts module) patterns
+- `src/butlers/modules/contacts/backfill.py` implements the apply_contact callback wired into `ContactsSyncEngine` at startup. Three-class design: `ContactBackfillResolver` (identity matching pipeline), `ContactBackfillWriter` (table mapping/upsert), `ContactBackfillEngine` (orchestrates resolver→writer→activity feed).
+- Identity resolution order: source_link > email > phone > name (single match) > ambiguous_name (skip auto-merge).
+- Conflict policy: provenance tracked in `contacts.metadata` JSONB under `sources.contacts.{provider}.{field}`. Source wins only if field is provenance-owned; locally-edited fields (no provenance) are preserved.
+- `ON CONFLICT DO NOTHING` without a conflict target is valid PostgreSQL syntax. The production CRM tables (`contact_info`, `addresses`, `important_dates`) lack composite unique constraints — adding those would require separate schema migration beads.
+- `upsert_source_link` accepts `local_id: uuid.UUID | None`; returns early without creating a link when `local_id is None` (tombstone with no known local contact).
+- Activity feed event types: `contact_synced`, `contact_sync_updated`, `contact_sync_conflict`, `contact_sync_deleted_source`.
+- Tests use `pytestmark = pytest.mark.integration` with `provisioned_postgres_pool` fixture and create all CRM tables inline in the `crm_pool` fixture.
