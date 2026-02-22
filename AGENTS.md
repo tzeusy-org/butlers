@@ -161,6 +161,7 @@ Each butler has a `MANIFESTO.md` that defines its public identity and value prop
 
 ### Calendar module config reminder
 - Calendar configs run through `src/butlers/daemon.py::_validate_module_configs`, which loads the module's `config_schema` and rejects extra/missing fields; `CalendarConfig` in `src/butlers/modules/calendar.py:906-925` demands `provider` + `calendar_id`, so any butler must populate them before the module can enable.
+- Calendar module today only persists sync metadata via `_state_get/_state_set` (aka the shared `state` table) and exposes Google-backed tools (list/get, create/update/delete, add/remove attendees, sync status/force) plus the background poller; there is no `calendar_events`/`scheduled_tasks` projection wiring or workspace tooling described in `docs/modules/calendar.md`.
 
 ### Contacts module sync contract
 - The contacts module is expected to run its incremental sync as an internal poll loop, not as a standalone connector (see `docs/modules/contacts_draft.md` §8); the default cadence is an immediate incremental run on startup, recurring polling every 15 minutes, and a forced full refresh every 6 days before the sync token expires.
@@ -268,6 +269,17 @@ uv run ruff check src/ tests/ roster/ conftest.py
 uv run ruff format --check src/ tests/ roster/ conftest.py
 make test-qg
 ```
+
+### Calendar persistence gap
+- `docs/modules/calendar.md` defines `calendar_sources`, `calendar_events`, `calendar_event_instances`, `calendar_sync_cursors`, and `calendar_action_log` as the target-state stores plus the scheduler/reminder linkage, but no migrations or tables for those models exist today (only the doc and scheduler/reminder specs reference them).
+- `alembic/versions/core/core_001_target_state_baseline.py` still defines only the core tables (`state`, `scheduled_tasks`, `sessions`, `route_inbox`), so `scheduled_tasks` lacks the timezone/start/end/until/display_title/calendar_event_id columns the calendar projector expects.
+- Relationship reminders (`roster/relationship/migrations/001_relationship_tables.py`) only record `cron`, `due_at`, and `dismissed`, so we still need timezone/next_trigger/until tracking for reminder projection.
+
+### Calendar workspace audit
+- `docs/modules/calendar.md` describes the `/butlers/calendar` dual-view workspace plus workspace query/mutation tools for user and butler lanes, but `frontend/src/router.tsx:35-74` exposes no `/butlers/calendar` route and no calendar page components are wired yet.
+- The only API surface touching time-based work today is the butler schedule CRUD proxy (`/api/butlers/{name}/schedules`) in `src/butlers/api/routers/schedules.py:1-301`; no workspace query endpoint, event getters, or reminder APIs exist to feed a calendar grid.
+- Frontend schedule management is limited to `ButlerDetailPage` tabs and the `ButlerSchedulesTab`/`ScheduleTable`/`ScheduleForm` components (`frontend/src/pages/ButlerDetailPage.tsx:398-520`, `frontend/src/components/butler-detail/ButlerSchedulesTab.tsx:44-200`); there is no grid-style, provider-backed or reminder-merged timeline rendering for a Google Calendar-like view.
+- Reminder tooling lives entirely in butler MCP tools (e.g., `roster/relationship/tools/reminders.py`) with no API/frontend surface today, so the calendar workspace cannot surface butler reminder events yet.
 
 ### Parallel Test Command
 - Default quality-gate pytest scope uses `pytest-xdist` (`-n auto`) via `make test-qg`.

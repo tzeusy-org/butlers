@@ -1,7 +1,7 @@
 # Calendar Module: Permanent Definition
 
 Status: Normative (Target State)
-Last updated: 2026-02-18
+Last updated: 2026-02-22
 Primary owner: Platform/Modules
 
 ## 1. Module
@@ -16,6 +16,8 @@ It is responsible for:
 - Tracking invitee/attendee state (accepted, declined, tentative, needs-action) and response changes.
 - Providing event documentation through structured descriptions and private notes.
 - Keeping the hosting butler's calendar view current through polling-based sync (v1) with a path toward push/subscription (v2+).
+- Powering a Google Calendar-like dashboard page at `/butlers/calendar` (for example `https://tzeusy.parrot-hen.ts.net/butlers/calendar`) with a view toggle between user events and butler-managed schedules/reminders.
+- Persisting normalized calendar data in-app so the dashboard can query fast, consistent calendar state across sources and butlers.
 
 This document is the authoritative target-state contract for calendar behavior when the module is enabled.
 
@@ -27,6 +29,8 @@ This document is the authoritative target-state contract for calendar behavior w
 - Timezone-first: all event boundaries carry explicit IANA timezone information. Naive datetimes are rejected or resolved against the butler's configured default timezone.
 - Fail-open for reads, fail-closed for writes: list/get failures log and return partial results; create/update/delete failures must not silently drop mutations.
 - Approval-integrated: overlap overrides and high-impact scheduling actions (e.g., cancelling events with external attendees) can be routed through the approvals module when enabled.
+- Dual-view workspace: a single calendar surface supports `user` and `butler` modes with shared interaction patterns (create/edit/delete/drag/reschedule/sync).
+- App-native persistence: external provider events and internal butler schedules/reminders are normalized into durable local records for rendering, analytics, and deterministic reconciliation.
 
 ## 3. Applicability and Boundaries
 
@@ -40,13 +44,15 @@ This document is the authoritative target-state contract for calendar behavior w
 - Butler-generated event tagging and identification.
 - Conflict policy enforcement and suggested-slot generation.
 - Approval integration for overlap overrides.
+- Dashboard calendar UX contract for `/butlers/calendar`, including `user` and `butler` views.
+- In-app calendar storage/projection model for user calendars plus butler schedule/reminder events.
 
 ### Out of scope
 - Direct CalDAV/iCal protocol implementation (providers wrap their native APIs).
 - Calendar sharing or ACL management.
 - Video conferencing link generation (Google Meet, Zoom, etc.).
-- Cross-butler shared calendar access (each butler owns its own calendar view; cross-butler coordination goes through the Switchboard).
-- Calendar UI rendering (frontend surfaces are defined in `docs/frontend/`).
+- Cross-butler execution coupling (the dashboard may read all butlers, but execution ownership remains per butler and goes through existing APIs/tools).
+- Full parity with every native provider feature (color palettes, offline editing, conference lifecycle, resource booking, etc.).
 
 ## 4. Runtime Architecture Contract
 
@@ -57,6 +63,9 @@ This document is the authoritative target-state contract for calendar behavior w
 - `Sync poller`: scheduled task that pulls recent changes and updates local event cache (when local cache is enabled).
 - `Conflict engine`: pre-write conflict detection using provider free/busy APIs and local event data.
 - `Approval enqueuer`: optional callback wired by the daemon when the approvals module is co-loaded.
+- `Calendar projection store`: normalized local tables for both external user events and internal butler schedule/reminder events.
+- `Calendar workspace API`: backend query layer serving `/butlers/calendar` range/window requests.
+- `Butler schedule projector`: adapter that maps `scheduled_tasks` plus butler-specific reminder tables into unified calendar entries.
 
 ### 4.2 Mandatory runtime flows
 
@@ -86,9 +95,17 @@ This document is the authoritative target-state contract for calendar behavior w
    - New, updated, and cancelled events are reflected in local cache.
    - Sync failures are logged but do not block butler operation.
 
+6. `Workspace projection refresh`
+   - A projector pass materializes/updates unified entries used by `/butlers/calendar`.
+   - Provider-origin events are upserted from sync payloads.
+   - Butler-origin events are upserted from scheduler/reminder sources and carry source pointers for bidirectional edits.
+   - Projection lag is tracked and exposed via sync/status APIs.
+
 ### 4.3 Determinism and isolation
-- All calendar data flows through the configured provider API; no direct cross-butler calendar access.
-- Calendar reads are stateless queries against the external provider (or local cache when enabled).
+- Provider writes always flow through the configured provider API (Google v1 today).
+- Dashboard reads are federated: per-butler stores can be queried and merged in a single UI response.
+- Cross-butler visibility is read-only at the aggregation layer; mutations are routed to the owning butler/source adapter.
+- Calendar reads for `/butlers/calendar` are served from local projection tables first, with provider fallback when the projection is stale/unavailable.
 - Conflict detection is point-in-time; concurrent external changes may create races that are acceptable for v1.
 - Butler-generated event metadata uses provider-specific private properties (Google `extendedProperties.private`) to avoid polluting user-visible fields.
 
@@ -229,6 +246,63 @@ The calendar workspace uses normalized persistence tables for source metadata, u
 
 Provider sync and workspace mutation handlers MUST use `calendar_action_log.idempotency_key` to prevent duplicate side effects during retries/replays, and MUST maintain deterministic source linkage via `calendar_events(source_id, origin_ref)` and `calendar_event_instances(event_id, origin_instance_ref)`.
 
+### 5.9 UnifiedCalendarEntry (local workspace read model)
+
+Purpose: single shape returned to `/butlers/calendar` regardless of source type.
+
+Required fields:
+- `entry_id` (uuid): local primary key.
+- `view` (Literal["user", "butler"]): which workspace mode the entry belongs to.
+- `source_type` (Literal["provider_event", "scheduled_task", "butler_reminder", "manual_butler_event"]): source category.
+- `title` (str): display title shown on calendar grid/list.
+- `start_at` (datetime): timezone-aware start boundary.
+- `end_at` (datetime): timezone-aware end boundary.
+- `timezone` (str): canonical IANA timezone.
+- `all_day` (bool): all-day flag.
+
+Optional fields:
+- `calendar_id` (str | None): external provider calendar identifier when applicable.
+- `provider_event_id` (str | None): upstream provider event identifier.
+- `butler_name` (str | None): owning butler (required for `view="butler"`).
+- `schedule_id` (uuid | None): pointer to `scheduled_tasks.id` when source is a scheduler row.
+- `reminder_id` (uuid | None): pointer to a module reminder row when source is reminder-backed.
+- `rrule` (str | None): recurrence rule for rendering and editing.
+- `cron` (str | None): cron expression for scheduler-backed entries.
+- `until_at` (datetime | None): end-of-series boundary (e.g., "every day until March 1").
+- `status` (str): `active`, `paused`, `completed`, `cancelled`, or `error`.
+- `sync_state` (str | None): projection freshness marker (`fresh`, `stale`, `syncing`, `failed`).
+- `editable` (bool): whether UI can edit in current context.
+- `metadata` (dict[str, Any]): source-specific metadata for detail drawers.
+
+### 5.10 App-native storage tables (target state)
+
+The module must persist calendar state in-app (not only in provider APIs) using the following logical tables.
+
+| Table | Purpose | Key columns |
+|-------|---------|-------------|
+| `calendar_sources` | Connected calendars and internal source adapters | `id`, `kind` (`google`, `outlook`, `internal_scheduler`, `internal_reminders`), `owner_scope`, `status`, `last_synced_at`, `last_error` |
+| `calendar_events` | Canonical event records (one row per series/master entity) | `id`, `view`, `source_id`, `source_external_id`, `title`, `description`, `timezone`, `all_day`, `rrule`, `cron`, `until_at`, `status`, `butler_name`, `origin_ref` (JSONB) |
+| `calendar_event_instances` | Expanded occurrences for fast range queries | `id`, `event_id`, `instance_start_at`, `instance_end_at`, `instance_status`, `is_exception` |
+| `calendar_sync_cursors` | Incremental sync and projection checkpoints per source | `source_id`, `cursor_type`, `cursor_value`, `updated_at` |
+| `calendar_action_log` | Auditable record of UI/API mutations and reconciliation actions | `id`, `event_id`, `action`, `actor`, `request_id`, `payload`, `created_at` |
+
+`origin_ref` contract:
+- Provider event: `{"provider":"google","calendar_id":"...","event_id":"..."}`
+- Scheduler event: `{"table":"scheduled_tasks","id":"<uuid>"}`
+- Reminder event: `{"table":"reminders","id":"<uuid>","module":"relationship|health|..."}`.
+
+### 5.11 Required changes to existing scheduler/reminder models
+
+To support full calendar editing in `butler` view, the scheduler/reminder source models need additional fields:
+- `scheduled_tasks`: add `timezone`, `start_at`, `end_at`, `until_at`, `display_title`, and `calendar_event_id` (nullable FK to `calendar_events.id`).
+- Reminder-capable modules (for example relationship reminders): expose `timezone`, `next_trigger_at`, and optional `until_at` consistently for projection.
+- All butler-origin schedules/reminders must store stable IDs and last-updated timestamps so the projector can perform deterministic upserts.
+
+This allows flows like:
+- "Health butler: remind me at 9:00 AM every day until 2026-03-01 to take medicines"
+- UI writes one `calendar_events` row (`view="butler"`, `rrule=RRULE:FREQ=DAILY;UNTIL=20260301T140000Z`, `butler_name="health"`)
+- Projector/materializer emits/updates underlying execution rows (`scheduled_tasks` or module reminder rows) while preserving linkage via `calendar_event_id`.
+
 ## 6. Timezone Contract
 
 ### 6.1 Storage and representation
@@ -323,11 +397,11 @@ Provider sync and workspace mutation handlers MUST use `calendar_action_log.idem
 ### 10.1 Polling model (v1)
 - Each butler with the calendar module runs a scheduled polling task (configured in `butler.toml` schedule).
 - The poller calls the provider's incremental sync endpoint (Google Calendar `syncToken` / `nextSyncToken`).
-- Changed events since the last sync are fetched and used to update local cache (when enabled) or trigger butler actions.
+- Changed events since the last sync are fetched and used to update local cache/projection tables and trigger butler actions.
 - Poll interval is configurable; recommended default is 5 minutes for active butlers.
 
 ### 10.2 Sync state
-- The module persists the provider's sync token in the butler's state store (KV JSONB).
+- The module persists provider cursors/checkpoints in `calendar_sync_cursors` (and may mirror to state KV for backward compatibility).
 - On first sync or token invalidation, a full sync is performed for the configured calendar(s).
 - Sync tokens are calendar-scoped; each configured `calendar_id` has its own token.
 
@@ -339,6 +413,7 @@ Provider sync and workspace mutation handlers MUST use `calendar_action_log.idem
   - Attendee response changes (response_status deltas).
   - Time changes (start_at/end_at deltas).
 - Detected changes are emitted as structured change records for butler processing.
+- Detected changes also drive upsert/delete in `calendar_events` and `calendar_event_instances` for `/butlers/calendar` queries.
 
 ### 10.4 Push/subscription model (target state, v2+)
 - Google Calendar supports push notifications via webhook channels.
@@ -385,6 +460,8 @@ Module config is declared under `[modules.calendar]` in each hosting butler's `b
 ### 12.2 Optional settings
 - `timezone` (str, default `"UTC"`): default IANA timezone for the butler's calendar operations.
 - `read_calendars` (list[str], default `[]`): additional calendar IDs to include in read queries (for cross-calendar visibility without write access).
+- `workspace_enabled` (bool, default `true`): whether this butler contributes to `/butlers/calendar` projection data.
+- `workspace_source_priority` (int, default `100`): merge priority when two sources produce overlapping canonical entries.
 
 ### 12.3 Conflict settings (`[modules.calendar.conflicts]`)
 - `policy` (CalendarConflictPolicy, default `"suggest"`): default conflict policy for create/update operations.
@@ -403,7 +480,13 @@ Module config is declared under `[modules.calendar]` in each hosting butler's `b
 - `interval_minutes` (int, default `5`): polling interval.
 - `full_sync_window_days` (int, default `30`): time window for full sync on first run or token invalidation.
 
-### 12.6 Example configuration
+### 12.6 Workspace settings (`[modules.calendar.workspace]`, target state)
+- `default_view` (Literal["user", "butler"], default `"user"`): initial mode when opening `/butlers/calendar`.
+- `enable_butler_lanes` (bool, default `true`): show per-butler lane split in butler view.
+- `max_range_days` (int, default `90`): maximum range window accepted by workspace APIs.
+- `projection_refresh_seconds` (int, default `60`): target maximum staleness for background projection refresh.
+
+### 12.7 Example configuration
 
 ```toml
 [modules.calendar]
@@ -411,6 +494,8 @@ provider = "google"
 calendar_id = "butler-general@group.calendar.google.com"
 timezone = "America/New_York"
 read_calendars = ["user@gmail.com"]
+workspace_enabled = true
+workspace_source_priority = 100
 
 [modules.calendar.conflicts]
 policy = "suggest"
@@ -428,6 +513,12 @@ visibility = "default"
 enabled = true
 interval_minutes = 5
 full_sync_window_days = 30
+
+[modules.calendar.workspace]
+default_view = "user"
+enable_butler_lanes = true
+max_range_days = 90
+projection_refresh_seconds = 60
 ```
 
 ## 13. MCP Tool Surface Contract
@@ -458,14 +549,26 @@ Calendar tools are registered on each hosting butler MCP server when the module 
 - `calendar_sync_status()`: Return sync state (last sync time, sync token validity, pending changes count).
 - `calendar_force_sync(calendar_id?)`: Trigger an immediate sync outside the normal polling schedule.
 
-### 13.6 Tool identity and I/O model
+### 13.6 Butler-view scheduling tools (target state)
+- `calendar_list_butler_events(start_at, end_at, butlers?, include_disabled?)`: List butler schedule/reminder entries in unified form for lane rendering.
+- `calendar_create_butler_event(butler_name, title, start_at, end_at?, timezone?, recurrence_rule?, cron?, until_at?, action, action_args?, source_hint?)`: Create a butler-owned scheduled event/reminder from calendar UI.
+- `calendar_update_butler_event(event_id, title?, start_at?, end_at?, timezone?, recurrence_rule?, cron?, until_at?, enabled?)`: Update an existing butler-owned event.
+- `calendar_delete_butler_event(event_id, scope?)`: Cancel/delete a butler-owned one-off or recurring series.
+- `calendar_toggle_butler_event(event_id, enabled)`: Pause/resume recurring butler events.
+
+### 13.7 Workspace query tools (target state)
+- `calendar_workspace_query(view, start_at, end_at, timezone?, butlers?, calendars?, include_metadata?)`: Backing query for `/butlers/calendar` month/week/day/list surfaces.
+- `calendar_workspace_mutate(action, payload)`: Thin action gateway for UI interactions that need routing to provider, scheduler, or reminder adapters.
+
+### 13.8 Tool identity and I/O model
 Calendar tools operate on the butler's configured calendar credentials. Following the I/O model contract:
 - Calendar tools that only read data are inputs with `approval_default="none"`.
 - Calendar tools that create, update, or delete events are outputs with `approval_default="conditional"`.
 - Overlap overrides are additionally gated through the approvals module when configured (see section 7.4).
 - v1 does not distinguish user-identity vs. bot-identity for calendar operations (the butler acts through a single set of OAuth credentials). Target state: support `user_calendar_*` and `bot_calendar_*` tool prefixes when user-delegated calendar access is available.
+- Butler-view mutations target explicit `butler_name` ownership and translate to `scheduled_tasks` and/or module reminder records.
 
-### 13.7 Lineage propagation
+### 13.9 Lineage propagation
 - All tools accept optional `request_context` metadata.
 - If `request_context.request_id` is present, the value is preserved in audit/event surfaces for trace correlation.
 
@@ -487,8 +590,8 @@ Every provider adapter must implement the `CalendarProvider` abstract base class
 ### 14.2 Google Calendar adapter (v1)
 - Authentication: OAuth 2.0 refresh-token flow using DB-first credential resolution.
   Credentials are resolved at startup via `resolve_google_credentials(pool)`:
-  1. DB lookup (from `butler_secrets` using keys `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`)
-  2. Env-var fallback: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`
+  1. DB lookup (from `butler_secrets` using keys `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`).
+  2. No runtime env-var fallback; runtime resolution is DB-backed only.
   Legacy `BUTLER_GOOGLE_CALENDAR_CREDENTIALS_JSON` is not used by runtime credential resolution.
 - API base: `https://www.googleapis.com/calendar/v3`.
 - Event mapping: Google event payloads are translated to/from canonical `CalendarEvent` shapes, including timezone resolution, attendee extraction, recurrence rule parsing, and extended property mapping.
@@ -532,12 +635,72 @@ All tool errors return structured dictionaries:
 - Credential values, access tokens, and refresh tokens are never included in error messages or logs.
 - Provider error payloads may contain user data; these are passed through only in the `message` field after sanitization.
 
-## 16. Non-Goals
+## 16. Calendar Workspace UX Contract (`/butlers/calendar`)
 
-- Replacing the user's native calendar application or UI.
+### 16.1 Route and visual model
+- Canonical route: `/butlers/calendar` (for example `https://tzeusy.parrot-hen.ts.net/butlers/calendar`).
+- UX target: Google Calendar-like interaction model (month/week/day/list switcher, drag-to-create, drag-to-reschedule, side panel details, quick-add).
+- The page must feel like one calendar workspace with a primary mode switch, not two disconnected screens.
+
+### 16.2 Required view toggle
+- A top-level segmented control toggles between:
+  - `user` view: user upcoming events across connected user calendars.
+  - `butler` view: butler-managed schedules/reminders, split by butler lane.
+- The selected view is persisted in URL query state (`?view=user|butler`) and restored on reload/share.
+
+### 16.3 `user` view behavior
+- Show upcoming user events in calendar grid/list with provider metadata (calendar/source labels, organizer, attendee state).
+- Provide inline actions:
+  - Create event on a selected connected calendar.
+  - Edit/move/delete user events (subject to provider permissions).
+  - Trigger sync now for one source or all connected sources.
+  - Filter by connected source/calendar.
+- Writes route to provider-backed tools (`calendar_create_event`, `calendar_update_event`, `calendar_delete_event`) and then refresh projection.
+
+### 16.4 `butler` view behavior
+- Show events as per-butler lanes (for example `general`, `relationship`, `health`, `switchboard`) in week/day views and grouped-by-butler in list/month views.
+- Include all scheduled butler items:
+  - Cron/job schedules (`scheduled_tasks` projections).
+  - One-off reminders.
+  - Recurring reminders (including RRULE- or cron-backed reminders with end boundaries).
+- Provide inline actions:
+  - Create a new butler reminder/schedule from cell selection or quick-add.
+  - Edit recurrence/timezone/start/end/until boundaries.
+  - Pause/resume recurring schedules.
+  - Delete one-off or entire recurring series.
+- Required example flow: user creates "Health: remind me at 9:00 AM every day until 2026-03-01 to take medicines"; UI must persist a recurring butler event with explicit `until_at`, bind it to `health`, and project it into executable scheduler/reminder rows.
+
+### 16.5 Interaction and safety rules
+- Drag-reschedule must preserve duration and timezone unless explicitly edited.
+- Recurrence edits require explicit scope selection (`this_instance`, `this_and_following`, `series`) when applicable.
+- Mutations emit optimistic UI updates only when local validation passes; hard failures roll back and surface actionable error details.
+- Butler-view writes use existing approval policies where actions are high impact.
+
+## 17. Calendar API Surface for the Workspace (target state)
+
+Required backend endpoints powering `/butlers/calendar`:
+- `GET /api/calendar/workspace?view=...&start=...&end=...&timezone=...&butlers=...&sources=...`
+  - Returns normalized `UnifiedCalendarEntry[]` and per-source freshness.
+- `POST /api/calendar/workspace/sync`
+  - Triggers projection refresh and optional provider pull (`source_id` or `all=true`).
+- `POST /api/calendar/workspace/user-events`
+  - Create/update/delete user-view provider events.
+- `POST /api/calendar/workspace/butler-events`
+  - Create/update/delete/pause/resume butler-view events.
+- `GET /api/calendar/workspace/meta`
+  - Returns view capabilities, connected sources, writable calendars, butler lanes, and default timezone.
+
+API behavior contract:
+- Query path is range-based and returns fully normalized entries (no frontend source-specific joins required).
+- Writes are source-routed and idempotent by `request_id`.
+- Every mutation response includes refreshed projection metadata (`projection_version`, `staleness_ms`).
+
+## 18. Non-Goals
+
+- Full replacement of native provider applications (settings/ACL UX, rooms/resources, conference lifecycle, offline merge semantics).
 - Implementing a standalone scheduling/booking platform.
 - Managing calendar ACLs, sharing settings, or calendar creation/deletion.
 - Generating video conferencing links (Google Meet, Zoom, Teams).
 - Sending calendar invitations outside of the provider's native invitation system.
-- Cross-butler shared calendar state or joint conflict resolution.
-- Real-time collaborative event editing.
+- Joint multi-butler execution semantics (shared rendering is in scope; execution ownership remains per butler).
+- Real-time collaborative event editing with CRDT-style merge.
