@@ -5,6 +5,7 @@ description = "Flexible catch-all assistant for freeform data"
 
 [butler.runtime]
 model = "gpt-5.3-codex-spark"
+max_concurrent_sessions = 3
 
 [runtime]
 type = "codex"

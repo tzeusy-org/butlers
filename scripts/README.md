@@ -35,6 +35,26 @@ You can override with `EXPECTED_PORTS` (comma/space separated), for example:
 EXPECTED_PORTS="54320,40173,40200" ./scripts/clear-processes.sh
 ```
 
+## cleanup_logs.sh
+
+Removes old log files and prunes empty directories under `logs/`.
+
+- Deletes files older than 3 days (default retention)
+- Removes empty subdirectories after file cleanup
+
+### Usage
+
+```bash
+# Use repository logs/ directory (default)
+./scripts/cleanup_logs.sh
+
+# Use a custom logs directory
+./scripts/cleanup_logs.sh /path/to/logs
+```
+
+Optional environment variable:
+- `RETENTION_DAYS` (default: `3`)
+
 ## fix_beads_dependency_timestamps.py
 
 Detects and fixes dependency records with zero timestamps (`created_at="0001-01-01T00:00:00Z"`) in `.beads/issues.jsonl`.

@@ -87,7 +87,7 @@ class ScheduleEntry(BaseModel):
 
     name: str
     cron: str
-    prompt: str
+    prompt: str | None = None
 
 
 class ModuleInfo(BaseModel):

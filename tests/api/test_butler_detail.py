@@ -73,6 +73,29 @@ def _make_roster_with_schedule(tmp_path: Path, name: str = "health", port: int =
     return butler_dir
 
 
+def _make_roster_with_job_schedule(
+    tmp_path: Path,
+    name: str = "relationship",
+    port: int = 40104,
+) -> Path:
+    """Create a butler directory with a deterministic job-mode schedule."""
+    butler_dir = tmp_path / name
+    butler_dir.mkdir(parents=True, exist_ok=True)
+    (butler_dir / "butler.toml").write_text(
+        f'[butler]\nname = "{name}"\nport = {port}\n'
+        f'description = "Relationship butler"\n'
+        f'[butler.db]\nname = "butler_{name}"\n'
+        f"[runtime]\n"
+        f'type = "claude-code"\n'
+        f"[[butler.schedule]]\n"
+        f'name = "eligibility-sweep"\n'
+        f'cron = "*/5 * * * *"\n'
+        f'dispatch_mode = "job"\n'
+        f'job_name = "eligibility_sweep"\n'
+    )
+    return butler_dir
+
+
 def _make_skills(butler_dir: Path, skill_names: list[str]) -> None:
     """Create skill directories with SKILL.md under butler_dir/skills/."""
     skills_dir = butler_dir / "skills"
@@ -274,6 +297,24 @@ class TestGetButlerDetail:
         assert len(data["schedules"]) == 1
         assert data["schedules"][0]["name"] == "daily-check"
         assert data["schedules"][0]["cron"] == "0 8 * * *"
+
+    async def test_includes_job_mode_schedule_without_prompt(self, tmp_path: Path):
+        """Butler detail allows deterministic schedules without prompt text."""
+        _make_roster_with_job_schedule(tmp_path, "relationship", 40104)
+        configs = [ButlerConnectionInfo("relationship", 40104)]
+        mgr = _mock_mcp_manager(online=True)
+        app = _create_test_app(tmp_path, configs, mgr)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/butlers/relationship")
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert len(data["schedules"]) == 1
+        assert data["schedules"][0]["name"] == "eligibility-sweep"
+        assert data["schedules"][0]["prompt"] is None
 
     async def test_handles_unreachable_butler(self, tmp_path: Path):
         """Butler detail returns 'offline' status when MCP is unreachable."""

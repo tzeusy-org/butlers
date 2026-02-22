@@ -318,6 +318,9 @@ make test-qg
 ### Switchboard eligibility sweep schedule contract
 - `roster/switchboard/butler.toml` schedules `eligibility-sweep` as a job-dispatch entry (`dispatch_mode = "job"`, `job_name = "eligibility_sweep"`) rather than a prompt-based schedule.
 
+### Butler detail schedule serialization contract
+- `GET /api/butlers/{name}` serializes `config.schedules` through `ScheduleEntry`; `ScheduleEntry.prompt` must remain nullable because `dispatch_mode="job"` schedules intentionally omit prompt text.
+
 ### Notifications DB fallback contract
 - `src/butlers/api/routers/notifications.py` should degrade gracefully when the switchboard DB pool is unavailable: `GET /api/notifications` and `GET /api/butlers/{name}/notifications` return empty paginated payloads, and `GET /api/notifications/stats` returns zeroed stats instead of propagating a `KeyError`/404.
 - Notifications list serialization must normalize `metadata` to object-or-null without raising on non-mapping JSON values (for example array/string/scalar rows); unsupported metadata shapes should coerce to `null` instead of returning 400/500.
@@ -740,3 +743,6 @@ make test-qg
 - `src/butlers/core/runtimes/claude_code.py` resolves transport with `resolve_runtime_mcp_transport()`: default `http` for `/mcp`, explicit/URL-inferred `sse` for legacy endpoints.
 - Connector ingest clients are still SSE-based (`SWITCHBOARD_MCP_URL=.../sse`) and are intentionally out of scope for spawner runtime transport cutover.
 - Operator cutover/fallback procedure is documented in `docs/operations/spawner-streamable-http-rollout.md`; keep this runbook aligned with transport behavior and rollback guidance.
+
+### Butler runtime concurrency baseline
+- All current roster butlers (`switchboard`, `general`, `relationship`, `health`, `messenger`) should explicitly set `[butler.runtime].max_concurrent_sessions = 3` in their `roster/*/butler.toml` to avoid unintended fallback to the serial default (`1`) for scheduled/tool-trigger workloads.

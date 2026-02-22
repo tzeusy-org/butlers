@@ -5,7 +5,7 @@ description = "Outbound delivery execution plane for Telegram and Email"
 
 [butler.runtime]
 model = "gpt-5.3-codex-spark"
-max_concurrent_sessions = 2
+max_concurrent_sessions = 3
 
 [runtime]
 type = "codex"

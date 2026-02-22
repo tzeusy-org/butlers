@@ -5,6 +5,7 @@ description = "Personal CRM. Manages contacts, relationships, important dates, i
 
 [butler.runtime]
 model = "gpt-5.3-codex-spark"
+max_concurrent_sessions = 3
 
 [runtime]
 type = "codex"

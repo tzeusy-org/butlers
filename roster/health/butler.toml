@@ -5,6 +5,7 @@ description = "Health tracking assistant for measurements, medications, diet, fo
 
 [butler.runtime]
 model = "gpt-5.3-codex-spark"
+max_concurrent_sessions = 3
 
 [runtime]
 type = "codex"

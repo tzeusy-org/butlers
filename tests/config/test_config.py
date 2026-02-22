@@ -1496,12 +1496,19 @@ max_concurrent_sessions = 3
         cfg = load_config(switchboard_config_dir)
         assert cfg.runtime.max_concurrent_sessions == 3
 
-    def test_messenger_roster_has_max_concurrent_sessions_2(self):
-        """Messenger butler.toml sets max_concurrent_sessions = 2."""
+    def test_messenger_roster_has_max_concurrent_sessions_3(self):
+        """Messenger butler.toml sets max_concurrent_sessions = 3."""
         repo_root = Path(__file__).resolve().parent.parent.parent
         messenger_config_dir = repo_root / "roster" / "messenger"
         cfg = load_config(messenger_config_dir)
-        assert cfg.runtime.max_concurrent_sessions == 2
+        assert cfg.runtime.max_concurrent_sessions == 3
+
+    def test_all_roster_butlers_have_min_concurrency_three(self):
+        """All active roster butlers should run with at least 3 concurrent sessions."""
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        for butler in ("switchboard", "general", "relationship", "health", "messenger"):
+            cfg = load_config(repo_root / "roster" / butler)
+            assert cfg.runtime.max_concurrent_sessions >= 3
 
 
 # ---------------------------------------------------------------------------
