@@ -19,6 +19,7 @@ from butlers.google_credentials import (
 )
 from butlers.modules.base import Module
 
+from .backfill import ContactBackfillEngine
 from .sync import (
     DEFAULT_FORCED_FULL_SYNC_DAYS,
     DEFAULT_GOOGLE_PERSON_FIELDS,
@@ -420,14 +421,16 @@ class ContactsModule(Module):
         pool = getattr(db, "pool", None) if db is not None else None
         state_store = ContactsSyncStateStore(pool)
 
-        async def _noop_apply(contact: CanonicalContact) -> None:
-            # Placeholder apply callback until tool layer is wired in.
-            pass
+        backfill_engine = ContactBackfillEngine(
+            pool,
+            provider=self._provider.name,
+            account_id=_DEFAULT_ACCOUNT_ID,
+        )
 
         sync_engine = ContactsSyncEngine(
             provider=self._provider,
             state_store=state_store,
-            apply_contact=_noop_apply,
+            apply_contact=backfill_engine,
         )
 
         self._runtime = ContactsSyncRuntime(
@@ -507,6 +510,7 @@ class ContactsModule(Module):
 
 
 __all__ = [
+    "ContactBackfillEngine",
     "ContactsConfig",
     "ContactsModule",
     "ContactsSyncConfig",
