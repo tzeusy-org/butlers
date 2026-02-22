@@ -38,8 +38,8 @@ class TestModuleABCCompliance:
     def test_credentials_env_declared(self) -> None:
         assert ContactsModule().credentials_env == []
 
-    def test_migration_revisions_none(self) -> None:
-        assert ContactsModule().migration_revisions() is None
+    def test_migration_revisions_returns_contacts_chain(self) -> None:
+        assert ContactsModule().migration_revisions() == "contacts"
 
     def test_module_discovered_in_default_registry(self) -> None:
         assert "contacts" in default_registry().available_modules
