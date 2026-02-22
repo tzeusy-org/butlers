@@ -96,8 +96,12 @@ async def pool(provisioned_postgres_pool):
                 label TEXT NOT NULL,
                 type TEXT NOT NULL DEFAULT 'one_time',
                 next_trigger_at TIMESTAMPTZ,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                until_at TIMESTAMPTZ,
+                calendar_event_id UUID,
                 last_triggered_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ DEFAULT now()
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
         await p.execute("""
@@ -828,6 +832,29 @@ async def test_reminder_create_recurring(pool):
         reminder_type="recurring_monthly",
     )
     assert r["type"] == "recurring_monthly"
+
+
+async def test_reminder_create_projection_linkage_fields(pool):
+    """reminder_create persists timezone/until/linkage fields for projection."""
+    from butlers.tools.relationship import contact_create, reminder_create
+
+    c = await contact_create(pool, "Remind-Projection")
+    next_trigger = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
+    until_at = datetime(2026, 4, 1, 14, 0, tzinfo=UTC)
+    calendar_event_id = uuid.uuid4()
+    r = await reminder_create(
+        pool,
+        contact_id=c["id"],
+        label="Hydration reminder",
+        type="recurring_monthly",
+        next_trigger_at=next_trigger,
+        timezone="America/New_York",
+        until_at=until_at,
+        calendar_event_id=calendar_event_id,
+    )
+    assert r["timezone"] == "America/New_York"
+    assert r["until_at"] == until_at
+    assert r["calendar_event_id"] == calendar_event_id
 
 
 async def test_reminder_list(pool):

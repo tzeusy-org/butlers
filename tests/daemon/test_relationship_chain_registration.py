@@ -27,6 +27,7 @@ EXPECTED_CHAIN = [
     ("rel_004_notes_rework.py", "rel_004", "rel_003"),
     ("rel_005_reminders_rework.py", "rel_005", "rel_004"),
     ("rel_006_crm_schema_extensions.py", "rel_006", "rel_005"),
+    ("rel_007_calendar_projection_linkage.py", "rel_007", "rel_006"),
 ]
 
 
@@ -84,7 +85,7 @@ def test_relationship_chain_has_unique_revisions_and_is_linear() -> None:
 
     assert len(revisions) == len(set(revisions))
 
-    current = "rel_006"
+    current = "rel_007"
     path = [current]
     while chain_map.get(current) is not None:
         current = chain_map[current]
@@ -102,4 +103,5 @@ def test_relationship_chain_has_unique_revisions_and_is_linear() -> None:
         "rel_004",
         "rel_005",
         "rel_006",
+        "rel_007",
     ]

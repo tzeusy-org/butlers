@@ -136,6 +136,12 @@ async def _create_core_and_shared_tables(dsn: str, schema: str) -> None:
                 dispatch_mode TEXT NOT NULL DEFAULT 'prompt',
                 job_name TEXT,
                 job_args JSONB,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                start_at TIMESTAMPTZ,
+                end_at TIMESTAMPTZ,
+                until_at TIMESTAMPTZ,
+                display_title TEXT,
+                calendar_event_id UUID,
                 source TEXT NOT NULL DEFAULT 'db',
                 enabled BOOLEAN NOT NULL DEFAULT true,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -146,8 +152,19 @@ async def _create_core_and_shared_tables(dsn: str, schema: str) -> None:
                     CHECK (
                         (dispatch_mode = 'prompt' AND prompt IS NOT NULL AND job_name IS NULL)
                         OR (dispatch_mode = 'job' AND job_name IS NOT NULL)
-                    )
+                    ),
+                CONSTRAINT scheduled_tasks_window_bounds_check
+                    CHECK (start_at IS NULL OR end_at IS NULL OR end_at > start_at),
+                CONSTRAINT scheduled_tasks_until_bounds_check
+                    CHECK (until_at IS NULL OR start_at IS NULL OR until_at >= start_at)
             )
+            """
+        )
+        await conn.execute(
+            f"""
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_scheduled_tasks_calendar_event_id
+            ON "{schema}"."scheduled_tasks" (calendar_event_id)
+            WHERE calendar_event_id IS NOT NULL
             """
         )
         await conn.execute(

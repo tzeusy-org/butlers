@@ -42,6 +42,11 @@ def _get_db_manager() -> DatabaseManager:
 
 _SCHEDULE_COLUMNS = (
     "id, name, cron, dispatch_mode, prompt, job_name, job_args, "
+    "timezone, start_at, end_at, until_at, display_title, calendar_event_id, "
+    "source, enabled, next_run_at, last_run_at, created_at, updated_at"
+)
+_SCHEDULE_COLUMNS_WITHOUT_LINKAGE = (
+    "id, name, cron, dispatch_mode, prompt, job_name, job_args, "
     "source, enabled, next_run_at, last_run_at, created_at, updated_at"
 )
 _SCHEDULE_COLUMNS_LEGACY = (
@@ -93,6 +98,12 @@ def _row_to_schedule(row) -> Schedule:
         prompt=_row_value(row, "prompt"),
         job_name=_row_value(row, "job_name"),
         job_args=_normalize_job_args(_row_value(row, "job_args")),
+        timezone=_row_value(row, "timezone"),
+        start_at=_row_value(row, "start_at"),
+        end_at=_row_value(row, "end_at"),
+        until_at=_row_value(row, "until_at"),
+        display_title=_row_value(row, "display_title"),
+        calendar_event_id=_row_value(row, "calendar_event_id"),
         source=_row_value(row, "source", "db"),
         enabled=bool(_row_value(row, "enabled", True)),
         next_run_at=_row_value(row, "next_run_at"),
@@ -165,9 +176,15 @@ async def list_schedules(
             f"SELECT {_SCHEDULE_COLUMNS} FROM scheduled_tasks ORDER BY created_at"
         )
     except asyncpg.UndefinedColumnError:
-        rows = await pool.fetch(
-            f"SELECT {_SCHEDULE_COLUMNS_LEGACY} FROM scheduled_tasks ORDER BY created_at"
-        )
+        try:
+            rows = await pool.fetch(
+                f"SELECT {_SCHEDULE_COLUMNS_WITHOUT_LINKAGE} "
+                "FROM scheduled_tasks ORDER BY created_at"
+            )
+        except asyncpg.UndefinedColumnError:
+            rows = await pool.fetch(
+                f"SELECT {_SCHEDULE_COLUMNS_LEGACY} FROM scheduled_tasks ORDER BY created_at"
+            )
     schedules = [_row_to_schedule(row) for row in rows]
     return ApiResponse[list[Schedule]](data=schedules)
 
@@ -197,6 +214,18 @@ async def create_schedule(
             arguments["job_args"] = body.job_args
     else:
         arguments["prompt"] = body.prompt
+    if body.timezone is not None:
+        arguments["timezone"] = body.timezone
+    if body.start_at is not None:
+        arguments["start_at"] = body.start_at.isoformat()
+    if body.end_at is not None:
+        arguments["end_at"] = body.end_at.isoformat()
+    if body.until_at is not None:
+        arguments["until_at"] = body.until_at.isoformat()
+    if body.display_title is not None:
+        arguments["display_title"] = body.display_title
+    if body.calendar_event_id is not None:
+        arguments["calendar_event_id"] = str(body.calendar_event_id)
 
     summary = {"name": body.name, "cron": body.cron, "dispatch_mode": body.dispatch_mode}
     if body.job_name is not None:
@@ -231,6 +260,11 @@ async def update_schedule(
     """Update a scheduled task via MCP tool call to the butler."""
     arguments: dict = {"id": str(schedule_id)}
     updates = body.model_dump(exclude_none=True)
+    for key in ("start_at", "end_at", "until_at"):
+        if key in updates:
+            updates[key] = updates[key].isoformat()
+    if "calendar_event_id" in updates:
+        updates["calendar_event_id"] = str(updates["calendar_event_id"])
     arguments.update(updates)
 
     summary = {"schedule_id": str(schedule_id), **updates}
