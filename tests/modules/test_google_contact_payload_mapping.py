@@ -68,18 +68,10 @@ class TestParseAddresses:
         assert addr.label == "Home"
         assert addr.primary is True
 
-    def test_all_fields_optional_empty_address_still_created(self):
+    def test_all_fields_optional_empty_address_skipped(self):
         raw = [{}]
         result = _parse_addresses(raw)
-        assert len(result) == 1
-        addr = result[0]
-        assert addr.street is None
-        assert addr.city is None
-        assert addr.region is None
-        assert addr.postal_code is None
-        assert addr.country is None
-        assert addr.label is None
-        assert addr.primary is False
+        assert result == []
 
     def test_primary_false_when_metadata_absent(self):
         raw = [{"streetAddress": "10 Elm St"}]
@@ -101,11 +93,11 @@ class TestParseAddresses:
         assert result[0].primary is True
         assert result[1].primary is False
 
-    def test_whitespace_only_fields_become_none(self):
+    def test_whitespace_only_fields_skipped(self):
+        # Whitespace-only fields normalize to None; an address with all-None fields is skipped
         raw = [{"streetAddress": "  ", "city": "\t"}]
         result = _parse_addresses(raw)
-        assert result[0].street is None
-        assert result[0].city is None
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
@@ -196,13 +188,14 @@ class TestParseDateEntry:
         result = _parse_date_entry({"date": "1990-06-15"}, label="birthday")
         assert result is None
 
-    def test_all_zero_int_fields_still_mapped(self):
-        # Google may omit fields entirely; 0 is a valid raw int but unusual
+    def test_zero_fields_normalized_to_none(self):
+        # Google uses 0 to indicate a missing date component
         item = {"date": {"year": 0, "month": 1, "day": 1}}
         result = _parse_date_entry(item, label="test")
-        # year=0 is a valid int; it gets mapped
         assert result is not None
-        assert result.year == 0
+        assert result.year is None
+        assert result.month == 1
+        assert result.day == 1
 
     def test_all_null_fields_returns_none(self):
         item = {"date": {}}

@@ -881,16 +881,24 @@ def _parse_addresses(raw: Any) -> list[ContactAddress]:
     for item in raw:
         if not isinstance(item, dict):
             continue
+        street = _as_non_empty_string(item.get("streetAddress"))
+        city = _as_non_empty_string(item.get("city"))
+        region = _as_non_empty_string(item.get("region"))
+        postal_code = _as_non_empty_string(item.get("postalCode"))
+        country = _as_non_empty_string(item.get("country"))
+        label = _as_non_empty_string(item.get("formattedType"))
+        if not any((street, city, region, postal_code, country, label)):
+            continue
         metadata = item.get("metadata")
         primary = bool(metadata.get("primary")) if isinstance(metadata, dict) else False
         parsed.append(
             ContactAddress(
-                street=_as_non_empty_string(item.get("streetAddress")),
-                city=_as_non_empty_string(item.get("city")),
-                region=_as_non_empty_string(item.get("region")),
-                postal_code=_as_non_empty_string(item.get("postalCode")),
-                country=_as_non_empty_string(item.get("country")),
-                label=_as_non_empty_string(item.get("formattedType")),
+                street=street,
+                city=city,
+                region=region,
+                postal_code=postal_code,
+                country=country,
+                label=label,
                 primary=primary,
             )
         )
@@ -926,9 +934,9 @@ def _parse_date_entry(item: dict[str, Any], label: str | None) -> ContactDate | 
     year_raw = date_obj.get("year")
     month_raw = date_obj.get("month")
     day_raw = date_obj.get("day")
-    year = int(year_raw) if isinstance(year_raw, int) else None
-    month = int(month_raw) if isinstance(month_raw, int) else None
-    day = int(day_raw) if isinstance(day_raw, int) else None
+    year = year_raw if isinstance(year_raw, int) and year_raw != 0 else None
+    month = month_raw if isinstance(month_raw, int) and month_raw != 0 else None
+    day = day_raw if isinstance(day_raw, int) and day_raw != 0 else None
     if year is None and month is None and day is None:
         return None
     return ContactDate(year=year, month=month, day=day, label=label)
