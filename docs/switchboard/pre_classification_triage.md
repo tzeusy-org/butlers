@@ -81,7 +81,7 @@ CREATE TABLE switchboard.triage_rules (
 
   CONSTRAINT triage_rules_action_check
     CHECK (
-      action IN ('skip', 'metadata_only', 'low_priority_queue')
+      action IN ('skip', 'metadata_only', 'low_priority_queue', 'pass_through')
       OR action LIKE 'route_to:%'
     ),
 
@@ -168,7 +168,10 @@ Validation:
 
 Validation:
 - `type` MUST be lowercase and non-empty.
-- Matching checks MIME parts/attachments from normalized envelope payload.
+- `type` supports:
+  - exact matching (e.g. `text/calendar`),
+  - wildcard subtype matching with `/*` suffix (e.g. `image/*`).
+- Matching is evaluated across all normalized MIME parts/attachments in the envelope payload.
 
 ### 4.3 Thread-affinity interaction
 
@@ -214,6 +217,9 @@ Input contract is normalized `ingest.v1` envelope data, including:
 Rules:
 - `target_butler` is required only when `decision=route_to`.
 - `pass_through` means continue to LLM classification unchanged.
+- `pass_through` can be produced by either:
+  - no deterministic rule match, or
+  - an explicit matched rule action (`action='pass_through'`) used for high-priority exceptions.
 
 ### 5.4 Deterministic evaluation order
 
@@ -290,6 +296,7 @@ Response: `201 Created` with created rule payload.
 Validation contract:
 - `rule_type` and `condition` MUST satisfy section 4.2.
 - `action=route_to:<butler>` target MUST be an eligible registry butler.
+- `action` MUST be one of `skip`, `metadata_only`, `low_priority_queue`, `pass_through`, or `route_to:<butler>`.
 
 ### 6.3 Update rule
 
@@ -384,11 +391,11 @@ Seed rules MUST be idempotent on repeated import and marked `created_by='seed'`.
 Required telemetry:
 
 1. `butlers.switchboard.triage.rule_matched` (counter)
-- Increment when a rule (or thread affinity) produces a non-pass-through decision.
+- Increment when a rule (or thread affinity) matches, regardless of resulting action.
 - Required attributes: `rule_type`, `action`, `source_channel`.
 
 2. `butlers.switchboard.triage.pass_through` (counter)
-- Increment when no deterministic match occurs.
+- Increment only when no deterministic match occurs.
 - Required attributes: `source_channel`, `reason` (`no_match|cache_unavailable|rules_disabled`).
 
 3. `butlers.switchboard.triage.evaluation_latency_ms` (histogram)
