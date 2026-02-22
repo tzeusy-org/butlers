@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from butlers.modules.contacts.sync import (
     GOOGLE_CONTACT_GROUPS_URL,
@@ -427,16 +428,10 @@ class TestGoogleContactsProviderListGroups:
 
 class TestGroupBatchModel:
     def test_canonical_group_extra_fields_forbidden(self):
-        import pytest
-        from pydantic import ValidationError
-
         with pytest.raises(ValidationError):
             CanonicalGroup(external_id="contactGroups/1", name="Test", unknown_field="x")
 
     def test_group_batch_extra_fields_forbidden(self):
-        import pytest
-        from pydantic import ValidationError
-
         with pytest.raises(ValidationError):
             GroupBatch(groups=[], unknown_field="x")
 

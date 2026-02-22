@@ -454,6 +454,62 @@ class GoogleContactsProvider(ContactsProvider):
         if self._owns_http_client:
             await self._http_client.aclose()
 
+    async def _authenticated_get_json(
+        self,
+        url: str,
+        params: dict[str, Any],
+        *,
+        api_label: str = "Google",
+    ) -> dict[str, Any]:
+        """Make an authenticated GET request with automatic 401 token-refresh retry.
+
+        Raises ContactsRequestError on non-2xx responses or invalid payloads.
+        Does not handle endpoint-specific status codes (e.g. 410 sync-token expiry);
+        callers requiring special treatment of specific codes should use this method
+        as a post-auth building block or inline their own logic.
+        """
+        token = await self._oauth.get_access_token()
+        response = await self._http_client.get(
+            url,
+            params=params,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            },
+        )
+
+        if response.status_code == 401:
+            token = await self._oauth.get_access_token(force_refresh=True)
+            response = await self._http_client.get(
+                url,
+                params=params,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                },
+            )
+
+        if response.status_code < 200 or response.status_code >= 300:
+            raise ContactsRequestError(
+                status_code=response.status_code,
+                message=_safe_google_error_message(response),
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ContactsRequestError(
+                status_code=response.status_code,
+                message=f"Invalid JSON payload from {api_label} API",
+            ) from exc
+
+        if not isinstance(payload, dict):
+            raise ContactsRequestError(
+                status_code=response.status_code,
+                message=f"{api_label} API payload must be a JSON object",
+            )
+        return payload
+
     async def _request_connections(
         self,
         params: dict[str, Any],
@@ -506,47 +562,11 @@ class GoogleContactsProvider(ContactsProvider):
         return payload
 
     async def _request_contact_groups(self, params: dict[str, Any]) -> dict[str, Any]:
-        token = await self._oauth.get_access_token()
-        response = await self._http_client.get(
+        return await self._authenticated_get_json(
             GOOGLE_CONTACT_GROUPS_URL,
-            params=params,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json",
-            },
+            params,
+            api_label="Google contactGroups",
         )
-
-        if response.status_code == 401:
-            token = await self._oauth.get_access_token(force_refresh=True)
-            response = await self._http_client.get(
-                GOOGLE_CONTACT_GROUPS_URL,
-                params=params,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/json",
-                },
-            )
-
-        if response.status_code < 200 or response.status_code >= 300:
-            raise ContactsRequestError(
-                status_code=response.status_code,
-                message=_safe_google_error_message(response),
-            )
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise ContactsRequestError(
-                status_code=response.status_code,
-                message="Invalid JSON payload from Google contactGroups API",
-            ) from exc
-
-        if not isinstance(payload, dict):
-            raise ContactsRequestError(
-                status_code=response.status_code,
-                message="Google contactGroups API payload must be a JSON object",
-            )
-        return payload
 
 
 def _safe_google_error_message(response: httpx.Response) -> str:
