@@ -63,7 +63,7 @@ Trip-level container and lifecycle state.
 | `destination` | TEXT | NOT NULL |
 | `start_date` | DATE | NOT NULL |
 | `end_date` | DATE | NOT NULL, `end_date >= start_date` |
-| `status` | TEXT | NOT NULL, enum-like: `planned|active|completed|cancelled` |
+| `status` | TEXT | NOT NULL, CHECK (`status` IN ('planned', 'active', 'completed', 'cancelled')) |
 | `metadata` | JSONB | NOT NULL default `{}` |
 | `created_at` | TIMESTAMPTZ | NOT NULL default `now()` |
 | `updated_at` | TIMESTAMPTZ | NOT NULL default `now()` |
@@ -80,7 +80,7 @@ Transport legs for a trip (air/rail/bus/ferry).
 |---|---|---|
 | `id` | UUID | PK, default generated |
 | `trip_id` | UUID | FK -> `travel.trips(id)` ON DELETE CASCADE |
-| `type` | TEXT | NOT NULL, enum-like: `flight|train|bus|ferry` |
+| `type` | TEXT | NOT NULL, CHECK (`type` IN ('flight', 'train', 'bus', 'ferry')) |
 | `carrier` | TEXT | NULL |
 | `departure_airport_station` | TEXT | NULL |
 | `departure_city` | TEXT | NULL |
@@ -107,7 +107,7 @@ Lodging bookings attached to a trip.
 |---|---|---|
 | `id` | UUID | PK, default generated |
 | `trip_id` | UUID | FK -> `travel.trips(id)` ON DELETE CASCADE |
-| `type` | TEXT | NOT NULL, enum-like: `hotel|airbnb|hostel` |
+| `type` | TEXT | NOT NULL, CHECK (`type` IN ('hotel', 'airbnb', 'hostel')) |
 | `name` | TEXT | NOT NULL |
 | `address` | TEXT | NULL |
 | `check_in` | TIMESTAMPTZ | NOT NULL |
@@ -128,7 +128,7 @@ Trip-linked non-leg and non-lodging reservations.
 |---|---|---|
 | `id` | UUID | PK, default generated |
 | `trip_id` | UUID | FK -> `travel.trips(id)` ON DELETE CASCADE |
-| `type` | TEXT | NOT NULL, enum-like: `car_rental|restaurant|activity|tour` |
+| `type` | TEXT | NOT NULL, CHECK (`type` IN ('car_rental', 'restaurant', 'activity', 'tour')) |
 | `provider` | TEXT | NOT NULL |
 | `datetime` | TIMESTAMPTZ | NOT NULL |
 | `confirmation_number` | TEXT | NULL |
@@ -147,7 +147,7 @@ Travel documents and receipts linked to trip context.
 |---|---|---|
 | `id` | UUID | PK, default generated |
 | `trip_id` | UUID | FK -> `travel.trips(id)` ON DELETE CASCADE |
-| `type` | TEXT | NOT NULL, enum-like: `boarding_pass|visa|insurance|receipt` |
+| `type` | TEXT | NOT NULL, CHECK (`type` IN ('boarding_pass', 'visa', 'insurance', 'receipt')) |
 | `blob_ref` | TEXT | NOT NULL |
 | `expiry_date` | DATE | NULL |
 | `metadata` | JSONB | NOT NULL default `{}` |
