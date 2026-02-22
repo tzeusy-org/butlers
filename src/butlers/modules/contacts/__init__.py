@@ -8,6 +8,15 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
+from butlers.google_credentials import (
+    KEY_CLIENT_ID as _GOOGLE_OAUTH_CLIENT_ID_KEY,
+)
+from butlers.google_credentials import (
+    KEY_CLIENT_SECRET as _GOOGLE_OAUTH_CLIENT_SECRET_KEY,
+)
+from butlers.google_credentials import (
+    KEY_REFRESH_TOKEN as _GOOGLE_REFRESH_TOKEN_KEY,
+)
 from butlers.modules.base import Module
 
 from .sync import (
@@ -35,9 +44,6 @@ from .sync import (
 
 logger = logging.getLogger(__name__)
 
-_GOOGLE_OAUTH_CLIENT_ID_KEY = "GOOGLE_OAUTH_CLIENT_ID"
-_GOOGLE_OAUTH_CLIENT_SECRET_KEY = "GOOGLE_OAUTH_CLIENT_SECRET"
-_GOOGLE_REFRESH_TOKEN_KEY = "GOOGLE_REFRESH_TOKEN"
 _DEFAULT_ACCOUNT_ID = "default"
 
 
