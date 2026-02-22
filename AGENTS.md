@@ -284,10 +284,9 @@ make test-qg
 - Relationship reminders (`roster/relationship/migrations/001_relationship_tables.py`) only record `cron`, `due_at`, and `dismissed`, so we still need timezone/next_trigger/until tracking for reminder projection.
 
 ### Calendar workspace audit
-- `docs/modules/calendar.md` describes the `/butlers/calendar` dual-view workspace plus workspace query/mutation tools for user and butler lanes, but `frontend/src/router.tsx:35-74` exposes no `/butlers/calendar` route and no calendar page components are wired yet.
-- The only API surface touching time-based work today is the butler schedule CRUD proxy (`/api/butlers/{name}/schedules`) in `src/butlers/api/routers/schedules.py:1-301`; no workspace query endpoint, event getters, or reminder APIs exist to feed a calendar grid.
-- Frontend schedule management is limited to `ButlerDetailPage` tabs and the `ButlerSchedulesTab`/`ScheduleTable`/`ScheduleForm` components (`frontend/src/pages/ButlerDetailPage.tsx:398-520`, `frontend/src/components/butler-detail/ButlerSchedulesTab.tsx:44-200`); there is no grid-style, provider-backed or reminder-merged timeline rendering for a Google Calendar-like view.
-- Reminder tooling lives entirely in butler MCP tools (e.g., `roster/relationship/tools/reminders.py`) with no API/frontend surface today, so the calendar workspace cannot surface butler reminder events yet.
+- Frontend now exposes a first-class `/butlers/calendar` route (`frontend/src/router.tsx`) and sidebar navigation entry (`frontend/src/components/layout/Sidebar.tsx`).
+- `frontend/src/pages/CalendarWorkspacePage.tsx` provides the initial dual-view shell: query-persisted `view=user|butler` plus `range=month|week|day|list` + `anchor` controls, a primary calendar canvas, and a right-side source/lane panel.
+- Calendar workspace reads are wired via `frontend/src/hooks/use-calendar-workspace.ts` to `GET /api/calendar/workspace` and `GET /api/calendar/workspace/meta`; TypeScript contracts live in `frontend/src/api/types.ts` and client bindings in `frontend/src/api/client.ts`.
 
 ### Parallel Test Command
 - Default quality-gate pytest scope uses `pytest-xdist` (`-n auto`) via `make test-qg`.

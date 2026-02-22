@@ -29,6 +29,7 @@ import EntityDetailPage from './pages/EntityDetailPage.tsx'
 import ApprovalsPage from './pages/ApprovalsPage.tsx'
 import ApprovalRulesPage from './pages/ApprovalRulesPage.tsx'
 import SecretsPage from './pages/SecretsPage.tsx'
+import CalendarWorkspacePage from './pages/CalendarWorkspacePage.tsx'
 
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 
@@ -51,6 +52,7 @@ export const router = createBrowserRouter(
         { path: '/approvals', element: <ApprovalsPage /> },
         { path: '/approvals/rules', element: <ApprovalRulesPage /> },
         { path: '/butlers/contacts', element: <ContactsPage /> },
+        { path: '/butlers/calendar', element: <CalendarWorkspacePage /> },
         { path: '/contacts', element: <ContactsPage /> },
         { path: '/contacts/:contactId', element: <ContactDetailPage /> },
         { path: '/groups', element: <GroupsPage /> },

@@ -358,6 +358,153 @@ export interface ScheduleUpdate {
 }
 
 // ---------------------------------------------------------------------------
+// Calendar workspace
+// ---------------------------------------------------------------------------
+
+/** Workspace mode toggle for /butlers/calendar. */
+export type CalendarWorkspaceView = "user" | "butler";
+
+/** Unified source categories for calendar entries. */
+export type UnifiedCalendarSourceType =
+  | "provider_event"
+  | "scheduled_task"
+  | "butler_reminder"
+  | "manual_butler_event";
+
+/** Freshness state returned by workspace source metadata. */
+export type CalendarWorkspaceSyncState = "fresh" | "stale" | "syncing" | "failed";
+
+/** Normalized event row returned by GET /api/calendar/workspace. */
+export interface UnifiedCalendarEntry {
+  entry_id: string;
+  view: CalendarWorkspaceView;
+  source_type: UnifiedCalendarSourceType;
+  source_key: string;
+  title: string;
+  start_at: string;
+  end_at: string;
+  timezone: string;
+  all_day: boolean;
+  calendar_id: string | null;
+  provider_event_id: string | null;
+  butler_name: string | null;
+  schedule_id: string | null;
+  reminder_id: string | null;
+  rrule: string | null;
+  cron: string | null;
+  until_at: string | null;
+  status: string;
+  sync_state: CalendarWorkspaceSyncState | null;
+  editable: boolean;
+  metadata: Record<string, unknown>;
+}
+
+/** Source-level freshness metadata for workspace rendering. */
+export interface CalendarWorkspaceSourceFreshness {
+  source_id: string;
+  source_key: string;
+  source_kind: string;
+  lane: CalendarWorkspaceView;
+  provider: string | null;
+  calendar_id: string | null;
+  butler_name: string | null;
+  display_name: string | null;
+  writable: boolean;
+  metadata: Record<string, unknown>;
+  cursor_name: string | null;
+  last_synced_at: string | null;
+  last_success_at: string | null;
+  last_error_at: string | null;
+  last_error: string | null;
+  full_sync_required: boolean;
+  sync_state: CalendarWorkspaceSyncState;
+  staleness_ms: number | null;
+}
+
+/** Butler lane descriptor used by butler-view layouts. */
+export interface CalendarWorkspaceLaneDefinition {
+  lane_id: string;
+  butler_name: string;
+  title: string;
+  source_keys: string[];
+}
+
+/** Response payload for GET /api/calendar/workspace. */
+export interface CalendarWorkspaceReadResponse {
+  entries: UnifiedCalendarEntry[];
+  source_freshness: CalendarWorkspaceSourceFreshness[];
+  lanes: CalendarWorkspaceLaneDefinition[];
+}
+
+/** Sync capability flags in workspace metadata. */
+export interface CalendarWorkspaceCapabilitiesSync {
+  global: boolean;
+  by_source: boolean;
+}
+
+/** Workspace capability switches. */
+export interface CalendarWorkspaceCapabilities {
+  views: CalendarWorkspaceView[];
+  filters: Record<string, boolean>;
+  sync: CalendarWorkspaceCapabilitiesSync;
+}
+
+/** Writable user-lane calendar descriptor. */
+export interface CalendarWorkspaceWritableCalendar {
+  source_key: string;
+  provider: string | null;
+  calendar_id: string;
+  display_name: string | null;
+  butler_name: string | null;
+}
+
+/** Response payload for GET /api/calendar/workspace/meta. */
+export interface CalendarWorkspaceMetaResponse {
+  capabilities: CalendarWorkspaceCapabilities;
+  connected_sources: CalendarWorkspaceSourceFreshness[];
+  writable_calendars: CalendarWorkspaceWritableCalendar[];
+  lane_definitions: CalendarWorkspaceLaneDefinition[];
+  default_timezone: string;
+}
+
+/** Query parameters for GET /api/calendar/workspace. */
+export interface CalendarWorkspaceParams {
+  view: CalendarWorkspaceView;
+  start: string;
+  end: string;
+  timezone?: string;
+  butlers?: string[];
+  sources?: string[];
+}
+
+/** Request payload for POST /api/calendar/workspace/sync. */
+export interface CalendarWorkspaceSyncRequest {
+  all?: boolean;
+  source_key?: string;
+  source_id?: string;
+  butler?: string;
+}
+
+/** One sync trigger attempt result. */
+export interface CalendarWorkspaceSyncTarget {
+  butler_name: string;
+  source_key: string | null;
+  calendar_id: string | null;
+  status: string;
+  detail: string | null;
+  error: string | null;
+}
+
+/** Response payload for POST /api/calendar/workspace/sync. */
+export interface CalendarWorkspaceSyncResponse {
+  scope: "all" | "source";
+  requested_source_key: string | null;
+  requested_source_id: string | null;
+  targets: CalendarWorkspaceSyncTarget[];
+  triggered_count: number;
+}
+
+// ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 

@@ -23,6 +23,11 @@ import type {
   ButlerConfigResponse,
   ButlerSkill,
   ButlerSummary,
+  CalendarWorkspaceMetaResponse,
+  CalendarWorkspaceParams,
+  CalendarWorkspaceReadResponse,
+  CalendarWorkspaceSyncRequest,
+  CalendarWorkspaceSyncResponse,
   ContactDetail,
   ContactListResponse,
   ContactParams,
@@ -539,6 +544,50 @@ export function getTimeline(params?: TimelineParams): Promise<TimelineResponse> 
   params?.event_type?.forEach((t) => sp.append("event_type", t));
   const qs = sp.toString();
   return apiFetch<TimelineResponse>(qs ? `/timeline?${qs}` : "/timeline");
+}
+
+// ---------------------------------------------------------------------------
+// Calendar workspace
+// ---------------------------------------------------------------------------
+
+/** Build URLSearchParams from calendar workspace read query parameters. */
+function calendarWorkspaceSearchParams(params: CalendarWorkspaceParams): URLSearchParams {
+  const sp = new URLSearchParams();
+  sp.set("view", params.view);
+  sp.set("start", params.start);
+  sp.set("end", params.end);
+  if (params.timezone != null && params.timezone !== "") sp.set("timezone", params.timezone);
+  params.butlers?.forEach((butler) => {
+    if (butler) sp.append("butlers", butler);
+  });
+  params.sources?.forEach((source) => {
+    if (source) sp.append("sources", source);
+  });
+  return sp;
+}
+
+/** Fetch normalized calendar workspace entries for a given range and view. */
+export function getCalendarWorkspace(
+  params: CalendarWorkspaceParams,
+): Promise<ApiResponse<CalendarWorkspaceReadResponse>> {
+  return apiFetch<ApiResponse<CalendarWorkspaceReadResponse>>(
+    `/calendar/workspace?${calendarWorkspaceSearchParams(params).toString()}`,
+  );
+}
+
+/** Fetch calendar workspace metadata: capabilities, sources, and lanes. */
+export function getCalendarWorkspaceMeta(): Promise<ApiResponse<CalendarWorkspaceMetaResponse>> {
+  return apiFetch<ApiResponse<CalendarWorkspaceMetaResponse>>("/calendar/workspace/meta");
+}
+
+/** Trigger calendar workspace sync globally or for a selected source. */
+export function syncCalendarWorkspace(
+  body: CalendarWorkspaceSyncRequest,
+): Promise<ApiResponse<CalendarWorkspaceSyncResponse>> {
+  return apiFetch<ApiResponse<CalendarWorkspaceSyncResponse>>("/calendar/workspace/sync", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 // ---------------------------------------------------------------------------

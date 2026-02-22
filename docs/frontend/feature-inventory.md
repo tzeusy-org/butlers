@@ -36,6 +36,18 @@ This inventory describes what is implemented today in `frontend/src/**`.
   - initial load error
   - refetch error with stale data retained
 
+## Calendar Workspace (`/butlers/calendar`)
+
+- Top-level `User` / `Butler` segmented toggle, persisted in URL query state (`view`) and restored from deep links/reloads.
+- Range controls for `month`, `week`, `day`, and `list`, with `Prev`/`Today`/`Next` navigation.
+- Query-state range model (`range`, `anchor`) drives calendar window selection and route-restorable state.
+- Calendar shell consumes workspace read/meta APIs:
+  - `GET /api/calendar/workspace` for normalized entries + source freshness + lanes.
+  - `GET /api/calendar/workspace/meta` for connected sources and lane metadata.
+- Dual-pane shell layout:
+  - primary calendar canvas (month grid or event table by selected range)
+  - side panel for source freshness and butler lane summaries
+
 ## Butler Detail (`/butlers/:name`)
 
 ### Overview Tab

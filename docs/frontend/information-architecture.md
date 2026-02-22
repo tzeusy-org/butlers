@@ -25,6 +25,7 @@ Sidebar entries:
 - Audit Log (`/audit-log`)
 - Approvals (`/approvals`)
 - Contacts (`/contacts`)
+- Calendar (`/butlers/calendar`)
 - Groups (`/groups`)
 - Health (`/health/measurements`)
 - Collections (`/collections`)
@@ -41,6 +42,7 @@ Note: `Costs` exists as a route (`/costs`) but is not a sidebar item.
 | --- | --- | --- |
 | `/` | Overview dashboard | Topology + aggregate health + failed notifications + active issues |
 | `/butlers` | Butler list | Status cards for all registered butlers |
+| `/butlers/calendar` | Calendar workspace | Dual-view shell with user/butler toggle and range controls |
 | `/butlers/:name` | Butler detail | Multi-tab control and observability surface |
 | `/sessions` | Session list | Cross-butler sessions with filters + drawer detail |
 | `/sessions/:id` | Session detail | Full metadata/prompt/result/error view |

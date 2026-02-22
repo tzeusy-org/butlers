@@ -11,6 +11,7 @@ const navItems = [
   { path: '/audit-log', label: 'Audit Log' },
   { path: '/approvals', label: 'Approvals' },
   { path: '/contacts', label: 'Contacts' },
+  { path: '/butlers/calendar', label: 'Calendar' },
   { path: '/groups', label: 'Groups' },
   { path: '/health/measurements', label: 'Health' },
   { path: '/collections', label: 'Collections' },
