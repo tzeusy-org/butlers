@@ -18,7 +18,7 @@ pytestmark = [
 ]
 
 REQUIRED_SCHEMAS = ("shared", "general", "health", "messenger", "relationship", "switchboard")
-CORE_HEAD_REVISION = "core_004"
+CORE_HEAD_REVISION = "core_005"
 RUNTIME_ROLES = {
     "general": "butler_general_rw",
     "health": "butler_health_rw",
@@ -190,6 +190,15 @@ def test_core_migrations_create_tables(postgres_container):
     assert _table_exists(db_url, "sessions"), "sessions table should exist"
     assert _table_exists(db_url, "route_inbox"), "route_inbox table should exist"
     assert _table_exists(db_url, "butler_secrets"), "butler_secrets table should exist"
+    assert _table_exists(db_url, "calendar_sources"), "calendar_sources table should exist"
+    assert _table_exists(db_url, "calendar_events"), "calendar_events table should exist"
+    assert _table_exists(db_url, "calendar_event_instances"), (
+        "calendar_event_instances table should exist"
+    )
+    assert _table_exists(db_url, "calendar_sync_cursors"), (
+        "calendar_sync_cursors table should exist"
+    )
+    assert _table_exists(db_url, "calendar_action_log"), "calendar_action_log table should exist"
     assert not _table_exists(db_url, "google_oauth_credentials"), (
         "legacy google_oauth_credentials table should not exist in target-state baseline"
     )
@@ -273,6 +282,163 @@ def test_core_scheduled_task_dispatch_mode_columns_and_constraints(postgres_cont
                         """
                     )
                 )
+    finally:
+        engine.dispose()
+
+
+def test_core_calendar_projection_tables_constraints_and_indexes(postgres_container):
+    """Calendar projection tables should support source lookup, window queries, and idempotency."""
+    from butlers.migrations import run_migrations
+
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
+
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            source_id = conn.execute(
+                text(
+                    """
+                    INSERT INTO calendar_sources (
+                        source_key, source_kind, lane, provider, calendar_id
+                    )
+                    VALUES ('google:user-primary', 'provider', 'user', 'google', 'primary')
+                    RETURNING id
+                    """
+                )
+            ).scalar_one()
+
+            event_id = conn.execute(
+                text(
+                    """
+                    INSERT INTO calendar_events (
+                        source_id,
+                        origin_ref,
+                        title,
+                        timezone,
+                        starts_at,
+                        ends_at
+                    )
+                    VALUES (
+                        :source_id,
+                        'evt-1',
+                        'Planning Session',
+                        'UTC',
+                        now(),
+                        now() + interval '1 hour'
+                    )
+                    RETURNING id
+                    """
+                ),
+                {"source_id": source_id},
+            ).scalar_one()
+            assert event_id is not None
+
+            with pytest.raises(IntegrityError):
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO calendar_events (
+                            source_id,
+                            origin_ref,
+                            title,
+                            timezone,
+                            starts_at,
+                            ends_at
+                        )
+                        VALUES (
+                            :source_id,
+                            'evt-1',
+                            'Duplicate Origin',
+                            'UTC',
+                            now() + interval '2 hours',
+                            now() + interval '3 hours'
+                        )
+                        """
+                    ),
+                    {"source_id": source_id},
+                )
+
+            with pytest.raises(IntegrityError):
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO calendar_events (
+                            source_id,
+                            origin_ref,
+                            title,
+                            timezone,
+                            starts_at,
+                            ends_at
+                        )
+                        VALUES (
+                            :source_id,
+                            'evt-bad-window',
+                            'Bad Window',
+                            'UTC',
+                            now() + interval '2 hours',
+                            now() + interval '1 hour'
+                        )
+                        """
+                    ),
+                    {"source_id": source_id},
+                )
+
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO calendar_action_log (
+                        idempotency_key, action_type, source_id, event_id
+                    )
+                    VALUES ('req-123:create', 'create_event', :source_id, :event_id)
+                    """
+                ),
+                {"source_id": source_id, "event_id": event_id},
+            )
+
+            with pytest.raises(IntegrityError):
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO calendar_action_log (idempotency_key, action_type)
+                        VALUES ('req-123:create', 'create_event')
+                        """
+                    )
+                )
+
+            event_indexes = {
+                str(row[0])
+                for row in conn.execute(
+                    text(
+                        """
+                        SELECT indexname
+                        FROM pg_indexes
+                        WHERE schemaname = 'public'
+                          AND tablename = 'calendar_events'
+                        """
+                    )
+                )
+            }
+            assert "ix_calendar_events_source_starts_at" in event_indexes
+            assert "ix_calendar_events_time_window_gist" in event_indexes
+
+            instance_indexes = {
+                str(row[0])
+                for row in conn.execute(
+                    text(
+                        """
+                        SELECT indexname
+                        FROM pg_indexes
+                        WHERE schemaname = 'public'
+                          AND tablename = 'calendar_event_instances'
+                        """
+                    )
+                )
+            }
+            assert "ix_calendar_event_instances_source_starts_at" in instance_indexes
+            assert "ix_calendar_event_instances_time_window_gist" in instance_indexes
     finally:
         engine.dispose()
 

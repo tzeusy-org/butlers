@@ -772,3 +772,9 @@ make test-qg
 - `src/butlers/modules/contacts/migrations/001_contacts_sync_tables.py` must create `contacts_source_links.local_contact_id` without an inline FK and add `contacts_source_links_local_contact_id_fkey` only when `contacts` exists in the current schema (`to_regclass(format('%I.contacts', current_schema()))`).
 - This guard keeps module migration `contacts_001` safe for schemas that enable contacts but do not own CRM `contacts` (for example `general` and `health`).
 - `tests/config/test_schema_matrix_migrations.py` `CHAIN_TABLES` must include `contacts` module tables so one-db schema-matrix runs exercise contacts migrations across all enabled schemas.
+
+### Calendar workspace projection baseline contract
+- Core migration `core_005` adds app-native calendar projection tables in each migrated schema: `calendar_sources`, `calendar_events`, `calendar_event_instances`, `calendar_sync_cursors`, and `calendar_action_log`.
+- Range-window queries are supported by GiST indexes on `tstzrange(starts_at, ends_at, '[)')` for both events and instances; source lookups use `(source_id, starts_at)` indexes.
+- Deterministic source linkage/idempotency guarantees are enforced by `UNIQUE (source_id, origin_ref)` on `calendar_events`, `UNIQUE (event_id, origin_instance_ref)` on `calendar_event_instances`, and `UNIQUE (idempotency_key)` on `calendar_action_log`.
+- Keep migration tests aligned: `tests/config/test_migrations.py::CORE_HEAD_REVISION` should track `core_005`, and `tests/config/test_schema_matrix_migrations.py::CORE_TABLES` must include the calendar projection tables.
