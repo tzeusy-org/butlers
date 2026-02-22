@@ -215,6 +215,20 @@ Controls whether attendees receive email notifications for event changes.
 
 Butler default: `none` for butler-managed events (to avoid spam). Overridable per-tool-call.
 
+### 5.8 Workspace Projection Persistence (v1)
+
+The calendar workspace uses normalized persistence tables for source metadata, unified events, expanded instances, sync checkpoints, and mutation audit/idempotency tracking.
+
+| Table | Purpose | Required columns | Key constraints/indexes |
+|------|---------|------------------|-------------------------|
+| `calendar_sources` | Source registry for user/provider and butler lanes. | `id`, `source_key`, `source_kind`, `lane`, `metadata`, `created_at`, `updated_at` | `UNIQUE(source_key)`; `lane IN ('user','butler')`; source lookup index on `(lane, source_kind)` |
+| `calendar_events` | Canonical projected event rows. | `id`, `source_id`, `origin_ref`, `title`, `timezone`, `starts_at`, `ends_at`, `status`, `metadata` | `UNIQUE(source_id, origin_ref)`; `ends_at > starts_at`; status enum check; source/time index `(source_id, starts_at)`; GiST range index on `tstzrange(starts_at, ends_at, '[)')` |
+| `calendar_event_instances` | Expanded recurrence/event instances. | `id`, `event_id`, `source_id`, `origin_instance_ref`, `timezone`, `starts_at`, `ends_at`, `status`, `metadata` | `UNIQUE(event_id, origin_instance_ref)`; `ends_at > starts_at`; status enum check; source/event time indexes and GiST range index for window overlap |
+| `calendar_sync_cursors` | Incremental/full sync checkpoints per source. | `source_id`, `cursor_name`, `sync_token`, `checkpoint`, `last_synced_at`, `created_at`, `updated_at` | `PRIMARY KEY(source_id, cursor_name)`; non-empty cursor name check; stale-sync lookup index on `last_synced_at` |
+| `calendar_action_log` | Mutation audit trail + idempotency guardrail. | `id`, `idempotency_key`, `action_type`, `action_status`, `action_payload`, `created_at`, `updated_at` | `UNIQUE(idempotency_key)`; action status enum check; request/source/event/instance audit lookup indexes |
+
+Provider sync and workspace mutation handlers MUST use `calendar_action_log.idempotency_key` to prevent duplicate side effects during retries/replays, and MUST maintain deterministic source linkage via `calendar_events(source_id, origin_ref)` and `calendar_event_instances(event_id, origin_instance_ref)`.
+
 ## 6. Timezone Contract
 
 ### 6.1 Storage and representation

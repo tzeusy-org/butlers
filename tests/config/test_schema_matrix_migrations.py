@@ -26,6 +26,11 @@ CORE_TABLES = {
     "sessions",
     "route_inbox",
     "butler_secrets",
+    "calendar_sources",
+    "calendar_events",
+    "calendar_event_instances",
+    "calendar_sync_cursors",
+    "calendar_action_log",
 }
 
 CHAIN_TABLES: dict[str, set[str]] = {
