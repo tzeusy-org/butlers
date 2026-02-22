@@ -485,6 +485,18 @@ class _FakePool:
 
 
 class TestContactsSyncStateStore:
+    @staticmethod
+    def _state_row(*, contact_versions: Any) -> dict[str, Any]:
+        return {
+            "sync_cursor": None,
+            "cursor_issued_at": None,
+            "last_full_sync_at": None,
+            "last_incremental_sync_at": None,
+            "last_success_at": None,
+            "last_error": None,
+            "contact_versions": contact_versions,
+        }
+
     async def test_load_returns_empty_state_when_no_row_exists(self) -> None:
         """load() returns a default ContactsSyncState when no DB row is found."""
         pool = _FakePool()
@@ -494,6 +506,74 @@ class TestContactsSyncStateStore:
         assert state.sync_cursor is None
         assert state.last_error is None
         assert state.contact_versions == {}
+
+    @pytest.mark.parametrize(
+        ("raw_versions", "expected"),
+        [
+            ("{}", {}),
+            ('{"people/1":"etag:v1:deleted=0"}', {"people/1": "etag:v1:deleted=0"}),
+            ("", {}),
+            ("   ", {}),
+        ],
+    )
+    async def test_load_parses_contact_versions_json_text(
+        self,
+        raw_versions: str,
+        expected: dict[str, str],
+    ) -> None:
+        """load() accepts JSON object text from asyncpg JSONB columns."""
+        pool = _FakePool()
+        pool._rows[("google", "acct-1")] = self._state_row(contact_versions=raw_versions)
+        store = ContactsSyncStateStore(pool)
+
+        state = await store.load(provider="google", account_id="acct-1")
+
+        assert state.contact_versions == expected
+
+    async def test_load_accepts_contact_versions_mapping(self) -> None:
+        """load() accepts already-decoded mapping values for contact_versions."""
+        pool = _FakePool()
+        pool._rows[("google", "acct-1")] = self._state_row(
+            contact_versions={"people/1": "etag:v1:deleted=0"}
+        )
+        store = ContactsSyncStateStore(pool)
+
+        state = await store.load(provider="google", account_id="acct-1")
+
+        assert state.contact_versions == {"people/1": "etag:v1:deleted=0"}
+
+    @pytest.mark.parametrize("raw_versions", ['{"people/1"', "{bad json}"])
+    async def test_load_rejects_malformed_contact_versions_json_text(
+        self, raw_versions: str
+    ) -> None:
+        """load() raises when contact_versions contains malformed JSON text."""
+        pool = _FakePool()
+        pool._rows[("google", "acct-1")] = self._state_row(contact_versions=raw_versions)
+        store = ContactsSyncStateStore(pool)
+
+        with pytest.raises(ValueError, match="contains invalid JSON"):
+            await store.load(provider="google", account_id="acct-1")
+
+    @pytest.mark.parametrize("raw_versions", ["[]", '"literal"'])
+    async def test_load_rejects_non_object_contact_versions_json_text(
+        self, raw_versions: str
+    ) -> None:
+        """load() raises when JSON text decodes to non-object values."""
+        pool = _FakePool()
+        pool._rows[("google", "acct-1")] = self._state_row(contact_versions=raw_versions)
+        store = ContactsSyncStateStore(pool)
+
+        with pytest.raises(ValueError, match="must decode to an object"):
+            await store.load(provider="google", account_id="acct-1")
+
+    async def test_load_rejects_non_mapping_contact_versions_value(self) -> None:
+        """load() raises when contact_versions is neither mapping nor JSON text."""
+        pool = _FakePool()
+        pool._rows[("google", "acct-1")] = self._state_row(contact_versions=123)
+        store = ContactsSyncStateStore(pool)
+
+        with pytest.raises(ValueError, match="must be a mapping or JSON object text"):
+            await store.load(provider="google", account_id="acct-1")
 
     async def test_save_and_load_round_trip(self) -> None:
         """save() persists state and load() retrieves it correctly."""

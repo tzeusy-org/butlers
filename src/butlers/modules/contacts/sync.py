@@ -13,7 +13,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 
@@ -1083,7 +1083,7 @@ class ContactsSyncStateStore:
                 row["last_success_at"].isoformat() if row["last_success_at"] else None
             ),
             last_error=row["last_error"],
-            contact_versions=dict(row["contact_versions"]) if row["contact_versions"] else {},
+            contact_versions=_normalize_contact_versions(row["contact_versions"]),
         )
 
     async def save(
@@ -1128,6 +1128,30 @@ class ContactsSyncStateStore:
             state.last_error,
             json.dumps(state.contact_versions),
         )
+
+
+def _normalize_contact_versions(value: Any) -> dict[str, Any]:
+    """Normalize JSONB values that may arrive as text or mapping."""
+    if value is None:
+        return {}
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            decoded = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("contacts_sync_state.contact_versions contains invalid JSON") from exc
+    elif isinstance(value, Mapping):
+        decoded = value
+    else:
+        raise ValueError(
+            "contacts_sync_state.contact_versions must be a mapping or JSON object text"
+        )
+
+    if not isinstance(decoded, Mapping):
+        raise ValueError("contacts_sync_state.contact_versions must decode to an object")
+    return dict(decoded)
 
 
 def _parse_iso_timestamp(value: str | None) -> datetime | None:

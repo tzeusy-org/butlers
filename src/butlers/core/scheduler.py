@@ -26,7 +26,6 @@ _DISPATCH_MODE_JOB = "job"
 _ALLOWED_DISPATCH_MODES = {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
 
 
-
 def _normalize_dispatch_mode(value: Any, *, context: str) -> str:
     """Normalize and validate a schedule dispatch mode value."""
     if not isinstance(value, str):
