@@ -239,6 +239,195 @@ function setUserMutationState(state?: Partial<UseUserMutationResult>) {
   } as unknown as UseUserMutationResult);
 }
 
+function setButlerWorkspaceFixtures() {
+  setWorkspaceState({
+    data: {
+      data: {
+        entries: [
+          {
+            entry_id: "entry-butler-1",
+            view: "butler",
+            source_type: "scheduled_task",
+            source_key: "internal_scheduler:general",
+            title: "Daily prep",
+            start_at: "2026-03-01T09:00:00Z",
+            end_at: "2026-03-01T09:15:00Z",
+            timezone: "UTC",
+            all_day: false,
+            calendar_id: null,
+            provider_event_id: null,
+            butler_name: "general",
+            schedule_id: "sched-1",
+            reminder_id: null,
+            rrule: "RRULE:FREQ=DAILY",
+            cron: "0 9 * * *",
+            until_at: "2026-03-08T09:00:00Z",
+            status: "active",
+            sync_state: "fresh",
+            editable: true,
+            metadata: {
+              origin_ref: "sched-1",
+            },
+          },
+          {
+            entry_id: "entry-butler-2",
+            view: "butler",
+            source_type: "butler_reminder",
+            source_key: "internal_reminders:health",
+            title: "Hydration check",
+            start_at: "2026-03-01T11:00:00Z",
+            end_at: "2026-03-01T11:05:00Z",
+            timezone: "UTC",
+            all_day: false,
+            calendar_id: null,
+            provider_event_id: null,
+            butler_name: "health",
+            schedule_id: null,
+            reminder_id: "rem-1",
+            rrule: null,
+            cron: null,
+            until_at: null,
+            status: "paused",
+            sync_state: "fresh",
+            editable: true,
+            metadata: {
+              origin_ref: "rem-1",
+            },
+          },
+        ],
+        source_freshness: [
+          {
+            source_id: "source-butler-1",
+            source_key: "internal_scheduler:general",
+            source_kind: "internal_scheduler",
+            lane: "butler",
+            provider: "internal",
+            calendar_id: null,
+            butler_name: "general",
+            display_name: "General scheduler",
+            writable: true,
+            metadata: {},
+            cursor_name: "projection",
+            last_synced_at: "2026-03-01T10:00:00Z",
+            last_success_at: "2026-03-01T10:00:00Z",
+            last_error_at: null,
+            last_error: null,
+            full_sync_required: false,
+            sync_state: "fresh",
+            staleness_ms: 900,
+          },
+          {
+            source_id: "source-butler-2",
+            source_key: "internal_reminders:health",
+            source_kind: "internal_reminders",
+            lane: "butler",
+            provider: "internal",
+            calendar_id: null,
+            butler_name: "health",
+            display_name: "Health reminders",
+            writable: true,
+            metadata: {},
+            cursor_name: "projection",
+            last_synced_at: "2026-03-01T10:00:00Z",
+            last_success_at: "2026-03-01T10:00:00Z",
+            last_error_at: null,
+            last_error: null,
+            full_sync_required: false,
+            sync_state: "fresh",
+            staleness_ms: 900,
+          },
+        ],
+        lanes: [
+          {
+            lane_id: "general",
+            butler_name: "general",
+            title: "General lane",
+            source_keys: ["internal_scheduler:general"],
+          },
+          {
+            lane_id: "health",
+            butler_name: "health",
+            title: "Health lane",
+            source_keys: ["internal_reminders:health"],
+          },
+        ],
+      },
+      meta: {},
+    },
+  });
+
+  setWorkspaceMetaState({
+    data: {
+      data: {
+        capabilities: {
+          views: ["user", "butler"],
+          filters: { butlers: true, sources: true, timezone: true },
+          sync: { global: true, by_source: true },
+        },
+        connected_sources: [
+          {
+            source_id: "source-butler-1",
+            source_key: "internal_scheduler:general",
+            source_kind: "internal_scheduler",
+            lane: "butler",
+            provider: "internal",
+            calendar_id: null,
+            butler_name: "general",
+            display_name: "General scheduler",
+            writable: true,
+            metadata: {},
+            cursor_name: "projection",
+            last_synced_at: "2026-03-01T10:00:00Z",
+            last_success_at: "2026-03-01T10:00:00Z",
+            last_error_at: null,
+            last_error: null,
+            full_sync_required: false,
+            sync_state: "fresh",
+            staleness_ms: 900,
+          },
+          {
+            source_id: "source-butler-2",
+            source_key: "internal_reminders:health",
+            source_kind: "internal_reminders",
+            lane: "butler",
+            provider: "internal",
+            calendar_id: null,
+            butler_name: "health",
+            display_name: "Health reminders",
+            writable: true,
+            metadata: {},
+            cursor_name: "projection",
+            last_synced_at: "2026-03-01T10:00:00Z",
+            last_success_at: "2026-03-01T10:00:00Z",
+            last_error_at: null,
+            last_error: null,
+            full_sync_required: false,
+            sync_state: "fresh",
+            staleness_ms: 900,
+          },
+        ],
+        writable_calendars: [],
+        lane_definitions: [
+          {
+            lane_id: "general",
+            butler_name: "general",
+            title: "General lane",
+            source_keys: ["internal_scheduler:general"],
+          },
+          {
+            lane_id: "health",
+            butler_name: "health",
+            title: "Health lane",
+            source_keys: ["internal_reminders:health"],
+          },
+        ],
+        default_timezone: "UTC",
+      },
+      meta: {},
+    },
+  });
+}
+
 function SearchEcho() {
   const location = useLocation();
   return <output data-testid="search">{location.search}</output>;
@@ -321,6 +510,21 @@ describe("CalendarWorkspacePage", () => {
     expect(latestWorkspaceParams()?.view).toBe("butler");
     expect(getSearchText()).toContain("view=butler");
     expect(getSearchText()).toContain("range=list");
+  });
+
+  it("updates query state when toggling to butler view", async () => {
+    renderPage("/butlers/calendar?view=user&range=week&anchor=2026-03-01");
+    const butlerButton = findButton("Butler");
+    expect(butlerButton).toBeDefined();
+
+    await act(async () => {
+      butlerButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(findButton("Butler")?.getAttribute("aria-pressed")).toBe("true");
+    expect(getSearchText()).toContain("view=butler");
+    expect(latestWorkspaceParams()?.view).toBe("butler");
   });
 
   it("applies calendar/source filters to workspace query params", async () => {
@@ -511,6 +715,102 @@ describe("CalendarWorkspacePage", () => {
         payload: expect.objectContaining({
           event_id: "evt-1",
           calendar_id: "primary",
+        }),
+      }),
+    );
+  });
+
+  it("renders butler lanes grouped with lane metadata", () => {
+    setButlerWorkspaceFixtures();
+    renderPage("/butlers/calendar?view=butler&range=week&anchor=2026-03-01");
+
+    expect(container.textContent).toContain("General lane");
+    expect(container.textContent).toContain("Health lane");
+    expect(container.textContent).toContain("Daily prep");
+    expect(container.textContent).toContain("Hydration check");
+  });
+
+  it("creates butler event through workspace mutation endpoint", async () => {
+    setButlerWorkspaceFixtures();
+    renderPage("/butlers/calendar?view=butler&range=week&anchor=2026-03-01");
+
+    const createButton = findButton("Create Butler Event");
+    expect(createButton).toBeDefined();
+    await act(async () => {
+      createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const dialog = findDialogByTitle("Create Butler Event");
+    const titleInput = dialog?.querySelector("#calendar-event-title") as HTMLInputElement;
+    expect(titleInput).toBeDefined();
+
+    await act(async () => {
+      setInputValue(titleInput, "Stretch break");
+      await flush();
+    });
+
+    const saveButton = Array.from(dialog?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "Create Event",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(mutateButlerEvent).toHaveBeenCalled();
+    const [payload] = mutateButlerEvent.mock.calls.at(-1) ?? [];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        butler_name: "general",
+        action: "create",
+        request_id: expect.stringMatching(/^calendar-create-/),
+        payload: expect.objectContaining({
+          title: "Stretch break",
+          source_hint: "butler_reminder",
+        }),
+      }),
+    );
+  });
+
+  it("updates butler event through workspace mutation endpoint", async () => {
+    setButlerWorkspaceFixtures();
+    renderPage("/butlers/calendar?view=butler&range=week&anchor=2026-03-01");
+
+    const editButton = findButton("Edit");
+    expect(editButton).toBeDefined();
+    await act(async () => {
+      editButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    const dialog = findDialogByTitle("Edit Butler Event");
+    const titleInput = dialog?.querySelector("#calendar-event-title") as HTMLInputElement;
+    expect(titleInput).toBeDefined();
+    await act(async () => {
+      setInputValue(titleInput, "Updated daily prep");
+      await flush();
+    });
+
+    const saveButton = Array.from(dialog?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent?.trim() === "Save Changes",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      saveButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(mutateButlerEvent).toHaveBeenCalled();
+    const [payload] = mutateButlerEvent.mock.calls.at(-1) ?? [];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        butler_name: "general",
+        action: "update",
+        request_id: expect.stringMatching(/^calendar-update-/),
+        payload: expect.objectContaining({
+          event_id: "sched-1",
+          source_hint: "scheduled_task",
+          title: "Updated daily prep",
         }),
       }),
     );

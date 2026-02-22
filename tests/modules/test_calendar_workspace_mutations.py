@@ -61,6 +61,53 @@ class TestWorkspaceMutationHelpers:
         assert replay_second["status"] == "created"
         assert replay_second["idempotent_replay"] is True
 
+    async def test_prepare_workspace_mutation_replays_pending_request(self):
+        mod = CalendarModule()
+        mod._db = _mock_db()
+
+        with (
+            patch.object(
+                mod,
+                "_load_projection_action",
+                AsyncMock(return_value=("pending", None, None)),
+            ),
+            patch.object(mod, "_record_projection_action", AsyncMock()) as record_action_mock,
+        ):
+            _, replay = await mod._prepare_workspace_mutation(
+                action_type="workspace_user_update",
+                request_id="req-pending",
+                action_payload={"foo": "bar"},
+            )
+
+        assert replay is not None
+        assert replay["status"] == "pending"
+        assert replay["idempotent_replay"] is True
+        record_action_mock.assert_not_awaited()
+
+    async def test_prepare_workspace_mutation_replays_failed_request(self):
+        mod = CalendarModule()
+        mod._db = _mock_db()
+
+        with (
+            patch.object(
+                mod,
+                "_load_projection_action",
+                AsyncMock(return_value=("failed", None, "Provider timeout")),
+            ),
+            patch.object(mod, "_record_projection_action", AsyncMock()) as record_action_mock,
+        ):
+            _, replay = await mod._prepare_workspace_mutation(
+                action_type="workspace_butler_delete",
+                request_id="req-failed",
+                action_payload={"event_id": "evt-1"},
+            )
+
+        assert replay is not None
+        assert replay["status"] == "error"
+        assert replay["error"] == "Provider timeout"
+        assert replay["idempotent_replay"] is True
+        record_action_mock.assert_not_awaited()
+
 
 class TestButlerEventTools:
     async def test_registers_butler_event_tools(self):

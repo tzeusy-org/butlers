@@ -171,6 +171,10 @@ Each butler has a `MANIFESTO.md` that defines its public identity and value prop
 - Projection checkpoints are persisted in `calendar_sync_cursors` (`provider_sync` for provider pulls, `projection` for internal sources), and each sync refresh records action status in `calendar_action_log`.
 - `calendar_sync_status` and `calendar_force_sync` now include `projection_freshness` (`last_refreshed_at`, `staleness_ms`, per-source `sync_state=fresh|stale|failed`); projection writes hard-gate on strict `to_regclass(...) IS TRUE` checks so pre-migration DBs/tests safely no-op.
 
+### Calendar workspace contract coverage
+- Calendar workspace frontend tests should cover URL-backed view toggles (`view=user|butler`), butler-lane rendering/grouping, and both user/butler create-edit mutation payload shapes.
+- `docs/frontend/backend-api-contract.md` calendar section must include mutation endpoints (`/api/calendar/workspace/user-events`, `/api/calendar/workspace/butler-events`), v1 recurrence scope limitation (`series` for provider recurring updates/deletes), and projection/request-id telemetry fields (`projection_freshness`, `request_id`).
+
 ### Contacts module sync contract
 - The contacts module is expected to run its incremental sync as an internal poll loop, not as a standalone connector (see `docs/modules/contacts_draft.md` §8); the default cadence is an immediate incremental run on startup, recurring polling every 15 minutes, and a forced full refresh every 6 days before the sync token expires.
 - Modules load inside `butlers up` via `ButlerDaemon.start()` (`src/butlers/daemon.py:852-931`), so the poller should live in-process; `scripts/dev.sh` already launches `uv run butlers up` and required connector panes, so no extra standalone contacts connector bootstrap is needed.

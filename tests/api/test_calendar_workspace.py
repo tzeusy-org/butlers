@@ -490,6 +490,51 @@ class TestCalendarWorkspaceUserEvents:
         assert first_call.args[0] == "calendar_create_event"
         assert first_call.args[1]["request_id"] == "req-123"
 
+    async def test_user_event_update_forwards_recurrence_scope_payload(self):
+        async def _call(tool_name: str, arguments: dict):
+            if tool_name == "calendar_update_event":
+                return _mcp_result(
+                    {
+                        "status": "updated",
+                        "projection_freshness": {
+                            "last_refreshed_at": "2026-03-01T11:00:00+00:00",
+                            "staleness_ms": 7,
+                            "sources": [],
+                        },
+                    }
+                )
+            raise AssertionError(f"Unexpected tool call: {tool_name}")
+
+        app, mock_client = _app_with_mcp(_call)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/calendar/workspace/user-events",
+                json={
+                    "butler_name": "general",
+                    "action": "update",
+                    "request_id": "req-update-1",
+                    "payload": {
+                        "event_id": "evt-42",
+                        "title": "Updated title",
+                        "recurrence_scope": "series",
+                    },
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()["data"]
+        assert body["tool_name"] == "calendar_update_event"
+        assert body["projection_version"] == "2026-03-01T11:00:00+00:00"
+        assert body["staleness_ms"] == 7
+        assert mock_client.call_tool.await_count == 1
+        call = mock_client.call_tool.await_args_list[0]
+        assert call.args[0] == "calendar_update_event"
+        assert call.args[1]["request_id"] == "req-update-1"
+        assert call.args[1]["event_id"] == "evt-42"
+        assert call.args[1]["recurrence_scope"] == "series"
+
 
 class TestCalendarWorkspaceButlerEvents:
     async def test_butler_event_create_sets_butler_name_and_request_id(self):
@@ -535,6 +580,49 @@ class TestCalendarWorkspaceButlerEvents:
         first_call = mock_client.call_tool.await_args_list[0]
         assert first_call.args[1]["butler_name"] == "general"
         assert first_call.args[1]["request_id"] == "req-butler-1"
+
+    async def test_butler_event_update_forwards_event_target_payload(self):
+        async def _call(tool_name: str, arguments: dict):
+            assert tool_name == "calendar_update_butler_event"
+            return _mcp_result(
+                {
+                    "status": "updated",
+                    "projection_freshness": {
+                        "last_refreshed_at": "2026-03-02T09:00:00+00:00",
+                        "staleness_ms": 3,
+                        "sources": [],
+                    },
+                }
+            )
+
+        app, mock_client = _app_with_mcp(_call)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/calendar/workspace/butler-events",
+                json={
+                    "butler_name": "general",
+                    "action": "update",
+                    "request_id": "req-butler-update-1",
+                    "payload": {
+                        "event_id": "5f3790f0-87b0-4a19-9df9-33f2eb660250",
+                        "source_hint": "scheduled_task",
+                        "title": "Updated prep",
+                    },
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()["data"]
+        assert body["tool_name"] == "calendar_update_butler_event"
+        assert body["projection_version"] == "2026-03-02T09:00:00+00:00"
+        assert body["staleness_ms"] == 3
+        assert mock_client.call_tool.await_count == 1
+        call = mock_client.call_tool.await_args_list[0]
+        assert call.args[1]["request_id"] == "req-butler-update-1"
+        assert call.args[1]["event_id"] == "5f3790f0-87b0-4a19-9df9-33f2eb660250"
+        assert call.args[1]["source_hint"] == "scheduled_task"
 
     async def test_butler_event_toggle_fetches_sync_status_when_projection_missing(self):
         async def _call(tool_name: str, arguments: dict):
