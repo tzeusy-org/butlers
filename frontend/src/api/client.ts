@@ -21,12 +21,13 @@ import type {
   AuditEntry,
   AuditLogParams,
   ButlerConfigResponse,
-  CalendarWorkspaceMutationResponse,
   ButlerSkill,
   ButlerSummary,
   CalendarWorkspaceMetaResponse,
+  CalendarWorkspaceMutationResponse,
   CalendarWorkspaceParams,
   CalendarWorkspaceReadResponse,
+  CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceSyncResponse,
   CalendarWorkspaceUserMutationRequest,
@@ -605,6 +606,18 @@ export function mutateCalendarWorkspaceUserEvent(
   );
 }
 
+/** Create/update/delete/toggle butler-lane schedule/reminder events. */
+export function mutateCalendarWorkspaceButlerEvent(
+  body: CalendarWorkspaceButlerMutationRequest,
+): Promise<ApiResponse<CalendarWorkspaceMutationResponse>> {
+  return apiFetch<ApiResponse<CalendarWorkspaceMutationResponse>>(
+    "/calendar/workspace/butler-events",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
+}
 // ---------------------------------------------------------------------------
 // Relationship / CRM
 // ---------------------------------------------------------------------------

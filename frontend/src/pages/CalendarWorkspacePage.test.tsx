@@ -9,6 +9,7 @@ import CalendarWorkspacePage from "@/pages/CalendarWorkspacePage";
 import {
   useCalendarWorkspace,
   useCalendarWorkspaceMeta,
+  useMutateCalendarWorkspaceButlerEvent,
   useMutateCalendarWorkspaceUserEvent,
   useSyncCalendarWorkspace,
 } from "@/hooks/use-calendar-workspace";
@@ -16,6 +17,7 @@ import {
 vi.mock("@/hooks/use-calendar-workspace", () => ({
   useCalendarWorkspace: vi.fn(),
   useCalendarWorkspaceMeta: vi.fn(),
+  useMutateCalendarWorkspaceButlerEvent: vi.fn(),
   useSyncCalendarWorkspace: vi.fn(),
   useMutateCalendarWorkspaceUserEvent: vi.fn(),
 }));
@@ -32,8 +34,11 @@ vi.mock("sonner", () => ({
 
 type UseWorkspaceResult = ReturnType<typeof useCalendarWorkspace>;
 type UseWorkspaceMetaResult = ReturnType<typeof useCalendarWorkspaceMeta>;
+type UseButlerMutationResult = ReturnType<typeof useMutateCalendarWorkspaceButlerEvent>;
 type UseSyncResult = ReturnType<typeof useSyncCalendarWorkspace>;
 type UseUserMutationResult = ReturnType<typeof useMutateCalendarWorkspaceUserEvent>;
+
+const mutateButlerEvent = vi.fn();
 
 function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -190,6 +195,14 @@ function setWorkspaceMetaState(state?: Partial<UseWorkspaceMetaResult>) {
   } as UseWorkspaceMetaResult);
 }
 
+function setButlerMutationState(state?: Partial<UseButlerMutationResult>) {
+  vi.mocked(useMutateCalendarWorkspaceButlerEvent).mockReturnValue({
+    mutate: mutateButlerEvent,
+    isPending: false,
+    ...state,
+  } as UseButlerMutationResult);
+}
+
 function setSyncState(state?: Partial<UseSyncResult>) {
   vi.mocked(useSyncCalendarWorkspace).mockReturnValue({
     mutateAsync: vi.fn().mockResolvedValue({
@@ -237,10 +250,13 @@ describe("CalendarWorkspacePage", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    mutateButlerEvent.mockReset();
     setWorkspaceState();
     setWorkspaceMetaState();
+    setButlerMutationState();
     setSyncState();
     setUserMutationState();
+    vi.stubGlobal("confirm", vi.fn(() => true));
 
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -252,6 +268,7 @@ describe("CalendarWorkspacePage", () => {
       root.unmount();
     });
     container.remove();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 

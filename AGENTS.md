@@ -313,6 +313,9 @@ make test-qg
 - Recurring writes with naive datetime boundaries require explicit `timezone`; omit timezone only when datetime boundaries already carry tzinfo.
 - `calendar_update_event` is series-only for recurrence in v1 (`recurrence_scope="series"`); non-series scope values must be rejected at validation time.
 
+### Butler reminder until_at update contract
+- `CalendarModule._update_reminder_event` should only write `reminders.until_at` when an explicit `until_at` value is provided; omitted `until_at` in calendar workspace edits must preserve the existing boundary instead of clearing it.
+
 ### Switchboard Classification Contract
 - `classify_message()` returns decomposition entries (`list[{"butler","prompt"}]`), not a bare butler string. Callers must normalize both legacy string and list formats before routing.
 - When `butler_registry` is empty, `classify_message()` auto-discovers butlers from `roster/` (see `roster/switchboard/tools/routing/classify.py`) before composing the "Available butlers" prompt.

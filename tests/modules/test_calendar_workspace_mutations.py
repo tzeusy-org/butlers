@@ -183,6 +183,69 @@ class TestButlerEventTools:
         assert result["status"] == "approval_required"
         assert result["action_id"] == "approval-action-1"
 
+    async def test_create_butler_reminder_event_preserves_health_linkage(self):
+        mod = CalendarModule()
+        mcp = _StubMCP()
+        db = _mock_db()
+        db.db_name = "butler_health"
+        await mod.register_tools(
+            mcp=mcp,
+            config={"provider": "google", "calendar_id": "primary"},
+            db=db,
+        )
+
+        reminder_id = uuid.uuid4()
+        reminder_event_id = uuid.uuid4()
+
+        with (
+            patch.object(
+                mod, "_prepare_workspace_mutation", AsyncMock(return_value=("key-1", None))
+            ),
+            patch.object(mod, "_finalize_workspace_mutation", AsyncMock()),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(
+                mod,
+                "_resolve_action_source_id",
+                AsyncMock(return_value=uuid.uuid4()),
+            ) as resolve_source_id_mock,
+            patch.object(
+                mod, "_refresh_butler_projection", AsyncMock(return_value={"staleness_ms": 0})
+            ),
+            patch.object(
+                mod,
+                "_create_reminder_event",
+                AsyncMock(
+                    return_value={
+                        "id": reminder_id,
+                        "calendar_event_id": reminder_event_id,
+                        "label": "Take medication",
+                    }
+                ),
+            ) as create_reminder_mock,
+        ):
+            result = await mcp.tools["calendar_create_butler_event"](
+                butler_name="health",
+                title="Take medication",
+                start_at=datetime(2026, 2, 23, 9, 0, tzinfo=UTC),
+                timezone="UTC",
+                recurrence_rule="RRULE:FREQ=DAILY;UNTIL=20260301T090000Z",
+                until_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+                source_hint="butler_reminder",
+                request_id="health-reminder-1",
+            )
+
+        assert result["status"] == "created"
+        assert result["source_type"] == "butler_reminder"
+        assert result["event_id"] == str(reminder_event_id)
+        assert result["reminder_id"] == str(reminder_id)
+        resolve_source_id_mock.assert_awaited_once_with(
+            source_kind="internal_reminders", lane="butler"
+        )
+        create_reminder_mock.assert_awaited_once()
+        create_kwargs = create_reminder_mock.await_args.kwargs
+        assert isinstance(create_kwargs["calendar_event_id"], uuid.UUID)
+        assert create_kwargs["until_at"] == datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+
 
 class TestReminderBackedTypeMapping:
     async def test_create_reminder_event_maps_yearly_rrule_to_yearly_legacy_type(self):
@@ -238,3 +301,65 @@ class TestReminderBackedTypeMapping:
 
         assert reminder["type"] == "recurring_yearly"
         assert reminder["reminder_type"] == "recurring"
+
+    async def test_update_reminder_event_keeps_until_at_when_omitted(self):
+        mod = CalendarModule()
+        db = _mock_db()
+        mod._db = db
+        pool = db.pool
+        reminder_id = uuid.uuid4()
+        until_at = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+
+        existing = {
+            "id": reminder_id,
+            "label": "Hydration check",
+            "message": "Drink water",
+            "next_trigger_at": datetime(2026, 2, 23, 9, 0, tzinfo=UTC),
+            "due_at": datetime(2026, 2, 23, 9, 0, tzinfo=UTC),
+            "timezone": "UTC",
+            "until_at": until_at,
+            "dismissed": False,
+            "updated_at": datetime(2026, 2, 22, 0, 0, tzinfo=UTC),
+        }
+
+        async def _fetchrow(sql: str, *values):
+            if sql.startswith("SELECT * FROM reminders"):
+                return existing
+            assert sql.startswith("UPDATE reminders SET")
+            assert "until_at =" not in sql
+            updated = dict(existing)
+            updated["label"] = values[1]
+            updated["message"] = values[1]
+            updated["updated_at"] = values[-1]
+            return updated
+
+        pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+
+        with patch.object(
+            mod,
+            "_table_columns",
+            AsyncMock(
+                return_value=[
+                    "label",
+                    "message",
+                    "next_trigger_at",
+                    "due_at",
+                    "timezone",
+                    "until_at",
+                    "dismissed",
+                    "updated_at",
+                ]
+            ),
+        ):
+            updated = await mod._update_reminder_event(
+                reminder_id=reminder_id,
+                title="Hydration reminder",
+                start_at=None,
+                timezone=None,
+                until_at=None,
+                recurrence_rule=None,
+                cron=None,
+                enabled=None,
+            )
+
+        assert updated["until_at"] == until_at

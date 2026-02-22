@@ -507,6 +507,13 @@ export interface CalendarWorkspaceSyncResponse {
 /** Allowed mutation actions for user-view calendar events. */
 export type CalendarWorkspaceUserMutationAction = "create" | "update" | "delete";
 
+/** Allowed actions for butler-lane event mutations. */
+export type CalendarWorkspaceButlerMutationAction =
+  | "create"
+  | "update"
+  | "delete"
+  | "toggle";
+
 /** Request payload for POST /api/calendar/workspace/user-events. */
 export interface CalendarWorkspaceUserMutationRequest {
   butler_name: string;
@@ -517,13 +524,21 @@ export interface CalendarWorkspaceUserMutationRequest {
 
 /** Response payload for calendar workspace mutation endpoints. */
 export interface CalendarWorkspaceMutationResponse {
-  action: string;
+  action: CalendarWorkspaceUserMutationAction | CalendarWorkspaceButlerMutationAction;
   tool_name: string;
   request_id: string | null;
   result: Record<string, unknown>;
   projection_version: string | null;
   staleness_ms: number | null;
   projection_freshness: Record<string, unknown> | null;
+}
+
+/** Request payload for POST /api/calendar/workspace/butler-events. */
+export interface CalendarWorkspaceButlerMutationRequest {
+  butler_name: string;
+  action: CalendarWorkspaceButlerMutationAction;
+  request_id?: string;
+  payload: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------

@@ -5664,7 +5664,7 @@ class CalendarModule(Module):
             add("due_at", start_at)
         if "timezone" in columns:
             add("timezone", timezone)
-        if "until_at" in columns:
+        if until_at is not None and "until_at" in columns:
             add("until_at", until_at)
         if "recurrence_rule" in columns:
             add("recurrence_rule", normalized_rule)
@@ -5742,7 +5742,7 @@ class CalendarModule(Module):
                 add("due_at", effective_trigger)
         if timezone is not None and "timezone" in columns:
             add("timezone", timezone)
-        if "until_at" in columns:
+        if until_at is not None and "until_at" in columns:
             add("until_at", until_at)
         if recurrence_rule is not None and "recurrence_rule" in columns:
             add("recurrence_rule", normalized_rule)

@@ -7,10 +7,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getCalendarWorkspace,
   getCalendarWorkspaceMeta,
+  mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
   syncCalendarWorkspace,
 } from "@/api/index.ts";
 import type {
+  CalendarWorkspaceButlerMutationRequest,
   CalendarWorkspaceParams,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceUserMutationRequest,
@@ -60,10 +62,22 @@ export function useSyncCalendarWorkspace() {
 /** Mutate user-view provider events and refresh workspace data after success. */
 export function useMutateCalendarWorkspaceUserEvent() {
   const queryClient = useQueryClient();
-
   return useMutation({
     mutationFn: (body: CalendarWorkspaceUserMutationRequest) =>
       mutateCalendarWorkspaceUserEvent(body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
+    },
+  });
+}
+
+/** Execute butler-lane workspace mutations and refresh query caches. */
+export function useMutateCalendarWorkspaceButlerEvent() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CalendarWorkspaceButlerMutationRequest) =>
+      mutateCalendarWorkspaceButlerEvent(body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
