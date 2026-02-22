@@ -142,6 +142,10 @@ git push                # Push to remote
 
 ## Notes to self
 
+### Required-schema module startup gate
+- `ButlerDaemon` now filters `load_all()` results via `_select_startup_modules`: if a module defines required `config_schema` fields and its `[modules.<name>]` section is absent, startup skips that module (info log) instead of config-failing on missing required fields.
+- This keeps intentionally omitted modules (for example `contacts` on `messenger`/`switchboard`) out of migrations/startup/tool registration and prevents provider-required warning noise.
+
 ### Scheduler job_args JSONB contract
 - In scheduler code paths, `job_args` JSONB values can round-trip through asyncpg as JSON strings; writes should serialize dict payloads explicitly, and reads should normalize back to dicts before diffing, validation merges, list responses, or dispatch payload assembly.
 
