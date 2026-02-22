@@ -415,7 +415,7 @@ class TestWorkspaceSync:
 
         assert resp.status_code == 200
         target = resp.json()["data"]["targets"][0]
-        assert target["detail"] == "[\"ok\", 1]"
+        assert target["detail"] == '["ok", 1]'
 
 
 def _mcp_result(payload: dict | str) -> list:

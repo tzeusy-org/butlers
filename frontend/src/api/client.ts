@@ -21,6 +21,7 @@ import type {
   AuditEntry,
   AuditLogParams,
   ButlerConfigResponse,
+  CalendarWorkspaceMutationResponse,
   ButlerSkill,
   ButlerSummary,
   CalendarWorkspaceMetaResponse,
@@ -28,6 +29,7 @@ import type {
   CalendarWorkspaceReadResponse,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceSyncResponse,
+  CalendarWorkspaceUserMutationRequest,
   ContactDetail,
   ContactListResponse,
   ContactParams,
@@ -588,6 +590,19 @@ export function syncCalendarWorkspace(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/** Create, update, or delete a user-view provider event through workspace APIs. */
+export function mutateCalendarWorkspaceUserEvent(
+  body: CalendarWorkspaceUserMutationRequest,
+): Promise<ApiResponse<CalendarWorkspaceMutationResponse>> {
+  return apiFetch<ApiResponse<CalendarWorkspaceMutationResponse>>(
+    "/calendar/workspace/user-events",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------

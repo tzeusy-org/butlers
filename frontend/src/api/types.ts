@@ -504,6 +504,28 @@ export interface CalendarWorkspaceSyncResponse {
   triggered_count: number;
 }
 
+/** Allowed mutation actions for user-view calendar events. */
+export type CalendarWorkspaceUserMutationAction = "create" | "update" | "delete";
+
+/** Request payload for POST /api/calendar/workspace/user-events. */
+export interface CalendarWorkspaceUserMutationRequest {
+  butler_name: string;
+  action: CalendarWorkspaceUserMutationAction;
+  request_id?: string;
+  payload: Record<string, unknown>;
+}
+
+/** Response payload for calendar workspace mutation endpoints. */
+export interface CalendarWorkspaceMutationResponse {
+  action: string;
+  tool_name: string;
+  request_id: string | null;
+  result: Record<string, unknown>;
+  projection_version: string | null;
+  staleness_ms: number | null;
+  projection_freshness: Record<string, unknown> | null;
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------

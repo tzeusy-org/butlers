@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   addDays,
   addMonths,
@@ -11,14 +11,22 @@ import {
   startOfMonth,
   startOfWeek,
 } from "date-fns";
+import { toast } from "sonner";
 import { useSearchParams } from "react-router";
 
 import type {
   CalendarWorkspaceSourceFreshness,
+  CalendarWorkspaceUserMutationAction,
   CalendarWorkspaceView,
+  CalendarWorkspaceWritableCalendar,
   UnifiedCalendarEntry,
 } from "@/api/types.ts";
-import { useCalendarWorkspace, useCalendarWorkspaceMeta } from "@/hooks/use-calendar-workspace";
+import {
+  useCalendarWorkspace,
+  useCalendarWorkspaceMeta,
+  useMutateCalendarWorkspaceUserEvent,
+  useSyncCalendarWorkspace,
+} from "@/hooks/use-calendar-workspace";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,6 +37,15 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import {
   Table,
   TableBody,
   TableCell,
@@ -36,11 +53,24 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 type CalendarRange = "month" | "week" | "day" | "list";
 
 type SyncBadgeVariant = "default" | "secondary" | "destructive" | "outline";
+
+type UserEventDialogMode = "create" | "edit";
+
+interface UserEventFormState {
+  sourceKey: string;
+  title: string;
+  startAtLocal: string;
+  endAtLocal: string;
+  timezone: string;
+  description: string;
+  location: string;
+}
 
 const DEFAULT_RANGE: CalendarRange = "week";
 
@@ -141,6 +171,78 @@ function sourceName(source: CalendarWorkspaceSourceFreshness): string {
   return source.display_name || source.calendar_id || source.source_key;
 }
 
+function formatStaleness(stalenessMs: number | null): string {
+  if (stalenessMs == null) {
+    return "staleness unknown";
+  }
+  if (stalenessMs < 1_000) {
+    return "fresh";
+  }
+  const seconds = Math.floor(stalenessMs / 1_000);
+  if (seconds < 60) {
+    return `${seconds}s stale`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m stale`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) {
+    return `${hours}h stale`;
+  }
+  return `${Math.floor(hours / 24)}d stale`;
+}
+
+function formatOptionalTimestamp(value: string | null): string | null {
+  if (!value) return null;
+  const parsed = parseISO(value);
+  if (!isValid(parsed)) return null;
+  return format(parsed, "MMM d, HH:mm");
+}
+
+function toLocalDateTimeValue(value: string): string {
+  const parsed = parseISO(value);
+  if (!isValid(parsed)) {
+    return "";
+  }
+  return format(parsed, "yyyy-MM-dd'T'HH:mm");
+}
+
+function toIsoFromLocalDateTime(value: string): string | null {
+  if (!value.trim()) {
+    return null;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed.toISOString();
+}
+
+function maybeText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function buildRequestId(action: CalendarWorkspaceUserMutationAction): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `calendar-${action}-${crypto.randomUUID()}`;
+  }
+  return `calendar-${action}-${Date.now()}`;
+}
+
+function defaultFormWindow(anchor: Date): { startAtLocal: string; endAtLocal: string } {
+  const start = new Date(anchor);
+  start.setMinutes(0, 0, 0);
+  if (start.getTime() < Date.now()) {
+    start.setHours(start.getHours() + 1);
+  }
+  const end = new Date(start.getTime() + 30 * 60 * 1_000);
+  return {
+    startAtLocal: format(start, "yyyy-MM-dd'T'HH:mm"),
+    endAtLocal: format(end, "yyyy-MM-dd'T'HH:mm"),
+  };
+}
+
 export default function CalendarWorkspacePage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -148,9 +250,55 @@ export default function CalendarWorkspacePage() {
   const range = parseRange(searchParams.get("range"));
   const anchor = parseAnchor(searchParams.get("anchor"));
   const anchorParam = serializeAnchor(anchor);
+  const selectedSourceKey = searchParams.get("source") ?? "all";
+  const selectedCalendarId = searchParams.get("calendar") ?? "all";
 
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const { start, end } = useMemo(() => computeWindow(range, anchor), [range, anchorParam]);
+
+  const metaQuery = useCalendarWorkspaceMeta();
+  const connectedSources = metaQuery.data?.data.connected_sources ?? [];
+  const writableCalendars = metaQuery.data?.data.writable_calendars ?? [];
+  const defaultTimezone = metaQuery.data?.data.default_timezone || timezone;
+
+  const userSources = useMemo(
+    () => connectedSources.filter((source) => source.lane === "user"),
+    [connectedSources],
+  );
+
+  const sourceFilters = useMemo(() => {
+    let filtered = userSources;
+    if (selectedCalendarId !== "all") {
+      filtered = filtered.filter((source) => source.calendar_id === selectedCalendarId);
+    }
+    if (selectedSourceKey !== "all") {
+      filtered = filtered.filter((source) => source.source_key === selectedSourceKey);
+    }
+    return filtered.map((source) => source.source_key);
+  }, [selectedCalendarId, selectedSourceKey, userSources]);
+
+  const sourcesForQuery =
+    view === "user" && (selectedSourceKey !== "all" || selectedCalendarId !== "all")
+      ? sourceFilters
+      : undefined;
+
+  const workspaceQuery = useCalendarWorkspace({
+    view,
+    start: start.toISOString(),
+    end: end.toISOString(),
+    timezone,
+    sources: sourcesForQuery,
+  });
+
+  const syncMutation = useSyncCalendarWorkspace();
+  const userEventMutation = useMutateCalendarWorkspaceUserEvent();
+
+  const [syncingSourceKey, setSyncingSourceKey] = useState<string | null>(null);
+  const [userEventDialogOpen, setUserEventDialogOpen] = useState(false);
+  const [userEventDialogMode, setUserEventDialogMode] = useState<UserEventDialogMode>("create");
+  const [activeUserEntry, setActiveUserEntry] = useState<UnifiedCalendarEntry | null>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<UnifiedCalendarEntry | null>(null);
+  const [userEventForm, setUserEventForm] = useState<UserEventFormState | null>(null);
 
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
@@ -169,18 +317,49 @@ export default function CalendarWorkspacePage() {
       changed = true;
     }
 
+    if (view !== "user") {
+      if (next.has("source")) {
+        next.delete("source");
+        changed = true;
+      }
+      if (next.has("calendar")) {
+        next.delete("calendar");
+        changed = true;
+      }
+    }
+
     if (changed) {
       setSearchParams(next, { replace: true });
     }
   }, [anchorParam, range, searchParams, setSearchParams, view]);
 
-  const workspaceQuery = useCalendarWorkspace({
-    view,
-    start: start.toISOString(),
-    end: end.toISOString(),
-    timezone,
-  });
-  const metaQuery = useCalendarWorkspaceMeta();
+  useEffect(() => {
+    if (view !== "user") {
+      return;
+    }
+
+    const sourceValid =
+      selectedSourceKey === "all" ||
+      userSources.some((source) => source.source_key === selectedSourceKey);
+    const calendarValid =
+      selectedCalendarId === "all" ||
+      userSources.some((source) => source.calendar_id === selectedCalendarId);
+
+    if (!sourceValid || !calendarValid) {
+      updateQuery({
+        source: sourceValid ? selectedSourceKey : "all",
+        calendar: calendarValid ? selectedCalendarId : "all",
+      });
+      return;
+    }
+
+    if (selectedSourceKey !== "all" && selectedCalendarId !== "all") {
+      const source = userSources.find((item) => item.source_key === selectedSourceKey);
+      if (source?.calendar_id !== selectedCalendarId) {
+        updateQuery({ source: "all" });
+      }
+    }
+  }, [selectedCalendarId, selectedSourceKey, userSources, view]);
 
   const entries = useMemo(() => {
     const rows = workspaceQuery.data?.data.entries ?? [];
@@ -188,10 +367,20 @@ export default function CalendarWorkspacePage() {
   }, [workspaceQuery.data?.data.entries]);
 
   const sourceFreshness = workspaceQuery.data?.data.source_freshness ?? [];
-  const connectedSources =
+  const laneSources =
     sourceFreshness.length > 0
       ? sourceFreshness
-      : (metaQuery.data?.data.connected_sources ?? []);
+      : connectedSources;
+  const visibleSources = laneSources.filter((source) => source.lane === view);
+
+  const sourceByKey = useMemo(() => {
+    const lookup = new Map<string, CalendarWorkspaceSourceFreshness>();
+    connectedSources.forEach((source) => {
+      lookup.set(source.source_key, source);
+    });
+    return lookup;
+  }, [connectedSources]);
+
   const lanes =
     workspaceQuery.data?.data.lanes.length
       ? workspaceQuery.data.data.lanes
@@ -214,17 +403,296 @@ export default function CalendarWorkspacePage() {
     return Array.from({ length: 42 }, (_, index) => addDays(gridStart, index));
   }, [range, start]);
 
+  const userEditableEntries = useMemo(
+    () =>
+      entries.filter(
+        (entry) =>
+          entry.view === "user" &&
+          entry.source_type === "provider_event" &&
+          !!entry.provider_event_id &&
+          entry.editable,
+      ),
+    [entries],
+  );
+
+  const upcomingEntries = useMemo(
+    () => userEditableEntries.slice(0, 8),
+    [userEditableEntries],
+  );
+
+  const calendarFilterOptions = useMemo(() => {
+    const deduped = new Map<string, string>();
+    userSources.forEach((source) => {
+      if (!source.calendar_id) return;
+      if (!deduped.has(source.calendar_id)) {
+        deduped.set(source.calendar_id, source.display_name || source.calendar_id);
+      }
+    });
+    return Array.from(deduped.entries()).map(([calendarId, label]) => ({ calendarId, label }));
+  }, [userSources]);
+
   function updateQuery(nextValues: {
     view?: CalendarWorkspaceView;
     range?: CalendarRange;
     anchor?: Date;
+    source?: string;
+    calendar?: string;
   }) {
     const next = new URLSearchParams(searchParams);
+
     if (nextValues.view) next.set("view", nextValues.view);
     if (nextValues.range) next.set("range", nextValues.range);
     if (nextValues.anchor) next.set("anchor", serializeAnchor(nextValues.anchor));
+
+    if (nextValues.source !== undefined) {
+      if (!nextValues.source || nextValues.source === "all") {
+        next.delete("source");
+      } else {
+        next.set("source", nextValues.source);
+      }
+    }
+
+    if (nextValues.calendar !== undefined) {
+      if (!nextValues.calendar || nextValues.calendar === "all") {
+        next.delete("calendar");
+      } else {
+        next.set("calendar", nextValues.calendar);
+      }
+    }
+
     setSearchParams(next, { replace: true });
   }
+
+  function resolveSourceForForm(sourceKey: string): CalendarWorkspaceWritableCalendar | undefined {
+    return writableCalendars.find((calendar) => calendar.source_key === sourceKey);
+  }
+
+  function resolveEntryOwner(entry: UnifiedCalendarEntry): {
+    butlerName: string | null;
+    calendarId: string | null;
+  } {
+    const source = sourceByKey.get(entry.source_key);
+    const writable = resolveSourceForForm(entry.source_key);
+
+    const butlerName =
+      entry.butler_name?.trim() ||
+      source?.butler_name?.trim() ||
+      writable?.butler_name?.trim() ||
+      null;
+
+    const calendarId =
+      entry.calendar_id ||
+      source?.calendar_id ||
+      writable?.calendar_id ||
+      null;
+
+    return { butlerName, calendarId };
+  }
+
+  function openCreateDialog() {
+    if (writableCalendars.length === 0) {
+      toast.error("No writable calendar sources are available for user events.");
+      return;
+    }
+
+    const preferredSource =
+      selectedSourceKey !== "all" && writableCalendars.some((c) => c.source_key === selectedSourceKey)
+        ? selectedSourceKey
+        : writableCalendars[0].source_key;
+    const { startAtLocal, endAtLocal } = defaultFormWindow(anchor);
+
+    setUserEventDialogMode("create");
+    setActiveUserEntry(null);
+    setUserEventForm({
+      sourceKey: preferredSource,
+      title: "",
+      startAtLocal,
+      endAtLocal,
+      timezone: defaultTimezone,
+      description: "",
+      location: "",
+    });
+    setUserEventDialogOpen(true);
+  }
+
+  function openEditDialog(entry: UnifiedCalendarEntry) {
+    if (!entry.provider_event_id) {
+      toast.error("This entry cannot be edited because it has no provider event id.");
+      return;
+    }
+
+    const fallbackSource = writableCalendars[0]?.source_key ?? entry.source_key;
+
+    setUserEventDialogMode("edit");
+    setActiveUserEntry(entry);
+    setUserEventForm({
+      sourceKey: writableCalendars.some((calendar) => calendar.source_key === entry.source_key)
+        ? entry.source_key
+        : fallbackSource,
+      title: entry.title,
+      startAtLocal: toLocalDateTimeValue(entry.start_at),
+      endAtLocal: toLocalDateTimeValue(entry.end_at),
+      timezone: entry.timezone || defaultTimezone,
+      description: maybeText(entry.metadata.description),
+      location: maybeText(entry.metadata.location),
+    });
+    setUserEventDialogOpen(true);
+  }
+
+  async function handleSyncAll() {
+    try {
+      const result = await syncMutation.mutateAsync({ all: true });
+      toast.success(`Sync triggered for ${result.data.triggered_count} source(s).`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to trigger sync.");
+    }
+  }
+
+  async function handleSyncSource(source: CalendarWorkspaceSourceFreshness) {
+    setSyncingSourceKey(source.source_key);
+    try {
+      const result = await syncMutation.mutateAsync({
+        source_key: source.source_key,
+        butler: source.butler_name || undefined,
+      });
+      const target = result.data.targets[0];
+      if (target?.status === "failed") {
+        toast.error(target.error || "Source sync failed.");
+      } else {
+        toast.success(target?.detail || `Sync triggered for ${sourceName(source)}.`);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to trigger source sync.");
+    } finally {
+      setSyncingSourceKey(null);
+    }
+  }
+
+  async function submitUserEventForm(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!userEventForm) {
+      return;
+    }
+
+    const startIso = toIsoFromLocalDateTime(userEventForm.startAtLocal);
+    const endIso = toIsoFromLocalDateTime(userEventForm.endAtLocal);
+    const trimmedTitle = userEventForm.title.trim();
+
+    if (!trimmedTitle) {
+      toast.error("Title is required.");
+      return;
+    }
+    if (!startIso || !endIso) {
+      toast.error("Start and end times must be valid.");
+      return;
+    }
+    if (new Date(endIso) <= new Date(startIso)) {
+      toast.error("End time must be after start time.");
+      return;
+    }
+
+    const selectedCalendar = resolveSourceForForm(userEventForm.sourceKey);
+    const fallbackOwner = activeUserEntry ? resolveEntryOwner(activeUserEntry) : null;
+    const butlerName = selectedCalendar?.butler_name || fallbackOwner?.butlerName || null;
+    const calendarId = selectedCalendar?.calendar_id || fallbackOwner?.calendarId || null;
+
+    if (!butlerName) {
+      toast.error("Could not resolve owning butler for this calendar source.");
+      return;
+    }
+
+    const action: CalendarWorkspaceUserMutationAction =
+      userEventDialogMode === "create" ? "create" : "update";
+
+    const payload: Record<string, unknown> = {
+      title: trimmedTitle,
+      start_at: startIso,
+      end_at: endIso,
+      timezone: userEventForm.timezone.trim() || defaultTimezone,
+    };
+    if (calendarId) {
+      payload.calendar_id = calendarId;
+    }
+
+    const description = userEventForm.description.trim();
+    if (description) {
+      payload.description = description;
+    }
+
+    const location = userEventForm.location.trim();
+    if (location) {
+      payload.location = location;
+    }
+
+    if (action === "update") {
+      if (!activeUserEntry?.provider_event_id) {
+        toast.error("Event id is missing for update.");
+        return;
+      }
+      payload.event_id = activeUserEntry.provider_event_id;
+    }
+
+    try {
+      const result = await userEventMutation.mutateAsync({
+        butler_name: butlerName,
+        action,
+        request_id: buildRequestId(action),
+        payload,
+      });
+      const status = maybeText(result.data.result?.status);
+      toast.success(
+        action === "create"
+          ? status
+            ? `Created event (${status}).`
+            : "Created calendar event."
+          : status
+            ? `Updated event (${status}).`
+            : "Updated calendar event.",
+      );
+      setUserEventDialogOpen(false);
+      setUserEventForm(null);
+      setActiveUserEntry(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to save calendar event.");
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteCandidate?.provider_event_id) {
+      setDeleteCandidate(null);
+      return;
+    }
+
+    const owner = resolveEntryOwner(deleteCandidate);
+    if (!owner.butlerName) {
+      toast.error("Could not resolve owning butler for this event.");
+      return;
+    }
+
+    const payload: Record<string, unknown> = {
+      event_id: deleteCandidate.provider_event_id,
+    };
+    if (owner.calendarId) {
+      payload.calendar_id = owner.calendarId;
+    }
+
+    try {
+      const result = await userEventMutation.mutateAsync({
+        butler_name: owner.butlerName,
+        action: "delete",
+        request_id: buildRequestId("delete"),
+        payload,
+      });
+      const status = maybeText(result.data.result?.status);
+      toast.success(status ? `Deleted event (${status}).` : "Deleted calendar event.");
+      setDeleteCandidate(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete calendar event.");
+    }
+  }
+
+  const syncButtonLabel = syncMutation.isPending ? "Syncing..." : "Sync now";
+  const canCreateUserEvents = view === "user" && writableCalendars.length > 0;
 
   return (
     <div className="space-y-6">
@@ -232,12 +700,33 @@ export default function CalendarWorkspacePage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Calendar Workspace</h1>
           <p className="text-muted-foreground mt-1">
-            Unified user and butler calendar surface backed by the workspace projection APIs.
+            Unified user and butler calendar surface backed by workspace APIs.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline">{timezone}</Badge>
           <Badge variant="outline">{entries.length} entries</Badge>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={handleSyncAll}
+            disabled={syncMutation.isPending}
+            aria-label="Sync all sources now"
+          >
+            {syncButtonLabel}
+          </Button>
+          {view === "user" ? (
+            <Button
+              type="button"
+              size="sm"
+              onClick={openCreateDialog}
+              disabled={!canCreateUserEvents || userEventMutation.isPending}
+              aria-label="Create user event"
+            >
+              Create Event
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -304,10 +793,57 @@ export default function CalendarWorkspacePage() {
               Next
             </Button>
           </div>
+
+          {view === "user" ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <label htmlFor="calendar-filter" className="text-xs font-medium text-muted-foreground">
+                Calendar
+              </label>
+              <select
+                id="calendar-filter"
+                className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 rounded-md border px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+                value={selectedCalendarId}
+                onChange={(event) =>
+                  updateQuery({
+                    calendar: event.target.value,
+                    source: "all",
+                  })
+                }
+              >
+                <option value="all">All calendars</option>
+                {calendarFilterOptions.map((option) => (
+                  <option key={option.calendarId} value={option.calendarId}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+
+              <label htmlFor="source-filter" className="text-xs font-medium text-muted-foreground">
+                Source
+              </label>
+              <select
+                id="source-filter"
+                className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 rounded-md border px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+                value={selectedSourceKey}
+                onChange={(event) => updateQuery({ source: event.target.value })}
+              >
+                <option value="all">All sources</option>
+                {userSources
+                  .filter((source) =>
+                    selectedCalendarId === "all" ? true : source.calendar_id === selectedCalendarId,
+                  )
+                  .map((source) => (
+                    <option key={source.source_key} value={source.source_key}>
+                      {sourceName(source)}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
+      <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
         <Card>
           <CardHeader>
             <CardTitle>{windowLabel(range, start, end)}</CardTitle>
@@ -325,9 +861,7 @@ export default function CalendarWorkspacePage() {
                   : "Unknown error"}
               </p>
             ) : entries.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No events in the selected range.
-              </p>
+              <p className="text-sm text-muted-foreground">No events in the selected range.</p>
             ) : range === "month" ? (
               <div className="space-y-2">
                 <div className="grid grid-cols-7 gap-2 text-xs font-medium text-muted-foreground">
@@ -379,19 +913,52 @@ export default function CalendarWorkspacePage() {
                     <TableHead>Title</TableHead>
                     <TableHead>Source</TableHead>
                     <TableHead>Status</TableHead>
+                    {view === "user" ? <TableHead className="text-right">Actions</TableHead> : null}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {entries.map((entry) => (
-                    <TableRow key={entry.entry_id}>
-                      <TableCell>{formatEntryWindow(entry)}</TableCell>
-                      <TableCell>{entry.title}</TableCell>
-                      <TableCell>{entry.butler_name ?? entry.source_key}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{entry.status}</Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {entries.map((entry) => {
+                    const canMutate =
+                      view === "user" &&
+                      entry.source_type === "provider_event" &&
+                      !!entry.provider_event_id &&
+                      entry.editable;
+
+                    return (
+                      <TableRow key={entry.entry_id}>
+                        <TableCell>{formatEntryWindow(entry)}</TableCell>
+                        <TableCell>{entry.title}</TableCell>
+                        <TableCell>{entry.butler_name ?? entry.source_key}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{entry.status}</Badge>
+                        </TableCell>
+                        {view === "user" ? (
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openEditDialog(entry)}
+                                disabled={!canMutate || userEventMutation.isPending}
+                              >
+                                Edit
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setDeleteCandidate(entry)}
+                                disabled={!canMutate || userEventMutation.isPending}
+                              >
+                                Delete
+                              </Button>
+                            </div>
+                          </TableCell>
+                        ) : null}
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             )}
@@ -402,16 +969,16 @@ export default function CalendarWorkspacePage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Sources</CardTitle>
-              <CardDescription>Workspace freshness and connected calendars</CardDescription>
+              <CardDescription>Provider metadata, staleness, and sync controls</CardDescription>
             </CardHeader>
             <CardContent>
-              {metaQuery.isLoading && connectedSources.length === 0 ? (
+              {metaQuery.isLoading && visibleSources.length === 0 ? (
                 <p className="text-sm text-muted-foreground">Loading source metadata...</p>
-              ) : connectedSources.length === 0 ? (
+              ) : visibleSources.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No connected sources reported.</p>
               ) : (
                 <div className="space-y-2">
-                  {connectedSources.map((source) => (
+                  {visibleSources.map((source) => (
                     <div key={source.source_key} className="rounded-md border border-border p-2">
                       <div className="flex items-center justify-between gap-2">
                         <p className="truncate text-sm font-medium" title={sourceName(source)}>
@@ -421,7 +988,28 @@ export default function CalendarWorkspacePage() {
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {source.lane} • {source.provider ?? source.source_kind}
+                        {source.calendar_id ? ` • ${source.calendar_id}` : ""}
                       </p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatStaleness(source.staleness_ms)}
+                        {formatOptionalTimestamp(source.last_success_at)
+                          ? ` • last success ${formatOptionalTimestamp(source.last_success_at)}`
+                          : ""}
+                      </p>
+                      {source.last_error ? (
+                        <p className="mt-1 text-xs text-destructive">{source.last_error}</p>
+                      ) : null}
+                      <div className="mt-2 flex justify-end">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleSyncSource(source)}
+                          disabled={syncMutation.isPending || !source.butler_name}
+                        >
+                          {syncingSourceKey === source.source_key ? "Syncing..." : "Sync now"}
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -429,30 +1017,273 @@ export default function CalendarWorkspacePage() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Butler Lanes</CardTitle>
-              <CardDescription>Lane metadata for butler-view grouping</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {lanes.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No lane metadata available.</p>
-              ) : (
-                <div className="space-y-2">
-                  {lanes.map((lane) => (
-                    <div key={lane.lane_id} className="rounded-md border border-border p-2">
-                      <p className="text-sm font-medium">{lane.title}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {lane.source_keys.length} source{lane.source_keys.length === 1 ? "" : "s"}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          {view === "user" ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Upcoming Events</CardTitle>
+                <CardDescription>Editable provider events in this window</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {upcomingEntries.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No editable provider events found.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {upcomingEntries.map((entry) => (
+                      <div key={`upcoming-${entry.entry_id}`} className="rounded-md border border-border p-2">
+                        <p className="text-sm font-medium">{entry.title}</p>
+                        <p className="text-xs text-muted-foreground">{formatEntryWindow(entry)}</p>
+                        <div className="mt-2 flex justify-end gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openEditDialog(entry)}
+                            disabled={userEventMutation.isPending}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setDeleteCandidate(entry)}
+                            disabled={userEventMutation.isPending}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Butler Lanes</CardTitle>
+                <CardDescription>Lane metadata for butler-view grouping</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {lanes.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No lane metadata available.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {lanes.map((lane) => (
+                      <div key={lane.lane_id} className="rounded-md border border-border p-2">
+                        <p className="text-sm font-medium">{lane.title}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {lane.source_keys.length} source{lane.source_keys.length === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
+
+      <Dialog
+        open={userEventDialogOpen}
+        onOpenChange={(open) => {
+          setUserEventDialogOpen(open);
+          if (!open) {
+            setUserEventForm(null);
+            setActiveUserEntry(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>
+              {userEventDialogMode === "create" ? "Create User Event" : "Edit User Event"}
+            </DialogTitle>
+            <DialogDescription>
+              {userEventDialogMode === "create"
+                ? "Create an event in a connected writable provider calendar."
+                : "Update a provider event from the user workspace."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {userEventForm ? (
+            <form className="space-y-4" onSubmit={submitUserEventForm}>
+              <div className="space-y-2">
+                <label htmlFor="event-source" className="text-sm font-medium">
+                  Calendar Source
+                </label>
+                <select
+                  id="event-source"
+                  className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-10 w-full rounded-md border px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+                  value={userEventForm.sourceKey}
+                  onChange={(event) =>
+                    setUserEventForm((current) =>
+                      current ? { ...current, sourceKey: event.target.value } : current,
+                    )
+                  }
+                  disabled={userEventMutation.isPending}
+                >
+                  {writableCalendars.map((calendar) => (
+                    <option key={calendar.source_key} value={calendar.source_key}>
+                      {calendar.display_name || calendar.calendar_id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="event-title" className="text-sm font-medium">
+                  Title
+                </label>
+                <Input
+                  id="event-title"
+                  value={userEventForm.title}
+                  onChange={(event) =>
+                    setUserEventForm((current) =>
+                      current ? { ...current, title: event.target.value } : current,
+                    )
+                  }
+                  disabled={userEventMutation.isPending}
+                />
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <label htmlFor="event-start" className="text-sm font-medium">
+                    Start
+                  </label>
+                  <Input
+                    id="event-start"
+                    type="datetime-local"
+                    value={userEventForm.startAtLocal}
+                    onChange={(event) =>
+                      setUserEventForm((current) =>
+                        current ? { ...current, startAtLocal: event.target.value } : current,
+                      )
+                    }
+                    disabled={userEventMutation.isPending}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="event-end" className="text-sm font-medium">
+                    End
+                  </label>
+                  <Input
+                    id="event-end"
+                    type="datetime-local"
+                    value={userEventForm.endAtLocal}
+                    onChange={(event) =>
+                      setUserEventForm((current) =>
+                        current ? { ...current, endAtLocal: event.target.value } : current,
+                      )
+                    }
+                    disabled={userEventMutation.isPending}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="event-timezone" className="text-sm font-medium">
+                  Timezone
+                </label>
+                <Input
+                  id="event-timezone"
+                  value={userEventForm.timezone}
+                  onChange={(event) =>
+                    setUserEventForm((current) =>
+                      current ? { ...current, timezone: event.target.value } : current,
+                    )
+                  }
+                  disabled={userEventMutation.isPending}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="event-description" className="text-sm font-medium">
+                  Description
+                </label>
+                <Textarea
+                  id="event-description"
+                  value={userEventForm.description}
+                  onChange={(event) =>
+                    setUserEventForm((current) =>
+                      current ? { ...current, description: event.target.value } : current,
+                    )
+                  }
+                  className="min-h-20"
+                  disabled={userEventMutation.isPending}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="event-location" className="text-sm font-medium">
+                  Location
+                </label>
+                <Input
+                  id="event-location"
+                  value={userEventForm.location}
+                  onChange={(event) =>
+                    setUserEventForm((current) =>
+                      current ? { ...current, location: event.target.value } : current,
+                    )
+                  }
+                  disabled={userEventMutation.isPending}
+                />
+              </div>
+
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setUserEventDialogOpen(false)}
+                  disabled={userEventMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={userEventMutation.isPending}>
+                  {userEventMutation.isPending
+                    ? "Saving..."
+                    : userEventDialogMode === "create"
+                      ? "Create Event"
+                      : "Update Event"}
+                </Button>
+              </DialogFooter>
+            </form>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!deleteCandidate} onOpenChange={(open) => (!open ? setDeleteCandidate(null) : null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Event</DialogTitle>
+            <DialogDescription>
+              {deleteCandidate
+                ? `Delete "${deleteCandidate.title}" from the provider calendar?`
+                : "Delete this event?"}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDeleteCandidate(null)}
+              disabled={userEventMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={confirmDelete}
+              disabled={userEventMutation.isPending}
+            >
+              {userEventMutation.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

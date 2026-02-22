@@ -817,3 +817,6 @@ make test-qg
 - Mutation routes proxy to MCP tools and must return projection freshness metadata (`projection_version`, `staleness_ms`, `projection_freshness`) by using tool-returned freshness or falling back to `calendar_sync_status`.
 - Calendar module mutation idempotency uses `calendar_action_log.idempotency_key` keyed by action + `request_id`; repeat requests should replay stored applied/noop results instead of re-executing side effects.
 - Butler-event MCP tools are `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, and `calendar_toggle_butler_event`; high-impact delete/toggle operations integrate with approval enqueueing and set `_approval_bypass=True` on queued replays.
+
+### Frontend dialog test contract
+- Radix `Dialog` content renders through a portal (`document.body`), so jsdom tests for dialog controls should query `document` (not only the mounted container) and use the native input value setter + `input` event dispatch for controlled text inputs.
