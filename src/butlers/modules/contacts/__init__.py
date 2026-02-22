@@ -118,9 +118,255 @@ class ContactsModule(Module):
         return config if isinstance(config, ContactsConfig) else ContactsConfig(**(config or {}))
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        # Tools are intentionally added in sync-engine follow-up work.
+        """Register contacts MCP tools.
+
+        Tools capture ``self`` via closure so they resolve ``_runtime`` at
+        call-time, after ``on_startup()`` has wired the runtime.  All four
+        tools return a clear error when the runtime is unavailable (sync
+        disabled or not yet started).
+        """
         self._config = self._coerce_config(config)
         self._db = db
+
+        module = self  # capture for closures
+
+        # ------------------------------------------------------------------
+        # contacts_sync_now
+        # ------------------------------------------------------------------
+
+        @mcp.tool()
+        async def contacts_sync_now(
+            provider: str = "google",
+            mode: ContactsSyncMode = "incremental",
+        ) -> dict[str, Any]:
+            """Trigger an immediate contacts sync cycle.
+
+            Args:
+                provider: Provider to sync (currently only 'google').
+                mode: Sync mode — 'incremental' for routine refresh,
+                      'full' for a complete backfill from the provider.
+
+            Returns:
+                A dict with the sync result summary including fetched,
+                applied, skipped, and deleted contact counts.
+            """
+            runtime = module._runtime
+            if runtime is None:
+                return {
+                    "error": (
+                        "Contacts sync runtime is not running. "
+                        "Ensure sync.enabled=true and Google credentials are configured."
+                    ),
+                    "provider": provider,
+                    "mode": mode,
+                }
+
+            config_provider = module._config.provider if module._config else "google"
+            if provider != config_provider:
+                return {
+                    "error": (
+                        f"Provider '{provider}' is not the configured provider "
+                        f"'{config_provider}'. Only the configured provider is supported."
+                    ),
+                    "provider": provider,
+                    "mode": mode,
+                }
+
+            try:
+                result: ContactsSyncResult = await runtime._sync_engine.sync(
+                    account_id=runtime._account_id,
+                    mode=mode,
+                )
+            except ContactsSyncError as exc:
+                return {
+                    "error": str(exc),
+                    "provider": provider,
+                    "mode": mode,
+                }
+            except Exception as exc:
+                logger.warning("contacts_sync_now failed: %s", exc, exc_info=True)
+                return {
+                    "error": f"Sync failed: {exc}",
+                    "provider": provider,
+                    "mode": mode,
+                }
+
+            return {
+                "provider": provider,
+                "mode": result.mode,
+                "summary": {
+                    "fetched": result.fetched_contacts,
+                    "applied": result.applied_contacts,
+                    "skipped": result.skipped_contacts,
+                    "deleted": result.deleted_contacts,
+                },
+                "next_sync_cursor": result.next_sync_cursor,
+            }
+
+        # ------------------------------------------------------------------
+        # contacts_sync_status
+        # ------------------------------------------------------------------
+
+        @mcp.tool()
+        async def contacts_sync_status(
+            provider: str = "google",
+        ) -> dict[str, Any]:
+            """Return the current contacts sync state for a provider.
+
+            Args:
+                provider: Provider to query (currently only 'google').
+
+            Returns:
+                A dict with last sync timestamps, cursor age, last error,
+                and approximate contact count.
+            """
+            runtime = module._runtime
+            if runtime is None:
+                return {
+                    "error": (
+                        "Contacts sync runtime is not running. "
+                        "Ensure sync.enabled=true and Google credentials are configured."
+                    ),
+                    "provider": provider,
+                    "sync_enabled": False,
+                }
+
+            try:
+                state: ContactsSyncState = await runtime._state_store.load(
+                    provider=runtime._provider_name,
+                    account_id=runtime._account_id,
+                )
+            except Exception as exc:
+                logger.warning("contacts_sync_status: state load failed: %s", exc, exc_info=True)
+                return {
+                    "error": f"Failed to load sync state: {exc}",
+                    "provider": provider,
+                }
+
+            contact_count = len(state.contact_versions) if state.contact_versions else 0
+
+            return {
+                "provider": provider,
+                "sync_enabled": True,
+                "sync_cursor": state.sync_cursor is not None,
+                "cursor_issued_at": state.cursor_issued_at,
+                "last_full_sync_at": state.last_full_sync_at,
+                "last_incremental_sync_at": state.last_incremental_sync_at,
+                "last_success_at": state.last_success_at,
+                "last_error": state.last_error,
+                "contact_count": contact_count,
+            }
+
+        # ------------------------------------------------------------------
+        # contacts_source_list
+        # ------------------------------------------------------------------
+
+        @mcp.tool()
+        async def contacts_source_list(
+            provider: str | None = None,
+        ) -> list[dict[str, Any]]:
+            """List connected contact source accounts with their status.
+
+            Args:
+                provider: Filter by provider name (e.g. 'google').
+                          When omitted, all configured sources are listed.
+
+            Returns:
+                A list of source account dicts, each with provider name,
+                account_id, sync enabled flag, and last sync timestamp.
+            """
+            runtime = module._runtime
+            cfg = module._config
+
+            configured_provider = cfg.provider if cfg else "unknown"
+
+            # If a provider filter is given and doesn't match, return empty.
+            if provider is not None and provider != configured_provider:
+                return []
+
+            if runtime is None:
+                return [
+                    {
+                        "provider": configured_provider,
+                        "account_id": _DEFAULT_ACCOUNT_ID,
+                        "sync_enabled": False,
+                        "status": "sync_disabled",
+                        "last_success_at": None,
+                        "last_error": None,
+                    }
+                ]
+
+            try:
+                state: ContactsSyncState = await runtime._state_store.load(
+                    provider=runtime._provider_name,
+                    account_id=runtime._account_id,
+                )
+                status = "active" if state.last_error is None else "error"
+                if state.last_success_at is None:
+                    status = "never_synced"
+            except Exception as exc:
+                logger.warning("contacts_source_list: state load failed: %s", exc, exc_info=True)
+                state = ContactsSyncState()
+                status = "unknown"
+
+            return [
+                {
+                    "provider": runtime._provider_name,
+                    "account_id": runtime._account_id,
+                    "sync_enabled": True,
+                    "status": status,
+                    "last_success_at": state.last_success_at,
+                    "last_error": state.last_error,
+                }
+            ]
+
+        # ------------------------------------------------------------------
+        # contacts_source_reconcile
+        # ------------------------------------------------------------------
+
+        @mcp.tool()
+        async def contacts_source_reconcile(
+            contact_id: str | None = None,
+        ) -> dict[str, Any]:
+            """Trigger re-evaluation of source links for a contact.
+
+            Schedules an immediate incremental sync to pull the latest data
+            from the provider and reconcile any stale or missing source links.
+
+            Args:
+                contact_id: Optional contact ID to reconcile.  When omitted,
+                            triggers reconciliation for all contacts.
+
+            Returns:
+                A dict confirming the reconciliation request was queued.
+            """
+            runtime = module._runtime
+            if runtime is None:
+                return {
+                    "error": (
+                        "Contacts sync runtime is not running. "
+                        "Ensure sync.enabled=true and Google credentials are configured."
+                    ),
+                    "queued": False,
+                }
+
+            # Signal the runtime poller to wake up and run a sync cycle.
+            runtime.trigger_immediate_sync()
+
+            return {
+                "queued": True,
+                "contact_id": contact_id,
+                "message": (
+                    "Reconciliation queued via immediate sync trigger. "
+                    "The sync runtime will process source links on the next cycle."
+                    if contact_id is None
+                    else (
+                        f"Reconciliation for contact '{contact_id}' queued via "
+                        "immediate sync trigger. The sync runtime will refresh "
+                        "source links on the next cycle."
+                    )
+                ),
+            }
 
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Initialize the contacts provider and start the sync runtime.
@@ -273,8 +519,8 @@ __all__ = [
     "ContactsSyncEngine",
     "ContactsSyncError",
     "ContactsSyncMode",
-    "ContactsSyncRuntime",
     "ContactsSyncResult",
+    "ContactsSyncRuntime",
     "ContactsSyncState",
     "ContactsSyncStateStore",
     "ContactsSyncTokenExpiredError",
