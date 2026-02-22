@@ -213,6 +213,53 @@ async def test_realtime_history_excludes_other_threads(switchboard_dsn):
         await pool.close()
 
 
+async def test_realtime_history_telegram_groups_message_scoped_thread_ids(switchboard_dsn):
+    """Telegram history groups message-scoped thread IDs by chat identity."""
+    pool = await asyncpg.create_pool(switchboard_dsn)
+    try:
+        now = datetime.now(UTC)
+        chat_id = f"-100{uuid.uuid4().int % 10_000_000:07d}"
+        current_thread = f"{chat_id}:103"
+
+        await _insert_message(
+            pool,
+            text="earlier inbound",
+            sender="user1",
+            thread_identity=f"{chat_id}:101",
+            received_at=now - timedelta(minutes=6),
+            channel="telegram",
+        )
+        await _insert_outbound_message(
+            pool,
+            text="earlier outbound",
+            origin_butler="general",
+            thread_identity=f"{chat_id}:102",
+            received_at=now - timedelta(minutes=5),
+            channel="telegram",
+        )
+        await _insert_message(
+            pool,
+            text="different chat",
+            sender="user2",
+            thread_identity=f"-100{uuid.uuid4().int % 10_000_000:07d}:201",
+            received_at=now - timedelta(minutes=4),
+            channel="telegram",
+        )
+
+        messages = await _load_realtime_history(
+            pool,
+            current_thread,
+            now,
+            source_channel="telegram",
+        )
+
+        assert len(messages) == 2
+        assert [m["raw_content"] for m in messages] == ["earlier inbound", "earlier outbound"]
+        assert [m["direction"] for m in messages] == ["inbound", "outbound"]
+    finally:
+        await pool.close()
+
+
 # ---------------------------------------------------------------------------
 # _load_email_history
 # ---------------------------------------------------------------------------

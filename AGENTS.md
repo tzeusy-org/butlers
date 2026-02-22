@@ -340,6 +340,9 @@ make test-qg
 - `src/butlers/modules/telegram.py::_store_message_inbox_entry` must persist inbound rows with deterministic Telegram dedupe keys and `ON CONFLICT (dedupe_key)` upsert semantics.
 - `TelegramModule.process_update()` should treat non-insert (`decision=deduped`) ingress persistence results as replayed updates and short-circuit before pipeline routing.
 
+### Telegram history thread-key contract
+- Connector/runtime request context may carry Telegram `source_thread_identity` as either `<chat_id>` or `<chat_id>:<message_id>` (reply-target form); realtime history loading in `src/butlers/modules/pipeline.py::_load_realtime_history` must normalize/group by numeric chat id for `source_channel="telegram"` so message-scoped identities do not collapse history to a single row.
+
 ### HTTP client logging contract
 - CLI logging config (`src/butlers/cli.py::_configure_logging`) sets `httpx` and `httpcore` logger levels to `WARNING` to prevent request-URL token leakage (notably Telegram bot tokens in `/bot<token>/...` paths).
 

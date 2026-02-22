@@ -28,6 +28,8 @@ from butlers.tools.switchboard.routing.telemetry import (
 logger = logging.getLogger(__name__)
 
 _ROUTE_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])route_to_butler$", re.IGNORECASE)
+_TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d+$")
+_TELEGRAM_CHAT_MESSAGE_RE = re.compile(r"^(?P<chat_id>-?\d+):(?P<message_id>\d+)$")
 
 # Per-task routing context for concurrent pipeline sessions.
 # Each asyncio task (pipeline.process() call) sets its own isolated copy,
@@ -74,6 +76,7 @@ async def _load_realtime_history(
     source_thread_identity: str,
     received_at: datetime,
     *,
+    source_channel: str | None = None,
     max_time_window_minutes: int = 15,
     max_message_count: int = 30,
 ) -> list[dict[str, Any]]:
@@ -88,6 +91,14 @@ async def _load_realtime_history(
     """
     time_cutoff = received_at - timedelta(minutes=max_time_window_minutes)
 
+    telegram_chat_id: str | None = None
+    if source_channel == "telegram":
+        match = _TELEGRAM_CHAT_MESSAGE_RE.fullmatch(source_thread_identity)
+        if match is not None:
+            telegram_chat_id = match.group("chat_id")
+        elif _TELEGRAM_CHAT_ID_RE.fullmatch(source_thread_identity):
+            telegram_chat_id = source_thread_identity
+
     async with pool.acquire() as conn:
         # Load time-based window
         time_window_messages = await conn.fetch(
@@ -99,7 +110,17 @@ async def _load_realtime_history(
                 raw_payload -> 'metadata' AS raw_metadata,
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
-            WHERE request_context ->> 'source_thread_identity' = $1
+            WHERE (
+                    request_context ->> 'source_thread_identity' = $1
+                    OR (
+                        $4::text IS NOT NULL
+                        AND (
+                            request_context ->> 'source_thread_identity' = $4
+                            OR request_context ->> 'source_thread_identity' LIKE ($4 || ':%')
+                        )
+                    )
+                )
+                AND ($5::text IS NULL OR request_context ->> 'source_channel' = $5)
                 AND received_at >= $2
                 AND received_at < $3
             ORDER BY received_at ASC
@@ -107,6 +128,8 @@ async def _load_realtime_history(
             source_thread_identity,
             time_cutoff,
             received_at,
+            telegram_chat_id,
+            source_channel,
         )
 
         # Load count-based window
@@ -119,13 +142,25 @@ async def _load_realtime_history(
                 raw_payload -> 'metadata' AS raw_metadata,
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
-            WHERE request_context ->> 'source_thread_identity' = $1
+            WHERE (
+                    request_context ->> 'source_thread_identity' = $1
+                    OR (
+                        $3::text IS NOT NULL
+                        AND (
+                            request_context ->> 'source_thread_identity' = $3
+                            OR request_context ->> 'source_thread_identity' LIKE ($3 || ':%')
+                        )
+                    )
+                )
+                AND ($4::text IS NULL OR request_context ->> 'source_channel' = $4)
                 AND received_at < $2
             ORDER BY received_at DESC
-            LIMIT $3
+            LIMIT $5
             """,
             source_thread_identity,
             received_at,
+            telegram_chat_id,
+            source_channel,
             max_message_count,
         )
 
@@ -275,6 +310,7 @@ async def _load_conversation_history(
                 pool,
                 source_thread_identity,
                 received_at,
+                source_channel=source_channel,
                 max_time_window_minutes=config.max_time_window_minutes,
                 max_message_count=config.max_message_count,
             )
