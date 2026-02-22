@@ -13,6 +13,32 @@ pytestmark = pytest.mark.unit
 
 
 class TestNativeScheduleDispatch:
+    def test_registry_includes_memory_jobs_for_memory_enabled_butlers(self):
+        """Memory-enabled butlers should register deterministic memory jobs."""
+        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+        expected_jobs = {"memory_consolidation", "memory_episode_cleanup"}
+        for butler_name in ("general", "health", "relationship", "switchboard"):
+            jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get(butler_name, {})
+            missing = expected_jobs - set(jobs)
+            assert not missing, (
+                f"Missing deterministic memory jobs for {butler_name}: {sorted(missing)}"
+            )
+
+    def test_registry_includes_switchboard_connector_stats_jobs(self):
+        """Switchboard deterministic connector stats jobs should be registered."""
+        from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+        jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("switchboard", {})
+        expected_jobs = {
+            "connector_stats_hourly_rollup",
+            "connector_stats_daily_rollup",
+            "connector_stats_pruning",
+            "eligibility_sweep",
+        }
+        missing = expected_jobs - set(jobs)
+        assert not missing, f"Missing switchboard deterministic jobs: {sorted(missing)}"
+
     async def test_switchboard_job_mode_dispatches_via_registry(self, tmp_path):
         """Job-mode deterministic schedules should dispatch via registry handler."""
         daemon = ButlerDaemon(tmp_path)
@@ -98,13 +124,13 @@ class TestNativeScheduleDispatch:
 
         result = await daemon._dispatch_scheduled_task(
             prompt="run memory cleanup",
-            trigger_source="schedule:memory-episode-cleanup",
+            trigger_source="schedule:non-native-prompt-task",
         )
 
         assert result == spawner_result
         mock_spawner.trigger.assert_awaited_once_with(
             prompt="run memory cleanup",
-            trigger_source="schedule:memory-episode-cleanup",
+            trigger_source="schedule:non-native-prompt-task",
         )
 
     async def test_unknown_job_mode_raises(self, tmp_path):

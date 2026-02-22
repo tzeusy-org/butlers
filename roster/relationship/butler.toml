@@ -34,12 +34,14 @@ on our last interaction and any upcoming dates.
 [[butler.schedule]]
 name = "memory-consolidation"
 cron = "0 */6 * * *"
-prompt = "Run memory consolidation to process unconsolidated episodes and extract facts and rules."
+dispatch_mode = "job"
+job_name = "memory_consolidation"
 
 [[butler.schedule]]
 name = "memory-episode-cleanup"
 cron = "0 4 * * *"
-prompt = "Run memory episode cleanup to delete expired episodes and enforce capacity limits."
+dispatch_mode = "job"
+job_name = "memory_episode_cleanup"
 
 [modules.calendar]
 provider = "google"

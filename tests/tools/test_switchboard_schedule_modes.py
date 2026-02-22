@@ -24,6 +24,8 @@ def test_switchboard_deterministic_schedules_use_job_mode() -> None:
         "connector-stats-daily-rollup": "connector_stats_daily_rollup",
         "connector-stats-pruning": "connector_stats_pruning",
         "eligibility-sweep": "eligibility_sweep",
+        "memory-consolidation": "memory_consolidation",
+        "memory-episode-cleanup": "memory_episode_cleanup",
     }
 
     missing = set(expected_jobs) - set(by_name)
