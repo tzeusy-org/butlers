@@ -142,6 +142,9 @@ git push                # Push to remote
 
 ## Notes to self
 
+### PR merge from worktree contract
+- In this repo's multi-worktree setup, `gh pr merge` from a non-main worktree can fail with `fatal: 'main' is already checked out at '/home/tze/GitHub/butlers'`; reviewer workers should merge via GitHub API (`PUT /repos/{owner}/{repo}/pulls/{number}/merge`) and delete the head ref separately when needed.
+
 ### Calendar projection linkage schema contract
 - Core `scheduled_tasks` now includes calendar-linkage columns (`timezone`, `start_at`, `end_at`, `until_at`, `display_title`, `calendar_event_id`) with bounds checks and a partial unique index on `calendar_event_id`.
 - Relationship `reminders` now includes projection fields (`timezone`, `until_at`, `updated_at`, `calendar_event_id`), and reminder writes/dismissals must preserve `updated_at` for deterministic projector upserts.
