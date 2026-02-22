@@ -99,6 +99,68 @@ class ContactPhone(BaseModel):
         return normalized
 
 
+class ContactAddress(BaseModel):
+    """Canonical postal address."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    street: str | None = None
+    city: str | None = None
+    region: str | None = None
+    postal_code: str | None = None
+    country: str | None = None
+    label: str | None = None
+    primary: bool = False
+
+
+class ContactOrganization(BaseModel):
+    """Canonical organization/employer entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    company: str | None = None
+    title: str | None = None
+    department: str | None = None
+
+
+class ContactDate(BaseModel):
+    """Canonical date entry (birthday, anniversary, etc.)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    year: int | None = None
+    month: int | None = None
+    day: int | None = None
+    label: str | None = None
+
+
+class ContactUrl(BaseModel):
+    """Canonical URL entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str = Field(min_length=1)
+    label: str | None = None
+
+
+class ContactUsername(BaseModel):
+    """Canonical username/handle entry for a specific service."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str = Field(min_length=1)
+    service: str | None = None
+
+
+class ContactPhoto(BaseModel):
+    """Canonical photo entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(min_length=1)
+    primary: bool = False
+
+
 class CanonicalContact(BaseModel):
     """Provider-neutral canonical contact shape."""
 
@@ -113,6 +175,13 @@ class CanonicalContact(BaseModel):
     nickname: str | None = None
     emails: list[ContactEmail] = Field(default_factory=list)
     phones: list[ContactPhone] = Field(default_factory=list)
+    addresses: list[ContactAddress] = Field(default_factory=list)
+    organizations: list[ContactOrganization] = Field(default_factory=list)
+    birthdays: list[ContactDate] = Field(default_factory=list)
+    anniversaries: list[ContactDate] = Field(default_factory=list)
+    urls: list[ContactUrl] = Field(default_factory=list)
+    usernames: list[ContactUsername] = Field(default_factory=list)
+    photos: list[ContactPhoto] = Field(default_factory=list)
     group_memberships: list[str] = Field(default_factory=list)
     deleted: bool = False
     raw: dict[str, Any] | None = None
