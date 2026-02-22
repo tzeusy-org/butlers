@@ -228,7 +228,7 @@ This is an optional protocol extension. Connectors remain transport adapters and
 
 ### 14.2 MCP Tools (Switchboard-Owned)
 - `backfill.poll(connector_type, endpoint_identity)` -> `BackfillJob | null`
-- `backfill.progress(job_id, rows_processed, rows_skipped, cost_spent_cents, cursor?, status?, error?)` -> `ack`
+- `backfill.progress(job_id, rows_processed, rows_skipped, cost_spent_cents, cursor?, status?, error?)` -> `{"status": "ack" | "paused" | "cancelled"}`
 
 ### 14.3 Connector Requirements (When Implementing Backfill)
 Connectors implementing backfill MUST:
@@ -236,7 +236,7 @@ Connectors implementing backfill MUST:
 - Use the same `ingest.v1` envelope and idempotency keys for historical messages as for live messages.
 - Respect `rate_limit_per_hour` from job parameters.
 - Report progress at least every 50 messages (configurable).
-- Stop immediately when `backfill.progress()` returns `paused` or `cancelled`.
+- Stop immediately when `backfill.progress()` returns `status` of `paused` or `cancelled`.
 - Keep live ingestion responsive; backfill runs in the background alongside normal polling.
 - Persist backfill cursor in job state via `backfill.progress`, not in a local checkpoint file.
 
