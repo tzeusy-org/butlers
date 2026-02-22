@@ -449,33 +449,144 @@ class TestGroupBatchModel:
         assert group.group_type is None
 
 
+class _FakePool:
+    """In-memory asyncpg pool double for ContactsSyncStateStore tests."""
+
+    def __init__(self) -> None:
+        # Maps (provider, account_id) -> row dict or None
+        self._rows: dict[tuple[str, str], dict[str, Any]] = {}
+        self.execute_calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
+        provider, account_id = args[0], args[1]
+        return self._rows.get((provider, account_id))
+
+    async def execute(self, query: str, *args: Any) -> str:
+        import json
+
+        self.execute_calls.append((query, args))
+        # Simulate upsert: extract positional params
+        # Args order: provider, account_id, sync_cursor, cursor_issued_at,
+        #             last_full_sync_at, last_incremental_sync_at,
+        #             last_success_at, last_error, contact_versions
+        provider, account_id = args[0], args[1]
+        self._rows[(provider, account_id)] = {
+            "sync_cursor": args[2],
+            "cursor_issued_at": args[3],
+            "last_full_sync_at": args[4],
+            "last_incremental_sync_at": args[5],
+            "last_success_at": args[6],
+            "last_error": args[7],
+            "contact_versions": (
+                json.loads(args[8]) if args[8] is not None and args[8] != "" else {}
+            ),
+        }
+        return "INSERT 0 1"
+
+
 class TestContactsSyncStateStore:
-    async def test_state_round_trip_uses_provider_account_key(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ):
-        store_data: dict[str, Any] = {}
+    async def test_load_returns_empty_state_when_no_row_exists(self) -> None:
+        """load() returns a default ContactsSyncState when no DB row is found."""
+        pool = _FakePool()
+        store = ContactsSyncStateStore(pool)
+        state = await store.load(provider="google", account_id="acct-1")
+        assert isinstance(state, ContactsSyncState)
+        assert state.sync_cursor is None
+        assert state.last_error is None
+        assert state.contact_versions == {}
 
-        async def fake_state_get(pool: Any, key: str) -> Any:
-            assert pool == "pool"
-            return store_data.get(key)
+    async def test_save_and_load_round_trip(self) -> None:
+        """save() persists state and load() retrieves it correctly."""
+        pool = _FakePool()
+        store = ContactsSyncStateStore(pool)
 
-        async def fake_state_set(pool: Any, key: str, value: Any) -> int:
-            assert pool == "pool"
-            store_data[key] = value
-            return 1
+        original = ContactsSyncState(
+            sync_cursor="tok-abc",
+            last_full_sync_at="2026-02-20T08:00:00+00:00",
+            last_success_at="2026-02-20T10:00:00+00:00",
+            last_error=None,
+            contact_versions={"people/1": "etag:v1:deleted=0"},
+        )
+        await store.save(provider="google", account_id="acct-1", state=original)
+        loaded = await store.load(provider="google", account_id="acct-1")
 
-        monkeypatch.setattr("butlers.modules.contacts.sync._state_get", fake_state_get)
-        monkeypatch.setattr("butlers.modules.contacts.sync._state_set", fake_state_set)
+        assert loaded.sync_cursor == "tok-abc"
+        assert loaded.last_full_sync_at == "2026-02-20T08:00:00+00:00"
+        assert loaded.last_success_at == "2026-02-20T10:00:00+00:00"
+        assert loaded.last_error is None
+        assert loaded.contact_versions == {"people/1": "etag:v1:deleted=0"}
 
-        store = ContactsSyncStateStore("pool")
-        state = ContactsSyncState(sync_cursor="tok-1", last_success_at="2026-02-20T10:00:00+00:00")
+    async def test_save_normalizes_provider_and_account(self) -> None:
+        """save() normalizes provider to lowercase and strips account_id."""
+        pool = _FakePool()
+        store = ContactsSyncStateStore(pool)
+
+        state = ContactsSyncState(sync_cursor="tok-1")
+        await store.save(provider="  GOOGLE  ", account_id="  acct-1  ", state=state)
+
+        # Should be stored under normalized keys
+        assert ("google", "acct-1") in pool._rows
+
+    async def test_load_normalizes_provider_and_account(self) -> None:
+        """load() normalizes provider to lowercase and strips account_id."""
+        pool = _FakePool()
+        store = ContactsSyncStateStore(pool)
+
+        state = ContactsSyncState(sync_cursor="tok-norm")
         await store.save(provider="google", account_id="acct-1", state=state)
 
+        # Loading with non-normalized keys should still find the row
+        loaded = await store.load(provider="  GOOGLE  ", account_id="  acct-1  ")
+        assert loaded.sync_cursor == "tok-norm"
+
+    async def test_key_helper_returns_legacy_format(self) -> None:
+        """key() returns the legacy KV key string for backward-compatibility."""
+        store = ContactsSyncStateStore(None)  # type: ignore[arg-type]
+        key = store.key(provider="Google", account_id="  my-acct  ")
+        assert key == "contacts::sync::google::my-acct"
+
+    async def test_save_issues_upsert_query(self) -> None:
+        """save() calls pool.execute with an INSERT ... ON CONFLICT query."""
+        pool = _FakePool()
+        store = ContactsSyncStateStore(pool)
+
+        state = ContactsSyncState(sync_cursor="tok-upsert")
+        await store.save(provider="google", account_id="acct-1", state=state)
+
+        assert len(pool.execute_calls) == 1
+        query, _ = pool.execute_calls[0]
+        assert "ON CONFLICT" in query
+        assert "contacts_sync_state" in query
+
+    async def test_save_multiple_accounts_independently(self) -> None:
+        """save() stores state independently per (provider, account_id) pair."""
+        pool = _FakePool()
+        store = ContactsSyncStateStore(pool)
+
+        state_a = ContactsSyncState(sync_cursor="cursor-a")
+        state_b = ContactsSyncState(sync_cursor="cursor-b")
+        await store.save(provider="google", account_id="acct-a", state=state_a)
+        await store.save(provider="google", account_id="acct-b", state=state_b)
+
+        loaded_a = await store.load(provider="google", account_id="acct-a")
+        loaded_b = await store.load(provider="google", account_id="acct-b")
+        assert loaded_a.sync_cursor == "cursor-a"
+        assert loaded_b.sync_cursor == "cursor-b"
+
+    async def test_save_overwrites_previous_state(self) -> None:
+        """Saving updated state replaces the previous row for the same key."""
+        pool = _FakePool()
+        store = ContactsSyncStateStore(pool)
+
+        state1 = ContactsSyncState(sync_cursor="tok-first")
+        await store.save(provider="google", account_id="acct-1", state=state1)
+
+        state2 = ContactsSyncState(sync_cursor="tok-second", last_error="oops")
+        await store.save(provider="google", account_id="acct-1", state=state2)
+
         loaded = await store.load(provider="google", account_id="acct-1")
-        assert loaded.sync_cursor == "tok-1"
-        assert loaded.last_success_at == "2026-02-20T10:00:00+00:00"
-        assert "contacts::sync::google::acct-1" in store_data
+        assert loaded.sync_cursor == "tok-second"
+        assert loaded.last_error == "oops"
 
 
 class TestContactsSyncEngine:

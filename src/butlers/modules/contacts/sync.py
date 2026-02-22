@@ -20,9 +20,6 @@ from typing import Any, Literal, Protocol
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
-from butlers.core.state import state_get as _state_get
-from butlers.core.state import state_set as _state_set
-
 logger = logging.getLogger(__name__)
 
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -813,22 +810,70 @@ class ContactsSyncStateRepository(Protocol):
 
 
 class ContactsSyncStateStore:
-    """KV-backed sync state repository using ``core.state``."""
+    """Table-backed sync state repository using ``contacts_sync_state``.
+
+    Reads and writes sync state via asyncpg directly to the
+    ``contacts_sync_state`` table created by the contacts module migration.
+    The ``key()`` helper is retained for backward-compatibility but is no
+    longer used for persistence.
+    """
 
     def __init__(self, pool: Any, *, key_prefix: str = SYNC_STATE_KEY_PREFIX) -> None:
         self._pool = pool
         self._key_prefix = key_prefix
 
     def key(self, *, provider: str, account_id: str) -> str:
+        """Return the legacy KV key for this (provider, account_id) pair.
+
+        Retained for backward-compatibility.  Persistence now uses the
+        ``contacts_sync_state`` relational table instead of the KV store.
+        """
         provider_key = provider.strip().lower()
         account_key = account_id.strip()
         return f"{self._key_prefix}{provider_key}::{account_key}"
 
     async def load(self, *, provider: str, account_id: str) -> ContactsSyncState:
-        raw = await _state_get(self._pool, self.key(provider=provider, account_id=account_id))
-        if not isinstance(raw, dict):
+        """Load sync state from the ``contacts_sync_state`` table.
+
+        Returns an empty :class:`ContactsSyncState` if no row exists yet.
+        """
+        row = await self._pool.fetchrow(
+            """
+            SELECT
+                sync_cursor,
+                cursor_issued_at,
+                last_full_sync_at,
+                last_incremental_sync_at,
+                last_success_at,
+                last_error,
+                contact_versions
+            FROM contacts_sync_state
+            WHERE provider = $1 AND account_id = $2
+            """,
+            provider.strip().lower(),
+            account_id.strip(),
+        )
+        if row is None:
             return ContactsSyncState()
-        return ContactsSyncState(**raw)
+        return ContactsSyncState(
+            sync_cursor=row["sync_cursor"],
+            cursor_issued_at=(
+                row["cursor_issued_at"].isoformat() if row["cursor_issued_at"] else None
+            ),
+            last_full_sync_at=(
+                row["last_full_sync_at"].isoformat() if row["last_full_sync_at"] else None
+            ),
+            last_incremental_sync_at=(
+                row["last_incremental_sync_at"].isoformat()
+                if row["last_incremental_sync_at"]
+                else None
+            ),
+            last_success_at=(
+                row["last_success_at"].isoformat() if row["last_success_at"] else None
+            ),
+            last_error=row["last_error"],
+            contact_versions=dict(row["contact_versions"]) if row["contact_versions"] else {},
+        )
 
     async def save(
         self,
@@ -837,11 +882,54 @@ class ContactsSyncStateStore:
         account_id: str,
         state: ContactsSyncState,
     ) -> None:
-        await _state_set(
-            self._pool,
-            self.key(provider=provider, account_id=account_id),
-            state.model_dump(),
+        """Upsert sync state into the ``contacts_sync_state`` table."""
+        provider_key = provider.strip().lower()
+        account_key = account_id.strip()
+        await self._pool.execute(
+            """
+            INSERT INTO contacts_sync_state (
+                provider,
+                account_id,
+                sync_cursor,
+                cursor_issued_at,
+                last_full_sync_at,
+                last_incremental_sync_at,
+                last_success_at,
+                last_error,
+                contact_versions
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (provider, account_id) DO UPDATE SET
+                sync_cursor = EXCLUDED.sync_cursor,
+                cursor_issued_at = EXCLUDED.cursor_issued_at,
+                last_full_sync_at = EXCLUDED.last_full_sync_at,
+                last_incremental_sync_at = EXCLUDED.last_incremental_sync_at,
+                last_success_at = EXCLUDED.last_success_at,
+                last_error = EXCLUDED.last_error,
+                contact_versions = EXCLUDED.contact_versions
+            """,
+            provider_key,
+            account_key,
+            state.sync_cursor,
+            _parse_iso_timestamp(state.cursor_issued_at),
+            _parse_iso_timestamp(state.last_full_sync_at),
+            _parse_iso_timestamp(state.last_incremental_sync_at),
+            _parse_iso_timestamp(state.last_success_at),
+            state.last_error,
+            json.dumps(state.contact_versions),
         )
+
+
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    """Parse an ISO-8601 timestamp string into a timezone-aware datetime.
+
+    Returns None if the value is None or empty.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 class ContactApplyFn(Protocol):
