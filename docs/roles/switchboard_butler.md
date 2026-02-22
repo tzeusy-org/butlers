@@ -355,6 +355,7 @@ Long-term durable tables and purposes:
 - `extraction_log`: durable audit of extraction-originated writes and undo inputs.
 - `notifications`: durable notification delivery history including status/error and trace/session linkage.
 - `dashboard_audit_log`: durable audit surface for dashboard/API operations.
+- `backfill_jobs`: durable lifecycle and progress state for MCP-mediated connector backfill jobs.
 
 Connector heartbeat and statistics tables:
 - `connector_registry`: current state of each known connector (self-registered, never auto-pruned).
@@ -364,9 +365,51 @@ Connector heartbeat and statistics tables:
 - `connector_fanout_daily`: per-connector per-target-butler daily message counts (1-year retention).
 
 Long-term storage summary:
-- `butler_registry`, `routing_log`, `extraction_queue`, `extraction_log`, `notifications`, and `dashboard_audit_log` are persistent operational tables.
+- `butler_registry`, `routing_log`, `extraction_queue`, `extraction_log`, `notifications`, `dashboard_audit_log`, and `backfill_jobs` are persistent operational tables.
 - `extraction_queue` is operational-state storage with expiry metadata; entries remain persisted unless explicit expiry/cleanup logic runs.
 - Long-term tables act as operational and audit projections, not as the canonical short-lived ingress payload store.
+
+### 11.1 Backfill Jobs Table Contract
+Switchboard owns the canonical backfill orchestration table in its schema.
+
+```sql
+CREATE TABLE switchboard.backfill_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    connector_type TEXT NOT NULL,
+    endpoint_identity TEXT NOT NULL,
+    target_categories JSONB NOT NULL DEFAULT '[]',
+    date_from DATE NOT NULL,
+    date_to DATE NOT NULL,
+    rate_limit_per_hour INTEGER NOT NULL DEFAULT 100,
+    daily_cost_cap_cents INTEGER NOT NULL DEFAULT 500,
+    status TEXT NOT NULL DEFAULT 'pending',
+    cursor JSONB,
+    rows_processed INTEGER NOT NULL DEFAULT 0,
+    rows_skipped INTEGER NOT NULL DEFAULT 0,
+    cost_spent_cents INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_backfill_jobs_status ON switchboard.backfill_jobs (status);
+CREATE INDEX idx_backfill_jobs_connector ON switchboard.backfill_jobs (connector_type, endpoint_identity);
+```
+
+Allowed `backfill_jobs.status` values:
+- `pending`
+- `active`
+- `paused`
+- `completed`
+- `cancelled`
+- `cost_capped`
+- `error`
+
+Migration requirement:
+- Add a new Switchboard Alembic revision under `roster/switchboard/migrations/` that creates `switchboard.backfill_jobs` and both indexes.
+- The revision must continue the existing Switchboard chain (`sw_*`) from the current head.
 
 Ingress lifecycle retention model:
 - `message_inbox` is a month-partitioned short-lived lifecycle storage surface with one-month retention policy unless policy override exists.
@@ -402,6 +445,10 @@ Core counters:
 - `butlers.switchboard.lifecycle_transition`
 - `butlers.switchboard.retry_attempt`
 - `butlers.switchboard.circuit_transition`
+- `butlers.switchboard.backfill.job_created`
+- `butlers.switchboard.backfill.job_completed` (tagged by terminal status: `completed|cancelled|error`)
+- `butlers.switchboard.backfill.rows_processed`
+- `butlers.switchboard.backfill.cost_spent_cents`
 
 Core histograms:
 - `butlers.switchboard.ingress_accept_latency_ms`
@@ -616,6 +663,62 @@ Required controls:
 Rules:
 - All overrides are auditable and attributable.
 - Override outcomes must be reflected in final lifecycle records.
+
+## 16. Backfill MCP Lifecycle Tools
+Switchboard is the control-plane owner for backfill lifecycle operations. Dashboard and connector processes use MCP tools only; they do not write operational backfill state directly.
+
+### 16.1 Dashboard-Facing Backfill Tools
+These tools are called by dashboard API handlers through Switchboard MCP.
+
+- `create_backfill_job(connector_type, endpoint_identity, target_categories, date_from, date_to, rate_limit_per_hour?, daily_cost_cap_cents?) -> {job_id, status}`
+  - Validates `(connector_type, endpoint_identity)` exists in `connector_registry` and is currently online.
+  - Creates a `backfill_jobs` row with `status=pending`.
+- `backfill.pause(job_id) -> {status}`
+  - Sets job status to `paused`.
+- `backfill.cancel(job_id) -> {status}`
+  - Sets job status to `cancelled`.
+- `backfill.resume(job_id) -> {status}`
+  - Re-queues the job by setting `status=pending`.
+  - Valid only from `paused` or `cost_capped`.
+- `backfill.list(connector_type?, endpoint_identity?, status?) -> [{job summary}]`
+  - Returns jobs with optional filtering by connector identity and status.
+
+Minimum `job summary` fields:
+- `job_id`
+- `connector_type`
+- `endpoint_identity`
+- `target_categories`
+- `date_from`
+- `date_to`
+- `rate_limit_per_hour`
+- `daily_cost_cap_cents`
+- `status`
+- `rows_processed`
+- `rows_skipped`
+- `cost_spent_cents`
+- `error`
+- `created_at`
+- `started_at`
+- `completed_at`
+- `updated_at`
+
+### 16.2 Connector-Facing Backfill Tools
+These tools are called by connector processes through Switchboard MCP.
+
+- `backfill.poll(connector_type, endpoint_identity) -> {job_id, params, cursor} | null`
+  - Returns the oldest `pending` job for the connector identity, or `null` when none is available.
+  - `params` includes `target_categories`, `date_from`, `date_to`, `rate_limit_per_hour`, and `daily_cost_cap_cents`.
+  - On assignment, sets `status=active` and initializes `started_at` when first transitioning from `pending`.
+- `backfill.progress(job_id, rows_processed, rows_skipped, cost_spent_cents, cursor?, status?, error?) -> {status}`
+  - Updates counters using per-batch deltas (`rows_processed`, `rows_skipped`, `cost_spent_cents`) and updates optional cursor/error payload.
+  - Returns the current authoritative job status so connectors can react to `paused`/`cancelled`.
+  - If `cost_spent_cents >= daily_cost_cap_cents`, Switchboard must set `status=cost_capped` and return `cost_capped`.
+
+### 16.3 Backfill Lifecycle Rules
+- Dashboard control tools (`create_backfill_job`, `backfill.pause`, `backfill.cancel`, `backfill.resume`, `backfill.list`) are dashboard-facing only.
+- Execution tools (`backfill.poll`, `backfill.progress`) are connector-facing only.
+- Connectors must treat returned status as authoritative and stop work when status is no longer `active`.
+- Job completion and failure must be recorded via `backfill.progress(..., status="completed" | "error", error?)`.
 
 ## 17. Data Sources and Ingestion Surfaces
 ### 17.1 Canonical Ingestion Boundary
