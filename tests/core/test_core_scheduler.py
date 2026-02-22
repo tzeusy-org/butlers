@@ -930,6 +930,30 @@ async def test_update_calendar_projection_fields(pool):
     assert row["calendar_event_id"] == calendar_event_id
 
 
+async def test_update_projection_window_checks_existing_values(pool):
+    """schedule_update validates projection windows against existing row values."""
+    from butlers.core.scheduler import schedule_create, schedule_update
+
+    start_at = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
+    end_at = datetime(2026, 3, 2, 15, 0, tzinfo=UTC)
+    task_id = await schedule_create(
+        pool,
+        "projection-window-check",
+        "0 9 * * *",
+        "projection window",
+        timezone="UTC",
+        start_at=start_at,
+        end_at=end_at,
+    )
+
+    with pytest.raises(ValueError, match="schedule_update.end_at must be after start_at"):
+        await schedule_update(
+            pool,
+            task_id,
+            start_at=datetime(2026, 3, 2, 16, 0, tzinfo=UTC),
+        )
+
+
 # ---------------------------------------------------------------------------
 # CRUD — schedule_delete
 # ---------------------------------------------------------------------------

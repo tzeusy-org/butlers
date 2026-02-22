@@ -434,6 +434,27 @@ class TestCreateSchedule:
             },
         )
 
+    async def test_create_rejects_naive_projection_datetimes(self):
+        """POST rejects naive projection timestamps at the API validation boundary."""
+        app, mock_client = _app_with_mock_mcp(
+            call_tool_result=_mock_mcp_result({"id": str(uuid4()), "status": "created"})
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/butlers/atlas/schedules",
+                json={
+                    "name": "timezone-validation",
+                    "cron": "0 9 * * *",
+                    "prompt": "validate timezone awareness",
+                    "start_at": "2026-03-01T14:00:00",
+                },
+            )
+
+        assert resp.status_code == 422
+        mock_client.call_tool.assert_not_called()
+
     async def test_butler_unreachable_returns_503(self):
         """When butler is unreachable, POST returns 503."""
         app = _app_with_unreachable_butler()
@@ -558,6 +579,23 @@ class TestUpdateSchedule:
                 "calendar_event_id": str(calendar_event_id),
             },
         )
+
+    async def test_update_rejects_naive_projection_datetimes(self):
+        """PUT rejects naive projection timestamps at the API validation boundary."""
+        sid = uuid4()
+        app, mock_client = _app_with_mock_mcp(
+            call_tool_result=_mock_mcp_result({"id": str(sid), "status": "updated"})
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.put(
+                f"/api/butlers/atlas/schedules/{sid}",
+                json={"start_at": "2026-03-02T14:00:00"},
+            )
+
+        assert resp.status_code == 422
+        mock_client.call_tool.assert_not_called()
 
     async def test_butler_unreachable_returns_503(self):
         """When butler is unreachable, PUT returns 503."""

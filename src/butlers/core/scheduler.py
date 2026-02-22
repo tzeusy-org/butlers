@@ -704,6 +704,19 @@ async def schedule_update(
             fields["dispatch_mode"],
             context="schedule_update",
         )
+    # Check task exists and fetch current state
+    existing = await pool.fetchrow(
+        """
+        SELECT id, cron, enabled, dispatch_mode, prompt, job_name, job_args,
+               timezone, start_at, end_at, until_at, display_title, calendar_event_id
+        FROM scheduled_tasks
+        WHERE id = $1
+        """,
+        task_id,
+    )
+    if existing is None:
+        raise ValueError(f"Task {task_id} not found")
+
     projection_fields = {
         "timezone",
         "start_at",
@@ -723,38 +736,26 @@ async def schedule_update(
             display_title,
             calendar_event_id,
         ) = _normalize_schedule_projection_fields(
-            timezone=fields.get("timezone"),
-            start_at=fields.get("start_at"),
-            end_at=fields.get("end_at"),
-            until_at=fields.get("until_at"),
-            display_title=fields.get("display_title"),
-            calendar_event_id=fields.get("calendar_event_id"),
+            timezone=fields.get("timezone", existing["timezone"]),
+            start_at=fields.get("start_at", existing["start_at"]),
+            end_at=fields.get("end_at", existing["end_at"]),
+            until_at=fields.get("until_at", existing["until_at"]),
+            display_title=fields.get("display_title", existing["display_title"]),
+            calendar_event_id=fields.get("calendar_event_id", existing["calendar_event_id"]),
             context="schedule_update",
         )
-        if "timezone" in fields:
-            fields["timezone"] = timezone
-        if "start_at" in fields:
-            fields["start_at"] = start_at
-        if "end_at" in fields:
-            fields["end_at"] = end_at
-        if "until_at" in fields:
-            fields["until_at"] = until_at
-        if "display_title" in fields:
-            fields["display_title"] = display_title
-        if "calendar_event_id" in fields:
-            fields["calendar_event_id"] = calendar_event_id
+        normalized_projection = {
+            "timezone": timezone,
+            "start_at": start_at,
+            "end_at": end_at,
+            "until_at": until_at,
+            "display_title": display_title,
+            "calendar_event_id": calendar_event_id,
+        }
+        for key in projection_fields:
+            if key in fields:
+                fields[key] = normalized_projection[key]
 
-    # Check task exists and fetch current state
-    existing = await pool.fetchrow(
-        """
-        SELECT id, cron, enabled, dispatch_mode, prompt, job_name, job_args
-        FROM scheduled_tasks
-        WHERE id = $1
-        """,
-        task_id,
-    )
-    if existing is None:
-        raise ValueError(f"Task {task_id} not found")
     existing_job_args = _jsonb_to_dict(existing["job_args"], context=f"scheduled_tasks[{task_id}]")
 
     normalized_fields: dict[str, Any] = dict(fields)

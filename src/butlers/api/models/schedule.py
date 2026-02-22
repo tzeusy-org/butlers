@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, model_validator
+from pydantic import AwareDatetime, BaseModel, model_validator
 
 _DISPATCH_MODE_PROMPT: Literal["prompt"] = "prompt"
 _DISPATCH_MODE_JOB: Literal["job"] = "job"
@@ -77,9 +77,9 @@ class ScheduleCreate(BaseModel):
     job_name: str | None = None
     job_args: dict[str, Any] | None = None
     timezone: str | None = None
-    start_at: datetime | None = None
-    end_at: datetime | None = None
-    until_at: datetime | None = None
+    start_at: AwareDatetime | None = None
+    end_at: AwareDatetime | None = None
+    until_at: AwareDatetime | None = None
     display_title: str | None = None
     calendar_event_id: UUID | None = None
 
@@ -126,9 +126,9 @@ class ScheduleUpdate(BaseModel):
     job_args: dict[str, Any] | None = None
     enabled: bool | None = None
     timezone: str | None = None
-    start_at: datetime | None = None
-    end_at: datetime | None = None
-    until_at: datetime | None = None
+    start_at: AwareDatetime | None = None
+    end_at: AwareDatetime | None = None
+    until_at: AwareDatetime | None = None
     display_title: str | None = None
     calendar_event_id: UUID | None = None
 
