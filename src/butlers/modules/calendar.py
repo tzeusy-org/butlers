@@ -13,7 +13,8 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Callable, Coroutine
+import uuid
+from collections.abc import Callable, Coroutine, Mapping
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from enum import StrEnum
 from typing import Any, Literal
@@ -58,10 +59,23 @@ RATE_LIMIT_BASE_BACKOFF_SECONDS = 1.0
 # Sync state store key prefix (spec section 10.2).
 # Format: calendar::sync::{calendar_id}
 SYNC_STATE_KEY_PREFIX = "calendar::sync::"
+# Calendar projection sync cursor names.
+SYNC_CURSOR_PROVIDER = "provider_sync"
+SYNC_CURSOR_PROJECTION = "projection"
 # Default full sync window in days when no sync token exists (spec section 12.5).
 DEFAULT_SYNC_WINDOW_DAYS = 30
 # Default sync interval in minutes (spec section 12.5).
 DEFAULT_SYNC_INTERVAL_MINUTES = 5
+# Projection staleness grace period multiplier over the configured sync interval.
+PROJECTION_STALENESS_MULTIPLIER = 2
+# Projection table source constants.
+SOURCE_KIND_PROVIDER = "provider_event"
+SOURCE_KIND_INTERNAL_SCHEDULER = "internal_scheduler"
+SOURCE_KIND_INTERNAL_REMINDERS = "internal_reminders"
+# Projection status constants surfaced to sync/status consumers.
+PROJECTION_STATUS_FRESH = "fresh"
+PROJECTION_STATUS_STALE = "stale"
+PROJECTION_STATUS_FAILED = "failed"
 
 CalendarConflictPolicy = Literal["suggest", "fail", "allow_overlap"]
 
@@ -2189,6 +2203,8 @@ class CalendarModule(Module):
         self._sync_states: dict[str, CalendarSyncState] = {}
         # Event set to trigger immediate sync (for calendar_force_sync tool).
         self._force_sync_event: asyncio.Event = asyncio.Event()
+        # Projection cache: avoids repeated table-presence checks per cycle.
+        self._projection_tables_available_cache: bool | None = None
 
     @property
     def name(self) -> str:
@@ -2846,6 +2862,7 @@ class CalendarModule(Module):
             resolved_calendar_id = module._resolve_calendar_id(calendar_id)
             cfg = module._require_config()
             provider = module._require_provider()
+            projection_freshness = await module._projection_freshness_metadata()
 
             if not cfg.sync.enabled:
                 return {
@@ -2857,6 +2874,7 @@ class CalendarModule(Module):
                     "sync_token_valid": False,
                     "last_batch_change_count": 0,
                     "last_sync_error": None,
+                    "projection_freshness": projection_freshness,
                 }
 
             # Use cached in-memory state when available; fall back to KV store.
@@ -2881,6 +2899,7 @@ class CalendarModule(Module):
                 "sync_token_valid": sync_state.sync_token is not None,
                 "last_batch_change_count": sync_state.last_batch_change_count,
                 "last_sync_error": sync_state.last_sync_error,
+                "projection_freshness": projection_freshness,
             }
 
         @mcp.tool()
@@ -2906,6 +2925,7 @@ class CalendarModule(Module):
                     "status": "sync_triggered",
                     "provider": provider.name,
                     "calendar_id": resolved_calendar_id,
+                    "projection_freshness": await module._projection_freshness_metadata(),
                     "message": (
                         "Immediate sync has been triggered; check calendar_sync_status for results."
                     ),
@@ -2924,6 +2944,7 @@ class CalendarModule(Module):
                 "last_sync_at": sync_state.last_sync_at,
                 "last_batch_change_count": sync_state.last_batch_change_count,
                 "last_sync_error": sync_state.last_sync_error,
+                "projection_freshness": await module._projection_freshness_metadata(),
             }
 
     async def _resolve_credentials(
@@ -3058,6 +3079,930 @@ class CalendarModule(Module):
         key = self._sync_state_key(calendar_id)
         await _state_set(pool, key, state.model_dump())
 
+    @staticmethod
+    def _normalize_json_object(value: Any) -> dict[str, Any]:
+        """Normalize a DB JSON/JSONB value into a dict for deterministic access."""
+        if isinstance(value, Mapping):
+            return dict(value)
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            if isinstance(parsed, Mapping):
+                return dict(parsed)
+        return {}
+
+    @classmethod
+    def _jsonify_for_storage(cls, value: Any) -> Any:
+        """Convert nested values into JSON-serializable primitives."""
+        if isinstance(value, Mapping):
+            return {str(key): cls._jsonify_for_storage(item) for key, item in value.items()}
+        if isinstance(value, list | tuple | set):
+            return [cls._jsonify_for_storage(item) for item in value]
+        if isinstance(value, datetime | date):
+            return value.isoformat()
+        if isinstance(value, StrEnum):
+            return value.value
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        return value
+
+    @classmethod
+    def _encode_jsonb(cls, value: Any) -> str:
+        normalized = cls._jsonify_for_storage(value)
+        return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+
+    @staticmethod
+    def _coerce_datetime(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return None
+            if normalized.endswith("Z"):
+                normalized = f"{normalized[:-1]}+00:00"
+            try:
+                parsed = datetime.fromisoformat(normalized)
+            except ValueError:
+                return None
+            return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+        return None
+
+    async def _projection_tables_available(self) -> bool:
+        """Return whether unified calendar projection tables are present."""
+        if self._projection_tables_available_cache is not None:
+            return self._projection_tables_available_cache
+
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            self._projection_tables_available_cache = False
+            return False
+
+        try:
+            row = await pool.fetchrow(
+                """
+                SELECT
+                    to_regclass('calendar_sources') IS NOT NULL AS has_sources,
+                    to_regclass('calendar_events') IS NOT NULL AS has_events,
+                    to_regclass('calendar_event_instances') IS NOT NULL AS has_instances,
+                    to_regclass('calendar_sync_cursors') IS NOT NULL AS has_cursors,
+                    to_regclass('calendar_action_log') IS NOT NULL AS has_action_log
+                """
+            )
+        except Exception as exc:
+            logger.debug("Projection table availability check failed: %s", exc, exc_info=True)
+            self._projection_tables_available_cache = False
+            return False
+
+        if row is None:
+            self._projection_tables_available_cache = False
+            return False
+
+        try:
+            flags = [
+                row["has_sources"],
+                row["has_events"],
+                row["has_instances"],
+                row["has_cursors"],
+                row["has_action_log"],
+            ]
+        except KeyError:
+            self._projection_tables_available_cache = False
+            return False
+
+        # Use strict True checks to avoid treating mock placeholder objects as table existence.
+        self._projection_tables_available_cache = all(flag is True for flag in flags)
+        return self._projection_tables_available_cache
+
+    async def _table_exists(self, table_name: str) -> bool:
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return False
+        exists = await pool.fetchval("SELECT to_regclass($1) IS NOT NULL", table_name)
+        return bool(exists)
+
+    async def _ensure_calendar_source(
+        self,
+        *,
+        source_key: str,
+        source_kind: str,
+        lane: Literal["user", "butler"],
+        provider: str | None = None,
+        calendar_id: str | None = None,
+        butler_name: str | None = None,
+        display_name: str | None = None,
+        writable: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> uuid.UUID | None:
+        if not await self._projection_tables_available():
+            return None
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return None
+
+        metadata_json = self._encode_jsonb(metadata or {})
+        row = await pool.fetchrow(
+            """
+            INSERT INTO calendar_sources (
+                source_key, source_kind, lane, provider, calendar_id, butler_name,
+                display_name, writable, metadata
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+            ON CONFLICT (source_key) DO UPDATE SET
+                source_kind = EXCLUDED.source_kind,
+                lane = EXCLUDED.lane,
+                provider = EXCLUDED.provider,
+                calendar_id = EXCLUDED.calendar_id,
+                butler_name = EXCLUDED.butler_name,
+                display_name = EXCLUDED.display_name,
+                writable = EXCLUDED.writable,
+                metadata = EXCLUDED.metadata,
+                updated_at = now()
+            RETURNING id
+            """,
+            source_key,
+            source_kind,
+            lane,
+            provider,
+            calendar_id,
+            butler_name,
+            display_name,
+            writable,
+            metadata_json,
+        )
+        return row["id"] if row is not None else None
+
+    async def _load_projection_cursor(
+        self,
+        *,
+        source_id: uuid.UUID,
+        cursor_name: str,
+    ) -> dict[str, Any] | None:
+        if not await self._projection_tables_available():
+            return None
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return None
+
+        row = await pool.fetchrow(
+            """
+            SELECT sync_token, checkpoint, full_sync_required,
+                   last_synced_at, last_success_at, last_error_at, last_error
+            FROM calendar_sync_cursors
+            WHERE source_id = $1 AND cursor_name = $2
+            """,
+            source_id,
+            cursor_name,
+        )
+        if row is None:
+            return None
+
+        return {
+            "sync_token": row["sync_token"],
+            "checkpoint": self._normalize_json_object(row["checkpoint"]),
+            "full_sync_required": bool(row["full_sync_required"]),
+            "last_synced_at": row["last_synced_at"],
+            "last_success_at": row["last_success_at"],
+            "last_error_at": row["last_error_at"],
+            "last_error": row["last_error"],
+        }
+
+    async def _upsert_projection_cursor(
+        self,
+        *,
+        source_id: uuid.UUID | None,
+        cursor_name: str,
+        sync_token: str | None,
+        checkpoint: dict[str, Any],
+        full_sync_required: bool,
+        last_synced_at: datetime | None,
+        last_success_at: datetime | None,
+        last_error_at: datetime | None,
+        last_error: str | None,
+    ) -> None:
+        if source_id is None or not await self._projection_tables_available():
+            return
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+
+        checkpoint_json = self._encode_jsonb(checkpoint)
+        await pool.execute(
+            """
+            INSERT INTO calendar_sync_cursors (
+                source_id, cursor_name, sync_token, checkpoint, full_sync_required,
+                last_synced_at, last_success_at, last_error_at, last_error
+            )
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)
+            ON CONFLICT (source_id, cursor_name) DO UPDATE SET
+                sync_token = EXCLUDED.sync_token,
+                checkpoint = EXCLUDED.checkpoint,
+                full_sync_required = EXCLUDED.full_sync_required,
+                last_synced_at = EXCLUDED.last_synced_at,
+                last_success_at = EXCLUDED.last_success_at,
+                last_error_at = EXCLUDED.last_error_at,
+                last_error = EXCLUDED.last_error,
+                updated_at = now()
+            """,
+            source_id,
+            cursor_name,
+            sync_token,
+            checkpoint_json,
+            full_sync_required,
+            last_synced_at,
+            last_success_at,
+            last_error_at,
+            last_error,
+        )
+
+    async def _record_projection_action(
+        self,
+        *,
+        idempotency_key: str,
+        action_type: str,
+        action_status: Literal["pending", "applied", "failed", "noop"],
+        source_id: uuid.UUID | None,
+        origin_ref: str | None,
+        action_payload: dict[str, Any],
+        action_result: dict[str, Any] | None = None,
+        request_id: str | None = None,
+        event_id: uuid.UUID | None = None,
+        instance_id: uuid.UUID | None = None,
+        error: str | None = None,
+    ) -> None:
+        if not await self._projection_tables_available():
+            return
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+
+        payload_json = self._encode_jsonb(action_payload)
+        result_json = None if action_result is None else self._encode_jsonb(action_result)
+        await pool.execute(
+            """
+            INSERT INTO calendar_action_log (
+                idempotency_key, request_id, action_type, action_status,
+                source_id, event_id, instance_id, origin_ref,
+                action_payload, action_result, error, applied_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12)
+            ON CONFLICT (idempotency_key) DO UPDATE SET
+                action_status = EXCLUDED.action_status,
+                source_id = EXCLUDED.source_id,
+                event_id = EXCLUDED.event_id,
+                instance_id = EXCLUDED.instance_id,
+                origin_ref = EXCLUDED.origin_ref,
+                action_payload = EXCLUDED.action_payload,
+                action_result = EXCLUDED.action_result,
+                error = EXCLUDED.error,
+                applied_at = EXCLUDED.applied_at,
+                updated_at = now()
+            """,
+            idempotency_key,
+            request_id,
+            action_type,
+            action_status,
+            source_id,
+            event_id,
+            instance_id,
+            origin_ref,
+            payload_json,
+            result_json,
+            error,
+            datetime.now(UTC) if action_status in {"applied", "failed", "noop"} else None,
+        )
+
+    async def _upsert_projection_event(
+        self,
+        *,
+        source_id: uuid.UUID,
+        origin_ref: str,
+        title: str,
+        timezone: str,
+        starts_at: datetime,
+        ends_at: datetime,
+        status: str,
+        all_day: bool = False,
+        visibility: str = "default",
+        recurrence_rule: str | None = None,
+        description: str | None = None,
+        location: str | None = None,
+        etag: str | None = None,
+        origin_updated_at: datetime | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> uuid.UUID:
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError("Projection writes require a database pool")
+
+        metadata_json = self._encode_jsonb(metadata or {})
+        row = await pool.fetchrow(
+            """
+            INSERT INTO calendar_events (
+                source_id, origin_ref, title, description, location, timezone,
+                starts_at, ends_at, all_day, status, visibility, recurrence_rule,
+                etag, origin_updated_at, metadata
+            )
+            VALUES (
+                $1, $2, $3, $4, $5, $6,
+                $7, $8, $9, $10, $11, $12,
+                $13, $14, $15::jsonb
+            )
+            ON CONFLICT (source_id, origin_ref) DO UPDATE SET
+                title = EXCLUDED.title,
+                description = EXCLUDED.description,
+                location = EXCLUDED.location,
+                timezone = EXCLUDED.timezone,
+                starts_at = EXCLUDED.starts_at,
+                ends_at = EXCLUDED.ends_at,
+                all_day = EXCLUDED.all_day,
+                status = EXCLUDED.status,
+                visibility = EXCLUDED.visibility,
+                recurrence_rule = EXCLUDED.recurrence_rule,
+                etag = EXCLUDED.etag,
+                origin_updated_at = EXCLUDED.origin_updated_at,
+                metadata = EXCLUDED.metadata,
+                updated_at = now()
+            RETURNING id
+            """,
+            source_id,
+            origin_ref,
+            title,
+            description,
+            location,
+            timezone,
+            starts_at,
+            ends_at,
+            all_day,
+            status,
+            visibility,
+            recurrence_rule,
+            etag,
+            origin_updated_at,
+            metadata_json,
+        )
+        if row is None:
+            raise RuntimeError("Projection upsert did not return calendar_events.id")
+        return row["id"]
+
+    async def _upsert_projection_instance(
+        self,
+        *,
+        event_id: uuid.UUID,
+        source_id: uuid.UUID,
+        origin_instance_ref: str,
+        timezone: str,
+        starts_at: datetime,
+        ends_at: datetime,
+        status: str,
+        is_exception: bool = False,
+        origin_updated_at: datetime | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> uuid.UUID:
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            raise RuntimeError("Projection writes require a database pool")
+
+        metadata_json = self._encode_jsonb(metadata or {})
+        row = await pool.fetchrow(
+            """
+            INSERT INTO calendar_event_instances (
+                event_id, source_id, origin_instance_ref, timezone, starts_at, ends_at,
+                status, is_exception, origin_updated_at, metadata
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+            ON CONFLICT (event_id, origin_instance_ref) DO UPDATE SET
+                timezone = EXCLUDED.timezone,
+                starts_at = EXCLUDED.starts_at,
+                ends_at = EXCLUDED.ends_at,
+                status = EXCLUDED.status,
+                is_exception = EXCLUDED.is_exception,
+                origin_updated_at = EXCLUDED.origin_updated_at,
+                metadata = EXCLUDED.metadata,
+                updated_at = now()
+            RETURNING id
+            """,
+            event_id,
+            source_id,
+            origin_instance_ref,
+            timezone,
+            starts_at,
+            ends_at,
+            status,
+            is_exception,
+            origin_updated_at,
+            metadata_json,
+        )
+        if row is None:
+            raise RuntimeError("Projection upsert did not return calendar_event_instances.id")
+        return row["id"]
+
+    async def _mark_projection_event_cancelled(
+        self,
+        *,
+        source_id: uuid.UUID,
+        origin_ref: str,
+        origin_updated_at: datetime | None = None,
+    ) -> uuid.UUID | None:
+        if not await self._projection_tables_available():
+            return None
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return None
+
+        row = await pool.fetchrow(
+            """
+            UPDATE calendar_events
+            SET status = 'cancelled',
+                origin_updated_at = COALESCE($3, origin_updated_at),
+                updated_at = now()
+            WHERE source_id = $1 AND origin_ref = $2
+            RETURNING id
+            """,
+            source_id,
+            origin_ref,
+            origin_updated_at,
+        )
+        if row is None:
+            return None
+
+        event_id: uuid.UUID = row["id"]
+        await pool.execute(
+            """
+            UPDATE calendar_event_instances
+            SET status = 'cancelled',
+                updated_at = now()
+            WHERE event_id = $1
+            """,
+            event_id,
+        )
+        return event_id
+
+    async def _mark_projection_source_stale_events_cancelled(
+        self,
+        *,
+        source_id: uuid.UUID,
+        seen_origin_refs: list[str],
+    ) -> None:
+        if not await self._projection_tables_available():
+            return
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+
+        if seen_origin_refs:
+            await pool.execute(
+                """
+                UPDATE calendar_events
+                SET status = 'cancelled',
+                    updated_at = now()
+                WHERE source_id = $1
+                  AND NOT (origin_ref = ANY($2::text[]))
+                """,
+                source_id,
+                seen_origin_refs,
+            )
+        else:
+            await pool.execute(
+                """
+                UPDATE calendar_events
+                SET status = 'cancelled',
+                    updated_at = now()
+                WHERE source_id = $1
+                """,
+                source_id,
+            )
+
+        await pool.execute(
+            """
+            UPDATE calendar_event_instances AS i
+            SET status = 'cancelled',
+                updated_at = now()
+            FROM calendar_events AS e
+            WHERE i.event_id = e.id
+              AND e.source_id = $1
+              AND e.status = 'cancelled'
+            """,
+            source_id,
+        )
+
+    async def _project_provider_changes(
+        self,
+        *,
+        source_id: uuid.UUID,
+        provider_name: str,
+        calendar_id: str,
+        updated_events: list[CalendarEvent],
+        cancelled_ids: list[str],
+    ) -> None:
+        for event in updated_events:
+            status_value = (
+                event.status.value if event.status is not None else EventStatus.confirmed.value
+            )
+            visibility_value = (
+                event.visibility.value
+                if event.visibility is not None
+                else EventVisibility.default.value
+            )
+            metadata = {
+                "source_type": SOURCE_KIND_PROVIDER,
+                "provider": provider_name,
+                "calendar_id": calendar_id,
+                "butler_generated": event.butler_generated,
+                "butler_name": event.butler_name,
+                "organizer": event.organizer,
+                "attendees": [self._attendee_to_payload(attendee) for attendee in event.attendees],
+                "created_at": event.created_at.isoformat() if event.created_at else None,
+                "updated_at": event.updated_at.isoformat() if event.updated_at else None,
+            }
+            event_id = await self._upsert_projection_event(
+                source_id=source_id,
+                origin_ref=event.event_id,
+                title=event.title,
+                description=event.description,
+                location=event.location,
+                timezone=event.timezone,
+                starts_at=event.start_at,
+                ends_at=event.end_at,
+                all_day=False,
+                status=status_value,
+                visibility=visibility_value,
+                recurrence_rule=event.recurrence_rule,
+                etag=event.etag,
+                origin_updated_at=event.updated_at,
+                metadata=metadata,
+            )
+            await self._upsert_projection_instance(
+                event_id=event_id,
+                source_id=source_id,
+                origin_instance_ref=f"{event.event_id}:{event.start_at.isoformat()}",
+                timezone=event.timezone,
+                starts_at=event.start_at,
+                ends_at=event.end_at,
+                status=status_value,
+                is_exception=False,
+                origin_updated_at=event.updated_at,
+                metadata={"source_type": SOURCE_KIND_PROVIDER, "provider": provider_name},
+            )
+
+        cancelled_at = datetime.now(UTC)
+        for cancelled_id in cancelled_ids:
+            await self._mark_projection_event_cancelled(
+                source_id=source_id,
+                origin_ref=cancelled_id,
+                origin_updated_at=cancelled_at,
+            )
+
+    async def _project_scheduler_source(self) -> None:
+        if not await self._projection_tables_available():
+            return
+        if not await self._table_exists("scheduled_tasks"):
+            return
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+
+        source_id = await self._ensure_calendar_source(
+            source_key=f"internal_scheduler:{self._butler_name}",
+            source_kind=SOURCE_KIND_INTERNAL_SCHEDULER,
+            lane="butler",
+            provider="internal",
+            butler_name=self._butler_name,
+            display_name=f"{self._butler_name} schedules",
+            writable=True,
+            metadata={"projection": "scheduler"},
+        )
+        if source_id is None:
+            return
+
+        rows = await pool.fetch(
+            """
+            SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
+                   timezone, start_at, end_at, until_at, display_title,
+                   calendar_event_id, enabled, updated_at
+            FROM scheduled_tasks
+            WHERE start_at IS NOT NULL AND end_at IS NOT NULL
+            """
+        )
+
+        seen_origin_refs: list[str] = []
+        now = datetime.now(UTC)
+        for row in rows:
+            record = dict(row)
+            start_at = self._coerce_datetime(record.get("start_at"))
+            end_at = self._coerce_datetime(record.get("end_at"))
+            if start_at is None or end_at is None:
+                continue
+
+            origin_ref = str(record["id"])
+            seen_origin_refs.append(origin_ref)
+            timezone = str(record.get("timezone") or "UTC")
+            title = str(record.get("display_title") or record.get("name") or "Scheduled task")
+            status = (
+                EventStatus.confirmed.value
+                if record.get("enabled", True)
+                else EventStatus.cancelled.value
+            )
+            metadata = {
+                "source_type": SOURCE_KIND_INTERNAL_SCHEDULER,
+                "name": record.get("name"),
+                "cron": record.get("cron"),
+                "dispatch_mode": record.get("dispatch_mode"),
+                "prompt": record.get("prompt"),
+                "job_name": record.get("job_name"),
+                "job_args": self._normalize_json_object(record.get("job_args")),
+                "until_at": record.get("until_at"),
+                "calendar_event_id": record.get("calendar_event_id"),
+            }
+            event_id = await self._upsert_projection_event(
+                source_id=source_id,
+                origin_ref=origin_ref,
+                title=title,
+                description=None,
+                location=None,
+                timezone=timezone,
+                starts_at=start_at,
+                ends_at=end_at,
+                all_day=False,
+                status=status,
+                visibility=EventVisibility.default.value,
+                recurrence_rule=str(record.get("cron")) if record.get("cron") else None,
+                etag=None,
+                origin_updated_at=self._coerce_datetime(record.get("updated_at")),
+                metadata=metadata,
+            )
+            await self._upsert_projection_instance(
+                event_id=event_id,
+                source_id=source_id,
+                origin_instance_ref=f"{origin_ref}:schedule",
+                timezone=timezone,
+                starts_at=start_at,
+                ends_at=end_at,
+                status=status,
+                is_exception=False,
+                origin_updated_at=self._coerce_datetime(record.get("updated_at")),
+                metadata={"source_type": SOURCE_KIND_INTERNAL_SCHEDULER},
+            )
+
+        await self._mark_projection_source_stale_events_cancelled(
+            source_id=source_id,
+            seen_origin_refs=seen_origin_refs,
+        )
+        await self._upsert_projection_cursor(
+            source_id=source_id,
+            cursor_name=SYNC_CURSOR_PROJECTION,
+            sync_token=None,
+            checkpoint={
+                "projected_rows": len(seen_origin_refs),
+                "source": SOURCE_KIND_INTERNAL_SCHEDULER,
+            },
+            full_sync_required=False,
+            last_synced_at=now,
+            last_success_at=now,
+            last_error_at=None,
+            last_error=None,
+        )
+
+    async def _project_reminders_source(self) -> None:
+        if not await self._projection_tables_available():
+            return
+        if not await self._table_exists("reminders"):
+            return
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+
+        source_id = await self._ensure_calendar_source(
+            source_key=f"internal_reminders:{self._butler_name}",
+            source_kind=SOURCE_KIND_INTERNAL_REMINDERS,
+            lane="butler",
+            provider="internal",
+            butler_name=self._butler_name,
+            display_name=f"{self._butler_name} reminders",
+            writable=True,
+            metadata={"projection": "reminders"},
+        )
+        if source_id is None:
+            return
+
+        rows = await pool.fetch("SELECT * FROM reminders")
+        seen_origin_refs: list[str] = []
+        now = datetime.now(UTC)
+
+        for row in rows:
+            record = dict(row)
+            origin_ref = str(record["id"])
+            seen_origin_refs.append(origin_ref)
+            updated_at = self._coerce_datetime(record.get("updated_at"))
+            timezone = str(record.get("timezone") or "UTC")
+            next_trigger_at = self._coerce_datetime(record.get("next_trigger_at"))
+            if next_trigger_at is None:
+                next_trigger_at = self._coerce_datetime(record.get("due_at"))
+
+            if next_trigger_at is None:
+                await self._mark_projection_event_cancelled(
+                    source_id=source_id,
+                    origin_ref=origin_ref,
+                    origin_updated_at=updated_at,
+                )
+                continue
+            dismissed = bool(record.get("dismissed"))
+
+            title = str(record.get("label") or record.get("message") or "Reminder")
+            starts_at = next_trigger_at
+            ends_at = next_trigger_at + timedelta(minutes=15)
+            status = EventStatus.cancelled.value if dismissed else EventStatus.confirmed.value
+            recurrence_rule_raw = record.get("recurrence_rule")
+            recurrence_rule = (
+                str(recurrence_rule_raw).strip()
+                if isinstance(recurrence_rule_raw, str) and recurrence_rule_raw.strip()
+                else None
+            )
+            metadata = {
+                "source_type": SOURCE_KIND_INTERNAL_REMINDERS,
+                "label": record.get("label"),
+                "message": record.get("message"),
+                "type": record.get("type"),
+                "reminder_type": record.get("reminder_type"),
+                "contact_id": record.get("contact_id"),
+                "until_at": record.get("until_at"),
+                "calendar_event_id": record.get("calendar_event_id"),
+                "dismissed": dismissed,
+            }
+            event_id = await self._upsert_projection_event(
+                source_id=source_id,
+                origin_ref=origin_ref,
+                title=title,
+                description=str(record.get("message") or "").strip() or None,
+                location=None,
+                timezone=timezone,
+                starts_at=starts_at,
+                ends_at=ends_at,
+                all_day=False,
+                status=status,
+                visibility=EventVisibility.default.value,
+                recurrence_rule=recurrence_rule,
+                etag=None,
+                origin_updated_at=updated_at,
+                metadata=metadata,
+            )
+            await self._upsert_projection_instance(
+                event_id=event_id,
+                source_id=source_id,
+                origin_instance_ref=f"{origin_ref}:{starts_at.isoformat()}",
+                timezone=timezone,
+                starts_at=starts_at,
+                ends_at=ends_at,
+                status=status,
+                is_exception=False,
+                origin_updated_at=updated_at,
+                metadata={"source_type": SOURCE_KIND_INTERNAL_REMINDERS},
+            )
+
+        await self._mark_projection_source_stale_events_cancelled(
+            source_id=source_id,
+            seen_origin_refs=seen_origin_refs,
+        )
+        await self._upsert_projection_cursor(
+            source_id=source_id,
+            cursor_name=SYNC_CURSOR_PROJECTION,
+            sync_token=None,
+            checkpoint={
+                "projected_rows": len(seen_origin_refs),
+                "source": SOURCE_KIND_INTERNAL_REMINDERS,
+            },
+            full_sync_required=False,
+            last_synced_at=now,
+            last_success_at=now,
+            last_error_at=None,
+            last_error=None,
+        )
+
+    async def _project_internal_sources(self) -> None:
+        """Refresh non-provider butler projection sources (scheduler/reminders)."""
+        try:
+            await self._project_scheduler_source()
+            await self._project_reminders_source()
+        except Exception as exc:
+            logger.error("Internal calendar projection refresh failed: %s", exc, exc_info=True)
+
+    async def _projection_freshness_metadata(self) -> dict[str, Any]:
+        if not await self._projection_tables_available():
+            return {
+                "available": False,
+                "last_refreshed_at": None,
+                "staleness_ms": None,
+                "sources": [],
+            }
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return {
+                "available": False,
+                "last_refreshed_at": None,
+                "staleness_ms": None,
+                "sources": [],
+            }
+
+        rows = await pool.fetch(
+            """
+            SELECT
+                s.id,
+                s.source_key,
+                s.source_kind,
+                s.lane,
+                s.provider,
+                s.calendar_id,
+                s.butler_name,
+                c.cursor_name,
+                c.last_synced_at,
+                c.last_success_at,
+                c.last_error_at,
+                c.last_error,
+                c.full_sync_required
+            FROM calendar_sources AS s
+            LEFT JOIN LATERAL (
+                SELECT cursor_name, last_synced_at, last_success_at, last_error_at, last_error,
+                       full_sync_required, updated_at
+                FROM calendar_sync_cursors
+                WHERE source_id = s.id
+                ORDER BY updated_at DESC
+                LIMIT 1
+            ) AS c ON TRUE
+            ORDER BY s.lane, s.source_kind, s.source_key
+            """
+        )
+
+        now = datetime.now(UTC)
+        cfg = self._config
+        interval_minutes = (
+            cfg.sync.interval_minutes if cfg is not None else DEFAULT_SYNC_INTERVAL_MINUTES
+        )
+        stale_threshold_ms = max(
+            interval_minutes * 60 * 1000 * PROJECTION_STALENESS_MULTIPLIER,
+            300_000,
+        )
+
+        source_payloads: list[dict[str, Any]] = []
+        freshest_at: datetime | None = None
+        for row in rows:
+            last_synced_at = self._coerce_datetime(row["last_synced_at"])
+            last_success_at = self._coerce_datetime(row["last_success_at"])
+            last_error_at = self._coerce_datetime(row["last_error_at"])
+            last_error = row["last_error"]
+            full_sync_required = (
+                bool(row["full_sync_required"]) if row["full_sync_required"] is not None else False
+            )
+
+            staleness_ms = None
+            if last_synced_at is not None:
+                staleness_ms = max(int((now - last_synced_at).total_seconds() * 1000), 0)
+                if freshest_at is None or last_synced_at > freshest_at:
+                    freshest_at = last_synced_at
+
+            if last_error and (
+                last_success_at is None or (last_error_at and last_error_at >= last_success_at)
+            ):
+                sync_state = PROJECTION_STATUS_FAILED
+            elif last_synced_at is None:
+                sync_state = PROJECTION_STATUS_STALE
+            elif full_sync_required:
+                sync_state = PROJECTION_STATUS_STALE
+            elif staleness_ms is not None and staleness_ms > stale_threshold_ms:
+                sync_state = PROJECTION_STATUS_STALE
+            else:
+                sync_state = PROJECTION_STATUS_FRESH
+
+            source_payloads.append(
+                {
+                    "source_key": row["source_key"],
+                    "source_kind": row["source_kind"],
+                    "lane": row["lane"],
+                    "provider": row["provider"],
+                    "calendar_id": row["calendar_id"],
+                    "butler_name": row["butler_name"],
+                    "cursor_name": row["cursor_name"],
+                    "last_synced_at": last_synced_at.isoformat() if last_synced_at else None,
+                    "last_success_at": last_success_at.isoformat() if last_success_at else None,
+                    "last_error_at": last_error_at.isoformat() if last_error_at else None,
+                    "last_error": last_error,
+                    "full_sync_required": full_sync_required,
+                    "sync_state": sync_state,
+                    "staleness_ms": staleness_ms,
+                }
+            )
+
+        overall_staleness_ms = None
+        if freshest_at is not None:
+            overall_staleness_ms = max(int((now - freshest_at).total_seconds() * 1000), 0)
+        return {
+            "available": True,
+            "last_refreshed_at": freshest_at.isoformat() if freshest_at else None,
+            "staleness_ms": overall_staleness_ms,
+            "sources": source_payloads,
+        }
+
     async def _sync_calendar(self, calendar_id: str) -> None:
         """Run one incremental sync cycle for ``calendar_id``.
 
@@ -3071,17 +4016,55 @@ class CalendarModule(Module):
 
         config = self._require_config()
         sync_state = self._sync_states.get(calendar_id) or await self._load_sync_state(calendar_id)
+        now = datetime.now(UTC)
+
+        source_id: uuid.UUID | None = None
+        source_key = f"provider:{provider.name}:{calendar_id}"
+        try:
+            source_id = await self._ensure_calendar_source(
+                source_key=source_key,
+                source_kind=SOURCE_KIND_PROVIDER,
+                lane="user",
+                provider=provider.name,
+                calendar_id=calendar_id,
+                display_name=calendar_id,
+                writable=True,
+                metadata={"projection": "provider_sync"},
+            )
+        except Exception as exc:
+            logger.debug("Failed to ensure provider calendar source '%s': %s", source_key, exc)
+
+        effective_sync_token = sync_state.sync_token
+        cursor_checkpoint: dict[str, Any] = {}
+        if source_id is not None:
+            try:
+                cursor_row = await self._load_projection_cursor(
+                    source_id=source_id,
+                    cursor_name=SYNC_CURSOR_PROVIDER,
+                )
+            except Exception as exc:
+                logger.debug("Failed loading projection cursor for '%s': %s", source_key, exc)
+                cursor_row = None
+            if cursor_row is not None:
+                cursor_token = cursor_row.get("sync_token")
+                if isinstance(cursor_token, str):
+                    effective_sync_token = cursor_token
+                cursor_checkpoint = self._normalize_json_object(cursor_row.get("checkpoint"))
+
+        performed_full_resync = False
+        error_message: str | None = None
 
         try:
             updated_events, cancelled_ids, next_token = await provider.sync_incremental(
                 calendar_id=calendar_id,
-                sync_token=sync_state.sync_token,
+                sync_token=effective_sync_token,
                 full_sync_window_days=config.sync.full_sync_window_days,
             )
         except CalendarSyncTokenExpiredError:
             logger.warning(
                 "Sync token expired for calendar '%s'; performing full re-sync", calendar_id
             )
+            performed_full_resync = True
             try:
                 updated_events, cancelled_ids, next_token = await provider.sync_incremental(
                     calendar_id=calendar_id,
@@ -3095,9 +4078,41 @@ class CalendarModule(Module):
                     exc,
                     exc_info=True,
                 )
-                sync_state.last_sync_error = str(exc)[:200]
+                error_message = str(exc)[:200]
+                sync_state.last_sync_error = error_message
                 self._sync_states[calendar_id] = sync_state
                 await self._save_sync_state(calendar_id, sync_state)
+                await self._upsert_projection_cursor(
+                    source_id=source_id,
+                    cursor_name=SYNC_CURSOR_PROVIDER,
+                    sync_token=effective_sync_token,
+                    checkpoint={
+                        **cursor_checkpoint,
+                        "provider": provider.name,
+                        "calendar_id": calendar_id,
+                        "error": error_message,
+                    },
+                    full_sync_required=True,
+                    last_synced_at=now,
+                    last_success_at=self._coerce_datetime(cursor_checkpoint.get("last_success_at")),
+                    last_error_at=now,
+                    last_error=error_message,
+                )
+                await self._record_projection_action(
+                    idempotency_key=f"calendar-sync:{source_key}:error:{int(now.timestamp())}",
+                    action_type="projection_sync_provider",
+                    action_status="failed",
+                    source_id=source_id,
+                    origin_ref=None,
+                    action_payload={
+                        "calendar_id": calendar_id,
+                        "provider": provider.name,
+                        "sync_token": effective_sync_token,
+                    },
+                    action_result={"status": "failed"},
+                    error=error_message,
+                )
+                await self._project_internal_sources()
                 return
         except CalendarAuthError as exc:
             logger.error(
@@ -3106,21 +4121,140 @@ class CalendarModule(Module):
                 exc,
                 exc_info=True,
             )
-            sync_state.last_sync_error = str(exc)[:200]
+            error_message = str(exc)[:200]
+            sync_state.last_sync_error = error_message
             self._sync_states[calendar_id] = sync_state
             await self._save_sync_state(calendar_id, sync_state)
+            await self._upsert_projection_cursor(
+                source_id=source_id,
+                cursor_name=SYNC_CURSOR_PROVIDER,
+                sync_token=effective_sync_token,
+                checkpoint={
+                    **cursor_checkpoint,
+                    "provider": provider.name,
+                    "calendar_id": calendar_id,
+                    "error": error_message,
+                },
+                full_sync_required=False,
+                last_synced_at=now,
+                last_success_at=self._coerce_datetime(cursor_checkpoint.get("last_success_at")),
+                last_error_at=now,
+                last_error=error_message,
+            )
+            await self._record_projection_action(
+                idempotency_key=f"calendar-sync:{source_key}:error:{int(now.timestamp())}",
+                action_type="projection_sync_provider",
+                action_status="failed",
+                source_id=source_id,
+                origin_ref=None,
+                action_payload={
+                    "calendar_id": calendar_id,
+                    "provider": provider.name,
+                    "sync_token": effective_sync_token,
+                },
+                action_result={"status": "failed"},
+                error=error_message,
+            )
+            await self._project_internal_sources()
             return
 
+        if source_id is not None:
+            try:
+                await self._project_provider_changes(
+                    source_id=source_id,
+                    provider_name=provider.name,
+                    calendar_id=calendar_id,
+                    updated_events=updated_events,
+                    cancelled_ids=cancelled_ids,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Provider projection write failed for calendar '%s': %s",
+                    calendar_id,
+                    exc,
+                    exc_info=True,
+                )
+                error_message = str(exc)[:200]
+                await self._upsert_projection_cursor(
+                    source_id=source_id,
+                    cursor_name=SYNC_CURSOR_PROVIDER,
+                    sync_token=effective_sync_token,
+                    checkpoint={
+                        "provider": provider.name,
+                        "calendar_id": calendar_id,
+                        "updated_events": len(updated_events),
+                        "cancelled_events": len(cancelled_ids),
+                    },
+                    full_sync_required=False,
+                    last_synced_at=now,
+                    last_success_at=None,
+                    last_error_at=now,
+                    last_error=error_message,
+                )
+                await self._record_projection_action(
+                    idempotency_key=f"calendar-sync:{source_key}:projection-error:{int(now.timestamp())}",
+                    action_type="projection_sync_provider",
+                    action_status="failed",
+                    source_id=source_id,
+                    origin_ref=None,
+                    action_payload={
+                        "calendar_id": calendar_id,
+                        "provider": provider.name,
+                        "updated_events": len(updated_events),
+                        "cancelled_events": len(cancelled_ids),
+                    },
+                    action_result={"status": "failed"},
+                    error=error_message,
+                )
+            else:
+                checkpoint = {
+                    "provider": provider.name,
+                    "calendar_id": calendar_id,
+                    "updated_events": len(updated_events),
+                    "cancelled_events": len(cancelled_ids),
+                    "full_resync": performed_full_resync,
+                }
+                await self._upsert_projection_cursor(
+                    source_id=source_id,
+                    cursor_name=SYNC_CURSOR_PROVIDER,
+                    sync_token=next_token,
+                    checkpoint=checkpoint,
+                    full_sync_required=False,
+                    last_synced_at=now,
+                    last_success_at=now,
+                    last_error_at=None,
+                    last_error=None,
+                )
+                await self._record_projection_action(
+                    idempotency_key=f"calendar-sync:{source_key}:{next_token}",
+                    action_type="projection_sync_provider",
+                    action_status="applied",
+                    source_id=source_id,
+                    origin_ref=None,
+                    action_payload={
+                        "calendar_id": calendar_id,
+                        "provider": provider.name,
+                        "sync_token_before": effective_sync_token,
+                    },
+                    action_result={
+                        "next_sync_token": next_token,
+                        "updated_events": len(updated_events),
+                        "cancelled_events": len(cancelled_ids),
+                        "full_resync": performed_full_resync,
+                    },
+                )
+
         pending_count = len(updated_events) + len(cancelled_ids)
-        now_iso = datetime.now(UTC).isoformat()
+        now_iso = now.isoformat()
         new_state = CalendarSyncState(
             sync_token=next_token,
             last_sync_at=now_iso,
-            last_sync_error=None,
+            last_sync_error=error_message,
             last_batch_change_count=pending_count,
         )
         self._sync_states[calendar_id] = new_state
         await self._save_sync_state(calendar_id, new_state)
+        await self._project_internal_sources()
 
         logger.info(
             "Calendar sync completed (calendar_id=%s, updated=%d, cancelled=%d)",

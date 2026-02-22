@@ -163,6 +163,11 @@ Each butler has a `MANIFESTO.md` that defines its public identity and value prop
 - Calendar configs run through `src/butlers/daemon.py::_validate_module_configs`, which loads the module's `config_schema` and rejects extra/missing fields; `CalendarConfig` in `src/butlers/modules/calendar.py:906-925` demands `provider` + `calendar_id`, so any butler must populate them before the module can enable.
 - Calendar module today only persists sync metadata via `_state_get/_state_set` (aka the shared `state` table) and exposes Google-backed tools (list/get, create/update/delete, add/remove attendees, sync status/force) plus the background poller; there is no `calendar_events`/`scheduled_tasks` projection wiring or workspace tooling described in `docs/modules/calendar.md`.
 
+### Calendar projection sync contract
+- `CalendarModule._sync_calendar` now materializes unified projection rows: provider deltas upsert into `calendar_events` + `calendar_event_instances`, and internal scheduler/reminder sources refresh into the same tables with deterministic `origin_ref` linkage (`scheduled_tasks.id` / `reminders.id`).
+- Projection checkpoints are persisted in `calendar_sync_cursors` (`provider_sync` for provider pulls, `projection` for internal sources), and each sync refresh records action status in `calendar_action_log`.
+- `calendar_sync_status` and `calendar_force_sync` now include `projection_freshness` (`last_refreshed_at`, `staleness_ms`, per-source `sync_state=fresh|stale|failed`); projection writes hard-gate on strict `to_regclass(...) IS TRUE` checks so pre-migration DBs/tests safely no-op.
+
 ### Contacts module sync contract
 - The contacts module is expected to run its incremental sync as an internal poll loop, not as a standalone connector (see `docs/modules/contacts_draft.md` §8); the default cadence is an immediate incremental run on startup, recurring polling every 15 minutes, and a forced full refresh every 6 days before the sync token expires.
 - Modules load inside `butlers up` via `ButlerDaemon.start()` (`src/butlers/daemon.py:852-931`), so the poller should live in-process; `scripts/dev.sh` already launches `uv run butlers up` and required connector panes, so no extra standalone contacts connector bootstrap is needed.

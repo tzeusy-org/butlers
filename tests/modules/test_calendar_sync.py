@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,6 +28,9 @@ import pytest
 from butlers.modules.calendar import (
     DEFAULT_SYNC_INTERVAL_MINUTES,
     DEFAULT_SYNC_WINDOW_DAYS,
+    SOURCE_KIND_INTERNAL_REMINDERS,
+    SOURCE_KIND_INTERNAL_SCHEDULER,
+    SOURCE_KIND_PROVIDER,
     SYNC_STATE_KEY_PREFIX,
     CalendarAuthError,
     CalendarConfig,
@@ -1033,3 +1037,294 @@ class TestCalendarForceSyncTool:
         result = await mcp.tools["calendar_force_sync"](calendar_id="other@example.com")
 
         assert result["calendar_id"] == "other@example.com"
+
+
+# ---------------------------------------------------------------------------
+# Unified projection tests (issue butlers-x6wi.3)
+# ---------------------------------------------------------------------------
+
+
+class TestCalendarProjectionSync:
+    def _make_module_with_projection_db(
+        self,
+        provider: CalendarProvider | None = None,
+        *,
+        sync_enabled: bool = True,
+    ) -> CalendarModule:
+        mod = CalendarModule()
+        mod._provider = provider or _SyncCapableProviderDouble()
+        mod._config = CalendarConfig(
+            provider="google",
+            calendar_id="primary",
+            sync=CalendarSyncConfig(enabled=sync_enabled),
+        )
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.fetchrow = AsyncMock(return_value=None)
+        pool.fetchval = AsyncMock(return_value=None)
+        pool.execute = AsyncMock(return_value="OK")
+        db = MagicMock()
+        db.pool = pool
+        db.db_name = "butler_general"
+        mod._db = db
+        mod._butler_name = "general"
+        return mod
+
+    async def test_sync_uses_projection_cursor_token_for_incremental_pull(self):
+        event = _make_sample_event("evt-proj-001")
+        provider = _SyncCapableProviderDouble(
+            sync_result=([event], ["evt-cancelled"], "token-next")
+        )
+        mod = self._make_module_with_projection_db(provider)
+        mod._sync_states["primary"] = CalendarSyncState(sync_token="kv-fallback")
+
+        source_id = uuid.uuid4()
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(
+                mod,
+                "_load_projection_cursor",
+                AsyncMock(
+                    return_value={
+                        "sync_token": "cursor-token",
+                        "checkpoint": {"provider": "google"},
+                        "full_sync_required": False,
+                        "last_synced_at": None,
+                        "last_success_at": None,
+                        "last_error_at": None,
+                        "last_error": None,
+                    }
+                ),
+            ),
+            patch.object(mod, "_project_provider_changes", AsyncMock()) as project_provider_mock,
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()) as cursor_upsert_mock,
+            patch.object(mod, "_record_projection_action", AsyncMock()) as action_log_mock,
+            patch.object(mod, "_project_internal_sources", AsyncMock()) as internal_project_mock,
+        ):
+            await mod._sync_calendar("primary")
+
+        assert provider.sync_calls[0]["sync_token"] == "cursor-token"
+        assert project_provider_mock.await_count == 1
+        assert cursor_upsert_mock.await_count >= 1
+        assert action_log_mock.await_count >= 1
+        assert internal_project_mock.await_count == 1
+
+        state = mod._sync_states["primary"]
+        assert state.sync_token == "token-next"
+        assert state.last_batch_change_count == 2
+
+    async def test_sync_projects_internal_sources_even_when_provider_fails(self):
+        provider = _SyncCapableProviderDouble(sync_error=CalendarAuthError("provider down"))
+        mod = self._make_module_with_projection_db(provider)
+
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=uuid.uuid4())),
+            patch.object(mod, "_load_projection_cursor", AsyncMock(return_value=None)),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+            patch.object(mod, "_record_projection_action", AsyncMock()),
+            patch.object(mod, "_project_internal_sources", AsyncMock()) as internal_project_mock,
+        ):
+            await mod._sync_calendar("primary")
+
+        assert internal_project_mock.await_count == 1
+        assert "provider down" in (mod._sync_states["primary"].last_sync_error or "")
+
+    async def test_project_scheduler_source_upserts_origin_ref_linked_rows(self):
+        mod = self._make_module_with_projection_db()
+        source_id = uuid.uuid4()
+        row_id = uuid.uuid4()
+        starts_at = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
+        ends_at = datetime(2026, 3, 5, 15, 0, tzinfo=UTC)
+        mod._db.pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": row_id,
+                    "name": "focus-time",
+                    "cron": "0 14 * * 1-5",
+                    "dispatch_mode": "prompt",
+                    "prompt": "do work",
+                    "job_name": None,
+                    "job_args": {"n": 1},
+                    "timezone": "UTC",
+                    "start_at": starts_at,
+                    "end_at": ends_at,
+                    "until_at": None,
+                    "display_title": "Deep Focus",
+                    "calendar_event_id": None,
+                    "enabled": True,
+                    "updated_at": starts_at,
+                }
+            ]
+        )
+
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(
+                mod, "_upsert_projection_event", AsyncMock(return_value=uuid.uuid4())
+            ) as upsert_event_mock,
+            patch.object(mod, "_upsert_projection_instance", AsyncMock()) as upsert_instance_mock,
+            patch.object(
+                mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()
+            ) as stale_cancel_mock,
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()) as cursor_upsert_mock,
+        ):
+            await mod._project_scheduler_source()
+
+        assert upsert_event_mock.await_count == 1
+        event_kwargs = upsert_event_mock.await_args.kwargs
+        assert event_kwargs["source_id"] == source_id
+        assert event_kwargs["origin_ref"] == str(row_id)
+        assert event_kwargs["title"] == "Deep Focus"
+        assert event_kwargs["recurrence_rule"] == "0 14 * * 1-5"
+        assert upsert_instance_mock.await_count == 1
+        assert stale_cancel_mock.await_count == 1
+        assert cursor_upsert_mock.await_count == 1
+
+    async def test_project_reminders_source_handles_active_and_dismissed_rows(self):
+        mod = self._make_module_with_projection_db()
+        source_id = uuid.uuid4()
+        reminder_active_id = uuid.uuid4()
+        reminder_dismissed_id = uuid.uuid4()
+        trigger_at = datetime(2026, 3, 6, 9, 30, tzinfo=UTC)
+
+        mod._db.pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": reminder_active_id,
+                    "label": "Call mom",
+                    "message": "Call mom",
+                    "type": "one_time",
+                    "reminder_type": "one_time",
+                    "contact_id": None,
+                    "timezone": "UTC",
+                    "next_trigger_at": trigger_at,
+                    "due_at": trigger_at,
+                    "until_at": None,
+                    "calendar_event_id": None,
+                    "dismissed": False,
+                    "updated_at": trigger_at,
+                },
+                {
+                    "id": reminder_dismissed_id,
+                    "label": "Dismissed",
+                    "message": "Dismissed",
+                    "type": "one_time",
+                    "reminder_type": "one_time",
+                    "contact_id": None,
+                    "timezone": "UTC",
+                    "next_trigger_at": None,
+                    "due_at": None,
+                    "until_at": None,
+                    "calendar_event_id": None,
+                    "dismissed": True,
+                    "updated_at": trigger_at,
+                },
+            ]
+        )
+
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(
+                mod, "_upsert_projection_event", AsyncMock(return_value=uuid.uuid4())
+            ) as upsert_event_mock,
+            patch.object(mod, "_upsert_projection_instance", AsyncMock()) as upsert_instance_mock,
+            patch.object(
+                mod, "_mark_projection_event_cancelled", AsyncMock()
+            ) as mark_cancelled_mock,
+            patch.object(
+                mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()
+            ) as stale_cancel_mock,
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()) as cursor_upsert_mock,
+        ):
+            await mod._project_reminders_source()
+
+        assert upsert_event_mock.await_count == 1
+        event_kwargs = upsert_event_mock.await_args.kwargs
+        assert event_kwargs["origin_ref"] == str(reminder_active_id)
+        assert event_kwargs["title"] == "Call mom"
+        assert upsert_instance_mock.await_count == 1
+        assert mark_cancelled_mock.await_count == 1
+        cancel_kwargs = mark_cancelled_mock.await_args.kwargs
+        assert cancel_kwargs["origin_ref"] == str(reminder_dismissed_id)
+        assert stale_cancel_mock.await_count == 1
+        assert cursor_upsert_mock.await_count == 1
+
+
+class TestCalendarProjectionFreshness:
+    async def test_freshness_metadata_classifies_source_states(self):
+        mod = CalendarModule()
+        mod._config = CalendarConfig(
+            provider="google",
+            calendar_id="primary",
+            sync=CalendarSyncConfig(enabled=True, interval_minutes=5),
+        )
+        pool = MagicMock()
+        now = datetime.now(UTC)
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": uuid.uuid4(),
+                    "source_key": "provider:google:primary",
+                    "source_kind": SOURCE_KIND_PROVIDER,
+                    "lane": "user",
+                    "provider": "google",
+                    "calendar_id": "primary",
+                    "butler_name": None,
+                    "cursor_name": "provider_sync",
+                    "last_synced_at": now - timedelta(minutes=1),
+                    "last_success_at": now - timedelta(minutes=1),
+                    "last_error_at": None,
+                    "last_error": None,
+                    "full_sync_required": False,
+                },
+                {
+                    "id": uuid.uuid4(),
+                    "source_key": "internal_scheduler:general",
+                    "source_kind": SOURCE_KIND_INTERNAL_SCHEDULER,
+                    "lane": "butler",
+                    "provider": "internal",
+                    "calendar_id": None,
+                    "butler_name": "general",
+                    "cursor_name": "projection",
+                    "last_synced_at": now - timedelta(hours=3),
+                    "last_success_at": now - timedelta(hours=3),
+                    "last_error_at": None,
+                    "last_error": None,
+                    "full_sync_required": False,
+                },
+                {
+                    "id": uuid.uuid4(),
+                    "source_key": "internal_reminders:general",
+                    "source_kind": SOURCE_KIND_INTERNAL_REMINDERS,
+                    "lane": "butler",
+                    "provider": "internal",
+                    "calendar_id": None,
+                    "butler_name": "general",
+                    "cursor_name": "projection",
+                    "last_synced_at": now - timedelta(minutes=2),
+                    "last_success_at": now - timedelta(hours=1),
+                    "last_error_at": now - timedelta(minutes=2),
+                    "last_error": "boom",
+                    "full_sync_required": False,
+                },
+            ]
+        )
+        db = MagicMock()
+        db.pool = pool
+        mod._db = db
+
+        with patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)):
+            freshness = await mod._projection_freshness_metadata()
+
+        assert freshness["available"] is True
+        assert len(freshness["sources"]) == 3
+        states = {source["source_key"]: source["sync_state"] for source in freshness["sources"]}
+        assert states["provider:google:primary"] == "fresh"
+        assert states["internal_scheduler:general"] == "stale"
+        assert states["internal_reminders:general"] == "failed"
