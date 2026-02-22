@@ -111,7 +111,8 @@ Tier 2 sends a slim envelope that preserves identity and threading while minimiz
   },
   "control": {
     "idempotency_key": "gmail:gmail:user:alice@gmail.com:gmail_message_id",
-    "ingestion_tier": "metadata"
+    "ingestion_tier": "metadata",
+    "policy_tier": "default"
   }
 }
 ```
@@ -133,6 +134,7 @@ Required schema:
 ```sql
 CREATE TABLE switchboard.email_metadata_refs (
   id UUID PRIMARY KEY,
+  endpoint_identity TEXT NOT NULL,
   gmail_message_id TEXT NOT NULL,
   thread_id TEXT,
   sender TEXT NOT NULL,
@@ -146,7 +148,7 @@ CREATE TABLE switchboard.email_metadata_refs (
 ```
 
 Required indexes/uniqueness:
-- Unique on `(gmail_message_id)` per mailbox identity boundary.
+- Unique on `(endpoint_identity, gmail_message_id)`.
 - Index on `(received_at DESC)` for timeline queries.
 - Index on `(sender, received_at DESC)` for sender lookups.
 
