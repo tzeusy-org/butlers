@@ -33,27 +33,24 @@ Thread affinity only applies when:
 
 ### 3.1 `routing_log` schema change
 
-Add a nullable thread identifier:
+Add thread affinity fields needed by the lookup:
 
 ```sql
 ALTER TABLE routing_log
-ADD COLUMN thread_id TEXT;
+ADD COLUMN thread_id TEXT,
+ADD COLUMN source_channel TEXT;
 
-CREATE INDEX idx_routing_log_thread_id
-ON routing_log (thread_id)
-WHERE thread_id IS NOT NULL;
+CREATE INDEX idx_routing_log_thread_affinity
+ON routing_log (thread_id, created_at DESC)
+WHERE thread_id IS NOT NULL AND source_channel = 'email';
 ```
 
 Population rule:
-- On route logging for email ingress, set `routing_log.thread_id` from
+- Set `routing_log.source_channel` from ingress metadata (`email`, `telegram`,
+  etc.) for all new writes.
+- For email ingress, set `routing_log.thread_id` from
   `ingest.v1.event.external_thread_id`.
 - For non-email channels, keep `thread_id = NULL`.
-
-### 3.2 Destination column compatibility
-
-Some docs call the destination column `routed_to`; current runtime schemas may
-still use `target_butler`. This spec treats both as the route destination field.
-Implementations must map to the active schema consistently.
 
 ## 4. Lookup Algorithm
 
@@ -68,13 +65,13 @@ Given `thread_id = :tid` and `source_channel = "email"`:
 
 ```sql
 SELECT
-  routed_to,
+  target_butler,
   MAX(created_at) AS last_routed_at
 FROM routing_log
 WHERE source_channel = 'email'
   AND thread_id = :tid
   AND created_at >= NOW() - (:ttl_days || ' days')::INTERVAL
-GROUP BY routed_to
+GROUP BY target_butler
 ORDER BY last_routed_at DESC
 LIMIT 2;
 ```
@@ -87,7 +84,6 @@ LIMIT 2;
 Notes:
 - The conflict path is required to avoid pinning a thread that has already
   decomposed across multiple butlers.
-- Equivalent `target_butler` queries are valid where that column is canonical.
 
 ## 5. TTL and Staleness
 
@@ -141,7 +137,8 @@ Low-cardinality attribute guidance:
 
 Migration requirement:
 - Add a new Alembic revision in `roster/switchboard/migrations/` that adds
-  `routing_log.thread_id` and `idx_routing_log_thread_id`.
+  `routing_log.thread_id`, `routing_log.source_channel`, and
+  `idx_routing_log_thread_affinity`.
 
 Rollout sequence:
 1. Deploy migration.
@@ -163,7 +160,8 @@ Backfill:
 ## 10. Acceptance Mapping
 
 This spec explicitly defines:
-1. `routing_log` extension with nullable `thread_id` and index.
+1. `routing_log` extension with nullable `thread_id`, `source_channel`, and
+   the affinity lookup index.
 2. Lookup algorithm with conflict and stale handling.
 3. TTL configuration and staleness behavior (default 30 days).
 4. Triage pipeline placement (after sender/header rules, before LLM fallback).
