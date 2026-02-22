@@ -250,6 +250,10 @@ Alembic revisions are chain-prefixed (`core_*`, `mem_*`, `sw_*`) rather than bar
 ### Known Warnings (not bugs)
 - 2 RuntimeWarnings in CLI tests from monkeypatched `asyncio.run` — unawaited coroutines in test mocking
 
+### FastMCP API drift test failures (current baseline)
+- `make test-qg` currently fails in this branch with tests assuming legacy FastMCP internals: `tests/modules/test_module_approvals.py::TestApproveAction::test_approve_tool_rejects_spoofed_actor_kwarg` accesses `mcp._tool_manager`, and `tests/daemon/test_daemon.py::TestNotifyTool::test_notify_tool_description_and_schema_contract` calls `runtime_mcp.get_tools()`.
+- Current FastMCP surface in this env exposes `get_tool` but not `_tool_manager`/`get_tools`; update tests to use supported introspection APIs before treating these as product regressions.
+
 ### Testcontainers xdist teardown flake
 - `make test-qg` can intermittently fail during DB-backed test teardown with Docker API 500 errors while removing/killing `postgres:16` testcontainers (`did not receive an exit event`); tracked in `butlers-e6b`.
 
