@@ -883,8 +883,6 @@ class ContactsSyncStateStore:
         state: ContactsSyncState,
     ) -> None:
         """Upsert sync state into the ``contacts_sync_state`` table."""
-        import json as _json
-
         provider_key = provider.strip().lower()
         account_key = account_id.strip()
         await self._pool.execute(
@@ -917,7 +915,7 @@ class ContactsSyncStateStore:
             _parse_iso_timestamp(state.last_incremental_sync_at),
             _parse_iso_timestamp(state.last_success_at),
             state.last_error,
-            _json.dumps(state.contact_versions),
+            json.dumps(state.contact_versions),
         )
 
 

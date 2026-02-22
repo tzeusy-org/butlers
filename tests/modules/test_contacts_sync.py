@@ -477,7 +477,9 @@ class _FakePool:
             "last_incremental_sync_at": args[5],
             "last_success_at": args[6],
             "last_error": args[7],
-            "contact_versions": json.loads(args[8]) if args[8] else {},
+            "contact_versions": (
+                json.loads(args[8]) if args[8] is not None and args[8] != "" else {}
+            ),
         }
         return "INSERT 0 1"
 
