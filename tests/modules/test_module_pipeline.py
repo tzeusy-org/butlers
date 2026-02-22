@@ -467,6 +467,24 @@ class TestRoutingContextLifecycle:
         _routing_ctx_var.set(None)
 
 
+class TestRequestIdCoercion:
+    """Verify request_id normalization for route.v1 UUID7 constraints."""
+
+    def test_coerce_request_id_generates_uuid7_for_invalid_value(self):
+        request_id = MessagePipeline._coerce_request_id("unknown")
+        parsed = uuid.UUID(request_id)
+        assert parsed.version == 7
+
+    def test_coerce_request_id_converts_non_v7_to_uuid7(self):
+        request_id = MessagePipeline._coerce_request_id("123e4567-e89b-42d3-a456-426614174000")
+        parsed = uuid.UUID(request_id)
+        assert parsed.version == 7
+
+    def test_coerce_request_id_preserves_uuid7(self):
+        request_id = MessagePipeline._coerce_request_id("018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa")
+        assert request_id == "018f52f3-9d8a-7ef2-8f2d-9fb6b32f12aa"
+
+
 # ---------------------------------------------------------------------------
 # MessagePipeline.process — tool-based routing
 # ---------------------------------------------------------------------------

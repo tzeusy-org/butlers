@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.daemon import ButlerDaemon
+from butlers.modules.pipeline import _routing_ctx_var
+from butlers.tools.switchboard.routing.contracts import parse_route_envelope
 
 pytestmark = pytest.mark.unit
 
@@ -308,3 +310,66 @@ class TestRouteToButlerAcceptedStatusPassthrough:
         assert result["status"] == "error"
         assert result["butler"] == "health"
         assert "something went wrong" in result["error"]
+
+    async def test_route_to_butler_serializes_uuid7_when_context_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """Missing routing context should not emit non-UUID request_context.request_id."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        captured_envelope: dict[str, Any] = {}
+
+        async def _capture_route(*_args, **kwargs):
+            captured_envelope.update(kwargs["args"])
+            return {"result": {"status": "accepted"}}
+
+        mock_route = AsyncMock(side_effect=_capture_route)
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        result = await route_to_butler_fn(butler="general", prompt="hello")
+
+        assert result["status"] == "accepted"
+        route_payload = dict(captured_envelope)
+        route_payload.pop("__switchboard_route_context", None)
+        parsed = parse_route_envelope(route_payload)
+        assert parsed.request_context.request_id.version == 7
+
+    async def test_route_to_butler_rewrites_invalid_context_request_id_to_uuid7(
+        self, tmp_path: Path
+    ) -> None:
+        """Invalid request_id values in routing context are normalized before route dispatch."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        captured_envelope: dict[str, Any] = {}
+
+        async def _capture_route(*_args, **kwargs):
+            captured_envelope.update(kwargs["args"])
+            return {"result": {"status": "accepted"}}
+
+        mock_route = AsyncMock(side_effect=_capture_route)
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        token = _routing_ctx_var.set(
+            {
+                "source_metadata": {"channel": "telegram", "identity": "user-123"},
+                "request_context": {"source_thread_identity": "chat-456"},
+                "request_id": "unknown",
+            }
+        )
+        try:
+            result = await route_to_butler_fn(butler="general", prompt="hello")
+        finally:
+            _routing_ctx_var.reset(token)
+
+        assert result["status"] == "accepted"
+        route_payload = dict(captured_envelope)
+        route_payload.pop("__switchboard_route_context", None)
+        parsed = parse_route_envelope(route_payload)
+        assert parsed.request_context.request_id.version == 7
+        assert captured_envelope["request_context"]["request_id"] != "unknown"

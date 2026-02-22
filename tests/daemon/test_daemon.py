@@ -2607,8 +2607,12 @@ class TestNotifyTool:
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
 
-        tools = await runtime_mcp.get_tools()
-        notify_tool = tools["notify"].model_dump()
+        get_tools = getattr(runtime_mcp, "get_tools", None)
+        if callable(get_tools):
+            tools = await get_tools()
+            notify_tool = tools["notify"].model_dump()
+        else:
+            notify_tool = (await runtime_mcp.get_tool("notify")).model_dump()
 
         description = notify_tool["description"] or ""
         assert "notify.v1" in description

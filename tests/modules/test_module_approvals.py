@@ -583,7 +583,7 @@ class TestApproveAction:
 
         mcp = FastMCP("test-approvals")
         await module.register_tools(mcp=mcp, config=None, db=mock_db)
-        tool = await mcp._tool_manager.get_tool("approve_action")
+        tool = await mcp.get_tool("approve_action")
 
         with pytest.raises(ValidationError, match="_actor"):
             await tool.run(

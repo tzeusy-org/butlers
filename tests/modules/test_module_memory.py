@@ -186,8 +186,12 @@ class TestRegisterTools:
 
         await mod.register_tools(mcp=runtime_mcp, config=None, db=fake_db)
 
-        tools = await runtime_mcp.get_tools()
-        fact_tool = tools["memory_store_fact"].model_dump()
+        get_tools = getattr(runtime_mcp, "get_tools", None)
+        if callable(get_tools):
+            tools = await get_tools()
+            fact_tool = tools["memory_store_fact"].model_dump()
+        else:
+            fact_tool = (await runtime_mcp.get_tool("memory_store_fact")).model_dump()
 
         description = fact_tool["description"] or ""
         assert "required fields" in description.lower()

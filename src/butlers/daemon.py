@@ -2918,8 +2918,20 @@ class ButlerDaemon:
                 """
                 _routing_ctx = _routing_ctx_var.get() or {}
                 source_metadata = _routing_ctx.get("source_metadata", {})
+                if not isinstance(source_metadata, dict):
+                    source_metadata = {}
+                normalized_source_metadata: dict[str, Any] = {
+                    "channel": str(source_metadata.get("channel", "mcp")),
+                    "identity": str(source_metadata.get("identity", "unknown")),
+                    "tool_name": str(source_metadata.get("tool_name", "route_to_butler")),
+                }
+                if source_metadata.get("source_id") not in (None, ""):
+                    normalized_source_metadata["source_id"] = str(source_metadata["source_id"])
                 request_context = _routing_ctx.get("request_context")
-                request_id = _routing_ctx.get("request_id", "unknown")
+                raw_request_id = _routing_ctx.get("request_id")
+                if raw_request_id in (None, "") and isinstance(request_context, dict):
+                    raw_request_id = request_context.get("request_id")
+                request_id = MessagePipeline._coerce_request_id(raw_request_id)
                 conversation_history = _routing_ctx.get("conversation_history")
 
                 _input: dict[str, Any] = {"prompt": prompt, "context": context}
@@ -2931,9 +2943,9 @@ class ButlerDaemon:
                     "request_context": {
                         "request_id": request_id,
                         "received_at": datetime.now(UTC).isoformat(),
-                        "source_channel": source_metadata.get("channel", "mcp"),
+                        "source_channel": normalized_source_metadata["channel"],
                         "source_endpoint_identity": "switchboard",
-                        "source_sender_identity": source_metadata.get("identity", "unknown"),
+                        "source_sender_identity": normalized_source_metadata["identity"],
                         "source_thread_identity": (
                             request_context.get("source_thread_identity")
                             if request_context
@@ -2943,7 +2955,7 @@ class ButlerDaemon:
                     },
                     "input": _input,
                     "target": {"butler": butler, "tool": "route.execute"},
-                    "source_metadata": source_metadata,
+                    "source_metadata": normalized_source_metadata,
                     "__switchboard_route_context": {
                         "request_id": request_id,
                         "fanout_mode": "tool_routed",
