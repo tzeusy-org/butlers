@@ -1,7 +1,7 @@
 # Connector Interface Contract
 
 Status: Normative (Target State)
-Last updated: 2026-02-16
+Last updated: 2026-02-22
 Primary owner: Platform/Core
 
 ## 1. Purpose
@@ -213,7 +213,47 @@ Environment variables:
 - `CONNECTOR_HEARTBEAT_INTERVAL_S` (optional, default: `120`): Heartbeat interval.
 - `CONNECTOR_HEARTBEAT_ENABLED` (optional, default: `true`): Disable for development/testing.
 
-## 14. Statistics and Dashboard Visibility
+## 14. Backfill Polling Protocol (Optional)
+
+Connectors that support historical data retrieval MAY implement the backfill polling protocol to enable dashboard-triggered backfill jobs.
+
+This is an optional protocol extension. Connectors remain transport adapters and MCP clients; backfill coordination is MCP-only and does not permit direct connector database access.
+
+### 14.1 Protocol Overview
+- Connector periodically calls Switchboard MCP tool `backfill.poll(connector_type, endpoint_identity)`.
+- If a pending job is returned, connector walks source API history backwards within the job date range.
+- Connector submits each historical message through the same `ingest.v1` contract used for live ingestion.
+- Connector reports progress via `backfill.progress(...)` MCP tool.
+- Connector checks for pause/cancel status on each progress report and stops when requested.
+
+### 14.2 MCP Tools (Switchboard-Owned)
+- `backfill.poll(connector_type, endpoint_identity)` -> `BackfillJob | null`
+- `backfill.progress(job_id, rows_processed, rows_skipped, cost_spent_cents, cursor?, status?, error?)` -> `ack`
+
+### 14.3 Connector Requirements (When Implementing Backfill)
+Connectors implementing backfill MUST:
+- Poll no more frequently than every 60 seconds (configurable via `CONNECTOR_BACKFILL_POLL_INTERVAL_S`).
+- Use the same `ingest.v1` envelope and idempotency keys for historical messages as for live messages.
+- Respect `rate_limit_per_hour` from job parameters.
+- Report progress at least every 50 messages (configurable).
+- Stop immediately when `backfill.progress()` returns `paused` or `cancelled`.
+- Keep live ingestion responsive; backfill runs in the background alongside normal polling.
+- Persist backfill cursor in job state via `backfill.progress`, not in a local checkpoint file.
+
+Connectors implementing backfill MUST NOT:
+- Maintain persistent database connections for backfill job polling (MCP only).
+- Bypass Switchboard ingest for historical messages.
+- Advance the live ingestion cursor based on backfill activity.
+
+### 14.4 Capability Advertisement
+Connectors that support backfill SHOULD include `capabilities.backfill=true` in heartbeat metadata. This allows the dashboard to show or hide backfill controls based on connector capability.
+
+### 14.5 Environment Variables
+- `CONNECTOR_BACKFILL_POLL_INTERVAL_S` (optional, default: `60`): How often to poll for backfill jobs.
+- `CONNECTOR_BACKFILL_PROGRESS_INTERVAL` (optional, default: `50`): Report progress every N messages.
+- `CONNECTOR_BACKFILL_ENABLED` (optional, default: `true`): Disable backfill polling entirely.
+
+## 15. Statistics and Dashboard Visibility
 
 Connector ingestion statistics are aggregated by the Switchboard and exposed via the dashboard API.
 
@@ -225,7 +265,7 @@ Summary:
 - Dashboard `/connectors` page with connector cards, volume charts, fanout matrix, and error log.
 - Rollup + prune retention: 7 days raw heartbeats, 30 days hourly stats, 1 year daily stats.
 
-## 15. Authentication and Token Management
+## 16. Authentication and Token Management
 
 Connector authentication uses bearer tokens issued and managed by the Switchboard butler framework.
 
