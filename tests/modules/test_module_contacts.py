@@ -10,7 +10,12 @@ from pydantic import BaseModel, ValidationError
 
 from butlers.modules.base import Module
 from butlers.modules.contacts import ContactsConfig, ContactsModule, ContactsSyncConfig
-from butlers.modules.contacts.sync import ContactsSyncRuntime
+from butlers.modules.contacts.sync import (
+    ContactsSyncError,
+    ContactsSyncResult,
+    ContactsSyncRuntime,
+    ContactsSyncState,
+)
 from butlers.modules.registry import default_registry
 
 pytestmark = pytest.mark.unit
@@ -304,7 +309,388 @@ class TestRuntimeAccessibility:
 
 
 class _StubMCP:
-    """Minimal MCP stub used for register_tools signatures."""
+    """Minimal MCP stub that supports the .tool() decorator pattern."""
+
+    def tool(self) -> Any:
+        """Return a no-op decorator."""
+
+        def decorator(fn: Any) -> Any:
+            return fn
+
+        return decorator
 
     def __getattr__(self, _name: str) -> Any:
         raise AttributeError
+
+
+# ---------------------------------------------------------------------------
+# MCP tool tests
+# ---------------------------------------------------------------------------
+
+
+class _CapturingMCP:
+    """Minimal MCP stub that captures registered tools for testing."""
+
+    def __init__(self) -> None:
+        self._tools: dict[str, Any] = {}
+
+    def tool(self) -> Any:
+        """Decorator that captures the tool function by name."""
+
+        def decorator(fn: Any) -> Any:
+            self._tools[fn.__name__] = fn
+            return fn
+
+        return decorator
+
+    def __getitem__(self, name: str) -> Any:
+        return self._tools[name]
+
+
+def _make_runtime_mock(
+    *,
+    provider_name: str = "google",
+    account_id: str = "default",
+    state: ContactsSyncState | None = None,
+) -> Any:
+    """Build a mock ContactsSyncRuntime with configurable state."""
+    from butlers.modules.contacts.sync import ContactsSyncState
+
+    resolved_state = state or ContactsSyncState()
+    runtime = MagicMock()
+    runtime._provider_name = provider_name
+    runtime._account_id = account_id
+    runtime._state_store = MagicMock()
+    runtime._state_store.load = AsyncMock(return_value=resolved_state)
+    runtime._sync_engine = MagicMock()
+    runtime.trigger_immediate_sync = MagicMock()
+    return runtime
+
+
+class TestContactsSyncNowTool:
+    """Unit tests for the contacts_sync_now MCP tool."""
+
+    async def test_sync_now_returns_error_when_runtime_none(self) -> None:
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        result = await mcp["contacts_sync_now"](provider="google", mode="incremental")
+
+        assert "error" in result
+        assert "sync runtime is not running" in result["error"].lower()
+
+    async def test_sync_now_returns_error_for_wrong_provider(self) -> None:
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        # Simulate runtime being active
+        mod._runtime = _make_runtime_mock(provider_name="google")
+
+        result = await mcp["contacts_sync_now"](provider="outlook", mode="incremental")
+
+        assert "error" in result
+        assert "outlook" in result["error"]
+
+    async def test_sync_now_calls_sync_engine_and_returns_summary(self) -> None:
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        sync_result = ContactsSyncResult(
+            mode="incremental",
+            fetched_contacts=50,
+            applied_contacts=10,
+            skipped_contacts=40,
+            deleted_contacts=0,
+            next_sync_cursor="cursor-abc",
+        )
+        runtime = _make_runtime_mock(provider_name="google")
+        runtime._sync_engine.sync = AsyncMock(return_value=sync_result)
+        mod._runtime = runtime
+
+        result = await mcp["contacts_sync_now"](provider="google", mode="incremental")
+
+        assert result["provider"] == "google"
+        assert result["mode"] == "incremental"
+        assert result["summary"]["fetched"] == 50
+        assert result["summary"]["applied"] == 10
+        assert result["summary"]["skipped"] == 40
+        assert result["summary"]["deleted"] == 0
+        assert result["next_sync_cursor"] == "cursor-abc"
+
+    async def test_sync_now_handles_sync_error(self) -> None:
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        runtime = _make_runtime_mock(provider_name="google")
+        runtime._sync_engine.sync = AsyncMock(side_effect=ContactsSyncError("token expired"))
+        mod._runtime = runtime
+
+        result = await mcp["contacts_sync_now"](provider="google", mode="incremental")
+
+        assert "error" in result
+        assert "token expired" in result["error"]
+
+    async def test_sync_now_full_mode_passed_through(self) -> None:
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        sync_result = ContactsSyncResult(
+            mode="full",
+            fetched_contacts=200,
+            applied_contacts=200,
+            skipped_contacts=0,
+            deleted_contacts=0,
+            next_sync_cursor="cursor-full",
+        )
+        runtime = _make_runtime_mock(provider_name="google")
+        runtime._sync_engine.sync = AsyncMock(return_value=sync_result)
+        mod._runtime = runtime
+
+        result = await mcp["contacts_sync_now"](provider="google", mode="full")
+
+        runtime._sync_engine.sync.assert_awaited_once_with(account_id="default", mode="full")
+        assert result["mode"] == "full"
+        assert result["summary"]["fetched"] == 200
+
+
+class TestContactsSyncStatusTool:
+    """Unit tests for the contacts_sync_status MCP tool."""
+
+    async def test_sync_status_returns_error_when_runtime_none(self) -> None:
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        result = await mcp["contacts_sync_status"](provider="google")
+
+        assert "error" in result
+        assert result["sync_enabled"] is False
+
+    async def test_sync_status_returns_state_snapshot(self) -> None:
+        from butlers.modules.contacts.sync import ContactsSyncState
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        state = ContactsSyncState(
+            sync_cursor="cursor-xyz",
+            last_full_sync_at="2026-01-01T00:00:00+00:00",
+            last_incremental_sync_at="2026-01-02T00:00:00+00:00",
+            last_success_at="2026-01-02T00:00:00+00:00",
+            last_error=None,
+            contact_versions={"c1": "v1", "c2": "v2"},
+        )
+        mod._runtime = _make_runtime_mock(provider_name="google", state=state)
+
+        result = await mcp["contacts_sync_status"](provider="google")
+
+        assert result["provider"] == "google"
+        assert result["sync_enabled"] is True
+        assert result["sync_cursor"] is True
+        assert result["last_full_sync_at"] == "2026-01-01T00:00:00+00:00"
+        assert result["last_incremental_sync_at"] == "2026-01-02T00:00:00+00:00"
+        assert result["last_error"] is None
+        assert result["contact_count"] == 2
+
+    async def test_sync_status_reports_last_error(self) -> None:
+        from butlers.modules.contacts.sync import ContactsSyncState
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        state = ContactsSyncState(last_error="401 Unauthorized")
+        mod._runtime = _make_runtime_mock(state=state)
+
+        result = await mcp["contacts_sync_status"](provider="google")
+
+        assert result["last_error"] == "401 Unauthorized"
+
+    async def test_sync_status_zero_contacts_when_no_versions(self) -> None:
+        from butlers.modules.contacts.sync import ContactsSyncState
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        state = ContactsSyncState()  # empty state
+        mod._runtime = _make_runtime_mock(state=state)
+
+        result = await mcp["contacts_sync_status"](provider="google")
+
+        assert result["contact_count"] == 0
+        assert result["sync_cursor"] is False
+
+    async def test_sync_status_returns_error_for_wrong_provider(self) -> None:
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        # Simulate runtime being active with google provider
+        state = ContactsSyncState(last_success_at="2026-01-01T00:00:00+00:00")
+        mod._runtime = _make_runtime_mock(provider_name="google", state=state)
+
+        result = await mcp["contacts_sync_status"](provider="outlook")
+
+        assert "error" in result
+        assert "outlook" in result["error"]
+        assert "google" in result["error"]
+
+
+class TestContactsSourceListTool:
+    """Unit tests for the contacts_source_list MCP tool."""
+
+    async def test_source_list_returns_disabled_when_runtime_none(self) -> None:
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        result = await mcp["contacts_source_list"]()
+
+        assert len(result) == 1
+        assert result[0]["sync_enabled"] is False
+        assert result[0]["status"] == "sync_disabled"
+        assert result[0]["provider"] == "google"
+
+    async def test_source_list_returns_active_source(self) -> None:
+        from butlers.modules.contacts.sync import ContactsSyncState
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        state = ContactsSyncState(
+            last_success_at="2026-01-01T00:00:00+00:00",
+            last_error=None,
+        )
+        mod._runtime = _make_runtime_mock(provider_name="google", account_id="default", state=state)
+
+        result = await mcp["contacts_source_list"]()
+
+        assert len(result) == 1
+        source = result[0]
+        assert source["provider"] == "google"
+        assert source["account_id"] == "default"
+        assert source["sync_enabled"] is True
+        assert source["status"] == "active"
+        assert source["last_success_at"] == "2026-01-01T00:00:00+00:00"
+
+    async def test_source_list_filters_by_provider(self) -> None:
+        from butlers.modules.contacts.sync import ContactsSyncState
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        state = ContactsSyncState(last_success_at="2026-01-01T00:00:00+00:00")
+        mod._runtime = _make_runtime_mock(provider_name="google", state=state)
+
+        # Filtering by the configured provider returns the source.
+        result_google = await mcp["contacts_source_list"](provider="google")
+        assert len(result_google) == 1
+
+        # Filtering by a different provider returns nothing.
+        result_outlook = await mcp["contacts_source_list"](provider="outlook")
+        assert result_outlook == []
+
+    async def test_source_list_never_synced_status(self) -> None:
+        from butlers.modules.contacts.sync import ContactsSyncState
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        state = ContactsSyncState()  # no last_success_at
+        mod._runtime = _make_runtime_mock(state=state)
+
+        result = await mcp["contacts_source_list"]()
+
+        assert result[0]["status"] == "never_synced"
+
+    async def test_source_list_error_status_on_last_error(self) -> None:
+        from butlers.modules.contacts.sync import ContactsSyncState
+
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        state = ContactsSyncState(
+            last_success_at="2026-01-01T00:00:00+00:00",
+            last_error="Connection refused",
+        )
+        mod._runtime = _make_runtime_mock(state=state)
+
+        result = await mcp["contacts_source_list"]()
+
+        assert result[0]["status"] == "error"
+        assert result[0]["last_error"] == "Connection refused"
+
+
+class TestContactsSourceReconcileTool:
+    """Unit tests for the contacts_source_reconcile MCP tool."""
+
+    async def test_reconcile_returns_error_when_runtime_none(self) -> None:
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        result = await mcp["contacts_source_reconcile"]()
+
+        assert "error" in result
+        assert result["queued"] is False
+
+    async def test_reconcile_triggers_immediate_sync_all(self) -> None:
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        runtime = _make_runtime_mock()
+        mod._runtime = runtime
+
+        result = await mcp["contacts_source_reconcile"]()
+
+        runtime.trigger_immediate_sync.assert_called_once()
+        assert result["queued"] is True
+        assert result["contact_id"] is None
+        assert "Reconciliation queued" in result["message"]
+
+    async def test_reconcile_triggers_immediate_sync_specific_contact(self) -> None:
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        runtime = _make_runtime_mock()
+        mod._runtime = runtime
+
+        result = await mcp["contacts_source_reconcile"](contact_id="abc-123")
+
+        runtime.trigger_immediate_sync.assert_called_once()
+        assert result["queued"] is True
+        assert result["contact_id"] == "abc-123"
+        assert "abc-123" in result["message"]
+
+    async def test_reconcile_message_differs_for_all_vs_specific(self) -> None:
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        runtime = _make_runtime_mock()
+        mod._runtime = runtime
+
+        result_all = await mcp["contacts_source_reconcile"]()
+        runtime.trigger_immediate_sync.reset_mock()
+        result_specific = await mcp["contacts_source_reconcile"](contact_id="xyz")
+
+        # Both succeed; messages differ
+        assert result_all["queued"] is True
+        assert result_specific["queued"] is True
+        assert result_all["message"] != result_specific["message"]
