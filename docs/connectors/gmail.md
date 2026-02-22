@@ -193,7 +193,68 @@ When `GMAIL_PUBSUB_WEBHOOK_TOKEN` is set, the webhook verifies that incoming req
 - Watch expires after ~7 days if not renewed
 - Connector logs watch expiration timestamps for monitoring
 
-## 9. Non-Goals
+## 9. Backfill Mode
+The Gmail connector implements the optional backfill polling protocol defined in
+`docs/connectors/interface.md` section 14 to support dashboard-triggered
+historical email processing.
+
+### 9.1 Backfill Loop Integration
+- Every `CONNECTOR_BACKFILL_POLL_INTERVAL_S` (default `60`), call
+  `backfill.poll(connector_type, endpoint_identity)` on Switchboard.
+- Live ingestion always takes priority; backfill work yields to incoming live
+  messages.
+- Backfill and live ingestion share the same `CONNECTOR_MAX_INFLIGHT`
+  concurrency budget.
+- When backfill is active, allocate at most `CONNECTOR_MAX_INFLIGHT - 1` slots
+  to backfill and reserve at least one slot for live ingestion.
+
+### 9.2 Gmail History Traversal for Backfill
+- Use `users.messages.list` with
+  `q='after:YYYY/MM/DD before:YYYY/MM/DD'` for date-bounded retrieval.
+- Walk result pages in reverse chronological order (newest first within the
+  requested date range).
+- For each message, fetch payload/metadata, normalize to `ingest.v1`, and
+  submit to Switchboard.
+- Apply the same tiered ingestion rules as live mode; metadata-only or skipped
+  messages are handled with the same slim/skip decisions.
+- Persist connector cursor (`page_token` plus last processed message id) via
+  `backfill.progress(...)`.
+- On restart, resume from cursor returned by `backfill.poll(...)`.
+
+### 9.3 Rate Limiting
+- Honor `rate_limit_per_hour` from backfill job params (default `100`).
+- Implement rate limiting as a token bucket with refill rate
+  `rate_limit_per_hour / 3600` tokens per second.
+- Also honor Gmail API quota guidance (250 quota units/second per user).
+- Enforce whichever limit is more restrictive.
+
+### 9.4 Cost Tracking
+- Track estimated LLM cost per backfill message from submitted payload size and
+  estimated per-token cost.
+- Report `cost_spent_cents` on each `backfill.progress(...)` call.
+- Connector estimates only; it does not know actual LLM runtime cost.
+- Switchboard enforces `daily_cost_cap` from job params; connector trusts status
+  returned by `backfill.progress(...)`.
+
+### 9.5 Capability Advertisement
+- Heartbeats for Gmail connectors with backfill support include
+  `capabilities.backfill=true` in metadata.
+- Dashboard uses capability metadata to enable/disable backfill controls for
+  Gmail connectors.
+
+### 9.6 Environment Variables
+- `CONNECTOR_BACKFILL_POLL_INTERVAL_S` (optional, default `60`; backfill poll cadence)
+- `CONNECTOR_BACKFILL_PROGRESS_INTERVAL` (optional, default `50`; backfill progress report cadence in messages)
+- `CONNECTOR_BACKFILL_ENABLED` (optional, default `true`; disable backfill polling entirely)
+
+### 9.7 Non-Goals for Gmail Backfill
+- Backfill does not process drafts, sent mail, or trash (inbox/label-scoped
+  only).
+- Backfill does not modify or re-classify previously ingested messages.
+- Backfill does not guarantee strict ordering within the date range; pages may
+  be processed out of order.
+
+## 10. Non-Goals
 This connector does not:
 - Bypass Switchboard canonical ingest semantics.
 - Perform direct specialist-butler routing.
