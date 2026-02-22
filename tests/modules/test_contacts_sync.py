@@ -448,6 +448,7 @@ class TestGroupBatchModel:
         assert group.member_count is None
         assert group.group_type is None
 
+
 class _FakePool:
     """In-memory asyncpg pool double for ContactsSyncStateStore tests."""
 
