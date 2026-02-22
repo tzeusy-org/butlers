@@ -326,6 +326,44 @@ class TestValidConfigPasses:
         assert mod._startup_config.port == 8080
 
 
+class TestUnconfiguredRequiredSchemaModules:
+    """Modules with required config fields are skipped when omitted."""
+
+    async def test_unconfigured_required_module_is_skipped(self, tmp_path: Path) -> None:
+        """Absent config skips required-schema modules but keeps default-only modules."""
+        butler_dir = _make_butler_toml(tmp_path, modules={})
+        registry = _make_registry(StrictModule, AllDefaultsModule)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["validate_core_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        loaded_names = {mod.name for mod in daemon._modules}
+        assert "strict_mod" not in loaded_names
+        assert "strict_mod" not in daemon._module_statuses
+        assert "defaults_mod" in loaded_names
+
+        defaults_mod = next(mod for mod in daemon._modules if mod.name == "defaults_mod")
+        assert isinstance(defaults_mod._startup_config, AllDefaultsConfig)
+        assert defaults_mod._startup_config.host == "localhost"
+        assert defaults_mod._startup_config.port == 8080
+
+
 class TestMissingRequiredField:
     """Missing a required field marks the module as failed (non-fatal)."""
 

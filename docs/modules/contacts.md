@@ -305,6 +305,12 @@ Intentionally excluded:
 - `roster/switchboard/butler.toml` (routing/control plane; does not own CRM sync execution)
 - `roster/messenger/butler.toml` (delivery plane only; does not own CRM sync execution)
 
+Operational note:
+
+- Keep `[modules.contacts]` omitted for excluded butlers. The daemon skips startup
+  for modules with required schemas when their `[modules.<name>]` section is absent,
+  which avoids provider-required validation warnings for intentionally excluded roles.
+
 Provider assumption for rollout: `provider = "google"` only.
 
 Required secrets for Google sync (DB-backed `butler_secrets`, not plain env fallback):

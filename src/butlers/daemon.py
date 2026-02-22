@@ -964,6 +964,53 @@ class ButlerDaemon:
             or self._module_statuses[m.name].status == "active"
         ]
 
+    @staticmethod
+    def _required_schema_fields(schema: type[Any]) -> list[str]:
+        """Return sorted required field names for a Pydantic schema."""
+        model_fields = getattr(schema, "model_fields", {})
+        required: list[str] = []
+        for field_name, field_info in model_fields.items():
+            is_required = getattr(field_info, "is_required", None)
+            if callable(is_required) and is_required():
+                required.append(field_name)
+        return sorted(required)
+
+    def _select_startup_modules(self, modules: list[Module]) -> list[Module]:
+        """Filter loaded modules to those eligible for startup in this config.
+
+        Modules that define required config fields are only started when an
+        explicit ``[modules.<name>]`` section exists in ``butler.toml``.
+        This keeps intentionally omitted modules out of the startup path and
+        avoids noisy "missing required field" validation warnings.
+        """
+        if self.config is None:
+            return modules
+
+        selected: list[Module] = []
+        for mod in modules:
+            if mod.name in self.config.modules:
+                selected.append(mod)
+                continue
+
+            schema = mod.config_schema
+            if schema is None:
+                selected.append(mod)
+                continue
+
+            required_fields = self._required_schema_fields(schema)
+            if required_fields:
+                logger.info(
+                    "Skipping module '%s': no [modules.%s] config provided and schema requires: %s",
+                    mod.name,
+                    mod.name,
+                    ", ".join(required_fields),
+                )
+                continue
+
+            selected.append(mod)
+
+        return selected
+
     def _cascade_module_failures(self) -> None:
         """Mark modules whose dependencies failed as ``cascade_failed``.
 
@@ -1111,10 +1158,10 @@ class ButlerDaemon:
         for warning in secret_warnings:
             logger.warning(warning)
 
-        # 3. Initialize modules (topological order) — load_all() instantiates every
-        # registered module; [modules.*] config sections are optional settings,
-        # not gates that enable/disable modules.
-        self._modules = self._registry.load_all(self.config.modules)
+        # 3. Initialize modules (topological order). The registry instantiates
+        # every built-in module, then startup filters out modules that require
+        # explicit config but are omitted from [modules.*].
+        self._modules = self._select_startup_modules(self._registry.load_all(self.config.modules))
 
         # 4. Validate module config schemas (non-fatal per-module).
         self._module_configs = self._validate_module_configs()
