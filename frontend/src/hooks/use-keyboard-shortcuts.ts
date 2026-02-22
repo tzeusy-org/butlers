@@ -6,6 +6,7 @@ declare global {
 
 import { useEffect } from "react";
 import { useNavigate } from "react-router";
+import { dispatchOpenCommandPalette } from "@/lib/command-palette";
 
 export function useKeyboardShortcuts() {
   const navigate = useNavigate();
@@ -25,14 +26,14 @@ export function useKeyboardShortcuts() {
       // Cmd/Ctrl+K → focus search
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        window.dispatchEvent(new CustomEvent("open-search"));
+        dispatchOpenCommandPalette();
         return;
       }
 
       // / → focus search
       if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
-        window.dispatchEvent(new CustomEvent("open-search"));
+        dispatchOpenCommandPalette();
         return;
       }
 

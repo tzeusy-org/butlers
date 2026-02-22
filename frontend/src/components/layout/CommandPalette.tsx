@@ -1,7 +1,7 @@
 /**
  * Global command palette / search overlay.
  *
- * Triggered by Cmd+K (Mac) / Ctrl+K (Windows) or the "/" key.
+ * Triggered by a global "open-search" event (keyboard shortcut + header button).
  * Uses the debounced useSearch hook to fetch grouped results from the API.
  */
 
@@ -20,6 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useSearch } from "@/hooks/use-search";
 import type { SearchResult } from "@/api/index.ts";
 import { RECENT_SEARCHES_KEY } from "@/lib/local-settings";
+import { OPEN_COMMAND_PALETTE_EVENT } from "@/lib/command-palette";
 
 const MAX_RECENT = 5;
 
@@ -91,34 +92,17 @@ export default function CommandPalette() {
   const flatResults = groupedResults.flatMap((g) => g.results);
 
   // -----------------------------------------------------------------------
-  // Keyboard shortcut: Cmd+K / Ctrl+K / "/"
+  // Open event bridge (shared by keyboard shortcuts and header icon)
   // -----------------------------------------------------------------------
   useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      // Cmd+K / Ctrl+K
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setOpen((prev) => !prev);
-        return;
-      }
-
-      // "/" — only when not focused on an input/textarea/contenteditable
-      if (e.key === "/" && !open) {
-        const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
-        const isEditable =
-          tag === "input" ||
-          tag === "textarea" ||
-          (e.target as HTMLElement)?.isContentEditable;
-        if (!isEditable) {
-          e.preventDefault();
-          setOpen(true);
-        }
-      }
+    function handleOpenCommandPalette() {
+      setOpen(true);
+      requestAnimationFrame(() => inputRef.current?.focus());
     }
 
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [open]);
+    window.addEventListener(OPEN_COMMAND_PALETTE_EVENT, handleOpenCommandPalette);
+    return () => window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, handleOpenCommandPalette);
+  }, []);
 
   // -----------------------------------------------------------------------
   // Reset state when dialog opens/closes

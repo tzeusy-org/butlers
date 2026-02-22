@@ -376,6 +376,11 @@ make test-qg
 - `docs/FRONTEND_PROJECT_PLAN.md` is historical/aspirational context; update `docs/frontend/` when routes, tabs, feature coverage, or data-refresh/write behavior changes.
 - `docs/frontend/backend-api-contract.md` is the target-state backend API contract required by the frontend; keep endpoint/query/payload definitions authoritative and up to date.
 
+### Command palette trigger contract
+- Dashboard command palette opening is event-driven via `frontend/src/lib/command-palette.ts` (`OPEN_COMMAND_PALETTE_EVENT = "open-search"`).
+- Global hotkeys (`frontend/src/hooks/use-keyboard-shortcuts.ts`) and the header search icon (`frontend/src/components/layout/PageHeader.tsx`, with `Cmd/Ctrl+K` hover hint) must dispatch the shared open event.
+- `frontend/src/components/layout/CommandPalette.tsx` should listen for that shared event and focus its search input when opening.
+
 ### Frontend single-pane contract updates (2026-02-14)
 - `/issues` is now a first-class frontend surface (route + sidebar) backed by `useIssues`; Overview includes `IssuesPanel` alongside failed notifications.
 - Overview KPI cards are wired: `Sessions Today` is sourced via `/api/sessions` with `since=<local-midnight ISO>` and `Est. Cost Today` via `/api/costs/summary?period=today`.
