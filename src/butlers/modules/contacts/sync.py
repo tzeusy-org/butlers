@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_PEOPLE_API_CONNECTIONS_URL = "https://people.googleapis.com/v1/people/me/connections"
+GOOGLE_CONTACT_GROUPS_URL = "https://people.googleapis.com/v1/contactGroups"
 
 DEFAULT_GOOGLE_PERSON_FIELDS = (
     "names,emailAddresses,phoneNumbers,addresses,birthdays,events,organizations,"
@@ -145,6 +146,42 @@ class ContactBatch(BaseModel):
         return normalized or None
 
 
+class CanonicalGroup(BaseModel):
+    """Provider-neutral canonical contact group/label shape."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    external_id: str = Field(min_length=1)
+    name: str
+    group_type: str | None = None
+    member_count: int | None = None
+
+    @field_validator("external_id")
+    @classmethod
+    def _normalize_external_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("external_id must be a non-empty string")
+        return normalized
+
+
+class GroupBatch(BaseModel):
+    """One provider group-list page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    groups: list[CanonicalGroup] = Field(default_factory=list)
+    next_page_token: str | None = None
+
+    @field_validator("next_page_token")
+    @classmethod
+    def _normalize_page_token(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
 class ContactsSyncState(BaseModel):
     """Persistent sync state and idempotency index."""
 
@@ -195,6 +232,25 @@ class ContactsProvider(abc.ABC):
         page_token: str | None = None,
     ) -> ContactBatch:
         """Fetch one incremental-sync page."""
+        ...
+
+    @abc.abstractmethod
+    async def validate_credentials(self) -> None:
+        """Verify provider credentials are valid.
+
+        Raises:
+            ContactsTokenRefreshError: if credentials cannot be validated.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def list_groups(
+        self,
+        *,
+        account_id: str,
+        page_token: str | None = None,
+    ) -> GroupBatch:
+        """Fetch one page of contact groups/labels from the provider."""
         ...
 
     @abc.abstractmethod
@@ -360,9 +416,99 @@ class GoogleContactsProvider(ContactsProvider):
         payload = await self._request_connections(params, has_sync_token=True)
         return _parse_google_batch(payload)
 
+    async def validate_credentials(self) -> None:
+        """Verify Google OAuth credentials by refreshing the access token
+        and making a lightweight People API call.
+
+        Raises:
+            ContactsTokenRefreshError: if the token refresh fails.
+            ContactsRequestError: if the lightweight People API call fails.
+        """
+        # Force a token refresh to confirm credentials are valid
+        await self._oauth.get_access_token(force_refresh=True)
+        # Make a lightweight API call to verify API access
+        params: dict[str, Any] = {
+            "personFields": "names",
+            "pageSize": 1,
+        }
+        await self._request_connections(params)
+
+    async def list_groups(
+        self,
+        *,
+        account_id: str,
+        page_token: str | None = None,
+    ) -> GroupBatch:
+        """Fetch one page of contact groups from the Google People API.
+
+        Calls ``contactGroups.list`` with optional pagination.
+        """
+        del account_id
+        params: dict[str, Any] = {"pageSize": 1000}
+        if page_token is not None:
+            params["pageToken"] = page_token
+        payload = await self._request_contact_groups(params)
+        return _parse_google_group_batch(payload)
+
     async def shutdown(self) -> None:
         if self._owns_http_client:
             await self._http_client.aclose()
+
+    async def _authenticated_get_json(
+        self,
+        url: str,
+        params: dict[str, Any],
+        *,
+        api_label: str = "Google",
+    ) -> dict[str, Any]:
+        """Make an authenticated GET request with automatic 401 token-refresh retry.
+
+        Raises ContactsRequestError on non-2xx responses or invalid payloads.
+        Does not handle endpoint-specific status codes (e.g. 410 sync-token expiry);
+        callers requiring special treatment of specific codes should use this method
+        as a post-auth building block or inline their own logic.
+        """
+        token = await self._oauth.get_access_token()
+        response = await self._http_client.get(
+            url,
+            params=params,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            },
+        )
+
+        if response.status_code == 401:
+            token = await self._oauth.get_access_token(force_refresh=True)
+            response = await self._http_client.get(
+                url,
+                params=params,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/json",
+                },
+            )
+
+        if response.status_code < 200 or response.status_code >= 300:
+            raise ContactsRequestError(
+                status_code=response.status_code,
+                message=_safe_google_error_message(response),
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ContactsRequestError(
+                status_code=response.status_code,
+                message=f"Invalid JSON payload from {api_label} API",
+            ) from exc
+
+        if not isinstance(payload, dict):
+            raise ContactsRequestError(
+                status_code=response.status_code,
+                message=f"{api_label} API payload must be a JSON object",
+            )
+        return payload
 
     async def _request_connections(
         self,
@@ -414,6 +560,13 @@ class GoogleContactsProvider(ContactsProvider):
                 message="Google People API payload must be a JSON object",
             )
         return payload
+
+    async def _request_contact_groups(self, params: dict[str, Any]) -> dict[str, Any]:
+        return await self._authenticated_get_json(
+            GOOGLE_CONTACT_GROUPS_URL,
+            params,
+            api_label="Google contactGroups",
+        )
 
 
 def _safe_google_error_message(response: httpx.Response) -> str:
@@ -469,6 +622,38 @@ def _parse_google_batch(payload: dict[str, Any]) -> ContactBatch:
         next_page_token=_as_non_empty_string(payload.get("nextPageToken")),
         next_sync_cursor=_as_non_empty_string(payload.get("nextSyncToken")),
         checkpoint={"total_people": len(contacts)},
+    )
+
+
+def _parse_google_group_batch(payload: dict[str, Any]) -> GroupBatch:
+    raw_groups = payload.get("contactGroups")
+    groups: list[CanonicalGroup] = []
+    if isinstance(raw_groups, list):
+        for item in raw_groups:
+            if not isinstance(item, dict):
+                continue
+            resource_name = _as_non_empty_string(item.get("resourceName"))
+            if resource_name is None:
+                continue
+            name = _as_non_empty_string(item.get("name")) or resource_name
+            group_type = _as_non_empty_string(item.get("groupType"))
+            member_count_raw = item.get("memberCount")
+            is_numeric = isinstance(member_count_raw, int | float) and not isinstance(
+                member_count_raw, bool
+            )
+            member_count = int(member_count_raw) if is_numeric else None
+            groups.append(
+                CanonicalGroup(
+                    external_id=resource_name,
+                    name=name,
+                    group_type=group_type,
+                    member_count=member_count,
+                )
+            )
+
+    return GroupBatch(
+        groups=groups,
+        next_page_token=_as_non_empty_string(payload.get("nextPageToken")),
     )
 
 

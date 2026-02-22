@@ -9,11 +9,14 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from butlers.modules.contacts.sync import (
+    GOOGLE_CONTACT_GROUPS_URL,
     GOOGLE_OAUTH_TOKEN_URL,
     GOOGLE_PEOPLE_API_CONNECTIONS_URL,
     CanonicalContact,
+    CanonicalGroup,
     ContactBatch,
     ContactsProvider,
     ContactsSyncEngine,
@@ -24,6 +27,7 @@ from butlers.modules.contacts.sync import (
     ContactsSyncStateStore,
     ContactsSyncTokenExpiredError,
     GoogleContactsProvider,
+    GroupBatch,
 )
 
 pytestmark = pytest.mark.unit
@@ -81,6 +85,17 @@ class _ProviderDouble(ContactsProvider):
         index = len([c for c in self.calls if c["mode"] == "incremental"]) - 1
         index = min(index, len(self.incremental_pages) - 1)
         return self.incremental_pages[index]
+
+    async def validate_credentials(self) -> None:
+        return None
+
+    async def list_groups(
+        self,
+        *,
+        account_id: str,
+        page_token: str | None = None,
+    ) -> GroupBatch:
+        return GroupBatch()
 
     async def shutdown(self) -> None:
         return None
@@ -205,6 +220,233 @@ class TestGoogleContactsProvider:
                 await provider.incremental_sync(account_id="acct-1", cursor="expired-cursor")
         finally:
             await provider.shutdown()
+
+
+class TestGoogleContactsProviderValidateCredentials:
+    async def _make_provider(
+        self,
+        handler,
+    ) -> GoogleContactsProvider:
+        transport = httpx.MockTransport(handler)
+        client = httpx.AsyncClient(transport=transport)
+        provider = GoogleContactsProvider(
+            client_id="cid",
+            client_secret="secret",
+            refresh_token="rtok",
+            http_client=client,
+        )
+        return provider
+
+    async def test_validate_credentials_refreshes_token_and_makes_lightweight_call(self):
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if str(request.url) == GOOGLE_OAUTH_TOKEN_URL:
+                return httpx.Response(200, json={"access_token": "tok-1", "expires_in": 3600})
+            if str(request.url).startswith(GOOGLE_PEOPLE_API_CONNECTIONS_URL):
+                # Lightweight call with pageSize=1 and personFields=names
+                return httpx.Response(200, json={"connections": [], "nextSyncToken": "tok"})
+            return httpx.Response(500, json={"error": {"message": "unexpected request"}})
+
+        provider = await self._make_provider(handler)
+        try:
+            await provider.validate_credentials()
+        finally:
+            await provider.shutdown()
+
+        # First request is OAuth token refresh, second is lightweight People API call
+        assert len(requests) == 2
+        token_req = requests[0]
+        assert str(token_req.url) == GOOGLE_OAUTH_TOKEN_URL
+        people_req = requests[1]
+        assert people_req.url.params.get("pageSize") == "1"
+        assert people_req.url.params.get("personFields") == "names"
+
+    async def test_validate_credentials_raises_on_bad_refresh_token(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if str(request.url) == GOOGLE_OAUTH_TOKEN_URL:
+                return httpx.Response(
+                    401,
+                    json={"error": "invalid_grant", "error_description": "Token has been expired"},
+                )
+            return httpx.Response(500)
+
+        from butlers.modules.contacts.sync import ContactsTokenRefreshError
+
+        provider = await self._make_provider(handler)
+        try:
+            with pytest.raises(ContactsTokenRefreshError):
+                await provider.validate_credentials()
+        finally:
+            await provider.shutdown()
+
+
+class TestGoogleContactsProviderListGroups:
+    async def _make_provider(
+        self,
+        handler,
+    ) -> GoogleContactsProvider:
+        transport = httpx.MockTransport(handler)
+        client = httpx.AsyncClient(transport=transport)
+        provider = GoogleContactsProvider(
+            client_id="cid",
+            client_secret="secret",
+            refresh_token="rtok",
+            http_client=client,
+        )
+        return provider
+
+    async def test_list_groups_fetches_and_parses_contact_groups(self):
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if str(request.url) == GOOGLE_OAUTH_TOKEN_URL:
+                return httpx.Response(200, json={"access_token": "tok-1", "expires_in": 3600})
+            if str(request.url).startswith(GOOGLE_CONTACT_GROUPS_URL):
+                return httpx.Response(
+                    200,
+                    json={
+                        "contactGroups": [
+                            {
+                                "resourceName": "contactGroups/friends",
+                                "name": "Friends",
+                                "groupType": "USER_CONTACT_GROUP",
+                                "memberCount": 42,
+                            },
+                            {
+                                "resourceName": "contactGroups/myContacts",
+                                "name": "My Contacts",
+                                "groupType": "SYSTEM_CONTACT_GROUP",
+                                "memberCount": 100,
+                            },
+                        ],
+                        "nextPageToken": None,
+                    },
+                )
+            return httpx.Response(500, json={"error": {"message": "unexpected request"}})
+
+        provider = await self._make_provider(handler)
+        try:
+            batch = await provider.list_groups(account_id="acct-1")
+        finally:
+            await provider.shutdown()
+
+        assert len(batch.groups) == 2
+        assert batch.next_page_token is None
+
+        friends = batch.groups[0]
+        assert friends.external_id == "contactGroups/friends"
+        assert friends.name == "Friends"
+        assert friends.group_type == "USER_CONTACT_GROUP"
+        assert friends.member_count == 42
+
+        my_contacts = batch.groups[1]
+        assert my_contacts.external_id == "contactGroups/myContacts"
+        assert my_contacts.name == "My Contacts"
+        assert my_contacts.group_type == "SYSTEM_CONTACT_GROUP"
+        assert my_contacts.member_count == 100
+
+        groups_req = requests[-1]
+        assert groups_req.url.path == "/v1/contactGroups"
+        assert groups_req.url.params.get("pageSize") == "1000"
+
+    async def test_list_groups_respects_pagination(self):
+        page_tokens_received: list[str | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if str(request.url) == GOOGLE_OAUTH_TOKEN_URL:
+                return httpx.Response(200, json={"access_token": "tok-1", "expires_in": 3600})
+            if str(request.url).startswith(GOOGLE_CONTACT_GROUPS_URL):
+                page_token = request.url.params.get("pageToken")
+                page_tokens_received.append(page_token)
+                if page_token is None:
+                    return httpx.Response(
+                        200,
+                        json={
+                            "contactGroups": [
+                                {"resourceName": "contactGroups/1", "name": "Group 1"},
+                            ],
+                            "nextPageToken": "page-2-token",
+                        },
+                    )
+                return httpx.Response(
+                    200,
+                    json={
+                        "contactGroups": [
+                            {"resourceName": "contactGroups/2", "name": "Group 2"},
+                        ],
+                    },
+                )
+            return httpx.Response(500)
+
+        provider = await self._make_provider(handler)
+        try:
+            # First page
+            batch1 = await provider.list_groups(account_id="acct-1")
+            assert len(batch1.groups) == 1
+            assert batch1.next_page_token == "page-2-token"
+            assert batch1.groups[0].external_id == "contactGroups/1"
+
+            # Second page
+            batch2 = await provider.list_groups(account_id="acct-1", page_token="page-2-token")
+            assert len(batch2.groups) == 1
+            assert batch2.next_page_token is None
+            assert batch2.groups[0].external_id == "contactGroups/2"
+        finally:
+            await provider.shutdown()
+
+        # Verify the page token was forwarded correctly
+        assert "page-2-token" in page_tokens_received
+
+    async def test_list_groups_skips_items_without_resource_name(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if str(request.url) == GOOGLE_OAUTH_TOKEN_URL:
+                return httpx.Response(200, json={"access_token": "tok-1", "expires_in": 3600})
+            if str(request.url).startswith(GOOGLE_CONTACT_GROUPS_URL):
+                return httpx.Response(
+                    200,
+                    json={
+                        "contactGroups": [
+                            {"name": "No Resource Name Here"},  # should be skipped
+                            {"resourceName": "contactGroups/valid", "name": "Valid Group"},
+                        ],
+                    },
+                )
+            return httpx.Response(500)
+
+        provider = await self._make_provider(handler)
+        try:
+            batch = await provider.list_groups(account_id="acct-1")
+        finally:
+            await provider.shutdown()
+
+        assert len(batch.groups) == 1
+        assert batch.groups[0].external_id == "contactGroups/valid"
+
+
+class TestGroupBatchModel:
+    def test_canonical_group_extra_fields_forbidden(self):
+        with pytest.raises(ValidationError):
+            CanonicalGroup(external_id="contactGroups/1", name="Test", unknown_field="x")
+
+    def test_group_batch_extra_fields_forbidden(self):
+        with pytest.raises(ValidationError):
+            GroupBatch(groups=[], unknown_field="x")
+
+    def test_group_batch_page_token_normalization(self):
+        batch = GroupBatch(groups=[], next_page_token="  token-1  ")
+        assert batch.next_page_token == "token-1"
+
+    def test_group_batch_empty_page_token_becomes_none(self):
+        batch = GroupBatch(groups=[], next_page_token="  ")
+        assert batch.next_page_token is None
+
+    def test_canonical_group_member_count_optional(self):
+        group = CanonicalGroup(external_id="contactGroups/1", name="Friends")
+        assert group.member_count is None
+        assert group.group_type is None
 
 
 class TestContactsSyncStateStore:
