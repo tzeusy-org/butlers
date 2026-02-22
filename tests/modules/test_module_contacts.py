@@ -530,6 +530,21 @@ class TestContactsSyncStatusTool:
         assert result["contact_count"] == 0
         assert result["sync_cursor"] is False
 
+    async def test_sync_status_returns_error_for_wrong_provider(self) -> None:
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        # Simulate runtime being active with google provider
+        state = ContactsSyncState(last_success_at="2026-01-01T00:00:00+00:00")
+        mod._runtime = _make_runtime_mock(provider_name="google", state=state)
+
+        result = await mcp["contacts_sync_status"](provider="outlook")
+
+        assert "error" in result
+        assert "outlook" in result["error"]
+        assert "google" in result["error"]
+
 
 class TestContactsSourceListTool:
     """Unit tests for the contacts_source_list MCP tool."""

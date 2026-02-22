@@ -161,7 +161,7 @@ class ContactsModule(Module):
                     "mode": mode,
                 }
 
-            config_provider = module._config.provider if module._config else "google"
+            config_provider = module._config.provider
             if provider != config_provider:
                 return {
                     "error": (
@@ -184,7 +184,7 @@ class ContactsModule(Module):
                     "mode": mode,
                 }
             except Exception as exc:
-                logger.warning("contacts_sync_now failed: %s", exc, exc_info=True)
+                logger.exception("contacts_sync_now failed")
                 return {
                     "error": f"Sync failed: {exc}",
                     "provider": provider,
@@ -231,6 +231,16 @@ class ContactsModule(Module):
                     "sync_enabled": False,
                 }
 
+            config_provider = module._config.provider
+            if provider != config_provider:
+                return {
+                    "error": (
+                        f"Provider '{provider}' is not the configured provider "
+                        f"'{config_provider}'. Only the configured provider is supported."
+                    ),
+                    "provider": provider,
+                }
+
             try:
                 state: ContactsSyncState = await runtime._state_store.load(
                     provider=runtime._provider_name,
@@ -243,7 +253,7 @@ class ContactsModule(Module):
                     "provider": provider,
                 }
 
-            contact_count = len(state.contact_versions) if state.contact_versions else 0
+            contact_count = len(state.contact_versions)
 
             return {
                 "provider": provider,
@@ -278,7 +288,7 @@ class ContactsModule(Module):
             runtime = module._runtime
             cfg = module._config
 
-            configured_provider = cfg.provider if cfg else "unknown"
+            configured_provider = cfg.provider
 
             # If a provider filter is given and doesn't match, return empty.
             if provider is not None and provider != configured_provider:
@@ -358,12 +368,13 @@ class ContactsModule(Module):
                 "contact_id": contact_id,
                 "message": (
                     "Reconciliation queued via immediate sync trigger. "
-                    "The sync runtime will process source links on the next cycle."
+                    "The sync runtime will process all source links on the next cycle."
                     if contact_id is None
                     else (
-                        f"Reconciliation for contact '{contact_id}' queued via "
-                        "immediate sync trigger. The sync runtime will refresh "
-                        "source links on the next cycle."
+                        f"Reconciliation queued for contact '{contact_id}' via "
+                        "immediate sync trigger. Note: the sync engine currently "
+                        "reconciles all source links per cycle; per-contact scoping "
+                        "is not yet supported at the engine level."
                     )
                 ),
             }
