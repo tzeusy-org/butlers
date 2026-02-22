@@ -3133,6 +3133,8 @@ class ButlerDaemon:
             tasks = await _schedule_list(pool)
             for t in tasks:
                 t["id"] = str(t["id"])
+                if t.get("calendar_event_id") is not None:
+                    t["calendar_event_id"] = str(t["calendar_event_id"])
             return tasks
 
         @mcp.tool()
@@ -3143,17 +3145,38 @@ class ButlerDaemon:
             dispatch_mode: str = "prompt",
             job_name: str | None = None,
             job_args: dict[str, Any] | None = None,
+            timezone: str | None = None,
+            start_at: datetime | None = None,
+            end_at: datetime | None = None,
+            until_at: datetime | None = None,
+            display_title: str | None = None,
+            calendar_event_id: str | None = None,
         ) -> dict:
             """Create a new runtime scheduled task."""
+            create_kwargs: dict[str, Any] = {
+                "dispatch_mode": dispatch_mode,
+                "job_name": job_name,
+                "job_args": job_args,
+                "stagger_key": daemon.config.name,
+            }
+            if timezone is not None:
+                create_kwargs["timezone"] = timezone
+            if start_at is not None:
+                create_kwargs["start_at"] = start_at
+            if end_at is not None:
+                create_kwargs["end_at"] = end_at
+            if until_at is not None:
+                create_kwargs["until_at"] = until_at
+            if display_title is not None:
+                create_kwargs["display_title"] = display_title
+            if calendar_event_id is not None:
+                create_kwargs["calendar_event_id"] = calendar_event_id
             task_id = await _schedule_create(
                 pool,
                 name,
                 cron,
                 prompt,
-                dispatch_mode=dispatch_mode,
-                job_name=job_name,
-                job_args=job_args,
-                stagger_key=daemon.config.name,
+                **create_kwargs,
             )
             return {
                 "id": str(task_id),
@@ -3162,6 +3185,12 @@ class ButlerDaemon:
                 "prompt": prompt,
                 "job_name": job_name,
                 "job_args": job_args,
+                "timezone": timezone,
+                "start_at": start_at.isoformat() if start_at else None,
+                "end_at": end_at.isoformat() if end_at else None,
+                "until_at": until_at.isoformat() if until_at else None,
+                "display_title": display_title,
+                "calendar_event_id": calendar_event_id,
             }
 
         def _resolve_schedule_tool_id(
@@ -3188,6 +3217,12 @@ class ButlerDaemon:
             job_name: str | None = None,
             job_args: dict[str, Any] | None = None,
             enabled: bool | None = None,
+            timezone: str | None = None,
+            start_at: datetime | None = None,
+            end_at: datetime | None = None,
+            until_at: datetime | None = None,
+            display_title: str | None = None,
+            calendar_event_id: str | None = None,
         ) -> dict:
             """Update a scheduled task. Only provided fields are changed."""
             resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_update")
@@ -3199,6 +3234,12 @@ class ButlerDaemon:
                 "job_name": job_name,
                 "job_args": job_args,
                 "enabled": enabled,
+                "timezone": timezone,
+                "start_at": start_at,
+                "end_at": end_at,
+                "until_at": until_at,
+                "display_title": display_title,
+                "calendar_event_id": calendar_event_id,
             }
             fields = {k: v for k, v in update_fields.items() if v is not None}
             await _schedule_update(
@@ -3214,6 +3255,12 @@ class ButlerDaemon:
                 "prompt": prompt,
                 "job_name": job_name,
                 "job_args": job_args,
+                "timezone": timezone,
+                "start_at": start_at.isoformat() if start_at else None,
+                "end_at": end_at.isoformat() if end_at else None,
+                "until_at": until_at.isoformat() if until_at else None,
+                "display_title": display_title,
+                "calendar_event_id": calendar_event_id,
             }
 
         @mcp.tool()

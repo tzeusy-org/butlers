@@ -55,6 +55,9 @@ async def reminder_create(
     label: str | None = None,
     type: str | None = None,
     next_trigger_at: datetime | None = None,
+    timezone: str | None = None,
+    until_at: datetime | None = None,
+    calendar_event_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Create a reminder for a contact."""
     cols = await table_columns(pool, "reminders")
@@ -64,6 +67,7 @@ async def reminder_create(
     effective_next_trigger_at = next_trigger_at if next_trigger_at is not None else due_at
     effective_message = message or label or ""
     effective_reminder_type = reminder_type or _legacy_from_new_type(effective_type)
+    effective_timezone = (timezone or "UTC").strip() or "UTC"
 
     insert_cols: list[str] = []
     values: list[Any] = []
@@ -88,6 +92,12 @@ async def reminder_create(
         add("type", effective_type)
     if "next_trigger_at" in cols:
         add("next_trigger_at", effective_next_trigger_at)
+    if "timezone" in cols:
+        add("timezone", effective_timezone)
+    if "until_at" in cols:
+        add("until_at", until_at)
+    if "calendar_event_id" in cols:
+        add("calendar_event_id", calendar_event_id)
 
     placeholders = [f"${idx}" for idx in range(1, len(values) + 1)]
     row = await pool.fetchrow(
@@ -153,14 +163,25 @@ async def reminder_dismiss(pool: asyncpg.Pool, reminder_id: uuid.UUID) -> dict[s
     original = _normalize_reminder_row(dict(row))
 
     if "dismissed" in cols:
-        updated = await pool.fetchrow(
-            """
-            UPDATE reminders SET dismissed = true
-            WHERE id = $1
-            RETURNING *
-            """,
-            reminder_id,
-        )
+        if "updated_at" in cols:
+            updated = await pool.fetchrow(
+                """
+                UPDATE reminders
+                SET dismissed = true, updated_at = now()
+                WHERE id = $1
+                RETURNING *
+                """,
+                reminder_id,
+            )
+        else:
+            updated = await pool.fetchrow(
+                """
+                UPDATE reminders SET dismissed = true
+                WHERE id = $1
+                RETURNING *
+                """,
+                reminder_id,
+            )
         result = _normalize_reminder_row(dict(updated))
     else:
         now = datetime.now(UTC)
@@ -176,17 +197,30 @@ async def reminder_dismiss(pool: asyncpg.Pool, reminder_id: uuid.UUID) -> dict[s
         else:
             new_next = None
 
-        updated = await pool.fetchrow(
-            """
-            UPDATE reminders
-            SET last_triggered_at = $2, next_trigger_at = $3
-            WHERE id = $1
-            RETURNING *
-            """,
-            reminder_id,
-            now,
-            new_next,
-        )
+        if "updated_at" in cols:
+            updated = await pool.fetchrow(
+                """
+                UPDATE reminders
+                SET last_triggered_at = $2, next_trigger_at = $3, updated_at = now()
+                WHERE id = $1
+                RETURNING *
+                """,
+                reminder_id,
+                now,
+                new_next,
+            )
+        else:
+            updated = await pool.fetchrow(
+                """
+                UPDATE reminders
+                SET last_triggered_at = $2, next_trigger_at = $3
+                WHERE id = $1
+                RETURNING *
+                """,
+                reminder_id,
+                now,
+                new_next,
+            )
         result = _normalize_reminder_row(dict(updated))
 
     if result.get("contact_id") is not None:

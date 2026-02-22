@@ -66,6 +66,12 @@ async def pool(postgres_container):
             dispatch_mode TEXT NOT NULL DEFAULT 'prompt',
             job_name TEXT,
             job_args JSONB,
+            timezone TEXT NOT NULL DEFAULT 'UTC',
+            start_at TIMESTAMPTZ,
+            end_at TIMESTAMPTZ,
+            until_at TIMESTAMPTZ,
+            display_title TEXT,
+            calendar_event_id UUID,
             source TEXT NOT NULL DEFAULT 'db',
             enabled BOOLEAN NOT NULL DEFAULT true,
             next_run_at TIMESTAMPTZ,
@@ -79,9 +85,20 @@ async def pool(postgres_container):
                 CHECK (
                     (dispatch_mode = 'prompt' AND prompt IS NOT NULL AND job_name IS NULL)
                     OR (dispatch_mode = 'job' AND job_name IS NOT NULL)
-                )
+                ),
+            CONSTRAINT scheduled_tasks_window_bounds_check
+                CHECK (start_at IS NULL OR end_at IS NULL OR end_at > start_at),
+            CONSTRAINT scheduled_tasks_until_bounds_check
+                CHECK (until_at IS NULL OR start_at IS NULL OR until_at >= start_at)
         )
     """)
+    await p.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_scheduled_tasks_calendar_event_id
+        ON scheduled_tasks (calendar_event_id)
+        WHERE calendar_event_id IS NOT NULL
+        """
+    )
 
     yield p
     await p.close()
@@ -605,6 +622,37 @@ async def test_schedule_list_includes_dispatch_fields(pool):
     assert job_task["job_args"] == {"dry_run": True}
 
 
+async def test_schedule_list_includes_projection_linkage_fields(pool):
+    """schedule_list returns timezone/window/linkage metadata."""
+    from butlers.core.scheduler import schedule_create, schedule_list
+
+    calendar_event_id = uuid.uuid4()
+    start_at = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
+    end_at = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
+    until_at = datetime(2026, 4, 1, 14, 0, tzinfo=UTC)
+    await schedule_create(
+        pool,
+        "projection-list-task",
+        "0 9 * * *",
+        "projection list",
+        timezone="America/New_York",
+        start_at=start_at,
+        end_at=end_at,
+        until_at=until_at,
+        display_title="Projection List",
+        calendar_event_id=calendar_event_id,
+    )
+
+    tasks = await schedule_list(pool)
+    task = next(t for t in tasks if t["name"] == "projection-list-task")
+    assert task["timezone"] == "America/New_York"
+    assert task["start_at"] == start_at
+    assert task["end_at"] == end_at
+    assert task["until_at"] == until_at
+    assert task["display_title"] == "Projection List"
+    assert task["calendar_event_id"] == calendar_event_id
+
+
 # ---------------------------------------------------------------------------
 # next_run_at computed correctly via croniter
 # ---------------------------------------------------------------------------
@@ -698,6 +746,43 @@ async def test_create_job_mode_requires_job_name(pool):
 
     with pytest.raises(ValueError, match="requires non-empty job_name"):
         await schedule_create(pool, "missing-job-name", "*/10 * * * *", dispatch_mode="job")
+
+
+async def test_create_persists_calendar_projection_fields(pool):
+    """schedule_create stores optional calendar linkage fields."""
+    from butlers.core.scheduler import schedule_create
+
+    start_at = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
+    end_at = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
+    until_at = datetime(2026, 4, 1, 14, 0, tzinfo=UTC)
+    calendar_event_id = uuid.uuid4()
+    task_id = await schedule_create(
+        pool,
+        "projection-create",
+        "0 9 * * *",
+        "projection create",
+        timezone="America/New_York",
+        start_at=start_at,
+        end_at=end_at,
+        until_at=until_at,
+        display_title="Projection Create",
+        calendar_event_id=calendar_event_id,
+    )
+
+    row = await pool.fetchrow(
+        """
+        SELECT timezone, start_at, end_at, until_at, display_title, calendar_event_id
+        FROM scheduled_tasks
+        WHERE id = $1
+        """,
+        task_id,
+    )
+    assert row["timezone"] == "America/New_York"
+    assert row["start_at"] == start_at
+    assert row["end_at"] == end_at
+    assert row["until_at"] == until_at
+    assert row["display_title"] == "Projection Create"
+    assert row["calendar_event_id"] == calendar_event_id
 
 
 # ---------------------------------------------------------------------------
@@ -807,6 +892,66 @@ async def test_update_rejects_job_name_for_prompt_mode(pool):
     task_id = await schedule_create(pool, "invalid-update-task", "0 9 * * *", "prompt")
     with pytest.raises(ValueError, match="job_name is only valid"):
         await schedule_update(pool, task_id, job_name="eligibility_sweep")
+
+
+async def test_update_calendar_projection_fields(pool):
+    """schedule_update mutates calendar linkage fields."""
+    from butlers.core.scheduler import schedule_create, schedule_update
+
+    task_id = await schedule_create(pool, "projection-update", "0 9 * * *", "projection update")
+    start_at = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
+    end_at = datetime(2026, 3, 2, 15, 0, tzinfo=UTC)
+    until_at = datetime(2026, 4, 2, 14, 0, tzinfo=UTC)
+    calendar_event_id = uuid.uuid4()
+    await schedule_update(
+        pool,
+        task_id,
+        timezone="America/Chicago",
+        start_at=start_at,
+        end_at=end_at,
+        until_at=until_at,
+        display_title="Projection Update",
+        calendar_event_id=calendar_event_id,
+    )
+
+    row = await pool.fetchrow(
+        """
+        SELECT timezone, start_at, end_at, until_at, display_title, calendar_event_id
+        FROM scheduled_tasks
+        WHERE id = $1
+        """,
+        task_id,
+    )
+    assert row["timezone"] == "America/Chicago"
+    assert row["start_at"] == start_at
+    assert row["end_at"] == end_at
+    assert row["until_at"] == until_at
+    assert row["display_title"] == "Projection Update"
+    assert row["calendar_event_id"] == calendar_event_id
+
+
+async def test_update_projection_window_checks_existing_values(pool):
+    """schedule_update validates projection windows against existing row values."""
+    from butlers.core.scheduler import schedule_create, schedule_update
+
+    start_at = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
+    end_at = datetime(2026, 3, 2, 15, 0, tzinfo=UTC)
+    task_id = await schedule_create(
+        pool,
+        "projection-window-check",
+        "0 9 * * *",
+        "projection window",
+        timezone="UTC",
+        start_at=start_at,
+        end_at=end_at,
+    )
+
+    with pytest.raises(ValueError, match="schedule_update.end_at must be after start_at"):
+        await schedule_update(
+            pool,
+            task_id,
+            start_at=datetime(2026, 3, 2, 16, 0, tzinfo=UTC),
+        )
 
 
 # ---------------------------------------------------------------------------

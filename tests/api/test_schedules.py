@@ -40,6 +40,12 @@ def _make_schedule_record(
     prompt="Send a daily digest",
     job_name=None,
     job_args=None,
+    timezone=None,
+    start_at=None,
+    end_at=None,
+    until_at=None,
+    display_title=None,
+    calendar_event_id=None,
     source="db",
     enabled=True,
     next_run_at=None,
@@ -56,6 +62,12 @@ def _make_schedule_record(
         "prompt": prompt,
         "job_name": job_name,
         "job_args": job_args,
+        "timezone": timezone,
+        "start_at": start_at,
+        "end_at": end_at,
+        "until_at": until_at,
+        "display_title": display_title,
+        "calendar_event_id": calendar_event_id,
         "source": source,
         "enabled": enabled,
         "next_run_at": next_run_at,
@@ -199,6 +211,12 @@ class TestListSchedules:
         assert schedule["prompt"] == "Send a daily digest"
         assert schedule["job_name"] is None
         assert schedule["job_args"] is None
+        assert schedule["timezone"] is None
+        assert schedule["start_at"] is None
+        assert schedule["end_at"] is None
+        assert schedule["until_at"] is None
+        assert schedule["display_title"] is None
+        assert schedule["calendar_event_id"] is None
         assert schedule["source"] == "db"
         assert schedule["enabled"] is True
         assert "created_at" in schedule
@@ -226,6 +244,37 @@ class TestListSchedules:
         assert schedule["prompt"] is None
         assert schedule["job_name"] == "eligibility_sweep"
         assert schedule["job_args"] == {"dry_run": True}
+
+    async def test_schedule_fields_for_calendar_projection_linkage(self):
+        """Schedule rows include calendar linkage columns when present."""
+        start_at = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
+        end_at = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
+        until_at = datetime(2026, 4, 1, 14, 0, tzinfo=UTC)
+        calendar_event_id = uuid4()
+        row = _make_schedule_record(
+            schedule_id=uuid4(),
+            name="medication-check",
+            timezone="America/New_York",
+            start_at=start_at,
+            end_at=end_at,
+            until_at=until_at,
+            display_title="Medication check",
+            calendar_event_id=calendar_event_id,
+        )
+        app = _app_with_mock_db(fetch_rows=[row])
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/butlers/atlas/schedules")
+
+        assert resp.status_code == 200
+        schedule = resp.json()["data"][0]
+        assert schedule["timezone"] == "America/New_York"
+        assert datetime.fromisoformat(schedule["start_at"].replace("Z", "+00:00")) == start_at
+        assert datetime.fromisoformat(schedule["end_at"].replace("Z", "+00:00")) == end_at
+        assert datetime.fromisoformat(schedule["until_at"].replace("Z", "+00:00")) == until_at
+        assert schedule["display_title"] == "Medication check"
+        assert schedule["calendar_event_id"] == str(calendar_event_id)
 
     async def test_legacy_schedule_row_defaults_to_prompt_mode(self):
         """Legacy DB rows without mode columns remain readable."""
@@ -342,6 +391,70 @@ class TestCreateSchedule:
             },
         )
 
+    async def test_creates_schedule_with_projection_linkage_fields(self):
+        """POST forwards projection linkage fields with JSON-safe encoding."""
+        app, mock_client = _app_with_mock_mcp(
+            call_tool_result=_mock_mcp_result({"id": str(uuid4()), "status": "created"})
+        )
+        start_at = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
+        end_at = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
+        until_at = datetime(2026, 4, 1, 14, 0, tzinfo=UTC)
+        calendar_event_id = uuid4()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/butlers/atlas/schedules",
+                json={
+                    "name": "medication-reminder",
+                    "cron": "0 9 * * *",
+                    "prompt": "Take meds",
+                    "timezone": "America/New_York",
+                    "start_at": start_at.isoformat(),
+                    "end_at": end_at.isoformat(),
+                    "until_at": until_at.isoformat(),
+                    "display_title": "Medication Reminder",
+                    "calendar_event_id": str(calendar_event_id),
+                },
+            )
+
+        assert resp.status_code == 201
+        mock_client.call_tool.assert_called_once_with(
+            "schedule_create",
+            {
+                "name": "medication-reminder",
+                "cron": "0 9 * * *",
+                "prompt": "Take meds",
+                "timezone": "America/New_York",
+                "start_at": start_at.isoformat(),
+                "end_at": end_at.isoformat(),
+                "until_at": until_at.isoformat(),
+                "display_title": "Medication Reminder",
+                "calendar_event_id": str(calendar_event_id),
+            },
+        )
+
+    async def test_create_rejects_naive_projection_datetimes(self):
+        """POST rejects naive projection timestamps at the API validation boundary."""
+        app, mock_client = _app_with_mock_mcp(
+            call_tool_result=_mock_mcp_result({"id": str(uuid4()), "status": "created"})
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/butlers/atlas/schedules",
+                json={
+                    "name": "timezone-validation",
+                    "cron": "0 9 * * *",
+                    "prompt": "validate timezone awareness",
+                    "start_at": "2026-03-01T14:00:00",
+                },
+            )
+
+        assert resp.status_code == 422
+        mock_client.call_tool.assert_not_called()
+
     async def test_butler_unreachable_returns_503(self):
         """When butler is unreachable, POST returns 503."""
         app = _app_with_unreachable_butler()
@@ -427,6 +540,62 @@ class TestUpdateSchedule:
                 "job_args": {"dry_run": True},
             },
         )
+
+    async def test_updates_schedule_projection_linkage_fields_via_mcp(self):
+        """PUT forwards projection linkage updates with JSON-safe encoding."""
+        sid = uuid4()
+        app, mock_client = _app_with_mock_mcp(
+            call_tool_result=_mock_mcp_result({"id": str(sid), "status": "updated"})
+        )
+        start_at = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
+        end_at = datetime(2026, 3, 2, 15, 0, tzinfo=UTC)
+        until_at = datetime(2026, 4, 2, 14, 0, tzinfo=UTC)
+        calendar_event_id = uuid4()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.put(
+                f"/api/butlers/atlas/schedules/{sid}",
+                json={
+                    "timezone": "America/Chicago",
+                    "start_at": start_at.isoformat(),
+                    "end_at": end_at.isoformat(),
+                    "until_at": until_at.isoformat(),
+                    "display_title": "Updated reminder",
+                    "calendar_event_id": str(calendar_event_id),
+                },
+            )
+
+        assert resp.status_code == 200
+        mock_client.call_tool.assert_called_once_with(
+            "schedule_update",
+            {
+                "id": str(sid),
+                "timezone": "America/Chicago",
+                "start_at": start_at.isoformat(),
+                "end_at": end_at.isoformat(),
+                "until_at": until_at.isoformat(),
+                "display_title": "Updated reminder",
+                "calendar_event_id": str(calendar_event_id),
+            },
+        )
+
+    async def test_update_rejects_naive_projection_datetimes(self):
+        """PUT rejects naive projection timestamps at the API validation boundary."""
+        sid = uuid4()
+        app, mock_client = _app_with_mock_mcp(
+            call_tool_result=_mock_mcp_result({"id": str(sid), "status": "updated"})
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.put(
+                f"/api/butlers/atlas/schedules/{sid}",
+                json={"start_at": "2026-03-02T14:00:00"},
+            )
+
+        assert resp.status_code == 422
+        mock_client.call_tool.assert_not_called()
 
     async def test_butler_unreachable_returns_503(self):
         """When butler is unreachable, PUT returns 503."""

@@ -443,6 +443,70 @@ def test_core_calendar_projection_tables_constraints_and_indexes(postgres_contai
         engine.dispose()
 
 
+def test_core_scheduled_task_calendar_linkage_columns(postgres_container):
+    """scheduled_tasks should include calendar projection linkage columns."""
+    from butlers.migrations import run_migrations
+
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
+
+    asyncio.run(run_migrations(db_url, chain="core"))
+
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT column_name, column_default, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'scheduled_tasks'
+                    """
+                )
+            )
+            columns = {
+                str(name): {"default": default, "is_nullable": nullable}
+                for name, default, nullable in rows
+            }
+
+            for required in (
+                "timezone",
+                "start_at",
+                "end_at",
+                "until_at",
+                "display_title",
+                "calendar_event_id",
+            ):
+                assert required in columns, f"Missing scheduled_tasks.{required}"
+            assert columns["timezone"]["is_nullable"] == "NO"
+            assert "UTC" in str(columns["timezone"]["default"])
+
+            calendar_event_id = conn.execute(
+                text(
+                    """
+                    INSERT INTO scheduled_tasks (
+                        name, cron, prompt, timezone, start_at, end_at, until_at, display_title
+                    )
+                    VALUES (
+                        'calendar-linkage-check',
+                        '0 9 * * *',
+                        'calendar-linked',
+                        'America/New_York',
+                        '2026-03-01T14:00:00Z'::timestamptz,
+                        '2026-03-01T15:00:00Z'::timestamptz,
+                        '2026-04-01T14:00:00Z'::timestamptz,
+                        'Medication reminder'
+                    )
+                    RETURNING calendar_event_id
+                    """
+                )
+            ).scalar_one()
+            assert calendar_event_id is None
+    finally:
+        engine.dispose()
+
+
 def test_core_002_adds_dispatch_mode_to_existing_table(postgres_container):
     """core_002 should add dispatch_mode columns to a pre-existing scheduled_tasks table."""
     from alembic import command
@@ -572,6 +636,12 @@ def test_core_002_adds_dispatch_mode_to_existing_table(postgres_container):
             assert "dispatch_mode" in columns, "dispatch_mode column should be added"
             assert "job_name" in columns, "job_name column should be added"
             assert "job_args" in columns, "job_args column should be added"
+            assert "timezone" in columns, "timezone column should be added"
+            assert "start_at" in columns, "start_at column should be added"
+            assert "end_at" in columns, "end_at column should be added"
+            assert "until_at" in columns, "until_at column should be added"
+            assert "display_title" in columns, "display_title column should be added"
+            assert "calendar_event_id" in columns, "calendar_event_id column should be added"
 
             # Verify constraints work.
             default_mode = conn.execute(
@@ -600,6 +670,44 @@ def test_core_schema_bootstrap_owner_baseline(postgres_container):
     expected_owner = _current_user(db_url)
     for schema in REQUIRED_SCHEMAS:
         assert _schema_owner(db_url, schema) == expected_owner
+
+
+def test_relationship_reminder_calendar_projection_columns(postgres_container):
+    """relationship reminders table should expose projection linkage columns."""
+    from butlers.migrations import run_migrations
+
+    db_name = _unique_db_name()
+    db_url = _create_db(postgres_container, db_name)
+
+    asyncio.run(run_migrations(db_url, chain="core"))
+    asyncio.run(run_migrations(db_url, chain="relationship"))
+
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT column_name, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'reminders'
+                    """
+                )
+            )
+            columns = {str(name): nullable for name, nullable in rows}
+            for required in (
+                "next_trigger_at",
+                "timezone",
+                "until_at",
+                "updated_at",
+                "calendar_event_id",
+            ):
+                assert required in columns, f"Missing reminders.{required}"
+            assert columns["timezone"] == "NO"
+            assert columns["updated_at"] == "NO"
+    finally:
+        engine.dispose()
 
 
 def test_migrations_idempotent(postgres_container):

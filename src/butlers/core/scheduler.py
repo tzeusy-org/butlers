@@ -26,6 +26,93 @@ _DISPATCH_MODE_JOB = "job"
 _ALLOWED_DISPATCH_MODES = {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
 
 
+def _normalize_schedule_projection_fields(
+    *,
+    timezone: Any,
+    start_at: Any,
+    end_at: Any,
+    until_at: Any,
+    display_title: Any,
+    calendar_event_id: Any,
+    context: str,
+) -> tuple[
+    str | None, datetime | None, datetime | None, datetime | None, str | None, uuid.UUID | None
+]:
+    """Validate optional calendar-projection fields used by scheduler rows."""
+    normalized_timezone: str | None = None
+    if timezone is not None:
+        if not isinstance(timezone, str):
+            raise ValueError(f"{context}.timezone must be a string when set")
+        stripped = timezone.strip()
+        if not stripped:
+            raise ValueError(f"{context}.timezone must be non-empty when set")
+        normalized_timezone = stripped
+
+    normalized_start_at: datetime | None = None
+    if start_at is not None:
+        if not isinstance(start_at, datetime):
+            raise ValueError(f"{context}.start_at must be a datetime when set")
+        if start_at.tzinfo is None:
+            raise ValueError(f"{context}.start_at must be timezone-aware")
+        normalized_start_at = start_at
+
+    normalized_end_at: datetime | None = None
+    if end_at is not None:
+        if not isinstance(end_at, datetime):
+            raise ValueError(f"{context}.end_at must be a datetime when set")
+        if end_at.tzinfo is None:
+            raise ValueError(f"{context}.end_at must be timezone-aware")
+        normalized_end_at = end_at
+
+    normalized_until_at: datetime | None = None
+    if until_at is not None:
+        if not isinstance(until_at, datetime):
+            raise ValueError(f"{context}.until_at must be a datetime when set")
+        if until_at.tzinfo is None:
+            raise ValueError(f"{context}.until_at must be timezone-aware")
+        normalized_until_at = until_at
+
+    if (
+        normalized_start_at is not None
+        and normalized_end_at is not None
+        and normalized_end_at <= normalized_start_at
+    ):
+        raise ValueError(f"{context}.end_at must be after start_at")
+    if (
+        normalized_start_at is not None
+        and normalized_until_at is not None
+        and normalized_until_at < normalized_start_at
+    ):
+        raise ValueError(f"{context}.until_at must be on/after start_at")
+
+    normalized_display_title: str | None = None
+    if display_title is not None:
+        if not isinstance(display_title, str):
+            raise ValueError(f"{context}.display_title must be a string when set")
+        stripped = display_title.strip()
+        if not stripped:
+            raise ValueError(f"{context}.display_title must be non-empty when set")
+        normalized_display_title = stripped
+
+    normalized_calendar_event_id: uuid.UUID | None = None
+    if calendar_event_id is not None:
+        if isinstance(calendar_event_id, uuid.UUID):
+            normalized_calendar_event_id = calendar_event_id
+        elif isinstance(calendar_event_id, str):
+            normalized_calendar_event_id = uuid.UUID(calendar_event_id)
+        else:
+            raise ValueError(f"{context}.calendar_event_id must be UUID or UUID string when set")
+
+    return (
+        normalized_timezone,
+        normalized_start_at,
+        normalized_end_at,
+        normalized_until_at,
+        normalized_display_title,
+        normalized_calendar_event_id,
+    )
+
+
 def _normalize_dispatch_mode(value: Any, *, context: str) -> str:
     """Normalize and validate a schedule dispatch mode value."""
     if not isinstance(value, str):
@@ -431,7 +518,9 @@ async def schedule_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     """
     rows = await pool.fetch(
         """
-        SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args, source, enabled,
+        SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
+               timezone, start_at, end_at, until_at, display_title, calendar_event_id,
+               source, enabled,
                next_run_at, last_run_at, last_result,
                created_at, updated_at
         FROM scheduled_tasks
@@ -458,6 +547,12 @@ async def schedule_create(
     dispatch_mode: str = _DISPATCH_MODE_PROMPT,
     job_name: str | None = None,
     job_args: dict[str, Any] | None = None,
+    timezone: str | None = None,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    until_at: datetime | None = None,
+    display_title: str | None = None,
+    calendar_event_id: uuid.UUID | str | None = None,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
 ) -> uuid.UUID:
@@ -487,6 +582,24 @@ async def schedule_create(
         job_args=job_args,
         context="schedule_create",
     )
+    (
+        timezone,
+        start_at,
+        end_at,
+        until_at,
+        display_title,
+        calendar_event_id,
+    ) = _normalize_schedule_projection_fields(
+        timezone=timezone,
+        start_at=start_at,
+        end_at=end_at,
+        until_at=until_at,
+        display_title=display_title,
+        calendar_event_id=calendar_event_id,
+        context="schedule_create",
+    )
+    if timezone is None:
+        timezone = "UTC"
 
     next_run_at = _next_run(
         cron,
@@ -503,11 +616,17 @@ async def schedule_create(
                 prompt,
                 job_name,
                 job_args,
+                timezone,
+                start_at,
+                end_at,
+                until_at,
+                display_title,
+                calendar_event_id,
                 source,
                 enabled,
                 next_run_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, 'db', true, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'db', true, $13)
             RETURNING id
             """,
             name,
@@ -516,6 +635,12 @@ async def schedule_create(
             prompt,
             job_name,
             _dict_to_jsonb(job_args),
+            timezone,
+            start_at,
+            end_at,
+            until_at,
+            display_title,
+            calendar_event_id,
             next_run_at,
         )
     except asyncpg.UniqueViolationError:
@@ -535,7 +660,8 @@ async def schedule_update(
     """Update fields on a scheduled task.
 
     Allowed fields: ``name``, ``cron``, ``dispatch_mode``, ``prompt``,
-    ``job_name``, ``job_args``, ``enabled``.
+    ``job_name``, ``job_args``, ``enabled``, ``timezone``, ``start_at``,
+    ``end_at``, ``until_at``, ``display_title``, and ``calendar_event_id``.
     If ``cron`` is updated, recomputes ``next_run_at``.
     If ``enabled`` is set to ``true``, recomputes ``next_run_at``.
     If ``enabled`` is set to ``false``, sets ``next_run_at`` to ``NULL``.
@@ -549,7 +675,21 @@ async def schedule_update(
         ValueError: If ``task_id`` is not found or if an invalid field is provided,
             or if the new cron expression is invalid.
     """
-    allowed = {"name", "cron", "dispatch_mode", "prompt", "job_name", "job_args", "enabled"}
+    allowed = {
+        "name",
+        "cron",
+        "dispatch_mode",
+        "prompt",
+        "job_name",
+        "job_args",
+        "enabled",
+        "timezone",
+        "start_at",
+        "end_at",
+        "until_at",
+        "display_title",
+        "calendar_event_id",
+    }
     invalid = set(fields.keys()) - allowed
     if invalid:
         raise ValueError(f"Invalid fields: {invalid}")
@@ -564,11 +704,11 @@ async def schedule_update(
             fields["dispatch_mode"],
             context="schedule_update",
         )
-
     # Check task exists and fetch current state
     existing = await pool.fetchrow(
         """
-        SELECT id, cron, enabled, dispatch_mode, prompt, job_name, job_args
+        SELECT id, cron, enabled, dispatch_mode, prompt, job_name, job_args,
+               timezone, start_at, end_at, until_at, display_title, calendar_event_id
         FROM scheduled_tasks
         WHERE id = $1
         """,
@@ -576,6 +716,46 @@ async def schedule_update(
     )
     if existing is None:
         raise ValueError(f"Task {task_id} not found")
+
+    projection_fields = {
+        "timezone",
+        "start_at",
+        "end_at",
+        "until_at",
+        "display_title",
+        "calendar_event_id",
+    }
+    if projection_fields & fields.keys():
+        if "timezone" in fields and fields["timezone"] is None:
+            raise ValueError("schedule_update.timezone cannot be null")
+        (
+            timezone,
+            start_at,
+            end_at,
+            until_at,
+            display_title,
+            calendar_event_id,
+        ) = _normalize_schedule_projection_fields(
+            timezone=fields.get("timezone", existing["timezone"]),
+            start_at=fields.get("start_at", existing["start_at"]),
+            end_at=fields.get("end_at", existing["end_at"]),
+            until_at=fields.get("until_at", existing["until_at"]),
+            display_title=fields.get("display_title", existing["display_title"]),
+            calendar_event_id=fields.get("calendar_event_id", existing["calendar_event_id"]),
+            context="schedule_update",
+        )
+        normalized_projection = {
+            "timezone": timezone,
+            "start_at": start_at,
+            "end_at": end_at,
+            "until_at": until_at,
+            "display_title": display_title,
+            "calendar_event_id": calendar_event_id,
+        }
+        for key in projection_fields:
+            if key in fields:
+                fields[key] = normalized_projection[key]
+
     existing_job_args = _jsonb_to_dict(existing["job_args"], context=f"scheduled_tasks[{task_id}]")
 
     normalized_fields: dict[str, Any] = dict(fields)
