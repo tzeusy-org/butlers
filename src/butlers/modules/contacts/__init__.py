@@ -88,7 +88,7 @@ class ContactsModule(Module):
         return []
 
     def migration_revisions(self) -> str | None:
-        return None
+        return "contacts"
 
     @staticmethod
     def _coerce_config(config: Any) -> ContactsConfig:
