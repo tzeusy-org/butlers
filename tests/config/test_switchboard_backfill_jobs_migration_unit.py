@@ -1,7 +1,7 @@
 """Unit tests for Switchboard backfill_jobs migration structure.
 
 Validates migration file existence, Alembic metadata, SQL content (table DDL,
-status constraint, indexes), and that the migration correctly chains from sw_016.
+status constraint, indexes), and that the migration correctly chains from sw_017.
 """
 
 from __future__ import annotations
@@ -13,9 +13,9 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_MIGRATION_FILENAME = "017_create_backfill_jobs.py"
-_REVISION = "sw_017"
-_DOWN_REVISION = "sw_016"
+_MIGRATION_FILENAME = "018_create_backfill_jobs.py"
+_REVISION = "sw_018"
+_DOWN_REVISION = "sw_017"
 
 _VALID_STATUSES = frozenset(
     {"pending", "active", "paused", "completed", "cancelled", "cost_capped", "error"}
@@ -34,7 +34,7 @@ def _migration_file() -> Path:
 def _load_migration():
     """Load and return the migration module."""
     migration_file = _migration_file()
-    spec = importlib.util.spec_from_file_location("migration_sw_017", migration_file)
+    spec = importlib.util.spec_from_file_location("migration_sw_018", migration_file)
     assert spec is not None, "Should be able to create module spec"
     assert spec.loader is not None, "Should have a loader"
     module = importlib.util.module_from_spec(spec)
@@ -71,14 +71,14 @@ def test_switchboard_chain_includes_backfill_jobs_migration():
 
 
 def test_backfill_jobs_migration_has_correct_revision():
-    """Verify migration revision ID is sw_017."""
+    """Verify migration revision ID is sw_018."""
     module = _load_migration()
     assert hasattr(module, "revision"), "Should have revision attribute"
     assert module.revision == _REVISION, f"revision should be {_REVISION!r}"
 
 
 def test_backfill_jobs_migration_has_correct_down_revision():
-    """Verify migration chains from sw_016."""
+    """Verify migration chains from sw_017."""
     module = _load_migration()
     assert hasattr(module, "down_revision"), "Should have down_revision attribute"
     assert module.down_revision == _DOWN_REVISION, (

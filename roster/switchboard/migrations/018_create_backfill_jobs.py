@@ -1,7 +1,7 @@
 """Create switchboard.backfill_jobs table for MCP-mediated connector backfill orchestration.
 
-Revision ID: sw_017
-Revises: sw_016
+Revision ID: sw_018
+Revises: sw_017
 Create Date: 2026-02-23 00:00:00.000000
 
 Migration notes:
@@ -17,8 +17,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "sw_017"
-down_revision = "sw_016"
+revision = "sw_018"
+down_revision = "sw_017"
 branch_labels = None
 depends_on = None
 
