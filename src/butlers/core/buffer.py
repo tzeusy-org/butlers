@@ -154,7 +154,7 @@ class DurableBuffer:
         self._process_fn = process_fn
         self._metrics = ButlerMetrics(butler_name=butler_name)
 
-        # Per-tier queues; total capacity shared equally across tiers.
+        # Per-tier queues; each tier has its own independent capacity.
         # Each tier queue holds up to queue_capacity items so the overall
         # system can buffer at most 3 * queue_capacity messages.
         tier_capacity = config.queue_capacity
@@ -471,8 +471,6 @@ class DurableBuffer:
                 await self._process_fn(ref)
 
             except asyncio.CancelledError:
-                # Mark queue tasks done then re-raise
-                self._tier_queues[ref.policy_tier].task_done()
                 raise
             except Exception:
                 logger.exception(
@@ -619,7 +617,7 @@ class DurableBuffer:
                     policy_tier,
                     request_id,
                 )
-                break  # Stop adding more; the queue is at capacity
+                continue  # This tier is full; try next tier on next sweep
 
         if recovered:
             logger.info("Buffer scanner sweep: recovered %d message(s)", recovered)

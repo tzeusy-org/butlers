@@ -420,12 +420,13 @@ class ButlerMetrics:
         self._buf_latency.record(latency_ms, self._attrs)
 
     def buffer_dequeue_by_tier(
-        self, policy_tier: str, *, starvation_override: bool = False
+        self, policy_tier: str, *, starvation_override: bool = False, queue_name: str = "ingest"
     ) -> None:
-        """Record one dequeue, tagged with policy tier and starvation override flag."""
+        """Record one dequeue, tagged with policy tier, queue name, and starvation override flag."""
         attrs = {
             **self._attrs,
             "policy_tier": policy_tier,
+            "queue_name": queue_name,
             "starvation_override": "true" if starvation_override else "false",
         }
         self._buf_dequeue_tier.add(1, attrs)
