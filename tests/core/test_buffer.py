@@ -1,9 +1,12 @@
-"""Unit tests for DurableBuffer (butlers-963.4).
+"""Unit tests for DurableBuffer (butlers-963.4, butlers-dsa4.5).
 
 Covers:
-- Bounded in-memory queue: enqueue, workers drain, backpressure on full queue
+- Bounded per-tier queues: enqueue, workers drain, backpressure on full queue
+- Tier-aware dequeue ordering: high_priority > interactive > default
+- Within-tier FIFO preservation
+- Starvation guard: forced lower-tier dequeue after max_consecutive_same_tier
 - Worker pool: N workers drain concurrently, errors are caught
-- Scanner: recovers 'accepted' rows older than grace period, skips recent rows
+- Scanner: recovers 'accepted' rows, routes to correct tier queue
 - Graceful shutdown: drain + cancel workers
 - Integration: buffer wired into daemon's _wire_pipelines flow
 """
@@ -18,7 +21,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.config import BufferConfig
-from butlers.core.buffer import DurableBuffer, _MessageRef
+from butlers.core.buffer import (
+    POLICY_TIER_DEFAULT,
+    POLICY_TIER_HIGH_PRIORITY,
+    POLICY_TIER_INTERACTIVE,
+    DurableBuffer,
+    _MessageRef,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -35,6 +44,7 @@ def _make_config(
     scanner_interval_s: int = 30,
     scanner_grace_s: int = 10,
     scanner_batch_size: int = 50,
+    max_consecutive_same_tier: int = 10,
 ) -> BufferConfig:
     return BufferConfig(
         queue_capacity=queue_capacity,
@@ -42,10 +52,15 @@ def _make_config(
         scanner_interval_s=scanner_interval_s,
         scanner_grace_s=scanner_grace_s,
         scanner_batch_size=scanner_batch_size,
+        max_consecutive_same_tier=max_consecutive_same_tier,
     )
 
 
-def _make_ref(request_id: str = "test-req-1", message_text: str = "hello") -> _MessageRef:
+def _make_ref(
+    request_id: str = "test-req-1",
+    message_text: str = "hello",
+    policy_tier: str = POLICY_TIER_DEFAULT,
+) -> _MessageRef:
     return _MessageRef(
         request_id=request_id,
         message_inbox_id=request_id,
@@ -54,6 +69,24 @@ def _make_ref(request_id: str = "test-req-1", message_text: str = "hello") -> _M
         event={"observed_at": "2026-02-18T12:00:00Z", "external_event_id": "evt1"},
         sender={"identity": "user42"},
         enqueued_at=datetime.now(UTC),
+        policy_tier=policy_tier,
+    )
+
+
+def _enqueue(
+    buf: DurableBuffer,
+    request_id: str,
+    policy_tier: str = POLICY_TIER_DEFAULT,
+    message_text: str = "msg",
+) -> bool:
+    return buf.enqueue(
+        request_id=request_id,
+        message_inbox_id=request_id,
+        message_text=message_text,
+        source={},
+        event={},
+        sender={},
+        policy_tier=policy_tier,
     )
 
 
@@ -83,30 +116,16 @@ class TestEnqueue:
         assert buf.queue_depth == 1
         assert buf._enqueue_hot_total == 1
 
-    async def test_enqueue_returns_false_when_queue_full(self) -> None:
+    async def test_enqueue_returns_false_when_tier_queue_full(self) -> None:
         """enqueue() returns False and increments backpressure counter on QueueFull."""
         process_fn = AsyncMock()
         buf = DurableBuffer(config=_make_config(queue_capacity=1), pool=None, process_fn=process_fn)
 
-        # Fill the queue
-        buf.enqueue(
-            request_id="r1",
-            message_inbox_id="r1",
-            message_text="first",
-            source={},
-            event={},
-            sender={},
-        )
+        # Fill the default tier queue
+        _enqueue(buf, "r1", POLICY_TIER_DEFAULT)
 
-        # Second enqueue should hit backpressure
-        enqueued = buf.enqueue(
-            request_id="r2",
-            message_inbox_id="r2",
-            message_text="second",
-            source={},
-            event={},
-            sender={},
-        )
+        # Second enqueue to same tier should hit backpressure
+        enqueued = _enqueue(buf, "r2", POLICY_TIER_DEFAULT)
 
         assert enqueued is False
         assert buf.queue_depth == 1  # Queue still holds only the first
@@ -119,16 +138,249 @@ class TestEnqueue:
         buf = DurableBuffer(config=_make_config(queue_capacity=5), pool=None, process_fn=process_fn)
 
         for i in range(3):
-            buf.enqueue(
-                request_id=f"r{i}",
-                message_inbox_id=f"r{i}",
-                message_text="msg",
-                source={},
-                event={},
-                sender={},
-            )
+            _enqueue(buf, f"r{i}")
 
         assert buf._enqueue_hot_total == 3
+
+    async def test_enqueue_unknown_tier_falls_back_to_default(self) -> None:
+        """An unknown policy_tier value is silently corrected to 'default'."""
+        process_fn = AsyncMock()
+        buf = DurableBuffer(config=_make_config(), pool=None, process_fn=process_fn)
+
+        result = buf.enqueue(
+            request_id="r1",
+            message_inbox_id="r1",
+            message_text="msg",
+            source={},
+            event={},
+            sender={},
+            policy_tier="bogus_tier",
+        )
+
+        assert result is True
+        assert buf.tier_depths[POLICY_TIER_DEFAULT] == 1
+
+    async def test_enqueue_routes_to_correct_tier_queue(self) -> None:
+        """Messages are placed in the correct per-tier queue."""
+        process_fn = AsyncMock()
+        buf = DurableBuffer(config=_make_config(), pool=None, process_fn=process_fn)
+
+        _enqueue(buf, "hp", POLICY_TIER_HIGH_PRIORITY)
+        _enqueue(buf, "ia", POLICY_TIER_INTERACTIVE)
+        _enqueue(buf, "df", POLICY_TIER_DEFAULT)
+
+        assert buf.tier_depths[POLICY_TIER_HIGH_PRIORITY] == 1
+        assert buf.tier_depths[POLICY_TIER_INTERACTIVE] == 1
+        assert buf.tier_depths[POLICY_TIER_DEFAULT] == 1
+        assert buf.queue_depth == 3
+
+
+# ---------------------------------------------------------------------------
+# Tier ordering
+# ---------------------------------------------------------------------------
+
+
+class TestTierOrdering:
+    """Tests for the high_priority > interactive > default dequeue order."""
+
+    async def test_high_priority_dequeued_before_interactive(self) -> None:
+        """high_priority messages are dequeued before interactive messages."""
+        order: list[str] = []
+
+        async def process_fn(ref: _MessageRef) -> None:
+            order.append(ref.policy_tier)
+
+        # No workers started yet; enqueue without draining
+        buf = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=process_fn)
+
+        _enqueue(buf, "ia", POLICY_TIER_INTERACTIVE)
+        _enqueue(buf, "hp", POLICY_TIER_HIGH_PRIORITY)
+
+        await buf.start()
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
+        await buf.stop(drain_timeout_s=1.0)
+
+        assert order == [POLICY_TIER_HIGH_PRIORITY, POLICY_TIER_INTERACTIVE]
+
+    async def test_interactive_dequeued_before_default(self) -> None:
+        """interactive messages are dequeued before default messages."""
+        order: list[str] = []
+
+        async def process_fn(ref: _MessageRef) -> None:
+            order.append(ref.policy_tier)
+
+        buf = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=process_fn)
+
+        _enqueue(buf, "df", POLICY_TIER_DEFAULT)
+        _enqueue(buf, "ia", POLICY_TIER_INTERACTIVE)
+
+        await buf.start()
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
+        await buf.stop(drain_timeout_s=1.0)
+
+        assert order == [POLICY_TIER_INTERACTIVE, POLICY_TIER_DEFAULT]
+
+    async def test_full_tier_order_respected(self) -> None:
+        """Full ordering: high_priority → interactive → default."""
+        order: list[str] = []
+
+        async def process_fn(ref: _MessageRef) -> None:
+            order.append(ref.policy_tier)
+
+        buf = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=process_fn)
+
+        _enqueue(buf, "df", POLICY_TIER_DEFAULT)
+        _enqueue(buf, "hp", POLICY_TIER_HIGH_PRIORITY)
+        _enqueue(buf, "ia", POLICY_TIER_INTERACTIVE)
+
+        await buf.start()
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
+        await buf.stop(drain_timeout_s=1.0)
+
+        assert order == [
+            POLICY_TIER_HIGH_PRIORITY,
+            POLICY_TIER_INTERACTIVE,
+            POLICY_TIER_DEFAULT,
+        ]
+
+    async def test_within_tier_fifo_preserved(self) -> None:
+        """Messages within the same tier are processed in FIFO order."""
+        order: list[str] = []
+
+        async def process_fn(ref: _MessageRef) -> None:
+            order.append(ref.request_id)
+
+        buf = DurableBuffer(config=_make_config(worker_count=1), pool=None, process_fn=process_fn)
+
+        for i in range(4):
+            _enqueue(buf, f"hp-{i}", POLICY_TIER_HIGH_PRIORITY)
+
+        await buf.start()
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
+        await buf.stop(drain_timeout_s=1.0)
+
+        assert order == ["hp-0", "hp-1", "hp-2", "hp-3"]
+
+
+# ---------------------------------------------------------------------------
+# Starvation guard
+# ---------------------------------------------------------------------------
+
+
+class TestStarvationGuard:
+    """Tests for the starvation-prevention mechanism."""
+
+    async def test_starvation_guard_forces_lower_tier_after_max_consecutive(self) -> None:
+        """After max_consecutive_same_tier dequeues from high_priority, next comes from default."""
+        order: list[tuple[str, str]] = []  # (tier, request_id)
+
+        async def process_fn(ref: _MessageRef) -> None:
+            order.append((ref.policy_tier, ref.request_id))
+
+        # max_consecutive=2 so after 2 high_priority dequeues, 1 default is forced
+        buf = DurableBuffer(
+            config=_make_config(worker_count=1, max_consecutive_same_tier=2),
+            pool=None,
+            process_fn=process_fn,
+        )
+
+        # Queue 3 high_priority and 1 default
+        _enqueue(buf, "hp-0", POLICY_TIER_HIGH_PRIORITY)
+        _enqueue(buf, "hp-1", POLICY_TIER_HIGH_PRIORITY)
+        _enqueue(buf, "hp-2", POLICY_TIER_HIGH_PRIORITY)
+        _enqueue(buf, "df-0", POLICY_TIER_DEFAULT)
+
+        await buf.start()
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
+        await buf.stop(drain_timeout_s=1.0)
+
+        # First two: high_priority (consecutive = 2)
+        # Third: forced to default (starvation guard)
+        # Fourth: high_priority resumes (highest non-empty tier)
+        assert order[0] == (POLICY_TIER_HIGH_PRIORITY, "hp-0")
+        assert order[1] == (POLICY_TIER_HIGH_PRIORITY, "hp-1")
+        assert order[2] == (POLICY_TIER_DEFAULT, "df-0")  # forced lower
+        assert order[3] == (POLICY_TIER_HIGH_PRIORITY, "hp-2")
+
+    async def test_starvation_guard_skips_force_when_lower_tiers_empty(self) -> None:
+        """Starvation guard does not force lower tier when all lower tiers are empty."""
+        order: list[str] = []
+
+        async def process_fn(ref: _MessageRef) -> None:
+            order.append(ref.policy_tier)
+
+        # max_consecutive=1 — guard triggers immediately, but only high_priority exists
+        buf = DurableBuffer(
+            config=_make_config(worker_count=1, max_consecutive_same_tier=1),
+            pool=None,
+            process_fn=process_fn,
+        )
+
+        for i in range(3):
+            _enqueue(buf, f"hp-{i}", POLICY_TIER_HIGH_PRIORITY)
+
+        await buf.start()
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
+        await buf.stop(drain_timeout_s=1.0)
+
+        # All three should still be high_priority (no lower tier to force)
+        assert order == [POLICY_TIER_HIGH_PRIORITY] * 3
+
+    async def test_starvation_guard_interactive_protects_default(self) -> None:
+        """Starvation guard also fires when interactive starves default."""
+        order: list[str] = []
+
+        async def process_fn(ref: _MessageRef) -> None:
+            order.append(ref.policy_tier)
+
+        buf = DurableBuffer(
+            config=_make_config(worker_count=1, max_consecutive_same_tier=2),
+            pool=None,
+            process_fn=process_fn,
+        )
+
+        _enqueue(buf, "ia-0", POLICY_TIER_INTERACTIVE)
+        _enqueue(buf, "ia-1", POLICY_TIER_INTERACTIVE)
+        _enqueue(buf, "ia-2", POLICY_TIER_INTERACTIVE)
+        _enqueue(buf, "df-0", POLICY_TIER_DEFAULT)
+
+        await buf.start()
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
+        await buf.stop(drain_timeout_s=1.0)
+
+        # interactive × 2, then forced default, then interactive resumes
+        assert order[0] == POLICY_TIER_INTERACTIVE
+        assert order[1] == POLICY_TIER_INTERACTIVE
+        assert order[2] == POLICY_TIER_DEFAULT
+        assert order[3] == POLICY_TIER_INTERACTIVE
+
+    async def test_starvation_guard_counter_resets_on_tier_change(self) -> None:
+        """Consecutive counter resets when the dequeued tier naturally changes."""
+        order: list[str] = []
+
+        async def process_fn(ref: _MessageRef) -> None:
+            order.append(ref.policy_tier)
+
+        buf = DurableBuffer(
+            config=_make_config(worker_count=1, max_consecutive_same_tier=3),
+            pool=None,
+            process_fn=process_fn,
+        )
+
+        # high_priority drains first (naturally), then interactive (re-evaluates)
+        _enqueue(buf, "hp-0", POLICY_TIER_HIGH_PRIORITY)
+        _enqueue(buf, "ia-0", POLICY_TIER_INTERACTIVE)
+        _enqueue(buf, "ia-1", POLICY_TIER_INTERACTIVE)
+
+        await buf.start()
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
+        await buf.stop(drain_timeout_s=1.0)
+
+        assert order == [
+            POLICY_TIER_HIGH_PRIORITY,
+            POLICY_TIER_INTERACTIVE,
+            POLICY_TIER_INTERACTIVE,
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +415,7 @@ class TestWorkers:
         )
 
         # Wait for the worker to process
-        await buf._queue.join()
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
         await buf.stop(drain_timeout_s=1.0)
 
         assert len(processed) == 1
@@ -202,7 +454,7 @@ class TestWorkers:
             sender={},
         )
 
-        await buf._queue.join()
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
         await buf.stop(drain_timeout_s=1.0)
 
         # "good" should have been processed despite "bad" failing
@@ -242,7 +494,7 @@ class TestWorkers:
         )
 
         # Wait with a timeout — if workers were serial, both would deadlock at barrier
-        await asyncio.wait_for(buf._queue.join(), timeout=2.0)
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
         await buf.stop(drain_timeout_s=1.0)
 
         assert set(processed) == {"r1", "r2"}
@@ -257,61 +509,41 @@ class TestBackpressure:
     """Tests for backpressure behavior when the queue is full."""
 
     async def test_backpressure_does_not_raise(self) -> None:
-        """enqueue() on a full queue returns False without raising."""
+        """enqueue() on a full tier queue returns False without raising."""
         process_fn = AsyncMock()
         buf = DurableBuffer(config=_make_config(queue_capacity=2), pool=None, process_fn=process_fn)
 
-        buf.enqueue(
-            request_id="r1",
-            message_inbox_id="r1",
-            message_text="x",
-            source={},
-            event={},
-            sender={},
-        )
-        buf.enqueue(
-            request_id="r2",
-            message_inbox_id="r2",
-            message_text="y",
-            source={},
-            event={},
-            sender={},
-        )
-        result = buf.enqueue(
-            request_id="r3",
-            message_inbox_id="r3",
-            message_text="z",
-            source={},
-            event={},
-            sender={},
-        )
+        _enqueue(buf, "r1", POLICY_TIER_DEFAULT)
+        _enqueue(buf, "r2", POLICY_TIER_DEFAULT)
+        result = _enqueue(buf, "r3", POLICY_TIER_DEFAULT)
 
         assert result is False
         assert buf._backpressure_total == 1
-        # Queue still only has 2 messages
-        assert buf.queue_depth == 2
+        # Queue still only has 2 messages in default tier
+        assert buf.tier_depths[POLICY_TIER_DEFAULT] == 2
+
+    async def test_backpressure_per_tier_independent(self) -> None:
+        """Backpressure in one tier queue does not block other tiers."""
+        process_fn = AsyncMock()
+        buf = DurableBuffer(config=_make_config(queue_capacity=1), pool=None, process_fn=process_fn)
+
+        _enqueue(buf, "df-0", POLICY_TIER_DEFAULT)
+        result_df = _enqueue(buf, "df-1", POLICY_TIER_DEFAULT)  # full → backpressure
+
+        # high_priority tier still has capacity
+        result_hp = _enqueue(buf, "hp-0", POLICY_TIER_HIGH_PRIORITY)
+
+        assert result_df is False
+        assert result_hp is True
+        assert buf._backpressure_total == 1
 
     async def test_stats_reflects_backpressure_count(self) -> None:
         """stats property includes backpressure_total."""
         process_fn = AsyncMock()
         buf = DurableBuffer(config=_make_config(queue_capacity=1), pool=None, process_fn=process_fn)
 
-        buf.enqueue(
-            request_id="r1",
-            message_inbox_id="r1",
-            message_text="x",
-            source={},
-            event={},
-            sender={},
-        )
-        buf.enqueue(
-            request_id="r2",
-            message_inbox_id="r2",
-            message_text="y",
-            source={},
-            event={},
-            sender={},
-        )
+        _enqueue(buf, "r1", POLICY_TIER_DEFAULT)
+        _enqueue(buf, "r2", POLICY_TIER_DEFAULT)
 
         stats = buf.stats
         assert stats["backpressure_total"] == 1
@@ -331,6 +563,7 @@ class TestScanner:
         request_id: str,
         normalized_text: str,
         received_at: datetime | None = None,
+        policy_tier: str = POLICY_TIER_DEFAULT,
     ) -> MagicMock:
         """Build a fake asyncpg record dict."""
         row = MagicMock()
@@ -342,6 +575,7 @@ class TestScanner:
                 "source": {"channel": "telegram", "endpoint_identity": "bot"},
                 "event": {"observed_at": "2026-02-18T12:00:00Z"},
                 "sender": {"identity": "u1"},
+                "control": {"policy_tier": policy_tier},
             },
             "normalized_text": normalized_text,
         }[key]
@@ -383,10 +617,53 @@ class TestScanner:
         assert buf._enqueue_cold_total == 2
 
         # Let workers drain
-        await buf._queue.join()
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
         await buf.stop(drain_timeout_s=1.0)
 
         assert set(recovered) == {"r1", "r2"}
+
+    async def test_scanner_routes_to_correct_tier_queue(self) -> None:
+        """Scanner places recovered messages into the correct tier queue."""
+        recovered_tiers: list[str] = []
+
+        async def process_fn(ref: _MessageRef) -> None:
+            recovered_tiers.append(ref.policy_tier)
+
+        mock_pool = MagicMock()
+        mock_conn = AsyncMock()
+        mock_pool.acquire = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=mock_conn),
+                __aexit__=AsyncMock(return_value=None),
+            )
+        )
+
+        rows = [
+            self._make_row("hp-1", "urgent", policy_tier=POLICY_TIER_HIGH_PRIORITY),
+            self._make_row("ia-1", "direct", policy_tier=POLICY_TIER_INTERACTIVE),
+            self._make_row("df-1", "newsletter", policy_tier=POLICY_TIER_DEFAULT),
+        ]
+        mock_conn.fetch = AsyncMock(return_value=rows)
+
+        buf = DurableBuffer(
+            config=_make_config(queue_capacity=10, worker_count=1, max_consecutive_same_tier=10),
+            pool=mock_pool,
+            process_fn=process_fn,
+        )
+        await buf.start()
+
+        count = await buf._run_scanner_sweep()
+        assert count == 3
+
+        await asyncio.wait_for(buf._drain_all_queues(), timeout=2.0)
+        await buf.stop(drain_timeout_s=1.0)
+
+        # Processing order should respect tiers
+        assert recovered_tiers == [
+            POLICY_TIER_HIGH_PRIORITY,
+            POLICY_TIER_INTERACTIVE,
+            POLICY_TIER_DEFAULT,
+        ]
 
     async def test_scanner_sweep_skips_empty_normalized_text(self) -> None:
         """Rows with empty normalized_text are marked errored, not re-enqueued."""
@@ -419,7 +696,7 @@ class TestScanner:
         process_fn.assert_not_awaited()
 
     async def test_scanner_sweep_stops_on_full_queue(self) -> None:
-        """Scanner stops adding to queue when it hits QueueFull mid-sweep."""
+        """Scanner stops adding to a tier queue when it hits QueueFull mid-sweep."""
         process_fn = AsyncMock()
 
         mock_pool = MagicMock()
@@ -434,7 +711,7 @@ class TestScanner:
         rows = [self._make_row(f"r{i}", f"msg {i}") for i in range(5)]
         mock_conn.fetch = AsyncMock(return_value=rows)
 
-        # Queue only holds 2
+        # Default tier queue only holds 2
         buf = DurableBuffer(
             config=_make_config(queue_capacity=2),
             pool=mock_pool,
@@ -445,7 +722,7 @@ class TestScanner:
 
         # Should have recovered 2 (stopped when queue full)
         assert count == 2
-        assert buf.queue_depth == 2
+        assert buf.tier_depths[POLICY_TIER_DEFAULT] == 2
 
     async def test_scanner_sweep_returns_zero_on_empty_db(self) -> None:
         """Scanner returns 0 when no stuck messages are found."""
@@ -589,34 +866,34 @@ class TestGracefulShutdown:
 
 
 class TestObservability:
-    """Tests for stats and queue_depth properties."""
+    """Tests for stats, queue_depth, and tier_depths properties."""
 
     async def test_queue_depth_reflects_current_depth(self) -> None:
-        """queue_depth returns number of items currently in the queue."""
+        """queue_depth returns sum of items across all tier queues."""
         process_fn = AsyncMock()
         buf = DurableBuffer(config=_make_config(queue_capacity=5), pool=None, process_fn=process_fn)
 
         assert buf.queue_depth == 0
 
-        buf.enqueue(
-            request_id="r1",
-            message_inbox_id="r1",
-            message_text="x",
-            source={},
-            event={},
-            sender={},
-        )
+        _enqueue(buf, "hp-0", POLICY_TIER_HIGH_PRIORITY)
         assert buf.queue_depth == 1
 
-        buf.enqueue(
-            request_id="r2",
-            message_inbox_id="r2",
-            message_text="y",
-            source={},
-            event={},
-            sender={},
-        )
+        _enqueue(buf, "df-0", POLICY_TIER_DEFAULT)
         assert buf.queue_depth == 2
+
+    async def test_tier_depths_reflects_per_tier_counts(self) -> None:
+        """tier_depths returns per-tier queue sizes."""
+        process_fn = AsyncMock()
+        buf = DurableBuffer(config=_make_config(queue_capacity=5), pool=None, process_fn=process_fn)
+
+        _enqueue(buf, "hp-0", POLICY_TIER_HIGH_PRIORITY)
+        _enqueue(buf, "ia-0", POLICY_TIER_INTERACTIVE)
+        _enqueue(buf, "ia-1", POLICY_TIER_INTERACTIVE)
+
+        depths = buf.tier_depths
+        assert depths[POLICY_TIER_HIGH_PRIORITY] == 1
+        assert depths[POLICY_TIER_INTERACTIVE] == 2
+        assert depths[POLICY_TIER_DEFAULT] == 0
 
     async def test_stats_returns_all_counters(self) -> None:
         """stats property includes all observable counters."""
