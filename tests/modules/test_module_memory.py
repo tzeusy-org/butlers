@@ -104,6 +104,9 @@ EXPECTED_TOOL_NAMES = {
     "memory_context",
     "memory_run_consolidation",
     "memory_run_episode_cleanup",
+    "entity_create",
+    "entity_get",
+    "entity_update",
 }
 
 
@@ -136,15 +139,16 @@ class TestRegisterTools:
                 "butlers.modules.memory.tools.feedback": MagicMock(),
                 "butlers.modules.memory.tools.management": MagicMock(),
                 "butlers.modules.memory.tools.context": MagicMock(),
+                "butlers.modules.memory.tools.entities": MagicMock(),
             },
         ):
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
 
         return registered_tools
 
-    async def test_registers_fourteen_tools(self):
+    async def test_registers_seventeen_tools(self):
         registered = await self._register_and_capture()
-        assert len(registered) == 14
+        assert len(registered) == 17
 
     async def test_tool_names_match(self):
         registered = await self._register_and_capture()
@@ -155,7 +159,7 @@ class TestRegisterTools:
         for tool_name, tool_fn in registered.items():
             assert asyncio.iscoroutinefunction(tool_fn), f"{tool_name} should be async"
 
-    async def test_mcp_tool_called_fourteen_times(self):
+    async def test_mcp_tool_called_seventeen_times(self):
         mod = MemoryModule()
         mcp = MagicMock()
         mcp.tool.return_value = lambda fn: fn
@@ -171,11 +175,12 @@ class TestRegisterTools:
                 "butlers.modules.memory.tools.feedback": MagicMock(),
                 "butlers.modules.memory.tools.management": MagicMock(),
                 "butlers.modules.memory.tools.context": MagicMock(),
+                "butlers.modules.memory.tools.entities": MagicMock(),
             },
         ):
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
 
-        assert mcp.tool.call_count == 14
+        assert mcp.tool.call_count == 17
 
     async def test_memory_store_fact_tool_description_and_schema_contract(self):
         """memory_store_fact metadata should document strict fields and tags shape."""
@@ -236,6 +241,7 @@ class TestToolDelegation:
         mock_feedback = MagicMock()
         mock_management = MagicMock()
         mock_context = MagicMock()
+        mock_entities = MagicMock()
 
         # Wire sub-mocks as attributes of the parent so that
         # ``from butlers.modules.memory.tools import writing`` resolves correctly.
@@ -245,6 +251,7 @@ class TestToolDelegation:
         parent_mock.feedback = mock_feedback
         parent_mock.management = mock_management
         parent_mock.context = mock_context
+        parent_mock.entities = mock_entities
 
         mcp = MagicMock()
         registered_tools: dict[str, Any] = {}
@@ -267,6 +274,7 @@ class TestToolDelegation:
                 "butlers.modules.memory.tools.feedback": mock_feedback,
                 "butlers.modules.memory.tools.management": mock_management,
                 "butlers.modules.memory.tools.context": mock_context,
+                "butlers.modules.memory.tools.entities": mock_entities,
             },
         ):
             await mod.register_tools(mcp=mcp, config=None, db=fake_db)
@@ -280,6 +288,7 @@ class TestToolDelegation:
             mock_feedback,
             mock_management,
             mock_context,
+            mock_entities,
         )
 
     async def test_memory_store_episode_delegates(self):
@@ -308,7 +317,7 @@ class TestToolDelegation:
         )
 
     async def test_memory_context_delegates(self):
-        mod, tools, pool, _, _, _, _, context_mod = await self._setup_and_register()
+        mod, tools, pool, _, _, _, _, context_mod, _ = await self._setup_and_register()
         mod._embedding_engine = MagicMock(name="embedding")
         context_mod.memory_context = AsyncMock(return_value="# Memory Context\n")
         await tools["memory_context"](trigger_prompt="test prompt", butler="memory")
@@ -343,13 +352,13 @@ class TestToolDelegation:
         feedback.memory_confirm.assert_called_once_with(pool, "fact", "abc-123")
 
     async def test_memory_forget_delegates(self):
-        mod, tools, pool, _, _, _, management, _ = await self._setup_and_register()
+        mod, tools, pool, _, _, _, management, _, _ = await self._setup_and_register()
         management.memory_forget = AsyncMock(return_value={"forgotten": True})
         await tools["memory_forget"](memory_type="fact", memory_id="abc-123")
         management.memory_forget.assert_called_once_with(pool, "fact", "abc-123")
 
     async def test_memory_stats_delegates(self):
-        mod, tools, pool, _, _, _, management, _ = await self._setup_and_register()
+        mod, tools, pool, _, _, _, management, _, _ = await self._setup_and_register()
         management.memory_stats = AsyncMock(return_value={})
         await tools["memory_stats"]()
         management.memory_stats.assert_called_once_with(pool, scope=None)
