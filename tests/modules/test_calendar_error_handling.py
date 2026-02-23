@@ -1,5 +1,19 @@
 """Unit tests for calendar module error handling contract (spec section 15).
 
+## Layer Ownership
+
+This file owns **all error-path and exception-mapping tests** for the
+calendar module. It exercises the error hierarchy, structured-error
+serialization, fail-open/fail-closed MCP tool behavior, rate-limit retry
+logic, and credential-leakage prevention.
+
+| Layer | Owned by |
+|-------|----------|
+| Pure helpers | test_calendar_helpers.py |
+| Data-model validation, OAuth edge cases | test_calendar_unit_behaviors.py |
+| MCP tool orchestration (happy paths) | test_module_calendar.py |
+| Error hierarchy / fail-open / fail-closed / rate-limit retry | THIS FILE |
+
 Covers:
 - Error hierarchy: CalendarAuthError, CalendarCredentialError,
   CalendarTokenRefreshError, CalendarRequestError

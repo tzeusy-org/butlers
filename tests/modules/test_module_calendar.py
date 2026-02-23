@@ -1,4 +1,23 @@
-"""Tests for calendar module config and provider interface scaffolding."""
+"""Tests for calendar module orchestration, provider wiring, and integration.
+
+## Layer Ownership
+
+This file owns **module-level** (orchestration/integration) tests: MCP tool
+wiring, provider abstraction, conflict-policy dispatch, approval-gate
+integration, and full event payload serialization.
+
+| Layer | Owned by |
+|-------|----------|
+| Pure helpers (`_extract_google_*`, `_normalize_optional_text`, etc.) | test_calendar_helpers.py |
+| OAuth credential edge cases (whitespace/type/non-object) | test_calendar_unit_behaviors.py |
+| OAuth token caching, force-refresh, error paths | test_calendar_unit_behaviors.py |
+| Conflict policy enum aliases | test_calendar_unit_behaviors.py |
+| MCP tool orchestration / provider wiring | THIS FILE |
+| CalendarConfig validation, defaults, unknown-key rejection | THIS FILE |
+| Credential JSON parsing (from_json wiring) | THIS FILE |
+| OAuth HTTP request body wiring | THIS FILE |
+| Error hierarchy / fail-open / fail-closed / rate-limit retry | test_calendar_error_handling.py |
+"""
 
 from __future__ import annotations
 
@@ -1095,10 +1114,14 @@ class TestCalendarWriteTools:
 
 
 class TestGoogleCredentialParsing:
-    """Verify credential JSON parsing and validation errors."""
+    """Verify credential JSON parsing and validation wiring.
 
-    def test_from_env_removed(self):
-        assert not hasattr(_GoogleOAuthCredentials, "from_env")
+    Note: Edge cases (whitespace stripping, non-object JSON, invalid field
+    types, from_env removal) are covered in
+    test_calendar_unit_behaviors.py::TestGoogleOAuthCredentials.
+    This class owns the integration-level from_json() paths: malformed JSON,
+    missing-field error messages, and the nested 'installed' shape.
+    """
 
     def test_invalid_json_is_explicit(self, monkeypatch: pytest.MonkeyPatch):
         """from_json() raises CalendarCredentialError for malformed JSON."""
@@ -1178,7 +1201,13 @@ def _mock_response(
 
 
 class TestGoogleOAuthClient:
-    """Verify access-token refresh against Google OAuth endpoint."""
+    """Verify access-token HTTP request wiring against Google OAuth endpoint.
+
+    Note: Token caching, force-refresh, and error paths are covered in
+    test_calendar_unit_behaviors.py::TestGoogleOAuthClient.
+    This class owns the integration wiring: exact HTTP body format, endpoint
+    URL, and caching at the level of the OAuth client integration.
+    """
 
     async def test_refresh_uses_client_id_secret_and_refresh_token(self):
         credentials = _GoogleOAuthCredentials(
