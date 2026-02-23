@@ -13,12 +13,13 @@ Tests cover:
 - entity_merge: facts re-pointed, aliases merged, source tombstoned
 - entity_merge: same ID raises ValueError
 - entity_merge: source not found raises ValueError
-- entity_merge: target not found returns None
+- entity_merge: target not found raises ValueError
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import uuid
 from pathlib import Path
@@ -632,6 +633,8 @@ class TestEntityMerge:
             "id": ENTITY_UUID,
             "aliases": src_aliases or ["Ali"],
             "tenant_id": "relationship",
+            "canonical_name": "Alice",
+            "metadata": {},
         }
         tgt_row = {
             "id": ENTITY_UUID2,
@@ -646,6 +649,7 @@ class TestEntityMerge:
 
         pool = AsyncMock()
 
+        # entity_merge uses conn.fetchrow (inside acquire() context), not pool.fetchrow
         fetchrow_results = []
         if src_exists:
             fetchrow_results.append(_asyncpg_record(src_row))
@@ -656,12 +660,11 @@ class TestEntityMerge:
         else:
             fetchrow_results.append(None)
 
-        pool.fetchrow = AsyncMock(side_effect=fetchrow_results)
-
         # Simulate acquire() transaction context
         mock_conn = AsyncMock()
         mock_conn.execute = AsyncMock()
-        mock_conn.fetchrow = AsyncMock(return_value=_asyncpg_record(tgt_row))
+        mock_conn.fetch = AsyncMock(return_value=[])  # no facts by default
+        mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_results)
         mock_conn.transaction = MagicMock()
         mock_conn.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
         mock_conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -691,15 +694,16 @@ class TestEntityMerge:
                 tenant_id="relationship",
             )
 
-    async def test_target_not_found_returns_none(self):
+    async def test_target_not_found_raises(self):
+        """entity_merge raises ValueError when target entity does not exist."""
         pool, _ = self._make_entity_pool(tgt_exists=False)
-        result = await entity_merge(
-            pool,
-            str(ENTITY_UUID),
-            str(ENTITY_UUID2),
-            tenant_id="relationship",
-        )
-        assert result is None
+        with pytest.raises(ValueError, match="Target entity"):
+            await entity_merge(
+                pool,
+                str(ENTITY_UUID),
+                str(ENTITY_UUID2),
+                tenant_id="relationship",
+            )
 
     async def test_facts_repointed_in_transaction(self):
         """entity_merge updates facts to point to target entity."""
@@ -726,17 +730,20 @@ class TestEntityMerge:
             str(ENTITY_UUID2),
             tenant_id="relationship",
         )
-        # The fetchrow call (target update) should have merged aliases
-        # ["Ally", "Alice"] + ["Ali"] (deduplicated "Alice")
-        fetchrow_call = mock_conn.fetchrow.call_args
-        merged_aliases = fetchrow_call.args[1]  # first positional after SQL
+        # entity_merge calls UPDATE entities SET aliases for the target entity
+        execute_calls = mock_conn.execute.call_args_list
+        update_entity_calls = [
+            c for c in execute_calls if "UPDATE entities SET aliases" in c[0][0]
+        ]
+        assert len(update_entity_calls) >= 1
+        merged_aliases = update_entity_calls[0][0][1]
         assert "Ali" in merged_aliases
         assert "Ally" in merged_aliases
-        # "Alice" should appear only once
+        # "Alice" should appear only once (deduplicated)
         assert merged_aliases.count("Alice") == 1
 
     async def test_source_tombstoned(self):
-        """entity_merge tombstones the source entity by emptying its aliases."""
+        """entity_merge tombstones the source entity via merged_into metadata flag."""
         pool, mock_conn = self._make_entity_pool()
         await entity_merge(
             pool,
@@ -744,8 +751,13 @@ class TestEntityMerge:
             str(ENTITY_UUID2),
             tenant_id="relationship",
         )
-        # Verify one of the execute calls updates the source with empty aliases
-        execute_calls = [call.args for call in mock_conn.execute.call_args_list]
-        # Find the tombstone call - it should pass [] as aliases for src_id
-        tombstone_found = any(len(args) >= 2 and args[1] == [] for args in execute_calls)
-        assert tombstone_found, f"Tombstone call not found in: {execute_calls}"
+        # Verify one of the execute calls tombstones source entity with merged_into
+        execute_calls = mock_conn.execute.call_args_list
+        tombstone_calls = [
+            c
+            for c in execute_calls
+            if "UPDATE entities SET metadata" in c[0][0] and ENTITY_UUID in c[0]
+        ]
+        assert len(tombstone_calls) == 1, f"Tombstone call not found in: {execute_calls}"
+        tombstone_meta = json.loads(tombstone_calls[0][0][1])
+        assert tombstone_meta.get("merged_into") == str(ENTITY_UUID2)

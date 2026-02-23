@@ -32,13 +32,15 @@ class TestMemoryBaselineMigration:
     def test_baseline_file_exists(self) -> None:
         assert BASELINE_FILE.exists(), f"Expected migration at {BASELINE_FILE}"
 
-    def test_only_one_migration_file_exists(self) -> None:
+    def test_migration_chain_files_exist(self) -> None:
         migration_files = sorted(
             p.name
             for p in MIGRATIONS_DIR.iterdir()
             if p.suffix == ".py" and p.name != "__init__.py"
         )
-        assert migration_files == ["001_memory_baseline.py"]
+        assert "001_memory_baseline.py" in migration_files
+        assert "002_entities.py" in migration_files
+        assert "003_memory_events.py" in migration_files
 
     def test_revision_identifiers(self) -> None:
         mod = _load_migration()

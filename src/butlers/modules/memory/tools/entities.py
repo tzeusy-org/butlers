@@ -269,6 +269,7 @@ async def entity_resolve(
             FROM entities
             WHERE tenant_id = $1
               AND LOWER(canonical_name) = $2
+              AND (metadata->>'merged_into') IS NULL
               {type_filter}
 
             UNION ALL
@@ -278,6 +279,7 @@ async def entity_resolve(
             FROM entities
             WHERE tenant_id = $1
               AND $2 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a)
+              AND (metadata->>'merged_into') IS NULL
               {type_filter}
 
             UNION ALL
@@ -298,6 +300,7 @@ async def entity_resolve(
               -- Exclude already-exact matches
               AND LOWER(canonical_name) != $2
               AND NOT ($2 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a))
+              AND (metadata->>'merged_into') IS NULL
               {type_filter}
         ) candidates
         ORDER BY id, tier ASC
@@ -434,6 +437,7 @@ async def _fetch_fuzzy_candidates(
               )
               AND LOWER(canonical_name) != LOWER($2)
               AND NOT (LOWER($2) = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a))
+              AND (metadata->>'merged_into') IS NULL
               {fuzzy_type_filter}
             LIMIT 20
             """,
@@ -526,97 +530,202 @@ async def entity_merge(
     target_entity_id: str,
     *,
     tenant_id: str,
-) -> dict[str, Any] | None:
-    """Merge source entity into target entity.
+) -> dict[str, Any]:
+    """Merge a source entity into a target entity.
 
-    All facts referencing the source entity are re-pointed to the target.
-    The source entity's aliases are appended to the target's alias list.
-    The source entity is tombstoned (soft-deleted: archived_at set, excluded
-    from future resolution). The target entity is returned.
+    Merge behavior (runs in a single atomic transaction):
+    1. Re-point all facts referencing source entity_id to target entity_id.
+       - If a conflict exists (target already has an active fact with same
+         scope+predicate), keep the higher-confidence fact as active and
+         supersede the lower-confidence one.
+    2. Append source's aliases to target's alias list (deduplicated).
+    3. Merge source's metadata into target's metadata (target wins on conflict).
+    4. Tombstone source entity (mark as merged_into=target_entity_id, retained
+       for audit, excluded from entity_resolve results).
+    5. Emit a memory_event audit record for the merge.
 
     Args:
         pool: asyncpg connection pool.
-        source_entity_id: UUID string of the entity to be merged (will be tombstoned).
-        target_entity_id: UUID string of the surviving entity.
+        source_entity_id: UUID string of the entity to merge from (will be tombstoned).
+        target_entity_id: UUID string of the entity to merge into (survives).
         tenant_id: Tenant scope for isolation.
 
     Returns:
-        Updated target entity dict, or None if target not found.
+        Dict with keys:
+          - target_entity_id: UUID string of the surviving entity.
+          - source_entity_id: UUID string of the tombstoned entity.
+          - facts_repointed: number of facts moved from source to target.
+          - facts_superseded: number of facts superseded due to conflicts.
+          - aliases_added: number of new aliases added to target.
 
     Raises:
-        ValueError: If source and target are the same entity, or source not found.
+        ValueError: If source or target entity not found for this tenant,
+                    or if source == target.
     """
     if source_entity_id == target_entity_id:
         raise ValueError("source_entity_id and target_entity_id must be different.")
 
-    src_id = uuid.UUID(source_entity_id)
-    tgt_id = uuid.UUID(target_entity_id)
-
-    # Verify both entities exist and belong to tenant
-    src_row = await pool.fetchrow(
-        "SELECT id, aliases FROM entities WHERE id = $1 AND tenant_id = $2",
-        src_id,
-        tenant_id,
-    )
-    if src_row is None:
-        raise ValueError(f"Source entity {source_entity_id!r} not found for tenant {tenant_id!r}.")
-
-    tgt_row = await pool.fetchrow(
-        "SELECT id, aliases FROM entities WHERE id = $1 AND tenant_id = $2",
-        tgt_id,
-        tenant_id,
-    )
-    if tgt_row is None:
-        return None
-
-    # Merge source aliases into target's alias list (dedup)
-    src_aliases: list[str] = list(src_row["aliases"]) if src_row["aliases"] else []
-    tgt_aliases: list[str] = list(tgt_row["aliases"]) if tgt_row["aliases"] else []
-    merged_aliases = tgt_aliases + [a for a in src_aliases if a not in tgt_aliases]
+    src_uuid = uuid.UUID(source_entity_id)
+    tgt_uuid = uuid.UUID(target_entity_id)
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Re-point all facts from source to target
-            await conn.execute(
-                "UPDATE facts SET entity_id = $1 WHERE entity_id = $2",
-                tgt_id,
-                src_id,
-            )
-
-            # Tombstone source entity (add archived_at if column exists; otherwise
-            # mark via a metadata flag for environments without the column)
-            try:
-                await conn.execute(
-                    """
-                    UPDATE entities
-                    SET aliases = $1,
-                        metadata = COALESCE(metadata, '{}'::jsonb)
-                            || '{"_merged_into": null}'::jsonb,
-                        updated_at = now()
-                    WHERE id = $2 AND tenant_id = $3
-                    """,
-                    [],
-                    src_id,
-                    tenant_id,
-                )
-            except Exception:
-                pass  # best-effort tombstone
-
-            # Update target with merged aliases
-            updated = await conn.fetchrow(
-                """
-                UPDATE entities
-                SET aliases = $1, updated_at = now()
-                WHERE id = $2 AND tenant_id = $3
-                RETURNING id, tenant_id, canonical_name, entity_type, aliases, metadata,
-                          created_at, updated_at
-                """,
-                merged_aliases,
-                tgt_id,
+            # ---------------------------------------------------------------
+            # 1. Fetch source and target entities (with lock)
+            # ---------------------------------------------------------------
+            src_row = await conn.fetchrow(
+                "SELECT id, canonical_name, aliases, metadata "
+                "FROM entities WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                src_uuid,
                 tenant_id,
             )
+            if src_row is None:
+                raise ValueError(
+                    f"Source entity '{source_entity_id}' not found for tenant '{tenant_id}'."
+                )
 
-    if updated is None:
-        return None
+            tgt_row = await conn.fetchrow(
+                "SELECT id, canonical_name, aliases, metadata "
+                "FROM entities WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                tgt_uuid,
+                tenant_id,
+            )
+            if tgt_row is None:
+                raise ValueError(
+                    f"Target entity '{target_entity_id}' not found for tenant '{tenant_id}'."
+                )
 
-    return _serialize_row(dict(updated))
+            # Check source is not already tombstoned
+            src_metadata: dict[str, Any] = dict(src_row["metadata"]) if src_row["metadata"] else {}
+            if "merged_into" in src_metadata:
+                raise ValueError(
+                    f"Source entity '{source_entity_id}' is already tombstoned "
+                    f"(merged_into={src_metadata['merged_into']!r})."
+                )
+
+            # ---------------------------------------------------------------
+            # 2. Resolve fact conflicts before re-pointing
+            # ---------------------------------------------------------------
+            # Fetch all active facts on the source entity
+            src_facts = await conn.fetch(
+                "SELECT id, scope, predicate, confidence FROM facts "
+                "WHERE entity_id = $1 AND validity = 'active'",
+                src_uuid,
+            )
+
+            facts_repointed = 0
+            facts_superseded = 0
+
+            for src_fact in src_facts:
+                # Check if target already has an active fact with same (scope, predicate)
+                conflict = await conn.fetchrow(
+                    "SELECT id, confidence FROM facts "
+                    "WHERE entity_id = $1 AND scope = $2 AND predicate = $3 "
+                    "AND validity = 'active'",
+                    tgt_uuid,
+                    src_fact["scope"],
+                    src_fact["predicate"],
+                )
+
+                if conflict is None:
+                    # No conflict: re-point fact to target
+                    await conn.execute(
+                        "UPDATE facts SET entity_id = $1 WHERE id = $2",
+                        tgt_uuid,
+                        src_fact["id"],
+                    )
+                    facts_repointed += 1
+                else:
+                    # Conflict: keep higher-confidence fact, supersede the other
+                    src_confidence = src_fact["confidence"]
+                    tgt_confidence = conflict["confidence"]
+
+                    if src_confidence > tgt_confidence:
+                        # Source fact wins: supersede target fact, re-point source fact
+                        await conn.execute(
+                            "UPDATE facts SET validity = 'superseded', supersedes_id = $1 "
+                            "WHERE id = $2",
+                            src_fact["id"],
+                            conflict["id"],
+                        )
+                        await conn.execute(
+                            "UPDATE facts SET entity_id = $1 WHERE id = $2",
+                            tgt_uuid,
+                            src_fact["id"],
+                        )
+                    else:
+                        # Target fact wins (or equal confidence): supersede source fact
+                        await conn.execute(
+                            "UPDATE facts SET validity = 'superseded', supersedes_id = $1 "
+                            "WHERE id = $2",
+                            conflict["id"],
+                            src_fact["id"],
+                        )
+                    facts_superseded += 1
+
+            # ---------------------------------------------------------------
+            # 3. Merge aliases (append source aliases to target, deduplicated)
+            # ---------------------------------------------------------------
+            src_aliases: list[str] = list(src_row["aliases"]) if src_row["aliases"] else []
+            tgt_aliases: list[str] = list(tgt_row["aliases"]) if tgt_row["aliases"] else []
+            tgt_alias_set = {a.lower() for a in tgt_aliases}
+            new_aliases: list[str] = list(tgt_aliases)
+            aliases_added = 0
+            for alias in src_aliases:
+                if alias.lower() not in tgt_alias_set:
+                    new_aliases.append(alias)
+                    tgt_alias_set.add(alias.lower())
+                    aliases_added += 1
+
+            # ---------------------------------------------------------------
+            # 4. Merge metadata (target wins on conflict)
+            # ---------------------------------------------------------------
+            tgt_metadata: dict[str, Any] = dict(tgt_row["metadata"]) if tgt_row["metadata"] else {}
+            # Merge source into target; target values take priority
+            merged_metadata = {**src_metadata, **tgt_metadata}
+
+            await conn.execute(
+                "UPDATE entities SET aliases = $1, metadata = $2::jsonb, updated_at = now() "
+                "WHERE id = $3",
+                new_aliases,
+                json.dumps(merged_metadata),
+                tgt_uuid,
+            )
+
+            # ---------------------------------------------------------------
+            # 5. Tombstone source entity
+            # ---------------------------------------------------------------
+            src_metadata_tombstoned = {**src_metadata, "merged_into": target_entity_id}
+            await conn.execute(
+                "UPDATE entities SET metadata = $1::jsonb, updated_at = now() WHERE id = $2",
+                json.dumps(src_metadata_tombstoned),
+                src_uuid,
+            )
+
+            # ---------------------------------------------------------------
+            # 6. Emit memory_event audit record
+            # ---------------------------------------------------------------
+            await conn.execute(
+                """
+                INSERT INTO memory_events (event_type, tenant_id, payload)
+                VALUES ('entity_merge', $1, $2::jsonb)
+                """,
+                tenant_id,
+                json.dumps(
+                    {
+                        "source_entity_id": source_entity_id,
+                        "target_entity_id": target_entity_id,
+                        "facts_repointed": facts_repointed,
+                        "facts_superseded": facts_superseded,
+                        "aliases_added": aliases_added,
+                    }
+                ),
+            )
+
+    return {
+        "target_entity_id": target_entity_id,
+        "source_entity_id": source_entity_id,
+        "facts_repointed": facts_repointed,
+        "facts_superseded": facts_superseded,
+        "aliases_added": aliases_added,
+    }

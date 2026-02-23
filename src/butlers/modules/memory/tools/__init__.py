@@ -15,6 +15,7 @@ from butlers.modules.memory.tools.context import memory_context
 from butlers.modules.memory.tools.entities import (
     entity_create,
     entity_get,
+    entity_merge,
     entity_resolve,
     entity_update,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "get_embedding_engine",
     "entity_create",
     "entity_get",
+    "entity_merge",
     "entity_resolve",
     "entity_update",
     "memory_confirm",

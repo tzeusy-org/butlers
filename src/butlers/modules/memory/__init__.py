@@ -504,8 +504,11 @@ class MemoryModule(Module):
             """Merge source entity into target entity.
 
             All facts referencing the source entity are re-pointed to the target.
-            Source aliases are appended to target's alias list. Source entity is
-            tombstoned (soft-deleted; excluded from future resolution).
+            Uniqueness conflicts are resolved via supersession (higher-confidence fact wins).
+            Source aliases are appended to target's alias list (deduplicated). Source metadata
+            is merged into target's (target wins on conflict). Source entity is
+            tombstoned (excluded from future entity_resolve results). An audit event
+            is emitted to memory_events.
 
             Returns the updated target entity dict, or None if target not found.
             Raises ValueError if source entity not found or IDs are identical.
