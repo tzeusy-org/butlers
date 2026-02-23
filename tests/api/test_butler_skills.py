@@ -3,72 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
-from butlers.api.app import create_app
-from butlers.api.deps import (
-    ButlerConnectionInfo,
-    ButlerUnreachableError,
-    MCPClientManager,
-    get_butler_configs,
-    get_mcp_manager,
-)
-from butlers.api.routers.butlers import _get_roster_dir, _read_skills
+from butlers.api.deps import ButlerConnectionInfo
+from butlers.api.routers.butlers import _read_skills
+
+from .conftest import make_butler_dir, make_mock_mcp_manager, make_test_app
 
 pytestmark = pytest.mark.unit
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _mock_mcp_manager(*, online: bool = True) -> MCPClientManager:
-    """Create a mock MCPClientManager."""
-    mgr = MagicMock(spec=MCPClientManager)
-    if online:
-        mock_client = MagicMock()
-        mock_client.ping = AsyncMock(return_value=True)
-        mgr.get_client = AsyncMock(return_value=mock_client)
-    else:
-        mgr.get_client = AsyncMock(
-            side_effect=ButlerUnreachableError("test", cause=ConnectionRefusedError("refused"))
-        )
-    return mgr
-
-
-def _create_test_app(
-    tmp_path: Path,
-    configs: list[ButlerConnectionInfo],
-    mcp_manager: MCPClientManager,
-):
-    """Create a FastAPI test app with dependency overrides."""
-    app = create_app()
-    app.dependency_overrides[get_butler_configs] = lambda: configs
-    app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
-    app.dependency_overrides[_get_roster_dir] = lambda: tmp_path
-    return app
-
-
-def _make_skills(butler_dir: Path, skills: dict[str, str]) -> None:
-    """Create skill directories with SKILL.md content under butler_dir/skills/.
-
-    Parameters
-    ----------
-    butler_dir:
-        The butler directory path.
-    skills:
-        Mapping of skill name to SKILL.md content.
-    """
-    skills_dir = butler_dir / "skills"
-    skills_dir.mkdir(exist_ok=True)
-    for skill_name, content in skills.items():
-        skill_dir = skills_dir / skill_name
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -92,10 +36,13 @@ class TestReadSkills:
 
     def test_reads_skill_name_and_content(self, tmp_path: Path):
         """Returns skill name and SKILL.md content."""
+        make_butler_dir(
+            tmp_path,
+            "test",
+            0,
+            skills_with_content={"my-skill": "# My Skill\n\nDoes something useful."},
+        )
         butler_dir = tmp_path / "test"
-        butler_dir.mkdir()
-        _make_skills(butler_dir, {"my-skill": "# My Skill\n\nDoes something useful."})
-
         result = _read_skills(butler_dir)
         assert len(result) == 1
         assert result[0].name == "my-skill"
@@ -103,17 +50,17 @@ class TestReadSkills:
 
     def test_returns_multiple_skills_sorted(self, tmp_path: Path):
         """Returns skills sorted alphabetically."""
-        butler_dir = tmp_path / "test"
-        butler_dir.mkdir()
-        _make_skills(
-            butler_dir,
-            {
+        make_butler_dir(
+            tmp_path,
+            "test",
+            0,
+            skills_with_content={
                 "zebra": "# Zebra\n",
                 "alpha": "# Alpha\n",
                 "middle": "# Middle\n",
             },
         )
-
+        butler_dir = tmp_path / "test"
         result = _read_skills(butler_dir)
         assert [s.name for s in result] == ["alpha", "middle", "zebra"]
 
@@ -142,11 +89,11 @@ class TestReadSkills:
 
 
 class TestListButlerSkills:
-    async def test_returns_404_for_unknown_butler(self, tmp_path: Path):
+    async def test_returns_404_for_unknown_butler(self, roster_dir):
         """Unknown butler name returns 404."""
         configs = [ButlerConnectionInfo("general", 40101)]
-        mgr = _mock_mcp_manager(online=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        mgr = make_mock_mcp_manager(online=True)
+        app = make_test_app(roster_dir, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -155,21 +102,20 @@ class TestListButlerSkills:
 
         assert response.status_code == 404
 
-    async def test_returns_skills_for_butler(self, tmp_path: Path):
+    async def test_returns_skills_for_butler(self, roster_dir):
         """Returns skill list with name and content for a known butler."""
-        butler_dir = tmp_path / "general"
-        butler_dir.mkdir()
-        _make_skills(
-            butler_dir,
-            {
+        make_butler_dir(
+            roster_dir,
+            "general",
+            40101,
+            skills_with_content={
                 "data-organizer": "# Data Organizer\n\nOrganize your data.",
                 "report-builder": "# Report Builder\n\nBuild reports.",
             },
         )
-
         configs = [ButlerConnectionInfo("general", 40101)]
-        mgr = _mock_mcp_manager(online=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        mgr = make_mock_mcp_manager(online=True)
+        app = make_test_app(roster_dir, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -184,14 +130,12 @@ class TestListButlerSkills:
         assert data[1]["name"] == "report-builder"
         assert data[1]["content"] == "# Report Builder\n\nBuild reports."
 
-    async def test_returns_empty_list_when_no_skills_dir(self, tmp_path: Path):
+    async def test_returns_empty_list_when_no_skills_dir(self, roster_dir):
         """Returns empty list when butler has no skills/ directory."""
-        butler_dir = tmp_path / "general"
-        butler_dir.mkdir()
-
+        (roster_dir / "general").mkdir()
         configs = [ButlerConnectionInfo("general", 40101)]
-        mgr = _mock_mcp_manager(online=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        mgr = make_mock_mcp_manager(online=True)
+        app = make_test_app(roster_dir, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -202,16 +146,18 @@ class TestListButlerSkills:
         data = response.json()["data"]
         assert data == []
 
-    async def test_skill_content_read_correctly(self, tmp_path: Path):
+    async def test_skill_content_read_correctly(self, roster_dir):
         """Skill SKILL.md content is returned exactly as written."""
         content = "---\nname: test-skill\n---\n\n# Test Skill\n\nMulti-line content.\n"
-        butler_dir = tmp_path / "general"
-        butler_dir.mkdir()
-        _make_skills(butler_dir, {"test-skill": content})
-
+        make_butler_dir(
+            roster_dir,
+            "general",
+            40101,
+            skills_with_content={"test-skill": content},
+        )
         configs = [ButlerConnectionInfo("general", 40101)]
-        mgr = _mock_mcp_manager(online=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        mgr = make_mock_mcp_manager(online=True)
+        app = make_test_app(roster_dir, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -224,14 +170,12 @@ class TestListButlerSkills:
         assert data[0]["name"] == "test-skill"
         assert data[0]["content"] == content
 
-    async def test_response_wrapped_in_api_response(self, tmp_path: Path):
+    async def test_response_wrapped_in_api_response(self, roster_dir):
         """Response follows the standard ApiResponse envelope."""
-        butler_dir = tmp_path / "general"
-        butler_dir.mkdir()
-
+        (roster_dir / "general").mkdir()
         configs = [ButlerConnectionInfo("general", 40101)]
-        mgr = _mock_mcp_manager(online=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        mgr = make_mock_mcp_manager(online=True)
+        app = make_test_app(roster_dir, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

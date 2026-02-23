@@ -29,118 +29,15 @@ from butlers.api.deps import (
     get_butler_configs,
     get_mcp_manager,
 )
-from butlers.api.routers.butlers import _get_roster_dir
+
+from .conftest import make_butler_dir, make_test_app
 
 pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers local to this file (discovery-specific, not shared)
 # ---------------------------------------------------------------------------
-
-_BUTLER_TOML_TEMPLATE = """\
-[butler]
-name = "{name}"
-port = {port}
-description = "{description}"
-
-[butler.db]
-name = "butler_{name}"
-
-[runtime]
-type = "claude-code"
-"""
-
-_BUTLER_TOML_WITH_MODULES = """\
-[butler]
-name = "{name}"
-port = {port}
-description = "{description}"
-
-[butler.db]
-name = "butler_{name}"
-
-[runtime]
-type = "claude-code"
-
-{modules_section}
-"""
-
-_BUTLER_TOML_WITH_SCHEDULE = """\
-[butler]
-name = "{name}"
-port = {port}
-description = "{description}"
-
-[butler.db]
-name = "butler_{name}"
-
-[runtime]
-type = "claude-code"
-
-[[butler.schedule]]
-name = "morning-check"
-cron = "0 8 * * *"
-prompt = "Run the morning check"
-
-[[butler.schedule]]
-name = "nightly-cleanup"
-cron = "0 2 * * *"
-prompt = "Clean up old data"
-"""
-
-
-def _make_butler_dir(
-    roster_dir: Path,
-    name: str,
-    port: int,
-    *,
-    description: str = "Test butler",
-    modules: dict[str, str] | None = None,
-    skills: list[str] | None = None,
-    claude_md: str | None = None,
-    manifesto_md: str | None = None,
-    agents_md: str | None = None,
-    with_schedule: bool = False,
-) -> Path:
-    """Create a complete butler directory with optional extras."""
-    butler_dir = roster_dir / name
-    butler_dir.mkdir(parents=True, exist_ok=True)
-
-    if with_schedule:
-        toml_content = _BUTLER_TOML_WITH_SCHEDULE.format(
-            name=name, port=port, description=description
-        )
-    elif modules:
-        mod_sections = ""
-        for mod_name, mod_body in modules.items():
-            mod_sections += f"[modules.{mod_name}]\n"
-            if mod_body:
-                mod_sections += f"{mod_body}\n"
-        toml_content = _BUTLER_TOML_WITH_MODULES.format(
-            name=name, port=port, description=description, modules_section=mod_sections
-        )
-    else:
-        toml_content = _BUTLER_TOML_TEMPLATE.format(name=name, port=port, description=description)
-
-    (butler_dir / "butler.toml").write_text(toml_content)
-
-    if claude_md is not None:
-        (butler_dir / "CLAUDE.md").write_text(claude_md)
-    if manifesto_md is not None:
-        (butler_dir / "MANIFESTO.md").write_text(manifesto_md)
-    if agents_md is not None:
-        (butler_dir / "AGENTS.md").write_text(agents_md)
-
-    if skills:
-        skills_dir = butler_dir / "skills"
-        skills_dir.mkdir(exist_ok=True)
-        for skill_name in skills:
-            skill_dir = skills_dir / skill_name
-            skill_dir.mkdir()
-            (skill_dir / "SKILL.md").write_text(f"# {skill_name}\n\nSkill description.\n")
-
-    return butler_dir
 
 
 def _make_mock_client(*, ping_ok: bool = True) -> MagicMock:
@@ -182,19 +79,6 @@ def _make_status_result(
     result.content = [content_block]
     result.is_error = False
     return result
-
-
-def _create_test_app(
-    roster_dir: Path,
-    configs: list[ButlerConnectionInfo],
-    mcp_manager: MCPClientManager,
-):
-    """Create a FastAPI test app with dependency overrides."""
-    app = create_app()
-    app.dependency_overrides[get_butler_configs] = lambda: configs
-    app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
-    app.dependency_overrides[_get_roster_dir] = lambda: roster_dir
-    return app
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +224,7 @@ class TestDetailWithRealConfig:
 
     async def test_basic_detail_from_disk(self, tmp_path: Path):
         """Detail response includes name, port, description, db_name from disk config."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "general",
             40101,
@@ -352,7 +236,7 @@ class TestDetailWithRealConfig:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -369,7 +253,7 @@ class TestDetailWithRealConfig:
 
     async def test_detail_includes_modules_from_config(self, tmp_path: Path):
         """Detail response includes modules from butler.toml."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "comm",
             40102,
@@ -381,7 +265,7 @@ class TestDetailWithRealConfig:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -396,7 +280,7 @@ class TestDetailWithRealConfig:
 
     async def test_detail_includes_schedules_from_config(self, tmp_path: Path):
         """Detail response includes schedule entries from butler.toml."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "health",
             40103,
@@ -408,7 +292,7 @@ class TestDetailWithRealConfig:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -424,7 +308,7 @@ class TestDetailWithRealConfig:
 
     async def test_detail_with_multiple_skills(self, tmp_path: Path):
         """Detail response lists all skills from skills/ directory."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "general",
             40101,
@@ -436,7 +320,7 @@ class TestDetailWithRealConfig:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -458,13 +342,13 @@ class TestDetailOnline:
 
     async def test_status_online_when_reachable(self, tmp_path: Path):
         """Butler is online when MCP client connects and pings successfully."""
-        _make_butler_dir(tmp_path, "general", 40101)
+        make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         mock_client = _make_mock_client(ping_ok=True)
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -488,14 +372,14 @@ class TestDetailOffline:
 
     async def test_status_offline_when_unreachable(self, tmp_path: Path):
         """Butler is offline when MCP client raises ButlerUnreachableError."""
-        _make_butler_dir(tmp_path, "general", 40101)
+        make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(
             side_effect=ButlerUnreachableError("general", cause=ConnectionRefusedError())
         )
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -509,12 +393,12 @@ class TestDetailOffline:
 
     async def test_status_offline_when_unexpected_error(self, tmp_path: Path):
         """Butler is offline when MCP client raises an unexpected exception."""
-        _make_butler_dir(tmp_path, "general", 40101)
+        make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(side_effect=RuntimeError("something broke"))
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -527,13 +411,12 @@ class TestDetailOffline:
 
     async def test_detail_still_returns_config_when_offline(self, tmp_path: Path):
         """Config data (modules, skills, schedules) is still returned when offline."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "general",
             40101,
             modules={"telegram": ""},
             skills=["classify"],
-            with_schedule=False,
         )
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
@@ -541,7 +424,7 @@ class TestDetailOffline:
             side_effect=ButlerUnreachableError("general", cause=ConnectionRefusedError())
         )
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -568,7 +451,7 @@ class TestConfigEndpointMarkdownFiles:
 
     async def test_reads_all_markdown_files(self, tmp_path: Path):
         """All three markdown files are returned when present."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "general",
             40101,
@@ -579,7 +462,7 @@ class TestConfigEndpointMarkdownFiles:
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -594,11 +477,11 @@ class TestConfigEndpointMarkdownFiles:
 
     async def test_butler_toml_parsed_as_dict(self, tmp_path: Path):
         """butler.toml is returned as a parsed dict, not raw text."""
-        _make_butler_dir(tmp_path, "general", 40101, description="A fine butler")
+        make_butler_dir(tmp_path, "general", 40101, description="A fine butler")
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -623,11 +506,11 @@ class TestConfigEndpointMissingMarkdown:
 
     async def test_all_markdown_files_missing(self, tmp_path: Path):
         """When no markdown files exist, all fields are null."""
-        _make_butler_dir(tmp_path, "general", 40101)
+        make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -645,18 +528,16 @@ class TestConfigEndpointMissingMarkdown:
 
     async def test_partial_markdown_files(self, tmp_path: Path):
         """Only some markdown files present — missing ones are null."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "general",
             40101,
             claude_md="# Instructions\n",
-            manifesto_md=None,
-            agents_md=None,
         )
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -680,7 +561,7 @@ class TestSkillsEndpointMultiple:
 
     async def test_returns_multiple_skills_with_content(self, tmp_path: Path):
         """Multiple skills are returned sorted with SKILL.md content."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "general",
             40101,
@@ -689,7 +570,7 @@ class TestSkillsEndpointMultiple:
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -706,7 +587,7 @@ class TestSkillsEndpointMultiple:
 
     async def test_skills_are_sorted_alphabetically(self, tmp_path: Path):
         """Skills are returned in alphabetical order."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "general",
             40101,
@@ -715,7 +596,7 @@ class TestSkillsEndpointMultiple:
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -738,7 +619,7 @@ class TestModulesEndpointMixedHealth:
 
     async def test_mixed_module_health(self, tmp_path: Path):
         """Modules with mixed health: connected, error (not loaded)."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "general",
             40101,
@@ -753,7 +634,7 @@ class TestModulesEndpointMixedHealth:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -773,7 +654,7 @@ class TestModulesEndpointMixedHealth:
 
     async def test_degraded_health_propagates_to_modules(self, tmp_path: Path):
         """When butler health is 'degraded', loaded modules show 'degraded'."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "general",
             40101,
@@ -787,7 +668,7 @@ class TestModulesEndpointMixedHealth:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -801,7 +682,7 @@ class TestModulesEndpointMixedHealth:
 
     async def test_modules_unknown_when_butler_unreachable(self, tmp_path: Path):
         """All modules show 'unknown' when butler MCP server is unreachable."""
-        _make_butler_dir(
+        make_butler_dir(
             tmp_path,
             "general",
             40101,
@@ -813,7 +694,7 @@ class TestModulesEndpointMixedHealth:
             side_effect=ButlerUnreachableError("general", cause=ConnectionRefusedError())
         )
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -838,9 +719,9 @@ class TestFullDiscoveryFlow:
 
     def test_discovers_all_butlers_from_roster(self, tmp_path: Path):
         """discover_butlers finds all valid butler configs in a roster dir."""
-        _make_butler_dir(tmp_path, "switchboard", 40100, description="Routes messages")
-        _make_butler_dir(tmp_path, "general", 40101, description="Catch-all assistant")
-        _make_butler_dir(tmp_path, "health", 40103, description="Health monitor")
+        make_butler_dir(tmp_path, "switchboard", 40100, description="Routes messages")
+        make_butler_dir(tmp_path, "general", 40101, description="Catch-all assistant")
+        make_butler_dir(tmp_path, "health", 40103, description="Health monitor")
 
         results = discover_butlers(tmp_path)
 
@@ -850,9 +731,9 @@ class TestFullDiscoveryFlow:
 
     def test_discovery_returns_sorted_by_name(self, tmp_path: Path):
         """Discovered butlers are sorted alphabetically by name."""
-        _make_butler_dir(tmp_path, "zebra", 40103)
-        _make_butler_dir(tmp_path, "alpha", 40100)
-        _make_butler_dir(tmp_path, "middle", 40101)
+        make_butler_dir(tmp_path, "zebra", 40103)
+        make_butler_dir(tmp_path, "alpha", 40100)
+        make_butler_dir(tmp_path, "middle", 40101)
 
         results = discover_butlers(tmp_path)
 
@@ -861,7 +742,7 @@ class TestFullDiscoveryFlow:
 
     def test_discovery_skips_dirs_without_butler_toml(self, tmp_path: Path):
         """Directories without butler.toml are silently skipped."""
-        _make_butler_dir(tmp_path, "valid", 40100)
+        make_butler_dir(tmp_path, "valid", 40100)
         # Create a directory without butler.toml
         (tmp_path / "not-a-butler").mkdir()
 
@@ -872,7 +753,7 @@ class TestFullDiscoveryFlow:
 
     def test_discovery_skips_files_in_roster_dir(self, tmp_path: Path):
         """Non-directory entries in the roster are ignored."""
-        _make_butler_dir(tmp_path, "valid", 40100)
+        make_butler_dir(tmp_path, "valid", 40100)
         # Create a regular file in roster dir
         (tmp_path / "README.md").write_text("# Roster\n")
 
@@ -883,7 +764,7 @@ class TestFullDiscoveryFlow:
 
     def test_discovery_skips_invalid_toml(self, tmp_path: Path):
         """Butler dirs with invalid TOML are skipped gracefully."""
-        _make_butler_dir(tmp_path, "valid", 40100)
+        make_butler_dir(tmp_path, "valid", 40100)
         # Create a butler dir with invalid TOML
         invalid_dir = tmp_path / "broken"
         invalid_dir.mkdir()
@@ -906,7 +787,7 @@ class TestFullDiscoveryFlow:
 
     def test_discovery_captures_port_and_description(self, tmp_path: Path):
         """Discovered butlers have correct port and description."""
-        _make_butler_dir(tmp_path, "mybutler", 9500, description="My custom butler")
+        make_butler_dir(tmp_path, "mybutler", 9500, description="My custom butler")
 
         results = discover_butlers(tmp_path)
 
@@ -961,13 +842,13 @@ class TestResponseEnvelope:
 
     async def test_detail_envelope(self, tmp_path: Path):
         """GET /api/butlers/{name} returns {data: {...}, meta: {...}}."""
-        _make_butler_dir(tmp_path, "general", 40101)
+        make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         mock_client = _make_mock_client()
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -981,11 +862,11 @@ class TestResponseEnvelope:
 
     async def test_config_envelope(self, tmp_path: Path):
         """GET /api/butlers/{name}/config returns {data: {...}, meta: {...}}."""
-        _make_butler_dir(tmp_path, "general", 40101)
+        make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1004,7 +885,7 @@ class TestResponseEnvelope:
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1018,14 +899,14 @@ class TestResponseEnvelope:
 
     async def test_modules_envelope(self, tmp_path: Path):
         """GET /api/butlers/{name}/modules returns {data: [...], meta: {...}}."""
-        _make_butler_dir(tmp_path, "general", 40101, modules={"telegram": ""})
+        make_butler_dir(tmp_path, "general", 40101, modules={"telegram": ""})
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(
             side_effect=ButlerUnreachableError("general", cause=ConnectionRefusedError())
         )
 
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = make_test_app(tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
