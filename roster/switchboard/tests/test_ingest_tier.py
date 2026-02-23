@@ -32,7 +32,7 @@ pytestmark = [
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with message_inbox table (including ingestion_tier).
 
-    WARNING: This fixture duplicates the database schema from sw_008 + sw_017 migrations.
+    WARNING: This fixture duplicates the database schema from sw_008 + sw_019 migrations.
     If you update the message_inbox schema, you must manually update this fixture.
     """
     async with provisioned_postgres_pool() as p:
@@ -73,7 +73,7 @@ async def pool(provisioned_postgres_pool):
             """
         )
 
-        # ingestion_tier index (from sw_017)
+        # ingestion_tier index (from sw_019)
         await p.execute(
             """
             CREATE INDEX ix_message_inbox_ingestion_tier_received_at

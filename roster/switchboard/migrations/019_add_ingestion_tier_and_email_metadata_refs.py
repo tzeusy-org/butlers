@@ -1,7 +1,7 @@
 """Add ingestion_tier to message_inbox and create email_metadata_refs table.
 
-Revision ID: sw_017
-Revises: sw_016
+Revision ID: sw_019
+Revises: sw_018
 Create Date: 2026-02-23 00:00:00.000000
 
 Migration notes:
@@ -22,8 +22,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "sw_017"
-down_revision = "sw_016"
+revision = "sw_019"
+down_revision = "sw_018"
 branch_labels = None
 depends_on = None
 
