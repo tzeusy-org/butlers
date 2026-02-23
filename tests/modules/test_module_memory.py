@@ -108,6 +108,7 @@ EXPECTED_TOOL_NAMES = {
     "entity_get",
     "entity_update",
     "entity_resolve",
+    "entity_merge",
 }
 
 
@@ -147,9 +148,9 @@ class TestRegisterTools:
 
         return registered_tools
 
-    async def test_registers_seventeen_tools(self):
+    async def test_registers_nineteen_tools(self):
         registered = await self._register_and_capture()
-        assert len(registered) == 18
+        assert len(registered) == 19
 
     async def test_tool_names_match(self):
         registered = await self._register_and_capture()
@@ -160,7 +161,7 @@ class TestRegisterTools:
         for tool_name, tool_fn in registered.items():
             assert asyncio.iscoroutinefunction(tool_fn), f"{tool_name} should be async"
 
-    async def test_mcp_tool_called_seventeen_times(self):
+    async def test_mcp_tool_called_nineteen_times(self):
         mod = MemoryModule()
         mcp = MagicMock()
         mcp.tool.return_value = lambda fn: fn
@@ -181,7 +182,7 @@ class TestRegisterTools:
         ):
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
 
-        assert mcp.tool.call_count == 18
+        assert mcp.tool.call_count == 19
 
     async def test_memory_store_fact_tool_description_and_schema_contract(self):
         """memory_store_fact metadata should document strict fields and tags shape."""
