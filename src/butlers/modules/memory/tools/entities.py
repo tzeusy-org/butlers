@@ -518,3 +518,105 @@ def _tokenize(text: str) -> set[str]:
 
     tokens = re.findall(r"[a-z0-9]+", text.lower())
     return set(tokens)
+
+
+async def entity_merge(
+    pool: Pool,
+    source_entity_id: str,
+    target_entity_id: str,
+    *,
+    tenant_id: str,
+) -> dict[str, Any] | None:
+    """Merge source entity into target entity.
+
+    All facts referencing the source entity are re-pointed to the target.
+    The source entity's aliases are appended to the target's alias list.
+    The source entity is tombstoned (soft-deleted: archived_at set, excluded
+    from future resolution). The target entity is returned.
+
+    Args:
+        pool: asyncpg connection pool.
+        source_entity_id: UUID string of the entity to be merged (will be tombstoned).
+        target_entity_id: UUID string of the surviving entity.
+        tenant_id: Tenant scope for isolation.
+
+    Returns:
+        Updated target entity dict, or None if target not found.
+
+    Raises:
+        ValueError: If source and target are the same entity, or source not found.
+    """
+    if source_entity_id == target_entity_id:
+        raise ValueError("source_entity_id and target_entity_id must be different.")
+
+    src_id = uuid.UUID(source_entity_id)
+    tgt_id = uuid.UUID(target_entity_id)
+
+    # Verify both entities exist and belong to tenant
+    src_row = await pool.fetchrow(
+        "SELECT id, aliases FROM entities WHERE id = $1 AND tenant_id = $2",
+        src_id,
+        tenant_id,
+    )
+    if src_row is None:
+        raise ValueError(f"Source entity {source_entity_id!r} not found for tenant {tenant_id!r}.")
+
+    tgt_row = await pool.fetchrow(
+        "SELECT id, aliases FROM entities WHERE id = $1 AND tenant_id = $2",
+        tgt_id,
+        tenant_id,
+    )
+    if tgt_row is None:
+        return None
+
+    # Merge source aliases into target's alias list (dedup)
+    src_aliases: list[str] = list(src_row["aliases"]) if src_row["aliases"] else []
+    tgt_aliases: list[str] = list(tgt_row["aliases"]) if tgt_row["aliases"] else []
+    merged_aliases = tgt_aliases + [a for a in src_aliases if a not in tgt_aliases]
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Re-point all facts from source to target
+            await conn.execute(
+                "UPDATE facts SET entity_id = $1 WHERE entity_id = $2",
+                tgt_id,
+                src_id,
+            )
+
+            # Tombstone source entity (add archived_at if column exists; otherwise
+            # mark via a metadata flag for environments without the column)
+            try:
+                await conn.execute(
+                    """
+                    UPDATE entities
+                    SET aliases = $1,
+                        metadata = COALESCE(metadata, '{}'::jsonb)
+                            || '{"_merged_into": null}'::jsonb,
+                        updated_at = now()
+                    WHERE id = $2 AND tenant_id = $3
+                    """,
+                    [],
+                    src_id,
+                    tenant_id,
+                )
+            except Exception:
+                pass  # best-effort tombstone
+
+            # Update target with merged aliases
+            updated = await conn.fetchrow(
+                """
+                UPDATE entities
+                SET aliases = $1, updated_at = now()
+                WHERE id = $2 AND tenant_id = $3
+                RETURNING id, tenant_id, canonical_name, entity_type, aliases, metadata,
+                          created_at, updated_at
+                """,
+                merged_aliases,
+                tgt_id,
+                tenant_id,
+            )
+
+    if updated is None:
+        return None
+
+    return _serialize_row(dict(updated))

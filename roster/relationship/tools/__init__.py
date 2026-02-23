@@ -21,6 +21,7 @@ from butlers.tools.relationship.contacts import (
     contact_archive,
     contact_create,
     contact_get,
+    contact_merge,
     contact_search,
     contact_update,
 )
@@ -119,6 +120,7 @@ __all__ = [
     "address_update",
     "contact_archive",
     "contact_create",
+    "contact_merge",
     "contact_export_vcard",
     "contact_get",
     "contact_import_vcard",

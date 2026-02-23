@@ -284,9 +284,12 @@ butlers-982/
 .worktrees/parallel-agents/butlers-9a3l.6/
 .worktrees/parallel-agents/butlers-64vs.6/
 .worktrees/parallel-agents/butlers-64vs.7/
-# bd worktree
 .worktrees/parallel-agents/butlers-3a77/
-# bd worktree
 .worktrees/parallel-agents/butlers-cgeo/
-# bd worktree
 .worktrees/parallel-agents/butlers-qo0e/
+.worktrees/parallel-agents/butlers-nrov.3/
+.worktrees/parallel-agents/butlers-nrov.4/
+.worktrees/parallel-agents/butlers-nrov.6/
+.worktrees/parallel-agents/butlers-80d1/
+
+node_modules/

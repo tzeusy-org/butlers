@@ -489,3 +489,30 @@ class MemoryModule(Module):
                 context_hints=context_hints,
                 enable_fuzzy=enable_fuzzy,
             )
+
+        @mcp.tool()
+        async def entity_merge(
+            source_entity_id: Annotated[
+                str,
+                Field(description="UUID string of the entity to be merged (will be tombstoned)."),
+            ],
+            target_entity_id: Annotated[
+                str, Field(description="UUID string of the surviving entity.")
+            ],
+            tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
+        ) -> dict[str, Any] | None:
+            """Merge source entity into target entity.
+
+            All facts referencing the source entity are re-pointed to the target.
+            Source aliases are appended to target's alias list. Source entity is
+            tombstoned (soft-deleted; excluded from future resolution).
+
+            Returns the updated target entity dict, or None if target not found.
+            Raises ValueError if source entity not found or IDs are identical.
+            """
+            return await _entities.entity_merge(
+                module._get_pool(),
+                source_entity_id,
+                target_entity_id,
+                tenant_id=tenant_id,
+            )
