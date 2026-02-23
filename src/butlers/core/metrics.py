@@ -65,6 +65,11 @@ logger = logging.getLogger(__name__)
 
 _METER_NAME = "butlers"
 
+# Guard flag: True once the global MeterProvider has been installed.
+# Prevents "Overriding of current MeterProvider is not allowed" warnings
+# when multiple butlers call init_metrics() in the same process.
+_meter_provider_installed: bool = False
+
 # ---------------------------------------------------------------------------
 # MeterProvider initialization
 # ---------------------------------------------------------------------------
@@ -85,10 +90,22 @@ def init_metrics(service_name: str) -> metrics.Meter:
     Returns:
         A Meter instance bound to the global MeterProvider.
     """
+    global _meter_provider_installed
+
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
 
     if not endpoint:
         logger.info("OTEL_EXPORTER_OTLP_ENDPOINT not set, using no-op meter")
+        return metrics.get_meter(_METER_NAME)
+
+    if _meter_provider_installed:
+        # Provider already set by an earlier butler in this process.
+        # Return a meter from the existing provider; per-butler attribution
+        # is handled via the butler label on all instrument recordings.
+        logger.debug(
+            "MeterProvider already initialized; reusing existing provider for service=%s",
+            service_name,
+        )
         return metrics.get_meter(_METER_NAME)
 
     # Import SDK/exporter only when needed to avoid hard dependency at import time
@@ -97,13 +114,14 @@ def init_metrics(service_name: str) -> metrics.Meter:
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
     from opentelemetry.sdk.resources import Resource
 
-    resource = Resource.create({"service.name": service_name})
+    resource = Resource.create({"service.name": "butlers"})
     exporter = OTLPMetricExporter(endpoint=endpoint)
     reader = PeriodicExportingMetricReader(exporter, export_interval_millis=15_000)
     provider = MeterProvider(resource=resource, metric_readers=[reader])
 
     metrics.set_meter_provider(provider)
-    logger.info("Metrics initialized: service=%s, endpoint=%s", service_name, endpoint)
+    _meter_provider_installed = True
+    logger.info("Metrics initialized: endpoint=%s", endpoint)
 
     return metrics.get_meter(_METER_NAME)
 

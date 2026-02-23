@@ -39,6 +39,7 @@ from butlers.core.telemetry import (
     clear_active_session_context,
     get_traceparent_env,
     set_active_session_context,
+    tag_butler_span,
 )
 from butlers.core.tool_call_capture import (
     clear_runtime_session_routing_context,
@@ -635,7 +636,7 @@ class Spawner:
         # Get tracer and start butler.llm_session span with parent context
         tracer = trace.get_tracer("butlers")
         span = tracer.start_span("butler.llm_session", context=parent_context)
-        span.set_attribute("butler.name", self._config.name)
+        tag_butler_span(span, self._config.name)
         span.set_attribute("prompt_length", len(final_prompt))
 
         # Attach span to context and publish for cross-task tool_span use

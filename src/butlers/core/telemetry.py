@@ -21,13 +21,24 @@ logger = logging.getLogger(__name__)
 
 _TRACER_NAME = "butlers"
 
+# Guard flag: True once the global TracerProvider has been installed.
+# Prevents "Overriding of current TracerProvider is not allowed" warnings
+# when multiple butlers call init_telemetry() in the same process.
+_tracer_provider_installed: bool = False
+
 
 def init_telemetry(service_name: str) -> trace.Tracer:
     """
     Initialize OpenTelemetry tracing for a butler daemon.
 
     When OTEL_EXPORTER_OTLP_ENDPOINT is set, configures a real TracerProvider
-    with OTLP gRPC exporter. Otherwise, returns a no-op tracer.
+    with OTLP gRPC exporter on the first call. Subsequent calls (for additional
+    butlers in the same process) reuse the existing provider and return a
+    correctly-named tracer without triggering provider-override warnings.
+
+    Each butler's spans carry ``service.name`` and ``butler.name`` span
+    attributes so that observability backends can distinguish per-butler
+    telemetry even though all butlers share a single TracerProvider.
 
     Args:
         service_name: The butler's service name for tracing (e.g., "butler-switchboard")
@@ -35,24 +46,37 @@ def init_telemetry(service_name: str) -> trace.Tracer:
     Returns:
         A Tracer instance (real or no-op depending on config)
     """
+    global _tracer_provider_installed
+
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
 
     if not endpoint:
         logger.info("OTEL_EXPORTER_OTLP_ENDPOINT not set, using no-op tracer")
         return trace.get_tracer(service_name)
 
+    if _tracer_provider_installed:
+        # Provider already set by an earlier butler in this process.
+        # Return a tracer using the service_name as instrumentation scope name.
+        # Spans will carry a "service.name" span attribute for backend attribution.
+        logger.debug(
+            "TracerProvider already initialized; reusing existing provider for service=%s",
+            service_name,
+        )
+        return trace.get_tracer(service_name)
+
     # Import exporter only when needed
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    resource = Resource.create({"service.name": service_name})
+    resource = Resource.create({"service.name": "butlers"})
     provider = TracerProvider(resource=resource)
 
     exporter = OTLPSpanExporter(endpoint=endpoint)
     provider.add_span_processor(BatchSpanProcessor(exporter))
 
     trace.set_tracer_provider(provider)
-    logger.info("Telemetry initialized: service=%s, endpoint=%s", service_name, endpoint)
+    _tracer_provider_installed = True
+    logger.info("Telemetry initialized: endpoint=%s", endpoint)
 
     return trace.get_tracer(service_name)
 
@@ -60,6 +84,23 @@ def init_telemetry(service_name: str) -> trace.Tracer:
 def get_tracer(name: str) -> trace.Tracer:
     """Get a tracer from the current provider (useful for modules)."""
     return trace.get_tracer(name)
+
+
+def tag_butler_span(span: trace.Span, butler_name: str) -> None:
+    """Set butler attribution attributes on a span.
+
+    Sets both butler.name (for filtering in dashboards) and
+    service.name (for per-butler attribution in observability backends
+    when all butlers share a single process-level TracerProvider resource).
+
+    Use this helper everywhere a span is created outside of tool_span.
+
+    Args:
+        span: The span to annotate.
+        butler_name: Short butler name (e.g. "switchboard", "finance").
+    """
+    span.set_attribute("butler.name", butler_name)
+    span.set_attribute("service.name", f"butler.{butler_name}")
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +124,12 @@ class tool_span:
         async def handle_state_get(key: str):
             ...
 
-    The span is named ``butler.tool.<tool_name>`` and carries a ``butler.name``
-    attribute.  Exceptions are recorded on the span with a full stack trace and
+    The span is named ``butler.tool.<tool_name>`` and carries ``butler.name``
+    and ``service.name`` attributes so that observability backends correctly
+    attribute spans to their originating butler even when multiple butlers
+    share a single TracerProvider in the same process.
+
+    Exceptions are recorded on the span with a full stack trace and
     the span status is set to ERROR before the exception is re-raised.
     """
 
@@ -108,7 +153,7 @@ class tool_span:
         # When get_active_session_context() returns None, start_span falls
         # back to the current contextvars context (unchanged default behavior).
         self._span = tracer.start_span(self._span_name, context=get_active_session_context())
-        self._span.set_attribute("butler.name", self._butler_name)
+        tag_butler_span(self._span, self._butler_name)
         self._token = trace.context_api.attach(trace.set_span_in_context(self._span))
         # Ensure butler context is correct for multi-butler mode
         set_butler_context(self._butler_name)
