@@ -732,9 +732,7 @@ class TestEntityMerge:
         )
         # entity_merge calls UPDATE entities SET aliases for the target entity
         execute_calls = mock_conn.execute.call_args_list
-        update_entity_calls = [
-            c for c in execute_calls if "UPDATE entities SET aliases" in c[0][0]
-        ]
+        update_entity_calls = [c for c in execute_calls if "UPDATE entities SET aliases" in c[0][0]]
         assert len(update_entity_calls) >= 1
         merged_aliases = update_entity_calls[0][0][1]
         assert "Ali" in merged_aliases
