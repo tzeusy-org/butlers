@@ -54,6 +54,10 @@ if _spec is not None and _spec.loader is not None:
     TriageRuleTestRequest = _models.TriageRuleTestRequest
     TriageRuleTestResult = _models.TriageRuleTestResult
     TriageRuleTestResponse = _models.TriageRuleTestResponse
+    ThreadAffinitySettings = _models.ThreadAffinitySettings
+    ThreadAffinitySettingsUpdate = _models.ThreadAffinitySettingsUpdate
+    ThreadOverrideUpsert = _models.ThreadOverrideUpsert
+    ThreadOverrideEntry = _models.ThreadOverrideEntry
     validate_condition = _models.validate_condition
     validate_action = _models.validate_action
 else:
@@ -1769,3 +1773,191 @@ async def test_triage_rule(
         )
 
     return TriageRuleTestResponse(data=result)
+
+
+# ---------------------------------------------------------------------------
+# Thread affinity settings endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/thread-affinity/settings", response_model=ThreadAffinitySettings)
+async def get_thread_affinity_settings(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ThreadAffinitySettings:
+    """Get current global thread-affinity routing settings.
+
+    Returns the singleton settings row with global enable/disable toggle,
+    TTL days, and per-thread override map.
+    """
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        """
+        SELECT
+            thread_affinity_enabled,
+            thread_affinity_ttl_days,
+            thread_overrides,
+            updated_at::text AS updated_at
+        FROM thread_affinity_settings
+        WHERE id = 1
+        """
+    )
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Thread affinity settings row not found")
+
+    overrides_raw = row["thread_overrides"]
+    if isinstance(overrides_raw, dict):
+        overrides = overrides_raw
+    else:
+        overrides = {}
+
+    return ThreadAffinitySettings(
+        enabled=bool(row["thread_affinity_enabled"]),
+        ttl_days=int(row["thread_affinity_ttl_days"]),
+        thread_overrides=overrides,
+        updated_at=row["updated_at"],
+    )
+
+
+@router.patch("/thread-affinity/settings", response_model=ThreadAffinitySettings)
+async def update_thread_affinity_settings(
+    body: ThreadAffinitySettingsUpdate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ThreadAffinitySettings:
+    """Update global thread-affinity routing settings.
+
+    Partial update: only fields provided in the request body are changed.
+    The singleton row (id=1) is created if it does not exist.
+    """
+    pool = _pool(db)
+
+    if body.enabled is None and body.ttl_days is None:
+        raise HTTPException(status_code=422, detail="No fields provided for update")
+
+    if body.ttl_days is not None and body.ttl_days <= 0:
+        raise HTTPException(status_code=422, detail="ttl_days must be a positive integer")
+
+    # Build SET clauses
+    set_clauses: list[str] = ["updated_at = NOW()"]
+    args: list = []
+
+    if body.enabled is not None:
+        args.append(body.enabled)
+        set_clauses.append(f"thread_affinity_enabled = ${len(args)}")
+
+    if body.ttl_days is not None:
+        args.append(body.ttl_days)
+        set_clauses.append(f"thread_affinity_ttl_days = ${len(args)}")
+
+    set_sql = ", ".join(set_clauses)
+
+    await pool.execute(
+        f"""
+        INSERT INTO thread_affinity_settings (id, thread_affinity_enabled, thread_affinity_ttl_days)
+        VALUES (1, TRUE, 30)
+        ON CONFLICT (id) DO UPDATE
+        SET {set_sql}
+        """,
+        *args,
+    )
+
+    # Return updated row
+    return await get_thread_affinity_settings(db=db)
+
+
+@router.get("/thread-affinity/overrides", response_model=list[ThreadOverrideEntry])
+async def list_thread_affinity_overrides(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[ThreadOverrideEntry]:
+    """List all per-thread affinity overrides.
+
+    Returns a list of thread_id → mode pairs from the overrides JSONB column.
+    """
+    pool = _pool(db)
+
+    row = await pool.fetchrow("SELECT thread_overrides FROM thread_affinity_settings WHERE id = 1")
+
+    if row is None or not row["thread_overrides"]:
+        return []
+
+    overrides_raw = row["thread_overrides"]
+    if not isinstance(overrides_raw, dict):
+        return []
+
+    return [ThreadOverrideEntry(thread_id=tid, mode=mode) for tid, mode in overrides_raw.items()]
+
+
+@router.put(
+    "/thread-affinity/overrides/{thread_id}",
+    response_model=ThreadOverrideEntry,
+    status_code=200,
+)
+async def upsert_thread_affinity_override(
+    thread_id: str,
+    body: ThreadOverrideUpsert,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ThreadOverrideEntry:
+    """Create or update a per-thread affinity override.
+
+    Set mode='disabled' to suppress affinity for a thread.
+    Set mode='force:<butler>' to always route this thread to a specific butler.
+    """
+    pool = _pool(db)
+
+    if not thread_id or not thread_id.strip():
+        raise HTTPException(status_code=422, detail="thread_id must not be empty")
+
+    clean_thread_id = thread_id.strip()
+
+    # Upsert the settings row if missing, then merge override into JSONB
+    await pool.execute(
+        """
+        INSERT INTO thread_affinity_settings (id)
+        VALUES (1)
+        ON CONFLICT (id) DO NOTHING
+        """
+    )
+
+    await pool.execute(
+        """
+        UPDATE thread_affinity_settings
+        SET thread_overrides = thread_overrides || jsonb_build_object($1::text, $2::text),
+            updated_at = NOW()
+        WHERE id = 1
+        """,
+        clean_thread_id,
+        body.mode,
+    )
+
+    return ThreadOverrideEntry(thread_id=clean_thread_id, mode=body.mode)
+
+
+@router.delete(
+    "/thread-affinity/overrides/{thread_id}",
+    status_code=204,
+)
+async def delete_thread_affinity_override(
+    thread_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Delete a per-thread affinity override.
+
+    After deletion, the thread will use history-based affinity lookup (or global settings).
+    """
+    pool = _pool(db)
+
+    if not thread_id or not thread_id.strip():
+        raise HTTPException(status_code=422, detail="thread_id must not be empty")
+
+    clean_thread_id = thread_id.strip()
+
+    await pool.execute(
+        """
+        UPDATE thread_affinity_settings
+        SET thread_overrides = thread_overrides - $1::text,
+            updated_at = NOW()
+        WHERE id = 1
+        """,
+        clean_thread_id,
+    )
