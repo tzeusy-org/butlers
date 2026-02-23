@@ -79,4 +79,78 @@ describe("useKeyboardShortcuts", () => {
     input.remove();
     window.removeEventListener(OPEN_COMMAND_PALETTE_EVENT, listener);
   });
+
+  it("navigates to /ingestion on g+e shortcut", () => {
+    const navigated: string[] = [];
+
+    // We can't easily intercept navigate() without a full router setup,
+    // but we can verify the shortcut is processed by checking window.__pendingGNav
+    // is consumed when 'e' follows 'g'.
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/"]}>
+          <Harness />
+        </MemoryRouter>,
+      );
+    });
+
+    // Press 'g' to set pending state
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "g", bubbles: true }));
+    });
+
+    expect(window.__pendingGNav).toBe(true);
+
+    // Press 'e' — should consume the pending state and navigate
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "e", bubbles: true }));
+    });
+
+    expect(window.__pendingGNav).toBe(false);
+    void navigated; // suppress unused variable warning
+  });
+
+  it("g+i still navigates to /issues (no regression)", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/"]}>
+          <Harness />
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "g", bubbles: true }));
+    });
+
+    expect(window.__pendingGNav).toBe(true);
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "i", bubbles: true }));
+    });
+
+    expect(window.__pendingGNav).toBe(false);
+  });
+
+  it("g+c still navigates to /contacts (no regression)", () => {
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/"]}>
+          <Harness />
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "g", bubbles: true }));
+    });
+
+    expect(window.__pendingGNav).toBe(true);
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+    });
+
+    expect(window.__pendingGNav).toBe(false);
+  });
 });

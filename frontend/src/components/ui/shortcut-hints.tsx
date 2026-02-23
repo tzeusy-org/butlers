@@ -23,6 +23,7 @@ const SHORTCUTS = [
   { keys: ["g", "m"], description: "Go to Memory" },
   { keys: ["g", "c"], description: "Go to Contacts" },
   { keys: ["g", "h"], description: "Go to Health" },
+  { keys: ["g", "e"], description: "Go to Ingestion" },
 ] as const;
 
 function Kbd({ children }: { children: React.ReactNode }) {

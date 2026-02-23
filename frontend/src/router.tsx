@@ -1,4 +1,4 @@
-import { createBrowserRouter } from 'react-router'
+import { createBrowserRouter, Navigate, useParams, useSearchParams } from 'react-router'
 import RootLayout from './layouts/RootLayout.tsx'
 import DashboardPage from './pages/DashboardPage.tsx'
 import ButlersPage from './pages/ButlersPage.tsx'
@@ -30,8 +30,20 @@ import ApprovalsPage from './pages/ApprovalsPage.tsx'
 import ApprovalRulesPage from './pages/ApprovalRulesPage.tsx'
 import SecretsPage from './pages/SecretsPage.tsx'
 import CalendarWorkspacePage from './pages/CalendarWorkspacePage.tsx'
+import IngestionPage from './pages/IngestionPage.tsx'
 
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
+
+// Redirect /connectors/:connectorType/:endpointIdentity
+// → /ingestion/connectors/:connectorType/:endpointIdentity
+// Preserves relevant query string params (period, date filters) per spec section 3.3.
+function ConnectorDetailRedirect() {
+  const { connectorType, endpointIdentity } = useParams()
+  const [searchParams] = useSearchParams()
+  const qs = searchParams.toString()
+  const target = `/ingestion/connectors/${connectorType}/${endpointIdentity}${qs ? `?${qs}` : ''}`
+  return <Navigate to={target} replace />
+}
 
 export const router = createBrowserRouter(
   [
@@ -69,6 +81,21 @@ export const router = createBrowserRouter(
         { path: '/memory', element: <MemoryPage /> },
         { path: '/settings', element: <SettingsPage /> },
         { path: '/secrets', element: <SecretsPage /> },
+        // Ingestion routes (spec section 3.1, 3.2)
+        { path: '/ingestion', element: <IngestionPage /> },
+        {
+          path: '/ingestion/connectors/:connectorType/:endpointIdentity',
+          element: <IngestionPage />,
+        },
+        // Legacy /connectors redirects → /ingestion equivalents (spec section 3.3)
+        {
+          path: '/connectors',
+          element: <Navigate to="/ingestion?tab=connectors" replace />,
+        },
+        {
+          path: '/connectors/:connectorType/:endpointIdentity',
+          element: <ConnectorDetailRedirect />,
+        },
       ],
     },
   ],
