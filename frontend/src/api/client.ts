@@ -1624,7 +1624,7 @@ function _toConnectorFanout(
       index.set(key, {
         connector_type: row.connector_type,
         endpoint_identity: row.endpoint_identity,
-        targets: {},
+        targets: Object.create(null) as Record<string, number>,
       });
     }
     index.get(key)!.targets[row.target_butler] = row.message_count;
