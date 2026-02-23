@@ -98,6 +98,16 @@ import type {
   MemoryRule,
   MemoryStats,
   RuleParams,
+  TriageRule,
+  TriageRuleCreate,
+  TriageRuleUpdate,
+  TriageRuleListParams,
+  TriageRuleTestRequest,
+  TriageRuleTestResponse,
+  ThreadAffinitySettings,
+  ThreadAffinitySettingsUpdate,
+  ThreadOverrideEntry,
+  ThreadOverrideUpsert,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1317,18 +1327,6 @@ export function listConnectors(): Promise<ApiResponse<ConnectorEntry[]>> {
 // ---------------------------------------------------------------------------
 // Triage rules API
 // ---------------------------------------------------------------------------
-import type {
-  TriageRule,
-  TriageRuleCreate,
-  TriageRuleUpdate,
-  TriageRuleListParams,
-  TriageRuleTestRequest,
-  TriageRuleTestResponse,
-  ThreadAffinitySettings,
-  ThreadAffinitySettingsUpdate,
-  ThreadOverrideEntry,
-  ThreadOverrideUpsert,
-} from "./types.ts";
 
 /** List triage rules with optional filters. */
 export function listTriageRules(

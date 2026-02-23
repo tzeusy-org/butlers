@@ -123,7 +123,11 @@ export function useUpdateThreadAffinitySettings() {
   });
 }
 
-/** Upsert a per-thread affinity override. */
+/**
+ * Upsert a per-thread affinity override.
+ * Reserved for the per-thread overrides management UI (future sub-task of butlers-dsa4.4).
+ * Not yet consumed by FiltersTab — exported for completeness alongside the query hook.
+ */
 export function useUpsertThreadAffinityOverride() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -136,7 +140,11 @@ export function useUpsertThreadAffinityOverride() {
   });
 }
 
-/** Delete a per-thread affinity override. */
+/**
+ * Delete a per-thread affinity override.
+ * Reserved for the per-thread overrides management UI (future sub-task of butlers-dsa4.4).
+ * Not yet consumed by FiltersTab — exported for completeness alongside the query hook.
+ */
 export function useDeleteThreadAffinityOverride() {
   const queryClient = useQueryClient();
   return useMutation({

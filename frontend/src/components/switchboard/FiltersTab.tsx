@@ -140,7 +140,7 @@ const SEED_RULES: TriageRuleCreate[] = [
   {
     rule_type: "mime_type",
     condition: { type: "text/calendar" },
-    action: "route_to:relationship",
+    action: "route_to:calendar",
     priority: 50,
   },
 ];
@@ -1214,7 +1214,11 @@ function GmailLabelFiltersPanel() {
   }
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4" data-testid="gmail-label-panel">
+    <div className="space-y-4" data-testid="gmail-label-panel">
+      <p className="text-xs text-amber-600 dark:text-amber-400">
+        Changes are not yet persisted — this panel is a UI preview pending backend label-filter support.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div className="space-y-1">
         <Label>Include labels</Label>
         <p className="text-xs text-muted-foreground">Only process emails with these labels.</p>
@@ -1236,6 +1240,7 @@ function GmailLabelFiltersPanel() {
           onRemove={removeExclude}
           testId="exclude-labels-input"
         />
+      </div>
       </div>
     </div>
   );
@@ -1321,6 +1326,7 @@ function EmailFiltersSection() {
 
       {/* Drawers and dialogs */}
       <RuleEditorDrawer
+        key={editingRule?.id ?? "new"}
         open={editorOpen}
         onOpenChange={handleEditorClose}
         editRule={editingRule}
