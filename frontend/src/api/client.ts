@@ -1468,42 +1468,272 @@ export type {
   IngestionPeriod,
 };
 
+// ---------------------------------------------------------------------------
+// Internal helpers — backend response shapes
+// ---------------------------------------------------------------------------
+
+/** Raw connector entry from GET /api/switchboard/connectors. */
+interface _BackendConnectorEntry {
+  connector_type: string;
+  endpoint_identity: string;
+  instance_id: string | null;
+  version: string | null;
+  state: string;
+  error_message: string | null;
+  uptime_s: number | null;
+  last_heartbeat_at: string | null;
+  first_seen_at: string;
+  registered_via: string;
+  counter_messages_ingested: number;
+  counter_messages_failed: number;
+  counter_source_api_calls: number;
+  counter_checkpoint_saves: number;
+  counter_dedupe_accepted: number;
+  checkpoint_cursor: string | null;
+  checkpoint_updated_at: string | null;
+}
+
+/** Raw aggregate summary from GET /api/switchboard/connectors/summary. */
+interface _BackendConnectorSummary {
+  total_connectors: number;
+  online_count: number;
+  stale_count: number;
+  offline_count: number;
+  unknown_count: number;
+  total_messages_ingested: number;
+  total_messages_failed: number;
+  error_rate_pct: number;
+}
+
+/** Raw row from GET /api/switchboard/ingestion/fanout. */
+interface _BackendFanoutRow {
+  connector_type: string;
+  endpoint_identity: string;
+  target_butler: string;
+  message_count: number;
+}
+
+/** Raw timeseries row from GET /api/switchboard/connectors/:type/:id/stats. */
+interface _BackendStatsRow {
+  connector_type: string;
+  endpoint_identity: string;
+  /** ISO string for hourly rollup (period=24h). */
+  hour?: string;
+  /** ISO date string for daily rollup (period=7d|30d). */
+  day?: string;
+  messages_ingested: number;
+  messages_failed: number;
+  source_api_calls: number;
+  dedupe_accepted: number;
+  heartbeat_count: number;
+  healthy_count: number;
+  degraded_count: number;
+  error_count: number;
+  uptime_pct?: number | null;
+}
+
+/**
+ * Derive liveness string from last heartbeat timestamp.
+ * - online: heartbeat within the last 5 minutes
+ * - stale: heartbeat between 5 and 30 minutes ago
+ * - offline: no heartbeat, or more than 30 minutes ago
+ */
+function _deriveLiveness(lastHeartbeatAt: string | null): string {
+  if (!lastHeartbeatAt) return "offline";
+  const ageMs = Date.now() - new Date(lastHeartbeatAt).getTime();
+  const ageMins = ageMs / 60_000;
+  if (ageMins < 5) return "online";
+  if (ageMins < 30) return "stale";
+  return "offline";
+}
+
+/** Map a backend ConnectorEntry to the frontend ConnectorSummary shape. */
+function _toConnectorSummary(entry: _BackendConnectorEntry): ConnectorSummary {
+  return {
+    connector_type: entry.connector_type,
+    endpoint_identity: entry.endpoint_identity,
+    liveness: _deriveLiveness(entry.last_heartbeat_at),
+    state: entry.state,
+    error_message: entry.error_message,
+    version: entry.version,
+    uptime_s: entry.uptime_s,
+    last_heartbeat_at: entry.last_heartbeat_at,
+    first_seen_at: entry.first_seen_at,
+    today: null,
+  };
+}
+
+/** Map a backend ConnectorEntry to the frontend ConnectorDetail shape. */
+function _toConnectorDetail(entry: _BackendConnectorEntry): ConnectorDetail {
+  return {
+    ..._toConnectorSummary(entry),
+    instance_id: entry.instance_id,
+    registered_via: entry.registered_via,
+    checkpoint:
+      entry.checkpoint_cursor != null || entry.checkpoint_updated_at != null
+        ? {
+            cursor: entry.checkpoint_cursor,
+            updated_at: entry.checkpoint_updated_at,
+          }
+        : null,
+    counters: {
+      messages_ingested: entry.counter_messages_ingested,
+      messages_failed: entry.counter_messages_failed,
+      source_api_calls: entry.counter_source_api_calls,
+      checkpoint_saves: entry.counter_checkpoint_saves,
+      dedupe_accepted: entry.counter_dedupe_accepted,
+    },
+  };
+}
+
+/**
+ * Map a backend aggregate summary to the frontend CrossConnectorSummary shape.
+ * The `/summary` endpoint does not include per-connector breakdown or period,
+ * so those are synthesised as empty/default values.
+ */
+function _toCrossConnectorSummary(
+  raw: _BackendConnectorSummary,
+  period: IngestionPeriod,
+): CrossConnectorSummary {
+  return {
+    period,
+    total_connectors: raw.total_connectors,
+    connectors_online: raw.online_count,
+    connectors_stale: raw.stale_count,
+    connectors_offline: raw.offline_count,
+    total_messages_ingested: raw.total_messages_ingested,
+    total_messages_failed: raw.total_messages_failed,
+    overall_error_rate_pct: raw.error_rate_pct,
+    by_connector: [],
+  };
+}
+
+/**
+ * Map a flat list of FanoutRow records into the matrix-shaped ConnectorFanout
+ * expected by FanoutMatrix. Rows are grouped by (connector_type, endpoint_identity)
+ * and each unique target_butler becomes a key in the `targets` dict.
+ */
+function _toConnectorFanout(
+  rows: _BackendFanoutRow[],
+  period: IngestionPeriod,
+): ConnectorFanout {
+  const index = new Map<string, ConnectorFanoutEntry>();
+  for (const row of rows) {
+    const key = `${row.connector_type}::${row.endpoint_identity}`;
+    if (!index.has(key)) {
+      index.set(key, {
+        connector_type: row.connector_type,
+        endpoint_identity: row.endpoint_identity,
+        targets: Object.create(null) as Record<string, number>,
+      });
+    }
+    index.get(key)!.targets[row.target_butler] = row.message_count;
+  }
+  return { period, matrix: Array.from(index.values()) };
+}
+
+/**
+ * Map a flat list of hourly/daily stats rows into the ConnectorStats shape
+ * expected by VolumeTrendChart and the period-summary card.
+ */
+function _toConnectorStats(
+  rows: _BackendStatsRow[],
+  connectorType: string,
+  endpointIdentity: string,
+  period: IngestionPeriod,
+): ConnectorStats {
+  const timeseries: ConnectorStatsBucket[] = rows.map((r) => ({
+    bucket: (r.hour ?? r.day ?? ""),
+    messages_ingested: r.messages_ingested,
+    messages_failed: r.messages_failed,
+    healthy_count: r.healthy_count,
+    degraded_count: r.degraded_count,
+    error_count: r.error_count,
+  }));
+
+  const totalIngested = timeseries.reduce((s, r) => s + r.messages_ingested, 0);
+  const totalFailed = timeseries.reduce((s, r) => s + r.messages_failed, 0);
+  const totalProcessed = totalIngested + totalFailed;
+  const errorRatePct = totalProcessed > 0 ? (totalFailed / totalProcessed) * 100 : 0;
+  // Approximate avg per hour: for 24h use hourly rows directly; for 7d/30d divide total by hours
+  const periodHours = period === "24h" ? 24 : period === "7d" ? 168 : 720;
+  const avgPerHour = periodHours > 0 ? totalIngested / periodHours : 0;
+
+  const summary: ConnectorStatsSummary = {
+    messages_ingested: totalIngested,
+    messages_failed: totalFailed,
+    error_rate_pct: errorRatePct,
+    uptime_pct: null,
+    avg_messages_per_hour: avgPerHour,
+  };
+
+  return { connector_type: connectorType, endpoint_identity: endpointIdentity, period, summary, timeseries };
+}
+
+// ---------------------------------------------------------------------------
+// Public API functions
+// ---------------------------------------------------------------------------
+
 /** List all connectors with liveness and today's stats. */
-export function listConnectorSummaries(): Promise<ApiResponse<ConnectorSummary[]>> {
-  return apiFetch<ApiResponse<ConnectorSummary[]>>("/connectors");
+export async function listConnectorSummaries(): Promise<ApiResponse<ConnectorSummary[]>> {
+  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry[]>>("/switchboard/connectors");
+  return {
+    ...resp,
+    data: (resp.data ?? []).map(_toConnectorSummary),
+  };
 }
 
 /** Get full detail for a single connector. */
-export function getConnectorDetail(
+export async function getConnectorDetail(
   connectorType: string,
   endpointIdentity: string,
 ): Promise<ApiResponse<ConnectorDetail>> {
-  return apiFetch<ApiResponse<ConnectorDetail>>(
-    `/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
+  const resp = await apiFetch<ApiResponse<_BackendConnectorEntry>>(
+    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
   );
+  return {
+    ...resp,
+    data: _toConnectorDetail(resp.data),
+  };
 }
 
 /** Get time-series statistics for a single connector. */
-export function getConnectorStats(
+export async function getConnectorStats(
   connectorType: string,
   endpointIdentity: string,
   period: IngestionPeriod = "24h",
 ): Promise<ApiResponse<ConnectorStats>> {
-  return apiFetch<ApiResponse<ConnectorStats>>(
-    `/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/stats?period=${period}`,
+  const resp = await apiFetch<ApiResponse<_BackendStatsRow[]>>(
+    `/switchboard/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/stats?period=${period}`,
   );
+  return {
+    ...resp,
+    data: _toConnectorStats(resp.data ?? [], connectorType, endpointIdentity, period),
+  };
 }
 
 /** Get aggregate cross-connector summary. */
-export function getCrossConnectorSummary(
+export async function getCrossConnectorSummary(
   period: IngestionPeriod = "24h",
 ): Promise<ApiResponse<CrossConnectorSummary>> {
-  return apiFetch<ApiResponse<CrossConnectorSummary>>(`/connectors/summary?period=${period}`);
+  const resp = await apiFetch<ApiResponse<_BackendConnectorSummary>>(
+    `/switchboard/connectors/summary`,
+  );
+  return {
+    ...resp,
+    data: _toCrossConnectorSummary(resp.data, period),
+  };
 }
 
 /** Get fanout distribution matrix. */
-export function getConnectorFanout(
+export async function getConnectorFanout(
   period: IngestionPeriod = "7d",
 ): Promise<ApiResponse<ConnectorFanout>> {
-  return apiFetch<ApiResponse<ConnectorFanout>>(`/connectors/fanout?period=${period}`);
+  const resp = await apiFetch<ApiResponse<_BackendFanoutRow[]>>(
+    `/switchboard/ingestion/fanout?period=${period}`,
+  );
+  return {
+    ...resp,
+    data: _toConnectorFanout(resp.data ?? [], period),
+  };
 }
