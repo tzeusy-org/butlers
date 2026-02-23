@@ -1429,6 +1429,7 @@ export function deleteThreadAffinityOverride(threadId: string): Promise<void> {
     `/switchboard/thread-affinity/overrides/${encodeURIComponent(threadId)}`,
     { method: "DELETE" },
   );
+}
 
 // ---------------------------------------------------------------------------
 // Connector statistics API (docs/connectors/statistics.md §6)

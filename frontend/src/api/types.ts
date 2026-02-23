@@ -1499,6 +1499,7 @@ export interface ThreadOverrideEntry {
 /** Request body for PUT /api/switchboard/thread-affinity/overrides/:thread_id. */
 export interface ThreadOverrideUpsert {
   mode: string;
+}
 
 // ---------------------------------------------------------------------------
 // Connector statistics and analytics types (docs/connectors/statistics.md)
