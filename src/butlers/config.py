@@ -172,6 +172,7 @@ class BufferConfig:
     scanner_interval_s: int = 30
     scanner_grace_s: int = 10
     scanner_batch_size: int = 50
+    max_consecutive_same_tier: int = 10
 
 
 @dataclass
@@ -705,6 +706,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         scanner_interval_s=int(buffer_section.get("scanner_interval_s", 30)),
         scanner_grace_s=int(buffer_section.get("scanner_grace_s", 10)),
         scanner_batch_size=int(buffer_section.get("scanner_batch_size", 50)),
+        max_consecutive_same_tier=int(buffer_section.get("max_consecutive_same_tier", 10)),
     )
 
     # --- [[butler.schedule]] array ---

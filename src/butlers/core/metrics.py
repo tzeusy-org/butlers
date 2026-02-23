@@ -199,6 +199,15 @@ def _buffer_process_latency_ms() -> metrics.Histogram:
     )
 
 
+def _buffer_dequeue_by_tier_total() -> metrics.Counter:
+    """Counter: messages dequeued by policy tier (label: policy_tier, starvation_override)."""
+    return get_meter().create_counter(
+        name="butlers.switchboard.queue.dequeue_by_tier",
+        description="Total messages dequeued by policy tier, per the switchboard priority contract",
+        unit="messages",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Route instruments
 # ---------------------------------------------------------------------------
@@ -279,6 +288,7 @@ class ButlerMetrics:
         self.__buf_backpressure: metrics.Counter | None = None
         self.__buf_scanner: metrics.Counter | None = None
         self.__buf_latency: metrics.Histogram | None = None
+        self.__buf_dequeue_tier: metrics.Counter | None = None
         self.__route_accept: metrics.Histogram | None = None
         self.__route_depth: metrics.UpDownCounter | None = None
         self.__route_process: metrics.Histogram | None = None
@@ -332,6 +342,12 @@ class ButlerMetrics:
         if self.__buf_latency is None:
             self.__buf_latency = _buffer_process_latency_ms()
         return self.__buf_latency
+
+    @property
+    def _buf_dequeue_tier(self) -> metrics.Counter:
+        if self.__buf_dequeue_tier is None:
+            self.__buf_dequeue_tier = _buffer_dequeue_by_tier_total()
+        return self.__buf_dequeue_tier
 
     @property
     def _route_accept(self) -> metrics.Histogram:
@@ -402,6 +418,17 @@ class ButlerMetrics:
     def record_buffer_process_latency(self, latency_ms: float) -> None:
         """Record buffer process latency (queue wait time) in ms."""
         self._buf_latency.record(latency_ms, self._attrs)
+
+    def buffer_dequeue_by_tier(
+        self, policy_tier: str, *, starvation_override: bool = False
+    ) -> None:
+        """Record one dequeue, tagged with policy tier and starvation override flag."""
+        attrs = {
+            **self._attrs,
+            "policy_tier": policy_tier,
+            "starvation_override": "true" if starvation_override else "false",
+        }
+        self._buf_dequeue_tier.add(1, attrs)
 
     # -- route recording helpers --------------------------------------------
 
