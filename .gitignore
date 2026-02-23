@@ -291,3 +291,5 @@ butlers-982/
 .worktrees/parallel-agents/butlers-nrov.4/
 .worktrees/parallel-agents/butlers-nrov.6/
 .worktrees/parallel-agents/butlers-80d1/
+
+node_modules/
