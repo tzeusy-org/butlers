@@ -489,10 +489,11 @@ class TelegramBotConnector:
             # Mark API as disconnected on failure
             self._source_api_ok = False
 
-            if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
-                if exc.response.status_code == 409:
-                    description = self._telegram_error_description(exc.response)
-                    conflict_hint = self._describe_get_updates_conflict(exc.response)
+            response = exc.response if isinstance(exc, httpx.HTTPStatusError) else None
+            if response is not None:
+                if response.status_code == 409:
+                    description = self._telegram_error_description(response)
+                    conflict_hint = self._describe_get_updates_conflict(response)
                     self._metrics.record_source_api_call(api_method="getUpdates", status="conflict")
                     self._metrics.record_error(
                         error_type=get_error_type(exc), operation="fetch_updates"
@@ -509,12 +510,24 @@ class TelegramBotConnector:
                     return []
 
             # Record failed API call
-            is_rate_limited = (
-                isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
-            )
+            is_rate_limited = response is not None and response.status_code == 429
             status = "rate_limited" if is_rate_limited else "error"
             self._metrics.record_source_api_call(api_method="getUpdates", status=status)
             self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_updates")
+
+            if is_rate_limited:
+                retry_after_s = self._telegram_retry_after_seconds(response)
+                logger.warning(
+                    "Telegram getUpdates rate-limited; skipping this poll cycle",
+                    extra={
+                        "endpoint_identity": self._config.endpoint_identity,
+                        "status_code": 429,
+                        "retry_after_s": retry_after_s,
+                    },
+                )
+                if retry_after_s is not None and retry_after_s > 0:
+                    await asyncio.sleep(retry_after_s)
+                return []
 
             raise
 
@@ -532,6 +545,48 @@ class TelegramBotConnector:
                 description = description.strip()
                 if description:
                     return description
+        return None
+
+    @staticmethod
+    def _telegram_retry_after_seconds(response: httpx.Response | None) -> float | None:
+        if response is None:
+            return None
+
+        retry_after_header = response.headers.get("Retry-After")
+        if retry_after_header is not None:
+            try:
+                value = float(retry_after_header)
+                if value > 0:
+                    return value
+            except ValueError:
+                pass
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if not isinstance(payload, dict):
+            return None
+
+        parameters = payload.get("parameters")
+        if not isinstance(parameters, dict):
+            return None
+
+        retry_after = parameters.get("retry_after")
+        value: float | None
+        if isinstance(retry_after, (int, float)) and not isinstance(retry_after, bool):
+            value = float(retry_after)
+        elif isinstance(retry_after, str):
+            try:
+                value = float(retry_after)
+            except ValueError:
+                value = None
+        else:
+            value = None
+
+        if value is not None and value > 0:
+            return value
         return None
 
     @classmethod

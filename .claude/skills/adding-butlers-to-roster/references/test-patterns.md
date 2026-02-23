@@ -42,6 +42,7 @@ async def pool(postgres_container):
 
     db = Database(
         db_name=_unique_db_name(),
+        schema="<butler-name>",  # Matches butler.toml [butler.db].schema
         host=postgres_container.get_container_host_ip(),
         port=int(postgres_container.get_exposed_port(5432)),
         user=postgres_container.username,
@@ -52,7 +53,10 @@ async def pool(postgres_container):
     await db.provision()
     p = await db.connect()
 
-    # Create tables matching this butler's Alembic migrations
+    # Create schema and tables matching this butler's Alembic migrations
+    # Note: Database.connect() sets search_path to "<schema>, shared, public"
+    await p.execute("CREATE SCHEMA IF NOT EXISTS <butler_name>")
+    await p.execute("SET search_path TO <butler_name>, public")
     await p.execute("""
         CREATE TABLE IF NOT EXISTS <table_name> (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -220,10 +224,13 @@ assert row["name"] == "expected"
 make test
 
 # Run a single butler's tests
-uv run pytest butlers/<butler-name>/tests/test_tools.py -v
+uv run pytest roster/<butler-name>/tests/test_tools.py -v
 
 # Run a single test
-uv run pytest butlers/<butler-name>/tests/test_tools.py::test_thing_create -v
+uv run pytest roster/<butler-name>/tests/test_tools.py::test_thing_create -v
+
+# Run tests from the project root tests/ directory
+uv run pytest tests/test_<butler-name>_tools.py -v
 
 # Skip integration tests (no Docker)
 uv run pytest -m "not integration" -v

@@ -827,3 +827,6 @@ make test-qg
 
 ### Frontend dialog test contract
 - Radix `Dialog` content renders through a portal (`document.body`), so jsdom tests for dialog controls should query `document` (not only the mounted container) and use the native input value setter + `input` event dispatch for controlled text inputs.
+
+### Telegram connector rate-limit polling contract
+- `src/butlers/connectors/telegram_bot.py::_get_updates` must treat Telegram `HTTP 429` as recoverable for polling: record `rate_limited` source API status/error metrics, log a warning, honor `Retry-After` (header first, then `result.parameters.retry_after`), and return `[]` instead of raising.

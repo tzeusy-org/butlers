@@ -253,8 +253,8 @@ Memory retrieval/config rules:
 
 ## 10. Persistence and Data Isolation Contract
 Isolation invariants:
-- Each butler has its own PostgreSQL database.
-- Direct cross-butler DB access is prohibited.
+- Each butler has its own PostgreSQL schema.
+- Direct cross-butler schema access is prohibited.
 - Inter-butler communication happens only via MCP/Switchboard contracts.
 
 ### 10.1 Data Schema Contract

@@ -5,6 +5,7 @@ import {
   addWeeks,
   format,
   isSameMonth,
+  isToday,
   isValid,
   parseISO,
   startOfDay,
@@ -575,7 +576,7 @@ export default function CalendarWorkspacePage() {
     sourceFreshness.length > 0
       ? sourceFreshness
       : connectedSources;
-  const visibleSources = laneSources.filter((source) => source.lane === view);
+  const visibleSources = laneSources;
 
   const sourceByKey = useMemo(() => {
     const lookup = new Map<string, CalendarWorkspaceSourceFreshness>();
@@ -605,6 +606,12 @@ export default function CalendarWorkspacePage() {
     if (range !== "month") return [] as Date[];
     const gridStart = startOfWeek(start, { weekStartsOn: 1 });
     return Array.from({ length: 42 }, (_, index) => addDays(gridStart, index));
+  }, [range, start]);
+
+  const weekDays = useMemo(() => {
+    if (range === "week") return Array.from({ length: 7 }, (_, i) => addDays(start, i));
+    if (range === "day") return [start];
+    return [] as Date[];
   }, [range, start]);
 
   const userEditableEntries = useMemo(
@@ -1332,8 +1339,6 @@ export default function CalendarWorkspacePage() {
                   ? workspaceQuery.error.message
                   : "Unknown error"}
               </p>
-            ) : entries.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No events in the selected range.</p>
             ) : view === "butler" ? (
               <div className="space-y-4">
                 {butlerLaneRows.length === 0 ? (
@@ -1465,6 +1470,50 @@ export default function CalendarWorkspacePage() {
                   })}
                 </div>
               </div>
+            ) : range === "week" || range === "day" ? (
+              <div className="space-y-2">
+                <div className={cn("grid gap-2 text-xs font-medium text-muted-foreground", range === "week" ? "grid-cols-7" : "grid-cols-1")}>
+                  {weekDays.map((day) => (
+                    <div key={format(day, "yyyy-MM-dd")} className="px-2">
+                      {format(day, "EEE")}
+                    </div>
+                  ))}
+                </div>
+                <div className={cn("grid gap-2", range === "week" ? "grid-cols-7" : "grid-cols-1")}>
+                  {weekDays.map((day) => {
+                    const key = format(day, "yyyy-MM-dd");
+                    const dayEntries = entriesByDay.get(key) ?? [];
+                    return (
+                      <div
+                        key={key}
+                        className={cn(
+                          "rounded-md border border-border p-2",
+                          range === "day" && "min-h-[200px]",
+                          isToday(day) && "ring-2 ring-primary/50",
+                        )}
+                      >
+                        <p className={cn("text-xs font-medium", isToday(day) && "text-primary")}>{format(day, "d MMM")}</p>
+                        <div className="mt-1 space-y-1">
+                          {dayEntries.map((entry) => (
+                            <p
+                              key={entry.entry_id}
+                              className="truncate rounded bg-accent/50 px-1 py-0.5 text-xs"
+                              title={`${formatEntryWindow(entry)} — ${entry.title}`}
+                            >
+                              {entry.all_day ? "" : format(new Date(entry.start_at), "HH:mm") + " "}{entry.title}
+                            </p>
+                          ))}
+                          {dayEntries.length === 0 ? (
+                            <p className="text-[11px] text-muted-foreground">&nbsp;</p>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : entries.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No events in the selected range.</p>
             ) : (
               <Table>
                 <TableHeader>
@@ -1547,7 +1596,7 @@ export default function CalendarWorkspacePage() {
                         <Badge variant={syncBadgeVariant(source.sync_state)}>{source.sync_state}</Badge>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        {source.lane} • {source.provider ?? source.source_kind}
+                        <span className="font-medium">({source.lane})</span> {source.provider ?? source.source_kind}
                         {source.calendar_id ? ` • ${source.calendar_id}` : ""}
                       </p>
                       <p className="text-xs text-muted-foreground">

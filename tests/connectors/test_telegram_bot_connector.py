@@ -571,6 +571,40 @@ async def test_get_updates_conflict_returns_empty(
 
 
 @pytest.mark.asyncio
+async def test_get_updates_rate_limited_returns_empty_and_respects_retry_after(
+    connector: TelegramBotConnector, caplog: pytest.LogCaptureFixture
+) -> None:
+    """429 Too Many Requests should back off and skip this poll cycle."""
+    connector._last_update_id = 200
+
+    response = httpx.Response(
+        status_code=429,
+        json={
+            "ok": False,
+            "description": "Too Many Requests: retry after 3",
+            "parameters": {"retry_after": 3},
+        },
+        request=httpx.Request("GET", "https://api.telegram.org/botTOKEN/getUpdates"),
+    )
+    response.headers["Retry-After"] = "2"
+
+    with caplog.at_level("WARNING"):
+        with patch.object(connector._http_client, "get", return_value=response) as mock_get:
+            with patch(
+                "butlers.connectors.telegram_bot.asyncio.sleep",
+                new_callable=AsyncMock,
+            ) as sleep_mock:
+                updates = await connector._get_updates()
+
+    assert updates == []
+    assert connector._last_update_id == 200
+    assert connector._source_api_ok is False
+    mock_get.assert_called_once()
+    sleep_mock.assert_awaited_once_with(2.0)
+    assert any("rate-limited" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_set_webhook(connector: TelegramBotConnector) -> None:
     """Test setWebhook API call."""
     mock_response = Mock()

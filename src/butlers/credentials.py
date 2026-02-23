@@ -75,35 +75,6 @@ def validate_credentials(
         raise CredentialError(msg)
 
 
-def validate_module_credentials(
-    module_credentials: dict[str, list[str]],
-) -> dict[str, list[str]]:
-    """Check module credentials and return per-module missing vars.
-
-    Unlike ``validate_credentials``, this function does **not** raise.
-    It returns a dict mapping module name to the list of missing env var
-    names.  An empty dict means all module credentials are present.
-
-    Parameters
-    ----------
-    module_credentials:
-        Dict mapping module (or scoped-module) name to list of required
-        env var names.
-
-    Returns
-    -------
-    dict[str, list[str]]
-        Mapping of module name to missing env var names.  Only modules
-        with at least one missing var appear in the result.
-    """
-    failures: dict[str, list[str]] = {}
-    for module_name, cred_vars in module_credentials.items():
-        missing = [var for var in cred_vars if not os.environ.get(var)]
-        if missing:
-            failures[module_name] = missing
-    return failures
-
-
 async def validate_module_credentials_async(
     module_credentials: dict[str, list[str]],
     credential_store: CredentialStore,

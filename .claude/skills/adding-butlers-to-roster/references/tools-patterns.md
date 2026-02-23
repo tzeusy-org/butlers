@@ -1,8 +1,60 @@
-# tools.py Patterns Reference
+# tools.py / tools/ Patterns Reference
 
-## File Structure
+## Two Forms: Single File or Package
 
-Every tools.py follows this structure:
+The framework auto-discovers either form:
+
+### Single file: `roster/<butler>/tools.py`
+
+Use for simple butlers with fewer than 5 tool functions.
+
+### Package: `roster/<butler>/tools/__init__.py`
+
+Use for complex butlers (recommended for 5+ tools). Organize by domain:
+
+```
+tools/
+├── __init__.py          # Re-exports all public symbols
+├── _helpers.py          # Shared helpers (underscore prefix, not public tools)
+├── domain_a.py          # Domain-grouped tools (e.g., measurements.py)
+└── domain_b.py          # Another group (e.g., medications.py)
+```
+
+**`__init__.py` pattern (from health butler):**
+
+```python
+"""<Butler-name> butler tools — <brief description>.
+
+Re-exports all public symbols so that ``from butlers.tools.<name> import X``
+continues to work as before.
+"""
+
+from butlers.tools.<butler>._helpers import _row_to_dict
+from butlers.tools.<butler>.domain_a import (
+    VALID_TYPES,
+    thing_create,
+    thing_list,
+    thing_get,
+)
+from butlers.tools.<butler>.domain_b import (
+    other_create,
+    other_list,
+)
+
+__all__ = [
+    "VALID_TYPES",
+    "_row_to_dict",
+    "thing_create",
+    "thing_list",
+    "thing_get",
+    "other_create",
+    "other_list",
+]
+```
+
+## Module File Structure
+
+Each domain module follows this template:
 
 ```python
 """<Butler-name> butler tools — <brief description>."""
@@ -56,6 +108,31 @@ def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
     """Convert an asyncpg Record to a dict, parsing JSONB strings."""
     d = dict(row)
     for key in ("data", "details", "config", "tags", "metadata"):
+        if key in d and isinstance(d[key], str):
+            d[key] = json.loads(d[key])
+    return d
+```
+
+## `_helpers.py` Pattern
+
+Shared helpers go in a separate file with underscore prefix:
+
+```python
+"""Shared helpers for <butler-name> butler tools."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import asyncpg
+
+
+def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
+    """Convert an asyncpg Record to a dict, parsing JSONB strings."""
+    d = dict(row)
+    for key in ("data", "details", "config", "tags", "metadata", "nutrition",
+                "value", "schedule"):
         if key in d and isinstance(d[key], str):
             d[key] = json.loads(d[key])
     return d
@@ -126,6 +203,19 @@ async def entity_search(
 - Build WHERE clause dynamically with parameterized queries
 - Use `$1`, `$2` etc. (asyncpg uses numbered params, not `%s`)
 - Use `@>` for JSONB containment queries
+
+### History/log functions
+```python
+async def entity_history(
+    pool: asyncpg.Pool,
+    entity_id: uuid.UUID | None = None,
+    days: int = 30,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+```
+- Support time-range filtering with `days` parameter
+- Optional entity-scoped filtering
+- ORDER BY time column DESC
 
 ## SQL Patterns
 
@@ -234,3 +324,4 @@ async def _log_activity(
 - Don't use raw string interpolation for SQL — always use parameterized queries
 - Don't use `datetime.now()` — use `now()` in SQL for consistency
 - Don't add OpenTelemetry tracing unless the butler is infrastructure (like heartbeat/switchboard)
+- Don't put helper functions in `__init__.py` — use `_helpers.py` for shared code
