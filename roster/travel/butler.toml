@@ -1,0 +1,45 @@
+[butler]
+name = "travel"
+port = 40106
+description = "Travel logistics and itinerary intelligence specialist for flights, hotels, car rentals, and trip planning."
+
+[butler.runtime]
+model = "gpt-5.3-codex-spark"
+max_concurrent_sessions = 3
+
+[runtime]
+type = "codex"
+
+[butler.db]
+name = "butlers"
+schema = "travel"
+
+[butler.switchboard]
+url = "http://localhost:40100/mcp"
+advertise = true
+liveness_ttl_s = 300
+route_contract_min = "route.v1"
+route_contract_max = "route.v1"
+
+[modules.email]
+
+[modules.calendar]
+provider = "google"
+calendar_id = "primary"
+
+[modules.calendar.conflicts]
+policy = "suggest"
+
+[modules.memory]
+
+[[butler.schedule]]
+name = "upcoming-travel-check"
+cron = "0 8 * * *"
+dispatch_mode = "job"
+job_name = "upcoming_travel_check"
+
+[[butler.schedule]]
+name = "trip-document-expiry"
+cron = "0 9 * * 1"
+dispatch_mode = "job"
+job_name = "trip_document_expiry"
