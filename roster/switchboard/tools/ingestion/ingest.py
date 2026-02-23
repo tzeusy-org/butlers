@@ -17,7 +17,8 @@ Key behaviors:
 - Parses and validates `ingest.v1` envelopes using canonical contract models
 - Assigns canonical request context (request_id, received_at, etc.)
 - Performs deduplication based on source identity and idempotency keys
-- Returns 202 Accepted with canonical request reference
+- Runs deterministic pre-classification triage (spec §5) before returning
+- Returns 202 Accepted with canonical request reference and triage decision
 - Duplicate submissions return the same request reference (idempotent)
 
 Design notes:
@@ -25,6 +26,8 @@ Design notes:
 - Deduplication strategy follows `butlers-9aq.4` guidance
 - Lifecycle persistence uses partitioned `message_inbox` from `butlers-9aq.9`
 - Unique index on dedupe_key (migration sw_010) prevents race conditions
+- Triage integration: deterministic evaluation runs before LLM spawn per
+  docs/switchboard/pre_classification_triage.md §5.1
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ import hashlib
 import json
 import logging
 import secrets
+import time
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -46,6 +50,12 @@ from butlers.tools.switchboard.routing.contracts import (
     IngestEnvelopeV1,
     parse_ingest_envelope,
 )
+from butlers.tools.switchboard.triage.evaluator import (
+    TriageDecision,
+    evaluate_triage,
+    make_triage_envelope_from_ingest,
+)
+from butlers.tools.switchboard.triage.telemetry import get_triage_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +68,14 @@ class IngestAcceptedResponse(BaseModel):
     request_id: UUID
     status: str = "accepted"
     duplicate: bool = False
+    triage_decision: str | None = None
+    """The deterministic triage decision applied to this message.
+
+    One of: route_to, skip, metadata_only, low_priority_queue, pass_through.
+    None for duplicates (triage was applied on first submission).
+    """
+    triage_target: str | None = None
+    """Target butler name, populated only when triage_decision='route_to'."""
 
 
 def _generate_uuid7() -> UUID:
@@ -146,11 +164,13 @@ def _build_request_context(
     *,
     request_id: UUID,
     received_at: datetime,
+    triage_decision: TriageDecision | None = None,
 ) -> dict[str, Any]:
     """Build canonical request context from ingest envelope.
 
     This function assigns the immutable request-context fields that will
-    be propagated through routing and fanout.
+    be propagated through routing and fanout. Triage decision metadata is
+    embedded when available for downstream pipeline visibility.
     """
     source = envelope.source
     event = envelope.event
@@ -178,18 +198,108 @@ def _build_request_context(
     # Tier annotation (always stored; defaults to "full" for backward compat)
     context["ingestion_tier"] = control.ingestion_tier
 
+    # Triage annotation: embed decision for downstream pipeline visibility
+    if triage_decision is not None:
+        context["triage_decision"] = triage_decision.decision
+        if triage_decision.target_butler:
+            context["triage_target"] = triage_decision.target_butler
+        if triage_decision.matched_rule_id:
+            context["triage_rule_id"] = triage_decision.matched_rule_id
+        if triage_decision.matched_rule_type:
+            context["triage_rule_type"] = triage_decision.matched_rule_type
+
     return context
+
+
+def _run_triage(
+    payload: Mapping[str, Any],
+    rules: list[dict[str, Any]],
+    *,
+    cache_available: bool,
+    source_channel: str,
+) -> TriageDecision:
+    """Run deterministic triage evaluation with telemetry.
+
+    Fail-open: if cache is unavailable or evaluation fails, returns pass_through.
+
+    Parameters
+    ----------
+    payload:
+        Raw ingest.v1 envelope payload dict.
+    rules:
+        Active triage rules from the cache.
+    cache_available:
+        Whether the triage rule cache has ever successfully loaded.
+    source_channel:
+        Source channel string for telemetry attributes.
+    """
+    telemetry = get_triage_telemetry()
+    t0 = time.monotonic()
+    result_label = "pass_through"
+
+    try:
+        if not cache_available:
+            # Cache never loaded — fail open
+            decision = TriageDecision(
+                decision="pass_through",
+                reason="triage cache unavailable",
+            )
+            telemetry.record_pass_through(
+                source_channel=source_channel,
+                reason="cache_unavailable",
+            )
+            result_label = "pass_through"
+            return decision
+
+        triage_envelope = make_triage_envelope_from_ingest(dict(payload))
+        decision = evaluate_triage(triage_envelope, rules)
+
+        if decision.decision == "pass_through":
+            telemetry.record_pass_through(
+                source_channel=source_channel,
+                reason="no_match",
+            )
+            result_label = "pass_through"
+        else:
+            telemetry.record_rule_matched(
+                rule_type=decision.matched_rule_type or "unknown",
+                action=decision.decision
+                if not decision.target_butler
+                else f"route_to:{decision.target_butler}",
+                source_channel=source_channel,
+            )
+            result_label = "matched"
+
+        return decision
+
+    except Exception:
+        logger.exception("Unexpected error during triage evaluation; failing open (pass_through)")
+        result_label = "error"
+        return TriageDecision(
+            decision="pass_through",
+            reason="triage evaluation error",
+        )
+    finally:
+        latency_ms = (time.monotonic() - t0) * 1000
+        telemetry.record_evaluation_latency(
+            latency_ms=latency_ms,
+            result=result_label,
+        )
 
 
 async def ingest_v1(
     pool: asyncpg.Pool,
     payload: Mapping[str, Any],
+    *,
+    triage_rules: list[dict[str, Any]] | None = None,
+    triage_cache_available: bool = True,
 ) -> IngestAcceptedResponse:
     """Accept and persist an `ingest.v1` envelope submission.
 
     This is the canonical ingestion boundary for connector submissions.
-    It parses, validates, deduplicates, and persists the ingest envelope,
-    returning a canonical request reference.
+    It parses, validates, deduplicates, applies deterministic pre-classification
+    triage, and persists the ingest envelope, returning a canonical request
+    reference.
 
     Authentication and authorization are enforced at the MCP transport layer
     before this function is called. See module docstring for details.
@@ -200,11 +310,19 @@ async def ingest_v1(
         Database connection pool for Switchboard butler.
     payload:
         Raw ingest envelope payload (must validate as `ingest.v1`).
+    triage_rules:
+        Active triage rules from the cache. Pass [] to skip triage with empty
+        rule set (produces pass_through). Pass None to bypass triage entirely
+        (backward-compatible mode — no triage annotation).
+    triage_cache_available:
+        Whether the triage rule cache is available. False forces fail-open
+        (pass_through with reason='cache_unavailable').
 
     Returns
     -------
     IngestAcceptedResponse
-        Canonical request reference with `request_id` and duplicate status.
+        Canonical request reference with `request_id`, duplicate status,
+        and triage decision annotation.
 
     Raises
     ------
@@ -238,9 +356,31 @@ async def ingest_v1(
             request_id=existing["request_id"],
             status="accepted",
             duplicate=True,
+            triage_decision=None,  # Triage was applied on first submission
+            triage_target=None,
         )
 
-    # 4. Assign canonical request context
+    # 4. Run deterministic triage (before classification runtime spawn, spec §5.1)
+    # triage_rules=None means caller did not provide a cache — skip triage annotation
+    # triage_rules=[] means cache loaded but no active rules — produces pass_through
+    triage_decision: TriageDecision | None = None
+    source_channel = envelope.source.channel
+
+    if triage_rules is not None:
+        triage_decision = _run_triage(
+            payload,
+            triage_rules,
+            cache_available=triage_cache_available,
+            source_channel=source_channel,
+        )
+        logger.debug(
+            "Triage decision for source=%s sender=%s: %s",
+            source_channel,
+            envelope.sender.identity,
+            triage_decision.decision,
+        )
+
+    # 5. Assign canonical request context
     request_id = _generate_uuid7()
     received_at = datetime.now(UTC)
 
@@ -248,12 +388,13 @@ async def ingest_v1(
         envelope,
         request_id=request_id,
         received_at=received_at,
+        triage_decision=triage_decision,
     )
     # Embed dedupe_key in request_context for lookup
     request_context["dedupe_key"] = dedupe_key
     request_context["dedupe_strategy"] = "connector_api"
 
-    # 5. Build raw_payload and normalized_text
+    # 6. Build raw_payload and normalized_text
     # For Tier 2 (metadata), payload.raw is None per contract
     ingestion_tier = envelope.control.ingestion_tier
     raw_payload = {
@@ -364,7 +505,7 @@ async def ingest_v1(
 
     logger.info(
         "Accepted ingest submission: request_id=%s, dedupe_key=%s, source=%s/%s, "
-        "sender=%s, ingestion_tier=%s, lifecycle_state=%s",
+        "sender=%s, ingestion_tier=%s, lifecycle_state=%s, triage=%s",
         request_id,
         dedupe_key,
         envelope.source.channel,
@@ -372,10 +513,13 @@ async def ingest_v1(
         envelope.sender.identity,
         ingestion_tier,
         lifecycle_state,
+        triage_decision.decision if triage_decision else "n/a",
     )
 
     return IngestAcceptedResponse(
         request_id=request_id,
         status="accepted",
         duplicate=False,
+        triage_decision=triage_decision.decision if triage_decision else None,
+        triage_target=triage_decision.target_butler if triage_decision else None,
     )
