@@ -84,6 +84,8 @@ PROJECTION_STATUS_FAILED = "failed"
 DEFAULT_SCHEDULED_TASK_DURATION_MINUTES = 15
 # Interval for periodic internal projection refresh (startup + periodic background task).
 DEFAULT_INTERNAL_PROJECTION_INTERVAL_MINUTES = 15
+# Rolling window for recurring event instance expansion (cron and RRULE).
+RECURRENCE_PROJECTION_WINDOW_DAYS = 90
 MUTATION_STATUS_PENDING = "pending"
 MUTATION_STATUS_APPLIED = "applied"
 MUTATION_STATUS_FAILED = "failed"
@@ -267,6 +269,72 @@ def _cron_next_occurrence(cron: str, *, now: datetime | None = None) -> datetime
     """
     anchor = now if now is not None else datetime.now(UTC)
     return _croniter(cron, anchor).get_next(datetime).replace(tzinfo=UTC)
+
+
+def _cron_occurrences_in_window(
+    cron: str,
+    window_start: datetime,
+    window_end: datetime,
+    duration_minutes: int = DEFAULT_SCHEDULED_TASK_DURATION_MINUTES,
+) -> list[tuple[datetime, datetime]]:
+    """Return a list of (starts_at, ends_at) pairs for all cron occurrences in the window.
+
+    Uses croniter to iterate occurrences.  The cron fires at or after window_start up to
+    (and including) window_end.  Returns an empty list when the expression has no occurrences
+    in the window.
+    """
+    results: list[tuple[datetime, datetime]] = []
+    it = _croniter(cron, window_start - timedelta(seconds=1))
+    while True:
+        occ = it.get_next(datetime).replace(tzinfo=UTC)
+        if occ > window_end:
+            break
+        ends = occ + timedelta(minutes=duration_minutes)
+        results.append((occ, ends))
+    return results
+
+
+def _rrule_occurrences_in_window(
+    recurrence_rule: str,
+    dtstart: datetime,
+    window_start: datetime,
+    window_end: datetime,
+    duration_minutes: int = DEFAULT_SCHEDULED_TASK_DURATION_MINUTES,
+) -> list[tuple[datetime, datetime]]:
+    """Return (starts_at, ends_at) pairs for RRULE occurrences within [window_start, window_end].
+
+    *recurrence_rule* is an RFC-5545 RRULE string (with or without the "RRULE:" prefix).
+    *dtstart* is the reference start datetime used to anchor the rule.
+    Only occurrences that fall within [window_start, window_end] are returned.
+    """
+    from dateutil.rrule import rrulestr
+
+    normalized = recurrence_rule.strip()
+    if not normalized.startswith("RRULE:"):
+        normalized = f"RRULE:{normalized}"
+    # dateutil expects DTSTART to be embedded or passed as dtstart= kwarg.
+    if dtstart.tzinfo is not None:
+        dtstart_utc = dtstart.astimezone(UTC)
+    else:
+        dtstart_utc = dtstart.replace(tzinfo=UTC)
+    try:
+        rule_set = rrulestr(normalized, dtstart=dtstart_utc, ignoretz=False)
+    except Exception:
+        return []
+
+    results: list[tuple[datetime, datetime]] = []
+    for occ in rule_set:
+        if isinstance(occ, datetime):
+            occ_utc = occ.astimezone(UTC) if occ.tzinfo else occ.replace(tzinfo=UTC)
+        else:
+            # date object — convert to midnight UTC
+            occ_utc = datetime(occ.year, occ.month, occ.day, tzinfo=UTC)
+        if occ_utc > window_end:
+            break
+        if occ_utc >= window_start:
+            ends = occ_utc + timedelta(minutes=duration_minutes)
+            results.append((occ_utc, ends))
+    return results
 
 
 def _extract_google_credential_value(payload: dict[str, Any], key: str) -> Any:
@@ -4594,6 +4662,32 @@ class CalendarModule(Module):
                 origin_updated_at=cancelled_at,
             )
 
+    async def _prune_recurring_instances_outside_window(
+        self,
+        *,
+        event_id: uuid.UUID,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> None:
+        """Delete calendar_event_instances for *event_id* that fall outside the window.
+
+        This prevents unbounded row growth as the rolling projection window advances.
+        Only instances that start before window_start or after window_end are deleted.
+        """
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+        await pool.execute(
+            """
+            DELETE FROM calendar_event_instances
+            WHERE event_id = $1
+              AND (starts_at < $2 OR starts_at > $3)
+            """,
+            event_id,
+            window_start,
+            window_end,
+        )
+
     async def _project_scheduler_source(self) -> None:
         if not await self._projection_tables_available():
             return
@@ -4627,18 +4721,17 @@ class CalendarModule(Module):
 
         seen_origin_refs: list[str] = []
         now = datetime.now(UTC)
+        window_end = now + timedelta(days=RECURRENCE_PROJECTION_WINDOW_DAYS)
         for row in rows:
             record = dict(row)
             start_at = self._coerce_datetime(record.get("start_at"))
             end_at = self._coerce_datetime(record.get("end_at"))
-            # Compute synthetic window from cron when columns are NULL.
-            if start_at is None:
-                cron_expr = record.get("cron")
-                if not cron_expr:
-                    continue
-                start_at = _cron_next_occurrence(str(cron_expr), now=now)
-            if end_at is None:
-                end_at = start_at + timedelta(minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES)
+            cron_expr = record.get("cron")
+
+            # Rows without a cron expression and no explicit start_at cannot
+            # produce occurrences — skip them.
+            if start_at is None and not cron_expr:
+                continue
 
             origin_ref = str(record["id"])
             seen_origin_refs.append(origin_ref)
@@ -4649,10 +4742,11 @@ class CalendarModule(Module):
                 if record.get("enabled", True)
                 else EventStatus.cancelled.value
             )
+            updated_at = self._coerce_datetime(record.get("updated_at"))
             metadata = {
                 "source_type": SOURCE_KIND_INTERNAL_SCHEDULER,
                 "name": record.get("name"),
-                "cron": record.get("cron"),
+                "cron": cron_expr,
                 "dispatch_mode": record.get("dispatch_mode"),
                 "prompt": record.get("prompt"),
                 "job_name": record.get("job_name"),
@@ -4660,6 +4754,33 @@ class CalendarModule(Module):
                 "until_at": record.get("until_at"),
                 "calendar_event_id": record.get("calendar_event_id"),
             }
+
+            if cron_expr and start_at is None:
+                # Recurring cron-driven task: expand into all occurrences within
+                # the rolling window.
+                occurrences = _cron_occurrences_in_window(
+                    str(cron_expr),
+                    window_start=now,
+                    window_end=window_end,
+                )
+                if not occurrences:
+                    # Cron fires outside the window (e.g. very sparse schedule);
+                    # fall back to next single occurrence to keep the event visible.
+                    occ_start = _cron_next_occurrence(str(cron_expr), now=now)
+                    occ_end = occ_start + timedelta(minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES)
+                    occurrences = [(occ_start, occ_end)]
+                # The canonical event represents the series; starts_at = first occurrence.
+                event_start_at, event_end_at = occurrences[0]
+            else:
+                # Task with explicit start_at (one-time or fixed occurrence) or no cron.
+                if start_at is None:
+                    # Should not reach here due to earlier guard, but be defensive.
+                    continue
+                if end_at is None:
+                    end_at = start_at + timedelta(minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES)
+                event_start_at, event_end_at = start_at, end_at
+                occurrences = [(start_at, end_at)]
+
             event_id = await self._upsert_projection_event(
                 source_id=source_id,
                 origin_ref=origin_ref,
@@ -4667,28 +4788,37 @@ class CalendarModule(Module):
                 description=None,
                 location=None,
                 timezone=timezone,
-                starts_at=start_at,
-                ends_at=end_at,
+                starts_at=event_start_at,
+                ends_at=event_end_at,
                 all_day=False,
                 status=status,
                 visibility=EventVisibility.default.value,
-                recurrence_rule=str(record.get("cron")) if record.get("cron") else None,
+                recurrence_rule=str(cron_expr) if cron_expr else None,
                 etag=None,
-                origin_updated_at=self._coerce_datetime(record.get("updated_at")),
+                origin_updated_at=updated_at,
                 metadata=metadata,
             )
-            await self._upsert_projection_instance(
+
+            # Prune stale instances outside the new window before re-projecting.
+            await self._prune_recurring_instances_outside_window(
                 event_id=event_id,
-                source_id=source_id,
-                origin_instance_ref=f"{origin_ref}:schedule",
-                timezone=timezone,
-                starts_at=start_at,
-                ends_at=end_at,
-                status=status,
-                is_exception=False,
-                origin_updated_at=self._coerce_datetime(record.get("updated_at")),
-                metadata={"source_type": SOURCE_KIND_INTERNAL_SCHEDULER},
+                window_start=now,
+                window_end=window_end,
             )
+
+            for occ_start, occ_end in occurrences:
+                await self._upsert_projection_instance(
+                    event_id=event_id,
+                    source_id=source_id,
+                    origin_instance_ref=f"{origin_ref}:{occ_start.isoformat()}",
+                    timezone=timezone,
+                    starts_at=occ_start,
+                    ends_at=occ_end,
+                    status=status,
+                    is_exception=False,
+                    origin_updated_at=updated_at,
+                    metadata={"source_type": SOURCE_KIND_INTERNAL_SCHEDULER},
+                )
 
         await self._mark_projection_source_stale_events_cancelled(
             source_id=source_id,
@@ -4734,6 +4864,7 @@ class CalendarModule(Module):
         rows = await pool.fetch("SELECT * FROM reminders")
         seen_origin_refs: list[str] = []
         now = datetime.now(UTC)
+        window_end = now + timedelta(days=RECURRENCE_PROJECTION_WINDOW_DAYS)
 
         for row in rows:
             record = dict(row)
@@ -4755,8 +4886,6 @@ class CalendarModule(Module):
             dismissed = bool(record.get("dismissed"))
 
             title = str(record.get("label") or record.get("message") or "Reminder")
-            starts_at = next_trigger_at
-            ends_at = next_trigger_at + timedelta(minutes=15)
             status = EventStatus.cancelled.value if dismissed else EventStatus.confirmed.value
             recurrence_rule_raw = record.get("recurrence_rule")
             recurrence_rule = (
@@ -4775,6 +4904,37 @@ class CalendarModule(Module):
                 "calendar_event_id": record.get("calendar_event_id"),
                 "dismissed": dismissed,
             }
+
+            # Determine occurrences: expand recurring rules into a windowed list.
+            if recurrence_rule is not None and not dismissed:
+                # Determine whether it's a cron or RRULE expression.
+                rrule_components = self._rrule_components(recurrence_rule)
+                if rrule_components.get("FREQ"):
+                    # RRULE-style recurrence.
+                    occurrences = _rrule_occurrences_in_window(
+                        recurrence_rule,
+                        dtstart=next_trigger_at,
+                        window_start=now,
+                        window_end=window_end,
+                        duration_minutes=15,
+                    )
+                else:
+                    # Treat as cron expression.
+                    occurrences = _cron_occurrences_in_window(
+                        recurrence_rule,
+                        window_start=now,
+                        window_end=window_end,
+                        duration_minutes=15,
+                    )
+                if not occurrences:
+                    # Rule produces no occurrences in window — fall back to next_trigger_at.
+                    occurrences = [(next_trigger_at, next_trigger_at + timedelta(minutes=15))]
+            else:
+                # One-time reminder or dismissed: single occurrence at next_trigger_at.
+                occurrences = [(next_trigger_at, next_trigger_at + timedelta(minutes=15))]
+
+            # The canonical event uses the first occurrence as its starts_at.
+            starts_at, ends_at = occurrences[0]
             event_id = await self._upsert_projection_event(
                 source_id=source_id,
                 origin_ref=origin_ref,
@@ -4792,18 +4952,28 @@ class CalendarModule(Module):
                 origin_updated_at=updated_at,
                 metadata=metadata,
             )
-            await self._upsert_projection_instance(
-                event_id=event_id,
-                source_id=source_id,
-                origin_instance_ref=f"{origin_ref}:{starts_at.isoformat()}",
-                timezone=timezone,
-                starts_at=starts_at,
-                ends_at=ends_at,
-                status=status,
-                is_exception=False,
-                origin_updated_at=updated_at,
-                metadata={"source_type": SOURCE_KIND_INTERNAL_REMINDERS},
-            )
+
+            # Prune stale instances outside the new window before re-projecting.
+            if recurrence_rule is not None and not dismissed:
+                await self._prune_recurring_instances_outside_window(
+                    event_id=event_id,
+                    window_start=now,
+                    window_end=window_end,
+                )
+
+            for occ_start, occ_end in occurrences:
+                await self._upsert_projection_instance(
+                    event_id=event_id,
+                    source_id=source_id,
+                    origin_instance_ref=f"{origin_ref}:{occ_start.isoformat()}",
+                    timezone=timezone,
+                    starts_at=occ_start,
+                    ends_at=occ_end,
+                    status=status,
+                    is_exception=False,
+                    origin_updated_at=updated_at,
+                    metadata={"source_type": SOURCE_KIND_INTERNAL_REMINDERS},
+                )
 
         await self._mark_projection_source_stale_events_cancelled(
             source_id=source_id,

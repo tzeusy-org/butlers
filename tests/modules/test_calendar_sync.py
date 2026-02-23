@@ -30,6 +30,7 @@ from butlers.modules.calendar import (
     DEFAULT_SCHEDULED_TASK_DURATION_MINUTES,
     DEFAULT_SYNC_INTERVAL_MINUTES,
     DEFAULT_SYNC_WINDOW_DAYS,
+    RECURRENCE_PROJECTION_WINDOW_DAYS,
     SOURCE_KIND_INTERNAL_REMINDERS,
     SOURCE_KIND_INTERNAL_SCHEDULER,
     SOURCE_KIND_PROVIDER,
@@ -44,8 +45,10 @@ from butlers.modules.calendar import (
     CalendarSyncState,
     CalendarSyncTokenExpiredError,
     _cron_next_occurrence,
+    _cron_occurrences_in_window,
     _GoogleOAuthCredentials,
     _GoogleProvider,
+    _rrule_occurrences_in_window,
 )
 
 pytestmark = pytest.mark.unit
@@ -1750,3 +1753,525 @@ class TestCalendarProjectionFreshness:
         assert states["provider:google:primary"] == "fresh"
         assert states["internal_scheduler:general"] == "stale"
         assert states["internal_reminders:general"] == "failed"
+
+
+class TestCronOccurrencesInWindow:
+    """Unit tests for _cron_occurrences_in_window helper."""
+
+    def test_daily_cron_returns_occurrences_in_window(self):
+        """A daily cron returns ~90 occurrences across a 90-day window."""
+        now = datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
+        window_end = now + timedelta(days=90)
+        result = _cron_occurrences_in_window("0 9 * * *", window_start=now, window_end=window_end)
+        # Expect roughly 90 occurrences (one per day).
+        assert 88 <= len(result) <= 91
+
+    def test_each_result_is_starts_at_ends_at_tuple(self):
+        now = datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
+        window_end = now + timedelta(days=2)
+        result = _cron_occurrences_in_window("0 9 * * *", window_start=now, window_end=window_end)
+        for starts_at, ends_at in result:
+            assert isinstance(starts_at, datetime)
+            assert isinstance(ends_at, datetime)
+            assert ends_at > starts_at
+
+    def test_occurrences_respect_window_end(self):
+        """No occurrence is returned that falls after window_end."""
+        now = datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
+        window_end = now + timedelta(hours=48)
+        result = _cron_occurrences_in_window("0 9 * * *", window_start=now, window_end=window_end)
+        for starts_at, _ in result:
+            assert starts_at <= window_end
+
+    def test_duration_parameter_controls_ends_at(self):
+        now = datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
+        window_end = now + timedelta(days=1)
+        result = _cron_occurrences_in_window(
+            "0 9 * * *", window_start=now, window_end=window_end, duration_minutes=30
+        )
+        assert len(result) >= 1
+        starts_at, ends_at = result[0]
+        assert (ends_at - starts_at).total_seconds() == 30 * 60
+
+    def test_empty_window_returns_no_occurrences(self):
+        """When window_start equals window_end, no occurrences are returned."""
+        ts = datetime(2026, 3, 1, 9, 1, tzinfo=UTC)  # Just after the cron fires.
+        result = _cron_occurrences_in_window("0 9 * * *", window_start=ts, window_end=ts)
+        assert result == []
+
+    def test_results_are_utc_aware(self):
+        now = datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
+        window_end = now + timedelta(days=3)
+        result = _cron_occurrences_in_window("0 9 * * *", window_start=now, window_end=window_end)
+        for starts_at, ends_at in result:
+            assert starts_at.tzinfo is not None
+            assert ends_at.tzinfo is not None
+
+    def test_weekday_only_cron_skips_weekends(self):
+        """A Mon-Fri cron should yield 5 occurrences per week."""
+        # 2026-03-02 is a Monday.
+        monday = datetime(2026, 3, 2, 0, 0, tzinfo=UTC)
+        window_end = monday + timedelta(days=7)
+        result = _cron_occurrences_in_window(
+            "0 9 * * 1-5", window_start=monday, window_end=window_end
+        )
+        assert len(result) == 5
+
+
+class TestRruleOccurrencesInWindow:
+    """Unit tests for _rrule_occurrences_in_window helper."""
+
+    def test_daily_rrule_returns_occurrences_in_window(self):
+        dtstart = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
+        now = dtstart
+        window_end = now + timedelta(days=90)
+        result = _rrule_occurrences_in_window(
+            "FREQ=DAILY", dtstart=dtstart, window_start=now, window_end=window_end
+        )
+        assert 88 <= len(result) <= 91
+
+    def test_rrule_prefix_is_optional(self):
+        """Both 'FREQ=DAILY' and 'RRULE:FREQ=DAILY' should work."""
+        dtstart = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
+        now = dtstart
+        window_end = now + timedelta(days=3)
+        r1 = _rrule_occurrences_in_window(
+            "FREQ=DAILY", dtstart=dtstart, window_start=now, window_end=window_end
+        )
+        r2 = _rrule_occurrences_in_window(
+            "RRULE:FREQ=DAILY", dtstart=dtstart, window_start=now, window_end=window_end
+        )
+        assert r1 == r2
+
+    def test_weekly_rrule_returns_correct_count(self):
+        dtstart = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)  # Monday
+        now = dtstart
+        window_end = now + timedelta(weeks=4)
+        result = _rrule_occurrences_in_window(
+            "FREQ=WEEKLY;BYDAY=MO",
+            dtstart=dtstart,
+            window_start=now,
+            window_end=window_end,
+        )
+        assert len(result) == 5  # 4 complete weeks + start date occurrence
+
+    def test_occurrences_respect_window_start(self):
+        """Occurrences before window_start must be excluded."""
+        dtstart = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
+        window_start = datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
+        window_end = window_start + timedelta(days=10)
+        result = _rrule_occurrences_in_window(
+            "FREQ=DAILY",
+            dtstart=dtstart,
+            window_start=window_start,
+            window_end=window_end,
+        )
+        for starts_at, _ in result:
+            assert starts_at >= window_start
+
+    def test_rrule_with_count_stops_at_count(self):
+        dtstart = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
+        now = dtstart
+        window_end = now + timedelta(days=90)
+        result = _rrule_occurrences_in_window(
+            "FREQ=DAILY;COUNT=5",
+            dtstart=dtstart,
+            window_start=now,
+            window_end=window_end,
+        )
+        assert len(result) == 5
+
+    def test_invalid_rrule_returns_empty_list(self):
+        dtstart = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
+        result = _rrule_occurrences_in_window(
+            "NOT_A_VALID_RULE",
+            dtstart=dtstart,
+            window_start=dtstart,
+            window_end=dtstart + timedelta(days=10),
+        )
+        assert result == []
+
+    def test_results_are_utc_aware(self):
+        dtstart = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
+        now = dtstart
+        window_end = now + timedelta(days=5)
+        result = _rrule_occurrences_in_window(
+            "FREQ=DAILY", dtstart=dtstart, window_start=now, window_end=window_end
+        )
+        for starts_at, ends_at in result:
+            assert starts_at.tzinfo is not None
+            assert ends_at.tzinfo is not None
+
+    def test_duration_controls_ends_at(self):
+        dtstart = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
+        now = dtstart
+        window_end = now + timedelta(days=2)
+        result = _rrule_occurrences_in_window(
+            "FREQ=DAILY",
+            dtstart=dtstart,
+            window_start=now,
+            window_end=window_end,
+            duration_minutes=45,
+        )
+        for starts_at, ends_at in result:
+            assert (ends_at - starts_at).total_seconds() == 45 * 60
+
+
+class TestWindowedRecurrenceExpansion:
+    """Integration-style tests for the windowed projection of recurring sources."""
+
+    def _make_module_with_projection_db(self) -> CalendarModule:
+        mod = CalendarModule()
+        mod._config = CalendarConfig(
+            provider="google",
+            calendar_id="primary",
+            sync=CalendarSyncConfig(enabled=True),
+        )
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
+        pool.fetchval = AsyncMock(return_value=None)
+        pool.execute = AsyncMock(return_value="OK")
+        db = MagicMock()
+        db.pool = pool
+        db.db_name = "butler_general"
+        mod._db = db
+        mod._butler_name = "general"
+        return mod
+
+    async def test_cron_recurring_task_expands_to_multiple_instances(self):
+        """A task with cron and no start_at should produce multiple instances (90-day window)."""
+        mod = self._make_module_with_projection_db()
+        source_id = uuid.uuid4()
+        task_id = uuid.uuid4()
+        now = datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
+
+        mod._db.pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": task_id,
+                    "name": "medication",
+                    "cron": "0 9 * * *",
+                    "dispatch_mode": "prompt",
+                    "prompt": "take meds",
+                    "job_name": None,
+                    "job_args": None,
+                    "timezone": "UTC",
+                    "start_at": None,  # Recurring — no explicit start_at
+                    "end_at": None,
+                    "until_at": None,
+                    "display_title": "Morning Medication",
+                    "calendar_event_id": None,
+                    "enabled": True,
+                    "updated_at": now,
+                }
+            ]
+        )
+
+        upsert_instance_mock = AsyncMock(return_value=uuid.uuid4())
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", AsyncMock(return_value=uuid.uuid4())),
+            patch.object(mod, "_upsert_projection_instance", upsert_instance_mock),
+            patch.object(mod, "_prune_recurring_instances_outside_window", AsyncMock()),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_scheduler_source()
+
+        # Should have created ~90 instances for a daily cron over 90 days.
+        instance_count = upsert_instance_mock.await_count
+        assert instance_count >= 88, f"Expected >=88 instances for daily cron, got {instance_count}"
+
+    async def test_cron_recurring_task_uses_isoformat_origin_instance_ref(self):
+        """origin_instance_ref for cron occurrences uses ISO datetime format."""
+        mod = self._make_module_with_projection_db()
+        source_id = uuid.uuid4()
+        task_id = uuid.uuid4()
+        now = datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
+
+        mod._db.pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": task_id,
+                    "name": "daily-task",
+                    "cron": "0 9 * * *",
+                    "dispatch_mode": "prompt",
+                    "prompt": "do stuff",
+                    "job_name": None,
+                    "job_args": None,
+                    "timezone": "UTC",
+                    "start_at": None,
+                    "end_at": None,
+                    "until_at": None,
+                    "display_title": "Daily",
+                    "calendar_event_id": None,
+                    "enabled": True,
+                    "updated_at": now,
+                }
+            ]
+        )
+
+        captured_refs: list[str] = []
+
+        async def capture_instance(**kwargs):
+            captured_refs.append(kwargs["origin_instance_ref"])
+            return uuid.uuid4()
+
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", AsyncMock(return_value=uuid.uuid4())),
+            patch.object(mod, "_upsert_projection_instance", capture_instance),
+            patch.object(mod, "_prune_recurring_instances_outside_window", AsyncMock()),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_scheduler_source()
+
+        assert len(captured_refs) >= 1
+        for ref in captured_refs:
+            # origin_instance_ref must be "{task_id}:{iso_datetime}"
+            assert ref.startswith(str(task_id) + ":")
+            # The part after the first colon must be a parseable ISO datetime.
+            ts_part = ref[len(str(task_id)) + 1 :]
+            parsed = datetime.fromisoformat(ts_part)
+            assert parsed.tzinfo is not None
+
+    async def test_recurring_reminder_rrule_expands_to_multiple_instances(self):
+        """A reminder with RRULE=FREQ=DAILY should yield multiple instances."""
+        mod = self._make_module_with_projection_db()
+        source_id = uuid.uuid4()
+        reminder_id = uuid.uuid4()
+        # Use a past dtstart so occurrences are generated from now through the full window.
+        trigger_at = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
+
+        mod._db.pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": reminder_id,
+                    "label": "Take medication",
+                    "message": "Take medication",
+                    "type": "recurring",
+                    "reminder_type": "recurring",
+                    "contact_id": None,
+                    "timezone": "UTC",
+                    "next_trigger_at": trigger_at,
+                    "due_at": trigger_at,
+                    "until_at": None,
+                    "calendar_event_id": None,
+                    "dismissed": False,
+                    "updated_at": trigger_at,
+                    "recurrence_rule": "FREQ=DAILY",
+                }
+            ]
+        )
+
+        upsert_instance_mock = AsyncMock(return_value=uuid.uuid4())
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", AsyncMock(return_value=uuid.uuid4())),
+            patch.object(mod, "_upsert_projection_instance", upsert_instance_mock),
+            patch.object(mod, "_prune_recurring_instances_outside_window", AsyncMock()),
+            patch.object(mod, "_mark_projection_event_cancelled", AsyncMock()),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_reminders_source()
+
+        instance_count = upsert_instance_mock.await_count
+        assert instance_count >= 85, (
+            f"Expected >=85 instances for daily RRULE over 90-day window, got {instance_count}"
+        )
+
+    async def test_one_time_reminder_produces_single_instance(self):
+        """A reminder with no recurrence_rule always yields exactly one instance."""
+        mod = self._make_module_with_projection_db()
+        source_id = uuid.uuid4()
+        reminder_id = uuid.uuid4()
+        trigger_at = datetime(2026, 3, 5, 10, 0, tzinfo=UTC)
+
+        mod._db.pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": reminder_id,
+                    "label": "Doctor appointment",
+                    "message": "Go to doctor",
+                    "type": "one_time",
+                    "reminder_type": "one_time",
+                    "contact_id": None,
+                    "timezone": "UTC",
+                    "next_trigger_at": trigger_at,
+                    "due_at": trigger_at,
+                    "until_at": None,
+                    "calendar_event_id": None,
+                    "dismissed": False,
+                    "updated_at": trigger_at,
+                    "recurrence_rule": None,
+                }
+            ]
+        )
+
+        upsert_instance_mock = AsyncMock(return_value=uuid.uuid4())
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", AsyncMock(return_value=uuid.uuid4())),
+            patch.object(mod, "_upsert_projection_instance", upsert_instance_mock),
+            patch.object(mod, "_prune_recurring_instances_outside_window", AsyncMock()),
+            patch.object(mod, "_mark_projection_event_cancelled", AsyncMock()),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_reminders_source()
+
+        assert upsert_instance_mock.await_count == 1
+
+    async def test_dismissed_recurring_reminder_produces_single_instance(self):
+        """A dismissed recurring reminder should not be expanded — just one instance."""
+        mod = self._make_module_with_projection_db()
+        source_id = uuid.uuid4()
+        reminder_id = uuid.uuid4()
+        trigger_at = datetime(2026, 3, 5, 10, 0, tzinfo=UTC)
+
+        mod._db.pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": reminder_id,
+                    "label": "Snoozed",
+                    "message": "Snoozed reminder",
+                    "type": "recurring",
+                    "reminder_type": "recurring",
+                    "contact_id": None,
+                    "timezone": "UTC",
+                    "next_trigger_at": trigger_at,
+                    "due_at": trigger_at,
+                    "until_at": None,
+                    "calendar_event_id": None,
+                    "dismissed": True,
+                    "updated_at": trigger_at,
+                    "recurrence_rule": "FREQ=DAILY",
+                }
+            ]
+        )
+
+        upsert_instance_mock = AsyncMock(return_value=uuid.uuid4())
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", AsyncMock(return_value=uuid.uuid4())),
+            patch.object(mod, "_upsert_projection_instance", upsert_instance_mock),
+            patch.object(mod, "_prune_recurring_instances_outside_window", AsyncMock()),
+            patch.object(mod, "_mark_projection_event_cancelled", AsyncMock()),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_reminders_source()
+
+        assert upsert_instance_mock.await_count == 1
+
+    async def test_prune_called_for_recurring_cron_task(self):
+        """_prune_recurring_instances_outside_window must be called for cron tasks."""
+        mod = self._make_module_with_projection_db()
+        source_id = uuid.uuid4()
+        task_id = uuid.uuid4()
+        now = datetime(2026, 3, 1, 0, 0, tzinfo=UTC)
+
+        mod._db.pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": task_id,
+                    "name": "daily",
+                    "cron": "0 8 * * *",
+                    "dispatch_mode": "prompt",
+                    "prompt": "daily run",
+                    "job_name": None,
+                    "job_args": None,
+                    "timezone": "UTC",
+                    "start_at": None,
+                    "end_at": None,
+                    "until_at": None,
+                    "display_title": "Daily",
+                    "calendar_event_id": None,
+                    "enabled": True,
+                    "updated_at": now,
+                }
+            ]
+        )
+
+        prune_mock = AsyncMock()
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", AsyncMock(return_value=uuid.uuid4())),
+            patch.object(mod, "_upsert_projection_instance", AsyncMock(return_value=uuid.uuid4())),
+            patch.object(mod, "_prune_recurring_instances_outside_window", prune_mock),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_scheduler_source()
+
+        assert prune_mock.await_count == 1
+        prune_kwargs = prune_mock.await_args.kwargs
+        assert "event_id" in prune_kwargs
+        assert "window_start" in prune_kwargs
+        assert "window_end" in prune_kwargs
+        # window_end should be ~90 days after window_start.
+        window_delta = prune_kwargs["window_end"] - prune_kwargs["window_start"]
+        assert abs(window_delta.days - RECURRENCE_PROJECTION_WINDOW_DAYS) <= 1
+
+    async def test_explicit_start_at_task_not_expanded(self):
+        """A task with explicit start_at should produce exactly one instance."""
+        mod = self._make_module_with_projection_db()
+        source_id = uuid.uuid4()
+        task_id = uuid.uuid4()
+        explicit_start = datetime(2026, 3, 10, 14, 0, tzinfo=UTC)
+        explicit_end = datetime(2026, 3, 10, 15, 0, tzinfo=UTC)
+
+        mod._db.pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": task_id,
+                    "name": "one-time-meeting",
+                    "cron": None,
+                    "dispatch_mode": "prompt",
+                    "prompt": "attend meeting",
+                    "job_name": None,
+                    "job_args": None,
+                    "timezone": "UTC",
+                    "start_at": explicit_start,
+                    "end_at": explicit_end,
+                    "until_at": None,
+                    "display_title": "Board Meeting",
+                    "calendar_event_id": None,
+                    "enabled": True,
+                    "updated_at": explicit_start,
+                }
+            ]
+        )
+
+        upsert_instance_mock = AsyncMock(return_value=uuid.uuid4())
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", AsyncMock(return_value=uuid.uuid4())),
+            patch.object(mod, "_upsert_projection_instance", upsert_instance_mock),
+            patch.object(mod, "_prune_recurring_instances_outside_window", AsyncMock()),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_scheduler_source()
+
+        assert upsert_instance_mock.await_count == 1
+        instance_kwargs = upsert_instance_mock.await_args.kwargs
+        assert instance_kwargs["starts_at"] == explicit_start
+        assert instance_kwargs["ends_at"] == explicit_end
