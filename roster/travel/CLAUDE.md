@@ -73,9 +73,9 @@ Choose the appropriate response mode based on the message type and action taken:
 
 **Actions**:
 1. Create or match trip container for Tokyo / March 15–22
-2. `record_booking(payload={provider="United Airlines", type="leg", departure="SFO", arrival="NRT", departure_at="2026-03-15T10:15:00-08:00", pnr="K9X4TZ", source_message_id=<email_id>})`
-3. `calendar_create_event(title="✈ SFO → NRT (UA 837)", start_time="2026-03-15T10:15:00-08:00", end_time="2026-03-16T14:30:00+09:00", notes="PNR: K9X4TZ | Terminal 3")`
-4. `calendar_create_event(title="Check-in: United SFO→NRT", start_time="2026-03-14T10:15:00-08:00", notes="Online check-in opens 24h before departure")`
+2. `record_booking(payload={"provider": "United Airlines", "type": "leg", "departure": "SFO", "arrival": "NRT", "departure_at": "2026-03-15T10:15:00-08:00", "pnr": "K9X4TZ", "source_message_id": "<email_id>"})`
+3. `calendar_create_event(title="✈ SFO → NRT (UA 837)", start_at="2026-03-15T10:15:00-08:00", end_at="2026-03-16T14:30:00+09:00", description="PNR: K9X4TZ | Terminal 3")`
+4. `calendar_create_event(title="Check-in: United SFO→NRT", start_at="2026-03-14T10:15:00-08:00", end_at="2026-03-14T10:30:00-08:00", description="Online check-in opens 24h before departure")`
 5. `notify(channel="telegram", message="Flight booked: SFO → NRT on March 15 (UA 837, PNR K9X4TZ). Calendar blocks set. Check-in reminder: tomorrow.", intent="reply", request_context=...)`
 
 ---
@@ -86,8 +86,8 @@ Choose the appropriate response mode based on the message type and action taken:
 
 **Actions**:
 1. Find trip and leg by PNR or flight number
-2. `update_itinerary(trip_id=<id>, patch={leg_id=<id>, departure_at="2026-03-15T13:40:00-08:00"}, reason="UA email: flight delay notification")`
-3. `calendar_update_event(event_id=<flight_block_id>, start_time="2026-03-15T13:40:00-08:00", notes="Delayed from 10:15 — updated per UA notification")`
+2. `update_itinerary(trip_id=<id>, patch={"leg_id": "<id>", "departure_at": "2026-03-15T13:40:00-08:00"}, reason="UA email: flight delay notification")`
+3. `calendar_update_event(event_id=<flight_block_id>, start_at="2026-03-15T13:40:00-08:00", description="Delayed from 10:15 — updated per UA notification")`
 4. `notify(channel="telegram", intent="react", emoji="⚠️", request_context=...)`
 5. `notify(channel="telegram", message="UA 837 is delayed. New departure: 13:40 (was 10:15). Itinerary and calendar updated.", intent="reply", request_context=...)`
 
@@ -124,7 +124,7 @@ Choose the appropriate response mode based on the message type and action taken:
 
 **Actions**:
 1. Find active or upcoming trip matching flight date/carrier
-2. `add_document(trip_id=<id>, type="boarding_pass", blob_ref=<attachment_ref>, metadata={flight="UA 837", gate="B12"})`
+2. `add_document(trip_id=<id>, type="boarding_pass", blob_ref=<attachment_ref>, metadata={"flight": "UA 837", "gate": "B12"})`
 3. `notify(channel="telegram", intent="react", emoji="✅", request_context=...)`
 
 ---
@@ -135,9 +135,10 @@ Choose the appropriate response mode based on the message type and action taken:
 
 **Actions**:
 1. Match trip by PNR or source message sender
-2. `update_itinerary(trip_id=<id>, patch={leg changes with ORD stopover}, reason="UA rebooking email: new routing via ORD")`
-3. Update calendar blocks: remove direct flight block, add SFO→ORD and ORD→NRT blocks
-4. `notify(channel="telegram", message="Itinerary changed for your Tokyo trip.\n\nPreviously: SFO → NRT direct (10:15)\nNow: SFO → ORD (13:40) → NRT (arrives March 16 18:55)\n\nCalendar updated. Confirm this is correct?", intent="reply", request_context=...)`
+2. `update_itinerary(trip_id=<id>, patch={"leg_id": "<original_leg_id>", "arrival": "ORD", "arrival_at": "2026-03-15T19:55:00-06:00"}, reason="UA rebooking email: new routing via ORD")`
+3. `record_booking(payload={"provider": "United Airlines", "type": "leg", "departure": "ORD", "arrival": "NRT", "departure_at": "2026-03-15T22:10:00-06:00", "arrival_at": "2026-03-16T18:55:00+09:00", "source_message_id": "<email_id>"})`
+4. Update calendar blocks: remove direct flight block, add SFO→ORD and ORD→NRT blocks
+5. `notify(channel="telegram", message="Itinerary changed for your Tokyo trip.\n\nPreviously: SFO → NRT direct (10:15)\nNow: SFO → ORD (13:40) → NRT (arrives March 16 18:55)\n\nCalendar updated. Confirm this is correct?", intent="reply", request_context=...)`
 
 ---
 
