@@ -196,7 +196,7 @@ class TestUpCommand:
 
     def test_up_only_comma_separated_multiple(self, runner, multi_butler_dir, monkeypatch):
         """Test --only with comma-separated butler names."""
-        monkeypatch.setattr("asyncio.run", lambda coro: None)
+        monkeypatch.setattr("asyncio.run", lambda coro: coro.close())
         result = runner.invoke(cli, ["up", "--dir", str(multi_butler_dir), "--only", "alpha,gamma"])
         assert result.exit_code == 0
         assert "Starting 2 butler(s)" in result.output
@@ -207,7 +207,7 @@ class TestUpCommand:
 
     def test_up_only_comma_separated_with_spaces(self, runner, multi_butler_dir, monkeypatch):
         """Test --only with comma-separated names and spaces."""
-        monkeypatch.setattr("asyncio.run", lambda coro: None)
+        monkeypatch.setattr("asyncio.run", lambda coro: coro.close())
         result = runner.invoke(cli, ["up", "--dir", str(multi_butler_dir), "--only", "alpha, beta"])
         assert result.exit_code == 0
         assert "Starting 2 butler(s)" in result.output
@@ -226,7 +226,7 @@ class TestUpCommand:
     def test_up_shows_starting_message(self, runner, butler_config_dir, monkeypatch):
         """Test that up command outputs the starting message before trying to start daemons."""
         # Patch asyncio.run to avoid actually starting daemons
-        monkeypatch.setattr("asyncio.run", lambda coro: None)
+        monkeypatch.setattr("asyncio.run", lambda coro: coro.close())
         result = runner.invoke(cli, ["up", "--dir", str(butler_config_dir)])
         assert result.exit_code == 0
         assert "Starting 1 butler(s)" in result.output
@@ -241,7 +241,7 @@ class TestRunCommand:
 
     def test_run_shows_starting_message(self, runner, butler_config_dir, monkeypatch):
         """Test that run outputs starting message before daemon start."""
-        monkeypatch.setattr("asyncio.run", lambda coro: None)
+        monkeypatch.setattr("asyncio.run", lambda coro: coro.close())
         config_path = str(butler_config_dir / "test_butler")
         result = runner.invoke(cli, ["run", "--config", config_path])
         assert result.exit_code == 0

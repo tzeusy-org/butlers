@@ -538,7 +538,7 @@ async def test_sessions_summary_rejects_invalid_period(pool):
 # ---------------------------------------------------------------------------
 
 
-def test_no_delete_function_exists():
+async def test_no_delete_function_exists():
     """The sessions module exposes no delete capability (append-only)."""
     import butlers.core.sessions as mod
 
@@ -551,7 +551,7 @@ def test_no_delete_function_exists():
         assert "purge" not in name.lower(), f"Found purge-like function: {name}"
 
 
-def test_module_has_no_drop_or_truncate():
+async def test_module_has_no_drop_or_truncate():
     """The sessions module source contains no DROP or TRUNCATE statements."""
     import butlers.core.sessions as mod
 

@@ -12,7 +12,6 @@ import pytest
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
@@ -441,6 +440,7 @@ class TestParseExtractions:
 # ------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestExtractSignals:
     """Tests for the main extract_signals pipeline."""
 
@@ -670,6 +670,7 @@ class TestExtractSignals:
 # ------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestExtractionLogging:
     """Tests for extraction audit logging."""
 
@@ -735,6 +736,7 @@ class TestExtractionLogging:
 # ------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestDispatchFailureHandling:
     """Tests that dispatch failures are handled gracefully."""
 
@@ -812,6 +814,7 @@ class TestDispatchFailureHandling:
 # ------------------------------------------------------------------
 
 
+@pytest.mark.asyncio(loop_scope="session")
 class TestCustomSchemas:
     """Tests with custom extractor schemas."""
 

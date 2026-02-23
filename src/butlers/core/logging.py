@@ -269,7 +269,10 @@ def configure_logging(
     console_handler.setFormatter(formatter)
 
     root = logging.getLogger()
-    # Remove existing handlers and filters to avoid duplicates on reconfiguration
+    # Remove existing handlers and filters to avoid duplicates on reconfiguration.
+    # Close file handlers first to avoid ResourceWarning on unclosed file objects.
+    for _handler in list(root.handlers):
+        _handler.close()
     root.handlers.clear()
     root.filters.clear()
     root.addHandler(console_handler)

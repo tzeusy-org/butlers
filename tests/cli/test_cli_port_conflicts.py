@@ -26,7 +26,7 @@ class TestPortConflictDetection:
         import asyncio
 
         original_run = asyncio.run
-        asyncio.run = lambda coro: None
+        asyncio.run = lambda coro: coro.close()
 
         try:
             result = runner.invoke(cli, ["up", "--dir", str(base)])
@@ -125,7 +125,7 @@ class TestPortConflictDetection:
         import asyncio
 
         original_run = asyncio.run
-        asyncio.run = lambda coro: None
+        asyncio.run = lambda coro: coro.close()
 
         try:
             # Try to start only alpha and gamma (no conflict between them)

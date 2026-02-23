@@ -35,14 +35,19 @@ def _reset_logging():
     token = _butler_context.set(None)
     yield
     _butler_context.reset(token)
-    # Restore root logger
+    # Restore root logger — close file handlers before clearing to avoid ResourceWarning
     root = logging.getLogger()
+    for handler in list(root.handlers):
+        handler.close()
     root.handlers.clear()
     root.filters.clear()
     root.setLevel(logging.WARNING)
     # Clear file handlers leaked onto noise loggers
     for name in _NOISE_LOGGERS:
-        logging.getLogger(name).handlers.clear()
+        logger = logging.getLogger(name)
+        for handler in list(logger.handlers):
+            handler.close()
+        logger.handlers.clear()
 
 
 # ---------------------------------------------------------------------------

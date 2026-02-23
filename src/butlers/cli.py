@@ -54,10 +54,11 @@ def _check_port_status(port: int, timeout: float = 0.5) -> bool:
     sock.settimeout(timeout)
     try:
         sock.connect(("localhost", port))
-        sock.close()
         return True
     except (TimeoutError, OSError):
         return False
+    finally:
+        sock.close()
 
 
 @click.group()
