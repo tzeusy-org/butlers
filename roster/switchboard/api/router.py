@@ -688,6 +688,12 @@ async def get_connector_fanout(
     Used to populate the fanout distribution table in the Connectors tab detail
     view and the Overview tab fanout matrix.
 
+    Note: This endpoint queries the ``connector_fanout_daily`` table, which has
+    daily granularity only. ``period="24h"`` therefore covers the current and
+    previous calendar day (yesterday + today UTC), not a strict rolling 24-hour
+    window. This is consistent with the table schema; the ``/stats`` endpoint
+    uses hourly granularity for the 24h window.
+
     Falls back gracefully to an empty list when rollup tables are missing.
     """
     pool = _pool(db)
@@ -776,8 +782,7 @@ async def get_ingestion_overview(
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=24)
         try:
             agg = await pool.fetchrow(
-                "SELECT coalesce(sum(messages_ingested), 0) AS total_ingested,"
-                " coalesce(sum(messages_failed), 0) AS total_failed"
+                "SELECT coalesce(sum(messages_ingested), 0) AS total_ingested"
                 " FROM connector_stats_hourly"
                 " WHERE hour >= $1",
                 cutoff,
@@ -791,8 +796,7 @@ async def get_ingestion_overview(
         cutoff_date = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)).date()
         try:
             agg = await pool.fetchrow(
-                "SELECT coalesce(sum(messages_ingested), 0) AS total_ingested,"
-                " coalesce(sum(messages_failed), 0) AS total_failed"
+                "SELECT coalesce(sum(messages_ingested), 0) AS total_ingested"
                 " FROM connector_stats_daily"
                 " WHERE day >= $1",
                 cutoff_date,
@@ -804,19 +808,15 @@ async def get_ingestion_overview(
 
     # Tier breakdown from message_inbox lifecycle/processing_metadata JSONB.
     # This is a best-effort query — if message_inbox is missing we skip gracefully.
-    if period == "24h":
-        inbox_cutoff: Any = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=24)
-        inbox_where = "received_at >= $1"
-        inbox_args: list = [inbox_cutoff]
-    else:
-        days = 7 if period == "7d" else 30
-        inbox_cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
-        inbox_where = "received_at >= $1"
-        inbox_args = [inbox_cutoff]
+    inbox_cutoff: Any = datetime.datetime.now(datetime.UTC) - (
+        datetime.timedelta(hours=24)
+        if period == "24h"
+        else datetime.timedelta(days=7 if period == "7d" else 30)
+    )
 
     try:
         tier_row = await pool.fetchrow(
-            f"""
+            """
             SELECT
                 count(*) FILTER (
                     WHERE processing_metadata->>'policy_tier' = 'tier1'
@@ -829,9 +829,9 @@ async def get_ingestion_overview(
                     WHERE processing_metadata->>'policy_tier' = 'tier3'
                 ) AS tier3_skip
             FROM message_inbox
-            WHERE {inbox_where}
+            WHERE received_at >= $1
             """,
-            *inbox_args,
+            inbox_cutoff,
         )
         if tier_row:
             tier1_full_count = int(tier_row["tier1_full"] or 0)
@@ -877,6 +877,11 @@ async def get_ingestion_fanout(
     Aggregates message counts per (connector_type, endpoint_identity, target_butler)
     over the requested period. Used to populate the fanout matrix table on the
     Overview tab.
+
+    Note: This endpoint queries the ``connector_fanout_daily`` table, which has
+    daily granularity only. ``period="24h"`` therefore covers the current and
+    previous calendar day (yesterday + today UTC), not a strict rolling 24-hour
+    window.
 
     Falls back gracefully to an empty list when rollup tables are missing.
     """
