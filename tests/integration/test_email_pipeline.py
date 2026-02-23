@@ -268,6 +268,7 @@ class TestProcessIncoming:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.filterwarnings("ignore:.*_check_and_route_inbox.*:DeprecationWarning")
 class TestCheckAndRouteInbox:
     """Test the bot_email_check_and_route_inbox tool."""
 

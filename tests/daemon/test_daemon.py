@@ -2920,17 +2920,29 @@ class TestNotifyTool:
         daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
         assert notify_fn is not None
 
+        _orphaned_coros: list = []
+
         async def slow_call(*args, **kwargs):
-            await asyncio.sleep(999)
+            await asyncio.sleep(999)  # pragma: no cover
+
+        def _tracking_slow_call(*args, **kwargs):
+            coro = slow_call(*args, **kwargs)
+            _orphaned_coros.append(coro)
+            return coro
 
         mock_client = AsyncMock()
-        mock_client.call_tool = slow_call
+        mock_client.call_tool = _tracking_slow_call
         daemon.switchboard_client = mock_client
 
         # The timeout is a local variable inside notify, so we mock
         # asyncio.wait_for to raise TimeoutError directly.
         with patch("butlers.daemon.asyncio.wait_for", side_effect=TimeoutError()):
             result = await notify_fn(channel="email", message="Hello")
+
+        # Close any coroutines that were created but not awaited (wait_for was mocked
+        # to raise TimeoutError before the coroutine could be scheduled).
+        for coro in _orphaned_coros:
+            coro.close()
 
         assert result["status"] == "error"
         assert "timed out" in result["error"].lower()
