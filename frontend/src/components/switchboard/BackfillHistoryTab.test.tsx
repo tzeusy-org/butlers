@@ -60,7 +60,7 @@ const SAMPLE_CONNECTOR = {
   endpoint_identity: "user@example.com",
   instance_id: null,
   version: null,
-  state: "online",
+  state: "healthy",
   error_message: null,
   uptime_s: null,
   last_heartbeat_at: null,
@@ -206,7 +206,7 @@ describe("BackfillHistoryTab", () => {
   });
 
   it("hides pause button when connector is offline", () => {
-    const offlineConnector = { ...SAMPLE_CONNECTOR, state: "offline" };
+    const offlineConnector = { ...SAMPLE_CONNECTOR, state: "error" };
     vi.spyOn(useBackfill, "useBackfillJobs").mockReturnValue(
       makeQuery({
         data: [SAMPLE_JOB],

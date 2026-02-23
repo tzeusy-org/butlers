@@ -3516,9 +3516,7 @@ class TestBackfillJobValidation:
         assert job.date_from == "2025-01-01"
         assert job.date_to == "2025-12-31"
 
-    async def test_zero_rate_limit_skips_job(
-        self, backfill_runtime: GmailConnectorRuntime
-    ) -> None:
+    async def test_zero_rate_limit_skips_job(self, backfill_runtime: GmailConnectorRuntime) -> None:
         """_execute_backfill_job skips execution when rate_limit_per_hour == 0."""
         from butlers.connectors.gmail import BackfillJob
 
@@ -3539,7 +3537,7 @@ class TestBackfillJobValidation:
         with patch.object(
             backfill_runtime,
             "_fetch_backfill_message_page",
-            new=AsyncMock(side_effect=mock_fetch_page)
+            new=AsyncMock(side_effect=mock_fetch_page),
         ):
             await backfill_runtime._execute_backfill_job(job)  # type: ignore[arg-type]
 

@@ -69,7 +69,7 @@ function isConnectorOnline(
   const match = connectors.find(
     (c) => c.connector_type === connectorType && c.endpoint_identity === endpointIdentity,
   );
-  return match?.state === "online";
+  return match?.state === "healthy";
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +287,7 @@ function CreateJobDialog({ open, onOpenChange, connectors }: CreateJobDialogProp
   const [targetCategories, setTargetCategories] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const onlineConnectors = connectors.filter((c) => c.state === "online");
+  const onlineConnectors = connectors.filter((c) => c.state === "healthy");
 
   function reset() {
     setConnectorType("");
