@@ -6,7 +6,7 @@
  * Clicking the card navigates to /ingestion/connectors/:type/:identity.
  */
 
-import { useNavigate } from "react-router";
+import { Link } from "react-router";
 import { formatDistanceToNow } from "date-fns";
 
 import { Badge } from "@/components/ui/badge";
@@ -29,13 +29,7 @@ export function ConnectorCard({
   connector,
   hasActiveBackfill = false,
 }: ConnectorCardProps) {
-  const navigate = useNavigate();
-
-  function handleClick() {
-    navigate(
-      `/ingestion/connectors/${encodeURIComponent(connector.connector_type)}/${encodeURIComponent(connector.endpoint_identity)}`,
-    );
-  }
+  const href = `/ingestion/connectors/${encodeURIComponent(connector.connector_type)}/${encodeURIComponent(connector.endpoint_identity)}`;
 
   const todayIngested = connector.today?.messages_ingested ?? 0;
   const uptimePct = connector.today?.uptime_pct;
@@ -47,53 +41,51 @@ export function ConnectorCard({
     : "never";
 
   return (
-    <Card
-      className="cursor-pointer transition-shadow hover:shadow-md"
-      onClick={handleClick}
-      data-testid="connector-card"
-    >
-      <CardHeader className="pb-2">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <CardTitle className="text-sm font-semibold">
-              {connector.connector_type}
-            </CardTitle>
-            <CardDescription className="font-mono text-xs">
-              {connector.endpoint_identity}
-            </CardDescription>
+    <Link to={href} className="block" data-testid="connector-card">
+      <Card className="transition-shadow hover:shadow-md">
+        <CardHeader className="pb-2">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <CardTitle className="text-sm font-semibold">
+                {connector.connector_type}
+              </CardTitle>
+              <CardDescription className="font-mono text-xs">
+                {connector.endpoint_identity}
+              </CardDescription>
+            </div>
+            <div className="flex flex-col gap-1 items-end">
+              <LivenessBadge
+                liveness={connector.liveness}
+                state={connector.state}
+                showState
+              />
+              {hasActiveBackfill && (
+                <Badge variant="secondary" className="text-xs">
+                  backfill active
+                </Badge>
+              )}
+            </div>
           </div>
-          <div className="flex flex-col gap-1 items-end">
-            <LivenessBadge
-              liveness={connector.liveness}
-              state={connector.state}
-              showState
-            />
-            {hasActiveBackfill && (
-              <Badge variant="secondary" className="text-xs">
-                backfill active
-              </Badge>
+        </CardHeader>
+        <CardContent>
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+            <dt className="text-muted-foreground">Today ingested</dt>
+            <dd className="text-right font-medium tabular-nums">
+              {todayIngested.toLocaleString()}
+            </dd>
+
+            {uptimePct != null && (
+              <>
+                <dt className="text-muted-foreground">Uptime</dt>
+                <dd className="text-right tabular-nums">{uptimePct.toFixed(1)}%</dd>
+              </>
             )}
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-          <dt className="text-muted-foreground">Today ingested</dt>
-          <dd className="text-right font-medium tabular-nums">
-            {todayIngested.toLocaleString()}
-          </dd>
 
-          {uptimePct != null && (
-            <>
-              <dt className="text-muted-foreground">Uptime</dt>
-              <dd className="text-right tabular-nums">{uptimePct.toFixed(1)}%</dd>
-            </>
-          )}
-
-          <dt className="text-muted-foreground">Last seen</dt>
-          <dd className="text-right text-xs text-muted-foreground">{lastSeen}</dd>
-        </dl>
-      </CardContent>
-    </Card>
+            <dt className="text-muted-foreground">Last seen</dt>
+            <dd className="text-right text-xs text-muted-foreground">{lastSeen}</dd>
+          </dl>
+        </CardContent>
+      </Card>
+    </Link>
   );
 }

@@ -31,7 +31,6 @@ import {
 
 import { LivenessBadge } from "@/components/ingestion/LivenessBadge";
 import { VolumeTrendChart } from "@/components/ingestion/VolumeTrendChart";
-import { PeriodSelector } from "@/components/ingestion/PeriodSelector";
 import { useConnectorDetail, useConnectorStats } from "@/hooks/use-ingestion";
 import type { IngestionPeriod } from "@/api/index.ts";
 
@@ -237,10 +236,7 @@ export default function ConnectorDetailPage() {
       {stats?.summary && (
         <Card>
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>Period Summary</CardTitle>
-              <PeriodSelector value={period} onChange={handlePeriodChange} />
-            </div>
+            <CardTitle>Period Summary</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">

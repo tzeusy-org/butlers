@@ -5,7 +5,7 @@
  * - ingestionKeys.connectorsList()            → list of ConnectorSummary
  * - ingestionKeys.connectorsSummary(period)   → CrossConnectorSummary
  * - ingestionKeys.fanout(period)              → ConnectorFanout matrix
- * - ingestionKeys.connectorDetail(type, id, period) → ConnectorDetail + stats
+ * - ingestionKeys.connectorDetail(type, id)           → ConnectorDetail
  * - ingestionKeys.connectorStats(type, id, period)  → ConnectorStats timeseries
  *
  * Overview and Connectors tabs share the connectors list / summary / fanout

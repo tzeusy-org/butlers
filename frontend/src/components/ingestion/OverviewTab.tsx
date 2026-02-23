@@ -97,6 +97,11 @@ export function OverviewTab({ isActive }: OverviewTabProps) {
             period={period}
             onPeriodChange={handlePeriodChange}
             isLoading={statsLoading && isActive}
+            title={
+              connectors.length > 1 && firstConnector
+                ? `Volume Trend (${firstConnector.connector_type})`
+                : "Volume Trend"
+            }
           />
         </div>
         <div>
