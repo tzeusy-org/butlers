@@ -904,7 +904,7 @@ class TestMetadataHandling:
             category="misc",
             metadata=None,
         )
-        assert result["metadata"] == {} or isinstance(result["metadata"], dict)
+        assert result["metadata"] == {}
 
     async def test_transaction_metadata_empty_dict_round_trips(self, pool):
         """metadata={} is stored and returned as {}."""
@@ -987,7 +987,7 @@ class TestMetadataHandling:
             due_date=_today() + timedelta(days=5),
             metadata=None,
         )
-        assert result["metadata"] == {} or isinstance(result["metadata"], dict)
+        assert result["metadata"] == {}
 
     async def test_bill_metadata_account_info_preserved(self, pool):
         """Bill metadata containing account info survives round-trip."""
