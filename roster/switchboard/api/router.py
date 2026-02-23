@@ -1,7 +1,7 @@
 """Switchboard butler endpoints.
 
-Provides read-only endpoints for the routing log, butler registry, and
-connector ingestion dashboard surfaces.
+Provides read-only endpoints for the routing log, butler registry,
+connector ingestion dashboard surfaces, and triage rules.
 All data is queried directly from the switchboard butler's PostgreSQL
 database via asyncpg.
 
@@ -17,6 +17,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -42,6 +43,14 @@ if _spec is not None and _spec.loader is not None:
     ConnectorStatsDaily = _models.ConnectorStatsDaily
     FanoutRow = _models.FanoutRow
     IngestionOverviewStats = _models.IngestionOverviewStats
+    TriageRule = _models.TriageRule
+    TriageRuleCreate = _models.TriageRuleCreate
+    TriageRuleUpdate = _models.TriageRuleUpdate
+    TriageRuleTestRequest = _models.TriageRuleTestRequest
+    TriageRuleTestResult = _models.TriageRuleTestResult
+    TriageRuleTestResponse = _models.TriageRuleTestResponse
+    validate_condition = _models.validate_condition
+    validate_action = _models.validate_action
 else:
     raise RuntimeError("Failed to load switchboard API models")
 
@@ -157,31 +166,6 @@ async def _register_missing_butler_from_roster(pool: Any, butler_name: str) -> b
         )
         return False
     return True
-
-
-def _row_to_connector_entry(r: dict) -> Any:
-    """Convert a connector_registry asyncpg row dict to ConnectorEntry."""
-    return ConnectorEntry(
-        connector_type=r["connector_type"],
-        endpoint_identity=r["endpoint_identity"],
-        instance_id=str(r["instance_id"]) if r.get("instance_id") else None,
-        version=r.get("version"),
-        state=str(r.get("state") or "unknown"),
-        error_message=r.get("error_message"),
-        uptime_s=r.get("uptime_s"),
-        last_heartbeat_at=str(r["last_heartbeat_at"]) if r.get("last_heartbeat_at") else None,
-        first_seen_at=str(r["first_seen_at"]),
-        registered_via=str(r.get("registered_via") or "self"),
-        counter_messages_ingested=int(r.get("counter_messages_ingested") or 0),
-        counter_messages_failed=int(r.get("counter_messages_failed") or 0),
-        counter_source_api_calls=int(r.get("counter_source_api_calls") or 0),
-        counter_checkpoint_saves=int(r.get("counter_checkpoint_saves") or 0),
-        counter_dedupe_accepted=int(r.get("counter_dedupe_accepted") or 0),
-        checkpoint_cursor=r.get("checkpoint_cursor"),
-        checkpoint_updated_at=str(r["checkpoint_updated_at"])
-        if r.get("checkpoint_updated_at")
-        else None,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +394,31 @@ async def receive_heartbeat(
     )
 
     return HeartbeatResponse(status="ok", eligibility_state=new_state)
+
+
+def _row_to_connector_entry(r: dict) -> Any:
+    """Convert a connector_registry asyncpg row dict to ConnectorEntry."""
+    return ConnectorEntry(
+        connector_type=r["connector_type"],
+        endpoint_identity=r["endpoint_identity"],
+        instance_id=str(r["instance_id"]) if r.get("instance_id") else None,
+        version=r.get("version"),
+        state=str(r.get("state") or "unknown"),
+        error_message=r.get("error_message"),
+        uptime_s=r.get("uptime_s"),
+        last_heartbeat_at=str(r["last_heartbeat_at"]) if r.get("last_heartbeat_at") else None,
+        first_seen_at=str(r["first_seen_at"]),
+        registered_via=str(r.get("registered_via") or "self"),
+        counter_messages_ingested=int(r.get("counter_messages_ingested") or 0),
+        counter_messages_failed=int(r.get("counter_messages_failed") or 0),
+        counter_source_api_calls=int(r.get("counter_source_api_calls") or 0),
+        counter_checkpoint_saves=int(r.get("counter_checkpoint_saves") or 0),
+        counter_dedupe_accepted=int(r.get("counter_dedupe_accepted") or 0),
+        checkpoint_cursor=r.get("checkpoint_cursor"),
+        checkpoint_updated_at=str(r["checkpoint_updated_at"])
+        if r.get("checkpoint_updated_at")
+        else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -914,3 +923,424 @@ async def get_ingestion_fanout(
         for r in rows
     ]
     return ApiResponse[list[FanoutRow]](data=data)
+
+
+# ---------------------------------------------------------------------------
+# Helpers — triage rules
+# ---------------------------------------------------------------------------
+
+
+def _row_to_triage_rule(r: Any) -> TriageRule:
+    """Convert an asyncpg row to a TriageRule model."""
+    condition = r["condition"]
+    if isinstance(condition, str):
+        condition = json.loads(condition)
+    return TriageRule(
+        id=str(r["id"]),
+        rule_type=r["rule_type"],
+        condition=condition,
+        action=r["action"],
+        priority=r["priority"],
+        enabled=r["enabled"],
+        created_by=r["created_by"],
+        created_at=str(r["created_at"]),
+        updated_at=str(r["updated_at"]),
+    )
+
+
+async def _assert_route_to_eligible(pool: Any, action: str) -> None:
+    """Validate that a route_to:<butler> action references a registered butler.
+
+    Raises HTTPException 422 when the target is not found in butler_registry.
+    No-op for non-route_to actions.
+    """
+    if not action.startswith("route_to:"):
+        return
+    target = action[len("route_to:") :]
+    row = await pool.fetchrow("SELECT name FROM butler_registry WHERE name = $1", target)
+    if row is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"route_to target '{target}' is not a registered butler",
+        )
+
+
+# ---------------------------------------------------------------------------
+# GET /triage-rules — list rules
+# ---------------------------------------------------------------------------
+
+
+@router.get("/triage-rules", response_model=ApiResponse[list[TriageRule]])
+async def list_triage_rules(
+    rule_type: str | None = Query(None, description="Filter by rule_type"),
+    enabled: bool | None = Query(None, description="Filter by enabled state"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[TriageRule]]:
+    """List active (non-deleted) triage rules with optional filters.
+
+    Results are ordered by priority ASC, created_at ASC, id ASC per spec §5.4.
+    """
+    pool = _pool(db)
+
+    conditions = ["deleted_at IS NULL"]
+    args: list[Any] = []
+    idx = 1
+
+    if rule_type is not None:
+        conditions.append(f"rule_type = ${idx}")
+        args.append(rule_type)
+        idx += 1
+
+    if enabled is not None:
+        conditions.append(f"enabled = ${idx}")
+        args.append(enabled)
+        idx += 1
+
+    where = " WHERE " + " AND ".join(conditions)
+
+    rows = await pool.fetch(
+        f"SELECT id, rule_type, condition, action, priority, enabled,"
+        f" created_by, created_at, updated_at"
+        f" FROM triage_rules{where}"
+        f" ORDER BY priority ASC, created_at ASC, id ASC",
+        *args,
+    )
+
+    total = len(rows)
+    data = [_row_to_triage_rule(r) for r in rows]
+
+    from butlers.api.models import ApiMeta
+
+    return ApiResponse[list[TriageRule]](data=data, meta=ApiMeta(total=total))
+
+
+# ---------------------------------------------------------------------------
+# POST /triage-rules — create rule
+# ---------------------------------------------------------------------------
+
+
+@router.post("/triage-rules", response_model=ApiResponse[TriageRule], status_code=201)
+async def create_triage_rule(
+    body: TriageRuleCreate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[TriageRule]:
+    """Create a new triage rule.
+
+    Validates rule_type/condition schema compatibility and route_to target
+    eligibility before writing to the database.  The new rule is marked
+    ``created_by='dashboard'``.
+    """
+    pool = _pool(db)
+
+    # Validate route_to eligibility against the registry
+    await _assert_route_to_eligible(pool, body.action)
+
+    # Re-validate and normalise condition (also done by Pydantic on body parse)
+    try:
+        validated_condition = validate_condition(body.rule_type, body.condition)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    row = await pool.fetchrow(
+        "INSERT INTO triage_rules"
+        " (rule_type, condition, action, priority, enabled, created_by)"
+        " VALUES ($1, $2::jsonb, $3, $4, $5, 'dashboard')"
+        " RETURNING id, rule_type, condition, action, priority, enabled,"
+        "           created_by, created_at, updated_at",
+        body.rule_type,
+        json.dumps(validated_condition),
+        body.action,
+        body.priority,
+        body.enabled,
+    )
+
+    return ApiResponse[TriageRule](data=_row_to_triage_rule(row))
+
+
+# ---------------------------------------------------------------------------
+# PATCH /triage-rules/{rule_id} — update rule
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/triage-rules/{rule_id}", response_model=ApiResponse[TriageRule])
+async def update_triage_rule(
+    rule_id: str,
+    body: TriageRuleUpdate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[TriageRule]:
+    """Partially update a triage rule.
+
+    Supports partial fields: condition, action, priority, enabled.
+    Returns 404 when the rule does not exist or has been soft-deleted.
+    """
+    pool = _pool(db)
+
+    # Validate UUID format
+    try:
+        UUID(rule_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID")
+
+    # Fetch the existing rule to validate condition+rule_type compatibility
+    existing = await pool.fetchrow(
+        "SELECT id, rule_type, condition, action, priority, enabled,"
+        " created_by, created_at, updated_at"
+        " FROM triage_rules WHERE id = $1 AND deleted_at IS NULL",
+        rule_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Triage rule '{rule_id}' not found")
+
+    # Build updated fields
+    updates: dict[str, Any] = {}
+
+    if body.action is not None:
+        await _assert_route_to_eligible(pool, body.action)
+        updates["action"] = body.action
+
+    if body.condition is not None:
+        # We need the rule_type to validate the condition
+        rule_type = existing["rule_type"]
+        try:
+            validated_condition = validate_condition(rule_type, body.condition)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        updates["condition"] = json.dumps(validated_condition)
+
+    if body.priority is not None:
+        updates["priority"] = body.priority
+
+    if body.enabled is not None:
+        updates["enabled"] = body.enabled
+
+    if not updates:
+        # No fields to update — return existing rule unchanged
+        return ApiResponse[TriageRule](data=_row_to_triage_rule(existing))
+
+    # Build SET clause
+    set_parts: list[str] = []
+    args: list[Any] = []
+    idx = 1
+
+    for field, value in updates.items():
+        if field == "condition":
+            set_parts.append(f"condition = ${idx}::jsonb")
+        else:
+            set_parts.append(f"{field} = ${idx}")
+        args.append(value)
+        idx += 1
+
+    set_parts.append(f"updated_at = ${idx}")
+    args.append(datetime.datetime.now(datetime.UTC))
+    idx += 1
+
+    args.append(rule_id)
+
+    row = await pool.fetchrow(
+        f"UPDATE triage_rules SET {', '.join(set_parts)}"
+        f" WHERE id = ${idx} AND deleted_at IS NULL"
+        f" RETURNING id, rule_type, condition, action, priority, enabled,"
+        f"           created_by, created_at, updated_at",
+        *args,
+    )
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Triage rule '{rule_id}' not found")
+
+    return ApiResponse[TriageRule](data=_row_to_triage_rule(row))
+
+
+# ---------------------------------------------------------------------------
+# DELETE /triage-rules/{rule_id} — soft-delete rule
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/triage-rules/{rule_id}", status_code=204)
+async def delete_triage_rule(
+    rule_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Soft-delete a triage rule.
+
+    Sets ``deleted_at=NOW()`` and ``enabled=FALSE``.
+    Returns 204 No Content on success.
+    Returns 404 when the rule does not exist or is already deleted.
+    """
+    pool = _pool(db)
+
+    # Validate UUID format
+    try:
+        UUID(rule_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID")
+
+    now = datetime.datetime.now(datetime.UTC)
+    result = await pool.execute(
+        "UPDATE triage_rules"
+        " SET deleted_at = $1, enabled = FALSE, updated_at = $1"
+        " WHERE id = $2 AND deleted_at IS NULL",
+        now,
+        rule_id,
+    )
+
+    rows_affected = int(result.split(" ")[-1]) if result else 0
+    if rows_affected == 0:
+        raise HTTPException(status_code=404, detail=f"Triage rule '{rule_id}' not found")
+
+
+# ---------------------------------------------------------------------------
+# Triage evaluator — pure Python, mirrors spec §5.4 logic
+# ---------------------------------------------------------------------------
+
+
+def _evaluate_rule(rule: TriageRuleCreate, envelope: Any) -> tuple[bool, str]:
+    """Evaluate a single triage rule against a sample envelope.
+
+    Returns ``(matched, reason)`` — a boolean and a human-readable reason string.
+
+    This is the canonical evaluator used by the /test dry-run endpoint. It mirrors
+    the deterministic match logic defined in spec §5.4 and §4.2.
+    """
+    rule_type = rule.rule_type
+    condition = rule.condition
+
+    if rule_type == "sender_domain":
+        sender_address = envelope.sender.identity.lower()
+        # Extract domain from "local@domain" or treat whole string as domain
+        domain_part = sender_address.split("@")[-1] if "@" in sender_address else sender_address
+        target_domain = condition["domain"].lower()
+        match_mode = condition.get("match", "exact")
+
+        if match_mode == "exact":
+            matched = domain_part == target_domain
+            reason = (
+                f"sender domain exact match: {domain_part} == {target_domain}"
+                if matched
+                else f"sender domain {domain_part!r} does not exactly match {target_domain!r}"
+            )
+        else:  # suffix
+            matched = domain_part == target_domain or domain_part.endswith("." + target_domain)
+            reason = (
+                f"sender domain suffix match: {domain_part} matches *.{target_domain}"
+                if matched
+                else f"sender domain {domain_part!r} does not suffix-match {target_domain!r}"
+            )
+        return matched, reason
+
+    elif rule_type == "sender_address":
+        sender = envelope.sender.identity.lower()
+        target = condition["address"].lower()
+        matched = sender == target
+        reason = (
+            f"sender address exact match: {sender}"
+            if matched
+            else f"sender address {sender!r} does not match {target!r}"
+        )
+        return matched, reason
+
+    elif rule_type == "header_condition":
+        headers = {k.lower(): v for k, v in (envelope.payload.headers or {}).items()}
+        header_name = condition["header"].lower()
+        op = condition["op"]
+        value = condition.get("value")
+
+        if op == "present":
+            matched = header_name in headers
+            reason = (
+                f"header {condition['header']!r} is present"
+                if matched
+                else f"header {condition['header']!r} is not present"
+            )
+        elif op == "equals":
+            actual = headers.get(header_name)
+            matched = actual is not None and actual == value
+            reason = (
+                f"header {condition['header']!r} equals {value!r}"
+                if matched
+                else f"header {condition['header']!r} value {actual!r} does not equal {value!r}"
+            )
+        elif op == "contains":
+            actual = headers.get(header_name)
+            matched = actual is not None and value is not None and value in actual
+            reason = (
+                f"header {condition['header']!r} contains {value!r}"
+                if matched
+                else f"header {condition['header']!r} value {actual!r} does not contain {value!r}"
+            )
+        else:
+            matched = False
+            reason = f"unknown op {op!r}"
+        return matched, reason
+
+    elif rule_type == "mime_type":
+        mime_parts = envelope.payload.mime_parts or []
+        target_type = condition["type"].lower()
+
+        def _type_matches(part_type: str) -> bool:
+            part_type = part_type.lower()
+            if target_type.endswith("/*"):
+                # Wildcard subtype: match major type
+                major = target_type[:-2]
+                return part_type == major or part_type.startswith(major + "/")
+            return part_type == target_type
+
+        matched = any(_type_matches(p.get("type", "")) for p in mime_parts)
+        reason = (
+            f"MIME part matches {target_type!r}"
+            if matched
+            else f"no MIME part matches {target_type!r}"
+        )
+        return matched, reason
+
+    return False, f"unknown rule_type {rule_type!r}"
+
+
+# ---------------------------------------------------------------------------
+# POST /triage-rules/test — dry-run evaluation
+# ---------------------------------------------------------------------------
+
+
+@router.post("/triage-rules/test", response_model=TriageRuleTestResponse)
+async def test_triage_rule(
+    body: TriageRuleTestRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> TriageRuleTestResponse:
+    """Dry-run evaluation of a triage rule against a sample envelope.
+
+    Uses the same evaluator as the production triage path.
+    Does NOT write any routing or inbox state.
+    """
+    # Pool must be reachable (validates DB connectivity) but we don't query in evaluator
+    _pool(db)
+
+    rule = body.rule
+    envelope = body.envelope
+
+    matched, reason = _evaluate_rule(rule, envelope)
+
+    if matched:
+        action = rule.action
+        if action.startswith("route_to:"):
+            decision = "route_to"
+            target_butler = action[len("route_to:") :]
+        else:
+            decision = action
+            target_butler = None
+
+        result = TriageRuleTestResult(
+            matched=True,
+            decision=decision,
+            target_butler=target_butler,
+            matched_rule_type=rule.rule_type,
+            reason=reason,
+        )
+    else:
+        result = TriageRuleTestResult(
+            matched=False,
+            decision=None,
+            target_butler=None,
+            matched_rule_type=None,
+            reason=reason,
+        )
+
+    return TriageRuleTestResponse(data=result)

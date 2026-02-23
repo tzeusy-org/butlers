@@ -1,12 +1,14 @@
 """Pydantic models for the switchboard API.
 
-Provides models for routing log, registry, connector ingestion, and
-ingestion overview entries (switchboard butler).
+Provides models for routing log, registry entries, connector ingestion, and
+triage rules (switchboard butler).
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Any, Literal
+
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class RoutingEntry(BaseModel):
@@ -172,3 +174,240 @@ class IngestionOverviewStats(BaseModel):
     tier1_full_count: int = 0
     tier2_metadata_count: int = 0
     tier3_skip_count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Triage rule condition schemas (per spec §4.2)
+# ---------------------------------------------------------------------------
+
+
+class SenderDomainCondition(BaseModel):
+    """Condition schema for rule_type='sender_domain'."""
+
+    domain: str
+    match: Literal["exact", "suffix"]
+
+    @field_validator("domain")
+    @classmethod
+    def domain_lowercase_nonempty(cls, v: str) -> str:
+        if not v or v != v.lower():
+            raise ValueError("domain must be lowercase and non-empty")
+        return v
+
+
+class SenderAddressCondition(BaseModel):
+    """Condition schema for rule_type='sender_address'."""
+
+    address: str
+
+    @field_validator("address")
+    @classmethod
+    def address_lowercase_nonempty(cls, v: str) -> str:
+        if not v or v != v.lower():
+            raise ValueError("address must be lowercase and non-empty")
+        return v
+
+
+class HeaderCondition(BaseModel):
+    """Condition schema for rule_type='header_condition'."""
+
+    header: str
+    op: Literal["present", "equals", "contains"]
+    value: str | None = None
+
+    @model_validator(mode="after")
+    def validate_op_value(self) -> HeaderCondition:
+        if self.op in ("equals", "contains"):
+            if not self.value:
+                raise ValueError(f"value must be present and non-empty for op='{self.op}'")
+        elif self.op == "present":
+            if self.value is not None:
+                raise ValueError("value must be null or omitted for op='present'")
+        return self
+
+
+class MimeTypeCondition(BaseModel):
+    """Condition schema for rule_type='mime_type'."""
+
+    type: str
+
+    @field_validator("type")
+    @classmethod
+    def type_lowercase_nonempty(cls, v: str) -> str:
+        if not v or v != v.lower():
+            raise ValueError("type must be lowercase and non-empty")
+        return v
+
+
+# Supported rule types
+RULE_TYPES = frozenset({"sender_domain", "sender_address", "header_condition", "mime_type"})
+
+# Supported simple actions (route_to:<butler> is validated separately)
+SIMPLE_ACTIONS = frozenset({"skip", "metadata_only", "low_priority_queue", "pass_through"})
+
+
+def validate_condition(rule_type: str, condition: dict[str, Any]) -> dict[str, Any]:
+    """Validate condition JSONB against the rule_type schema.
+
+    Returns the validated condition dict.
+    Raises ValueError on schema mismatch.
+    """
+    if rule_type == "sender_domain":
+        return SenderDomainCondition(**condition).model_dump()
+    elif rule_type == "sender_address":
+        return SenderAddressCondition(**condition).model_dump()
+    elif rule_type == "header_condition":
+        cond = HeaderCondition(**condition)
+        d = cond.model_dump()
+        if cond.op == "present":
+            d["value"] = None
+        return d
+    elif rule_type == "mime_type":
+        return MimeTypeCondition(**condition).model_dump()
+    else:
+        raise ValueError(f"Unknown rule_type: {rule_type!r}")
+
+
+def validate_action(action: str) -> str:
+    """Validate action value per spec §4.1 constraints.
+
+    Returns the action string unchanged if valid.
+    Raises ValueError otherwise.
+    """
+    if action in SIMPLE_ACTIONS:
+        return action
+    if action.startswith("route_to:") and len(action) > len("route_to:"):
+        return action
+    raise ValueError(
+        f"Invalid action {action!r}. Must be one of {sorted(SIMPLE_ACTIONS)} or 'route_to:<butler>'"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Triage rule API models
+# ---------------------------------------------------------------------------
+
+
+class TriageRule(BaseModel):
+    """A persisted triage rule returned from the API."""
+
+    id: str
+    rule_type: str
+    condition: dict[str, Any]
+    action: str
+    priority: int
+    enabled: bool
+    created_by: str
+    created_at: str
+    updated_at: str
+
+
+class TriageRuleCreate(BaseModel):
+    """Request body for POST /api/switchboard/triage-rules."""
+
+    rule_type: str
+    condition: dict[str, Any]
+    action: str
+    priority: int
+    enabled: bool = True
+
+    @field_validator("rule_type")
+    @classmethod
+    def rule_type_valid(cls, v: str) -> str:
+        if v not in RULE_TYPES:
+            raise ValueError(f"rule_type must be one of {sorted(RULE_TYPES)}")
+        return v
+
+    @field_validator("action")
+    @classmethod
+    def action_valid(cls, v: str) -> str:
+        return validate_action(v)
+
+    @field_validator("priority")
+    @classmethod
+    def priority_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("priority must be >= 0")
+        return v
+
+    @model_validator(mode="after")
+    def condition_matches_rule_type(self) -> TriageRuleCreate:
+        try:
+            validate_condition(self.rule_type, self.condition)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"condition invalid for rule_type={self.rule_type!r}: {exc}") from exc
+        return self
+
+
+class TriageRuleUpdate(BaseModel):
+    """Request body for PATCH /api/switchboard/triage-rules/:id.
+
+    All fields are optional (partial update).
+    """
+
+    condition: dict[str, Any] | None = None
+    action: str | None = None
+    priority: int | None = None
+    enabled: bool | None = None
+
+    @field_validator("action")
+    @classmethod
+    def action_valid(cls, v: str | None) -> str | None:
+        if v is not None:
+            return validate_action(v)
+        return v
+
+    @field_validator("priority")
+    @classmethod
+    def priority_non_negative(cls, v: int | None) -> int | None:
+        if v is not None and v < 0:
+            raise ValueError("priority must be >= 0")
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Triage rule test (dry-run) models
+# ---------------------------------------------------------------------------
+
+
+class EnvelopeSender(BaseModel):
+    """Sender identity in the test envelope."""
+
+    identity: str
+
+
+class EnvelopePayload(BaseModel):
+    """Payload section of the test envelope."""
+
+    headers: dict[str, str] = {}
+    mime_parts: list[dict[str, Any]] = []
+
+
+class TestEnvelope(BaseModel):
+    """Sample envelope for dry-run rule testing."""
+
+    sender: EnvelopeSender
+    payload: EnvelopePayload = EnvelopePayload()
+
+
+class TriageRuleTestRequest(BaseModel):
+    """Request body for POST /api/switchboard/triage-rules/test."""
+
+    envelope: TestEnvelope
+    rule: TriageRuleCreate
+
+
+class TriageRuleTestResult(BaseModel):
+    """Result of a dry-run triage rule test."""
+
+    matched: bool
+    decision: str | None = None
+    target_butler: str | None = None
+    matched_rule_type: str | None = None
+    reason: str
+
+
+class TriageRuleTestResponse(BaseModel):
+    """Response envelope for POST /api/switchboard/triage-rules/test."""
+
+    data: TriageRuleTestResult
