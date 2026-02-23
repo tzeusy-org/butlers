@@ -7,7 +7,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from butlers.core.telemetry import get_tracer, init_telemetry
+import butlers.core.telemetry as _telemetry_mod
+from butlers.core.telemetry import get_tracer, init_telemetry, tag_butler_span, tool_span
 
 pytestmark = pytest.mark.unit
 
@@ -21,6 +22,9 @@ def _reset_otel_global_state():
     """
     trace._TRACER_PROVIDER_SET_ONCE = trace.Once()
     trace._TRACER_PROVIDER = None
+    # Also reset the module-level guard so init_telemetry behaves as a
+    # first-call again in each test.
+    _telemetry_mod._tracer_provider_installed = False
 
 
 @pytest.fixture(autouse=True)
@@ -57,10 +61,10 @@ class TestTracerReturnsValidTracer:
             span.set_attribute("key", "value")
 
 
-class TestServiceNameSet:
-    """When endpoint IS set, the resource has the correct service.name."""
+class TestSharedProviderResourceName:
+    """When endpoint IS set, the shared provider uses 'butlers' as resource service.name."""
 
-    def test_resource_has_service_name(self, monkeypatch):
+    def test_resource_has_shared_service_name(self, monkeypatch):
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
 
         # Call init_telemetry which sets a real TracerProvider
@@ -70,9 +74,10 @@ class TestServiceNameSet:
         provider = trace.get_tracer_provider()
         assert isinstance(provider, TracerProvider)
 
-        # Check the resource attributes
+        # The shared provider resource uses "butlers" as the process-level service name.
+        # Per-butler attribution is done via span attributes (service.name + butler.name).
         attrs = dict(provider.resource.attributes)
-        assert attrs["service.name"] == "butler-switchboard"
+        assert attrs["service.name"] == "butlers"
 
         provider.shutdown()
 
@@ -94,6 +99,124 @@ class TestServiceNameSet:
         assert len(spans) == 1
         assert spans[0].name == "test-op"
         assert spans[0].attributes["test.key"] == "test-value"
+
+        provider.shutdown()
+
+
+class TestMultiButlerNoOverrideWarning:
+    """Multiple init_telemetry calls must not trigger provider override warnings."""
+
+    def test_second_init_does_not_reinstall_provider(self, monkeypatch):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+
+        # First butler initializes the provider
+        init_telemetry("butler.finance")
+        assert _telemetry_mod._tracer_provider_installed is True
+
+        # Capture the installed provider
+        provider_after_first = trace.get_tracer_provider()
+
+        # Second butler must NOT reinstall (would trigger override warning)
+        init_telemetry("butler.general")
+
+        # Provider identity must not change
+        assert trace.get_tracer_provider() is provider_after_first
+
+        provider_after_first.shutdown()
+
+    def test_second_butler_returns_valid_tracer(self, monkeypatch):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+
+        init_telemetry("butler.finance")
+        tracer = init_telemetry("butler.general")
+
+        # The returned tracer must be usable (not None)
+        assert tracer is not None
+
+        provider = trace.get_tracer_provider()
+        if isinstance(provider, TracerProvider):
+            provider.shutdown()
+
+    def test_noop_mode_multiple_calls_ok(self, monkeypatch):
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+
+        # In no-op mode the guard is never set; multiple calls are always safe.
+        t1 = init_telemetry("butler.finance")
+        t2 = init_telemetry("butler.general")
+
+        assert t1 is not None
+        assert t2 is not None
+        # Guard should remain False in no-op mode
+        assert _telemetry_mod._tracer_provider_installed is False
+
+
+class TestToolSpanButlerAttribution:
+    """tool_span sets both butler.name and service.name on spans."""
+
+    def test_tool_span_sets_butler_and_service_attributes(self):
+        exporter = InMemorySpanExporter()
+        resource = Resource.create({"service.name": "butlers"})
+        provider = TracerProvider(resource=resource)
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+        _telemetry_mod._tracer_provider_installed = True
+
+        with tool_span("state_get", butler_name="general"):
+            pass
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        attrs = dict(spans[0].attributes)
+        assert attrs["butler.name"] == "general"
+        assert attrs["service.name"] == "butler.general"
+
+        provider.shutdown()
+
+    def test_different_butlers_get_different_service_names(self):
+        exporter = InMemorySpanExporter()
+        resource = Resource.create({"service.name": "butlers"})
+        provider = TracerProvider(resource=resource)
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+        _telemetry_mod._tracer_provider_installed = True
+
+        with tool_span("state_get", butler_name="finance"):
+            pass
+        with tool_span("state_set", butler_name="general"):
+            pass
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 2
+
+        finance_span = next(s for s in spans if s.name == "butler.tool.state_get")
+        general_span = next(s for s in spans if s.name == "butler.tool.state_set")
+
+        assert finance_span.attributes["service.name"] == "butler.finance"
+        assert general_span.attributes["service.name"] == "butler.general"
+
+        provider.shutdown()
+
+
+class TestTagButlerSpan:
+    """tag_butler_span sets both butler.name and service.name attributes."""
+
+    def test_sets_both_attributes(self):
+        exporter = InMemorySpanExporter()
+        resource = Resource.create({"service.name": "butlers"})
+        provider = TracerProvider(resource=resource)
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+        _telemetry_mod._tracer_provider_installed = True
+
+        tracer = trace.get_tracer("butlers")
+        with tracer.start_as_current_span("route.process") as span:
+            tag_butler_span(span, "switchboard")
+
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 1
+        attrs = dict(spans[0].attributes)
+        assert attrs["butler.name"] == "switchboard"
+        assert attrs["service.name"] == "butler.switchboard"
 
         provider.shutdown()
 

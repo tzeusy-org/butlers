@@ -99,7 +99,7 @@ from butlers.core.state import state_delete as _state_delete
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_list as _state_list
 from butlers.core.state import state_set as _state_set
-from butlers.core.telemetry import extract_trace_context, init_telemetry, tool_span
+from butlers.core.telemetry import extract_trace_context, init_telemetry, tag_butler_span, tool_span
 from butlers.core.tool_call_capture import (
     capture_tool_call,
     get_current_runtime_session_routing_context,
@@ -1549,7 +1549,7 @@ class ButlerDaemon:
                 "route.process.recovery",
                 context=OtelContext(),
             ) as _recovery_span:
-                _recovery_span.set_attribute("butler.name", self.config.name)
+                tag_butler_span(_recovery_span, self.config.name)
                 _recovery_span.set_attribute("request_id", route_request_id)
                 await route_inbox_mark_processing(pool, row_id)
                 try:
@@ -2156,7 +2156,7 @@ class ButlerDaemon:
             with tracer.start_as_current_span(
                 "butler.tool.route.execute", context=parent_ctx
             ) as _span:
-                _span.set_attribute("butler.name", butler_name)
+                tag_butler_span(_span, butler_name)
                 # Capture the accept-phase span context so the background processing
                 # task can link back to it via a SpanLink (cross-trace correlation).
                 accept_span_ctx = _span.get_span_context()
@@ -2417,7 +2417,7 @@ class ButlerDaemon:
                         context=OtelContext(),
                         links=_links,
                     ) as _process_span:
-                        _process_span.set_attribute("butler.name", butler_name)
+                        tag_butler_span(_process_span, butler_name)
                         _process_span.set_attribute("request_id", _request_id)
                         try:
                             await route_inbox_mark_processing(_pool, _inbox_id)
@@ -3196,7 +3196,7 @@ class ButlerDaemon:
             parent_ctx = extract_trace_context(_trace_context) if _trace_context else None
             tracer = trace.get_tracer("butlers")
             with tracer.start_as_current_span("butler.tool.state_get", context=parent_ctx) as span:
-                span.set_attribute("butler.name", daemon.config.name)
+                tag_butler_span(span, daemon.config.name)
                 value = await _state_get(pool, key)
                 return {"key": key, "value": value}
 
@@ -3206,7 +3206,7 @@ class ButlerDaemon:
             parent_ctx = extract_trace_context(_trace_context) if _trace_context else None
             tracer = trace.get_tracer("butlers")
             with tracer.start_as_current_span("butler.tool.state_set", context=parent_ctx) as span:
-                span.set_attribute("butler.name", daemon.config.name)
+                tag_butler_span(span, daemon.config.name)
                 await _state_set(pool, key, value)
                 return {"key": key, "status": "ok"}
 
@@ -3218,7 +3218,7 @@ class ButlerDaemon:
             with tracer.start_as_current_span(
                 "butler.tool.state_delete", context=parent_ctx
             ) as span:
-                span.set_attribute("butler.name", daemon.config.name)
+                tag_butler_span(span, daemon.config.name)
                 await _state_delete(pool, key)
                 return {"key": key, "status": "deleted"}
 
@@ -3236,7 +3236,7 @@ class ButlerDaemon:
             parent_ctx = extract_trace_context(_trace_context) if _trace_context else None
             tracer = trace.get_tracer("butlers")
             with tracer.start_as_current_span("butler.tool.state_list", context=parent_ctx) as span:
-                span.set_attribute("butler.name", daemon.config.name)
+                tag_butler_span(span, daemon.config.name)
                 return await _state_list(pool, prefix, keys_only)
 
         # Schedule tools

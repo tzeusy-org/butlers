@@ -23,6 +23,7 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.util._once import Once
 
+import butlers.core.metrics as _metrics_mod
 from butlers.config import BufferConfig, ButlerConfig, RuntimeConfig
 from butlers.core.buffer import DurableBuffer, _MessageRef
 from butlers.core.metrics import ButlerMetrics, init_metrics
@@ -505,3 +506,143 @@ class TestDurableBufferMetrics:
         latency_dps = data.get("butlers.buffer.process_latency_ms", [])
         assert latency_dps, "Expected process_latency_ms to be recorded"
         assert latency_dps[0].count == 1
+
+
+# ---------------------------------------------------------------------------
+# Multi-butler provider guard
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Multi-butler provider guard
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Multi-butler provider guard
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Multi-butler provider guard
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Multi-butler provider guard
+# ---------------------------------------------------------------------------
+
+
+class TestMultiButlerMeterProvider:
+    """Multiple init_metrics calls must not trigger provider override warnings."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self) -> None:
+        _reset_metrics_global_state()
+        yield
+        _reset_metrics_global_state()
+
+    def test_second_init_does_not_call_set_provider_again(self) -> None:
+        """Second init_metrics call reuses the existing provider without override.
+
+        Simulates a second butler calling init_metrics by pre-installing a provider
+        and setting the guard flag, then verifying init_metrics returns a meter
+        without reinstalling.
+        """
+        import os as _os
+
+        reader = InMemoryMetricReader()
+        from opentelemetry.sdk.metrics import MeterProvider as _MP
+        from opentelemetry.sdk.resources import Resource as _Res
+
+        # Install a real provider (simulating the first butler's init_metrics)
+        provider = _MP(
+            resource=_Res.create({"service.name": "butlers"}),
+            metric_readers=[reader],
+        )
+        metrics.set_meter_provider(provider)
+        _metrics_mod._meter_provider_installed = True
+
+        # Track whether set_meter_provider is called again
+        set_count = 0
+        original_set = metrics.set_meter_provider
+
+        def guarded_set(p):
+            nonlocal set_count
+            set_count += 1
+            original_set(p)
+
+        # Replace set_meter_provider to detect if it gets called
+        metrics.set_meter_provider = guarded_set
+        try:
+            _os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4317"
+            try:
+                meter = init_metrics("butler.general")
+            finally:
+                _os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
+        finally:
+            metrics.set_meter_provider = original_set
+
+        assert set_count == 0, (
+            f"set_meter_provider called {set_count} times on second init; expected 0"
+        )
+        assert meter is not None
+
+    def test_noop_mode_returns_valid_meter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """In no-op mode init_metrics returns a valid meter (no endpoint → no provider install)."""
+        monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+
+        # Track whether set_meter_provider is called at all
+        set_count = 0
+        original_set = metrics.set_meter_provider
+
+        def guarded_set(p):
+            nonlocal set_count
+            set_count += 1
+            original_set(p)
+
+        metrics.set_meter_provider = guarded_set
+        try:
+            meter1 = init_metrics("butler.finance")
+            meter2 = init_metrics("butler.general")
+        finally:
+            metrics.set_meter_provider = original_set
+
+        # set_meter_provider must not be called in no-op mode
+        assert set_count == 0, (
+            f"set_meter_provider called {set_count} times in no-op mode; expected 0"
+        )
+        assert meter1 is not None
+        assert meter2 is not None
+
+    def test_second_call_returns_usable_meter(self) -> None:
+        """Meter returned by second init_metrics call is valid and records without error."""
+        import os as _os
+
+        reader = InMemoryMetricReader()
+        from opentelemetry.sdk.metrics import MeterProvider as _MP
+        from opentelemetry.sdk.resources import Resource as _Res
+
+        provider = _MP(
+            resource=_Res.create({"service.name": "butlers"}),
+            metric_readers=[reader],
+        )
+        metrics.set_meter_provider(provider)
+        _metrics_mod._meter_provider_installed = True
+
+        # Second butler call (endpoint set but guard fires early)
+        _os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://localhost:4317"
+        try:
+            meter = init_metrics("butler.general")
+        finally:
+            _os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
+
+        assert meter is not None
+
+        # Meter must be usable
+        counter = meter.create_counter("test.multi.counter")
+        counter.add(5, {"butler": "general"})
+
+        data = _collect_metrics(reader)
+        assert "test.multi.counter" in data
+        assert data["test.multi.counter"][0].value == 5
