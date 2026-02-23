@@ -271,5 +271,40 @@ Configuration notes:
 - New travel MCP tools MUST include explicit parameter and return contracts in section 5.
 - Classification-signal changes that alter routing behavior MUST update section 6 with concrete examples.
 
-## 10. Non-Normative Note
+## 10. Additional AI-Generated Ideas
+
+The following ideas extend the normative spec above. They are non-normative proposals for consideration in future iterations.
+
+### 10.1 Trip Intelligence
+- **Automatic trip detection**: When multiple travel bookings arrive within a close date range for the same destination, auto-create a trip container and associate them without manual trip creation.
+- **Layover intelligence**: Detect tight layovers in multi-leg journeys and surface warnings when connection time drops below airline minimum connect times.
+- **Alternative routing suggestions**: When a flight is cancelled or significantly delayed, proactively suggest rebooking options based on known itinerary constraints and stored airline preferences.
+
+### 10.2 Travel Preparation
+- **Packing list generation**: Auto-generate destination-aware packing suggestions based on trip dates, weather forecasts, and planned activities stored in reservations.
+- **Visa and entry requirement checks**: Surface visa and entry requirements based on destination country and stored passport nationality (via memory facts).
+- **Time zone awareness**: Surface timezone differences and jet lag implications for multi-zone itineraries; suggest adjustment strategies for long-haul trips.
+- **Pre-trip document checklist**: Auto-generate a checklist of required documents (passport, visa, insurance, boarding passes) based on destination and track completion status.
+
+### 10.3 Trip Experience
+- **Real-time flight tracking**: Poll flight status APIs for active trips to proactively surface delays, gate changes, and diversions before the user notices.
+- **Local recommendations**: Surface dining, activity, and transportation recommendations near accommodation locations using destination metadata.
+- **Emergency contact surface**: Store and surface embassy contacts, insurance hotline numbers, and local emergency numbers for the destination country.
+
+### 10.4 Post-Trip
+- **Trip journal prompts**: After trip completion, prompt user for reflection and store trip memories via memory module for future preference learning.
+- **Trip cost summary**: Aggregate travel-related expenses by cross-referencing Finance Butler transaction records for the trip date range and destination merchants.
+- **Loyalty program tracking**: Track airline miles, hotel points, and rental loyalty status across trips with optimization suggestions for status qualification.
+
+### 10.5 Multi-Trip Intelligence
+- **Travel pattern analysis**: Analyze historical trips to surface preferences (preferred airlines, seating, hotel chains) and seasonal travel patterns for proactive suggestions.
+- **Frequent route optimization**: For recurring trips (e.g., quarterly business travel), suggest optimized booking windows based on historical pricing patterns.
+- **Carbon footprint estimation**: Estimate and track travel carbon footprint per trip and over time based on transport type and distance.
+
+### 10.6 Integration Enhancements
+- **Calendar blocking**: Auto-create calendar events for flights, hotel check-ins/check-outs, and reservations with all relevant details (confirmation numbers, addresses, terminal info) in the event description.
+- **Finance Butler cross-link**: Flag travel-related transactions in Finance Butler and link them to trip containers for per-trip expense tracking and post-trip cost summaries.
+- **Itinerary sharing**: Generate shareable trip summary documents for travel companions or family members, with configurable detail level.
+
+## 11. Non-Normative Note
 This role is intentionally narrow: it models travel as correlated, time-sensitive operational data. General long-term reflections about trips (journaling, generic ideas, broad planning) can still be delegated to the General Butler via Switchboard when no structured itinerary container is required.
