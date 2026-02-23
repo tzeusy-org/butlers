@@ -23,7 +23,7 @@ schema = "switchboard"
 
 [modules.calendar]
 provider = "google"
-calendar_id = "07fd80d3b4464836e586759b1b8672f1f97f80a9d642a30482176246dff4510b@group.calendar.google.com"
+calendar_id = "ae06dba0d764682d69b909d7a56cf8458a0a47faaac5fa0a01f7cc47bec4ce8c@group.calendar.google.com"
 
 [modules.calendar.conflicts]
 policy = "suggest"

@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CALENDAR_ENABLED_BUTLERS = ("general", "health", "relationship")
 SHARED_BUTLER_CALENDAR_ID = (
-    "07fd80d3b4464836e586759b1b8672f1f97f80a9d642a30482176246dff4510b@group.calendar.google.com"
+    "ae06dba0d764682d69b909d7a56cf8458a0a47faaac5fa0a01f7cc47bec4ce8c@group.calendar.google.com"
 )
 
 
