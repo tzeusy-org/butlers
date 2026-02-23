@@ -1,7 +1,7 @@
 [butler]
 name = "travel"
 port = 40106
-description = "Travel logistics and itinerary intelligence specialist for flights, hotels, and trip planning."
+description = "Travel logistics and itinerary intelligence specialist for flights, hotels, car rentals, and trip planning."
 
 [butler.runtime]
 model = "gpt-5.3-codex-spark"
@@ -39,7 +39,7 @@ dispatch_mode = "job"
 job_name = "upcoming_travel_check"
 
 [[butler.schedule]]
-name = "document-expiry-scan"
+name = "trip-document-expiry"
 cron = "0 9 * * 1"
 dispatch_mode = "job"
-job_name = "document_expiry_scan"
+job_name = "trip_document_expiry"
