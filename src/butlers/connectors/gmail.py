@@ -56,6 +56,16 @@ from fastapi import FastAPI, Request
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict
 
+from butlers.connectors.gmail_policy import (
+    INGESTION_TIER_FULL,
+    INGESTION_TIER_METADATA,
+    LabelFilterPolicy,
+    MessagePolicyResult,
+    PolicyTierAssigner,
+    evaluate_message_policy,
+    load_known_contacts_from_file,
+    parse_label_list,
+)
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
@@ -182,6 +192,20 @@ class GmailConnectorConfig(BaseModel):
     gmail_pubsub_webhook_path: str = "/gmail/webhook"
     gmail_pubsub_webhook_token: str | None = None  # Optional auth token for webhook
 
+    # Label include/exclude policy (GMAIL_LABEL_INCLUDE, GMAIL_LABEL_EXCLUDE)
+    # Per docs/connectors/email_ingestion_policy.md §9
+    gmail_label_include: tuple[str, ...] = ()
+    gmail_label_exclude: tuple[str, ...] = ("SPAM", "TRASH")
+
+    # Policy tier assignment: user email (the account owner)
+    # Required for direct-correspondence tier rule evaluation
+    gmail_user_email: str = ""
+
+    # Optional path to a known-contacts JSON cache file.
+    # Format: {"contacts": ["addr@example.com", ...], "generated_at": "..."}
+    # Per docs/switchboard/email_priority_queuing.md §4
+    gmail_known_contacts_path: str | None = None
+
     @classmethod
     def _load_non_secret_env_config(cls) -> dict[str, Any]:
         """Load connector config from environment variables excluding OAuth secrets."""
@@ -243,6 +267,16 @@ class GmailConnectorConfig(BaseModel):
         pubsub_webhook_path = os.environ.get("GMAIL_PUBSUB_WEBHOOK_PATH", "/gmail/webhook")
         pubsub_webhook_token = os.environ.get("GMAIL_PUBSUB_WEBHOOK_TOKEN")
 
+        # Label include/exclude policy (per docs/connectors/email_ingestion_policy.md §9)
+        label_include_raw = os.environ.get("GMAIL_LABEL_INCLUDE", "")
+        label_exclude_raw = os.environ.get("GMAIL_LABEL_EXCLUDE", "SPAM,TRASH")
+        gmail_label_include = tuple(parse_label_list(label_include_raw))
+        gmail_label_exclude = tuple(parse_label_list(label_exclude_raw))
+
+        # Policy tier assignment (per docs/switchboard/email_priority_queuing.md)
+        gmail_user_email = os.environ.get("GMAIL_USER_EMAIL", "")
+        gmail_known_contacts_path = os.environ.get("GMAIL_KNOWN_CONTACTS_PATH")
+
         return {
             "switchboard_mcp_url": os.environ["SWITCHBOARD_MCP_URL"],
             "connector_provider": os.environ.get("CONNECTOR_PROVIDER", "gmail"),
@@ -258,6 +292,10 @@ class GmailConnectorConfig(BaseModel):
             "gmail_pubsub_webhook_port": pubsub_webhook_port,
             "gmail_pubsub_webhook_path": pubsub_webhook_path,
             "gmail_pubsub_webhook_token": pubsub_webhook_token,
+            "gmail_label_include": gmail_label_include,
+            "gmail_label_exclude": gmail_label_exclude,
+            "gmail_user_email": gmail_user_email,
+            "gmail_known_contacts_path": gmail_known_contacts_path,
         }
 
     @classmethod
@@ -334,6 +372,21 @@ class GmailConnectorRuntime:
         # Heartbeat
         self._heartbeat: ConnectorHeartbeat | None = None
         self._last_history_id: str | None = None
+
+        # Label filter policy (per docs/connectors/email_ingestion_policy.md §9)
+        self._label_filter = LabelFilterPolicy.from_lists(
+            include=list(config.gmail_label_include),
+            exclude=list(config.gmail_label_exclude),
+        )
+
+        # Policy tier assigner (per docs/switchboard/email_priority_queuing.md §2)
+        known_contacts: frozenset[str] = frozenset()
+        if config.gmail_known_contacts_path:
+            known_contacts = load_known_contacts_from_file(config.gmail_known_contacts_path)
+        self._policy_tier_assigner = PolicyTierAssigner(
+            user_email=config.gmail_user_email or "",
+            known_contacts=known_contacts,
+        )
 
     async def get_health_status(self) -> HealthStatus:
         """Get current health status for Kubernetes probes."""
@@ -939,19 +992,57 @@ class GmailConnectorRuntime:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _ingest_single_message(self, message_id: str) -> None:
-        """Fetch and ingest a single Gmail message."""
+        """Fetch and ingest a single Gmail message.
+
+        Pipeline order (per docs/connectors/email_ingestion_policy.md §8):
+        1. Fetch message data (always needed to get labels and headers).
+        2. Apply label include/exclude filter; skip if excluded.
+        3. Evaluate triage rules -> ingestion tier.
+        4. Assign policy_tier for queue ordering.
+        5. Execute tier behavior:
+           - Tier 3 (skip): emit skip log, no Switchboard submission.
+           - Tier 2 (metadata): submit slim envelope with ingestion_tier=metadata.
+           - Tier 1 (full): submit full envelope.
+        """
         async with self._semaphore:
             try:
-                # Fetch message metadata and payload
+                # Fetch message data (required for label/header-based policy evaluation)
                 message_data = await self._fetch_message(message_id)
 
-                # Build ingest.v1 envelope
-                envelope = await self._build_ingest_envelope(message_data)
+                # Evaluate label filter + tier policy
+                policy_result = evaluate_message_policy(
+                    message_data,
+                    label_filter=self._label_filter,
+                    tier_assigner=self._policy_tier_assigner,
+                    triage_rules=None,  # Connector-side triage rules (future: load from config/DB)
+                    endpoint_identity=self._config.connector_endpoint_identity,
+                )
+
+                # Tier 3: skip — do not submit to Switchboard
+                if not policy_result.should_ingest:
+                    logger.debug(
+                        "Skipping message %s: tier=%d reason=%s",
+                        message_id,
+                        policy_result.ingestion_tier,
+                        policy_result.filter_reason,
+                    )
+                    return
+
+                # Build ingest.v1 envelope (tier-aware)
+                envelope = await self._build_ingest_envelope(
+                    message_data,
+                    policy_result=policy_result,
+                )
 
                 # Submit to Switchboard ingest API
                 await self._submit_to_ingest_api(envelope)
 
-                logger.info("Ingested message: %s", message_id)
+                logger.info(
+                    "Ingested message: %s tier=%d policy_tier=%s",
+                    message_id,
+                    policy_result.ingestion_tier,
+                    policy_result.policy_tier,
+                )
 
             except Exception as exc:
                 logger.error("Failed to ingest message %s: %s", message_id, exc, exc_info=True)
@@ -982,8 +1073,26 @@ class GmailConnectorRuntime:
             self._metrics.record_error(error_type=get_error_type(exc), operation="fetch_message")
             raise
 
-    async def _build_ingest_envelope(self, message_data: dict[str, Any]) -> dict[str, Any]:
-        """Build ingest.v1 envelope from Gmail message data."""
+    async def _build_ingest_envelope(
+        self,
+        message_data: dict[str, Any],
+        policy_result: MessagePolicyResult | None = None,
+    ) -> dict[str, Any]:
+        """Build ingest.v1 envelope from Gmail message data.
+
+        Builds a tier-appropriate envelope per spec §5:
+        - Tier 1 (full): full normalized payload + attachments.
+        - Tier 2 (metadata): slim envelope, payload.raw=null, subject-only normalized_text.
+        - Tier 3 (skip): caller must not reach this method.
+
+        Parameters
+        ----------
+        message_data:
+            Raw Gmail message dict from messages.get API.
+        policy_result:
+            Result of policy evaluation (tier + policy_tier). If None, defaults to
+            Tier 1 with policy_tier='default' (backward compatible).
+        """
         message_id = message_data.get("id", "unknown")
         thread_id = message_data.get("threadId")
         internal_date = message_data.get("internalDate", "0")
@@ -996,6 +1105,55 @@ class GmailConnectorRuntime:
         from_address = headers.get("From", "unknown")
         rfc_message_id = headers.get("Message-ID", message_id)
 
+        # Resolve effective tier and policy_tier
+        effective_ingestion_tier = INGESTION_TIER_FULL
+        effective_policy_tier = "default"
+        if policy_result is not None:
+            effective_ingestion_tier = policy_result.ingestion_tier
+            effective_policy_tier = policy_result.policy_tier
+
+        # Observed timestamp
+        try:
+            observed_timestamp_ms = int(internal_date)
+            observed_at = datetime.fromtimestamp(observed_timestamp_ms / 1000, tz=UTC)
+        except (ValueError, OSError):
+            observed_at = datetime.now(UTC)
+
+        # --- Tier 2: Metadata-only envelope ---
+        # Per spec §5.2: payload.raw=null, normalized_text=subject-only, ingestion_tier=metadata
+        if effective_ingestion_tier == INGESTION_TIER_METADATA:
+            idempotency_key = (
+                f"{self._config.connector_provider}:"
+                f"{self._config.connector_endpoint_identity}:"
+                f"{rfc_message_id}"
+            )
+            return {
+                "schema_version": "ingest.v1",
+                "source": {
+                    "channel": self._config.connector_channel,
+                    "provider": self._config.connector_provider,
+                    "endpoint_identity": self._config.connector_endpoint_identity,
+                },
+                "event": {
+                    "external_event_id": rfc_message_id,
+                    "external_thread_id": thread_id,
+                    "observed_at": observed_at.isoformat(),
+                },
+                "sender": {
+                    "identity": from_address,
+                },
+                "payload": {
+                    "raw": None,
+                    "normalized_text": f"Subject: {html.escape(subject)} ",
+                },
+                "control": {
+                    "idempotency_key": idempotency_key,
+                    "ingestion_tier": "metadata",
+                    "policy_tier": effective_policy_tier,
+                },
+            }
+
+        # --- Tier 1: Full envelope ---
         # Extract body
         body = self._extract_body_from_payload(message_data.get("payload", {}))
 
@@ -1004,13 +1162,6 @@ class GmailConnectorRuntime:
 
         # Process attachments
         attachments = await self._process_attachments(message_id, message_data.get("payload", {}))
-
-        # Observed timestamp
-        try:
-            observed_timestamp_ms = int(internal_date)
-            observed_at = datetime.fromtimestamp(observed_timestamp_ms / 1000, tz=UTC)
-        except (ValueError, OSError):
-            observed_at = datetime.now(UTC)
 
         return {
             "schema_version": "ingest.v1",
@@ -1033,7 +1184,7 @@ class GmailConnectorRuntime:
                 "attachments": attachments,
             },
             "control": {
-                "policy_tier": "default",
+                "policy_tier": effective_policy_tier,
             },
         }
 
