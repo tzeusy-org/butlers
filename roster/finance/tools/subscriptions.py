@@ -9,6 +9,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.finance._helpers import _deserialize_row
+
 _VALID_STATUSES = ("active", "cancelled", "paused")
 _VALID_FREQUENCIES = ("weekly", "monthly", "quarterly", "yearly", "custom")
 
@@ -21,20 +23,6 @@ def _normalize_renewal_date(next_renewal: str | date) -> date:
     if isinstance(next_renewal, date):
         return next_renewal
     return date.fromisoformat(str(next_renewal))
-
-
-def _deserialize_row(row: asyncpg.Record) -> dict[str, Any]:
-    """Convert an asyncpg record to a plain dict, deserializing JSONB fields."""
-    result: dict[str, Any] = {}
-    for key in row.keys():
-        val = row[key]
-        if isinstance(val, str) and key == "metadata":
-            try:
-                val = json.loads(val)
-            except (json.JSONDecodeError, ValueError):
-                pass
-        result[key] = val
-    return result
 
 
 async def track_subscription(

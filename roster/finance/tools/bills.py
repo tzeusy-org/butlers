@@ -10,6 +10,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.tools.finance._helpers import _deserialize_row
+
 _VALID_STATUSES = ("pending", "paid", "overdue")
 _VALID_FREQUENCIES = ("one_time", "weekly", "monthly", "quarterly", "yearly", "custom")
 
@@ -21,20 +23,6 @@ def _normalize_date(value: str | date) -> date:
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value))
-
-
-def _deserialize_row(row: asyncpg.Record) -> dict[str, Any]:
-    """Convert an asyncpg record to a plain dict, deserializing JSONB fields."""
-    result: dict[str, Any] = {}
-    for key in row.keys():
-        val = row[key]
-        if isinstance(val, str) and key == "metadata":
-            try:
-                val = json.loads(val)
-            except (json.JSONDecodeError, ValueError):
-                pass
-        result[key] = val
-    return result
 
 
 def _urgency(due: date, today: date, is_overdue: bool) -> str:
