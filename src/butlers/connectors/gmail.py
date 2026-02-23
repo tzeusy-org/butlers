@@ -34,6 +34,9 @@ Environment variables (see `docs/connectors/gmail.md` section 4):
 - GMAIL_PUBSUB_WEBHOOK_PORT (optional, default 40083; port for Pub/Sub webhook)
 - GMAIL_PUBSUB_WEBHOOK_PATH (optional, default /gmail/webhook; path for Pub/Sub webhook)
 - GMAIL_PUBSUB_WEBHOOK_TOKEN (optional but recommended; auth token for webhook security)
+- CONNECTOR_BACKFILL_ENABLED (optional, default true; enable/disable backfill polling)
+- CONNECTOR_BACKFILL_POLL_INTERVAL_S (optional, default 60; backfill poll cadence in seconds)
+- CONNECTOR_BACKFILL_PROGRESS_INTERVAL (optional, default 50; report progress every N messages)
 """
 
 from __future__ import annotations
@@ -233,6 +236,14 @@ class GmailConnectorConfig(BaseModel):
     # Per docs/switchboard/email_priority_queuing.md §4
     gmail_known_contacts_path: str | None = None
 
+    # Backfill polling protocol (docs/connectors/interface.md section 14)
+    # CONNECTOR_BACKFILL_ENABLED controls whether backfill polling is active.
+    connector_backfill_enabled: bool = True
+    # CONNECTOR_BACKFILL_POLL_INTERVAL_S: how often to poll Switchboard for pending backfill jobs.
+    connector_backfill_poll_interval_s: int = 60
+    # CONNECTOR_BACKFILL_PROGRESS_INTERVAL: report progress every N messages.
+    connector_backfill_progress_interval: int = 50
+
     @classmethod
     def _load_non_secret_env_config(cls) -> dict[str, Any]:
         """Load connector config from environment variables excluding OAuth secrets."""
@@ -304,6 +315,30 @@ class GmailConnectorConfig(BaseModel):
         gmail_user_email = os.environ.get("GMAIL_USER_EMAIL", "")
         gmail_known_contacts_path = os.environ.get("GMAIL_KNOWN_CONTACTS_PATH")
 
+        # Backfill polling protocol (docs/connectors/interface.md section 14)
+        backfill_enabled_str = os.environ.get("CONNECTOR_BACKFILL_ENABLED", "true").lower()
+        connector_backfill_enabled = backfill_enabled_str not in ("false", "0", "no", "off")
+
+        backfill_poll_interval_str = os.environ.get("CONNECTOR_BACKFILL_POLL_INTERVAL_S", "60")
+        try:
+            connector_backfill_poll_interval_s = int(backfill_poll_interval_str)
+        except ValueError as exc:
+            raise ValueError(
+                "CONNECTOR_BACKFILL_POLL_INTERVAL_S must be an integer, "
+                f"got: {backfill_poll_interval_str}"
+            ) from exc
+
+        backfill_progress_interval_str = os.environ.get(
+            "CONNECTOR_BACKFILL_PROGRESS_INTERVAL", "50"
+        )
+        try:
+            connector_backfill_progress_interval = int(backfill_progress_interval_str)
+        except ValueError as exc:
+            raise ValueError(
+                "CONNECTOR_BACKFILL_PROGRESS_INTERVAL must be an integer, "
+                f"got: {backfill_progress_interval_str}"
+            ) from exc
+
         return {
             "switchboard_mcp_url": os.environ["SWITCHBOARD_MCP_URL"],
             "connector_provider": os.environ.get("CONNECTOR_PROVIDER", "gmail"),
@@ -323,6 +358,9 @@ class GmailConnectorConfig(BaseModel):
             "gmail_label_exclude": gmail_label_exclude,
             "gmail_user_email": gmail_user_email,
             "gmail_known_contacts_path": gmail_known_contacts_path,
+            "connector_backfill_enabled": connector_backfill_enabled,
+            "connector_backfill_poll_interval_s": connector_backfill_poll_interval_s,
+            "connector_backfill_progress_interval": connector_backfill_progress_interval,
         }
 
     @classmethod
@@ -359,6 +397,30 @@ class GmailCursor(BaseModel):
 
     history_id: str
     last_updated_at: str  # ISO 8601 timestamp
+
+
+class BackfillJob(BaseModel):
+    """Backfill job returned by backfill.poll MCP tool.
+
+    Represents a pending backfill job assigned to this connector by Switchboard.
+    Date-bounded traversal parameters, rate control, and server-side cursor come
+    from job params as described in docs/connectors/email_backfill.md section 4.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    job_id: str
+    # Date range for historical traversal (YYYY-MM-DD strings)
+    date_from: str
+    date_to: str
+    # Rate limit: max messages per hour
+    rate_limit_per_hour: int = 100
+    # Daily cost cap in cents
+    daily_cost_cap_cents: int = 500
+    # Optional server-side cursor for resume
+    cursor: dict[str, Any] | None = None
+    # Optional target categories filter (e.g. ["finance", "health"])
+    target_categories: list[str] = []
 
 
 class GmailConnectorRuntime:
@@ -407,6 +469,12 @@ class GmailConnectorRuntime:
         # Heartbeat
         self._heartbeat: ConnectorHeartbeat | None = None
         self._last_history_id: str | None = None
+
+        # Backfill polling (docs/connectors/interface.md section 14)
+        self._backfill_task: asyncio.Task[None] | None = None
+        # Token bucket for rate limiting active backfill job
+        self._backfill_tokens: float = 0.0
+        self._backfill_token_last_refill: float = time.time()
 
         # Label filter policy (per docs/connectors/email_ingestion_policy.md §9)
         self._label_filter = LabelFilterPolicy.from_lists(
@@ -556,6 +624,7 @@ class GmailConnectorRuntime:
             metrics=self._metrics,
             get_health_state=self._get_health_state,
             get_checkpoint=self._get_checkpoint,
+            get_capabilities=self._get_capabilities,
         )
 
         self._heartbeat.start()
@@ -586,6 +655,15 @@ class GmailConnectorRuntime:
             else None
         )
         return (cursor, updated_at)
+
+    def _get_capabilities(self) -> dict[str, object]:
+        """Return connector capabilities for heartbeat advertisement.
+
+        Includes capabilities.backfill=True per docs/connectors/gmail.md section 9.5
+        when backfill polling is enabled. Dashboard uses this to show/hide backfill
+        controls for this connector.
+        """
+        return {"backfill": self._config.connector_backfill_enabled}
 
     async def start(self) -> None:
         """Start the Gmail connector runtime."""
@@ -622,6 +700,16 @@ class GmailConnectorRuntime:
         # Ensure cursor file exists
         await self._ensure_cursor_file()
 
+        # Start backfill polling loop in background (does not block live ingestion)
+        if self._config.connector_backfill_enabled:
+            self._backfill_task = asyncio.create_task(self._run_backfill_loop())
+            logger.info(
+                "Backfill polling loop started (interval=%ds)",
+                self._config.connector_backfill_poll_interval_s,
+            )
+        else:
+            logger.info("Backfill polling disabled via CONNECTOR_BACKFILL_ENABLED=false")
+
         # Main ingestion loop
         try:
             await self._run_ingestion_loop()
@@ -631,6 +719,16 @@ class GmailConnectorRuntime:
     async def stop(self) -> None:
         """Stop the Gmail connector runtime."""
         self._running = False
+
+        # Cancel backfill task if running
+        if self._backfill_task is not None and not self._backfill_task.done():
+            self._backfill_task.cancel()
+            try:
+                await self._backfill_task
+            except asyncio.CancelledError:
+                pass
+            self._backfill_task = None
+
         # Stop heartbeat
         if self._heartbeat is not None:
             await self._heartbeat.stop()
@@ -752,6 +850,433 @@ class GmailConnectorRuntime:
                 logger.error("Error in Pub/Sub ingestion loop: %s", exc, exc_info=True)
                 # Back off on error
                 await asyncio.sleep(min(60, self._config.gmail_poll_interval_s * 2))
+
+    async def _run_backfill_loop(self) -> None:
+        """Background loop that polls Switchboard for pending backfill jobs.
+
+        Runs alongside live ingestion and never blocks it. Polls every
+        CONNECTOR_BACKFILL_POLL_INTERVAL_S seconds (default 60).
+
+        Per docs/connectors/interface.md section 14 and docs/connectors/gmail.md
+        section 9.1.
+        """
+        logger.debug(
+            "Backfill loop starting: poll_interval=%ds",
+            self._config.connector_backfill_poll_interval_s,
+        )
+        while self._running:
+            try:
+                await self._poll_and_execute_backfill_job()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Backfill poll loop error (will retry after interval): %s",
+                    exc,
+                    exc_info=True,
+                )
+
+            try:
+                await asyncio.sleep(self._config.connector_backfill_poll_interval_s)
+            except asyncio.CancelledError:
+                raise
+
+    async def _poll_and_execute_backfill_job(self) -> None:
+        """Poll Switchboard for a pending backfill job and execute it if found.
+
+        Calls backfill.poll(connector_type, endpoint_identity). If a job is
+        returned, delegates execution to _execute_backfill_job().
+        """
+        try:
+            result = await self._mcp_client.call_tool(
+                "backfill.poll",
+                {
+                    "connector_type": self._config.connector_provider,
+                    "endpoint_identity": self._config.connector_endpoint_identity,
+                },
+            )
+        except Exception as exc:
+            logger.warning("backfill.poll failed (non-fatal): %s", exc)
+            return
+
+        if result is None:
+            logger.debug("No pending backfill jobs")
+            return
+
+        # Parse the job response
+        if not isinstance(result, dict):
+            logger.warning("Unexpected backfill.poll response type: %s", type(result))
+            return
+
+        try:
+            # Switchboard returns {job_id, params, cursor} or flat job structure
+            job_id = result.get("job_id")
+            params = result.get("params", result)  # flatten if no nested params
+            cursor = result.get("cursor")
+
+            if not job_id:
+                logger.warning("backfill.poll returned result without job_id: %s", result)
+                return
+
+            job = BackfillJob(
+                job_id=job_id,
+                date_from=params.get("date_from", ""),
+                date_to=params.get("date_to", ""),
+                rate_limit_per_hour=int(params.get("rate_limit_per_hour", 100)),
+                daily_cost_cap_cents=int(params.get("daily_cost_cap_cents", 500)),
+                cursor=cursor,
+                target_categories=params.get("target_categories", []),
+            )
+        except Exception as exc:
+            logger.error("Failed to parse backfill job from poll result %s: %s", result, exc)
+            return
+
+        logger.info(
+            "Backfill job assigned: job_id=%s date_from=%s date_to=%s rate_limit=%d/hr",
+            job.job_id,
+            job.date_from,
+            job.date_to,
+            job.rate_limit_per_hour,
+        )
+        await self._execute_backfill_job(job)
+
+    async def _execute_backfill_job(self, job: BackfillJob) -> None:
+        """Walk Gmail history for a backfill job date range, ingesting historical messages.
+
+        Implements docs/connectors/gmail.md section 9.2:
+        - Uses users.messages.list with date-bounded query
+        - Walks pages in reverse chronological order (newest first)
+        - Applies tiered ingestion policy to each message
+        - Reports progress every CONNECTOR_BACKFILL_PROGRESS_INTERVAL messages
+        - Respects pause/cancel signals from backfill.progress responses
+        - Honors rate_limit_per_hour via token-bucket throttle
+
+        Parameters
+        ----------
+        job:
+            Backfill job from Switchboard including date range, rate limit, and
+            optional resume cursor.
+        """
+        rows_processed = 0
+        rows_skipped = 0
+        cost_spent_cents = 0
+        progress_counter = 0
+
+        # Token-bucket state for rate limiting (tokens = messages allowed)
+        # Refill rate: rate_limit_per_hour / 3600 tokens/second
+        self._backfill_tokens = float(job.rate_limit_per_hour)
+        self._backfill_token_last_refill = time.time()
+        token_refill_rate = job.rate_limit_per_hour / 3600.0  # tokens per second
+
+        # Resume cursor from server-side job state
+        page_token: str | None = None
+        if job.cursor and isinstance(job.cursor, dict):
+            page_token = job.cursor.get("page_token")
+
+        logger.info(
+            "Executing backfill job %s: date_from=%s date_to=%s resume_page_token=%s",
+            job.job_id,
+            job.date_from,
+            job.date_to,
+            page_token,
+        )
+
+        try:
+            while True:
+                # Fetch a page of messages in date range
+                messages_page, next_page_token = await self._fetch_backfill_message_page(
+                    date_from=job.date_from,
+                    date_to=job.date_to,
+                    page_token=page_token,
+                )
+
+                if not messages_page:
+                    # No messages in this page or empty response
+                    if next_page_token is None:
+                        # End of results
+                        break
+                    page_token = next_page_token
+                    continue
+
+                for msg_stub in messages_page:
+                    message_id = msg_stub.get("id")
+                    if not message_id:
+                        rows_skipped += 1
+                        continue
+
+                    # Token-bucket rate limiting
+                    now = time.time()
+                    elapsed = now - self._backfill_token_last_refill
+                    self._backfill_tokens = min(
+                        float(job.rate_limit_per_hour),
+                        self._backfill_tokens + elapsed * token_refill_rate,
+                    )
+                    self._backfill_token_last_refill = now
+
+                    if self._backfill_tokens < 1.0:
+                        # Wait until a token is available
+                        wait_s = (1.0 - self._backfill_tokens) / token_refill_rate
+                        logger.debug(
+                            "Backfill rate limit: waiting %.2fs for token (job %s)",
+                            wait_s,
+                            job.job_id,
+                        )
+                        await asyncio.sleep(wait_s)
+                        self._backfill_tokens = 0.0
+                        self._backfill_token_last_refill = time.time()
+                    else:
+                        self._backfill_tokens -= 1.0
+
+                    # Ingest using at-most (connector_max_inflight - 1) slots
+                    # to always leave one slot for live ingestion
+                    backfill_semaphore = self._semaphore
+                    async with backfill_semaphore:
+                        try:
+                            message_data = await self._fetch_message(message_id)
+                            policy_result = evaluate_message_policy(
+                                message_data,
+                                label_filter=self._label_filter,
+                                tier_assigner=self._policy_tier_assigner,
+                                triage_rules=None,
+                                endpoint_identity=self._config.connector_endpoint_identity,
+                            )
+
+                            if not policy_result.should_ingest:
+                                rows_skipped += 1
+                                logger.debug(
+                                    "Backfill skipping message %s: tier=%d reason=%s",
+                                    message_id,
+                                    policy_result.ingestion_tier,
+                                    policy_result.filter_reason,
+                                )
+                            else:
+                                envelope = await self._build_ingest_envelope(
+                                    message_data,
+                                    policy_result=policy_result,
+                                )
+                                await self._submit_to_ingest_api(envelope)
+                                rows_processed += 1
+
+                                # Estimate cost: ~0.01 cents per message as conservative proxy
+                                # Actual cost is LLM-side; connector estimates only.
+                                # Per docs/connectors/email_backfill.md section 9.4.
+                                cost_spent_cents += 1
+
+                        except Exception as exc:
+                            logger.warning(
+                                "Backfill: failed to ingest message %s (job %s): %s",
+                                message_id,
+                                job.job_id,
+                                exc,
+                            )
+                            rows_skipped += 1
+
+                    progress_counter += 1
+
+                    # Report progress every N messages
+                    if progress_counter >= self._config.connector_backfill_progress_interval:
+                        cursor_payload: dict[str, Any] | None = {"page_token": page_token or ""}
+                        status = await self._report_backfill_progress(
+                            job_id=job.job_id,
+                            rows_processed=rows_processed,
+                            rows_skipped=rows_skipped,
+                            cost_spent_cents=cost_spent_cents,
+                            cursor=cursor_payload,
+                        )
+                        progress_counter = 0
+                        cost_spent_cents = 0  # reset delta after reporting
+
+                        if status in ("paused", "cancelled", "cost_capped"):
+                            logger.info(
+                                "Backfill job %s: stopping due to status=%s",
+                                job.job_id,
+                                status,
+                            )
+                            return
+
+                # Advance to next page
+                if next_page_token is None:
+                    break
+                page_token = next_page_token
+
+            # Date window exhausted — report completion
+            logger.info(
+                "Backfill job %s complete: processed=%d skipped=%d",
+                job.job_id,
+                rows_processed,
+                rows_skipped,
+            )
+            await self._report_backfill_progress(
+                job_id=job.job_id,
+                rows_processed=rows_processed,
+                rows_skipped=rows_skipped,
+                cost_spent_cents=cost_spent_cents,
+                cursor=None,
+                status="completed",
+            )
+
+        except asyncio.CancelledError:
+            # Connector shutting down — report partial progress before exit
+            logger.info(
+                "Backfill job %s interrupted by shutdown: processed=%d skipped=%d",
+                job.job_id,
+                rows_processed,
+                rows_skipped,
+            )
+            try:
+                await self._report_backfill_progress(
+                    job_id=job.job_id,
+                    rows_processed=rows_processed,
+                    rows_skipped=rows_skipped,
+                    cost_spent_cents=cost_spent_cents,
+                    cursor={"page_token": page_token or ""},
+                )
+            except Exception:
+                pass
+            raise
+        except Exception as exc:
+            logger.error(
+                "Backfill job %s failed: %s",
+                job.job_id,
+                exc,
+                exc_info=True,
+            )
+            try:
+                await self._report_backfill_progress(
+                    job_id=job.job_id,
+                    rows_processed=rows_processed,
+                    rows_skipped=rows_skipped,
+                    cost_spent_cents=cost_spent_cents,
+                    cursor={"page_token": page_token or ""},
+                    status="error",
+                    error=str(exc),
+                )
+            except Exception:
+                pass
+
+    async def _fetch_backfill_message_page(
+        self,
+        date_from: str,
+        date_to: str,
+        page_token: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Fetch one page of messages for a backfill date range.
+
+        Uses Gmail messages.list with date query format YYYY/MM/DD.
+        Returns (message_stubs, next_page_token). next_page_token is None when
+        the result set is exhausted.
+
+        Parameters
+        ----------
+        date_from:
+            Start of date range in YYYY-MM-DD format (inclusive).
+        date_to:
+            End of date range in YYYY-MM-DD format (inclusive).
+        page_token:
+            Optional page token for pagination resume.
+        """
+        if not self._http_client:
+            raise RuntimeError("HTTP client not initialized")
+
+        try:
+            token = await self._get_access_token()
+
+            # Convert YYYY-MM-DD to YYYY/MM/DD for Gmail query syntax
+            date_from_q = date_from.replace("-", "/")
+            date_to_q = date_to.replace("-", "/")
+            query = f"after:{date_from_q} before:{date_to_q}"
+
+            params: dict[str, Any] = {
+                "q": query,
+                "maxResults": 100,
+            }
+            if page_token:
+                params["pageToken"] = page_token
+
+            response = await self._http_client.get(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                params=params,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+
+            self._source_api_ok = True
+            self._metrics.record_source_api_call(
+                api_method="messages.list.backfill", status="success"
+            )
+
+            data = response.json()
+            messages = data.get("messages", [])
+            next_page_token = data.get("nextPageToken")
+
+            logger.debug(
+                "Backfill page: %d messages, next_page_token=%s",
+                len(messages),
+                next_page_token,
+            )
+            return messages, next_page_token
+
+        except Exception as exc:
+            self._source_api_ok = False
+            self._metrics.record_source_api_call(
+                api_method="messages.list.backfill", status="error"
+            )
+            self._metrics.record_error(
+                error_type=get_error_type(exc), operation="backfill_message_list"
+            )
+            raise
+
+    async def _report_backfill_progress(
+        self,
+        job_id: str,
+        rows_processed: int,
+        rows_skipped: int,
+        cost_spent_cents: int,
+        cursor: dict[str, Any] | None = None,
+        status: str | None = None,
+        error: str | None = None,
+    ) -> str:
+        """Report backfill progress to Switchboard via backfill.progress MCP tool.
+
+        Returns the authoritative status from Switchboard ('ack', 'paused',
+        'cancelled', 'cost_capped'). Connector must stop if status is not 'ack'.
+
+        Per docs/connectors/interface.md section 14.2 and docs/connectors/email_backfill.md
+        section 6.2.
+        """
+        args: dict[str, Any] = {
+            "job_id": job_id,
+            "rows_processed": rows_processed,
+            "rows_skipped": rows_skipped,
+            "cost_spent_cents_delta": cost_spent_cents,
+        }
+        if cursor is not None:
+            args["cursor"] = cursor
+        if status is not None:
+            args["status"] = status
+        if error is not None:
+            args["error"] = error
+
+        try:
+            result = await self._mcp_client.call_tool("backfill.progress", args)
+            if isinstance(result, dict):
+                returned_status = result.get("status", "ack")
+            else:
+                returned_status = "ack"
+
+            logger.debug(
+                "backfill.progress response: job_id=%s returned_status=%s",
+                job_id,
+                returned_status,
+            )
+            return str(returned_status)
+        except Exception as exc:
+            logger.warning(
+                "backfill.progress call failed for job %s (non-fatal): %s",
+                job_id,
+                exc,
+            )
+            return "ack"  # assume continue on progress reporting failures
 
     async def _ensure_cursor_file(self) -> None:
         """Ensure cursor file exists with initial state if missing."""

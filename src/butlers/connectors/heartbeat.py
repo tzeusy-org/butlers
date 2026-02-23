@@ -120,6 +120,7 @@ class ConnectorHeartbeat:
         metrics: ConnectorMetrics,
         get_health_state: Callable[[], tuple[str, str | None]],
         get_checkpoint: Callable[[], tuple[str | None, datetime | None]] | None = None,
+        get_capabilities: Callable[[], dict[str, object]] | None = None,
     ) -> None:
         """Initialize heartbeat task.
 
@@ -129,12 +130,15 @@ class ConnectorHeartbeat:
             metrics: Metrics collector for reading counter values
             get_health_state: Callable that returns (state, error_message) tuple
             get_checkpoint: Optional callable that returns (cursor, updated_at) tuple
+            get_capabilities: Optional callable that returns a capabilities dict
+                (e.g. {"backfill": True}). Included in heartbeat as "capabilities" key.
         """
         self._config = config
         self._mcp_client = mcp_client
         self._metrics = metrics
         self._get_health_state = get_health_state
         self._get_checkpoint = get_checkpoint
+        self._get_capabilities = get_capabilities
 
         # Generate stable instance_id for this process
         self._instance_id = uuid4()
@@ -275,6 +279,12 @@ class ConnectorHeartbeat:
                 "cursor": checkpoint_cursor,
                 "updated_at": checkpoint_updated_at.isoformat() if checkpoint_updated_at else None,
             }
+
+        # Add capabilities if available (e.g. {"backfill": True})
+        if self._get_capabilities is not None:
+            capabilities = self._get_capabilities()
+            if capabilities:
+                envelope["capabilities"] = capabilities
 
         # Submit via MCP
         try:
