@@ -442,6 +442,76 @@ function newButlerRequestId(prefix: string): string {
   return `calendar-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** Maximum recurring instances of the same parent event to show per day per lane or grid cell. */
+const RECURRING_INSTANCE_CAP = 10;
+
+/**
+ * Returns the grouping key for a butler event entry.
+ * Recurring instances from the same calendar_events row share the same schedule_id or reminder_id.
+ * Falls back to entry_id for one-off events so they are never grouped together.
+ */
+function recurringGroupKey(entry: UnifiedCalendarEntry): string {
+  return entry.schedule_id ?? entry.reminder_id ?? entry.entry_id;
+}
+
+interface RecurringOverflowSentinel {
+  readonly _kind: "overflow";
+  readonly sentinelKey: string;
+  readonly title: string;
+  readonly hiddenCount: number;
+}
+
+type LaneRowItem = UnifiedCalendarEntry | RecurringOverflowSentinel;
+
+function isOverflowSentinel(item: LaneRowItem): item is RecurringOverflowSentinel {
+  return (item as RecurringOverflowSentinel)._kind === "overflow";
+}
+
+/**
+ * Groups entries by (day, parentGroupKey), caps each group at `cap`, and appends a
+ * RecurringOverflowSentinel after each truncated group so the UI can render "... and N more".
+ * Order within each group is preserved (caller should pre-sort by start_at).
+ */
+function capLaneEntriesByDay(entries: UnifiedCalendarEntry[], cap: number): LaneRowItem[] {
+  // Build ordered list of (dayKey, groupKey) pairs while preserving insertion order
+  const order: Array<[string, string]> = [];
+  const seen = new Set<string>();
+  const buckets = new Map<string, UnifiedCalendarEntry[]>();
+
+  for (const entry of entries) {
+    const dayKey = format(new Date(entry.start_at), "yyyy-MM-dd");
+    const groupKey = recurringGroupKey(entry);
+    const bucketKey = `${dayKey}::${groupKey}`;
+
+    if (!seen.has(bucketKey)) {
+      seen.add(bucketKey);
+      order.push([dayKey, groupKey]);
+    }
+
+    const bucket = buckets.get(bucketKey) ?? [];
+    bucket.push(entry);
+    buckets.set(bucketKey, bucket);
+  }
+
+  const result: LaneRowItem[] = [];
+  for (const [dayKey, groupKey] of order) {
+    const bucketKey = `${dayKey}::${groupKey}`;
+    const group = buckets.get(bucketKey) ?? [];
+    const visible = group.slice(0, cap);
+    result.push(...visible);
+    const overflow = group.length - visible.length;
+    if (overflow > 0) {
+      result.push({
+        _kind: "overflow",
+        sentinelKey: `overflow::${bucketKey}`,
+        title: group[0]?.title ?? groupKey,
+        hiddenCount: overflow,
+      });
+    }
+  }
+  return result;
+}
+
 export default function CalendarWorkspacePage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -1377,49 +1447,57 @@ export default function CalendarWorkspacePage() {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {lane.entries.map((entry) => (
-                              <TableRow key={entry.entry_id}>
-                                <TableCell>{formatEntryWindow(entry)}</TableCell>
-                                <TableCell>{entry.title}</TableCell>
-                                <TableCell>
-                                  {entry.source_type === "scheduled_task" ? "Schedule" : "Reminder"}
-                                </TableCell>
-                                <TableCell>
-                                  <Badge variant="outline">{entry.status}</Badge>
-                                </TableCell>
-                                <TableCell className="text-right">
-                                  <div className="flex justify-end gap-2">
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => openButlerEditDialog(entry)}
-                                      disabled={butlerMutation.isPending}
-                                    >
-                                      Edit
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={() => handleButlerToggle(entry)}
-                                      disabled={butlerMutation.isPending}
-                                    >
-                                      {isPausedEntry(entry) ? "Resume" : "Pause"}
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      variant="destructive"
-                                      size="sm"
-                                      onClick={() => handleButlerDelete(entry)}
-                                      disabled={butlerMutation.isPending}
-                                    >
-                                      Delete
-                                    </Button>
-                                  </div>
-                                </TableCell>
-                              </TableRow>
-                            ))}
+                            {capLaneEntriesByDay(lane.entries, RECURRING_INSTANCE_CAP).map((item) =>
+                              isOverflowSentinel(item) ? (
+                                <TableRow key={item.sentinelKey} className="bg-muted/30">
+                                  <TableCell colSpan={5} className="py-1 text-center text-xs text-muted-foreground">
+                                    ... and {item.hiddenCount} more instance{item.hiddenCount === 1 ? "" : "s"} of &ldquo;{item.title}&rdquo;
+                                  </TableCell>
+                                </TableRow>
+                              ) : (
+                                <TableRow key={item.entry_id}>
+                                  <TableCell>{formatEntryWindow(item)}</TableCell>
+                                  <TableCell>{item.title}</TableCell>
+                                  <TableCell>
+                                    {item.source_type === "scheduled_task" ? "Schedule" : "Reminder"}
+                                  </TableCell>
+                                  <TableCell>
+                                    <Badge variant="outline">{item.status}</Badge>
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <div className="flex justify-end gap-2">
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => openButlerEditDialog(item)}
+                                        disabled={butlerMutation.isPending}
+                                      >
+                                        Edit
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => handleButlerToggle(item)}
+                                        disabled={butlerMutation.isPending}
+                                      >
+                                        {isPausedEntry(item) ? "Resume" : "Pause"}
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        variant="destructive"
+                                        size="sm"
+                                        onClick={() => handleButlerDelete(item)}
+                                        disabled={butlerMutation.isPending}
+                                      >
+                                        Delete
+                                      </Button>
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            )}
                           </TableBody>
                         </Table>
                       )}
@@ -1494,15 +1572,24 @@ export default function CalendarWorkspacePage() {
                       >
                         <p className={cn("text-xs font-medium", isToday(day) && "text-primary")}>{format(day, "d MMM")}</p>
                         <div className="mt-1 space-y-1">
-                          {dayEntries.map((entry) => (
-                            <p
-                              key={entry.entry_id}
-                              className="truncate rounded bg-accent/50 px-1 py-0.5 text-xs"
-                              title={`${formatEntryWindow(entry)} — ${entry.title}`}
-                            >
-                              {entry.all_day ? "" : format(new Date(entry.start_at), "HH:mm") + " "}{entry.title}
-                            </p>
-                          ))}
+                          {capLaneEntriesByDay(dayEntries, RECURRING_INSTANCE_CAP).map((item) =>
+                            isOverflowSentinel(item) ? (
+                              <p
+                                key={item.sentinelKey}
+                                className="text-[11px] text-muted-foreground"
+                              >
+                                ... and {item.hiddenCount} more instance{item.hiddenCount === 1 ? "" : "s"}
+                              </p>
+                            ) : (
+                              <p
+                                key={item.entry_id}
+                                className="truncate rounded bg-accent/50 px-1 py-0.5 text-xs"
+                                title={`${formatEntryWindow(item)} — ${item.title}`}
+                              >
+                                {item.all_day ? "" : format(new Date(item.start_at), "HH:mm") + " "}{item.title}
+                              </p>
+                            )
+                          )}
                           {dayEntries.length === 0 ? (
                             <p className="text-[11px] text-muted-foreground">&nbsp;</p>
                           ) : null}
