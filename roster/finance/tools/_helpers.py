@@ -51,3 +51,7 @@ async def _log_activity(
     # a best-effort audit log into the shared sessions infrastructure.
     # Implementations that wire a dedicated audit sink can extend this helper.
     pass
+
+
+# Alias for compatibility with modules that import _deserialize_row directly.
+_deserialize_row = _row_to_dict
