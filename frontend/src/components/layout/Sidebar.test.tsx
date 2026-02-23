@@ -40,7 +40,7 @@ describe("Sidebar", () => {
   it("includes navigation link to calendar workspace", () => {
     render();
 
-    const calendarLink = container.querySelector('a[href="/butlers/calendar"]');
+    const calendarLink = container.querySelector('a[href="/calendar"]');
     expect(calendarLink).toBeInstanceOf(HTMLAnchorElement);
     expect(calendarLink?.textContent).toContain("Calendar");
   });

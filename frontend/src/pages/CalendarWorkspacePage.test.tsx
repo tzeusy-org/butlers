@@ -467,7 +467,7 @@ describe("CalendarWorkspacePage", () => {
         <MemoryRouter initialEntries={[initialEntry]}>
           <Routes>
             <Route
-              path="/butlers/calendar"
+              path="/calendar"
               element={(
                 <>
                   <CalendarWorkspacePage />
@@ -503,7 +503,7 @@ describe("CalendarWorkspacePage", () => {
   }
 
   it("restores view/range from deep-link query state", () => {
-    renderPage("/butlers/calendar?view=butler&range=list&anchor=2026-03-01");
+    renderPage("/calendar?view=butler&range=list&anchor=2026-03-01");
 
     expect(findButton("Butler")?.getAttribute("aria-pressed")).toBe("true");
     expect(findButton("List")?.getAttribute("aria-pressed")).toBe("true");
@@ -513,7 +513,7 @@ describe("CalendarWorkspacePage", () => {
   });
 
   it("updates query state when toggling to butler view", async () => {
-    renderPage("/butlers/calendar?view=user&range=week&anchor=2026-03-01");
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
     const butlerButton = findButton("Butler");
     expect(butlerButton).toBeDefined();
 
@@ -528,7 +528,7 @@ describe("CalendarWorkspacePage", () => {
   });
 
   it("applies calendar/source filters to workspace query params", async () => {
-    renderPage("/butlers/calendar?view=user&range=week&anchor=2026-03-01");
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
 
     const calendarSelect = container.querySelector("#calendar-filter") as HTMLSelectElement;
     expect(calendarSelect).toBeDefined();
@@ -556,7 +556,7 @@ describe("CalendarWorkspacePage", () => {
     });
     setSyncState({ mutateAsync: syncMutateAsync });
 
-    renderPage("/butlers/calendar?view=user&range=week&anchor=2026-03-01");
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
 
     const syncButton = document.querySelector(
       'button[aria-label="Sync all sources now"]',
@@ -586,7 +586,7 @@ describe("CalendarWorkspacePage", () => {
     });
     setUserMutationState({ mutateAsync });
 
-    renderPage("/butlers/calendar?view=user&range=week&anchor=2026-03-01");
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
 
     const openCreateButton = document.querySelector(
       'button[aria-label="Create user event"]',
@@ -638,7 +638,7 @@ describe("CalendarWorkspacePage", () => {
     });
     setUserMutationState({ mutateAsync });
 
-    renderPage("/butlers/calendar?view=user&range=week&anchor=2026-03-01");
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
 
     const editButton = findButton("Edit");
     expect(editButton).toBeDefined();
@@ -688,7 +688,7 @@ describe("CalendarWorkspacePage", () => {
     });
     setUserMutationState({ mutateAsync });
 
-    renderPage("/butlers/calendar?view=user&range=week&anchor=2026-03-01");
+    renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
 
     const rowDeleteButton = findButton("Delete");
     expect(rowDeleteButton).toBeDefined();
@@ -722,7 +722,7 @@ describe("CalendarWorkspacePage", () => {
 
   it("renders butler lanes grouped with lane metadata", () => {
     setButlerWorkspaceFixtures();
-    renderPage("/butlers/calendar?view=butler&range=week&anchor=2026-03-01");
+    renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
 
     expect(container.textContent).toContain("General lane");
     expect(container.textContent).toContain("Health lane");
@@ -732,7 +732,7 @@ describe("CalendarWorkspacePage", () => {
 
   it("creates butler event through workspace mutation endpoint", async () => {
     setButlerWorkspaceFixtures();
-    renderPage("/butlers/calendar?view=butler&range=week&anchor=2026-03-01");
+    renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
 
     const createButton = findButton("Create Butler Event");
     expect(createButton).toBeDefined();
@@ -775,7 +775,7 @@ describe("CalendarWorkspacePage", () => {
 
   it("updates butler event through workspace mutation endpoint", async () => {
     setButlerWorkspaceFixtures();
-    renderPage("/butlers/calendar?view=butler&range=week&anchor=2026-03-01");
+    renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
 
     const editButton = findButton("Edit");
     expect(editButton).toBeDefined();
@@ -889,7 +889,7 @@ describe("CalendarWorkspacePage", () => {
         },
       });
 
-      renderPage("/butlers/calendar?view=butler&range=week&anchor=2026-03-01");
+      renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
 
       // Should see overflow indicator
       expect(container.textContent).toContain("2 more instances");
@@ -943,7 +943,7 @@ describe("CalendarWorkspacePage", () => {
         },
       });
 
-      renderPage("/butlers/calendar?view=butler&range=week&anchor=2026-03-01");
+      renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
 
       expect(container.textContent).not.toContain("more instance");
       const rows = Array.from(container.querySelectorAll("tr")).filter(
@@ -996,7 +996,7 @@ describe("CalendarWorkspacePage", () => {
         },
       });
 
-      renderPage("/butlers/calendar?view=butler&range=week&anchor=2026-03-01");
+      renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
 
       // sched-A: 10 visible + 1 overflow; sched-B: 6 visible, no overflow
       // Total visible rows: 16 + 1 overflow row
@@ -1051,7 +1051,7 @@ describe("CalendarWorkspacePage", () => {
         },
       });
 
-      renderPage("/butlers/calendar?view=butler&range=week&anchor=2026-03-01");
+      renderPage("/calendar?view=butler&range=week&anchor=2026-03-01");
 
       // Each day: 10 visible + 1 overflow = 2 overflow rows total
       const overflowText = Array.from(container.querySelectorAll("td, p")).filter((el) =>
