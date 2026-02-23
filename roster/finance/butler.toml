@@ -1,0 +1,51 @@
+[butler]
+name = "finance"
+port = 40105
+description = "Personal finance specialist for receipts, bills, subscriptions, and transaction alerts."
+
+[butler.runtime]
+model = "gpt-5.3-codex-spark"
+max_concurrent_sessions = 3
+
+[runtime]
+type = "codex"
+
+[butler.db]
+name = "butlers"
+schema = "finance"
+
+[butler.switchboard]
+url = "http://localhost:40100/mcp"
+advertise = true
+liveness_ttl_s = 300
+route_contract_min = "route.v1"
+route_contract_max = "route.v1"
+
+[modules.email]
+
+[modules.calendar]
+provider = "google"
+calendar_id = "primary"
+
+[modules.calendar.conflicts]
+policy = "suggest"
+
+[modules.memory]
+
+[[butler.schedule]]
+name = "upcoming-bills-check"
+cron = "0 8 * * *"
+dispatch_mode = "job"
+job_name = "upcoming_bills_check"
+
+[[butler.schedule]]
+name = "subscription-renewal-alerts"
+cron = "30 8 * * *"
+dispatch_mode = "job"
+job_name = "subscription_renewal_alerts"
+
+[[butler.schedule]]
+name = "monthly-spending-summary"
+cron = "0 9 1 * *"
+dispatch_mode = "job"
+job_name = "monthly_spending_summary"
