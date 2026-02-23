@@ -2772,6 +2772,12 @@ class ButlerDaemon:
         if butler_name == "switchboard":
             import importlib.util as _ilu
 
+            from butlers.tools.switchboard.backfill.connector import (
+                backfill_poll as _backfill_poll,
+            )
+            from butlers.tools.switchboard.backfill.connector import (
+                backfill_progress as _backfill_progress,
+            )
             from butlers.tools.switchboard.ingestion.ingest import ingest_v1
             from butlers.tools.switchboard.notification.deliver import (
                 deliver as _switchboard_deliver,
@@ -3092,6 +3098,82 @@ class ButlerDaemon:
                     payload["checkpoint"] = checkpoint
                 result = await _connector_heartbeat(pool, payload)
                 return result.model_dump()
+
+            @mcp.tool(name="backfill.poll")
+            @tool_span("backfill.poll", butler_name=butler_name)
+            async def backfill_poll_tool(
+                connector_type: str,
+                endpoint_identity: str,
+            ) -> dict[str, Any] | None:
+                """Claim the next pending backfill job for a connector identity.
+
+                Called by connector processes (e.g. Gmail connector) to atomically
+                claim the oldest pending backfill job. Returns None when no pending
+                job exists for this connector.
+
+                Connectors MUST call this no more frequently than once every 60 seconds.
+
+                Args:
+                    connector_type: Canonical connector type (e.g. ``gmail``).
+                    endpoint_identity: The account identity this connector serves.
+
+                Returns:
+                    Job payload with job_id, params, and cursor on success; None when
+                    no pending job is available.
+                """
+                return await _backfill_poll(
+                    pool,
+                    connector_type=connector_type,
+                    endpoint_identity=endpoint_identity,
+                )
+
+            @mcp.tool(name="backfill.progress")
+            @tool_span("backfill.progress", butler_name=butler_name)
+            async def backfill_progress_tool(
+                job_id: str,
+                connector_type: str,
+                endpoint_identity: str,
+                rows_processed: int,
+                rows_skipped: int,
+                cost_spent_cents_delta: int,
+                cursor: dict[str, Any] | None = None,
+                status: str | None = None,
+                error: str | None = None,
+            ) -> dict[str, Any]:
+                """Report batch progress for an active backfill job.
+
+                Called by connector processes to update cumulative counters, advance
+                the resume cursor, and optionally mark the job as completed or errored.
+
+                Connectors MUST stop processing when the returned status is anything
+                other than ``active``.
+
+                Args:
+                    job_id: UUID of the job being reported on.
+                    connector_type: Must match the job's connector_type.
+                    endpoint_identity: Must match the job's endpoint_identity.
+                    rows_processed: Rows processed in this batch (non-negative).
+                    rows_skipped: Rows skipped in this batch (non-negative).
+                    cost_spent_cents_delta: Additional cost in cents for this batch.
+                    cursor: Optional updated resume cursor (opaque JSONB).
+                    status: Optional terminal status (``completed`` or ``error``).
+                    error: Optional error detail (accompany ``status="error"``).
+
+                Returns:
+                    ``{status: str}`` — the authoritative job status after this update.
+                """
+                return await _backfill_progress(
+                    pool,
+                    job_id=job_id,
+                    connector_type=connector_type,
+                    endpoint_identity=endpoint_identity,
+                    rows_processed=rows_processed,
+                    rows_skipped=rows_skipped,
+                    cost_spent_cents_delta=cost_spent_cents_delta,
+                    cursor=cursor,
+                    status=status,
+                    error=error,
+                )
 
         @mcp.tool()
         async def tick() -> dict:
