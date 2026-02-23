@@ -153,11 +153,7 @@ class tool_span:
         # When get_active_session_context() returns None, start_span falls
         # back to the current contextvars context (unchanged default behavior).
         self._span = tracer.start_span(self._span_name, context=get_active_session_context())
-        self._span.set_attribute("butler.name", self._butler_name)
-        # Set service.name as a span attribute so observability backends can
-        # correctly attribute spans to their butler even when all butlers share
-        # a single TracerProvider (and thus a single Resource service.name).
-        self._span.set_attribute("service.name", f"butler.{self._butler_name}")
+        tag_butler_span(self._span, self._butler_name)
         self._token = trace.context_api.attach(trace.set_span_in_context(self._span))
         # Ensure butler context is correct for multi-butler mode
         set_butler_context(self._butler_name)
