@@ -220,7 +220,7 @@ async def list_contacts(
         SELECT
             c.id,
             c.name AS full_name,
-            c.details->>'nickname' AS nickname,
+            c.nickname,
             (
                 SELECT ci.value FROM contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'email'
@@ -388,11 +388,11 @@ async def get_contact(
         SELECT
             c.id,
             c.name AS full_name,
-            c.details->>'nickname' AS nickname,
+            c.nickname,
             c.details->>'notes' AS notes,
-            c.details->>'company' AS company,
-            c.details->>'job_title' AS job_title,
-            c.details AS metadata,
+            c.company,
+            c.job_title,
+            c.metadata,
             c.created_at,
             c.updated_at,
             (
@@ -472,7 +472,8 @@ async def get_contact(
         ]
         address = ", ".join(p for p in parts if p)
 
-    metadata = dict(row["metadata"]) if row["metadata"] else {}
+    _raw_meta = row["metadata"]
+    metadata = dict(_raw_meta) if isinstance(_raw_meta, dict) else {}
 
     return ContactDetail(
         id=row["id"],
@@ -662,7 +663,7 @@ async def list_contact_feed(
             id=r["id"],
             contact_id=r["contact_id"],
             action=r["action"],
-            details=dict(r["details"]) if r["details"] else {},
+            details=dict(r["details"]) if isinstance(r["details"], dict) else {},
             created_at=r["created_at"],
         )
         for r in rows

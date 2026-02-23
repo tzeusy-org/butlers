@@ -363,6 +363,129 @@ def test_get_contact_detail():
     assert data["birthday"] == "1990-03-15"
 
 
+def test_get_contact_detail_with_null_metadata_google_sync():
+    """GET /contacts/{id} succeeds when metadata is None (Google-synced contact).
+
+    Regression test for: "dictionary update sequence element #0 has length 1;
+    2 is required" crash caused by passing non-dict metadata to dict().
+    """
+    cid = uuid4()
+    app, mock_db, mock_pool = _app_with_mock_db(include_mock_pool=True)
+
+    # Google-synced contacts may have NULL metadata before rel_003 backfill runs
+    mock_pool.fetchrow = AsyncMock(
+        side_effect=[
+            {
+                "id": cid,
+                "full_name": "Google User",
+                "nickname": None,
+                "notes": None,
+                "company": "Google LLC",
+                "job_title": "SWE",
+                "metadata": None,  # NULL in DB — triggers crash without isinstance guard
+                "created_at": datetime(2024, 6, 1, tzinfo=UTC),
+                "updated_at": datetime(2024, 6, 1, tzinfo=UTC),
+                "email": "guser@google.com",
+                "phone": None,
+                "last_interaction_at": None,
+            },
+            None,  # no birthday
+            None,  # no address
+        ]
+    )
+    mock_pool.fetch = AsyncMock(return_value=[])
+
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/contacts/{cid}")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["full_name"] == "Google User"
+    assert data["company"] == "Google LLC"
+    assert data["metadata"] == {}
+
+
+def test_get_contact_detail_reads_dedicated_columns_not_details_jsonb():
+    """GET /contacts/{id} reads nickname/company/job_title from dedicated columns.
+
+    Verifies that the detail SQL query selects c.nickname, c.company, c.job_title,
+    and c.metadata instead of c.details->>'...' — post-rel_003 schema.
+    """
+    cid = uuid4()
+    app, mock_db, mock_pool = _app_with_mock_db(include_mock_pool=True)
+
+    mock_pool.fetchrow = AsyncMock(
+        side_effect=[
+            {
+                "id": cid,
+                "full_name": "Jane Doe",
+                "nickname": "JD",  # from dedicated column c.nickname
+                "notes": None,
+                "company": "Acme Corp",  # from dedicated column c.company
+                "job_title": "Director",  # from dedicated column c.job_title
+                "metadata": {"source": "google"},  # from dedicated column c.metadata
+                "created_at": datetime(2024, 1, 1, tzinfo=UTC),
+                "updated_at": datetime(2024, 1, 1, tzinfo=UTC),
+                "email": "jane@acme.com",
+                "phone": "555-0000",
+                "last_interaction_at": None,
+            },
+            None,  # no birthday
+            None,  # no address
+        ]
+    )
+    mock_pool.fetch = AsyncMock(return_value=[])
+
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/contacts/{cid}")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["nickname"] == "JD"
+    assert data["company"] == "Acme Corp"
+    assert data["job_title"] == "Director"
+    assert data["metadata"] == {"source": "google"}
+
+    # Verify the SQL uses dedicated columns, not details JSONB extraction
+    contact_sql = mock_pool.fetchrow.await_args_list[0].args[0]
+    assert "c.nickname" in contact_sql
+    assert "c.company" in contact_sql
+    assert "c.job_title" in contact_sql
+    assert "c.metadata" in contact_sql
+    assert "details->>'nickname'" not in contact_sql
+    assert "details->>'company'" not in contact_sql
+    assert "details->>'job_title'" not in contact_sql
+
+
+def test_list_contacts_reads_nickname_from_dedicated_column():
+    """GET /contacts reads nickname from c.nickname not c.details->>'nickname'.
+
+    Verifies that the contacts list SQL query uses the post-rel_003 dedicated column.
+    """
+    cid = uuid4()
+    app, _, mock_pool = _app_with_mock_db(fetchval_result=1, include_mock_pool=True)
+
+    contact_row = {
+        "id": cid,
+        "full_name": "Alice Smith",
+        "nickname": "Ali",
+        "email": "alice@example.com",
+        "phone": None,
+        "last_interaction_at": None,
+    }
+    mock_pool.fetch = AsyncMock(side_effect=[[contact_row], []])
+
+    with TestClient(app=app) as client:
+        resp = client.get("/api/relationship/contacts")
+
+    assert resp.status_code == 200
+
+    # Verify the contacts list SQL uses dedicated column
+    contacts_sql = mock_pool.fetch.await_args_list[0].args[0]
+    assert "c.nickname" in contacts_sql
+    assert "details->>'nickname'" not in contacts_sql
+
+
 # ---------------------------------------------------------------------------
 # GET /api/relationship/contacts/{contact_id}/notes
 # ---------------------------------------------------------------------------
