@@ -35,6 +35,7 @@ CORE_TABLES = {
 
 CHAIN_TABLES: dict[str, set[str]] = {
     "core": CORE_TABLES,
+    "finance": {"accounts", "bills", "subscriptions", "transactions"},
     "general": {"collections", "entities"},
     "health": {
         "conditions",
