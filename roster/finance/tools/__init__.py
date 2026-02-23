@@ -11,7 +11,6 @@ branches are merged the guards can be removed.
 from __future__ import annotations
 
 # --- Always-available: implemented on this branch ---
-from butlers.tools.finance._helpers import _row_to_dict
 from butlers.tools.finance.spending import (
     VALID_GROUP_BY_MODES,
     spending_summary,
@@ -44,8 +43,6 @@ except (ImportError, AttributeError):
     upcoming_bills = None  # type: ignore[assignment]
 
 __all__ = [
-    # helpers
-    "_row_to_dict",
     # spending
     "VALID_GROUP_BY_MODES",
     "spending_summary",

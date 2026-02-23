@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -24,8 +24,6 @@ def _current_month_bounds() -> tuple[date, date]:
     else:
         end = date(today.year, today.month + 1, 1)
     # end_date is inclusive — use last day of current month
-    from datetime import timedelta
-
     end = end - timedelta(days=1)
     return start, end
 
