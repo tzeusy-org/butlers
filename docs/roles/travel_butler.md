@@ -226,33 +226,55 @@ Travel Butler SHOULD enable calendar and memory modules by default.
 ```toml
 [butler]
 name = "travel"
-description = "Travel itinerary and booking specialist"
-port = 8130
+port = 40106
+description = "Travel itinerary and booking specialist for flights, hotels, car rentals, and trip logistics."
+
+[butler.runtime]
+model = "gpt-5.3-codex-spark"
+max_concurrent_sessions = 3
+
+[runtime]
+type = "codex"
 
 [butler.db]
 name = "butlers"
 schema = "travel"
 
 [butler.switchboard]
-url = "http://localhost:8003/mcp"
+url = "http://localhost:40100/mcp"
 advertise = true
-route_contract_min = 1
-route_contract_max = 1
+liveness_ttl_s = 300
+route_contract_min = "route.v1"
+route_contract_max = "route.v1"
+
+[modules.email]
 
 [modules.calendar]
-enabled = true
 provider = "google"
 calendar_id = "primary"
 
+[modules.calendar.conflicts]
+policy = "suggest"
+
 [modules.memory]
-enabled = true
-retrieval_mode = "hybrid"
-context_token_budget = 4000
+
+[[butler.schedule]]
+name = "upcoming-travel-check"
+cron = "0 8 * * *"
+dispatch_mode = "job"
+job_name = "upcoming_travel_check"
+
+[[butler.schedule]]
+name = "trip-document-expiry"
+cron = "0 9 * * 1"
+dispatch_mode = "job"
+job_name = "trip_document_expiry"
 ```
 
 Configuration notes:
 - Calendar blocks itinerary windows and check-in reminders.
 - Memory stores travel preferences (seat, airline/hotel preferences, visa constraints) and prior trip context for better extraction/ranking.
+- Email module enables ingestion of booking confirmations, itinerary updates, and travel documents.
 
 ## 8. Scheduled Tasks
 
