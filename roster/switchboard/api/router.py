@@ -1,6 +1,7 @@
 """Switchboard butler endpoints.
 
-Provides read-only endpoints for the routing log and butler registry.
+Provides read-only endpoints for the routing log, butler registry, and
+connector ingestion dashboard surfaces.
 All data is queried directly from the switchboard butler's PostgreSQL
 database via asyncpg.
 
@@ -15,7 +16,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -35,10 +36,20 @@ if _spec is not None and _spec.loader is not None:
     RoutingEntry = _models.RoutingEntry
     HeartbeatRequest = _models.HeartbeatRequest
     HeartbeatResponse = _models.HeartbeatResponse
+    ConnectorEntry = _models.ConnectorEntry
+    ConnectorSummary = _models.ConnectorSummary
+    ConnectorStatsHourly = _models.ConnectorStatsHourly
+    ConnectorStatsDaily = _models.ConnectorStatsDaily
+    FanoutRow = _models.FanoutRow
+    IngestionOverviewStats = _models.IngestionOverviewStats
 else:
     raise RuntimeError("Failed to load switchboard API models")
 
 logger = logging.getLogger(__name__)
+
+# Period literal for query parameter validation
+PeriodLiteral = Literal["24h", "7d", "30d"]
+_PERIOD_HOURS: dict[str, int] = {"24h": 24, "7d": 168, "30d": 720}
 
 
 def _normalize_jsonb_string_list(raw: Any) -> list[str]:
@@ -146,6 +157,31 @@ async def _register_missing_butler_from_roster(pool: Any, butler_name: str) -> b
         )
         return False
     return True
+
+
+def _row_to_connector_entry(r: dict) -> Any:
+    """Convert a connector_registry asyncpg row dict to ConnectorEntry."""
+    return ConnectorEntry(
+        connector_type=r["connector_type"],
+        endpoint_identity=r["endpoint_identity"],
+        instance_id=str(r["instance_id"]) if r.get("instance_id") else None,
+        version=r.get("version"),
+        state=str(r.get("state") or "unknown"),
+        error_message=r.get("error_message"),
+        uptime_s=r.get("uptime_s"),
+        last_heartbeat_at=str(r["last_heartbeat_at"]) if r.get("last_heartbeat_at") else None,
+        first_seen_at=str(r["first_seen_at"]),
+        registered_via=str(r.get("registered_via") or "self"),
+        counter_messages_ingested=int(r.get("counter_messages_ingested") or 0),
+        counter_messages_failed=int(r.get("counter_messages_failed") or 0),
+        counter_source_api_calls=int(r.get("counter_source_api_calls") or 0),
+        counter_checkpoint_saves=int(r.get("counter_checkpoint_saves") or 0),
+        counter_dedupe_accepted=int(r.get("counter_dedupe_accepted") or 0),
+        checkpoint_cursor=r.get("checkpoint_cursor"),
+        checkpoint_updated_at=str(r["checkpoint_updated_at"])
+        if r.get("checkpoint_updated_at")
+        else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -374,3 +410,502 @@ async def receive_heartbeat(
     )
 
     return HeartbeatResponse(status="ok", eligibility_state=new_state)
+
+
+# ---------------------------------------------------------------------------
+# GET /connectors — list all connectors
+# ---------------------------------------------------------------------------
+
+
+@router.get("/connectors", response_model=ApiResponse[list[ConnectorEntry]])
+async def list_connectors(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ConnectorEntry]]:
+    """List all connectors from the connector registry.
+
+    Returns current state for each connector. Suitable for populating
+    connector cards on the Overview and Connectors tabs, including health
+    badge rows.
+
+    Falls back gracefully to an empty list when the connector_registry
+    table does not exist (degraded / partially migrated DB).
+    """
+    pool = _pool(db)
+
+    try:
+        rows = await pool.fetch(
+            "SELECT connector_type, endpoint_identity, instance_id, version, state,"
+            " error_message, uptime_s, last_heartbeat_at, first_seen_at, registered_via,"
+            " counter_messages_ingested, counter_messages_failed, counter_source_api_calls,"
+            " counter_checkpoint_saves, counter_dedupe_accepted,"
+            " checkpoint_cursor, checkpoint_updated_at"
+            " FROM connector_registry"
+            " ORDER BY connector_type, endpoint_identity",
+        )
+    except Exception:
+        logger.warning(
+            "connector_registry table not available; returning empty list", exc_info=True
+        )
+        return ApiResponse[list[ConnectorEntry]](data=[])
+
+    data = [_row_to_connector_entry(dict(row)) for row in rows]
+    return ApiResponse[list[ConnectorEntry]](data=data)
+
+
+# ---------------------------------------------------------------------------
+# GET /connectors/summary — aggregate summary across all connectors
+# ---------------------------------------------------------------------------
+
+
+@router.get("/connectors/summary", response_model=ApiResponse[ConnectorSummary])
+async def get_connectors_summary(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ConnectorSummary]:
+    """Return aggregate connector health and volume summary.
+
+    Drives the summary stats row at the top of the Connectors tab
+    (total, online, stale, offline, ingested, failed, error rate).
+
+    Falls back gracefully to a zero-value summary on DB errors.
+    """
+    pool = _pool(db)
+
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT
+                count(*) AS total_connectors,
+                count(*) FILTER (WHERE state = 'healthy') AS online_count,
+                count(*) FILTER (WHERE state = 'degraded') AS stale_count,
+                count(*) FILTER (WHERE state = 'error') AS offline_count,
+                count(*) FILTER (WHERE state NOT IN ('healthy','degraded','error'))
+                    AS unknown_count,
+                coalesce(sum(counter_messages_ingested), 0) AS total_messages_ingested,
+                coalesce(sum(counter_messages_failed), 0) AS total_messages_failed
+            FROM connector_registry
+            """,
+        )
+    except Exception:
+        logger.warning(
+            "connector_registry not available for summary; returning zeros", exc_info=True
+        )
+        return ApiResponse[ConnectorSummary](data=ConnectorSummary())
+
+    if row is None:
+        return ApiResponse[ConnectorSummary](data=ConnectorSummary())
+
+    total_ingested = int(row["total_messages_ingested"] or 0)
+    total_failed = int(row["total_messages_failed"] or 0)
+    total_attempts = total_ingested + total_failed
+    error_rate_pct = (total_failed / total_attempts * 100.0) if total_attempts > 0 else 0.0
+
+    summary = ConnectorSummary(
+        total_connectors=int(row["total_connectors"] or 0),
+        online_count=int(row["online_count"] or 0),
+        stale_count=int(row["stale_count"] or 0),
+        offline_count=int(row["offline_count"] or 0),
+        unknown_count=int(row["unknown_count"] or 0),
+        total_messages_ingested=total_ingested,
+        total_messages_failed=total_failed,
+        error_rate_pct=round(error_rate_pct, 2),
+    )
+    return ApiResponse[ConnectorSummary](data=summary)
+
+
+# ---------------------------------------------------------------------------
+# GET /connectors/{connector_type}/{endpoint_identity} — connector detail
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/connectors/{connector_type}/{endpoint_identity}",
+    response_model=ApiResponse[ConnectorEntry],
+)
+async def get_connector_detail(
+    connector_type: str,
+    endpoint_identity: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ConnectorEntry]:
+    """Return current state for a single connector.
+
+    Raises 404 if the connector is not found in the registry.
+    """
+    pool = _pool(db)
+
+    try:
+        row = await pool.fetchrow(
+            "SELECT connector_type, endpoint_identity, instance_id, version, state,"
+            " error_message, uptime_s, last_heartbeat_at, first_seen_at, registered_via,"
+            " counter_messages_ingested, counter_messages_failed, counter_source_api_calls,"
+            " counter_checkpoint_saves, counter_dedupe_accepted,"
+            " checkpoint_cursor, checkpoint_updated_at"
+            " FROM connector_registry"
+            " WHERE connector_type = $1 AND endpoint_identity = $2",
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        logger.warning(
+            "connector_registry not available for detail lookup %r/%r",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Connector registry is not available")
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(dict(row)))
+
+
+# ---------------------------------------------------------------------------
+# GET /connectors/{connector_type}/{endpoint_identity}/stats — time-series stats
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/connectors/{connector_type}/{endpoint_identity}/stats",
+    response_model=ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]],
+)
+async def get_connector_stats(
+    connector_type: str,
+    endpoint_identity: str,
+    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
+    """Return time-series rollup stats for a single connector.
+
+    - ``period=24h``: hourly rollup for the last 24 hours (connector_stats_hourly)
+    - ``period=7d``: daily rollup for the last 7 days (connector_stats_daily)
+    - ``period=30d``: daily rollup for the last 30 days (connector_stats_daily)
+
+    Falls back gracefully to an empty list when rollup tables are missing.
+    """
+    pool = _pool(db)
+
+    if period == "24h":
+        cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=24)
+        try:
+            rows = await pool.fetch(
+                "SELECT connector_type, endpoint_identity, hour,"
+                " messages_ingested, messages_failed, source_api_calls, dedupe_accepted,"
+                " heartbeat_count, healthy_count, degraded_count, error_count"
+                " FROM connector_stats_hourly"
+                " WHERE connector_type = $1 AND endpoint_identity = $2"
+                " AND hour >= $3"
+                " ORDER BY hour ASC",
+                connector_type,
+                endpoint_identity,
+                cutoff,
+            )
+        except Exception:
+            logger.warning(
+                "connector_stats_hourly not available; returning empty list", exc_info=True
+            )
+            return ApiResponse(data=[])
+
+        data: list = [
+            ConnectorStatsHourly(
+                connector_type=r["connector_type"],
+                endpoint_identity=r["endpoint_identity"],
+                hour=str(r["hour"]),
+                messages_ingested=int(r["messages_ingested"] or 0),
+                messages_failed=int(r["messages_failed"] or 0),
+                source_api_calls=int(r["source_api_calls"] or 0),
+                dedupe_accepted=int(r["dedupe_accepted"] or 0),
+                heartbeat_count=int(r["heartbeat_count"] or 0),
+                healthy_count=int(r["healthy_count"] or 0),
+                degraded_count=int(r["degraded_count"] or 0),
+                error_count=int(r["error_count"] or 0),
+            )
+            for r in rows
+        ]
+    else:
+        days = 7 if period == "7d" else 30
+        cutoff_date = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)).date()
+        try:
+            rows = await pool.fetch(
+                "SELECT connector_type, endpoint_identity, day,"
+                " messages_ingested, messages_failed, source_api_calls, dedupe_accepted,"
+                " heartbeat_count, healthy_count, degraded_count, error_count, uptime_pct"
+                " FROM connector_stats_daily"
+                " WHERE connector_type = $1 AND endpoint_identity = $2"
+                " AND day >= $3"
+                " ORDER BY day ASC",
+                connector_type,
+                endpoint_identity,
+                cutoff_date,
+            )
+        except Exception:
+            logger.warning(
+                "connector_stats_daily not available; returning empty list", exc_info=True
+            )
+            return ApiResponse(data=[])
+
+        data = [
+            ConnectorStatsDaily(
+                connector_type=r["connector_type"],
+                endpoint_identity=r["endpoint_identity"],
+                day=str(r["day"]),
+                messages_ingested=int(r["messages_ingested"] or 0),
+                messages_failed=int(r["messages_failed"] or 0),
+                source_api_calls=int(r["source_api_calls"] or 0),
+                dedupe_accepted=int(r["dedupe_accepted"] or 0),
+                heartbeat_count=int(r["heartbeat_count"] or 0),
+                healthy_count=int(r["healthy_count"] or 0),
+                degraded_count=int(r["degraded_count"] or 0),
+                error_count=int(r["error_count"] or 0),
+                uptime_pct=float(r["uptime_pct"]) if r.get("uptime_pct") is not None else None,
+            )
+            for r in rows
+        ]
+
+    return ApiResponse(data=data)
+
+
+# ---------------------------------------------------------------------------
+# GET /connectors/{connector_type}/{endpoint_identity}/fanout — fanout breakdown
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/connectors/{connector_type}/{endpoint_identity}/fanout",
+    response_model=ApiResponse[list[FanoutRow]],
+)
+async def get_connector_fanout(
+    connector_type: str,
+    endpoint_identity: str,
+    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[FanoutRow]]:
+    """Return fanout distribution for a single connector.
+
+    Aggregates message counts per target butler over the requested period.
+    Used to populate the fanout distribution table in the Connectors tab detail
+    view and the Overview tab fanout matrix.
+
+    Falls back gracefully to an empty list when rollup tables are missing.
+    """
+    pool = _pool(db)
+
+    days = _PERIOD_HOURS.get(period, 24) // 24 or 1
+    cutoff_date = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)).date()
+
+    try:
+        rows = await pool.fetch(
+            "SELECT connector_type, endpoint_identity, target_butler,"
+            " sum(message_count) AS message_count"
+            " FROM connector_fanout_daily"
+            " WHERE connector_type = $1 AND endpoint_identity = $2"
+            " AND day >= $3"
+            " GROUP BY connector_type, endpoint_identity, target_butler"
+            " ORDER BY message_count DESC",
+            connector_type,
+            endpoint_identity,
+            cutoff_date,
+        )
+    except Exception:
+        logger.warning("connector_fanout_daily not available; returning empty list", exc_info=True)
+        return ApiResponse[list[FanoutRow]](data=[])
+
+    data = [
+        FanoutRow(
+            connector_type=r["connector_type"],
+            endpoint_identity=r["endpoint_identity"],
+            target_butler=r["target_butler"],
+            message_count=int(r["message_count"] or 0),
+        )
+        for r in rows
+    ]
+    return ApiResponse[list[FanoutRow]](data=data)
+
+
+# ---------------------------------------------------------------------------
+# GET /ingestion/overview — overview aggregates
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ingestion/overview", response_model=ApiResponse[IngestionOverviewStats])
+async def get_ingestion_overview(
+    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[IngestionOverviewStats]:
+    """Return aggregate ingestion overview statistics.
+
+    Drives the stat-row cards on the Overview tab:
+    - total ingested
+    - total skipped (tier 3)
+    - total metadata-only (tier 2)
+    - LLM calls saved (deterministic pre-LLM handling)
+    - active connectors count
+
+    Also provides tier breakdown counts for the donut chart.
+
+    Data is sourced from connector_stats_hourly/daily rollup tables and
+    connector_registry.  Falls back gracefully when tables are missing.
+    """
+    pool = _pool(db)
+
+    hours = _PERIOD_HOURS.get(period, 24)
+
+    # Active connectors: those with a heartbeat in the last N hours
+    try:
+        active_connectors = await pool.fetchval(
+            "SELECT count(*)"
+            " FROM connector_registry"
+            " WHERE last_heartbeat_at >= now() - make_interval(hours => $1)"
+            " AND state = 'healthy'",
+            hours,
+        )
+        active_connectors = int(active_connectors or 0)
+    except Exception:
+        logger.warning("connector_registry not available for active count", exc_info=True)
+        active_connectors = 0
+
+    # Volume aggregates from rollup tables
+    total_ingested = 0
+    tier1_full_count = 0
+    tier2_metadata_count = 0
+    tier3_skip_count = 0
+
+    if period == "24h":
+        cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=24)
+        try:
+            agg = await pool.fetchrow(
+                "SELECT coalesce(sum(messages_ingested), 0) AS total_ingested,"
+                " coalesce(sum(messages_failed), 0) AS total_failed"
+                " FROM connector_stats_hourly"
+                " WHERE hour >= $1",
+                cutoff,
+            )
+            if agg:
+                total_ingested = int(agg["total_ingested"] or 0)
+        except Exception:
+            logger.warning("connector_stats_hourly not available for overview", exc_info=True)
+    else:
+        days = 7 if period == "7d" else 30
+        cutoff_date = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)).date()
+        try:
+            agg = await pool.fetchrow(
+                "SELECT coalesce(sum(messages_ingested), 0) AS total_ingested,"
+                " coalesce(sum(messages_failed), 0) AS total_failed"
+                " FROM connector_stats_daily"
+                " WHERE day >= $1",
+                cutoff_date,
+            )
+            if agg:
+                total_ingested = int(agg["total_ingested"] or 0)
+        except Exception:
+            logger.warning("connector_stats_daily not available for overview", exc_info=True)
+
+    # Tier breakdown from message_inbox lifecycle/processing_metadata JSONB.
+    # This is a best-effort query — if message_inbox is missing we skip gracefully.
+    if period == "24h":
+        inbox_cutoff: Any = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=24)
+        inbox_where = "received_at >= $1"
+        inbox_args: list = [inbox_cutoff]
+    else:
+        days = 7 if period == "7d" else 30
+        inbox_cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)
+        inbox_where = "received_at >= $1"
+        inbox_args = [inbox_cutoff]
+
+    try:
+        tier_row = await pool.fetchrow(
+            f"""
+            SELECT
+                count(*) FILTER (
+                    WHERE processing_metadata->>'policy_tier' = 'tier1'
+                    OR processing_metadata->>'policy_tier' IS NULL
+                ) AS tier1_full,
+                count(*) FILTER (
+                    WHERE processing_metadata->>'policy_tier' = 'tier2'
+                ) AS tier2_metadata,
+                count(*) FILTER (
+                    WHERE processing_metadata->>'policy_tier' = 'tier3'
+                ) AS tier3_skip
+            FROM message_inbox
+            WHERE {inbox_where}
+            """,
+            *inbox_args,
+        )
+        if tier_row:
+            tier1_full_count = int(tier_row["tier1_full"] or 0)
+            tier2_metadata_count = int(tier_row["tier2_metadata"] or 0)
+            tier3_skip_count = int(tier_row["tier3_skip"] or 0)
+    except Exception:
+        logger.warning("message_inbox not available for tier breakdown; using zeros", exc_info=True)
+
+    # LLM calls saved = tier2 + tier3 (messages handled without full LLM classification)
+    llm_calls_saved = tier2_metadata_count + tier3_skip_count
+
+    # Total skipped = tier3 messages
+    total_skipped = tier3_skip_count
+    # Total metadata-only = tier2 messages
+    total_metadata_only = tier2_metadata_count
+
+    overview = IngestionOverviewStats(
+        period=period,
+        total_ingested=total_ingested,
+        total_skipped=total_skipped,
+        total_metadata_only=total_metadata_only,
+        llm_calls_saved=llm_calls_saved,
+        active_connectors=active_connectors,
+        tier1_full_count=tier1_full_count,
+        tier2_metadata_count=tier2_metadata_count,
+        tier3_skip_count=tier3_skip_count,
+    )
+    return ApiResponse[IngestionOverviewStats](data=overview)
+
+
+# ---------------------------------------------------------------------------
+# GET /ingestion/fanout — cross-connector fanout matrix
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ingestion/fanout", response_model=ApiResponse[list[FanoutRow]])
+async def get_ingestion_fanout(
+    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[FanoutRow]]:
+    """Return the cross-connector × butler fanout matrix for the Overview tab.
+
+    Aggregates message counts per (connector_type, endpoint_identity, target_butler)
+    over the requested period. Used to populate the fanout matrix table on the
+    Overview tab.
+
+    Falls back gracefully to an empty list when rollup tables are missing.
+    """
+    pool = _pool(db)
+
+    days = _PERIOD_HOURS.get(period, 24) // 24 or 1
+    cutoff_date = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)).date()
+
+    try:
+        rows = await pool.fetch(
+            "SELECT connector_type, endpoint_identity, target_butler,"
+            " sum(message_count) AS message_count"
+            " FROM connector_fanout_daily"
+            " WHERE day >= $1"
+            " GROUP BY connector_type, endpoint_identity, target_butler"
+            " ORDER BY connector_type, endpoint_identity, message_count DESC",
+            cutoff_date,
+        )
+    except Exception:
+        logger.warning("connector_fanout_daily not available; returning empty list", exc_info=True)
+        return ApiResponse[list[FanoutRow]](data=[])
+
+    data = [
+        FanoutRow(
+            connector_type=r["connector_type"],
+            endpoint_identity=r["endpoint_identity"],
+            target_butler=r["target_butler"],
+            message_count=int(r["message_count"] or 0),
+        )
+        for r in rows
+    ]
+    return ApiResponse[list[FanoutRow]](data=data)
