@@ -67,6 +67,8 @@ SWITCHBOARD_TABLES_SQL = """
         success BOOLEAN NOT NULL,
         duration_ms INTEGER,
         error TEXT,
+        thread_id TEXT,
+        source_channel TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 """
