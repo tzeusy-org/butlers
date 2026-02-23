@@ -1,99 +1,31 @@
-"""Tests for GET /api/butlers/{name}/notifications — butler-scoped notifications."""
+"""Tests for GET /api/butlers/{name}/notifications — butler-scoped notifications.
+
+This endpoint is a narrowed view of /api/notifications with the butler path
+parameter acting as the mandatory source_butler filter. Tests here focus on
+path-parameter injection and butler-scoped boundary behaviour; general
+pagination, validation, and SQL construction are covered by
+test_notifications_router.py and test_notification_endpoints.py.
+"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import httpx
 import pytest
 
-from butlers.api.app import create_app
-from butlers.api.db import DatabaseManager
-from butlers.api.routers.notifications import _get_db_manager
+from tests.api.conftest import build_notifications_app, make_notification_row
 
 pytestmark = pytest.mark.unit
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_notification_row(
-    *,
-    source_butler: str = "atlas",
-    channel: str = "telegram",
-    recipient: str = "12345",
-    message: str = "Hello!",
-    metadata: dict | None = None,
-    status: str = "sent",
-    error: str | None = None,
-    session_id=None,
-    trace_id: str | None = None,
-    created_at: datetime | None = None,
-):
-    """Build a dict mimicking an asyncpg Record for the notifications table."""
-    return {
-        "id": uuid4(),
-        "source_butler": source_butler,
-        "channel": channel,
-        "recipient": recipient,
-        "message": message,
-        "metadata": metadata or {},
-        "status": status,
-        "error": error,
-        "session_id": session_id,
-        "trace_id": trace_id,
-        "created_at": created_at or datetime.now(tz=UTC),
-    }
-
-
-def _build_app_with_mock_db(
-    rows: list[dict],
-    total: int | None = None,
-) -> tuple:
-    """Create a FastAPI app with mocked DatabaseManager.
-
-    Returns (app, mock_pool, mock_db) so tests can inspect call args.
-    """
-    if total is None:
-        total = len(rows)
-
-    mock_pool = AsyncMock()
-    mock_pool.fetchval = AsyncMock(return_value=total)
-    mock_pool.fetch = AsyncMock(
-        return_value=[
-            MagicMock(
-                **{
-                    "__getitem__": lambda self, key, row=row: row[key],
-                }
-            )
-            for row in rows
-        ]
-    )
-
-    mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = mock_pool
-
-    app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
-
-    return app, mock_pool, mock_db
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 class TestButlerNotificationsDefaults:
     """Test the default pagination behaviour for butler-scoped endpoint."""
 
     async def test_returns_200_with_paginated_response(self):
-        rows = [_make_notification_row(source_butler="atlas") for _ in range(3)]
-        app, mock_pool, _ = _build_app_with_mock_db(rows, total=3)
+        rows = [make_notification_row(source_butler="atlas") for _ in range(3)]
+        app, mock_pool, _ = build_notifications_app(rows, total=3)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -108,7 +40,7 @@ class TestButlerNotificationsDefaults:
         assert body["meta"]["limit"] == 50
 
     async def test_empty_results(self):
-        app, _, _ = _build_app_with_mock_db([], total=0)
+        app, _, _ = build_notifications_app([], total=0)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -125,8 +57,8 @@ class TestButlerNotificationsButlerFilter:
     """Verify the butler name from the path is used as the source_butler filter."""
 
     async def test_butler_name_injected_as_filter(self):
-        rows = [_make_notification_row(source_butler="atlas")]
-        app, mock_pool, _ = _build_app_with_mock_db(rows, total=1)
+        rows = [make_notification_row(source_butler="atlas")]
+        app, mock_pool, _ = build_notifications_app(rows, total=1)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -135,22 +67,19 @@ class TestButlerNotificationsButlerFilter:
 
         assert resp.status_code == 200
 
-        # Verify the count query includes source_butler filter
         count_sql = mock_pool.fetchval.call_args[0][0]
         assert "source_butler = $1" in count_sql
 
-        # Verify "atlas" was passed as argument
         count_args = mock_pool.fetchval.call_args[0][1:]
         assert "atlas" in count_args
 
-        # Verify the data query includes source_butler filter
         data_sql = mock_pool.fetch.call_args[0][0]
         assert "source_butler = $1" in data_sql
 
     async def test_different_butler_name(self):
         """The butler name from the URL path should be used, not a hardcoded value."""
-        rows = [_make_notification_row(source_butler="herald")]
-        app, mock_pool, _ = _build_app_with_mock_db(rows, total=1)
+        rows = [make_notification_row(source_butler="herald")]
+        app, mock_pool, _ = build_notifications_app(rows, total=1)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -158,7 +87,6 @@ class TestButlerNotificationsButlerFilter:
             resp = await client.get("/api/butlers/herald/notifications")
 
         assert resp.status_code == 200
-
         count_args = mock_pool.fetchval.call_args[0][1:]
         assert "herald" in count_args
 
@@ -167,8 +95,8 @@ class TestButlerNotificationsPagination:
     """Test custom offset/limit parameters on the butler-scoped endpoint."""
 
     async def test_custom_offset_and_limit(self):
-        rows = [_make_notification_row()]
-        app, mock_pool, _ = _build_app_with_mock_db(rows, total=100)
+        rows = [make_notification_row()]
+        app, mock_pool, _ = build_notifications_app(rows, total=100)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -184,13 +112,12 @@ class TestButlerNotificationsPagination:
         assert body["meta"]["limit"] == 5
         assert body["meta"]["total"] == 100
 
-        # Last two positional args to data query should be offset=10, limit=5
         data_call_args = mock_pool.fetch.call_args
         assert data_call_args[0][-2] == 10
         assert data_call_args[0][-1] == 5
 
     async def test_invalid_offset_returns_422(self):
-        app, _, _ = _build_app_with_mock_db([])
+        app, _, _ = build_notifications_app([])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -203,7 +130,7 @@ class TestButlerNotificationsPagination:
         assert resp.status_code == 422
 
     async def test_invalid_limit_zero_returns_422(self):
-        app, _, _ = _build_app_with_mock_db([])
+        app, _, _ = build_notifications_app([])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -220,8 +147,8 @@ class TestButlerNotificationsFilters:
     """Test additional query filters on butler-scoped endpoint."""
 
     async def test_channel_filter(self):
-        rows = [_make_notification_row(channel="email")]
-        app, mock_pool, _ = _build_app_with_mock_db(rows, total=1)
+        rows = [make_notification_row(channel="email")]
+        app, mock_pool, _ = build_notifications_app(rows, total=1)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -232,7 +159,6 @@ class TestButlerNotificationsFilters:
             )
 
         assert resp.status_code == 200
-
         count_sql = mock_pool.fetchval.call_args[0][0]
         assert "source_butler = $1" in count_sql
         assert "channel = $2" in count_sql
@@ -242,8 +168,8 @@ class TestButlerNotificationsFilters:
         assert "email" in count_args
 
     async def test_status_filter(self):
-        rows = [_make_notification_row(status="failed")]
-        app, mock_pool, _ = _build_app_with_mock_db(rows, total=1)
+        rows = [make_notification_row(status="failed")]
+        app, mock_pool, _ = build_notifications_app(rows, total=1)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -254,7 +180,6 @@ class TestButlerNotificationsFilters:
             )
 
         assert resp.status_code == 200
-
         count_sql = mock_pool.fetchval.call_args[0][0]
         assert "source_butler = $1" in count_sql
         assert "status = $2" in count_sql
@@ -264,8 +189,8 @@ class TestButlerNotificationsFilters:
         assert "failed" in count_args
 
     async def test_since_filter(self):
-        rows = [_make_notification_row()]
-        app, mock_pool, _ = _build_app_with_mock_db(rows, total=1)
+        rows = [make_notification_row()]
+        app, mock_pool, _ = build_notifications_app(rows, total=1)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -276,14 +201,13 @@ class TestButlerNotificationsFilters:
             )
 
         assert resp.status_code == 200
-
         count_sql = mock_pool.fetchval.call_args[0][0]
         assert "source_butler = $1" in count_sql
         assert "created_at >= $2" in count_sql
 
     async def test_until_filter(self):
-        rows = [_make_notification_row()]
-        app, mock_pool, _ = _build_app_with_mock_db(rows, total=1)
+        rows = [make_notification_row()]
+        app, mock_pool, _ = build_notifications_app(rows, total=1)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -294,14 +218,13 @@ class TestButlerNotificationsFilters:
             )
 
         assert resp.status_code == 200
-
         count_sql = mock_pool.fetchval.call_args[0][0]
         assert "source_butler = $1" in count_sql
         assert "created_at <= $2" in count_sql
 
     async def test_combined_filters(self):
-        rows = [_make_notification_row()]
-        app, mock_pool, _ = _build_app_with_mock_db(rows, total=1)
+        rows = [make_notification_row()]
+        app, mock_pool, _ = build_notifications_app(rows, total=1)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -317,7 +240,6 @@ class TestButlerNotificationsFilters:
             )
 
         assert resp.status_code == 200
-
         count_sql = mock_pool.fetchval.call_args[0][0]
         assert "source_butler = $1" in count_sql
         assert "channel = $2" in count_sql
@@ -348,7 +270,7 @@ class TestButlerNotificationsResponseShape:
                 "created_at": now,
             }
         ]
-        app, _, _ = _build_app_with_mock_db(rows, total=1)
+        app, _, _ = build_notifications_app(rows, total=1)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -370,7 +292,7 @@ class TestButlerNotificationsResponseShape:
 
     async def test_switchboard_pool_is_used(self):
         """Verify the endpoint queries the switchboard database specifically."""
-        app, _, mock_db = _build_app_with_mock_db([], total=0)
+        app, _, mock_db = build_notifications_app([], total=0)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -385,8 +307,8 @@ class TestButlerNotificationsNoButlerQueryParam:
 
     async def test_butler_query_param_ignored(self):
         """Even if someone passes ?butler=other, the path {name} takes precedence."""
-        rows = [_make_notification_row(source_butler="atlas")]
-        app, mock_pool, _ = _build_app_with_mock_db(rows, total=1)
+        rows = [make_notification_row(source_butler="atlas")]
+        app, mock_pool, _ = build_notifications_app(rows, total=1)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
