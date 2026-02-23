@@ -13,6 +13,12 @@ vi.mock("@/components/switchboard/BackfillHistoryTab", () => ({
   BackfillHistoryTab: () => <div data-testid="backfill-history-tab-stub">History stub</div>,
 }));
 
+// Mock FiltersTab so IngestionPage tab-routing tests do not
+// require a QueryClientProvider (that concern belongs to FiltersTab.test.tsx).
+vi.mock("@/components/switchboard/FiltersTab", () => ({
+  FiltersTab: () => <div data-testid="filters-tab-stub">Filters stub</div>,
+}));
+
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 

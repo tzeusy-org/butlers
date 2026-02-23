@@ -98,6 +98,16 @@ import type {
   MemoryRule,
   MemoryStats,
   RuleParams,
+  TriageRule,
+  TriageRuleCreate,
+  TriageRuleUpdate,
+  TriageRuleListParams,
+  TriageRuleTestRequest,
+  TriageRuleTestResponse,
+  ThreadAffinitySettings,
+  ThreadAffinitySettingsUpdate,
+  ThreadOverrideEntry,
+  ThreadOverrideUpsert,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -1312,4 +1322,111 @@ export function resumeBackfillJob(
 /** List registered connectors. */
 export function listConnectors(): Promise<ApiResponse<ConnectorEntry[]>> {
   return apiFetch<ApiResponse<ConnectorEntry[]>>("/switchboard/connectors");
+}
+
+// ---------------------------------------------------------------------------
+// Triage rules API
+// ---------------------------------------------------------------------------
+
+/** List triage rules with optional filters. */
+export function listTriageRules(
+  params?: TriageRuleListParams,
+): Promise<ApiResponse<TriageRule[]>> {
+  const qs = params
+    ? Object.entries(params)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+        .join("&")
+    : "";
+  return apiFetch<ApiResponse<TriageRule[]>>(
+    qs ? `/switchboard/triage-rules?${qs}` : "/switchboard/triage-rules",
+  );
+}
+
+/** Create a new triage rule. */
+export function createTriageRule(body: TriageRuleCreate): Promise<ApiResponse<TriageRule>> {
+  return apiFetch<ApiResponse<TriageRule>>("/switchboard/triage-rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Partially update a triage rule. */
+export function updateTriageRule(
+  ruleId: string,
+  body: TriageRuleUpdate,
+): Promise<ApiResponse<TriageRule>> {
+  return apiFetch<ApiResponse<TriageRule>>(
+    `/switchboard/triage-rules/${encodeURIComponent(ruleId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/** Soft-delete a triage rule. */
+export function deleteTriageRule(ruleId: string): Promise<void> {
+  return apiFetch<void>(`/switchboard/triage-rules/${encodeURIComponent(ruleId)}`, {
+    method: "DELETE",
+  });
+}
+
+/** Dry-run a triage rule against a sample envelope. */
+export function testTriageRule(body: TriageRuleTestRequest): Promise<TriageRuleTestResponse> {
+  return apiFetch<TriageRuleTestResponse>("/switchboard/triage-rules/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Thread affinity API
+// ---------------------------------------------------------------------------
+
+/** Get global thread-affinity settings. */
+export function getThreadAffinitySettings(): Promise<ThreadAffinitySettings> {
+  return apiFetch<ThreadAffinitySettings>("/switchboard/thread-affinity/settings");
+}
+
+/** Update global thread-affinity settings. */
+export function updateThreadAffinitySettings(
+  body: ThreadAffinitySettingsUpdate,
+): Promise<ThreadAffinitySettings> {
+  return apiFetch<ThreadAffinitySettings>("/switchboard/thread-affinity/settings", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** List per-thread affinity overrides. */
+export function listThreadAffinityOverrides(): Promise<ThreadOverrideEntry[]> {
+  return apiFetch<ThreadOverrideEntry[]>("/switchboard/thread-affinity/overrides");
+}
+
+/** Upsert a per-thread affinity override. */
+export function upsertThreadAffinityOverride(
+  threadId: string,
+  body: ThreadOverrideUpsert,
+): Promise<ThreadAffinitySettings> {
+  return apiFetch<ThreadAffinitySettings>(
+    `/switchboard/thread-affinity/overrides/${encodeURIComponent(threadId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/** Delete a per-thread affinity override. */
+export function deleteThreadAffinityOverride(threadId: string): Promise<void> {
+  return apiFetch<void>(
+    `/switchboard/thread-affinity/overrides/${encodeURIComponent(threadId)}`,
+    { method: "DELETE" },
+  );
 }

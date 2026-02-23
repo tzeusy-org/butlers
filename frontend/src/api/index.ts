@@ -252,3 +252,32 @@ export type {
   ConnectorEntry,
   CreateBackfillJobRequest,
 } from "./types.ts";
+
+export {
+  createTriageRule,
+  deleteTriageRule,
+  deleteThreadAffinityOverride,
+  getThreadAffinitySettings,
+  listThreadAffinityOverrides,
+  listTriageRules,
+  testTriageRule,
+  updateThreadAffinitySettings,
+  updateTriageRule,
+  upsertThreadAffinityOverride,
+} from "./client.ts";
+
+export type {
+  ThreadAffinitySettings,
+  ThreadAffinitySettingsUpdate,
+  ThreadOverrideEntry,
+  ThreadOverrideUpsert,
+  TriageRule,
+  TriageRuleAction,
+  TriageRuleCreate,
+  TriageRuleListParams,
+  TriageRuleTestRequest,
+  TriageRuleTestResponse,
+  TriageRuleTestResult,
+  TriageRuleType,
+  TriageRuleUpdate,
+} from "./types.ts";
