@@ -282,6 +282,7 @@ def _make_module_with_mock_provider(
     """Create a CalendarModule wired to a mock provider."""
     module = CalendarModule()
     module._config = CalendarConfig(provider="google", calendar_id="cal@example.com")
+    module._resolved_calendar_id = "cal@example.com"
     module._provider = mock_provider
     return module
 

@@ -414,6 +414,7 @@ class TestCalendarDeleteEventTool:
             calendar_id="test@example.com",
             timezone="UTC",
         )
+        module._resolved_calendar_id = "test@example.com"
 
         tools: dict = {}
 
@@ -446,6 +447,7 @@ class TestCalendarDeleteEventTool:
             calendar_id="test@example.com",
             timezone="UTC",
         )
+        module._resolved_calendar_id = "test@example.com"
 
         tools: dict = {}
 
@@ -478,6 +480,7 @@ class TestCalendarDeleteEventTool:
             calendar_id="test@example.com",
             timezone="UTC",
         )
+        module._resolved_calendar_id = "test@example.com"
 
         tools: dict = {}
 
@@ -513,6 +516,7 @@ class TestCalendarDeleteEventTool:
             calendar_id="test@example.com",
             timezone="UTC",
         )
+        module._resolved_calendar_id = "test@example.com"
 
         tools: dict = {}
 
@@ -541,6 +545,7 @@ class TestCalendarDeleteEventTool:
             calendar_id="test@example.com",
             timezone="UTC",
         )
+        module._resolved_calendar_id = "test@example.com"
 
         tools: dict = {}
 
@@ -572,6 +577,7 @@ class TestCalendarDeleteEventTool:
             calendar_id="configured@example.com",
             timezone="UTC",
         )
+        module._resolved_calendar_id = "configured@example.com"
 
         tools: dict = {}
 
@@ -608,6 +614,7 @@ class TestCalendarDeleteEventTool:
             calendar_id="default@example.com",
             timezone="UTC",
         )
+        module._resolved_calendar_id = "default@example.com"
 
         tools: dict = {}
 
@@ -644,6 +651,7 @@ class TestCalendarDeleteEventTool:
             calendar_id="test@example.com",
             timezone="UTC",
         )
+        module._resolved_calendar_id = "test@example.com"
 
         tools: dict = {}
 
@@ -677,6 +685,7 @@ class TestCalendarDeleteEventTool:
             calendar_id="test@example.com",
             timezone="UTC",
         )
+        module._resolved_calendar_id = "test@example.com"
 
         tools: dict = {}
 

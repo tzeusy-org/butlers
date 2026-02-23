@@ -43,6 +43,12 @@ ApprovalEnqueuer = Callable[
 
 GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_CALENDAR_API_BASE_URL = "https://www.googleapis.com/calendar/v3"
+
+# Credential store key for the auto-discovered/configured Google Calendar ID.
+_CREDENTIAL_KEY_CALENDAR_ID = "GOOGLE_CALENDAR_ID"
+# Name used to discover or create the shared Butlers calendar.
+_CALENDAR_DISCOVERY_NAME = "Butlers"
+
 BUTLER_EVENT_TITLE_PREFIX = "BUTLER:"
 BUTLER_GENERATED_PRIVATE_KEY = "butler_generated"
 BUTLER_NAME_PRIVATE_KEY = "butler_name"
@@ -983,7 +989,7 @@ class CalendarConfig(BaseModel):
     """Configuration for the Calendar module."""
 
     provider: str = Field(min_length=1)
-    calendar_id: str = Field(min_length=1)
+    calendar_id: str | None = None
     timezone: str = "UTC"
     conflicts: CalendarConflictDefaults = Field(default_factory=CalendarConflictDefaults)
     event_defaults: CalendarNotificationDefaults = Field(
@@ -999,9 +1005,17 @@ class CalendarConfig(BaseModel):
             raise ValueError("provider must be a non-empty string")
         return normalized
 
-    @field_validator("calendar_id", "timezone")
+    @field_validator("calendar_id", mode="before")
     @classmethod
-    def _normalize_non_empty(cls, value: str, info: ValidationInfo) -> str:
+    def _normalize_calendar_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
+
+    @field_validator("timezone")
+    @classmethod
+    def _normalize_timezone(cls, value: str, info: ValidationInfo) -> str:
         normalized = value.strip()
         if not normalized:
             raise ValueError(f"{info.field_name} must be a non-empty string")
@@ -1751,6 +1765,42 @@ class _GoogleProvider(CalendarProvider):
         except httpx.HTTPError as exc:
             raise CalendarAuthError(f"Google Calendar request failed: {exc}") from exc
 
+    async def discover_or_create_calendar(self, name: str) -> str:
+        """Find a calendar by *name* in the user's calendar list, or create one.
+
+        Paginates through ``calendarList.list`` looking for a calendar whose
+        ``summary`` matches *name* exactly.  If none is found after exhausting
+        all pages, a new calendar is created via ``calendars.insert`` and its
+        ``id`` is returned.
+        """
+        page_token: str | None = None
+        while True:
+            params: dict[str, Any] = {"maxResults": 250}
+            if page_token is not None:
+                params["pageToken"] = page_token
+
+            payload = await self._request_google_json(
+                "GET", "/users/me/calendarList", params=params
+            )
+
+            for entry in payload.get("items", []):
+                if isinstance(entry, dict) and entry.get("summary") == name:
+                    calendar_id = entry.get("id")
+                    if isinstance(calendar_id, str) and calendar_id.strip():
+                        logger.info("Discovered existing calendar %r (id=%s)", name, calendar_id)
+                        return calendar_id
+
+            next_token = payload.get("nextPageToken")
+            if not next_token:
+                break
+            page_token = next_token
+
+        # Not found — create a new calendar.
+        created = await self._request_google_json("POST", "/calendars", json_body={"summary": name})
+        calendar_id = created["id"]
+        logger.info("Created new calendar %r (id=%s)", name, calendar_id)
+        return calendar_id
+
     async def list_events(
         self,
         *,
@@ -2302,6 +2352,8 @@ class CalendarModule(Module):
         self._force_sync_event: asyncio.Event = asyncio.Event()
         # Projection cache: avoids repeated table-presence checks per cycle.
         self._projection_tables_available_cache: bool | None = None
+        # Calendar ID resolved at startup from credential store or auto-discovery.
+        self._resolved_calendar_id: str | None = None
 
     @property
     def name(self) -> str:
@@ -3988,6 +4040,45 @@ class CalendarModule(Module):
             "Store them via the dashboard OAuth flow (shared credential store)."
         )
 
+    async def _resolve_startup_calendar_id(self, credential_store: Any) -> str:
+        """Resolve the primary calendar ID from the credential store or auto-discovery.
+
+        Resolution order:
+        1. ``GOOGLE_CALENDAR_ID`` in the credential store.
+        2. Auto-discover a calendar named "Butlers" via the Google Calendar API.
+           If it does not exist, create it.
+        3. Persist the discovered/created ID back to the credential store.
+        """
+        # 1. Try credential store.
+        if credential_store is not None:
+            stored_id = await credential_store.resolve(
+                _CREDENTIAL_KEY_CALENDAR_ID, env_fallback=False
+            )
+            if stored_id:
+                logger.debug("CalendarModule: resolved calendar ID from credential store")
+                return stored_id
+
+        # 2. Auto-discover or create.
+        if self._provider is None or not hasattr(self._provider, "discover_or_create_calendar"):
+            raise RuntimeError(
+                "CalendarModule: calendar ID not found in credential store and provider "
+                "does not support auto-discovery"
+            )
+        discovered_id = await self._provider.discover_or_create_calendar(_CALENDAR_DISCOVERY_NAME)
+
+        # 3. Persist for future restarts.
+        if credential_store is not None:
+            await credential_store.store(
+                _CREDENTIAL_KEY_CALENDAR_ID,
+                discovered_id,
+                category="google",
+                description="Auto-discovered Google Calendar ID for the Butlers calendar",
+                is_sensitive=False,
+            )
+            logger.debug("CalendarModule: persisted discovered calendar ID to credential store")
+
+        return discovered_id
+
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Initialize the calendar provider with resolved Google OAuth credentials.
 
@@ -4018,6 +4109,8 @@ class CalendarModule(Module):
         credentials = await self._resolve_credentials(db=db, credential_store=credential_store)
         self._provider = provider_cls(self._config, credentials)
 
+        self._resolved_calendar_id = await self._resolve_startup_calendar_id(credential_store)
+
         if self._config.sync.enabled:
             self._sync_task = asyncio.create_task(
                 self._run_sync_poller(), name="calendar-sync-poller"
@@ -4025,7 +4118,7 @@ class CalendarModule(Module):
             logger.info(
                 "Calendar sync poller started (interval=%dm, calendar_id=%s)",
                 self._config.sync.interval_minutes,
-                self._config.calendar_id,
+                self._resolved_calendar_id,
             )
 
         self._internal_projection_task = asyncio.create_task(
@@ -5390,7 +5483,9 @@ class CalendarModule(Module):
         while True:
             try:
                 # Run sync for the primary calendar.
-                await self._sync_calendar(config.calendar_id)
+                if self._resolved_calendar_id is None:
+                    raise RuntimeError("Calendar ID not resolved; call on_startup first")
+                await self._sync_calendar(self._resolved_calendar_id)
             except Exception as exc:
                 logger.error("Calendar sync poller error: %s", exc, exc_info=True)
 
@@ -5443,7 +5538,9 @@ class CalendarModule(Module):
 
     def _resolve_calendar_id(self, override_calendar_id: str | None) -> str:
         if override_calendar_id is None:
-            return self._require_config().calendar_id
+            if self._resolved_calendar_id is None:
+                raise RuntimeError("Calendar ID not resolved; call on_startup first")
+            return self._resolved_calendar_id
 
         normalized = override_calendar_id.strip()
         if not normalized:

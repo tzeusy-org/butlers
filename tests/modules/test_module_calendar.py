@@ -94,12 +94,13 @@ class TestModuleABCCompliance:
 class TestCalendarConfig:
     """Verify config validation, required fields, and defaults."""
 
-    def test_required_fields_provider_and_calendar_id(self):
+    def test_provider_is_required(self):
         with pytest.raises(ValidationError):
             CalendarConfig(calendar_id="primary")
 
-        with pytest.raises(ValidationError):
-            CalendarConfig(provider="google")
+    def test_calendar_id_is_optional(self):
+        config = CalendarConfig(provider="google")
+        assert config.calendar_id is None
 
     def test_defaults(self):
         config = CalendarConfig(provider="google", calendar_id="primary")
@@ -124,18 +125,18 @@ class TestCalendarConfig:
         assert config.calendar_id == "primary"
         assert config.timezone == "America/New_York"
 
-    def test_non_empty_errors_include_field_name(self):
-        with pytest.raises(ValidationError, match="calendar_id must be a non-empty string"):
-            CalendarConfig(provider="google", calendar_id="   ")
+    def test_whitespace_only_calendar_id_becomes_none(self):
+        config = CalendarConfig(provider="google", calendar_id="   ")
+        assert config.calendar_id is None
 
+    def test_timezone_rejects_empty_string(self):
         with pytest.raises(ValidationError, match="timezone must be a non-empty string"):
-            CalendarConfig(provider="google", calendar_id="primary", timezone="   ")
+            CalendarConfig(provider="google", timezone="   ")
 
     def test_nested_defaults_forbid_unknown_keys(self):
         with pytest.raises(ValidationError) as conflict_error:
             CalendarConfig(
                 provider="google",
-                calendar_id="primary",
                 conflicts={"policy": "suggest", "unexpected": True},
             )
         assert conflict_error.value.errors()[0]["loc"] == ("conflicts", "unexpected")
@@ -144,7 +145,6 @@ class TestCalendarConfig:
         with pytest.raises(ValidationError) as defaults_error:
             CalendarConfig(
                 provider="google",
-                calendar_id="primary",
                 event_defaults={"minutes_beforee": 10},
             )
         assert defaults_error.value.errors()[0]["loc"] == ("event_defaults", "minutes_beforee")
@@ -181,13 +181,14 @@ class TestModuleStartup:
                 "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
                 "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
                 "GOOGLE_REFRESH_TOKEN": "test-refresh-token",
+                "GOOGLE_CALENDAR_ID": "test-calendar-id",
             }
             return values.get(key)
 
         store.resolve.side_effect = _resolve
         mod = CalendarModule()
         await mod.on_startup(
-            {"provider": "google", "calendar_id": "primary"},
+            {"provider": "google"},
             db=None,
             credential_store=store,
         )
@@ -196,11 +197,12 @@ class TestModuleStartup:
         provider = getattr(mod, "_provider")
         assert provider is not None
         assert provider.name == "google"
+        assert mod._resolved_calendar_id == "test-calendar-id"
 
     async def test_startup_fails_clearly_on_unsupported_provider(self):
         mod = CalendarModule()
         with pytest.raises(RuntimeError) as excinfo:
-            await mod.on_startup({"provider": "outlook", "calendar_id": "primary"}, db=None)
+            await mod.on_startup({"provider": "outlook"}, db=None)
 
         error_message = str(excinfo.value)
         assert "Unsupported calendar provider 'outlook'" in error_message
@@ -208,7 +210,7 @@ class TestModuleStartup:
 
     async def test_register_tools_accepts_validated_config(self):
         mod = CalendarModule()
-        cfg = CalendarConfig(provider="google", calendar_id="primary")
+        cfg = CalendarConfig(provider="google")
         await mod.register_tools(mcp=_StubMCP(), config=cfg, db=None)
         assert isinstance(getattr(mod, "_config"), CalendarConfig)
 
@@ -216,7 +218,7 @@ class TestModuleStartup:
         mod = CalendarModule()
         await mod.register_tools(
             mcp=_StubMCP(),
-            config={"provider": "google", "calendar_id": "primary"},
+            config={"provider": "google"},
             db=None,
         )
         stored = getattr(mod, "_config")
@@ -364,6 +366,7 @@ class TestCalendarReadTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -443,6 +446,7 @@ class TestCalendarReadTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -466,6 +470,7 @@ class TestCalendarReadTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
         await mod.register_tools(
             mcp=mcp,
             config={"provider": "google", "calendar_id": "primary"},
@@ -493,6 +498,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -539,6 +545,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -572,6 +579,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -603,6 +611,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -627,6 +636,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -647,6 +657,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -668,6 +679,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -698,6 +710,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -729,6 +742,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -764,6 +778,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -813,6 +828,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -853,6 +869,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -900,6 +917,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -952,6 +970,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -993,6 +1012,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -1041,6 +1061,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -1095,6 +1116,7 @@ class TestCalendarWriteTools:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -1680,6 +1702,7 @@ class TestCalendarOverlapApprovalGate:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -1747,6 +1770,7 @@ class TestCalendarOverlapApprovalGate:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -1797,6 +1821,7 @@ class TestCalendarOverlapApprovalGate:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -1842,6 +1867,7 @@ class TestCalendarOverlapApprovalGate:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -1891,6 +1917,7 @@ class TestCalendarOverlapApprovalGate:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -1954,6 +1981,7 @@ class TestCalendarOverlapApprovalGate:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,
@@ -1998,6 +2026,7 @@ class TestCalendarOverlapApprovalGate:
         mcp = _StubMCP()
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
 
         await mod.register_tools(
             mcp=mcp,

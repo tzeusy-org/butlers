@@ -283,10 +283,11 @@ class TestCalendarModuleCredentialStore:
             GOOGLE_OAUTH_CLIENT_ID="cs-client-id",
             GOOGLE_OAUTH_CLIENT_SECRET="cs-client-secret",
             GOOGLE_REFRESH_TOKEN="cs-refresh-token",
+            GOOGLE_CALENDAR_ID="primary",
         )
         mod = CalendarModule()
         await mod.on_startup(
-            {"provider": "google", "calendar_id": "primary"},
+            {"provider": "google"},
             db=None,
             credential_store=store,
         )
@@ -302,7 +303,7 @@ class TestCalendarModuleCredentialStore:
         mod = CalendarModule()
         with pytest.raises(RuntimeError):
             await mod.on_startup(
-                {"provider": "google", "calendar_id": "primary"},
+                {"provider": "google"},
                 db=None,
                 credential_store=store,
             )
@@ -315,10 +316,11 @@ class TestCalendarModuleCredentialStore:
             GOOGLE_OAUTH_CLIENT_ID="db-client-id",
             GOOGLE_OAUTH_CLIENT_SECRET="db-client-secret",
             GOOGLE_REFRESH_TOKEN="db-refresh-token",
+            GOOGLE_CALENDAR_ID="primary",
         )
         mod = CalendarModule()
         await mod.on_startup(
-            {"provider": "google", "calendar_id": "primary"},
+            {"provider": "google"},
             db=None,
             credential_store=store,
         )
@@ -335,7 +337,7 @@ class TestCalendarModuleCredentialStore:
         mod = CalendarModule()
         with pytest.raises(RuntimeError):
             await mod.on_startup(
-                {"provider": "google", "calendar_id": "primary"},
+                {"provider": "google"},
                 db=None,
                 credential_store=None,
             )

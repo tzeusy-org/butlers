@@ -305,6 +305,7 @@ class TestFailOpenReadTools:
     ) -> tuple[CalendarModule, _StubMCP]:
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
         mcp = _StubMCP()
         await mod.register_tools(
             mcp=mcp,
@@ -444,6 +445,7 @@ class TestFailClosedWriteTools:
     ) -> tuple[CalendarModule, _StubMCP]:
         mod = CalendarModule()
         mod._provider = provider
+        mod._resolved_calendar_id = "primary"
         mcp = _StubMCP()
         await mod.register_tools(
             mcp=mcp,

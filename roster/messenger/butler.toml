@@ -16,7 +16,6 @@ schema = "messenger"
 
 [modules.calendar]
 provider = "google"
-calendar_id = "ae06dba0d764682d69b909d7a56cf8458a0a47faaac5fa0a01f7cc47bec4ce8c@group.calendar.google.com"
 
 [modules.calendar.conflicts]
 policy = "suggest"

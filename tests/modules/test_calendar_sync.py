@@ -132,6 +132,7 @@ def _make_credential_store() -> AsyncMock:
             "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
             "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
             "GOOGLE_REFRESH_TOKEN": "test-refresh-token",
+            "GOOGLE_CALENDAR_ID": "primary",
         }
         return values.get(key)
 
@@ -623,6 +624,7 @@ class TestCalendarModuleSyncCalendar:
             sync=sync_config or CalendarSyncConfig(enabled=True),
         )
         mod._config = cfg
+        mod._resolved_calendar_id = "primary"
         return mod
 
     async def test_happy_path_persists_new_sync_token(self):
@@ -744,6 +746,7 @@ class TestCalendarModuleSyncCalendar:
         mod = CalendarModule()
         mod._provider = None
         mod._config = CalendarConfig(provider="google", calendar_id="primary")
+        mod._resolved_calendar_id = "primary"
         # Should not raise.
         await mod._sync_calendar("primary")
 
@@ -1020,6 +1023,7 @@ class TestCalendarSyncStatusTool:
             sync=CalendarSyncConfig(enabled=sync_enabled),
         )
         mod._config = cfg
+        mod._resolved_calendar_id = "primary"
         mod._db = _make_mock_db(state_store)
         if sync_state is not None:
             mod._sync_states["primary"] = sync_state
@@ -1120,6 +1124,7 @@ class TestCalendarForceSyncTool:
             sync=CalendarSyncConfig(enabled=sync_enabled),
         )
         mod._config = cfg
+        mod._resolved_calendar_id = "primary"
         db = _make_mock_db(state_store)
         mod._db = db
         mcp = _StubMCP()
@@ -1239,6 +1244,7 @@ class TestCalendarProjectionSync:
             calendar_id="primary",
             sync=CalendarSyncConfig(enabled=sync_enabled),
         )
+        mod._resolved_calendar_id = "primary"
         pool = MagicMock()
         pool.fetch = AsyncMock(return_value=[])
         pool.fetchrow = AsyncMock(return_value=None)
@@ -1477,6 +1483,7 @@ class TestProjectSchedulerSourceSyntheticWindow:
             calendar_id="primary",
             sync=CalendarSyncConfig(enabled=True),
         )
+        mod._resolved_calendar_id = "primary"
         pool = MagicMock()
         pool.fetch = AsyncMock(return_value=[])
         pool.fetchrow = AsyncMock(return_value=None)
@@ -1689,6 +1696,7 @@ class TestCalendarProjectionFreshness:
             calendar_id="primary",
             sync=CalendarSyncConfig(enabled=True, interval_minutes=5),
         )
+        mod._resolved_calendar_id = "primary"
         pool = MagicMock()
         now = datetime.now(UTC)
         pool.fetch = AsyncMock(
@@ -1927,6 +1935,7 @@ class TestWindowedRecurrenceExpansion:
             calendar_id="primary",
             sync=CalendarSyncConfig(enabled=True),
         )
+        mod._resolved_calendar_id = "primary"
         pool = MagicMock()
         pool.fetch = AsyncMock(return_value=[])
         pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
