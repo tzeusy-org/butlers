@@ -12,6 +12,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
+import type { ReactNode } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -87,11 +88,15 @@ export function VolumeTrendChart({
                 width={50}
               />
               <Tooltip
-                formatter={(value: number, name: string) => [
-                  formatCount(value),
+                formatter={(value: number | undefined, name: string | undefined) => [
+                  formatCount(value ?? 0),
                   name === "messages_ingested" ? "Ingested" : "Failed",
                 ]}
-                labelFormatter={(label: string) => formatBucket(label, period)}
+                labelFormatter={(label: ReactNode) =>
+                  typeof label === "string" || typeof label === "number"
+                    ? formatBucket(String(label), period)
+                    : ""
+                }
               />
               <Legend
                 formatter={(value: string) =>

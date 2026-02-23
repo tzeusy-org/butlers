@@ -74,7 +74,7 @@ export function TierBreakdownDonut({ summary, isLoading }: TierBreakdownDonutPro
                   />
                 ))}
               </Pie>
-              <Tooltip formatter={(value: number) => [value.toLocaleString(), ""]} />
+              <Tooltip formatter={(value: number | undefined) => [(value ?? 0).toLocaleString(), ""]} />
               <Legend />
             </PieChart>
           </ResponsiveContainer>

@@ -74,19 +74,19 @@ function setupDefaultMocks() {
     >,
   );
   vi.spyOn(useTriage, "useCreateTriageRule").mockReturnValue(
-    makeMutation() as ReturnType<typeof useTriage.useCreateTriageRule>,
+    makeMutation() as unknown as ReturnType<typeof useTriage.useCreateTriageRule>,
   );
   vi.spyOn(useTriage, "useUpdateTriageRule").mockReturnValue(
-    makeMutation() as ReturnType<typeof useTriage.useUpdateTriageRule>,
+    makeMutation() as unknown as ReturnType<typeof useTriage.useUpdateTriageRule>,
   );
   vi.spyOn(useTriage, "useDeleteTriageRule").mockReturnValue(
-    makeMutation() as ReturnType<typeof useTriage.useDeleteTriageRule>,
+    makeMutation() as unknown as ReturnType<typeof useTriage.useDeleteTriageRule>,
   );
   vi.spyOn(useTriage, "useTestTriageRule").mockReturnValue(
-    makeMutation() as ReturnType<typeof useTriage.useTestTriageRule>,
+    makeMutation() as unknown as ReturnType<typeof useTriage.useTestTriageRule>,
   );
   vi.spyOn(useTriage, "useUpdateThreadAffinitySettings").mockReturnValue(
-    makeMutation() as ReturnType<typeof useTriage.useUpdateThreadAffinitySettings>,
+    makeMutation() as unknown as ReturnType<typeof useTriage.useUpdateThreadAffinitySettings>,
   );
 }
 
@@ -439,7 +439,7 @@ describe("FiltersTab", () => {
       mutate: mutateFn,
       mutateAsync: vi.fn().mockResolvedValue({}),
       isPending: false,
-    } as ReturnType<typeof useTriage.useUpdateThreadAffinitySettings>);
+    } as unknown as ReturnType<typeof useTriage.useUpdateThreadAffinitySettings>);
     render();
     act(() => {
       const toggle = container.querySelector(
