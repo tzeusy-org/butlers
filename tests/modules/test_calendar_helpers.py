@@ -1,12 +1,28 @@
-"""Unit tests for calendar module helper functions.
+"""Unit tests for calendar module pure helper functions.
 
-This module provides focused unit tests for the calendar module's
-core helper functions, including:
-- Auth credential parsing and token refresh helpers
-- BUTLER event tagging and metadata extraction
-- Google API payload normalization
-- Conflict policy handling edge cases
-- Recurrence validation
+## Layer Ownership
+
+This file owns all tests for **pure (stateless) helper functions** in the
+calendar module — functions that take plain data in and return plain data out,
+with no module/MCP/provider coupling.
+
+| Layer | Owned by |
+|-------|----------|
+| Pure helpers (this file) | test_calendar_helpers.py |
+| Data-model validation, OAuth edge cases | test_calendar_unit_behaviors.py |
+| MCP tool orchestration / provider wiring | test_module_calendar.py |
+| Error hierarchy / fail-open / fail-closed | test_calendar_error_handling.py |
+
+Covered helpers:
+- `_extract_google_credential_value` — credential JSON extraction
+- `_coerce_expires_in_seconds` — token expiry coercion
+- `_safe_google_error_message` — API error message sanitization
+- `_google_rfc3339` / `_parse_google_datetime` — datetime formatting/parsing
+- `_coerce_zoneinfo` — timezone coercion with UTC fallback
+- `_extract_google_attendees` — attendee list extraction
+- `_extract_google_recurrence_rule` — recurrence rule extraction
+- `_extract_google_private_metadata` — BUTLER event tagging extraction
+- `_normalize_optional_text` — optional text field normalization
 """
 
 from __future__ import annotations

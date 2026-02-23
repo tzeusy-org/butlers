@@ -1,10 +1,30 @@
 """Unit tests for core calendar module behaviors.
 
+## Layer Ownership
+
+This file owns **unit-level** tests for the calendar module: pure functions,
+data-model validation, and edge-case logic that does not require the full
+module + MCP wiring.
+
+| Layer | Owned by |
+|-------|----------|
+| Pure helpers (`_extract_google_*`, `_normalize_optional_text`, etc.) | test_calendar_helpers.py |
+| Data-model construction / field validation (CalendarEventCreate, Pydantic) | THIS FILE |
+| OAuth credential parsing edge cases (non-object decode, invalid type, whitespace) | THIS FILE |
+| OAuth token caching, force-refresh, error paths | THIS FILE |
+| `normalize_event_payload` pure-function edge cases (timezone precedence) | THIS FILE |
+| Conflict policy enum aliases and validation | THIS FILE |
+| MCP tool orchestration / provider wiring | test_module_calendar.py |
+| Error hierarchy / fail-open / fail-closed / rate-limit retry | test_calendar_error_handling.py |
+
+Note: `TestButlerEventTagging` was removed; all `_extract_google_private_metadata`
+behavior is covered by `test_calendar_helpers.py::TestButlerPrivateMetadataExtraction`.
+
 Covers:
-- Auth credential parsing and refresh error paths
-- BUTLER event tagging and metadata extraction
-- Event payload normalization edge cases
-- Conflict policy handling (suggest, fail, allow_overlap)
+- Auth credential parsing edge cases (whitespace stripping, type errors, non-object JSON)
+- OAuth client token caching, force-refresh, and error paths
+- Event payload normalization unique cases (timezone precedence)
+- Conflict policy handling (legacy aliases, validation)
 - Approval-required flow for overlap overrides
 - Recurring event validation and timezone requirements
 - Mixed date/datetime boundary type validation (PR #173 review feedback)
@@ -23,15 +43,12 @@ import pytest
 from pydantic import ValidationError
 
 from butlers.modules.calendar import (
-    BUTLER_GENERATED_PRIVATE_KEY,
-    BUTLER_NAME_PRIVATE_KEY,
     CalendarConfig,
     CalendarCredentialError,
     CalendarEventCreate,
     CalendarEventPayloadInput,
     CalendarNotificationInput,
     CalendarTokenRefreshError,
-    _extract_google_private_metadata,
     _GoogleOAuthClient,
     _GoogleOAuthCredentials,
     _GoogleProvider,
@@ -41,21 +58,16 @@ from butlers.modules.calendar import (
 
 # ============================================================================
 # Auth Credential Parsing Tests
+#
+# Note: Basic from_json() paths (top-level, nested installed/web, invalid JSON,
+# missing-fields message) are covered in test_module_calendar.py::TestGoogleCredentialParsing.
+# This class owns the remaining unit-level edge cases: whitespace stripping,
+# Pydantic model validation, non-object JSON decode, and invalid field types.
 # ============================================================================
 
 
 class TestGoogleOAuthCredentials:
-    """Test OAuth credential validation and parsing."""
-
-    def test_valid_credentials_parse_successfully(self):
-        creds = _GoogleOAuthCredentials(
-            client_id="test_client_id",
-            client_secret="test_secret",
-            refresh_token="test_refresh",
-        )
-        assert creds.client_id == "test_client_id"
-        assert creds.client_secret == "test_secret"
-        assert creds.refresh_token == "test_refresh"
+    """Test OAuth credential validation and parsing edge cases."""
 
     def test_credentials_strip_whitespace(self):
         creds = _GoogleOAuthCredentials(
@@ -91,33 +103,22 @@ class TestGoogleOAuthCredentials:
                 refresh_token="   ",
             )
 
-    def test_from_json_parses_top_level_credentials(self):
-        raw = json.dumps(
-            {
-                "client_id": "top_id",
-                "client_secret": "top_secret",
-                "refresh_token": "top_token",
-            }
-        )
-        creds = _GoogleOAuthCredentials.from_json(raw)
-        assert creds.client_id == "top_id"
-        assert creds.client_secret == "top_secret"
-        assert creds.refresh_token == "top_token"
+    def test_from_json_non_object_raises_credential_error(self):
+        with pytest.raises(CalendarCredentialError, match="must decode to a JSON object"):
+            _GoogleOAuthCredentials.from_json(json.dumps(["list", "not", "object"]))
 
-    def test_from_json_extracts_nested_installed_credentials(self):
+    def test_from_json_invalid_type_client_id_raises_credential_error(self):
         raw = json.dumps(
             {
-                "installed": {
-                    "client_id": "nested_id",
-                    "client_secret": "nested_secret",
-                },
-                "refresh_token": "outer_token",
+                "client_id": 12345,  # not a string
+                "client_secret": "secret",
+                "refresh_token": "token",
             }
         )
-        creds = _GoogleOAuthCredentials.from_json(raw)
-        assert creds.client_id == "nested_id"
-        assert creds.client_secret == "nested_secret"
-        assert creds.refresh_token == "outer_token"
+        with pytest.raises(
+            CalendarCredentialError, match="must contain non-empty string field.*client_id"
+        ):
+            _GoogleOAuthCredentials.from_json(raw)
 
     def test_from_json_extracts_nested_web_credentials(self):
         raw = json.dumps(
@@ -133,69 +134,18 @@ class TestGoogleOAuthCredentials:
         assert creds.client_id == "web_id"
         assert creds.client_secret == "web_secret"
 
-    def test_from_json_invalid_json_raises_credential_error(self):
-        with pytest.raises(CalendarCredentialError, match="must be valid JSON"):
-            _GoogleOAuthCredentials.from_json("{not valid json")
-
-    def test_from_json_non_object_raises_credential_error(self):
-        with pytest.raises(CalendarCredentialError, match="must decode to a JSON object"):
-            _GoogleOAuthCredentials.from_json(json.dumps(["list", "not", "object"]))
-
-    def test_from_json_missing_client_id_raises_credential_error(self):
-        raw = json.dumps(
-            {
-                "client_secret": "secret",
-                "refresh_token": "token",
-            }
-        )
-        with pytest.raises(CalendarCredentialError, match="missing required field.*client_id"):
-            _GoogleOAuthCredentials.from_json(raw)
-
-    def test_from_json_missing_multiple_fields_lists_all(self):
-        raw = json.dumps({"client_id": "id"})
-        with pytest.raises(
-            CalendarCredentialError,
-            match="missing required field.*client_secret.*refresh_token",
-        ):
-            _GoogleOAuthCredentials.from_json(raw)
-
-    def test_from_json_invalid_type_client_id_raises_credential_error(self):
-        raw = json.dumps(
-            {
-                "client_id": 12345,  # not a string
-                "client_secret": "secret",
-                "refresh_token": "token",
-            }
-        )
-        with pytest.raises(
-            CalendarCredentialError, match="must contain non-empty string field.*client_id"
-        ):
-            _GoogleOAuthCredentials.from_json(raw)
-
-    def test_from_json_empty_string_client_secret_raises_credential_error(self):
-        raw = json.dumps(
-            {
-                "client_id": "id",
-                "client_secret": "",
-                "refresh_token": "token",
-            }
-        )
-        with pytest.raises(
-            CalendarCredentialError, match="must contain non-empty string field.*client_secret"
-        ):
-            _GoogleOAuthCredentials.from_json(raw)
-
-    def test_from_env_is_removed(self):
-        assert not hasattr(_GoogleOAuthCredentials, "from_env")
-
 
 # ============================================================================
 # Auth Token Refresh Tests
+#
+# Note: Basic token refresh + HTTP request body wiring is covered in
+# test_module_calendar.py::TestGoogleOAuthClient. This class owns
+# the caching/force-refresh behavior and all error paths.
 # ============================================================================
 
 
 class TestGoogleOAuthClient:
-    """Test OAuth client token refresh and caching logic."""
+    """Test OAuth client token caching, force-refresh, and error paths."""
 
     @pytest.fixture
     def mock_credentials(self):
@@ -208,23 +158,6 @@ class TestGoogleOAuthClient:
     @pytest.fixture
     def mock_http_client(self):
         return MagicMock(spec=httpx.AsyncClient)
-
-    async def test_get_access_token_refreshes_when_no_cached_token(
-        self, mock_credentials, mock_http_client
-    ):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "access_token": "fresh_token",
-            "expires_in": 3600,
-        }
-        mock_http_client.post = AsyncMock(return_value=mock_response)
-
-        client = _GoogleOAuthClient(mock_credentials, mock_http_client)
-        token = await client.get_access_token()
-
-        assert token == "fresh_token"
-        mock_http_client.post.assert_awaited_once()
 
     async def test_get_access_token_uses_cached_token_when_fresh(
         self, mock_credentials, mock_http_client
@@ -244,10 +177,10 @@ class TestGoogleOAuthClient:
         assert token1 == "fresh_token"
         assert mock_http_client.post.await_count == 1
 
-        # Second call uses cache
+        # Second call uses cache — no additional HTTP request
         token2 = await client.get_access_token()
         assert token2 == "fresh_token"
-        assert mock_http_client.post.await_count == 1  # No additional refresh
+        assert mock_http_client.post.await_count == 1
 
     async def test_get_access_token_force_refresh_bypasses_cache(
         self, mock_credentials, mock_http_client
@@ -313,103 +246,17 @@ class TestGoogleOAuthClient:
 
 
 # ============================================================================
-# BUTLER Event Tagging Tests
-# ============================================================================
-
-
-class TestButlerEventTagging:
-    """Test BUTLER prefix and private metadata extraction."""
-
-    def test_extract_butler_generated_true_from_bool(self):
-        payload = {
-            "private": {
-                BUTLER_GENERATED_PRIVATE_KEY: True,
-            }
-        }
-        butler_generated, butler_name = _extract_google_private_metadata(payload)
-        assert butler_generated is True
-        assert butler_name is None
-
-    def test_extract_butler_generated_false_from_bool(self):
-        payload = {
-            "private": {
-                BUTLER_GENERATED_PRIVATE_KEY: False,
-            }
-        }
-        butler_generated, butler_name = _extract_google_private_metadata(payload)
-        assert butler_generated is False
-
-    def test_extract_butler_generated_from_string_true(self):
-        payload = {
-            "private": {
-                BUTLER_GENERATED_PRIVATE_KEY: "true",
-            }
-        }
-        butler_generated, _ = _extract_google_private_metadata(payload)
-        assert butler_generated is True
-
-    def test_extract_butler_generated_from_string_false(self):
-        payload = {
-            "private": {
-                BUTLER_GENERATED_PRIVATE_KEY: "false",
-            }
-        }
-        butler_generated, _ = _extract_google_private_metadata(payload)
-        assert butler_generated is False
-
-    def test_extract_butler_name_from_string(self):
-        payload = {
-            "private": {
-                BUTLER_NAME_PRIVATE_KEY: "my_butler",
-            }
-        }
-        _, butler_name = _extract_google_private_metadata(payload)
-        assert butler_name == "my_butler"
-
-    def test_extract_butler_name_strips_whitespace(self):
-        payload = {
-            "private": {
-                BUTLER_NAME_PRIVATE_KEY: "  my_butler  ",
-            }
-        }
-        _, butler_name = _extract_google_private_metadata(payload)
-        assert butler_name == "my_butler"
-
-    def test_extract_butler_name_empty_string_returns_none(self):
-        payload = {
-            "private": {
-                BUTLER_NAME_PRIVATE_KEY: "   ",
-            }
-        }
-        _, butler_name = _extract_google_private_metadata(payload)
-        assert butler_name is None
-
-    def test_extract_missing_payload_returns_defaults(self):
-        butler_generated, butler_name = _extract_google_private_metadata({})
-        assert butler_generated is False
-        assert butler_name is None
-
-    def test_extract_non_dict_private_returns_defaults(self):
-        payload = {
-            "private": "not a dict",
-        }
-        butler_generated, butler_name = _extract_google_private_metadata(payload)
-        assert butler_generated is False
-        assert butler_name is None
-
-    def test_extract_non_dict_payload_returns_defaults(self):
-        butler_generated, butler_name = _extract_google_private_metadata("not a dict")
-        assert butler_generated is False
-        assert butler_name is None
-
-
-# ============================================================================
 # Event Payload Normalization Tests
+#
+# Note: Comprehensive normalization cases (notification shorthands, color_id
+# defaults, attendee dedup, parametrized validation errors, recurrence
+# normalization) are covered by test_module_calendar.py::TestEventPayloadNormalization.
+# This class owns the unique pure-function edge cases not exercised there.
 # ============================================================================
 
 
 class TestEventPayloadNormalization:
-    """Test normalize_event_payload edge cases and validation."""
+    """Test normalize_event_payload pure-function edge cases."""
 
     @pytest.fixture
     def base_config(self):
@@ -419,65 +266,8 @@ class TestEventPayloadNormalization:
             timezone="America/New_York",
         )
 
-    def test_normalize_timed_event_with_naive_datetimes(self, base_config):
-        payload = CalendarEventPayloadInput(
-            title="Test Event",
-            start_at=datetime(2026, 3, 1, 10, 0),
-            end_at=datetime(2026, 3, 1, 11, 0),
-        )
-        normalized = normalize_event_payload(payload, config=base_config)
-
-        assert normalized.title == "Test Event"
-        assert normalized.all_day is False
-        assert normalized.timezone == "America/New_York"
-        assert normalized.start.date_time_value is not None
-        assert normalized.end.date_time_value is not None
-
-    def test_normalize_all_day_event_requires_date_only_values(self, base_config):
-        from datetime import date
-
-        payload = CalendarEventPayloadInput(
-            title="All Day Event",
-            start_at=date(2026, 3, 1),
-            end_at=date(2026, 3, 2),
-            all_day=True,
-        )
-        normalized = normalize_event_payload(payload, config=base_config)
-
-        assert normalized.all_day is True
-        assert normalized.start.date_value is not None
-        assert normalized.end.date_value is not None
-
-    def test_normalize_all_day_with_datetime_values_raises_error(self, base_config):
-        payload = CalendarEventPayloadInput(
-            title="Invalid All Day",
-            start_at=datetime(2026, 3, 1, 0, 0, 0, tzinfo=UTC),
-            end_at=datetime(2026, 3, 2, 0, 0, 0, tzinfo=UTC),
-            all_day=True,
-        )
-        with pytest.raises(ValueError, match="all_day events require date-only"):
-            normalize_event_payload(payload, config=base_config)
-
-    def test_normalize_end_before_start_raises_error(self, base_config):
-        payload = CalendarEventPayloadInput(
-            title="Invalid Times",
-            start_at=datetime(2026, 3, 1, 15, 0, tzinfo=UTC),
-            end_at=datetime(2026, 3, 1, 14, 0, tzinfo=UTC),
-        )
-        with pytest.raises(ValueError, match="end_at must be after start_at"):
-            normalize_event_payload(payload, config=base_config)
-
-    def test_normalize_end_equal_to_start_raises_error(self, base_config):
-        same_time = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
-        payload = CalendarEventPayloadInput(
-            title="Same Start/End",
-            start_at=same_time,
-            end_at=same_time,
-        )
-        with pytest.raises(ValueError, match="end_at must be after start_at"):
-            normalize_event_payload(payload, config=base_config)
-
     def test_normalize_uses_payload_timezone_over_config(self, base_config):
+        """Payload timezone takes precedence over the config default."""
         payload = CalendarEventPayloadInput(
             title="Override TZ",
             start_at=datetime(2026, 3, 1, 10, 0),
@@ -486,16 +276,6 @@ class TestEventPayloadNormalization:
         )
         normalized = normalize_event_payload(payload, config=base_config)
         assert normalized.timezone == "Europe/London"
-
-    def test_normalize_invalid_timezone_raises_error(self, base_config):
-        # Invalid timezone is caught during CalendarEventPayloadInput validation
-        with pytest.raises(ValidationError, match="must be a valid IANA timezone"):
-            CalendarEventPayloadInput(
-                title="Bad TZ",
-                start_at=datetime(2026, 3, 1, 10, 0),
-                end_at=datetime(2026, 3, 1, 11, 0),
-                timezone="Invalid/Timezone",
-            )
 
 
 # ============================================================================
@@ -589,42 +369,16 @@ class TestRecurrenceValidation:
 
 # ============================================================================
 # Conflict Policy Handling Tests
+#
+# Note: Default policy value and require_approval_for_overlap defaults are
+# already covered in test_module_calendar.py::TestCalendarConfig.test_defaults.
+# This class owns the legacy alias mappings, invalid policy rejection, and
+# explicit bool setter tests.
 # ============================================================================
 
 
 class TestConflictPolicyHandling:
-    """Test conflict detection and policy enforcement."""
-
-    def test_config_default_conflict_policy_is_suggest(self):
-        config = CalendarConfig(
-            provider="google",
-            calendar_id="test@example.com",
-        )
-        assert config.conflicts.policy == "suggest"
-
-    def test_config_conflict_policy_suggest(self):
-        config = CalendarConfig(
-            provider="google",
-            calendar_id="test@example.com",
-            conflicts={"policy": "suggest"},
-        )
-        assert config.conflicts.policy == "suggest"
-
-    def test_config_conflict_policy_fail(self):
-        config = CalendarConfig(
-            provider="google",
-            calendar_id="test@example.com",
-            conflicts={"policy": "fail"},
-        )
-        assert config.conflicts.policy == "fail"
-
-    def test_config_conflict_policy_allow_overlap(self):
-        config = CalendarConfig(
-            provider="google",
-            calendar_id="test@example.com",
-            conflicts={"policy": "allow_overlap"},
-        )
-        assert config.conflicts.policy == "allow_overlap"
+    """Test conflict policy enum aliases and validation (config layer)."""
 
     def test_config_conflict_policy_legacy_alias_allow(self):
         """Legacy 'allow' should map to 'allow_overlap'."""
@@ -651,14 +405,6 @@ class TestConflictPolicyHandling:
                 calendar_id="test@example.com",
                 conflicts={"policy": "invalid_policy"},
             )
-
-    def test_config_require_approval_for_overlap_default_true(self):
-        """Default is True per current implementation."""
-        config = CalendarConfig(
-            provider="google",
-            calendar_id="test@example.com",
-        )
-        assert config.conflicts.require_approval_for_overlap is True
 
     def test_config_require_approval_for_overlap_can_be_false(self):
         config = CalendarConfig(
@@ -898,7 +644,3 @@ class TestCalendarCreateEventToolNewFields:
         assert event.visibility == "public"
         assert event.notes == "These are my notes"
         assert event.notification is not None
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
