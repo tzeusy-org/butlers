@@ -15,11 +15,12 @@ import importlib.util
 import json
 import logging
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
@@ -43,6 +44,10 @@ if _spec is not None and _spec.loader is not None:
     ConnectorStatsDaily = _models.ConnectorStatsDaily
     FanoutRow = _models.FanoutRow
     IngestionOverviewStats = _models.IngestionOverviewStats
+    BackfillJobEntry = _models.BackfillJobEntry
+    BackfillJobSummary = _models.BackfillJobSummary
+    CreateBackfillJobRequest = _models.CreateBackfillJobRequest
+    BackfillLifecycleResponse = _models.BackfillLifecycleResponse
     TriageRule = _models.TriageRule
     TriageRuleCreate = _models.TriageRuleCreate
     TriageRuleUpdate = _models.TriageRuleUpdate
@@ -923,6 +928,426 @@ async def get_ingestion_fanout(
         for r in rows
     ]
     return ApiResponse[list[FanoutRow]](data=data)
+
+
+# ---------------------------------------------------------------------------
+# Backfill helpers
+# ---------------------------------------------------------------------------
+
+_BACKFILL_ALLOWED_STATUSES = frozenset(
+    {"pending", "active", "paused", "completed", "cancelled", "cost_capped", "error"}
+)
+
+# Status transitions allowed per lifecycle action
+_BACKFILL_PAUSE_FROM = frozenset({"pending", "active"})
+_BACKFILL_CANCEL_FROM = frozenset({"pending", "active", "paused", "cost_capped", "error"})
+_BACKFILL_RESUME_FROM = frozenset({"paused"})
+
+
+def _row_to_backfill_summary(r: Any) -> Any:
+    """Convert an asyncpg row dict to BackfillJobSummary."""
+    return BackfillJobSummary(
+        id=str(r["id"]),
+        connector_type=str(r["connector_type"]),
+        endpoint_identity=str(r["endpoint_identity"]),
+        target_categories=_normalize_jsonb_string_list(r.get("target_categories")),
+        date_from=str(r["date_from"]),
+        date_to=str(r["date_to"]),
+        rate_limit_per_hour=int(r.get("rate_limit_per_hour") or 100),
+        daily_cost_cap_cents=int(r.get("daily_cost_cap_cents") or 500),
+        status=str(r.get("status") or "pending"),
+        rows_processed=int(r.get("rows_processed") or 0),
+        rows_skipped=int(r.get("rows_skipped") or 0),
+        cost_spent_cents=int(r.get("cost_spent_cents") or 0),
+        error=r.get("error"),
+        created_at=str(r["created_at"]),
+        started_at=str(r["started_at"]) if r.get("started_at") else None,
+        completed_at=str(r["completed_at"]) if r.get("completed_at") else None,
+        updated_at=str(r["updated_at"]),
+    )
+
+
+def _row_to_backfill_entry(r: Any) -> Any:
+    """Convert an asyncpg row dict to BackfillJobEntry (full detail including cursor)."""
+    cursor_raw = r.get("cursor")
+    if isinstance(cursor_raw, str):
+        try:
+            cursor_raw = json.loads(cursor_raw)
+        except (json.JSONDecodeError, ValueError):
+            cursor_raw = None
+    return BackfillJobEntry(
+        id=str(r["id"]),
+        connector_type=str(r["connector_type"]),
+        endpoint_identity=str(r["endpoint_identity"]),
+        target_categories=_normalize_jsonb_string_list(r.get("target_categories")),
+        date_from=str(r["date_from"]),
+        date_to=str(r["date_to"]),
+        rate_limit_per_hour=int(r.get("rate_limit_per_hour") or 100),
+        daily_cost_cap_cents=int(r.get("daily_cost_cap_cents") or 500),
+        status=str(r.get("status") or "pending"),
+        cursor=cursor_raw if isinstance(cursor_raw, dict) else None,
+        rows_processed=int(r.get("rows_processed") or 0),
+        rows_skipped=int(r.get("rows_skipped") or 0),
+        cost_spent_cents=int(r.get("cost_spent_cents") or 0),
+        error=r.get("error"),
+        created_at=str(r["created_at"]),
+        started_at=str(r["started_at"]) if r.get("started_at") else None,
+        completed_at=str(r["completed_at"]) if r.get("completed_at") else None,
+        updated_at=str(r["updated_at"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /backfill — list backfill jobs
+# ---------------------------------------------------------------------------
+
+
+@router.get("/backfill", response_model=PaginatedResponse[BackfillJobSummary])
+async def list_backfill_jobs(
+    connector_type: str | None = Query(None, description="Filter by connector type"),
+    endpoint_identity: str | None = Query(None, description="Filter by endpoint identity"),
+    status: str | None = Query(None, description="Filter by job status"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[BackfillJobSummary]:
+    """Return a paginated list of backfill jobs.
+
+    Supports filtering by connector_type, endpoint_identity, and status.
+    Jobs are ordered by created_at descending (newest first).
+    """
+    pool = _pool(db)
+
+    conditions: list[str] = []
+    params: list[Any] = []
+    idx = 1
+
+    if connector_type is not None:
+        conditions.append(f"connector_type = ${idx}")
+        params.append(connector_type)
+        idx += 1
+
+    if endpoint_identity is not None:
+        conditions.append(f"endpoint_identity = ${idx}")
+        params.append(endpoint_identity)
+        idx += 1
+
+    if status is not None:
+        if status not in _BACKFILL_ALLOWED_STATUSES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid status '{status}'. Allowed: {sorted(_BACKFILL_ALLOWED_STATUSES)}",
+            )
+        conditions.append(f"status = ${idx}")
+        params.append(status)
+        idx += 1
+
+    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    count_sql = f"SELECT count(*) FROM switchboard.backfill_jobs {where_clause}"
+    list_sql = (
+        f"SELECT id, connector_type, endpoint_identity, target_categories,"
+        f" date_from, date_to, rate_limit_per_hour, daily_cost_cap_cents,"
+        f" status, rows_processed, rows_skipped, cost_spent_cents, error,"
+        f" created_at, started_at, completed_at, updated_at"
+        f" FROM switchboard.backfill_jobs {where_clause}"
+        f" ORDER BY created_at DESC"
+        f" LIMIT ${idx} OFFSET ${idx + 1}"
+    )
+    list_params = params + [limit, offset]
+
+    try:
+        total = int(await pool.fetchval(count_sql, *params) or 0)
+        rows = await pool.fetch(list_sql, *list_params)
+    except Exception:
+        logger.warning("backfill_jobs table not available; returning empty list", exc_info=True)
+        return PaginatedResponse[BackfillJobSummary](
+            data=[],
+            meta=PaginationMeta(total=0, offset=offset, limit=limit),
+        )
+
+    data = [_row_to_backfill_summary(r) for r in rows]
+    return PaginatedResponse[BackfillJobSummary](
+        data=data,
+        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /backfill — create a new backfill job
+# ---------------------------------------------------------------------------
+
+
+@router.post("/backfill", response_model=ApiResponse[BackfillJobEntry], status_code=201)
+async def create_backfill_job(
+    body: CreateBackfillJobRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[BackfillJobEntry]:
+    """Create a new backfill job and queue it as pending.
+
+    The job is inserted into switchboard.backfill_jobs with status=pending.
+    The connector will pick it up on its next poll cycle.
+
+    Returns the created job with its assigned id.
+    """
+    pool = _pool(db)
+
+    job_id = str(uuid.uuid4())
+    now = datetime.datetime.now(datetime.UTC)
+    target_categories_json = json.dumps(body.target_categories)
+
+    try:
+        row = await pool.fetchrow(
+            "INSERT INTO switchboard.backfill_jobs"
+            " (id, connector_type, endpoint_identity, target_categories,"
+            "  date_from, date_to, rate_limit_per_hour, daily_cost_cap_cents,"
+            "  status, rows_processed, rows_skipped, cost_spent_cents,"
+            "  created_at, updated_at)"
+            " VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,'pending',0,0,0,$9,$9)"
+            " RETURNING id, connector_type, endpoint_identity, target_categories,"
+            "   date_from, date_to, rate_limit_per_hour, daily_cost_cap_cents,"
+            "   status, cursor, rows_processed, rows_skipped, cost_spent_cents,"
+            "   error, created_at, started_at, completed_at, updated_at",
+            job_id,
+            body.connector_type,
+            body.endpoint_identity,
+            target_categories_json,
+            body.date_from,
+            body.date_to,
+            body.rate_limit_per_hour,
+            body.daily_cost_cap_cents,
+            now,
+        )
+    except Exception:
+        logger.exception("Failed to create backfill job")
+        raise HTTPException(status_code=503, detail="Failed to create backfill job")
+
+    if row is None:
+        raise HTTPException(status_code=503, detail="No row returned after insert")
+
+    return ApiResponse[BackfillJobEntry](data=_row_to_backfill_entry(row))
+
+
+# ---------------------------------------------------------------------------
+# GET /backfill/{job_id} — get backfill job detail
+# ---------------------------------------------------------------------------
+
+
+@router.get("/backfill/{job_id}", response_model=ApiResponse[BackfillJobEntry])
+async def get_backfill_job(
+    job_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[BackfillJobEntry]:
+    """Return the full details of a single backfill job by id.
+
+    Returns 404 if the job does not exist.
+    Returns 503 on database error.
+    """
+    pool = _pool(db)
+
+    try:
+        row = await pool.fetchrow(
+            "SELECT id, connector_type, endpoint_identity, target_categories,"
+            "   date_from, date_to, rate_limit_per_hour, daily_cost_cap_cents,"
+            "   status, cursor, rows_processed, rows_skipped, cost_spent_cents,"
+            "   error, created_at, started_at, completed_at, updated_at"
+            " FROM switchboard.backfill_jobs"
+            " WHERE id = $1",
+            job_id,
+        )
+    except Exception:
+        logger.exception("Failed to fetch backfill job %s", job_id)
+        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
+
+    return ApiResponse[BackfillJobEntry](data=_row_to_backfill_entry(row))
+
+
+# ---------------------------------------------------------------------------
+# PATCH /backfill/{job_id}/pause
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/backfill/{job_id}/pause", response_model=ApiResponse[BackfillLifecycleResponse])
+async def pause_backfill_job(
+    job_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[BackfillLifecycleResponse]:
+    """Pause an active or pending backfill job.
+
+    Only jobs in 'pending' or 'active' state may be paused.
+    Returns 404 if the job does not exist.
+    Returns 409 if the job is in a terminal or incompatible state.
+    Returns 503 on database error.
+    """
+    pool = _pool(db)
+
+    try:
+        row = await pool.fetchrow(
+            "SELECT status FROM switchboard.backfill_jobs WHERE id = $1",
+            job_id,
+        )
+    except Exception:
+        logger.exception("Failed to fetch backfill job %s for pause", job_id)
+        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
+
+    current_status = str(row["status"])
+    if current_status not in _BACKFILL_PAUSE_FROM:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot pause job in status '{current_status}'. "
+            f"Must be one of: {sorted(_BACKFILL_PAUSE_FROM)}",
+        )
+
+    try:
+        await pool.fetchrow(
+            "UPDATE switchboard.backfill_jobs SET status='paused', updated_at=now() WHERE id = $1",
+            job_id,
+        )
+    except Exception:
+        logger.exception("Failed to pause backfill job %s", job_id)
+        raise HTTPException(status_code=503, detail="Failed to pause backfill job")
+
+    return ApiResponse[BackfillLifecycleResponse](
+        data=BackfillLifecycleResponse(job_id=job_id, status="paused")
+    )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /backfill/{job_id}/cancel
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/backfill/{job_id}/cancel", response_model=ApiResponse[BackfillLifecycleResponse])
+async def cancel_backfill_job(
+    job_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[BackfillLifecycleResponse]:
+    """Cancel a backfill job.
+
+    Jobs in 'pending', 'active', 'paused', 'cost_capped', or 'error' state may
+    be cancelled.  Terminal states 'completed' and 'cancelled' cannot be
+    cancelled again.
+    Returns 404 if the job does not exist.
+    Returns 409 if the job is in a terminal state that disallows cancellation.
+    Returns 503 on database error.
+    """
+    pool = _pool(db)
+
+    try:
+        row = await pool.fetchrow(
+            "SELECT status FROM switchboard.backfill_jobs WHERE id = $1",
+            job_id,
+        )
+    except Exception:
+        logger.exception("Failed to fetch backfill job %s for cancel", job_id)
+        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
+
+    current_status = str(row["status"])
+    if current_status not in _BACKFILL_CANCEL_FROM:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot cancel job in status '{current_status}'. "
+            f"Must be one of: {sorted(_BACKFILL_CANCEL_FROM)}",
+        )
+
+    try:
+        await pool.fetchrow(
+            "UPDATE switchboard.backfill_jobs"
+            " SET status='cancelled', updated_at=now()"
+            " WHERE id = $1",
+            job_id,
+        )
+    except Exception:
+        logger.exception("Failed to cancel backfill job %s", job_id)
+        raise HTTPException(status_code=503, detail="Failed to cancel backfill job")
+
+    return ApiResponse[BackfillLifecycleResponse](
+        data=BackfillLifecycleResponse(job_id=job_id, status="cancelled")
+    )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /backfill/{job_id}/resume
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/backfill/{job_id}/resume", response_model=ApiResponse[BackfillLifecycleResponse])
+async def resume_backfill_job(
+    job_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[BackfillLifecycleResponse]:
+    """Resume a paused backfill job.
+
+    Only jobs in 'paused' state may be resumed.
+    Returns 404 if the job does not exist.
+    Returns 409 if the job is not in 'paused' state.
+    Returns 503 on database error.
+    """
+    pool = _pool(db)
+
+    try:
+        row = await pool.fetchrow(
+            "SELECT status FROM switchboard.backfill_jobs WHERE id = $1",
+            job_id,
+        )
+    except Exception:
+        logger.exception("Failed to fetch backfill job %s for resume", job_id)
+        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
+
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
+
+    current_status = str(row["status"])
+    if current_status not in _BACKFILL_RESUME_FROM:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot resume job in status '{current_status}'. "
+            f"Must be one of: {sorted(_BACKFILL_RESUME_FROM)}",
+        )
+
+    try:
+        await pool.fetchrow(
+            "UPDATE switchboard.backfill_jobs SET status='pending', updated_at=now() WHERE id = $1",
+            job_id,
+        )
+    except Exception:
+        logger.exception("Failed to resume backfill job %s", job_id)
+        raise HTTPException(status_code=503, detail="Failed to resume backfill job")
+
+    return ApiResponse[BackfillLifecycleResponse](
+        data=BackfillLifecycleResponse(job_id=job_id, status="pending")
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /backfill/{job_id}/progress — backfill progress metrics
+# ---------------------------------------------------------------------------
+
+
+@router.get("/backfill/{job_id}/progress", response_model=ApiResponse[BackfillJobEntry])
+async def get_backfill_job_progress(
+    job_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[BackfillJobEntry]:
+    """Return progress metrics for a single backfill job.
+
+    Returns the same full job detail as GET /backfill/{job_id} — the caller
+    can read rows_processed, rows_skipped, cost_spent_cents, status, and cursor
+    to render a live progress view.
+
+    Returns 404 if the job does not exist.
+    Returns 503 on database error.
+    """
+    return await get_backfill_job(job_id=job_id, db=db)
 
 
 # ---------------------------------------------------------------------------

@@ -411,3 +411,80 @@ class TriageRuleTestResponse(BaseModel):
     """Response envelope for POST /api/switchboard/triage-rules/test."""
 
     data: TriageRuleTestResult
+
+
+# Backfill job models
+# ---------------------------------------------------------------------------
+
+
+class BackfillJobEntry(BaseModel):
+    """A single backfill job row from switchboard.backfill_jobs.
+
+    Exposes all fields required for the backfill job management dashboard.
+    """
+
+    id: str
+    connector_type: str
+    endpoint_identity: str
+    target_categories: list[str] = []
+    date_from: str
+    date_to: str
+    rate_limit_per_hour: int = 100
+    daily_cost_cap_cents: int = 500
+    status: str = "pending"
+    cursor: dict | None = None
+    rows_processed: int = 0
+    rows_skipped: int = 0
+    cost_spent_cents: int = 0
+    error: str | None = None
+    created_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    updated_at: str
+
+
+class BackfillJobSummary(BaseModel):
+    """Summarised view of a backfill job for list endpoints.
+
+    Omits cursor to keep list responses lightweight.
+    """
+
+    id: str
+    connector_type: str
+    endpoint_identity: str
+    target_categories: list[str] = []
+    date_from: str
+    date_to: str
+    rate_limit_per_hour: int = 100
+    daily_cost_cap_cents: int = 500
+    status: str = "pending"
+    rows_processed: int = 0
+    rows_skipped: int = 0
+    cost_spent_cents: int = 0
+    error: str | None = None
+    created_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    updated_at: str
+
+
+class CreateBackfillJobRequest(BaseModel):
+    """Request body for POST /api/switchboard/backfill."""
+
+    connector_type: str
+    endpoint_identity: str
+    target_categories: list[str] = []
+    date_from: str
+    date_to: str
+    rate_limit_per_hour: int = 100
+    daily_cost_cap_cents: int = 500
+
+
+class BackfillLifecycleResponse(BaseModel):
+    """Response body for backfill lifecycle actions (pause/cancel/resume).
+
+    Returns the job's updated status after the action.
+    """
+
+    job_id: str
+    status: str
