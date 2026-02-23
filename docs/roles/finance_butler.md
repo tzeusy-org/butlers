@@ -481,5 +481,42 @@ Write mutations remain MCP-tool owned.
 - Any schema changes require explicit migration planning and backward-compatibility notes.
 - Classification signal changes must be coordinated with Switchboard routing policy docs.
 
-## 12. Non-Normative Note
+## 12. Additional AI-Generated Ideas
+
+The following ideas extend the normative spec above. They are non-normative proposals for consideration in future iterations.
+
+### 12.1 Transaction Intelligence
+- **Merchant normalization**: Auto-map raw merchant strings (e.g., "AMZN*MARKETPLACE WA" → "Amazon") using a learnable mapping table in `finance.merchant_aliases`. User corrections feed back to improve future classifications.
+- **Auto-categorization**: Infer transaction categories from merchant + amount patterns using a category-rules engine. User-correctable overrides train future classifications via memory facts.
+- **Anomaly detection**: Flag unusual transactions — abnormally large amounts for a merchant, first-time merchants, duplicate charges within short windows — and surface via `notify` with configurable sensitivity thresholds.
+
+### 12.2 Spending Insights
+- **Spending velocity alerts**: Proactive notification when daily or weekly spending pace significantly exceeds historical norms for the same period (e.g., "You've spent 2x your typical Tuesday by noon").
+- **Recurring charge detection**: Auto-detect recurring transactions from patterns (same merchant, similar amount, regular intervals) and surface as potential untracked subscriptions for user confirmation.
+- **Category trend analysis**: Month-over-month and year-over-year comparisons per category with percentage changes, trend direction, and notable movers in monthly digest.
+
+### 12.3 Financial Planning
+- **Savings goals**: Track progress toward user-defined savings targets with projected completion dates based on current pace and income patterns.
+- **Net worth snapshots**: Periodic aggregate of account balances over time for wealth trajectory visualization. Requires optional `finance.account_snapshots` table.
+- **Cash flow projection**: Forward-looking estimate of available funds based on known upcoming bills, subscriptions, and average income patterns over a configurable horizon.
+
+### 12.4 Tax and Compliance
+- **Year-end tax summary**: Auto-generate categorized summary of tax-relevant transactions (charitable donations, medical expenses, business deductions) with receipt linkage for documentation.
+- **Receipt archival**: Proactive extraction and storage of receipt URLs/attachments linked to transactions for tax documentation, warranty tracking, and return eligibility windows.
+
+### 12.5 Budget System (promotion from §5.2.5 Optional Future)
+- **Budget alerts**: Real-time notifications when category spending approaches (80%) or exceeds budget limits, with configurable thresholds.
+- **Rolling budgets**: Automatic budget period creation with optional unused-allowance carry-forward.
+- **Budget vs. actual dashboard**: Visual comparison of budgeted vs. actual spending per category per period via dashboard API endpoint.
+
+### 12.6 Multi-Currency
+- **Currency conversion**: Automatic exchange rate lookup for cross-currency transactions with configurable base currency for unified reporting.
+- **Travel spending isolation**: Group transactions by trip or location for travel expense tracking, with optional per-trip summary generation.
+
+### 12.7 Integration Enhancements
+- **Statement import skill**: Guided workflow for bulk importing transactions from bank/credit card CSV or OFX statement exports.
+- **Financial health score**: Composite metric based on bill payment timeliness, savings rate, subscription churn, and budget adherence — surfaced in monthly digest.
+- **Shared expense tracking**: Split transactions across household members with running balance tracking and settlement reminders.
+
+## 13. Non-Normative Note
 This document defines the target-state finance role contract. It may temporarily lead implementation while migrations/tools are staged, but implementation should converge to this specification.
