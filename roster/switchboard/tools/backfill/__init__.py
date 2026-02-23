@@ -7,11 +7,11 @@ See docs/connectors/email_backfill.md and docs/roles/switchboard_butler.md §16
 for the full contract.
 """
 
-from roster.switchboard.tools.backfill.connector import (
+from butlers.tools.switchboard.backfill.connector import (
     backfill_poll,
     backfill_progress,
 )
-from roster.switchboard.tools.backfill.controls import (
+from butlers.tools.switchboard.backfill.controls import (
     backfill_cancel,
     backfill_list,
     backfill_pause,
