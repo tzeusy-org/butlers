@@ -15,16 +15,10 @@ from butlers.tools.finance.spending import (
     VALID_GROUP_BY_MODES,
     spending_summary,
 )
-
-# --- Parallel-branch modules: guarded imports ---
-try:
-    from butlers.tools.finance.transactions import (  # type: ignore[attr-defined]
-        list_transactions,
-        record_transaction,
-    )
-except (ImportError, AttributeError):
-    record_transaction = None  # type: ignore[assignment]
-    list_transactions = None  # type: ignore[assignment]
+from butlers.tools.finance.transactions import (
+    list_transactions,
+    record_transaction,
+)
 
 try:
     from butlers.tools.finance.subscriptions import (  # type: ignore[attr-defined]
