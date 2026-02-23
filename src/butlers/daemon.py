@@ -3078,6 +3078,7 @@ class ButlerDaemon:
                 status: dict[str, Any],
                 counters: dict[str, Any],
                 checkpoint: dict[str, Any] | None = None,
+                capabilities: dict[str, Any] | None = None,
                 sent_at: str = "",
             ) -> dict[str, Any]:
                 """Accept a connector heartbeat for liveness tracking and statistics."""
@@ -3090,6 +3091,8 @@ class ButlerDaemon:
                 }
                 if checkpoint is not None:
                     payload["checkpoint"] = checkpoint
+                if capabilities is not None:
+                    payload["capabilities"] = capabilities
                 result = await _connector_heartbeat(pool, payload)
                 return result.model_dump()
 

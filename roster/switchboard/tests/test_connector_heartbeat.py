@@ -280,3 +280,121 @@ async def test_heartbeat_degraded_state_without_error_message(valid_heartbeat_pa
     # Should accept but log a warning (validation allows it)
     result = await heartbeat(pool, valid_heartbeat_payload)
     assert result.status == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# Capabilities field tests (butlers-3a77)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_heartbeat_with_capabilities(valid_heartbeat_payload):
+    """Test parsing heartbeat envelope that includes a capabilities field."""
+    valid_heartbeat_payload["capabilities"] = {"backfill": True}
+    envelope = parse_connector_heartbeat(valid_heartbeat_payload)
+    assert envelope.capabilities == {"backfill": True}
+
+
+def test_parse_heartbeat_without_capabilities(valid_heartbeat_payload):
+    """Test that capabilities field defaults to None when omitted."""
+    envelope = parse_connector_heartbeat(valid_heartbeat_payload)
+    assert envelope.capabilities is None
+
+
+def test_parse_heartbeat_capabilities_null(valid_heartbeat_payload):
+    """Test parsing heartbeat with explicit null capabilities."""
+    valid_heartbeat_payload["capabilities"] = None
+    envelope = parse_connector_heartbeat(valid_heartbeat_payload)
+    assert envelope.capabilities is None
+
+
+def test_parse_heartbeat_capabilities_multiple_flags(valid_heartbeat_payload):
+    """Test parsing heartbeat with multiple capability flags."""
+    valid_heartbeat_payload["capabilities"] = {
+        "backfill": True,
+        "realtime": False,
+        "max_age_days": 30,
+    }
+    envelope = parse_connector_heartbeat(valid_heartbeat_payload)
+    expected = {"backfill": True, "realtime": False, "max_age_days": 30}
+    assert envelope.capabilities == expected
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_with_capabilities_stored_in_registry(valid_heartbeat_payload):
+    """Test that capabilities from heartbeat are persisted to connector_registry."""
+    import json
+
+    valid_heartbeat_payload["capabilities"] = {"backfill": True}
+
+    pool = AsyncMock()
+    pool.fetchrow.return_value = None
+    pool.execute.return_value = None
+
+    result = await heartbeat(pool, valid_heartbeat_payload)
+    assert result.status == "accepted"
+
+    # Find the upsert call to connector_registry
+    upsert_call = pool.execute.call_args_list[0]
+    sql = upsert_call[0][0]
+    args = upsert_call[0][1:]
+
+    assert "capabilities" in sql
+    # The last positional arg (after checkpoint_updated_at) should be capabilities JSON
+    capabilities_arg = args[-1]
+    assert capabilities_arg == json.dumps({"backfill": True})
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_without_capabilities_stores_null(valid_heartbeat_payload):
+    """Test that a heartbeat without capabilities stores NULL in the registry."""
+    # Ensure no capabilities in payload
+    valid_heartbeat_payload.pop("capabilities", None)
+
+    pool = AsyncMock()
+    pool.fetchrow.return_value = None
+    pool.execute.return_value = None
+
+    result = await heartbeat(pool, valid_heartbeat_payload)
+    assert result.status == "accepted"
+
+    # Find the upsert call
+    upsert_call = pool.execute.call_args_list[0]
+    args = upsert_call[0][1:]
+
+    # The last arg should be None (capabilities is NULL)
+    capabilities_arg = args[-1]
+    assert capabilities_arg is None
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_capabilities_updated_on_subsequent_heartbeat(valid_heartbeat_payload):
+    """Test that capabilities are updated on every heartbeat upsert."""
+    import json
+
+    instance_id = valid_heartbeat_payload["connector"]["instance_id"]
+    valid_heartbeat_payload["capabilities"] = {"backfill": False}
+
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {
+        "instance_id": uuid.UUID(instance_id),
+        "counter_messages_ingested": 30,
+        "counter_messages_failed": 0,
+        "counter_source_api_calls": 100,
+        "counter_checkpoint_saves": 5,
+        "counter_dedupe_accepted": 0,
+    }
+    pool.execute.return_value = None
+
+    result = await heartbeat(pool, valid_heartbeat_payload)
+    assert result.status == "accepted"
+
+    # Find the upsert call
+    upsert_call = pool.execute.call_args_list[0]
+    sql = upsert_call[0][0]
+    args = upsert_call[0][1:]
+
+    # SQL should update capabilities in ON CONFLICT clause
+    assert "capabilities = EXCLUDED.capabilities" in sql
+    # Last arg should be the JSON capabilities
+    capabilities_arg = args[-1]
+    assert capabilities_arg == json.dumps({"backfill": False})
