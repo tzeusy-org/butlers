@@ -180,6 +180,7 @@ class TestMemoryStoreFact:
                 permanence="standard",
                 scope="global",
                 tags=None,
+                entity_id=None,
             )
 
     async def test_returns_id_as_string(

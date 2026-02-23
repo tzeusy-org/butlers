@@ -172,14 +172,26 @@ async def store_fact(
     source_butler: str | None = None,
     source_episode_id: uuid.UUID | None = None,
     metadata: dict | None = None,
+    entity_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Store a distilled fact with optional supersession.
 
-    If an active fact with the same ``(subject, predicate)`` already exists:
+    If ``entity_id`` is provided the fact is anchored to a resolved entity.
+    Uniqueness and supersession use ``(entity_id, scope, predicate)``; the
+    ``subject`` field is still stored as a human-readable label.
+
+    If ``entity_id`` is omitted (backward compatible), uniqueness and
+    supersession use ``(subject, predicate)`` as before.
+
+    If an active fact matching the key already exists:
 
     1. Set the old fact's ``validity`` to ``'superseded'``.
     2. Link the new fact to the old one via ``supersedes_id``.
     3. Create a ``memory_links`` row with ``relation='supersedes'``.
+
+    Args:
+        entity_id: Optional UUID of an existing entity row.  When provided
+            the entity must exist; a ``ValueError`` is raised otherwise.
 
     Returns:
         The UUID of the newly created fact.
@@ -195,13 +207,33 @@ async def store_fact(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Check for existing active fact with same subject+predicate
-            existing = await conn.fetchrow(
-                "SELECT id FROM facts "
-                "WHERE subject = $1 AND predicate = $2 AND validity = 'active'",
-                subject,
-                predicate,
-            )
+            # Validate entity_id when provided.
+            if entity_id is not None:
+                entity_exists = await conn.fetchval(
+                    "SELECT 1 FROM entities WHERE id = $1",
+                    entity_id,
+                )
+                if not entity_exists:
+                    raise ValueError(f"entity_id {entity_id!r} does not exist in entities table")
+
+            # Check for existing active fact using entity-keyed or subject-keyed lookup.
+            if entity_id is not None:
+                existing = await conn.fetchrow(
+                    "SELECT id FROM facts "
+                    "WHERE entity_id = $1 AND scope = $2 AND predicate = $3 "
+                    "AND validity = 'active'",
+                    entity_id,
+                    scope,
+                    predicate,
+                )
+            else:
+                existing = await conn.fetchrow(
+                    "SELECT id FROM facts "
+                    "WHERE entity_id IS NULL AND subject = $1 AND predicate = $2 "
+                    "AND validity = 'active'",
+                    subject,
+                    predicate,
+                )
 
             supersedes_id = None
             if existing:
@@ -219,13 +251,13 @@ async def store_fact(
                     id, subject, predicate, content, embedding, search_vector,
                     importance, confidence, decay_rate, permanence, source_butler,
                     source_episode_id, supersedes_id, validity, scope,
-                    created_at, last_confirmed_at, tags, metadata
+                    created_at, last_confirmed_at, tags, metadata, entity_id
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, {tsvector_sql("$6")},
                     $7, $8, $9, $10, $11,
                     $12, $13, 'active', $14,
-                    $15, $15, $16, $17
+                    $15, $15, $16, $17, $18
                 )
             """
             await conn.execute(
@@ -247,6 +279,7 @@ async def store_fact(
                 now,
                 tags_json,
                 meta_json,
+                entity_id,
             )
 
             # Create supersedes link if applicable
