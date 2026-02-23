@@ -102,6 +102,7 @@ from butlers.core.state import state_set as _state_set
 from butlers.core.telemetry import extract_trace_context, init_telemetry, tool_span
 from butlers.core.tool_call_capture import (
     capture_tool_call,
+    get_current_runtime_session_routing_context,
     reset_current_runtime_session_id,
     set_current_runtime_session_id,
 )
@@ -2917,6 +2918,21 @@ class ButlerDaemon:
                     context: Optional additional context for the target butler.
                 """
                 _routing_ctx = _routing_ctx_var.get() or {}
+                if not isinstance(_routing_ctx, dict):
+                    _routing_ctx = {}
+                runtime_routing_ctx = get_current_runtime_session_routing_context()
+                if isinstance(runtime_routing_ctx, dict):
+                    if not _routing_ctx:
+                        _routing_ctx = dict(runtime_routing_ctx)
+                    else:
+                        for key in (
+                            "source_metadata",
+                            "request_context",
+                            "request_id",
+                            "conversation_history",
+                        ):
+                            if _routing_ctx.get(key) in (None, "", {}):
+                                _routing_ctx[key] = runtime_routing_ctx.get(key)
                 source_metadata = _routing_ctx.get("source_metadata", {})
                 if not isinstance(source_metadata, dict):
                     source_metadata = {}
@@ -2928,11 +2944,30 @@ class ButlerDaemon:
                 if source_metadata.get("source_id") not in (None, ""):
                     normalized_source_metadata["source_id"] = str(source_metadata["source_id"])
                 request_context = _routing_ctx.get("request_context")
+                if not isinstance(request_context, dict):
+                    request_context = None
                 raw_request_id = _routing_ctx.get("request_id")
                 if raw_request_id in (None, "") and isinstance(request_context, dict):
                     raw_request_id = request_context.get("request_id")
                 request_id = MessagePipeline._coerce_request_id(raw_request_id)
                 conversation_history = _routing_ctx.get("conversation_history")
+                source_channel = str(
+                    request_context.get("source_channel")
+                    if isinstance(request_context, dict)
+                    and request_context.get("source_channel") not in (None, "")
+                    else normalized_source_metadata["channel"]
+                )
+                source_sender_identity = str(
+                    request_context.get("source_sender_identity")
+                    if isinstance(request_context, dict)
+                    and request_context.get("source_sender_identity") not in (None, "")
+                    else normalized_source_metadata["identity"]
+                )
+                source_thread_identity = (
+                    request_context.get("source_thread_identity")
+                    if isinstance(request_context, dict)
+                    else None
+                )
 
                 _input: dict[str, Any] = {"prompt": prompt, "context": context}
                 if conversation_history:
@@ -2943,14 +2978,10 @@ class ButlerDaemon:
                     "request_context": {
                         "request_id": request_id,
                         "received_at": datetime.now(UTC).isoformat(),
-                        "source_channel": normalized_source_metadata["channel"],
+                        "source_channel": source_channel,
                         "source_endpoint_identity": "switchboard",
-                        "source_sender_identity": normalized_source_metadata["identity"],
-                        "source_thread_identity": (
-                            request_context.get("source_thread_identity")
-                            if request_context
-                            else None
-                        ),
+                        "source_sender_identity": source_sender_identity,
+                        "source_thread_identity": source_thread_identity,
                         "trace_context": {},
                     },
                     "input": _input,

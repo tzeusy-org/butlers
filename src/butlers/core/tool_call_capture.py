@@ -17,6 +17,7 @@ _runtime_session_id_var: contextvars.ContextVar[str | None] = contextvars.Contex
     "_runtime_session_id_var", default=None
 )
 _captured_tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
+_runtime_routing_context: dict[str, dict[str, Any]] = {}
 _capture_lock = threading.Lock()
 
 
@@ -103,3 +104,37 @@ def discard_runtime_session_tool_calls(session_id: str) -> None:
     """Drop captured executed tool calls for session id."""
     with _capture_lock:
         _captured_tool_calls.pop(session_id, None)
+
+
+def set_runtime_session_routing_context(
+    session_id: str,
+    context: dict[str, Any] | None,
+) -> None:
+    """Set routing context payload for a runtime session id."""
+    if not isinstance(context, dict) or not context:
+        return
+    with _capture_lock:
+        _runtime_routing_context[session_id] = _json_safe(context)
+
+
+def get_runtime_session_routing_context(session_id: str) -> dict[str, Any] | None:
+    """Return routing context payload for runtime session id."""
+    with _capture_lock:
+        payload = _runtime_routing_context.get(session_id)
+        if not isinstance(payload, dict):
+            return None
+        return dict(payload)
+
+
+def get_current_runtime_session_routing_context() -> dict[str, Any] | None:
+    """Return routing context payload for current request/task session id."""
+    session_id = get_current_runtime_session_id()
+    if not session_id:
+        return None
+    return get_runtime_session_routing_context(session_id)
+
+
+def clear_runtime_session_routing_context(session_id: str) -> None:
+    """Drop routing context payload for runtime session id."""
+    with _capture_lock:
+        _runtime_routing_context.pop(session_id, None)

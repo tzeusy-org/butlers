@@ -830,3 +830,7 @@ make test-qg
 
 ### Telegram connector rate-limit polling contract
 - `src/butlers/connectors/telegram_bot.py::_get_updates` must treat Telegram `HTTP 429` as recoverable for polling: record `rate_limited` source API status/error metrics, log a warning, honor `Retry-After` (header first, then `result.parameters.retry_after`), and return `[]` instead of raising.
+
+### Switchboard route_to_butler lineage fallback contract
+- `route_to_butler` can run in a different MCP/ASGI task than `MessagePipeline.process()`, so `_routing_ctx_var` may be empty at tool-call time; switchboard now falls back to runtime-session-bound routing lineage.
+- `Spawner._run()` captures pipeline routing context and stores it keyed by `runtime_session_id` for the lifetime of the runtime session; `route_to_butler` reads it via `get_current_runtime_session_routing_context()` and restores `source_channel`, `source_sender_identity`, and `source_thread_identity` when task-local context is missing.

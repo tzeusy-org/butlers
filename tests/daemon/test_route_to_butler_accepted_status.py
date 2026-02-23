@@ -15,6 +15,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.core.tool_call_capture import (
+    clear_runtime_session_routing_context,
+    reset_current_runtime_session_id,
+    set_current_runtime_session_id,
+    set_runtime_session_routing_context,
+)
 from butlers.daemon import ButlerDaemon
 from butlers.modules.pipeline import _routing_ctx_var
 from butlers.tools.switchboard.routing.contracts import parse_route_envelope
@@ -373,3 +379,51 @@ class TestRouteToButlerAcceptedStatusPassthrough:
         parsed = parse_route_envelope(route_payload)
         assert parsed.request_context.request_id.version == 7
         assert captured_envelope["request_context"]["request_id"] != "unknown"
+
+    async def test_route_to_butler_uses_runtime_session_routing_context_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        """When task-local routing context is missing, fallback to runtime session lineage."""
+        patches = _patch_infra()
+        butler_dir = _make_switchboard_dir(tmp_path)
+        captured_envelope: dict[str, Any] = {}
+
+        async def _capture_route(*_args, **kwargs):
+            captured_envelope.update(kwargs["args"])
+            return {"result": {"status": "accepted"}}
+
+        mock_route = AsyncMock(side_effect=_capture_route)
+        _, route_to_butler_fn = await _start_switchboard_and_capture_route_to_butler(
+            butler_dir, patches, mock_route=mock_route
+        )
+        assert route_to_butler_fn is not None
+
+        runtime_session_id = "sess-route-to-butler-fallback"
+        set_runtime_session_routing_context(
+            runtime_session_id,
+            {
+                "source_metadata": {
+                    "channel": "telegram",
+                    "identity": "telegram:bot-main",
+                    "tool_name": "ingest",
+                },
+                "request_context": {
+                    "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+                    "source_channel": "telegram",
+                    "source_sender_identity": "123456789",
+                    "source_thread_identity": "123456789:999",
+                },
+                "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+            },
+        )
+        token = set_current_runtime_session_id(runtime_session_id)
+        try:
+            result = await route_to_butler_fn(butler="health", prompt="track breakfast reminder")
+        finally:
+            reset_current_runtime_session_id(token)
+            clear_runtime_session_routing_context(runtime_session_id)
+
+        assert result["status"] == "accepted"
+        assert captured_envelope["request_context"]["source_channel"] == "telegram"
+        assert captured_envelope["request_context"]["source_sender_identity"] == "123456789"
+        assert captured_envelope["request_context"]["source_thread_identity"] == "123456789:999"

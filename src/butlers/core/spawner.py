@@ -41,9 +41,11 @@ from butlers.core.telemetry import (
     set_active_session_context,
 )
 from butlers.core.tool_call_capture import (
+    clear_runtime_session_routing_context,
     consume_runtime_session_tool_calls,
     discard_runtime_session_tool_calls,
     ensure_runtime_session_capture,
+    set_runtime_session_routing_context,
 )
 from butlers.credential_store import CredentialStore
 
@@ -187,6 +189,19 @@ def _compose_system_prompt(base_system_prompt: str, memory_context: str | None) 
     if not memory_context:
         return base_system_prompt
     return f"{base_system_prompt}\n\n{memory_context}"
+
+
+def _capture_pipeline_routing_context() -> dict[str, Any] | None:
+    """Best-effort capture of switchboard routing context when available."""
+    try:
+        from butlers.modules.pipeline import _routing_ctx_var
+    except Exception:
+        return None
+
+    payload = _routing_ctx_var.get()
+    if not isinstance(payload, dict) or not payload:
+        return None
+    return dict(payload)
 
 
 async def _build_env(
@@ -607,6 +622,7 @@ class Spawner:
         runtime_session_id: str | None = None
         runtime = self._runtime.create_worker()
         runtime_invoked = False
+        routing_context = _capture_pipeline_routing_context()
 
         # Prepend context to prompt if provided
         final_prompt = prompt
@@ -647,6 +663,7 @@ class Spawner:
                 span.set_attribute("session_id", str(session_id))
                 runtime_session_id = str(session_id)
                 ensure_runtime_session_capture(runtime_session_id)
+                set_runtime_session_routing_context(runtime_session_id, routing_context)
 
             # Read system prompt
             system_prompt = read_system_prompt(self._config_dir, self._config.name)
@@ -813,6 +830,8 @@ class Spawner:
             return spawner_result
 
         finally:
+            if runtime_session_id:
+                clear_runtime_session_routing_context(runtime_session_id)
             # Record session duration metric using wall-clock time from t0
             self._metrics.record_session_duration(int((time.monotonic() - t0) * 1000))
             # Clear session context before ending span so tool handlers
