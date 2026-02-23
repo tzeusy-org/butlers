@@ -82,6 +82,8 @@ PROJECTION_STATUS_STALE = "stale"
 PROJECTION_STATUS_FAILED = "failed"
 # Default duration for scheduled tasks when start_at/end_at are not set.
 DEFAULT_SCHEDULED_TASK_DURATION_MINUTES = 15
+# Interval for periodic internal projection refresh (startup + periodic background task).
+DEFAULT_INTERNAL_PROJECTION_INTERVAL_MINUTES = 15
 MUTATION_STATUS_PENDING = "pending"
 MUTATION_STATUS_APPLIED = "applied"
 MUTATION_STATUS_FAILED = "failed"
@@ -2225,6 +2227,7 @@ class CalendarModule(Module):
         self._approval_enqueuer: ApprovalEnqueuer | None = None
         self._db: Any = None
         self._sync_task: asyncio.Task[None] | None = None
+        self._internal_projection_task: asyncio.Task[None] | None = None
         # In-memory sync state cache (calendar_id → CalendarSyncState).
         self._sync_states: dict[str, CalendarSyncState] = {}
         # Event set to trigger immediate sync (for calendar_force_sync tool).
@@ -3957,6 +3960,15 @@ class CalendarModule(Module):
                 self._config.calendar_id,
             )
 
+        self._internal_projection_task = asyncio.create_task(
+            self._run_internal_projection_poller(),
+            name="calendar-internal-projection-poller",
+        )
+        logger.info(
+            "Calendar internal projection poller started (interval=%dm)",
+            DEFAULT_INTERNAL_PROJECTION_INTERVAL_MINUTES,
+        )
+
     async def on_shutdown(self) -> None:
         if self._sync_task is not None and not self._sync_task.done():
             self._sync_task.cancel()
@@ -3965,6 +3977,14 @@ class CalendarModule(Module):
             except asyncio.CancelledError:
                 pass
         self._sync_task = None
+
+        if self._internal_projection_task is not None and not self._internal_projection_task.done():
+            self._internal_projection_task.cancel()
+            try:
+                await self._internal_projection_task
+            except asyncio.CancelledError:
+                pass
+        self._internal_projection_task = None
 
         if self._provider is not None:
             await self._provider.shutdown()
@@ -5216,6 +5236,26 @@ class CalendarModule(Module):
             except TimeoutError:
                 # Normal timer expiry; loop and sync again.
                 pass
+
+    async def _run_internal_projection_poller(self) -> None:
+        """Background task: project internal sources immediately on startup, then periodically.
+
+        This ensures calendar_event_instances is populated for scheduler tasks
+        and reminders even when no external provider sync has ever completed.
+        The interval is controlled by DEFAULT_INTERNAL_PROJECTION_INTERVAL_MINUTES.
+        """
+        interval_seconds = DEFAULT_INTERNAL_PROJECTION_INTERVAL_MINUTES * 60
+        logger.debug("Calendar internal projection poller started (interval=%ds)", interval_seconds)
+        while True:
+            try:
+                await self._project_internal_sources()
+            except Exception as exc:
+                logger.error("Calendar internal projection poller error: %s", exc, exc_info=True)
+            # Sleep for the configured interval before the next run.
+            try:
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                break
 
     # ------------------------------------------------------------------
     # Provider / config accessors

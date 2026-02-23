@@ -26,6 +26,7 @@ import httpx
 import pytest
 
 from butlers.modules.calendar import (
+    DEFAULT_INTERNAL_PROJECTION_INTERVAL_MINUTES,
     DEFAULT_SCHEDULED_TASK_DURATION_MINUTES,
     DEFAULT_SYNC_INTERVAL_MINUTES,
     DEFAULT_SYNC_WINDOW_DAYS,
@@ -817,6 +818,181 @@ class TestCalendarModuleStartupPoller:
         await mod.on_startup(config, db=None, credential_store=credential_store)
         # Should not raise.
         await mod.on_shutdown()
+
+
+# ---------------------------------------------------------------------------
+# CalendarModule internal projection poller tests
+# ---------------------------------------------------------------------------
+
+
+class TestCalendarModuleInternalProjectionPoller:
+    """Tests for _run_internal_projection_poller and its lifecycle."""
+
+    async def test_internal_projection_task_started_on_startup(self):
+        """on_startup always creates a background internal projection task."""
+        mod = CalendarModule()
+        credential_store = _make_credential_store()
+        config = {"provider": "google", "calendar_id": "primary"}
+
+        async def fake_poller():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                pass
+
+        with patch.object(mod, "_run_internal_projection_poller", side_effect=fake_poller):
+            await mod.on_startup(config, db=None, credential_store=credential_store)
+
+        try:
+            assert mod._internal_projection_task is not None
+            assert not mod._internal_projection_task.done()
+        finally:
+            await mod.on_shutdown()
+
+    async def test_internal_projection_task_started_even_when_sync_disabled(self):
+        """Internal projection poller starts regardless of sync.enabled setting."""
+        mod = CalendarModule()
+        credential_store = _make_credential_store()
+        config = {"provider": "google", "calendar_id": "primary"}  # sync disabled by default
+
+        async def fake_poller():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                pass
+
+        with patch.object(mod, "_run_internal_projection_poller", side_effect=fake_poller):
+            await mod.on_startup(config, db=None, credential_store=credential_store)
+
+        try:
+            assert mod._sync_task is None, "Sync poller should not start when sync disabled"
+            assert mod._internal_projection_task is not None
+        finally:
+            await mod.on_shutdown()
+
+    async def test_on_shutdown_cancels_internal_projection_task(self):
+        """on_shutdown cancels the internal projection task."""
+        mod = CalendarModule()
+        credential_store = _make_credential_store()
+        config = {"provider": "google", "calendar_id": "primary"}
+
+        async def fake_poller():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                pass
+
+        with patch.object(mod, "_run_internal_projection_poller", side_effect=fake_poller):
+            await mod.on_startup(config, db=None, credential_store=credential_store)
+
+        task = mod._internal_projection_task
+        assert task is not None
+        await mod.on_shutdown()
+        assert task.done()
+        assert mod._internal_projection_task is None
+
+    async def test_run_internal_projection_poller_calls_project_on_first_iteration(self):
+        """_run_internal_projection_poller calls _project_internal_sources immediately."""
+        mod = CalendarModule()
+        projection_calls: list[None] = []
+
+        async def fake_project_internal():
+            projection_calls.append(None)
+
+        mod._db = None
+
+        # Use a very short sleep to let the first iteration run before cancelling.
+        async def fake_sleep(seconds: float) -> None:
+            # Simulate the sleep resolving immediately so the loop would repeat,
+            # then raise CancelledError on the second call to stop the loop.
+            if len(projection_calls) >= 1:
+                raise asyncio.CancelledError
+
+        with (
+            patch.object(mod, "_project_internal_sources", side_effect=fake_project_internal),
+            patch("asyncio.sleep", side_effect=fake_sleep),
+        ):
+            try:
+                await mod._run_internal_projection_poller()
+            except asyncio.CancelledError:
+                pass
+
+        assert len(projection_calls) >= 1
+
+    async def test_run_internal_projection_poller_uses_configured_interval(self):
+        """_run_internal_projection_poller sleeps for the configured interval in seconds."""
+        mod = CalendarModule()
+        sleep_calls: list[float] = []
+
+        async def fake_project_internal():
+            pass
+
+        async def fake_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            raise asyncio.CancelledError  # Stop after first sleep
+
+        with (
+            patch.object(mod, "_project_internal_sources", side_effect=fake_project_internal),
+            patch("asyncio.sleep", side_effect=fake_sleep),
+        ):
+            try:
+                await mod._run_internal_projection_poller()
+            except asyncio.CancelledError:
+                pass
+
+        assert len(sleep_calls) == 1
+        assert sleep_calls[0] == DEFAULT_INTERNAL_PROJECTION_INTERVAL_MINUTES * 60
+
+    async def test_run_internal_projection_poller_error_does_not_stop_loop(self):
+        """Errors from _project_internal_sources are caught; poller continues running."""
+        mod = CalendarModule()
+        call_count = 0
+
+        async def failing_project():
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("projection failure")
+
+        sleep_call_count = 0
+
+        async def fake_sleep(seconds: float) -> None:
+            nonlocal sleep_call_count
+            sleep_call_count += 1
+            if sleep_call_count >= 2:
+                raise asyncio.CancelledError
+
+        with (
+            patch.object(mod, "_project_internal_sources", side_effect=failing_project),
+            patch("asyncio.sleep", side_effect=fake_sleep),
+        ):
+            try:
+                await mod._run_internal_projection_poller()
+            except asyncio.CancelledError:
+                pass
+
+        # Poller should have looped at least twice despite errors.
+        assert call_count >= 2
+
+    async def test_run_internal_projection_poller_stops_on_cancel(self):
+        """_run_internal_projection_poller exits cleanly on CancelledError from sleep."""
+        mod = CalendarModule()
+        projection_calls: list[None] = []
+
+        async def fake_project():
+            projection_calls.append(None)
+
+        async def cancelling_sleep(seconds: float) -> None:
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(mod, "_project_internal_sources", side_effect=fake_project),
+            patch("asyncio.sleep", side_effect=cancelling_sleep),
+        ):
+            # Should return without raising CancelledError (loop exits via break).
+            await mod._run_internal_projection_poller()
+
+        # _project_internal_sources ran once before the cancelled sleep.
+        assert len(projection_calls) == 1
 
 
 # ---------------------------------------------------------------------------
