@@ -482,3 +482,78 @@ class TestConnectorHeartbeat:
             assert envelope["counters"]["dedupe_accepted"] == 5
             assert envelope["counters"]["source_api_calls"] == 100
             assert envelope["counters"]["checkpoint_saves"] == 10
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_includes_capabilities_when_provided(
+        self, config, mock_mcp_client, mock_metrics, get_health_state
+    ):
+        """Test that heartbeat envelope includes capabilities when get_capabilities is provided."""
+        get_capabilities = MagicMock(return_value={"backfill": True})
+
+        with patch("prometheus_client.REGISTRY") as mock_registry:
+            mock_registry.collect.return_value = []
+
+            heartbeat = ConnectorHeartbeat(
+                config=config,
+                mcp_client=mock_mcp_client,
+                metrics=mock_metrics,
+                get_health_state=get_health_state,
+                get_capabilities=get_capabilities,
+            )
+
+            heartbeat.start()
+            await asyncio.sleep(1.5)
+            await heartbeat.stop()
+
+            envelope = mock_mcp_client.call_tool.call_args_list[0].args[1]
+            assert "capabilities" in envelope
+            assert envelope["capabilities"] == {"backfill": True}
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_omits_capabilities_when_not_provided(
+        self, config, mock_mcp_client, mock_metrics, get_health_state
+    ):
+        """Test that capabilities key is absent when get_capabilities is not provided."""
+        with patch("prometheus_client.REGISTRY") as mock_registry:
+            mock_registry.collect.return_value = []
+
+            heartbeat = ConnectorHeartbeat(
+                config=config,
+                mcp_client=mock_mcp_client,
+                metrics=mock_metrics,
+                get_health_state=get_health_state,
+                get_capabilities=None,
+            )
+
+            heartbeat.start()
+            await asyncio.sleep(1.5)
+            await heartbeat.stop()
+
+            envelope = mock_mcp_client.call_tool.call_args_list[0].args[1]
+            assert "capabilities" not in envelope
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_omits_capabilities_when_empty_dict_returned(
+        self, config, mock_mcp_client, mock_metrics, get_health_state
+    ):
+        """Test that capabilities key is absent when get_capabilities returns empty dict."""
+        get_capabilities = MagicMock(return_value={})
+
+        with patch("prometheus_client.REGISTRY") as mock_registry:
+            mock_registry.collect.return_value = []
+
+            heartbeat = ConnectorHeartbeat(
+                config=config,
+                mcp_client=mock_mcp_client,
+                metrics=mock_metrics,
+                get_health_state=get_health_state,
+                get_capabilities=get_capabilities,
+            )
+
+            heartbeat.start()
+            await asyncio.sleep(1.5)
+            await heartbeat.stop()
+
+            envelope = mock_mcp_client.call_tool.call_args_list[0].args[1]
+            # Empty capabilities dict => omitted from envelope (falsy guard)
+            assert "capabilities" not in envelope
