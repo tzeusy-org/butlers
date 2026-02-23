@@ -175,6 +175,9 @@ def _build_request_context(
     if control.trace_context:
         context["trace_context"] = control.trace_context
 
+    # Tier annotation (always stored; defaults to "full" for backward compat)
+    context["ingestion_tier"] = control.ingestion_tier
+
     return context
 
 
@@ -251,6 +254,8 @@ async def ingest_v1(
     request_context["dedupe_strategy"] = "connector_api"
 
     # 5. Build raw_payload and normalized_text
+    # For Tier 2 (metadata), payload.raw is None per contract
+    ingestion_tier = envelope.control.ingestion_tier
     raw_payload = {
         "source": {
             "channel": envelope.source.channel,
@@ -271,6 +276,7 @@ async def ingest_v1(
         },
         "control": {
             "policy_tier": envelope.control.policy_tier,
+            "ingestion_tier": ingestion_tier,
         },
     }
 
@@ -300,6 +306,10 @@ async def ingest_v1(
     )
 
     # 8. Insert into message_inbox lifecycle store
+    # Tier 2 (metadata-only) uses a distinct lifecycle_state to signal
+    # that LLM classification should be bypassed by the processing pipeline.
+    lifecycle_state = "metadata_ref" if ingestion_tier == "metadata" else "accepted"
+
     try:
         await pool.execute(
             """
@@ -317,7 +327,7 @@ async def ingest_v1(
                 updated_at
             ) VALUES (
                 $1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb,
-                'accepted', 'message_inbox.v2', '{}'::jsonb, $2, $2
+                $7, 'message_inbox.v2', '{}'::jsonb, $2, $2
             )
             """,
             request_id,
@@ -326,6 +336,7 @@ async def ingest_v1(
             json.dumps(raw_payload),
             normalized_text,
             attachments_json,
+            lifecycle_state,
         )
     except asyncpg.UniqueViolationError:
         # Race condition: another worker already inserted this dedupe_key
@@ -352,12 +363,15 @@ async def ingest_v1(
         raise RuntimeError(f"Failed to persist ingest envelope: {exc}") from exc
 
     logger.info(
-        "Accepted ingest submission: request_id=%s, dedupe_key=%s, source=%s/%s, sender=%s",
+        "Accepted ingest submission: request_id=%s, dedupe_key=%s, source=%s/%s, "
+        "sender=%s, ingestion_tier=%s, lifecycle_state=%s",
         request_id,
         dedupe_key,
         envelope.source.channel,
         envelope.source.endpoint_identity,
         envelope.sender.identity,
+        ingestion_tier,
+        lifecycle_state,
     )
 
     return IngestAcceptedResponse(

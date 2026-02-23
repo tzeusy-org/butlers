@@ -282,3 +282,186 @@ def test_request_context_lineage_allows_optional_extension() -> None:
 
     assert candidate.source_thread_identity == "chat-456"
     assert candidate.request_id == original.request_id
+
+
+# ---------------------------------------------------------------------------
+# Ingestion Tier Tests (butlers-dsa4.2.1)
+# ---------------------------------------------------------------------------
+
+
+class TestIngestionTierContract:
+    """Tests for ingestion_tier semantics in IngestControlV1 / IngestEnvelopeV1."""
+
+    def _base_email_payload(self) -> dict[str, Any]:
+        now = datetime.now(UTC).isoformat()
+        return {
+            "schema_version": "ingest.v1",
+            "source": {
+                "channel": "email",
+                "provider": "gmail",
+                "endpoint_identity": "gmail:user:alice@gmail.com",
+            },
+            "event": {
+                "external_event_id": "gmail_message_id_001",
+                "external_thread_id": "gmail_thread_001",
+                "observed_at": now,
+            },
+            "sender": {"identity": "sender@example.com"},
+            "payload": {
+                "raw": {"subject": "Hello", "body": "Body text"},
+                "normalized_text": "Hello\nBody text",
+            },
+            "control": {
+                "idempotency_key": "gmail:gmail:user:alice@gmail.com:gmail_message_id_001",
+                "ingestion_tier": "full",
+                "policy_tier": "default",
+            },
+        }
+
+    def _tier2_email_payload(self) -> dict[str, Any]:
+        now = datetime.now(UTC).isoformat()
+        return {
+            "schema_version": "ingest.v1",
+            "source": {
+                "channel": "email",
+                "provider": "gmail",
+                "endpoint_identity": "gmail:user:alice@gmail.com",
+            },
+            "event": {
+                "external_event_id": "gmail_message_id_002",
+                "external_thread_id": "gmail_thread_002",
+                "observed_at": now,
+            },
+            "sender": {"identity": "newsletter@example.com"},
+            "payload": {
+                "raw": None,
+                "normalized_text": "Subject: Weekly Newsletter",
+            },
+            "control": {
+                "idempotency_key": "gmail:gmail:user:alice@gmail.com:gmail_message_id_002",
+                "ingestion_tier": "metadata",
+                "policy_tier": "default",
+            },
+        }
+
+    def test_tier1_full_envelope_valid(self) -> None:
+        """Tier 1 (full) envelope accepts non-null raw payload."""
+        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+
+        envelope = IngestEnvelopeV1.model_validate(self._base_email_payload())
+        assert envelope.control.ingestion_tier == "full"
+        assert envelope.payload.raw == {"subject": "Hello", "body": "Body text"}
+
+    def test_tier2_metadata_envelope_valid(self) -> None:
+        """Tier 2 (metadata) envelope accepts null raw with subject-only text."""
+        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+
+        envelope = IngestEnvelopeV1.model_validate(self._tier2_email_payload())
+        assert envelope.control.ingestion_tier == "metadata"
+        assert envelope.payload.raw is None
+        assert envelope.payload.normalized_text == "Subject: Weekly Newsletter"
+
+    def test_default_ingestion_tier_is_full(self) -> None:
+        """When ingestion_tier is omitted, it defaults to 'full'."""
+        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+
+        payload = self._base_email_payload()
+        del payload["control"]["ingestion_tier"]
+
+        envelope = IngestEnvelopeV1.model_validate(payload)
+        assert envelope.control.ingestion_tier == "full"
+
+    def test_tier2_with_non_null_raw_rejected(self) -> None:
+        """Tier 2 envelopes must have payload.raw=null."""
+        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+
+        payload = self._tier2_email_payload()
+        payload["payload"]["raw"] = {"some": "body content"}  # violates tier 2 constraint
+
+        with pytest.raises(ValidationError) as exc_info:
+            IngestEnvelopeV1.model_validate(payload)
+
+        error = exc_info.value.errors()[0]
+        assert error["type"] == "tier2_raw_must_be_null"
+
+    def test_tier1_with_null_raw_rejected(self) -> None:
+        """Tier 1 envelopes must have a non-null raw dict."""
+        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+
+        payload = self._base_email_payload()
+        payload["payload"]["raw"] = None  # violates tier 1 constraint
+
+        with pytest.raises(ValidationError) as exc_info:
+            IngestEnvelopeV1.model_validate(payload)
+
+        error = exc_info.value.errors()[0]
+        assert error["type"] == "tier1_raw_required"
+
+    def test_invalid_ingestion_tier_rejected(self) -> None:
+        """Unknown ingestion_tier values are rejected by the contract."""
+        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+
+        payload = self._base_email_payload()
+        payload["control"]["ingestion_tier"] = "skip"  # Tier 3 is connector-side only
+
+        with pytest.raises(ValidationError) as exc_info:
+            IngestEnvelopeV1.model_validate(payload)
+
+        errors = exc_info.value.errors()
+        assert any(e["loc"] == ("control", "ingestion_tier") for e in errors)
+
+    def test_backward_compat_no_ingestion_tier_field_in_control(self) -> None:
+        """Envelopes without ingestion_tier in control remain valid (backward compat)."""
+        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+
+        payload = {
+            "schema_version": "ingest.v1",
+            "source": {
+                "channel": "telegram",
+                "provider": "telegram",
+                "endpoint_identity": "bot_legacy",
+            },
+            "event": {
+                "external_event_id": "upd_001",
+                "observed_at": datetime.now(UTC).isoformat(),
+            },
+            "sender": {"identity": "user_001"},
+            "payload": {"raw": {"text": "hello"}, "normalized_text": "hello"},
+        }
+
+        envelope = IngestEnvelopeV1.model_validate(payload)
+        assert envelope.control.ingestion_tier == "full"
+        assert envelope.payload.raw == {"text": "hello"}
+
+    def test_tier2_spec_example_from_policy_doc(self) -> None:
+        """Validate the exact Tier 2 JSON example from email_ingestion_policy.md section 5.2."""
+        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+
+        payload = {
+            "schema_version": "ingest.v1",
+            "source": {
+                "channel": "email",
+                "provider": "gmail",
+                "endpoint_identity": "gmail:user:alice@gmail.com",
+            },
+            "event": {
+                "external_event_id": "gmail_message_id",
+                "external_thread_id": "gmail_thread_id",
+                "observed_at": "2026-02-22T10:00:00Z",
+            },
+            "sender": {"identity": "sender@example.com"},
+            "payload": {
+                "raw": None,
+                "normalized_text": "Subject: ... ",
+            },
+            "control": {
+                "idempotency_key": "gmail:gmail:user:alice@gmail.com:gmail_message_id",
+                "ingestion_tier": "metadata",
+                "policy_tier": "default",
+            },
+        }
+
+        envelope = IngestEnvelopeV1.model_validate(payload)
+        assert envelope.control.ingestion_tier == "metadata"
+        assert envelope.payload.raw is None
+        assert "Subject:" in envelope.payload.normalized_text
