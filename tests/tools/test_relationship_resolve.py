@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -606,3 +607,551 @@ class TestInferredFieldsPresence:
         # Should mention frequent contact
         reason_lower = result["inferred_reason"].lower()
         assert "frequent" in reason_lower or "contact" in reason_lower
+
+
+class TestEntityResolveIntegration:
+    """Tests for entity_resolve integration via context_hints.domain_scores."""
+
+    def _make_pool_with_entity_ids(
+        self,
+        entity_id_1: str,
+        entity_id_2: str,
+        salience_rows: list,
+    ) -> MagicMock:
+        """Build a mock pool that returns two exact-match rows with entity_ids."""
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            side_effect=[
+                # Exact match query returns 2 rows with entity_ids
+                [
+                    {
+                        "id": "uuid-1",
+                        "first_name": "Chloe",
+                        "last_name": "Wong",
+                        "nickname": None,
+                        "company": None,
+                        "job_title": None,
+                        "metadata": {},
+                        "entity_id": uuid.UUID(entity_id_1),
+                    },
+                    {
+                        "id": "uuid-2",
+                        "first_name": "Chloe",
+                        "last_name": "Tan",
+                        "nickname": None,
+                        "company": "Acme",
+                        "job_title": None,
+                        "metadata": {},
+                        "entity_id": uuid.UUID(entity_id_2),
+                    },
+                ],
+                # salience queries
+                *salience_rows,
+            ]
+        )
+        return pool
+
+    async def test_entity_resolve_called_with_domain_scores(self):
+        """When memory_pool is provided, entity_resolve is called with salience as domain_scores."""
+        eid1 = str(uuid.uuid4())
+        eid2 = str(uuid.uuid4())
+
+        pool = self._make_pool_with_entity_ids(
+            eid1,
+            eid2,
+            salience_rows=[
+                # contact_data query (stay_in_touch_days) - eid1 has weekly cadence
+                [
+                    {"id": "uuid-1", "stay_in_touch_days": 7},  # +10 salience
+                    {"id": "uuid-2", "stay_in_touch_days": None},
+                ],
+                # relationships query - eid1 is partner
+                [{"contact_id": "uuid-1", "forward_label": "partner"}],  # +50 salience
+                # interactions query
+                [],
+                # fact_note query
+                [],
+                # groups query
+                [],
+            ],
+        )
+        memory_pool = MagicMock()
+
+        # entity_resolve returns eid1 ranked first with a large score gap
+        entity_resolve_result = [
+            {
+                "entity_id": eid1,
+                "canonical_name": "Chloe Wong",
+                "entity_type": "person",
+                "score": 210.0,
+                "name_match": "exact",
+                "aliases": [],
+            },
+            {
+                "entity_id": eid2,
+                "canonical_name": "Chloe Tan",
+                "entity_type": "person",
+                "score": 90.0,
+                "name_match": "exact",
+                "aliases": [],
+            },
+        ]
+
+        captured_hints: dict = {}
+
+        async def mock_entity_resolve(
+            pool, name, *, tenant_id, entity_type=None, context_hints=None, enable_fuzzy=False
+        ):
+            captured_hints.update(context_hints or {})
+            return entity_resolve_result
+
+        with patch(
+            "butlers.modules.memory.tools.entities.entity_resolve",
+            side_effect=mock_entity_resolve,
+        ):
+            await contact_resolve(
+                pool, "Chloe", memory_pool=memory_pool, memory_tenant_id="relationship"
+            )
+
+        # entity_resolve should have been called with domain_scores
+        assert "domain_scores" in captured_hints
+        assert eid1 in captured_hints["domain_scores"]
+        assert eid2 in captured_hints["domain_scores"]
+        # eid1 should have higher salience (partner + weekly cadence = 60)
+        assert captured_hints["domain_scores"][eid1] == 60.0
+        assert captured_hints["domain_scores"][eid2] == 0.0
+
+    async def test_entity_resolve_score_used_for_threshold(self):
+        """Entity_resolve composite scores are used for the 30-point gap threshold."""
+        eid1 = str(uuid.uuid4())
+        eid2 = str(uuid.uuid4())
+
+        pool = self._make_pool_with_entity_ids(
+            eid1,
+            eid2,
+            salience_rows=[
+                # All zeros — salience provided but not important for this test
+                [],  # contact_data
+                [],  # relationships
+                [],  # interactions
+                [],  # fact_note
+                [],  # groups
+            ],
+        )
+        memory_pool = MagicMock()
+
+        # entity_resolve returns eid1 with score 145, eid2 with score 85 (gap = 60 >= 30)
+        async def mock_entity_resolve(
+            pool, name, *, tenant_id, entity_type=None, context_hints=None, enable_fuzzy=False
+        ):
+            return [
+                {
+                    "entity_id": eid1,
+                    "canonical_name": "Chloe Wong",
+                    "entity_type": "person",
+                    "score": 145.0,
+                    "name_match": "exact",
+                    "aliases": [],
+                },
+                {
+                    "entity_id": eid2,
+                    "canonical_name": "Chloe Tan",
+                    "entity_type": "person",
+                    "score": 85.0,
+                    "name_match": "exact",
+                    "aliases": [],
+                },
+            ]
+
+        with patch(
+            "butlers.modules.memory.tools.entities.entity_resolve",
+            side_effect=mock_entity_resolve,
+        ):
+            result = await contact_resolve(pool, "Chloe", memory_pool=memory_pool)
+
+        # Gap = 60 >= 30 → HIGH confidence with auto-selection of uuid-1 (mapped from eid1)
+        assert result["confidence"] == CONFIDENCE_HIGH
+        assert result["contact_id"] == "uuid-1"
+        assert result["inferred"] is True
+
+    async def test_entity_resolve_medium_when_gap_less_than_30(self):
+        """When entity_resolve scores have gap < 30, returns MEDIUM confidence."""
+        eid1 = str(uuid.uuid4())
+        eid2 = str(uuid.uuid4())
+
+        pool = self._make_pool_with_entity_ids(
+            eid1,
+            eid2,
+            salience_rows=[[], [], [], [], []],
+        )
+        memory_pool = MagicMock()
+
+        # entity_resolve returns candidates with gap = 10 (< 30)
+        async def mock_entity_resolve(
+            pool, name, *, tenant_id, entity_type=None, context_hints=None, enable_fuzzy=False
+        ):
+            return [
+                {
+                    "entity_id": eid1,
+                    "canonical_name": "Chloe Wong",
+                    "entity_type": "person",
+                    "score": 100.0,
+                    "name_match": "exact",
+                    "aliases": [],
+                },
+                {
+                    "entity_id": eid2,
+                    "canonical_name": "Chloe Tan",
+                    "entity_type": "person",
+                    "score": 90.0,
+                    "name_match": "exact",
+                    "aliases": [],
+                },
+            ]
+
+        with patch(
+            "butlers.modules.memory.tools.entities.entity_resolve",
+            side_effect=mock_entity_resolve,
+        ):
+            result = await contact_resolve(pool, "Chloe", memory_pool=memory_pool)
+
+        # Gap = 10 < 30 → MEDIUM confidence, no auto-selection
+        assert result["confidence"] == CONFIDENCE_MEDIUM
+        assert result["contact_id"] is None
+        assert result["inferred"] is False
+
+    async def test_context_passed_as_topic_hint(self):
+        """Context string is passed as context_hints.topic to entity_resolve."""
+        eid1 = str(uuid.uuid4())
+        eid2 = str(uuid.uuid4())
+
+        pool = self._make_pool_with_entity_ids(eid1, eid2, salience_rows=[[], [], [], [], []])
+        memory_pool = MagicMock()
+
+        captured_hints: dict = {}
+
+        async def mock_entity_resolve(
+            pool, name, *, tenant_id, entity_type=None, context_hints=None, enable_fuzzy=False
+        ):
+            captured_hints.update(context_hints or {})
+            return [
+                {
+                    "entity_id": eid1,
+                    "canonical_name": "Chloe Wong",
+                    "entity_type": "person",
+                    "score": 100.0,
+                    "name_match": "exact",
+                    "aliases": [],
+                },
+                {
+                    "entity_id": eid2,
+                    "canonical_name": "Chloe Tan",
+                    "entity_type": "person",
+                    "score": 90.0,
+                    "name_match": "exact",
+                    "aliases": [],
+                },
+            ]
+
+        with patch(
+            "butlers.modules.memory.tools.entities.entity_resolve",
+            side_effect=mock_entity_resolve,
+        ):
+            await contact_resolve(pool, "Chloe", context="from work", memory_pool=memory_pool)
+
+        assert captured_hints.get("topic") == "from work"
+
+    async def test_fallback_to_local_scoring_when_entity_resolve_fails(self):
+        """If entity_resolve raises an exception, local scoring is used as fallback."""
+        eid1 = str(uuid.uuid4())
+        eid2 = str(uuid.uuid4())
+
+        pool = self._make_pool_with_entity_ids(
+            eid1,
+            eid2,
+            salience_rows=[
+                # contact_data: uuid-1 has weekly cadence (+10)
+                [
+                    {"id": "uuid-1", "stay_in_touch_days": 7},
+                    {"id": "uuid-2", "stay_in_touch_days": None},
+                ],
+                # relationships: uuid-1 is partner (+50)
+                [{"contact_id": "uuid-1", "forward_label": "partner"}],
+                # interactions
+                [],
+                # fact_note
+                [],
+                # groups
+                [],
+            ],
+        )
+        memory_pool = MagicMock()
+
+        async def mock_entity_resolve_fails(
+            pool, name, *, tenant_id, entity_type=None, context_hints=None, enable_fuzzy=False
+        ):
+            raise RuntimeError("entity_resolve unavailable")
+
+        with patch(
+            "butlers.modules.memory.tools.entities.entity_resolve",
+            side_effect=mock_entity_resolve_fails,
+        ):
+            result = await contact_resolve(pool, "Chloe", memory_pool=memory_pool)
+
+        # Fallback: local salience (partner=50 + stay_in_touch=10 = 60) + base 90 = 150
+        # vs uuid-2: base 90. Gap = 60 ≥ 30 → HIGH confidence from local scoring
+        assert result["confidence"] == CONFIDENCE_HIGH
+        assert result["contact_id"] == "uuid-1"
+        assert result["inferred"] is True
+
+    async def test_fallback_when_no_entity_ids(self):
+        """When contacts have no entity_ids, local scoring is used without entity_resolve."""
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            side_effect=[
+                # Exact match query returns 2 rows WITHOUT entity_ids
+                [
+                    {
+                        "id": "uuid-1",
+                        "first_name": "Chloe",
+                        "last_name": "Wong",
+                        "nickname": None,
+                        "company": None,
+                        "job_title": None,
+                        "metadata": {},
+                        "entity_id": None,
+                    },
+                    {
+                        "id": "uuid-2",
+                        "first_name": "Chloe",
+                        "last_name": "Tan",
+                        "nickname": None,
+                        "company": None,
+                        "job_title": None,
+                        "metadata": {},
+                        "entity_id": None,
+                    },
+                ],
+                # contact_data: uuid-1 has partner relationship
+                [
+                    {"id": "uuid-1", "stay_in_touch_days": None},
+                    {"id": "uuid-2", "stay_in_touch_days": None},
+                ],
+                # relationships: uuid-1 is partner (+50)
+                [{"contact_id": "uuid-1", "forward_label": "partner"}],
+                # interactions
+                [],
+                # fact_note
+                [],
+                # groups
+                [],
+            ]
+        )
+        memory_pool = MagicMock()
+
+        # entity_resolve should NOT be called when no entity_ids exist
+        entity_resolve_call_count = 0
+
+        async def mock_entity_resolve(
+            pool, name, *, tenant_id, entity_type=None, context_hints=None, enable_fuzzy=False
+        ):
+            nonlocal entity_resolve_call_count
+            entity_resolve_call_count += 1
+            return []
+
+        with patch(
+            "butlers.modules.memory.tools.entities.entity_resolve",
+            side_effect=mock_entity_resolve,
+        ):
+            result = await contact_resolve(pool, "Chloe", memory_pool=memory_pool)
+
+        # entity_resolve should NOT be called when no entity_ids exist
+        assert entity_resolve_call_count == 0
+        # Local scoring: uuid-1 gets partner (+50), gap=50 ≥ 30 → HIGH
+        assert result["confidence"] == CONFIDENCE_HIGH
+        assert result["contact_id"] == "uuid-1"
+
+    async def test_salience_only_computed_for_multiple_candidates(self):
+        """Salience scoring is skipped for single-match results (zero-cost rule)."""
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            return_value=[
+                {
+                    "id": "uuid-1",
+                    "first_name": "Chloe",
+                    "last_name": "Wong",
+                    "nickname": None,
+                    "company": None,
+                    "job_title": None,
+                    "metadata": {},
+                    "entity_id": None,
+                }
+            ]
+        )
+        memory_pool = MagicMock()
+
+        entity_resolve_call_count = 0
+
+        async def mock_entity_resolve(
+            pool, name, *, tenant_id, entity_type=None, context_hints=None, enable_fuzzy=False
+        ):
+            nonlocal entity_resolve_call_count
+            entity_resolve_call_count += 1
+            return []
+
+        with patch(
+            "butlers.modules.memory.tools.entities.entity_resolve",
+            side_effect=mock_entity_resolve,
+        ):
+            result = await contact_resolve(pool, "Chloe Wong", memory_pool=memory_pool)
+
+        # Single match: entity_resolve should NOT be called
+        assert entity_resolve_call_count == 0
+        assert result["confidence"] == CONFIDENCE_HIGH
+        assert result["contact_id"] == "uuid-1"
+        assert result["inferred"] is False
+
+    async def test_entity_resolve_called_with_person_entity_type(self):
+        """entity_resolve is called with entity_type='person' filter."""
+        eid1 = str(uuid.uuid4())
+        eid2 = str(uuid.uuid4())
+
+        pool = self._make_pool_with_entity_ids(eid1, eid2, salience_rows=[[], [], [], [], []])
+        memory_pool = MagicMock()
+
+        captured_args: dict = {}
+
+        async def mock_entity_resolve(
+            pool, name, *, tenant_id, entity_type=None, context_hints=None, enable_fuzzy=False
+        ):
+            captured_args["entity_type"] = entity_type
+            return [
+                {
+                    "entity_id": eid1,
+                    "canonical_name": "Chloe Wong",
+                    "entity_type": "person",
+                    "score": 100.0,
+                    "name_match": "exact",
+                    "aliases": [],
+                },
+                {
+                    "entity_id": eid2,
+                    "canonical_name": "Chloe Tan",
+                    "entity_type": "person",
+                    "score": 90.0,
+                    "name_match": "exact",
+                    "aliases": [],
+                },
+            ]
+
+        with patch(
+            "butlers.modules.memory.tools.entities.entity_resolve",
+            side_effect=mock_entity_resolve,
+        ):
+            await contact_resolve(pool, "Chloe", memory_pool=memory_pool)
+
+        assert captured_args.get("entity_type") == "person"
+
+    async def test_salience_uses_all_six_signal_types(self):
+        """Salience scoring incorporates all 6 signal types from §10.4."""
+        import datetime
+
+        eid1 = str(uuid.uuid4())
+        eid2 = str(uuid.uuid4())
+
+        now = datetime.datetime.now(datetime.UTC)
+        recent_interaction = now - datetime.timedelta(days=3)  # <7 days = +15
+
+        pool = MagicMock()
+        pool.fetch = AsyncMock(
+            side_effect=[
+                # Exact match rows
+                [
+                    {
+                        "id": "uuid-1",
+                        "first_name": "Chloe",
+                        "last_name": "Wong",
+                        "nickname": None,
+                        "company": None,
+                        "job_title": None,
+                        "metadata": {},
+                        "entity_id": uuid.UUID(eid1),
+                    },
+                    {
+                        "id": "uuid-2",
+                        "first_name": "Chloe",
+                        "last_name": "Tan",
+                        "nickname": None,
+                        "company": None,
+                        "job_title": None,
+                        "metadata": {},
+                        "entity_id": uuid.UUID(eid2),
+                    },
+                ],
+                # contact_data: signal 5 (stay_in_touch: weekly = +10)
+                [
+                    {"id": "uuid-1", "stay_in_touch_days": 7},
+                    {"id": "uuid-2", "stay_in_touch_days": None},
+                ],
+                # relationships: signal 1 (partner = +50)
+                [{"contact_id": "uuid-1", "forward_label": "partner"}],
+                # interactions: signal 2 (6 interactions * 2 = +12) + signal 3 (recent <7d = +15)
+                [
+                    {
+                        "contact_id": "uuid-1",
+                        "count_90d": 6,
+                        "most_recent": recent_interaction,
+                    }
+                ],
+                # fact_note: signal 4 (3+3=6 = +6)
+                [{"contact_id": "uuid-1", "fact_count": 3, "note_count": 3}],
+                # groups: signal 6 (family = +10)
+                [{"contact_id": "uuid-1", "type": "family"}],
+            ]
+        )
+        memory_pool = MagicMock()
+
+        captured_hints: dict = {}
+
+        async def mock_entity_resolve(
+            pool, name, *, tenant_id, entity_type=None, context_hints=None, enable_fuzzy=False
+        ):
+            captured_hints.update(context_hints or {})
+            return [
+                {
+                    "entity_id": eid1,
+                    "canonical_name": "Chloe Wong",
+                    "entity_type": "person",
+                    "score": 200.0,
+                    "name_match": "exact",
+                    "aliases": [],
+                },
+                {
+                    "entity_id": eid2,
+                    "canonical_name": "Chloe Tan",
+                    "entity_type": "person",
+                    "score": 90.0,
+                    "name_match": "exact",
+                    "aliases": [],
+                },
+            ]
+
+        with patch(
+            "butlers.modules.memory.tools.entities.entity_resolve",
+            side_effect=mock_entity_resolve,
+        ):
+            await contact_resolve(pool, "Chloe", memory_pool=memory_pool)
+
+        domain_scores = captured_hints.get("domain_scores", {})
+        # Expected salience for uuid-1:
+        # signal 1: partner = +50
+        # signal 2: 6 * 2 = +12
+        # signal 3: recent <7d = +15
+        # signal 4: 3+3=6 density = +6
+        # signal 5: weekly stay_in_touch = +10
+        # signal 6: family group = +10
+        # Total = 50 + 12 + 15 + 6 + 10 + 10 = 103
+        assert eid1 in domain_scores
+        assert domain_scores[eid1] == 103.0
+        assert eid2 in domain_scores
+        assert domain_scores[eid2] == 0.0

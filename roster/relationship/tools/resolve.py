@@ -1,12 +1,20 @@
-"""Contact resolution — resolve name strings to contact IDs."""
+"""Contact resolution — resolve name strings to contact IDs.
+
+When multiple candidates exist, salience scores from relationship domain data
+are passed as context_hints.domain_scores to entity_resolve, which combines
+them with generic entity scoring to produce a ranked candidate list.
+"""
 
 from __future__ import annotations
 
 import datetime
 import json
+import logging
 from typing import Any
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 CONFIDENCE_HIGH = "high"
 CONFIDENCE_MEDIUM = "medium"
@@ -77,15 +85,34 @@ async def contact_resolve(
     pool: asyncpg.Pool,
     name: str,
     context: str | None = None,
+    *,
+    memory_pool: asyncpg.Pool | None = None,
+    memory_tenant_id: str = "relationship",
 ) -> dict[str, Any]:
     """Resolve a name string to a contact_id.
 
     Resolution strategy (in order):
     1. Exact full-name match (case-insensitive) -> HIGH confidence, single contact_id.
-    2. Partial match (first name or last name, case-insensitive) -> MEDIUM confidence, candidates.
-    3. Context-boosted: if context is provided and a candidate's details/notes match,
+    2. Multiple candidates -> compute salience scores, call entity_resolve (when memory_pool
+       is provided and contacts have entity_ids), apply 30-point gap threshold.
+    3. Partial match (first name or last name, case-insensitive) -> MEDIUM confidence.
+    4. Context-boosted: if context is provided and a candidate's details/notes match,
        boost that candidate's relevance.
-    4. No match -> {contact_id: None, confidence: "none", candidates: []}.
+    5. No match -> {contact_id: None, confidence: "none", candidates: []}.
+
+    When ``memory_pool`` is provided, salience scores are passed as
+    ``context_hints.domain_scores`` to ``entity_resolve``, which combines the
+    relationship-domain signals with its own generic scoring (name-match quality
+    + graph neighbourhood) to produce the final ranked candidate list.
+    Entity resolution is fail-open: if it fails the local scoring is used instead.
+
+    Args:
+        pool: asyncpg connection pool for the relationship butler database.
+        name: The name string to resolve.
+        context: Optional free-text context for boosting candidate scores.
+        memory_pool: Optional asyncpg pool for the memory module database.
+            When provided, entity_resolve is called with salience domain_scores.
+        memory_tenant_id: Tenant ID used when querying the memory module.
 
     Returns:
         {
@@ -96,7 +123,7 @@ async def contact_resolve(
                     "contact_id": uuid,
                     "name": str,
                     "confidence": str,
-                    "score": int,
+                    "score": int | float,
                     "salience": int
                 }
             ],
@@ -117,7 +144,7 @@ async def contact_resolve(
     # Step 1: Exact match (case-insensitive, listed contacts only)
     exact_rows = await pool.fetch(
         """
-        SELECT id, first_name, last_name, nickname, company, job_title, metadata
+        SELECT id, first_name, last_name, nickname, company, job_title, metadata, entity_id
         FROM contacts
         WHERE listed = true
           AND (
@@ -151,13 +178,27 @@ async def contact_resolve(
         }
 
     if len(exact_rows) > 1:
-        # Multiple exact matches -- ambiguous, return as MEDIUM with context boosting
+        # Multiple exact matches -- ambiguous, need disambiguation
         candidates = _build_candidates(exact_rows, base_score=90)
-        candidates = await _compute_salience(pool, candidates)
-        if context:
-            candidates = await _boost_by_context(pool, candidates, context)
+
+        # Integrate with entity_resolve when memory_pool is available
+        if memory_pool is not None:
+            candidates = await _resolve_via_entity_resolve(
+                pool,
+                memory_pool,
+                candidates,
+                name,
+                context,
+                memory_tenant_id,
+            )
+        else:
+            # Fallback: local salience + context boost
+            candidates = await _compute_salience(pool, candidates)
+            if context:
+                candidates = await _boost_by_context(pool, candidates, context)
+
         candidates.sort(key=lambda c: c["score"], reverse=True)
-        # If context boosting yields a clear winner (≥30 point gap), return HIGH
+
         if len(candidates) >= 2 and candidates[0]["score"] - candidates[1]["score"] >= 30:
             winner = candidates[0]
             inferred_reason = _generate_inferred_reason(winner)
@@ -180,7 +221,7 @@ async def contact_resolve(
     name_parts = name.split()
     partial_rows = await pool.fetch(
         """
-        SELECT id, first_name, last_name, nickname, company, job_title, metadata
+        SELECT id, first_name, last_name, nickname, company, job_title, metadata, entity_id
         FROM contacts
         WHERE listed = true
           AND (
@@ -214,7 +255,7 @@ async def contact_resolve(
             conditions.append(f"nickname ILIKE '%' || ${i} || '%'")
             params.append(part)
         query = f"""
-            SELECT id, first_name, last_name, nickname, company, job_title, metadata
+            SELECT id, first_name, last_name, nickname, company, job_title, metadata, entity_id
             FROM contacts
             WHERE listed = true AND ({" OR ".join(conditions)})
             ORDER BY first_name, last_name, nickname
@@ -233,12 +274,24 @@ async def contact_resolve(
     # Score partial matches
     candidates = _score_partial_matches(partial_rows, name, name_parts)
 
-    # Salience scoring (only when multiple candidates)
     if len(candidates) >= 2:
-        candidates = await _compute_salience(pool, candidates)
-
-    # Context boosting
-    if context:
+        # Integrate with entity_resolve when memory_pool is available
+        if memory_pool is not None:
+            candidates = await _resolve_via_entity_resolve(
+                pool,
+                memory_pool,
+                candidates,
+                name,
+                context,
+                memory_tenant_id,
+            )
+        else:
+            # Fallback: local salience + context boost
+            candidates = await _compute_salience(pool, candidates)
+            if context:
+                candidates = await _boost_by_context(pool, candidates, context)
+    elif context:
+        # Single candidate still benefits from context boosting for score accuracy
         candidates = await _boost_by_context(pool, candidates, context)
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -284,6 +337,7 @@ def _build_candidates(rows: list[asyncpg.Record], base_score: int = 50) -> list[
             "confidence": CONFIDENCE_MEDIUM,
             "score": base_score,
             "salience": 0,
+            "_entity_id": str(row["entity_id"]) if row.get("entity_id") else None,
         }
         for row in rows
     ]
@@ -327,8 +381,93 @@ def _score_partial_matches(
                 "confidence": CONFIDENCE_MEDIUM,
                 "score": score,
                 "salience": 0,
+                "_entity_id": str(row["entity_id"]) if row.get("entity_id") else None,
             }
         )
+
+    return candidates
+
+
+async def _resolve_via_entity_resolve(
+    pool: asyncpg.Pool,
+    memory_pool: asyncpg.Pool,
+    candidates: list[dict[str, Any]],
+    name: str,
+    context: str | None,
+    memory_tenant_id: str,
+) -> list[dict[str, Any]]:
+    """Integrate entity_resolve with salience domain_scores.
+
+    Steps:
+    1. Compute salience scores for each candidate from relationship domain data.
+    2. Map contact_id -> entity_id for each candidate.
+    3. Call entity_resolve with salience scores as context_hints.domain_scores.
+    4. Map entity_resolve results back to candidates, merging entity-level scores.
+
+    Falls back gracefully to local salience + context boost if entity_resolve
+    fails or no candidates have entity_ids.
+
+    Only called when len(candidates) >= 2.
+    """
+    from butlers.modules.memory.tools.entities import entity_resolve
+
+    # Step 1: Compute salience scores for all candidates
+    candidates = await _compute_salience(pool, candidates)
+
+    # Step 2: Collect entity_ids and build salience domain_scores
+    domain_scores: dict[str, float] = {}
+    entity_id_to_contact: dict[str, str] = {}
+
+    for cand in candidates:
+        entity_id = cand.get("_entity_id")
+        if entity_id:
+            domain_scores[entity_id] = float(cand["salience"])
+            entity_id_to_contact[entity_id] = cand["contact_id"]
+
+    # If no candidates have entity_ids, fall back to local context boost
+    if not domain_scores:
+        if context:
+            candidates = await _boost_by_context(pool, candidates, context)
+        return candidates
+
+    # Step 3: Build context_hints
+    context_hints: dict[str, Any] = {"domain_scores": domain_scores}
+    if context:
+        context_hints["topic"] = context
+
+    # Step 4: Call entity_resolve with domain_scores
+    try:
+        entity_candidates = await entity_resolve(
+            memory_pool,
+            name,
+            tenant_id=memory_tenant_id,
+            entity_type="person",
+            context_hints=context_hints,
+        )
+    except Exception:
+        logger.exception("entity_resolve failed for name=%r; falling back to local scoring", name)
+        if context:
+            candidates = await _boost_by_context(pool, candidates, context)
+        return candidates
+
+    # Step 5: Merge entity_resolve scores back into candidates
+    # Build a map of entity_id -> entity score from entity_resolve results
+    entity_scores: dict[str, float] = {ec["entity_id"]: ec["score"] for ec in entity_candidates}
+
+    # For candidates with an entity_id, replace their score with the entity_resolve
+    # composite score (which already includes name-match quality + graph boost + domain_scores).
+    # For candidates without an entity_id, add local context boost only.
+    contact_ids_with_entity = set(entity_id_to_contact.values())
+
+    for cand in candidates:
+        entity_id = cand.get("_entity_id")
+        if entity_id and entity_id in entity_scores:
+            # entity_resolve already incorporates salience via domain_scores;
+            # use its composite score as the candidate score
+            cand["score"] = entity_scores[entity_id]
+        elif cand["contact_id"] not in contact_ids_with_entity and context:
+            # No entity link — fall back to context boost for this candidate
+            await _boost_single_by_context(pool, cand, context)
 
     return candidates
 
@@ -485,7 +624,9 @@ async def _compute_salience(
             for group_type in groups[cid]:
                 salience += GROUP_TYPE_WEIGHTS.get(group_type, 0)
 
-        # Store salience and add to score
+        # Store salience and add to score.
+        # When entity_resolve integration is active, the entity score will override this;
+        # when falling back to local scoring, this addition is the final score.
         candidate["salience"] = salience
         candidate["score"] += salience
 
@@ -498,61 +639,67 @@ async def _boost_by_context(
     context: str,
 ) -> list[dict[str, Any]]:
     """Boost candidate scores based on context matching against metadata and notes."""
-    context_words = [w.lower() for w in context.split() if len(w) > 2]
-
     for candidate in candidates:
-        cid = candidate["contact_id"]
-
-        # Check metadata and explicit profile fields
-        detail_row = await pool.fetchrow(
-            """
-            SELECT metadata, company, job_title, first_name, last_name, nickname
-            FROM contacts
-            WHERE id = $1
-            """,
-            cid,
-        )
-        if detail_row:
-            metadata = detail_row["metadata"]
-            metadata_text = (
-                json.dumps(metadata).lower()
-                if isinstance(metadata, dict)
-                else str(metadata or "").lower()
-            )
-            profile_text = " ".join(
-                [
-                    str(detail_row["company"] or ""),
-                    str(detail_row["job_title"] or ""),
-                    str(detail_row["first_name"] or ""),
-                    str(detail_row["last_name"] or ""),
-                    str(detail_row["nickname"] or ""),
-                ]
-            ).lower()
-            for word in context_words:
-                if word in metadata_text or word in profile_text:
-                    candidate["score"] += 10
-                    break
-
-        # Check notes
-        note_rows = await pool.fetch("SELECT body FROM notes WHERE contact_id = $1 LIMIT 10", cid)
-        for note in note_rows:
-            note_text = str(note["body"] or "").lower()
-            for word in context_words:
-                if word in note_text:
-                    candidate["score"] += 5
-                    break
-
-        # Check interactions
-        interaction_rows = await pool.fetch(
-            "SELECT summary FROM interactions WHERE contact_id = $1"
-            " AND summary IS NOT NULL LIMIT 10",
-            cid,
-        )
-        for interaction in interaction_rows:
-            int_text = interaction["summary"].lower()
-            for word in context_words:
-                if word in int_text:
-                    candidate["score"] += 5
-                    break
-
+        await _boost_single_by_context(pool, candidate, context)
     return candidates
+
+
+async def _boost_single_by_context(
+    pool: asyncpg.Pool,
+    candidate: dict[str, Any],
+    context: str,
+) -> None:
+    """Boost a single candidate's score based on context matching. Modifies in-place."""
+    context_words = [w.lower() for w in context.split() if len(w) > 2]
+    cid = candidate["contact_id"]
+
+    # Check metadata and explicit profile fields
+    detail_row = await pool.fetchrow(
+        """
+        SELECT metadata, company, job_title, first_name, last_name, nickname
+        FROM contacts
+        WHERE id = $1
+        """,
+        cid,
+    )
+    if detail_row:
+        metadata = detail_row["metadata"]
+        metadata_text = (
+            json.dumps(metadata).lower()
+            if isinstance(metadata, dict)
+            else str(metadata or "").lower()
+        )
+        profile_text = " ".join(
+            [
+                str(detail_row["company"] or ""),
+                str(detail_row["job_title"] or ""),
+                str(detail_row["first_name"] or ""),
+                str(detail_row["last_name"] or ""),
+                str(detail_row["nickname"] or ""),
+            ]
+        ).lower()
+        for word in context_words:
+            if word in metadata_text or word in profile_text:
+                candidate["score"] += 10
+                break
+
+    # Check notes
+    note_rows = await pool.fetch("SELECT body FROM notes WHERE contact_id = $1 LIMIT 10", cid)
+    for note in note_rows:
+        note_text = str(note["body"] or "").lower()
+        for word in context_words:
+            if word in note_text:
+                candidate["score"] += 5
+                break
+
+    # Check interactions
+    interaction_rows = await pool.fetch(
+        "SELECT summary FROM interactions WHERE contact_id = $1 AND summary IS NOT NULL LIMIT 10",
+        cid,
+    )
+    for interaction in interaction_rows:
+        int_text = interaction["summary"].lower()
+        for word in context_words:
+            if word in int_text:
+                candidate["score"] += 5
+                break
