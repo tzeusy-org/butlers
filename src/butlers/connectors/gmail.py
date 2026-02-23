@@ -60,7 +60,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 from prometheus_client import REGISTRY, generate_latest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from butlers.connectors.gmail_policy import (
     INGESTION_TIER_FULL,
@@ -413,7 +413,7 @@ class BackfillJob(BaseModel):
     # Date range for historical traversal (YYYY-MM-DD strings)
     date_from: str
     date_to: str
-    # Rate limit: max messages per hour
+    # Rate limit: max messages per hour (must be >= 1 to avoid division by zero in token bucket)
     rate_limit_per_hour: int = 100
     # Daily cost cap in cents
     daily_cost_cap_cents: int = 500
@@ -421,6 +421,17 @@ class BackfillJob(BaseModel):
     cursor: dict[str, Any] | None = None
     # Optional target categories filter (e.g. ["finance", "health"])
     target_categories: list[str] = []
+
+    @field_validator("date_from", "date_to")
+    @classmethod
+    def _require_non_empty_date(cls, v: str, info: object) -> str:
+        """Reject empty date strings that would produce malformed Gmail queries."""
+        if not v:
+            raise ValueError(
+                f"BackfillJob.{getattr(info, 'field_name', 'date')} must not be empty; "
+                "expected YYYY-MM-DD format from Switchboard"
+            )
+        return v
 
 
 class GmailConnectorRuntime:
@@ -445,6 +456,9 @@ class GmailConnectorRuntime:
         self._token_expires_at: datetime | None = None
         self._running = False
         self._semaphore = asyncio.Semaphore(config.connector_max_inflight)
+        # Dedicated semaphore for backfill: limits to (max_inflight - 1) concurrent slots,
+        # reserving at least one slot for live ingestion as documented in the comment below.
+        self._backfill_semaphore = asyncio.Semaphore(max(1, config.connector_max_inflight - 1))
 
         # Metrics
         self._metrics = ConnectorMetrics(
@@ -472,9 +486,6 @@ class GmailConnectorRuntime:
 
         # Backfill polling (docs/connectors/interface.md section 14)
         self._backfill_task: asyncio.Task[None] | None = None
-        # Token bucket for rate limiting active backfill job
-        self._backfill_tokens: float = 0.0
-        self._backfill_token_last_refill: float = time.time()
 
         # Label filter policy (per docs/connectors/email_ingestion_policy.md §9)
         self._label_filter = LabelFilterPolicy.from_lists(
@@ -962,10 +973,20 @@ class GmailConnectorRuntime:
         cost_spent_cents = 0
         progress_counter = 0
 
-        # Token-bucket state for rate limiting (tokens = messages allowed)
+        # Guard against division by zero in token bucket (rate must be >= 1)
+        if job.rate_limit_per_hour <= 0:
+            logger.warning(
+                "Backfill job %s: rate_limit_per_hour=%d <= 0; skipping to avoid divide-by-zero.",
+                job.job_id,
+                job.rate_limit_per_hour,
+            )
+            return
+
+        # Token-bucket state for rate limiting (tokens = messages allowed per hour)
+        # Kept as local variables: state is per-job-execution and not shared across jobs.
         # Refill rate: rate_limit_per_hour / 3600 tokens/second
-        self._backfill_tokens = float(job.rate_limit_per_hour)
-        self._backfill_token_last_refill = time.time()
+        backfill_tokens: float = float(job.rate_limit_per_hour)
+        backfill_token_last_refill: float = time.time()
         token_refill_rate = job.rate_limit_per_hour / 3600.0  # tokens per second
 
         # Resume cursor from server-side job state
@@ -1006,31 +1027,30 @@ class GmailConnectorRuntime:
 
                     # Token-bucket rate limiting
                     now = time.time()
-                    elapsed = now - self._backfill_token_last_refill
-                    self._backfill_tokens = min(
+                    elapsed = now - backfill_token_last_refill
+                    backfill_tokens = min(
                         float(job.rate_limit_per_hour),
-                        self._backfill_tokens + elapsed * token_refill_rate,
+                        backfill_tokens + elapsed * token_refill_rate,
                     )
-                    self._backfill_token_last_refill = now
+                    backfill_token_last_refill = now
 
-                    if self._backfill_tokens < 1.0:
+                    if backfill_tokens < 1.0:
                         # Wait until a token is available
-                        wait_s = (1.0 - self._backfill_tokens) / token_refill_rate
+                        wait_s = (1.0 - backfill_tokens) / token_refill_rate
                         logger.debug(
                             "Backfill rate limit: waiting %.2fs for token (job %s)",
                             wait_s,
                             job.job_id,
                         )
                         await asyncio.sleep(wait_s)
-                        self._backfill_tokens = 0.0
-                        self._backfill_token_last_refill = time.time()
+                        backfill_tokens = 0.0
+                        backfill_token_last_refill = time.time()
                     else:
-                        self._backfill_tokens -= 1.0
+                        backfill_tokens -= 1.0
 
                     # Ingest using at-most (connector_max_inflight - 1) slots
-                    # to always leave one slot for live ingestion
-                    backfill_semaphore = self._semaphore
-                    async with backfill_semaphore:
+                    # to always leave one slot for live ingestion (enforced by _backfill_semaphore)
+                    async with self._backfill_semaphore:
                         try:
                             message_data = await self._fetch_message(message_id)
                             policy_result = evaluate_message_policy(

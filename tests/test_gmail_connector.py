@@ -3482,3 +3482,80 @@ class TestHeartbeatCapabilities:
 
         envelope = sent_envelopes[0]
         assert "capabilities" not in envelope
+
+
+# ---------------------------------------------------------------------------
+# Tests for review-fix validations
+# (empty dates in BackfillJob, rate_limit_per_hour <= 0 guard,
+#  dedicated backfill semaphore slot reservation)
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillJobValidation:
+    """Tests for BackfillJob field validators added in review fixes."""
+
+    def test_empty_date_from_raises(self) -> None:
+        """BackfillJob rejects empty date_from to prevent malformed Gmail queries."""
+        from butlers.connectors.gmail import BackfillJob
+
+        with pytest.raises(Exception, match="must not be empty"):
+            BackfillJob(job_id="j1", date_from="", date_to="2025-12-31")
+
+    def test_empty_date_to_raises(self) -> None:
+        """BackfillJob rejects empty date_to to prevent malformed Gmail queries."""
+        from butlers.connectors.gmail import BackfillJob
+
+        with pytest.raises(Exception, match="must not be empty"):
+            BackfillJob(job_id="j2", date_from="2025-01-01", date_to="")
+
+    def test_valid_dates_accepted(self) -> None:
+        """BackfillJob accepts non-empty YYYY-MM-DD date strings."""
+        from butlers.connectors.gmail import BackfillJob
+
+        job = BackfillJob(job_id="j3", date_from="2025-01-01", date_to="2025-12-31")
+        assert job.date_from == "2025-01-01"
+        assert job.date_to == "2025-12-31"
+
+    async def test_zero_rate_limit_skips_job(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """_execute_backfill_job skips execution when rate_limit_per_hour == 0."""
+        from butlers.connectors.gmail import BackfillJob
+
+        job = BackfillJob(
+            job_id="zero-rate",
+            date_from="2025-01-01",
+            date_to="2025-01-31",
+            rate_limit_per_hour=0,
+        )
+
+        fetch_called = False
+
+        async def mock_fetch_page(**kwargs: object) -> tuple[list, None]:
+            nonlocal fetch_called
+            fetch_called = True
+            return ([], None)
+
+        with patch.object(
+            backfill_runtime,
+            "_fetch_backfill_message_page",
+            new=AsyncMock(side_effect=mock_fetch_page)
+        ):
+            await backfill_runtime._execute_backfill_job(job)  # type: ignore[arg-type]
+
+        # fetch should not be called because rate guard exits early
+        assert not fetch_called, (
+            "fetch_backfill_message_page should not be called with rate_limit_per_hour=0"
+        )
+
+    def test_backfill_semaphore_is_one_less_than_max_inflight(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """_backfill_semaphore is initialized to (max_inflight - 1) slots."""
+        max_inflight = backfill_runtime._config.connector_max_inflight
+        # asyncio.Semaphore._value is the initial count
+        expected = max(1, max_inflight - 1)
+        assert backfill_runtime._backfill_semaphore._value == expected, (
+            f"Expected backfill semaphore value={expected}, "
+            f"got {backfill_runtime._backfill_semaphore._value}"
+        )
