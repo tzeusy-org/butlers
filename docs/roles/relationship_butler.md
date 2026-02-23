@@ -176,7 +176,7 @@ All domain tables live in the `butler_relationship` database and are managed thr
 
 | Table | Purpose |
 |---|---|
-| `contacts` | Primary contact records (name, company, job, gender, pronouns, avatar, metadata) |
+| `contacts` | Primary contact records (name, company, job, gender, pronouns, avatar, metadata, `entity_id` FK to memory entity) |
 | `contact_info` | Multi-valued contact methods (type/value/label with primary flag) |
 | `addresses` | Physical addresses with `is_current` flag |
 | `relationships` | Bidirectional typed relationships between contacts |
@@ -199,7 +199,17 @@ All domain tables live in the `butler_relationship` database and are managed thr
 
 Note: Stay-in-touch cadence is stored as `stay_in_touch_days` column on the `contacts` table, not a separate table.
 
-### 6.3 Data Integrity Rules
+### 6.3 Contact-Entity Bridge
+Each contact record holds an `entity_id` FK pointing to the memory module's entity registry (§5.5 of `docs/modules/memory.md`). This establishes a 1:1 mapping between a domain contact and a stable memory identity.
+
+- **On contact creation:** The butler creates a corresponding memory entity via `entity_create(canonical_name="{first_name} {last_name}", entity_type="person", aliases=[nickname, first_name, ...])` and stores the returned `entity_id` on the contact row.
+- **On contact update (name change):** The butler updates the linked entity's `canonical_name` and aliases to stay in sync.
+- **On contact merge:** The butler calls `entity_merge` on the memory side as well, so facts from both source entities consolidate under the surviving contact's entity.
+- **Nullable:** `entity_id` is nullable to support legacy contacts created before the entity registry existed. The Contact Health Audit (§8.5) should flag contacts without linked entities for backfill.
+
+All memory facts extracted about a contact MUST be stored with the contact's `entity_id`, not a raw name string. This ensures that facts about "Chloe", "Chloe Wong", and "Chlo" all resolve to the same identity and are retrievable together.
+
+### 6.4 Data Integrity Rules
 - All entity mutations auto-populate the `activity_feed` table.
 - Gift status transitions are forward-only and enforced at the tool layer.
 - Loan records use a two-party model (lender_contact_id, borrower_contact_id) — not a direction enum.
@@ -265,9 +275,11 @@ Target-state additions:
 
 ### 9.1 Memory Module (Required)
 The memory module enables:
-- **Fact extraction:** Conversational messages are parsed for relationship-relevant facts (preferences, life events, opinions, plans) and stored with structured metadata (subject, predicate, permanence, importance, tags).
-- **Contextual recall:** Before answering questions about a contact, the butler queries both domain tools and memory facts, synthesizing a complete picture.
-- **Cross-referencing:** Memory facts enable contextual inference that domain tables alone cannot provide (e.g. "Sarah is allergic to shellfish" stored as a fact enables the butler to flag seafood restaurant suggestions).
+- **Entity-keyed fact storage:** All relationship-relevant facts are anchored to memory entities (via `entity_id`), not raw name strings. This solves the disambiguation problem: facts about "Chloe", "Chloe Wong", and "Chlo" all resolve to the same entity and are retrievable together. See §6.3 for the contact-entity bridge.
+- **Fact extraction:** Conversational messages are parsed for relationship-relevant facts (preferences, life events, opinions, plans) and stored with structured metadata (entity_id, predicate, permanence, importance, tags).
+- **Entity resolution:** When a person is mentioned in conversation, the butler calls `entity_resolve` with the name and domain-specific `context_hints` (including salience scores from §10.4). The memory module returns ranked entity candidates; the butler applies its disambiguation policy to select or ask.
+- **Contextual recall:** Before answering questions about a contact, the butler queries both domain tools and memory facts (filtered by `entity_id`), synthesizing a complete picture. Entity-keyed retrieval ensures all facts about a person are found regardless of which name variant was used at storage time.
+- **Cross-referencing:** Memory facts enable contextual inference that domain tables alone cannot provide (e.g. "Sarah is allergic to shellfish" stored as a fact enables the butler to flag seafood restaurant suggestions). Entity-keyed facts make cross-referencing reliable even when the same person is referred to by different names across conversations.
 
 Memory fact taxonomy for relationship domain:
 - **Permanent facts:** Birthday, family relationships, identity-defining attributes.
@@ -292,10 +304,12 @@ Calendar rules:
 When processing messages routed from Switchboard (indicated by `request_context` presence), the butler must:
 
 1. **Identify mentions of people** in the message text.
-2. **Extract facts** about those people using the memory module's fact taxonomy.
-3. **Store facts** with appropriate permanence, importance, and tags.
-4. **Log interactions** when the message implies the user interacted with someone.
-5. **Update domain records** when facts map to structured fields (e.g. a birthday mentioned in conversation should create both a memory fact and an `important_dates` record).
+2. **Resolve mentions to entities** by calling `entity_resolve(name, entity_type="person", context_hints)` for each person mention. Context hints should include conversation topic, co-mentioned names, and salience scores from domain data (§10.4). Apply the disambiguation policy from §10.4 to select an entity or ask the user.
+3. **Create entities for new people** when `entity_resolve` returns zero candidates and the message contains enough identifying information. Call `entity_create` and link to a new contact if appropriate, or defer contact creation until more information is available.
+4. **Extract facts** about those people using the memory module's fact taxonomy.
+5. **Store facts with `entity_id`**, not raw subject strings. Every fact extracted from conversation MUST be anchored to the resolved entity. This ensures facts are retrievable regardless of which name variant was used.
+6. **Log interactions** when the message implies the user interacted with someone.
+7. **Update domain records** when facts map to structured fields (e.g. a birthday mentioned in conversation should create both a memory fact and an `important_dates` record).
 
 ### 10.2 Contextual Inference
 The butler should perform cross-fact inference when answering questions or generating suggestions:
@@ -308,7 +322,8 @@ The butler should perform cross-fact inference when answering questions or gener
 
 ### 10.3 Duplicate and Conflict Resolution
 When ingesting facts that conflict with existing data:
-- **Memory facts:** Use the memory module's supersession mechanism (new fact supersedes old with linking).
+- **Entity deduplication:** If two entities are later discovered to represent the same person (e.g. "Sarah W." and "Sarah Wong" created in separate conversations), use `entity_merge` to consolidate them. This re-points all facts from the source entity to the target entity. The corresponding contacts should also be merged via `contact_merge`.
+- **Memory facts:** Use the memory module's supersession mechanism (new fact supersedes old with linking). Entity-keyed uniqueness constraints (`entity_id + predicate`) prevent duplicate facts about the same entity, even when different name variants were used.
 - **Domain records:** Flag conflicts for user confirmation rather than silently overwriting (e.g. "I have Sarah's birthday as March 15, but you just said March 16 — which is correct?").
 
 ### 10.4 Contact Salience and First-Name Disambiguation
@@ -320,6 +335,16 @@ When a user says "I met Chloe on Saturday", the system must resolve "Chloe" to a
 #### Design Principle
 
 Contacts have implicit **salience** — a composite signal of relational closeness, interaction density, and user-declared importance. When multiple contacts match a first-name query, salience scoring breaks ties transparently: the system picks the most salient candidate and confirms the inference to the user rather than asking every time.
+
+#### Integration with Memory Entity Resolution
+
+Salience scoring is the relationship butler's domain-specific contribution to the memory module's generic entity resolution (§6.4 of `docs/modules/memory.md`). The integration works as follows:
+
+1. **`contact_resolve` calls `entity_resolve`** under the hood, passing salience scores as `context_hints.domain_scores` (a dict of `entity_id → salience_score`).
+2. **The memory module** combines its generic scoring (name match quality + graph neighborhood) with the butler-provided domain scores to produce a final ranked candidate list.
+3. **The relationship butler** applies the resolution thresholds below to decide whether to auto-resolve or ask the user.
+
+This separation means the memory module handles candidate discovery and generic ranking, while the relationship butler owns the disambiguation policy and domain-specific importance signals. Other butlers that load the memory module can provide their own `context_hints` without changes to the memory module.
 
 #### Salience Score Computation
 

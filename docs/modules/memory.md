@@ -67,7 +67,7 @@ This document is the authoritative target-state contract for memory behavior whe
 - Lifecycle workers must be idempotent.
 
 ## 5. Data Model Contract
-The module defines three primary memory classes plus provenance/audit tables.
+The module defines three primary memory classes, an entity identity registry, and provenance/audit tables.
 
 ### 5.1 Episodes (observations)
 - Purpose: high-volume, short-lived session observations.
@@ -77,10 +77,11 @@ The module defines three primary memory classes plus provenance/audit tables.
 
 ### 5.2 Facts (semantic memory)
 - Purpose: durable subject-predicate-content knowledge.
-- Required fields: `id`, `tenant_id`, `subject`, `predicate`, `content`, `scope`, `validity`, `confidence`, `decay_rate`, `permanence`, `source_butler`, `source_episode_id`, `supersedes_id`, `created_at`, `last_confirmed_at`, `last_referenced_at`, `metadata`, `tags`.
+- Required fields: `id`, `tenant_id`, `entity_id` (nullable FK to entities), `subject`, `predicate`, `content`, `scope`, `validity`, `confidence`, `decay_rate`, `permanence`, `source_butler`, `source_episode_id`, `supersedes_id`, `created_at`, `last_confirmed_at`, `last_referenced_at`, `metadata`, `tags`.
 - Lifecycle states: `active`, `fading`, `superseded`, `expired`, `retracted`.
 - Backward compatibility: legacy `forgotten` MUST normalize to canonical `retracted`.
-- Constraint: for active facts, `(tenant_id, scope, subject, predicate)` uniqueness MUST be DB-enforced (partial unique index).
+- Entity linking: When `entity_id` is set, the fact is anchored to a stable identity rather than a raw subject string. The `subject` field remains populated as a human-readable label but is not the primary key for deduplication. When `entity_id` is null, the `subject` string is used as-is (backward compatible with unresolved facts).
+- Constraint: for active facts where `entity_id IS NOT NULL`, `(tenant_id, scope, entity_id, predicate)` uniqueness MUST be DB-enforced (partial unique index). For active facts where `entity_id IS NULL`, `(tenant_id, scope, subject, predicate)` uniqueness MUST be DB-enforced (separate partial unique index). Both constraints coexist.
 
 ### 5.3 Rules (procedural memory)
 - Purpose: behavior guidance learned from repeated outcomes.
@@ -93,6 +94,15 @@ The module defines three primary memory classes plus provenance/audit tables.
 - `memory_events`: append-only audit stream for all memory mutations/lifecycle transitions.
 - `rule_applications`: per-application outcome records.
 - `embedding_versions`: model/version tracking and re-embed migrations.
+
+### 5.5 Entities (identity registry)
+- Purpose: Stable identity anchors for recurring subjects referenced in facts and episodes. Solves the disambiguation problem where a raw string like "Chloe" may refer to multiple distinct people, places, or organizations.
+- Required fields: `id`, `tenant_id`, `canonical_name`, `entity_type`, `aliases` (text[]), `metadata` (JSONB), `created_at`, `updated_at`.
+- Supported entity types: `person`, `organization`, `place`, `other`. Extensible via `metadata` for domain-specific typing.
+- Aliases: Alternative names, nicknames, diminutives, and abbreviations (e.g. `["Chloe Wong", "Chlo", "CW"]`). Used by `entity_resolve` for candidate discovery.
+- Lifecycle: Entities are durable. They can be merged (`entity_merge`) but not soft-deleted once referenced by facts. Unreferenced entities may be pruned by hygiene workers.
+- Constraint: `(tenant_id, canonical_name, entity_type)` uniqueness MUST be DB-enforced.
+- Ownership: The memory module owns the entity registry schema and resolution algorithm. Hosting butlers own the disambiguation policy (when to auto-resolve vs. ask the user) and provide domain-specific scoring signals via `context_hints`.
 
 ## 6. Retrieval and Context Contract
 ### 6.1 Retrieval modes
@@ -114,7 +124,50 @@ Confidence decay:
 - Within a butler, scope supports `global` plus role-local scopes.
 - Cross-butler memory access is not a direct data-plane feature; it requires explicit routed/tool-level integration.
 
-### 6.4 Context assembly contract
+### 6.4 Entity resolution contract
+
+`entity_resolve` enables hosting butlers to map an ambiguous name string to a stable entity identity. The memory module provides candidate discovery and generic scoring; the hosting butler provides domain-specific signals and decides the confidence threshold for auto-resolution vs. user clarification.
+
+**Candidate discovery** (in priority order):
+1. Exact `canonical_name` match (case-insensitive).
+2. Exact alias match (case-insensitive).
+3. Prefix/substring match on canonical name and aliases.
+4. Optional: fuzzy match (edit distance ≤ 2) when enabled via config.
+
+**Candidate scoring:**
+Each candidate receives a composite score from two components:
+
+| Component | Weight | Description |
+|-----------|--------|-------------|
+| Name-match quality | Primary | Exact match > alias match > prefix > fuzzy. Provides the base score. |
+| Graph neighborhood similarity | Secondary | Semantic overlap between the candidate's associated facts and the caller-provided `context_hints`. |
+
+Graph neighborhood scoring: For each candidate entity, the resolver retrieves its associated facts (facts where `entity_id` matches). It then computes overlap between the candidate's fact predicates/content and the `context_hints` dict. Candidates whose fact neighborhoods are more contextually relevant to the current conversation score higher.
+
+**`context_hints` contract:**
+- `context_hints` is an optional dict of structured signals provided by the hosting butler.
+- Common keys: `topic` (string), `mentioned_with` (list of other entity names or IDs), `domain_scores` (dict of entity_id → numeric score from domain-specific ranking).
+- The memory module scores `context_hints` generically (keyword overlap). Domain-specific interpretation (e.g. relationship salience) is the hosting butler's responsibility — it passes pre-computed scores via `domain_scores`.
+
+**Response shape:**
+```python
+[
+    {
+        "entity_id": "<uuid>",
+        "canonical_name": "Chloe Wong",
+        "entity_type": "person",
+        "score": 85,            # composite score
+        "name_match": "exact",  # exact | alias | prefix | fuzzy
+        "aliases": ["Chlo", "CW"]
+    },
+    ...
+]
+```
+Ordered by `score DESC`, then `canonical_name ASC`.
+
+The memory module does NOT make the auto-resolve-vs-ask decision. It returns all candidates above a minimum score threshold. The hosting butler applies its own confidence thresholds and disambiguation policy.
+
+### 6.5 Context assembly contract
 - `memory_context` output must be deterministic and sectioned:
 - Facts (highest priority first).
 - Rules (ordered by maturity and score).
@@ -126,7 +179,7 @@ Confidence decay:
 ## 7. Write, Consolidation, and Lifecycle Contract
 ### 7.1 Write semantics
 - `memory_store_episode` is append-only.
-- `memory_store_fact` supports supersession and provenance linking.
+- `memory_store_fact` supports supersession and provenance linking. Accepts optional `entity_id` to anchor the fact to a resolved entity. When `entity_id` is provided, the fact is keyed by entity identity; when omitted, the `subject` string is used as-is (backward compatible).
 - `memory_store_rule` initializes `candidate` maturity and baseline confidence.
 - `memory_confirm` updates confirmation anchors.
 - `memory_mark_helpful` and `memory_mark_harmful` drive effectiveness/maturity transitions.
@@ -167,6 +220,14 @@ Required stable tools:
 - Feedback: `memory_confirm`, `memory_mark_helpful`, `memory_mark_harmful`
 - Management: `memory_forget`, `memory_stats`
 - Context: `memory_context`
+- Entities: `entity_create`, `entity_resolve`, `entity_get`, `entity_update`, `entity_merge`
+
+Entity tool contracts:
+- `entity_create(canonical_name, entity_type, aliases?, metadata?)` — Create a new entity. Returns entity ID. Fails if `(tenant_id, canonical_name, entity_type)` already exists.
+- `entity_resolve(name, entity_type?, context_hints?)` — Resolve a name string to entity candidates. Returns ranked list per §6.4. When zero candidates are found, returns empty list (does not auto-create).
+- `entity_get(entity_id)` — Retrieve entity record with its aliases and metadata.
+- `entity_update(entity_id, canonical_name?, aliases?, metadata?)` — Update entity fields. Alias updates are replace-all (pass the full alias list).
+- `entity_merge(source_entity_id, target_entity_id)` — Merge source into target. All facts referencing source are re-pointed to target. Source's aliases are appended to target's alias list. Source entity is tombstoned (retained for audit, excluded from resolution). Target survives.
 
 Lineage propagation rules:
 - Read/write tools should accept optional `request_context` metadata.
