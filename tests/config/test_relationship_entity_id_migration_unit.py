@@ -77,11 +77,11 @@ class TestUpgradeSQL:
         # Should NOT force NOT NULL at column creation
         assert "NOT NULL" not in source.split("entity_id")[1].split("REFERENCES")[0]
 
-    def test_cross_schema_fk_references_general_entities(self) -> None:
-        """FK constraint references general.entities with explicit schema qualification."""
+    def test_cross_schema_fk_references_memory_entities(self) -> None:
+        """FK constraint references memory.entities with explicit schema qualification."""
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "general.entities" in source
+        assert "memory.entities" in source
 
     def test_fk_on_delete_set_null(self) -> None:
         """FK uses ON DELETE SET NULL so deleting an entity nullifies contacts."""
