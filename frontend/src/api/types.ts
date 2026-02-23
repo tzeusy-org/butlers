@@ -1293,3 +1293,89 @@ export interface SecretTemplate {
   description: string;
   category: SecretCategory;
 }
+
+// ---------------------------------------------------------------------------
+// Backfill job types (switchboard ingestion history)
+// ---------------------------------------------------------------------------
+
+export type BackfillJobStatus =
+  | "pending"
+  | "active"
+  | "paused"
+  | "completed"
+  | "cancelled"
+  | "cost_capped"
+  | "error";
+
+/** A summarised backfill job for list endpoints (cursor omitted). */
+export interface BackfillJobSummary {
+  id: string;
+  connector_type: string;
+  endpoint_identity: string;
+  target_categories: string[];
+  date_from: string;
+  date_to: string;
+  rate_limit_per_hour: number;
+  daily_cost_cap_cents: number;
+  status: BackfillJobStatus;
+  rows_processed: number;
+  rows_skipped: number;
+  cost_spent_cents: number;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+}
+
+/** Full backfill job entry including cursor. */
+export interface BackfillJobEntry extends BackfillJobSummary {
+  cursor: Record<string, unknown> | null;
+}
+
+/** Request body for creating a backfill job. */
+export interface CreateBackfillJobRequest {
+  connector_type: string;
+  endpoint_identity: string;
+  target_categories?: string[];
+  date_from: string;
+  date_to: string;
+  rate_limit_per_hour?: number;
+  daily_cost_cap_cents?: number;
+}
+
+/** Response body for lifecycle actions (pause/cancel/resume). */
+export interface BackfillLifecycleResponse {
+  job_id: string;
+  status: string;
+}
+
+/** Query parameters for backfill job list. */
+export interface BackfillJobParams {
+  status?: BackfillJobStatus;
+  connector_type?: string;
+  endpoint_identity?: string;
+  offset?: number;
+  limit?: number;
+}
+
+/** A connector entry from the connector_registry table. */
+export interface ConnectorEntry {
+  connector_type: string;
+  endpoint_identity: string;
+  instance_id: string | null;
+  version: string | null;
+  state: string;
+  error_message: string | null;
+  uptime_s: number | null;
+  last_heartbeat_at: string | null;
+  first_seen_at: string;
+  registered_via: string;
+  counter_messages_ingested: number;
+  counter_messages_failed: number;
+  counter_source_api_calls: number;
+  counter_checkpoint_saves: number;
+  counter_dedupe_accepted: number;
+  checkpoint_cursor: string | null;
+  checkpoint_updated_at: string | null;
+}

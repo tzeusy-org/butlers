@@ -231,3 +231,24 @@ export type {
   SecretTemplate,
   SecretUpsertRequest,
 } from "./types.ts";
+
+export {
+  cancelBackfillJob,
+  createBackfillJob,
+  getBackfillJob,
+  getBackfillJobProgress,
+  listBackfillJobs,
+  listConnectors,
+  pauseBackfillJob,
+  resumeBackfillJob,
+} from "./client.ts";
+
+export type {
+  BackfillJobEntry,
+  BackfillJobParams,
+  BackfillJobStatus,
+  BackfillJobSummary,
+  BackfillLifecycleResponse,
+  ConnectorEntry,
+  CreateBackfillJobRequest,
+} from "./types.ts";
