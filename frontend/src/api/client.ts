@@ -1429,4 +1429,80 @@ export function deleteThreadAffinityOverride(threadId: string): Promise<void> {
     `/switchboard/thread-affinity/overrides/${encodeURIComponent(threadId)}`,
     { method: "DELETE" },
   );
+
+// ---------------------------------------------------------------------------
+// Connector statistics API (docs/connectors/statistics.md §6)
+// ---------------------------------------------------------------------------
+
+import type {
+  ConnectorCheckpoint,
+  ConnectorCounters,
+  ConnectorDaySummary,
+  ConnectorDetail,
+  ConnectorFanout,
+  ConnectorFanoutEntry,
+  ConnectorStats,
+  ConnectorStatsBucket,
+  ConnectorStatsSummary,
+  ConnectorSummary,
+  ConnectorSummaryEntry,
+  CrossConnectorSummary,
+  IngestionPeriod,
+} from "./types.ts";
+
+// Re-export the types so they are accessible from this module too.
+export type {
+  ConnectorCheckpoint,
+  ConnectorCounters,
+  ConnectorDaySummary,
+  ConnectorDetail,
+  ConnectorFanout,
+  ConnectorFanoutEntry,
+  ConnectorStats,
+  ConnectorStatsBucket,
+  ConnectorStatsSummary,
+  ConnectorSummary,
+  ConnectorSummaryEntry,
+  CrossConnectorSummary,
+  IngestionPeriod,
+};
+
+/** List all connectors with liveness and today's stats. */
+export function listConnectorSummaries(): Promise<ApiResponse<ConnectorSummary[]>> {
+  return apiFetch<ApiResponse<ConnectorSummary[]>>("/connectors");
+}
+
+/** Get full detail for a single connector. */
+export function getConnectorDetail(
+  connectorType: string,
+  endpointIdentity: string,
+): Promise<ApiResponse<ConnectorDetail>> {
+  return apiFetch<ApiResponse<ConnectorDetail>>(
+    `/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
+  );
+}
+
+/** Get time-series statistics for a single connector. */
+export function getConnectorStats(
+  connectorType: string,
+  endpointIdentity: string,
+  period: IngestionPeriod = "24h",
+): Promise<ApiResponse<ConnectorStats>> {
+  return apiFetch<ApiResponse<ConnectorStats>>(
+    `/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/stats?period=${period}`,
+  );
+}
+
+/** Get aggregate cross-connector summary. */
+export function getCrossConnectorSummary(
+  period: IngestionPeriod = "24h",
+): Promise<ApiResponse<CrossConnectorSummary>> {
+  return apiFetch<ApiResponse<CrossConnectorSummary>>(`/connectors/summary?period=${period}`);
+}
+
+/** Get fanout distribution matrix. */
+export function getConnectorFanout(
+  period: IngestionPeriod = "7d",
+): Promise<ApiResponse<ConnectorFanout>> {
+  return apiFetch<ApiResponse<ConnectorFanout>>(`/connectors/fanout?period=${period}`);
 }

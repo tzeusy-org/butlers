@@ -31,6 +31,7 @@ import ApprovalRulesPage from './pages/ApprovalRulesPage.tsx'
 import SecretsPage from './pages/SecretsPage.tsx'
 import CalendarWorkspacePage from './pages/CalendarWorkspacePage.tsx'
 import IngestionPage from './pages/IngestionPage.tsx'
+import ConnectorDetailPage from './pages/ConnectorDetailPage.tsx'
 
 const _baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/+$/, '') || '/'
 
@@ -85,7 +86,7 @@ export const router = createBrowserRouter(
         { path: '/ingestion', element: <IngestionPage /> },
         {
           path: '/ingestion/connectors/:connectorType/:endpointIdentity',
-          element: <IngestionPage />,
+          element: <ConnectorDetailPage />,
         },
         // Legacy /connectors redirects → /ingestion equivalents (spec section 3.3)
         {

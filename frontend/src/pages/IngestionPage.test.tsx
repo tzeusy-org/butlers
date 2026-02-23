@@ -7,12 +7,26 @@ import { MemoryRouter, Route, Routes } from "react-router";
 
 import IngestionPage from "@/pages/IngestionPage";
 
-// Mock BackfillHistoryTab so IngestionPage tab-routing tests do not
-// require a QueryClientProvider (that concern belongs to BackfillHistoryTab.test.tsx).
+// Mock tab content components so IngestionPage tab-routing tests do not
+// require a QueryClientProvider. Behavioral tests for each tab component
+// live in their own test files.
 vi.mock("@/components/switchboard/BackfillHistoryTab", () => ({
   BackfillHistoryTab: () => <div data-testid="backfill-history-tab-stub">History stub</div>,
 }));
-
+vi.mock("@/components/ingestion/OverviewTab", () => ({
+  OverviewTab: ({ isActive }: { isActive: boolean }) => (
+    <div data-testid="overview-tab-stub" data-active={String(isActive)}>
+      Overview stub
+    </div>
+  ),
+}));
+vi.mock("@/components/ingestion/ConnectorsTab", () => ({
+  ConnectorsTab: ({ isActive }: { isActive: boolean }) => (
+    <div data-testid="connectors-tab-stub" data-active={String(isActive)}>
+      Connectors stub
+    </div>
+  ),
+}));
 // Mock FiltersTab so IngestionPage tab-routing tests do not
 // require a QueryClientProvider (that concern belongs to FiltersTab.test.tsx).
 vi.mock("@/components/switchboard/FiltersTab", () => ({
@@ -68,8 +82,6 @@ describe("IngestionPage", () => {
 
   it("defaults to Overview tab when no ?tab param is present", () => {
     render("/ingestion");
-    // The Overview tab content heading should be visible
-    // The active tab trigger should be Overview
     const activeTab = container.querySelector('[role="tab"][data-state="active"]');
     expect(activeTab?.textContent?.trim()).toBe("Overview");
   });
@@ -96,5 +108,17 @@ describe("IngestionPage", () => {
     render("/ingestion?tab=unknown-garbage");
     const activeTab = container.querySelector('[role="tab"][data-state="active"]');
     expect(activeTab?.textContent?.trim()).toBe("Overview");
+  });
+
+  it("renders overview tab stub content by default", () => {
+    render("/ingestion");
+    const stub = container.querySelector('[data-testid="overview-tab-stub"]');
+    expect(stub).not.toBeNull();
+  });
+
+  it("renders connectors tab stub when ?tab=connectors", () => {
+    render("/ingestion?tab=connectors");
+    const stub = container.querySelector('[data-testid="connectors-tab-stub"]');
+    expect(stub).not.toBeNull();
   });
 });

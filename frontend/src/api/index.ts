@@ -281,3 +281,27 @@ export type {
   TriageRuleType,
   TriageRuleUpdate,
 } from "./types.ts";
+
+export {
+  getCrossConnectorSummary,
+  getConnectorDetail,
+  getConnectorFanout,
+  getConnectorStats,
+  listConnectorSummaries,
+} from "./client.ts";
+
+export type {
+  ConnectorCheckpoint,
+  ConnectorCounters,
+  ConnectorDaySummary,
+  ConnectorDetail,
+  ConnectorFanout,
+  ConnectorFanoutEntry,
+  ConnectorStats,
+  ConnectorStatsBucket,
+  ConnectorStatsSummary,
+  ConnectorSummary,
+  ConnectorSummaryEntry,
+  CrossConnectorSummary,
+  IngestionPeriod,
+} from "./types.ts";
