@@ -13,6 +13,9 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+# Generic migration contract checks (file existence, metadata, callable guards, chain
+# membership) for this migration are covered canonically in test_migration_contract.py.
+
 _MIGRATION_FILENAME = "018_create_backfill_jobs.py"
 _REVISION = "sw_018"
 _DOWN_REVISION = "sw_017"
@@ -45,78 +48,6 @@ def _load_migration():
 # ---------------------------------------------------------------------------
 # File presence
 # ---------------------------------------------------------------------------
-
-
-def test_backfill_jobs_migration_file_exists():
-    """Verify the 017_create_backfill_jobs.py migration file exists."""
-    assert _migration_file().exists(), f"Migration file {_MIGRATION_FILENAME} should exist"
-
-
-def test_switchboard_chain_includes_backfill_jobs_migration():
-    """Verify the switchboard migrations directory contains the new file."""
-    from butlers.migrations import _resolve_chain_dir
-
-    chain_dir = _resolve_chain_dir("switchboard")
-    assert chain_dir is not None, "Switchboard chain should exist"
-
-    migration_names = [f.name for f in chain_dir.glob("*.py") if f.name != "__init__.py"]
-    assert _MIGRATION_FILENAME in migration_names, (
-        f"{_MIGRATION_FILENAME} should be in the switchboard migration chain"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Alembic metadata
-# ---------------------------------------------------------------------------
-
-
-def test_backfill_jobs_migration_has_correct_revision():
-    """Verify migration revision ID is sw_018."""
-    module = _load_migration()
-    assert hasattr(module, "revision"), "Should have revision attribute"
-    assert module.revision == _REVISION, f"revision should be {_REVISION!r}"
-
-
-def test_backfill_jobs_migration_has_correct_down_revision():
-    """Verify migration chains from sw_017."""
-    module = _load_migration()
-    assert hasattr(module, "down_revision"), "Should have down_revision attribute"
-    assert module.down_revision == _DOWN_REVISION, (
-        f"down_revision should be {_DOWN_REVISION!r} (chains after direction migration)"
-    )
-
-
-def test_backfill_jobs_migration_branch_labels_is_none():
-    """Branch labels should be None (this is not a branch head)."""
-    module = _load_migration()
-    assert hasattr(module, "branch_labels"), "Should have branch_labels attribute"
-    assert module.branch_labels is None, "branch_labels should be None"
-
-
-def test_backfill_jobs_migration_depends_on_is_none():
-    """Depends-on should be None (no cross-chain dependencies)."""
-    module = _load_migration()
-    assert hasattr(module, "depends_on"), "Should have depends_on attribute"
-    assert module.depends_on is None, "depends_on should be None"
-
-
-# ---------------------------------------------------------------------------
-# Callable guards
-# ---------------------------------------------------------------------------
-
-
-def test_backfill_jobs_migration_has_upgrade_function():
-    """upgrade() must exist and be callable."""
-    module = _load_migration()
-    assert hasattr(module, "upgrade"), "Should have upgrade function"
-    assert callable(module.upgrade), "upgrade should be callable"
-
-
-def test_backfill_jobs_migration_has_downgrade_function():
-    """downgrade() must exist and be callable."""
-    module = _load_migration()
-    assert hasattr(module, "downgrade"), "Should have downgrade function"
-    assert callable(module.downgrade), "downgrade should be callable"
 
 
 # ---------------------------------------------------------------------------

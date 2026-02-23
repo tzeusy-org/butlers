@@ -15,6 +15,9 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+# Generic migration contract checks (file existence, metadata, callable guards, chain
+# membership) for this migration are covered canonically in test_migration_contract.py.
+
 MIGRATION_FILENAME = "001_finance_tables.py"
 
 
@@ -45,12 +48,6 @@ def _load_migration():
 # ---------------------------------------------------------------------------
 
 
-def test_migration_file_exists():
-    """Migration file must exist at the expected path."""
-    migration_path = _finance_migration_dir() / MIGRATION_FILENAME
-    assert migration_path.exists(), f"Expected migration file at {migration_path}"
-
-
 def test_finance_chain_discoverable():
     """Finance chain must be discoverable via the migrations module."""
     from butlers.migrations import get_all_chains, has_butler_chain
@@ -67,60 +64,6 @@ def test_finance_chain_contains_migration_file():
     assert MIGRATION_FILENAME in migration_files, (
         f"Expected {MIGRATION_FILENAME!r} in chain dir; found: {migration_files}"
     )
-
-
-# ---------------------------------------------------------------------------
-# Revision metadata
-# ---------------------------------------------------------------------------
-
-
-def test_migration_revision():
-    """revision must be 'finance_001'."""
-    module = _load_migration()
-    assert module.revision == "finance_001", (
-        f"Expected revision='finance_001', got {module.revision!r}"
-    )
-
-
-def test_migration_branch_labels():
-    """branch_labels must be ('finance',) for the chain root."""
-    module = _load_migration()
-    assert module.branch_labels == ("finance",), (
-        f"Expected branch_labels=('finance',), got {module.branch_labels!r}"
-    )
-
-
-def test_migration_down_revision_is_none():
-    """down_revision must be None (chain root — no parent)."""
-    module = _load_migration()
-    assert module.down_revision is None, (
-        f"Expected down_revision=None, got {module.down_revision!r}"
-    )
-
-
-def test_migration_depends_on_is_none():
-    """depends_on must be None for the chain root."""
-    module = _load_migration()
-    assert module.depends_on is None, f"Expected depends_on=None, got {module.depends_on!r}"
-
-
-# ---------------------------------------------------------------------------
-# Callable contract
-# ---------------------------------------------------------------------------
-
-
-def test_migration_has_upgrade():
-    """Migration must export an upgrade() callable."""
-    module = _load_migration()
-    assert hasattr(module, "upgrade"), "Migration must define upgrade()"
-    assert callable(module.upgrade), "upgrade must be callable"
-
-
-def test_migration_has_downgrade():
-    """Migration must export a downgrade() callable."""
-    module = _load_migration()
-    assert hasattr(module, "downgrade"), "Migration must define downgrade()"
-    assert callable(module.downgrade), "downgrade must be callable"
 
 
 # ---------------------------------------------------------------------------

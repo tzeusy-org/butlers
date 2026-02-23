@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-import uuid
 
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
+
+from butlers.testing.migration import create_migration_db, migration_db_name, table_exists
 
 # Skip all tests if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -31,54 +32,6 @@ RUNTIME_ROLES = {
 def _quote_ident(identifier: str) -> str:
     """Quote an identifier for SQL text construction."""
     return '"' + identifier.replace('"', '""') + '"'
-
-
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for migration tests."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16") as postgres:
-        yield postgres
-
-
-def _create_db(postgres_container, db_name: str) -> str:
-    """Create a fresh database and return its SQLAlchemy URL."""
-    admin_url = postgres_container.get_connection_url()
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    with engine.connect() as conn:
-        safe = db_name.replace('"', '""')
-        conn.execute(text(f'CREATE DATABASE "{safe}"'))
-    engine.dispose()
-
-    # Build URL pointing at the new database
-    host = postgres_container.get_container_host_ip()
-    port = postgres_container.get_exposed_port(5432)
-    user = postgres_container.username
-    password = postgres_container.password
-    return f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
-
-
-def _table_exists(db_url: str, table_name: str) -> bool:
-    """Check whether a table exists in the database."""
-    engine = create_engine(db_url)
-    with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                "SELECT EXISTS ("
-                "  SELECT 1 FROM information_schema.tables"
-                "  WHERE table_schema = 'public' AND table_name = :t"
-                ")"
-            ),
-            {"t": table_name},
-        )
-        exists = result.scalar()
-    engine.dispose()
-    return bool(exists)
 
 
 def _table_exists_in_schema(db_url: str, schema_name: str, table_name: str) -> bool:
@@ -180,26 +133,24 @@ def test_core_migrations_create_tables(postgres_container):
     """Run core migrations and verify all core tables are created."""
     from butlers.migrations import run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
 
-    assert _table_exists(db_url, "state"), "state table should exist"
-    assert _table_exists(db_url, "scheduled_tasks"), "scheduled_tasks table should exist"
-    assert _table_exists(db_url, "sessions"), "sessions table should exist"
-    assert _table_exists(db_url, "route_inbox"), "route_inbox table should exist"
-    assert _table_exists(db_url, "butler_secrets"), "butler_secrets table should exist"
-    assert _table_exists(db_url, "calendar_sources"), "calendar_sources table should exist"
-    assert _table_exists(db_url, "calendar_events"), "calendar_events table should exist"
-    assert _table_exists(db_url, "calendar_event_instances"), (
+    assert table_exists(db_url, "state"), "state table should exist"
+    assert table_exists(db_url, "scheduled_tasks"), "scheduled_tasks table should exist"
+    assert table_exists(db_url, "sessions"), "sessions table should exist"
+    assert table_exists(db_url, "route_inbox"), "route_inbox table should exist"
+    assert table_exists(db_url, "butler_secrets"), "butler_secrets table should exist"
+    assert table_exists(db_url, "calendar_sources"), "calendar_sources table should exist"
+    assert table_exists(db_url, "calendar_events"), "calendar_events table should exist"
+    assert table_exists(db_url, "calendar_event_instances"), (
         "calendar_event_instances table should exist"
     )
-    assert _table_exists(db_url, "calendar_sync_cursors"), (
-        "calendar_sync_cursors table should exist"
-    )
-    assert _table_exists(db_url, "calendar_action_log"), "calendar_action_log table should exist"
-    assert not _table_exists(db_url, "google_oauth_credentials"), (
+    assert table_exists(db_url, "calendar_sync_cursors"), "calendar_sync_cursors table should exist"
+    assert table_exists(db_url, "calendar_action_log"), "calendar_action_log table should exist"
+    assert not table_exists(db_url, "google_oauth_credentials"), (
         "legacy google_oauth_credentials table should not exist in target-state baseline"
     )
 
@@ -211,8 +162,8 @@ def test_core_scheduled_task_dispatch_mode_columns_and_constraints(postgres_cont
     """scheduled_tasks should persist dispatch metadata and enforce mode constraints."""
     from butlers.migrations import run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
 
@@ -290,8 +241,8 @@ def test_core_calendar_projection_tables_constraints_and_indexes(postgres_contai
     """Calendar projection tables should support source lookup, window queries, and idempotency."""
     from butlers.migrations import run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
 
@@ -447,8 +398,8 @@ def test_core_scheduled_task_calendar_linkage_columns(postgres_container):
     """scheduled_tasks should include calendar projection linkage columns."""
     from butlers.migrations import run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
 
@@ -512,8 +463,8 @@ def test_core_002_adds_dispatch_mode_to_existing_table(postgres_container):
     from alembic import command
     from butlers.migrations import _build_alembic_config
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     # Simulate a legacy database: create the table WITHOUT dispatch_mode columns,
     # then stamp as core_001 so Alembic thinks core_001 already ran.
@@ -662,8 +613,8 @@ def test_core_schema_bootstrap_owner_baseline(postgres_container):
     """Schema bootstrap sets owner baseline to migration user on fresh installs."""
     from butlers.migrations import run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
 
@@ -676,8 +627,8 @@ def test_relationship_reminder_calendar_projection_columns(postgres_container):
     """relationship reminders table should expose projection linkage columns."""
     from butlers.migrations import run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
     asyncio.run(run_migrations(db_url, chain="relationship"))
@@ -714,16 +665,16 @@ def test_migrations_idempotent(postgres_container):
     """Running migrations twice should not raise errors."""
     from butlers.migrations import run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
     # Second run should succeed without errors
     asyncio.run(run_migrations(db_url, chain="core"))
 
-    assert _table_exists(db_url, "state")
-    assert _table_exists(db_url, "scheduled_tasks")
-    assert _table_exists(db_url, "sessions")
+    assert table_exists(db_url, "state")
+    assert table_exists(db_url, "scheduled_tasks")
+    assert table_exists(db_url, "sessions")
     for schema in REQUIRED_SCHEMAS:
         assert _schema_exists(db_url, schema)
 
@@ -733,8 +684,8 @@ def test_upgrade_to_core_head_creates_required_schemas(postgres_container):
     from alembic import command
     from butlers.migrations import _build_alembic_config
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     config = _build_alembic_config(db_url, chains=["core"])
     command.upgrade(config, "core@head")
@@ -747,8 +698,8 @@ def test_core_acl_runtime_role_isolation(postgres_container):
     """Core ACL migration enforces own-schema + shared access with cross-schema denial."""
     from butlers.migrations import run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
 
@@ -843,12 +794,12 @@ def test_alembic_version_tracking(postgres_container):
     """After migration, alembic_version table should have the correct entry."""
     from butlers.migrations import run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
 
-    assert _table_exists(db_url, "alembic_version"), "alembic_version table should exist"
+    assert table_exists(db_url, "alembic_version"), "alembic_version table should exist"
 
     engine = create_engine(db_url)
     with engine.connect() as conn:
@@ -865,8 +816,8 @@ def test_schema_scoped_alembic_version_tracking_isolated(postgres_container):
     """Schema-scoped runs should track revisions in separate schema-local tables."""
     from butlers.migrations import run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core", schema="general"))
     asyncio.run(run_migrations(db_url, chain="core", schema="health"))

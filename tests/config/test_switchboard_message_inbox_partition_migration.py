@@ -5,13 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-import uuid
 from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
+from butlers.testing.migration import (
+    create_migration_db,
+    index_exists,
+    migration_db_name,
+    table_exists,
+)
 
 # Skip all tests if Docker is not available.
 docker_available = shutil.which("docker") is not None
@@ -19,52 +24,6 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
-
-
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
-@pytest.fixture(scope="module")
-def postgres_container():
-    """Start a PostgreSQL container for migration tests."""
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16") as postgres:
-        yield postgres
-
-
-def _create_db(postgres_container, db_name: str) -> str:
-    """Create a fresh database and return its SQLAlchemy URL."""
-    admin_url = postgres_container.get_connection_url()
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    with engine.connect() as conn:
-        safe = db_name.replace('"', '""')
-        conn.execute(text(f'CREATE DATABASE "{safe}"'))
-    engine.dispose()
-
-    host = postgres_container.get_container_host_ip()
-    port = postgres_container.get_exposed_port(5432)
-    user = postgres_container.username
-    password = postgres_container.password
-    return f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
-
-
-def _table_exists(db_url: str, table_name: str) -> bool:
-    engine = create_engine(db_url)
-    with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                "SELECT EXISTS ("
-                "  SELECT 1 FROM information_schema.tables"
-                "  WHERE table_schema = 'public' AND table_name = :t"
-                ")"
-            ),
-            {"t": table_name},
-        )
-        exists = result.scalar()
-    engine.dispose()
-    return bool(exists)
 
 
 def _table_relkind(db_url: str, table_name: str) -> str | None:
@@ -82,23 +41,6 @@ def _table_relkind(db_url: str, table_name: str) -> str | None:
         row = result.fetchone()
     engine.dispose()
     return str(row[0]) if row else None
-
-
-def _index_exists(db_url: str, index_name: str) -> bool:
-    engine = create_engine(db_url)
-    with engine.connect() as conn:
-        result = conn.execute(
-            text(
-                "SELECT EXISTS ("
-                "  SELECT 1 FROM pg_indexes"
-                "  WHERE schemaname = 'public' AND indexname = :i"
-                ")"
-            ),
-            {"i": index_name},
-        )
-        exists = result.scalar()
-    engine.dispose()
-    return bool(exists)
 
 
 def _function_exists(db_url: str, function_name: str) -> bool:
@@ -141,18 +83,18 @@ def test_partition_migration_builds_partitioned_table_and_indexes(postgres_conta
     """Switchboard migration creates a partitioned message_inbox lifecycle table."""
     from butlers.migrations import run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
     asyncio.run(run_migrations(db_url, chain="switchboard"))
 
-    assert _table_exists(db_url, "message_inbox")
+    assert table_exists(db_url, "message_inbox")
     assert _table_relkind(db_url, "message_inbox") == "p"
 
-    assert _index_exists(db_url, "ix_message_inbox_recent_received_at")
-    assert _index_exists(db_url, "ix_message_inbox_ctx_source_channel_received_at")
-    assert _index_exists(db_url, "ix_message_inbox_ctx_source_sender_received_at")
+    assert index_exists(db_url, "ix_message_inbox_recent_received_at")
+    assert index_exists(db_url, "ix_message_inbox_ctx_source_channel_received_at")
+    assert index_exists(db_url, "ix_message_inbox_ctx_source_sender_received_at")
 
     assert _function_exists(db_url, "switchboard_message_inbox_ensure_partition")
     assert _function_exists(db_url, "switchboard_message_inbox_drop_expired_partitions")
@@ -162,8 +104,8 @@ def test_partition_maintenance_and_downgrade_round_trip(postgres_container):
     """Maintenance functions and downgrade path preserve operability."""
     from butlers.migrations import _build_alembic_config, run_migrations
 
-    db_name = _unique_db_name()
-    db_url = _create_db(postgres_container, db_name)
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
     asyncio.run(run_migrations(db_url, chain="switchboard"))
@@ -239,12 +181,12 @@ def test_partition_maintenance_and_downgrade_round_trip(postgres_container):
         )
     engine.dispose()
 
-    assert not _table_exists(db_url, "message_inbox_p202401")
+    assert not table_exists(db_url, "message_inbox_p202401")
 
     config = _build_alembic_config(db_url, chains=["switchboard"])
     command.downgrade(config, "switchboard@sw_007")
 
-    assert _table_exists(db_url, "message_inbox")
+    assert table_exists(db_url, "message_inbox")
     assert _table_relkind(db_url, "message_inbox") == "r"
     assert _column_exists(db_url, "message_inbox", "raw_content")
     assert _column_exists(db_url, "message_inbox", "routing_results")
