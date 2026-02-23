@@ -107,6 +107,7 @@ EXPECTED_TOOL_NAMES = {
     "entity_create",
     "entity_get",
     "entity_update",
+    "entity_resolve",
 }
 
 
@@ -148,7 +149,7 @@ class TestRegisterTools:
 
     async def test_registers_seventeen_tools(self):
         registered = await self._register_and_capture()
-        assert len(registered) == 17
+        assert len(registered) == 18
 
     async def test_tool_names_match(self):
         registered = await self._register_and_capture()
@@ -180,7 +181,7 @@ class TestRegisterTools:
         ):
             await mod.register_tools(mcp=mcp, config=None, db=MagicMock())
 
-        assert mcp.tool.call_count == 17
+        assert mcp.tool.call_count == 18
 
     async def test_memory_store_fact_tool_description_and_schema_contract(self):
         """memory_store_fact metadata should document strict fields and tags shape."""

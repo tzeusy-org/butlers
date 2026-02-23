@@ -463,3 +463,29 @@ class MemoryModule(Module):
                 module._get_pool(),
                 max_entries=max_entries,
             )
+
+        @mcp.tool()
+        async def entity_resolve(
+            name: str,
+            tenant_id: str = "default",
+            entity_type: str | None = None,
+            context_hints: dict[str, Any] | None = None,
+            enable_fuzzy: bool = False,
+        ) -> list[dict[str, Any]]:
+            """Resolve an ambiguous name string to ranked entity candidates.
+
+            Returns a list of candidate entities ordered by composite score
+            (name-match quality + graph neighborhood similarity). Returns an
+            empty list when no candidates are found — does not auto-create.
+
+            context_hints keys: topic (str), mentioned_with (list),
+            domain_scores (dict of entity_id -> numeric score).
+            """
+            return await _entities.entity_resolve(
+                module._get_pool(),
+                name,
+                tenant_id=tenant_id,
+                entity_type=entity_type,
+                context_hints=context_hints,
+                enable_fuzzy=enable_fuzzy,
+            )
