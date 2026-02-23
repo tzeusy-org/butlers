@@ -26,6 +26,7 @@ SourceProvider = Literal["telegram", "slack", "gmail", "imap", "internal"]
 NotifyChannel = Literal["telegram", "email", "sms", "chat"]
 NotifyIntent = Literal["send", "reply", "react"]
 PolicyTier = Literal["default", "interactive", "high_priority"]
+IngestionTier = Literal["full", "metadata"]
 FanoutMode = Literal["parallel", "ordered", "conditional"]
 _ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = {
     "telegram": frozenset({"telegram"}),
@@ -160,23 +161,35 @@ class IngestAttachment(BaseModel):
 
 
 class IngestPayloadV1(BaseModel):
-    """Source payload for canonical ingest payloads."""
+    """Source payload for canonical ingest payloads.
+
+    For Tier 1 (full) ingestion: raw must be a non-empty dict.
+    For Tier 2 (metadata-only) ingestion: raw must be None; normalized_text
+    contains subject-only text.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    raw: dict[str, Any]
+    raw: dict[str, Any] | None = None
     normalized_text: NonEmptyStr
     attachments: tuple[IngestAttachment, ...] | None = None
 
 
 class IngestControlV1(BaseModel):
-    """Optional ingest control metadata."""
+    """Optional ingest control metadata.
+
+    ingestion_tier semantics (from docs/connectors/email_ingestion_policy.md):
+    - "full" (default): Standard Tier 1 pipeline. Full payload + LLM classification.
+    - "metadata": Tier 2 pipeline. Bypass LLM classification; persist metadata ref only.
+      Requires payload.raw=None and subject-only normalized_text.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     idempotency_key: NonEmptyStr | None = None
     trace_context: dict[str, Any] = Field(default_factory=dict)
     policy_tier: PolicyTier = "default"
+    ingestion_tier: IngestionTier = "full"
 
 
 class IngestEnvelopeV1(BaseModel):
@@ -195,6 +208,36 @@ class IngestEnvelopeV1(BaseModel):
     @classmethod
     def _validate_ingest_schema_version(cls, value: str) -> str:
         return _validate_schema_version(value, expected="ingest.v1")
+
+    @model_validator(mode="after")
+    def _validate_tier_payload_constraints(self) -> IngestEnvelopeV1:
+        """Enforce tier-specific payload constraints.
+
+        Tier 2 (metadata) constraints:
+        - payload.raw MUST be None
+        - normalized_text MUST be present (subject-only text)
+
+        Tier 1 (full) constraints:
+        - payload.raw MUST be a non-None dict
+        """
+        tier = self.control.ingestion_tier
+        raw = self.payload.raw
+
+        if tier == "metadata":
+            if raw is not None:
+                raise PydanticCustomError(
+                    "tier2_raw_must_be_null",
+                    "Tier 2 (metadata) envelopes must have payload.raw=null.",
+                    {},
+                )
+        elif tier == "full":
+            if raw is None:
+                raise PydanticCustomError(
+                    "tier1_raw_required",
+                    "Tier 1 (full) envelopes must have a non-null payload.raw dict.",
+                    {},
+                )
+        return self
 
 
 class RouteRequestContextV1(BaseModel):
@@ -511,6 +554,7 @@ def parse_notify_request(payload: Mapping[str, Any]) -> NotifyRequestV1:
 __all__ = [
     "IngestAttachment",
     "IngestControlV1",
+    "IngestionTier",
     "IngestEnvelopeV1",
     "IngestEventV1",
     "IngestPayloadV1",
