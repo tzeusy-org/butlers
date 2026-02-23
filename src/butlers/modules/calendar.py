@@ -22,6 +22,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
+from croniter import croniter as _croniter
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from butlers.core.scheduler import schedule_create as _schedule_create
@@ -79,6 +80,8 @@ SOURCE_KIND_INTERNAL_REMINDERS = "internal_reminders"
 PROJECTION_STATUS_FRESH = "fresh"
 PROJECTION_STATUS_STALE = "stale"
 PROJECTION_STATUS_FAILED = "failed"
+# Default duration for scheduled tasks when start_at/end_at are not set.
+DEFAULT_SCHEDULED_TASK_DURATION_MINUTES = 15
 MUTATION_STATUS_PENDING = "pending"
 MUTATION_STATUS_APPLIED = "applied"
 MUTATION_STATUS_FAILED = "failed"
@@ -252,6 +255,16 @@ class _GoogleOAuthClient:
 
         self._access_token = access_token.strip()
         self._access_token_expires_at = datetime.now(UTC) + timedelta(seconds=refresh_ttl_seconds)
+
+
+def _cron_next_occurrence(cron: str, *, now: datetime | None = None) -> datetime:
+    """Return the next UTC datetime at which cron fires after *now*.
+
+    Uses croniter (already a project dependency) to parse and advance the
+    cron expression.  The result is always timezone-aware (UTC).
+    """
+    anchor = now if now is not None else datetime.now(UTC)
+    return _croniter(cron, anchor).get_next(datetime).replace(tzinfo=UTC)
 
 
 def _extract_google_credential_value(payload: dict[str, Any], key: str) -> Any:
@@ -4589,7 +4602,6 @@ class CalendarModule(Module):
                    timezone, start_at, end_at, until_at, display_title,
                    calendar_event_id, enabled, updated_at
             FROM scheduled_tasks
-            WHERE start_at IS NOT NULL AND end_at IS NOT NULL
             """
         )
 
@@ -4599,8 +4611,14 @@ class CalendarModule(Module):
             record = dict(row)
             start_at = self._coerce_datetime(record.get("start_at"))
             end_at = self._coerce_datetime(record.get("end_at"))
-            if start_at is None or end_at is None:
-                continue
+            # Compute synthetic window from cron when columns are NULL.
+            if start_at is None:
+                cron_expr = record.get("cron")
+                if not cron_expr:
+                    continue
+                start_at = _cron_next_occurrence(str(cron_expr), now=now)
+            if end_at is None:
+                end_at = start_at + timedelta(minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES)
 
             origin_ref = str(record["id"])
             seen_origin_refs.append(origin_ref)

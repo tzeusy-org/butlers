@@ -26,6 +26,7 @@ import httpx
 import pytest
 
 from butlers.modules.calendar import (
+    DEFAULT_SCHEDULED_TASK_DURATION_MINUTES,
     DEFAULT_SYNC_INTERVAL_MINUTES,
     DEFAULT_SYNC_WINDOW_DAYS,
     SOURCE_KIND_INTERNAL_REMINDERS,
@@ -41,6 +42,7 @@ from butlers.modules.calendar import (
     CalendarSyncConfig,
     CalendarSyncState,
     CalendarSyncTokenExpiredError,
+    _cron_next_occurrence,
     _GoogleOAuthCredentials,
     _GoogleProvider,
 )
@@ -1254,6 +1256,250 @@ class TestCalendarProjectionSync:
         assert cancel_kwargs["origin_ref"] == str(reminder_dismissed_id)
         assert stale_cancel_mock.await_count == 1
         assert cursor_upsert_mock.await_count == 1
+
+
+class TestCronNextOccurrence:
+    """Unit tests for _cron_next_occurrence helper."""
+
+    def test_returns_future_datetime(self):
+        """Next occurrence must be after the anchor."""
+        now = datetime(2026, 3, 1, 12, 0, 0, tzinfo=UTC)
+        result = _cron_next_occurrence("0 14 * * *", now=now)
+        assert result > now
+
+    def test_result_is_timezone_aware(self):
+        result = _cron_next_occurrence("*/5 * * * *")
+        assert result.tzinfo is not None
+
+    def test_hourly_cron_returns_next_hour(self):
+        """For @hourly on the dot, next hit is one hour ahead."""
+        # Anchor exactly at midnight; "0 * * * *" should fire at 01:00.
+        now = datetime(2026, 3, 1, 0, 0, 0, tzinfo=UTC)
+        result = _cron_next_occurrence("0 * * * *", now=now)
+        expected = datetime(2026, 3, 1, 1, 0, 0, tzinfo=UTC)
+        assert result == expected
+
+    def test_default_now_is_used_when_not_provided(self):
+        before = datetime.now(UTC)
+        result = _cron_next_occurrence("* * * * *")
+        after = datetime.now(UTC)
+        # Result must fall strictly between before and after + 1 min.
+        assert result >= before
+        assert result <= after + timedelta(minutes=1)
+
+
+class TestProjectSchedulerSourceSyntheticWindow:
+    """Tests for synthetic start_at/end_at computation in _project_scheduler_source."""
+
+    def _make_module(self) -> CalendarModule:
+        mod = CalendarModule()
+        mod._config = CalendarConfig(
+            provider="google",
+            calendar_id="primary",
+            sync=CalendarSyncConfig(enabled=True),
+        )
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
+        pool.fetchrow = AsyncMock(return_value=None)
+        pool.fetchval = AsyncMock(return_value=None)
+        pool.execute = AsyncMock(return_value="OK")
+        db = MagicMock()
+        db.pool = pool
+        db.db_name = "butler_general"
+        mod._db = db
+        mod._butler_name = "general"
+        return mod
+
+    def _make_task_row(
+        self,
+        *,
+        task_id: uuid.UUID | None = None,
+        name: str = "daily-standup",
+        cron: str = "0 9 * * 1-5",
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        display_title: str | None = None,
+        enabled: bool = True,
+    ) -> dict:
+        tid = task_id or uuid.uuid4()
+        now = datetime(2026, 3, 1, 8, 0, 0, tzinfo=UTC)
+        return {
+            "id": tid,
+            "name": name,
+            "cron": cron,
+            "dispatch_mode": "prompt",
+            "prompt": "run standup",
+            "job_name": None,
+            "job_args": None,
+            "timezone": "UTC",
+            "start_at": start_at,
+            "end_at": end_at,
+            "until_at": None,
+            "display_title": display_title,
+            "calendar_event_id": None,
+            "enabled": enabled,
+            "updated_at": now,
+        }
+
+    async def test_null_start_at_end_at_row_is_projected_using_cron(self):
+        """A row with start_at=NULL and end_at=NULL should be projected using
+        the synthetic window derived from the cron expression."""
+        mod = self._make_module()
+        source_id = uuid.uuid4()
+        row = self._make_task_row(cron="0 9 * * 1-5", start_at=None, end_at=None)
+        mod._db.pool.fetch = AsyncMock(return_value=[row])
+
+        captured_kwargs: list[dict] = []
+
+        async def capture_event(**kwargs):
+            captured_kwargs.append(kwargs)
+            return uuid.uuid4()
+
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", capture_event),
+            patch.object(mod, "_upsert_projection_instance", AsyncMock()),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_scheduler_source()
+
+        assert len(captured_kwargs) == 1, "Expected exactly one event upserted"
+        kw = captured_kwargs[0]
+
+        # start_at must be the next cron occurrence and be timezone-aware.
+        assert kw["starts_at"].tzinfo is not None
+        # end_at must be exactly DEFAULT_SCHEDULED_TASK_DURATION_MINUTES after start_at.
+        assert kw["ends_at"] == kw["starts_at"] + timedelta(
+            minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES
+        )
+
+    async def test_explicit_start_at_end_at_are_preserved(self):
+        """If start_at/end_at are already set, they must not be overwritten."""
+        mod = self._make_module()
+        source_id = uuid.uuid4()
+        explicit_start = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
+        explicit_end = datetime(2026, 3, 2, 16, 0, tzinfo=UTC)
+        row = self._make_task_row(start_at=explicit_start, end_at=explicit_end)
+        mod._db.pool.fetch = AsyncMock(return_value=[row])
+
+        captured_kwargs: list[dict] = []
+
+        async def capture_event(**kwargs):
+            captured_kwargs.append(kwargs)
+            return uuid.uuid4()
+
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", capture_event),
+            patch.object(mod, "_upsert_projection_instance", AsyncMock()),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_scheduler_source()
+
+        assert len(captured_kwargs) == 1
+        kw = captured_kwargs[0]
+        assert kw["starts_at"] == explicit_start
+        assert kw["ends_at"] == explicit_end
+
+    async def test_null_end_at_with_explicit_start_at_uses_default_duration(self):
+        """If start_at is set but end_at is NULL, end_at = start_at + default duration."""
+        mod = self._make_module()
+        source_id = uuid.uuid4()
+        explicit_start = datetime(2026, 3, 3, 10, 0, tzinfo=UTC)
+        row = self._make_task_row(start_at=explicit_start, end_at=None)
+        mod._db.pool.fetch = AsyncMock(return_value=[row])
+
+        captured_kwargs: list[dict] = []
+
+        async def capture_event(**kwargs):
+            captured_kwargs.append(kwargs)
+            return uuid.uuid4()
+
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", capture_event),
+            patch.object(mod, "_upsert_projection_instance", AsyncMock()),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_scheduler_source()
+
+        assert len(captured_kwargs) == 1
+        kw = captured_kwargs[0]
+        assert kw["starts_at"] == explicit_start
+        assert kw["ends_at"] == explicit_start + timedelta(
+            minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES
+        )
+
+    async def test_row_without_cron_and_null_start_at_is_skipped(self):
+        """A row with no cron expression and NULL start_at cannot produce a
+        synthetic window — it should be silently skipped."""
+        mod = self._make_module()
+        source_id = uuid.uuid4()
+        row = self._make_task_row(cron=None, start_at=None, end_at=None)
+        mod._db.pool.fetch = AsyncMock(return_value=[row])
+
+        upsert_event_mock = AsyncMock(return_value=uuid.uuid4())
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", upsert_event_mock),
+            patch.object(mod, "_upsert_projection_instance", AsyncMock()),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_scheduler_source()
+
+        # Nothing projected for rows without cron and without start_at.
+        assert upsert_event_mock.await_count == 0
+
+    async def test_multiple_toml_tasks_all_projected(self):
+        """All rows — whether they have explicit or synthetic windows — appear
+        in the projected output."""
+        mod = self._make_module()
+        source_id = uuid.uuid4()
+        explicit_start = datetime(2026, 3, 4, 9, 0, tzinfo=UTC)
+        explicit_end = datetime(2026, 3, 4, 10, 0, tzinfo=UTC)
+        rows = [
+            # Task with explicit window.
+            self._make_task_row(
+                name="morning-brief",
+                start_at=explicit_start,
+                end_at=explicit_end,
+            ),
+            # Task with no window — synthetic fallback from cron.
+            self._make_task_row(
+                name="evening-review",
+                cron="0 18 * * *",
+                start_at=None,
+                end_at=None,
+            ),
+        ]
+        mod._db.pool.fetch = AsyncMock(return_value=rows)
+
+        upsert_event_mock = AsyncMock(return_value=uuid.uuid4())
+        with (
+            patch.object(mod, "_projection_tables_available", AsyncMock(return_value=True)),
+            patch.object(mod, "_table_exists", AsyncMock(return_value=True)),
+            patch.object(mod, "_ensure_calendar_source", AsyncMock(return_value=source_id)),
+            patch.object(mod, "_upsert_projection_event", upsert_event_mock),
+            patch.object(mod, "_upsert_projection_instance", AsyncMock()),
+            patch.object(mod, "_mark_projection_source_stale_events_cancelled", AsyncMock()),
+            patch.object(mod, "_upsert_projection_cursor", AsyncMock()),
+        ):
+            await mod._project_scheduler_source()
+
+        # Both tasks must be projected.
+        assert upsert_event_mock.await_count == 2
 
 
 class TestCalendarProjectionFreshness:
