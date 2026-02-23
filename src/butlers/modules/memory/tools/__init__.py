@@ -12,6 +12,7 @@ from butlers.modules.memory.tools._helpers import (
     get_embedding_engine,
 )
 from butlers.modules.memory.tools.context import memory_context
+from butlers.modules.memory.tools.entities import entity_create, entity_get, entity_update
 from butlers.modules.memory.tools.feedback import (
     memory_confirm,
     memory_mark_harmful,
@@ -31,6 +32,9 @@ __all__ = [
     "_storage",
     "_search",
     "get_embedding_engine",
+    "entity_create",
+    "entity_get",
+    "entity_update",
     "memory_confirm",
     "memory_context",
     "memory_forget",

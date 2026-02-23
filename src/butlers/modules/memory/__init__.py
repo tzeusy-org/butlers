@@ -1,6 +1,6 @@
 """Memory module — wires memory domain tools into the butler's MCP server.
 
-Registers 12 MCP tools that delegate to the existing implementations in
+Registers 17 MCP tools that delegate to the existing implementations in
 ``butlers.modules.memory.tools``. The tool closures strip ``pool`` and
 ``embedding_engine`` from the MCP-visible signature and inject them from
 module state at call time.
@@ -40,7 +40,7 @@ class MemoryModuleConfig(BaseModel):
 
 
 class MemoryModule(Module):
-    """Memory module providing 12 MCP tools for memory CRUD and retrieval."""
+    """Memory module providing 17 MCP tools for memory CRUD and retrieval."""
 
     def __init__(self) -> None:
         self._db: Any = None
@@ -100,6 +100,7 @@ class MemoryModule(Module):
         # Deferred to avoid import-time side effects (sentence_transformers).
         from butlers.modules.memory import consolidation as _consolidation
         from butlers.modules.memory.tools import context as _context
+        from butlers.modules.memory.tools import entities as _entities
         from butlers.modules.memory.tools import feedback as _feedback
         from butlers.modules.memory.tools import management as _management
         from butlers.modules.memory.tools import reading as _reading
@@ -327,6 +328,94 @@ class MemoryModule(Module):
                 trigger_prompt,
                 butler,
                 token_budget=token_budget,
+            )
+
+        # --- Entity tools ---
+
+        @mcp.tool()
+        async def entity_create(
+            canonical_name: Annotated[str, Field(description="The canonical name of the entity.")],
+            entity_type: Annotated[
+                Literal["person", "organization", "place", "other"],
+                Field(description="Entity type: person | organization | place | other."),
+            ],
+            tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
+            aliases: Annotated[
+                list[str] | None,
+                Field(description="Optional list of alternative names for the entity."),
+            ] = None,
+            metadata: Annotated[
+                dict[str, Any] | None,
+                Field(description="Optional JSONB metadata dict."),
+            ] = None,
+        ) -> dict[str, Any]:
+            """Create a new named entity.
+
+            Inserts a new entity record. Fails if (tenant_id, canonical_name, entity_type)
+            already exists.
+
+            Returns:
+                Dict with key entity_id (UUID string).
+            """
+            return await _entities.entity_create(
+                module._get_pool(),
+                canonical_name,
+                entity_type,
+                tenant_id=tenant_id,
+                aliases=aliases,
+                metadata=metadata,
+            )
+
+        @mcp.tool()
+        async def entity_get(
+            entity_id: Annotated[str, Field(description="UUID string of the entity.")],
+            tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
+        ) -> dict[str, Any] | None:
+            """Retrieve a named entity by ID.
+
+            Returns the full entity record including aliases and metadata,
+            or None if the entity does not exist within the given tenant.
+            """
+            return await _entities.entity_get(
+                module._get_pool(),
+                entity_id,
+                tenant_id=tenant_id,
+            )
+
+        @mcp.tool()
+        async def entity_update(
+            entity_id: Annotated[str, Field(description="UUID string of the entity to update.")],
+            tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
+            canonical_name: Annotated[
+                str | None,
+                Field(description="New canonical name (optional)."),
+            ] = None,
+            aliases: Annotated[
+                list[str] | None,
+                Field(
+                    description=("Full replacement aliases list (replace-all semantics). Optional.")
+                ),
+            ] = None,
+            metadata: Annotated[
+                dict[str, Any] | None,
+                Field(description="Metadata keys to merge into existing metadata. Optional."),
+            ] = None,
+        ) -> dict[str, Any] | None:
+            """Update a named entity.
+
+            - canonical_name: replaces current value when provided.
+            - aliases: replace-all semantics — pass the full desired list.
+            - metadata: merge semantics — keys are merged into existing metadata.
+
+            Returns the updated entity record or None if not found.
+            """
+            return await _entities.entity_update(
+                module._get_pool(),
+                entity_id,
+                tenant_id=tenant_id,
+                canonical_name=canonical_name,
+                aliases=aliases,
+                metadata=metadata,
             )
 
         # --- Consolidation and cleanup tools ---
