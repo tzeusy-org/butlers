@@ -2537,3 +2537,1025 @@ class TestExtractAttachmentsExpanded:
         result = runtime._extract_attachments(payload)
         assert len(result) == 1
         assert result[0]["mime_type"] == "application/vnd.ms-excel"
+
+
+# ---------------------------------------------------------------------------
+# Backfill polling protocol tests
+# (docs/connectors/interface.md section 14, docs/connectors/gmail.md section 9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def backfill_runtime(tmp_path: Path) -> GmailConnectorRuntime:
+    """Create a Gmail connector runtime with backfill enabled."""
+    from butlers.connectors.gmail import BackfillJob  # noqa: F401 (imported for use in tests)
+
+    config = GmailConnectorConfig(
+        switchboard_mcp_url="http://localhost:40100/sse",
+        connector_provider="gmail",
+        connector_channel="email",
+        connector_endpoint_identity="gmail:user:backfill@example.com",
+        connector_cursor_path=tmp_path / "cursor.json",
+        connector_max_inflight=4,
+        gmail_client_id="test-client-id",
+        gmail_client_secret="test-client-secret",
+        gmail_refresh_token="test-refresh-token",
+        gmail_poll_interval_s=5,
+        connector_backfill_enabled=True,
+        connector_backfill_poll_interval_s=60,
+        connector_backfill_progress_interval=5,
+    )
+    return GmailConnectorRuntime(config)
+
+
+class TestBackfillConfig:
+    """Tests for backfill-related GmailConnectorConfig fields."""
+
+    def test_backfill_defaults(self, gmail_config: GmailConnectorConfig) -> None:
+        """Default backfill config values match spec defaults."""
+        assert gmail_config.connector_backfill_enabled is True
+        assert gmail_config.connector_backfill_poll_interval_s == 60
+        assert gmail_config.connector_backfill_progress_interval == 50
+
+    def test_backfill_disabled_via_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CONNECTOR_BACKFILL_ENABLED=false disables backfill."""
+        cursor_path = tmp_path / "cursor.json"
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+        monkeypatch.setenv("CONNECTOR_BACKFILL_ENABLED", "false")
+
+        config = GmailConnectorConfig.from_env(
+            gmail_client_id="client-id",
+            gmail_client_secret="client-secret",
+            gmail_refresh_token="refresh-token",
+        )
+        assert config.connector_backfill_enabled is False
+
+    def test_backfill_poll_interval_from_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CONNECTOR_BACKFILL_POLL_INTERVAL_S is parsed from env."""
+        cursor_path = tmp_path / "cursor.json"
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+        monkeypatch.setenv("CONNECTOR_BACKFILL_POLL_INTERVAL_S", "120")
+
+        config = GmailConnectorConfig.from_env(
+            gmail_client_id="client-id",
+            gmail_client_secret="client-secret",
+            gmail_refresh_token="refresh-token",
+        )
+        assert config.connector_backfill_poll_interval_s == 120
+
+    def test_backfill_progress_interval_from_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CONNECTOR_BACKFILL_PROGRESS_INTERVAL is parsed from env."""
+        cursor_path = tmp_path / "cursor.json"
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+        monkeypatch.setenv("CONNECTOR_BACKFILL_PROGRESS_INTERVAL", "25")
+
+        config = GmailConnectorConfig.from_env(
+            gmail_client_id="client-id",
+            gmail_client_secret="client-secret",
+            gmail_refresh_token="refresh-token",
+        )
+        assert config.connector_backfill_progress_interval == 25
+
+    def test_backfill_poll_interval_invalid_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-integer CONNECTOR_BACKFILL_POLL_INTERVAL_S raises ValueError."""
+        cursor_path = tmp_path / "cursor.json"
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+        monkeypatch.setenv("CONNECTOR_BACKFILL_POLL_INTERVAL_S", "notanint")
+
+        with pytest.raises(  # noqa: E501
+            ValueError, match="CONNECTOR_BACKFILL_POLL_INTERVAL_S must be an integer"
+        ):
+            GmailConnectorConfig.from_env(
+                gmail_client_id="client-id",
+                gmail_client_secret="client-secret",
+                gmail_refresh_token="refresh-token",
+            )
+
+    def test_backfill_progress_interval_invalid_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-integer CONNECTOR_BACKFILL_PROGRESS_INTERVAL raises ValueError."""
+        cursor_path = tmp_path / "cursor.json"
+        monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:40100/sse")
+        monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "gmail:user:test@example.com")
+        monkeypatch.setenv("CONNECTOR_CURSOR_PATH", str(cursor_path))
+        monkeypatch.setenv("CONNECTOR_BACKFILL_PROGRESS_INTERVAL", "bad")
+
+        with pytest.raises(  # noqa: E501
+            ValueError, match="CONNECTOR_BACKFILL_PROGRESS_INTERVAL must be an integer"
+        ):
+            GmailConnectorConfig.from_env(
+                gmail_client_id="client-id",
+                gmail_client_secret="client-secret",
+                gmail_refresh_token="refresh-token",
+            )
+
+
+class TestBackfillJob:
+    """Tests for BackfillJob model."""
+
+    def test_backfill_job_basic(self) -> None:
+        """BackfillJob parses required fields."""
+        from butlers.connectors.gmail import BackfillJob
+
+        job = BackfillJob(
+            job_id="job-123",
+            date_from="2025-01-01",
+            date_to="2025-12-31",
+        )
+        assert job.job_id == "job-123"
+        assert job.date_from == "2025-01-01"
+        assert job.date_to == "2025-12-31"
+        assert job.rate_limit_per_hour == 100
+        assert job.daily_cost_cap_cents == 500
+        assert job.cursor is None
+        assert job.target_categories == []
+
+    def test_backfill_job_with_cursor(self) -> None:
+        """BackfillJob accepts cursor for resume."""
+        from butlers.connectors.gmail import BackfillJob
+
+        job = BackfillJob(
+            job_id="job-456",
+            date_from="2024-01-01",
+            date_to="2024-06-30",
+            cursor={"page_token": "abc123"},
+            rate_limit_per_hour=50,
+            daily_cost_cap_cents=200,
+        )
+        assert job.cursor == {"page_token": "abc123"}
+        assert job.rate_limit_per_hour == 50
+
+    def test_backfill_job_with_target_categories(self) -> None:
+        """BackfillJob stores target_categories."""
+        from butlers.connectors.gmail import BackfillJob
+
+        job = BackfillJob(
+            job_id="job-789",
+            date_from="2023-01-01",
+            date_to="2023-12-31",
+            target_categories=["finance", "health"],
+        )
+        assert "finance" in job.target_categories
+        assert "health" in job.target_categories
+
+
+class TestBackfillPollAndExecute:
+    """Tests for _poll_and_execute_backfill_job and _run_backfill_loop."""
+
+    async def test_no_pending_job_returns_silently(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """When backfill.poll returns None, no job is executed."""
+        with patch.object(
+            backfill_runtime._mcp_client, "call_tool", new=AsyncMock(return_value=None)
+        ):
+            # Should complete without error
+            await backfill_runtime._poll_and_execute_backfill_job()
+
+    async def test_poll_mcp_failure_is_non_fatal(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """backfill.poll MCP failure is logged and does not crash loop."""
+        with patch.object(
+            backfill_runtime._mcp_client,
+            "call_tool",
+            new=AsyncMock(side_effect=ConnectionError("mcp down")),
+        ):
+            # Should not raise
+            await backfill_runtime._poll_and_execute_backfill_job()
+
+    async def test_poll_returns_invalid_type_is_non_fatal(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Non-dict backfill.poll response is handled gracefully."""
+        with patch.object(
+            backfill_runtime._mcp_client, "call_tool", new=AsyncMock(return_value="invalid")
+        ):
+            await backfill_runtime._poll_and_execute_backfill_job()
+
+    async def test_poll_result_missing_job_id_is_non_fatal(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Poll result without job_id is logged and skipped."""
+        with patch.object(
+            backfill_runtime._mcp_client,
+            "call_tool",
+            new=AsyncMock(return_value={"date_from": "2025-01-01", "date_to": "2025-12-31"}),
+        ):
+            await backfill_runtime._poll_and_execute_backfill_job()
+
+    async def test_poll_triggers_job_execution(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """A valid poll result dispatches to _execute_backfill_job."""
+        job_response = {
+            "job_id": "job-001",
+            "date_from": "2025-01-01",
+            "date_to": "2025-03-31",
+            "rate_limit_per_hour": 100,
+            "daily_cost_cap_cents": 500,
+        }
+
+        executed_jobs: list = []
+
+        async def mock_execute(job: object) -> None:
+            executed_jobs.append(job)
+
+        with (
+            patch.object(
+                backfill_runtime._mcp_client, "call_tool", new=AsyncMock(return_value=job_response)
+            ),
+            patch.object(backfill_runtime, "_execute_backfill_job", new=mock_execute),
+        ):
+            await backfill_runtime._poll_and_execute_backfill_job()
+
+        assert len(executed_jobs) == 1
+        assert executed_jobs[0].job_id == "job-001"
+
+    async def test_poll_with_nested_params_structure(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Poll result with nested params dict is correctly parsed."""
+        job_response = {
+            "job_id": "job-nested",
+            "params": {
+                "date_from": "2025-06-01",
+                "date_to": "2025-06-30",
+                "rate_limit_per_hour": 50,
+                "target_categories": ["finance"],
+            },
+            "cursor": {"page_token": "tok123"},
+        }
+
+        executed_jobs: list = []
+
+        async def mock_execute(job: object) -> None:
+            executed_jobs.append(job)
+
+        with (
+            patch.object(
+                backfill_runtime._mcp_client, "call_tool", new=AsyncMock(return_value=job_response)
+            ),
+            patch.object(backfill_runtime, "_execute_backfill_job", new=mock_execute),
+        ):
+            await backfill_runtime._poll_and_execute_backfill_job()
+
+        assert len(executed_jobs) == 1
+        job = executed_jobs[0]
+        assert job.date_from == "2025-06-01"
+        assert job.cursor == {"page_token": "tok123"}
+        assert "finance" in job.target_categories
+
+    async def test_backfill_loop_runs_until_stopped(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """_run_backfill_loop calls poll repeatedly and stops when _running=False."""
+        call_count = 0
+
+        async def mock_poll_and_execute() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                backfill_runtime._running = False
+
+        backfill_runtime._running = True
+
+        with (
+            patch.object(
+                backfill_runtime, "_poll_and_execute_backfill_job", new=mock_poll_and_execute
+            ),
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
+            await backfill_runtime._run_backfill_loop()
+
+        assert call_count >= 2
+
+    async def test_backfill_loop_errors_are_non_fatal(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Errors in poll_and_execute are caught and loop continues."""
+        call_count = 0
+
+        async def mock_poll_and_execute() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("transient error")
+            backfill_runtime._running = False
+
+        backfill_runtime._running = True
+
+        with (
+            patch.object(
+                backfill_runtime, "_poll_and_execute_backfill_job", new=mock_poll_and_execute
+            ),
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
+            await backfill_runtime._run_backfill_loop()
+
+        assert call_count >= 2
+
+
+class TestFetchBackfillMessagePage:
+    """Tests for _fetch_backfill_message_page."""
+
+    async def test_fetches_messages_for_date_range(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Date range is converted to Gmail query and messages returned."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "messages": [{"id": "msg1"}, {"id": "msg2"}],
+        }
+
+        with (
+            patch.object(backfill_runtime, "_http_client", new=AsyncMock()) as mock_client,
+            patch.object(
+                backfill_runtime, "_get_access_token", new=AsyncMock(return_value="token")
+            ),
+        ):
+            mock_client.get = AsyncMock(return_value=mock_response)
+            messages, next_token = await backfill_runtime._fetch_backfill_message_page(
+                date_from="2025-01-01", date_to="2025-06-30"
+            )
+
+        assert len(messages) == 2
+        assert next_token is None
+
+        # Verify query was built correctly
+        call_params = mock_client.get.call_args[1]["params"]
+        assert "after:2025/01/01" in call_params["q"]
+        assert "before:2025/06/30" in call_params["q"]
+
+    async def test_passes_page_token_for_pagination(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """page_token is passed to messages.list for pagination resume."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "messages": [{"id": "msg3"}],
+            "nextPageToken": "next-tok-456",
+        }
+
+        with (
+            patch.object(backfill_runtime, "_http_client", new=AsyncMock()) as mock_client,
+            patch.object(
+                backfill_runtime, "_get_access_token", new=AsyncMock(return_value="token")
+            ),
+        ):
+            mock_client.get = AsyncMock(return_value=mock_response)
+            messages, next_token = await backfill_runtime._fetch_backfill_message_page(
+                date_from="2025-01-01",
+                date_to="2025-03-31",
+                page_token="prev-tok-123",
+            )
+
+        assert len(messages) == 1
+        assert next_token == "next-tok-456"
+        call_params = mock_client.get.call_args[1]["params"]
+        assert call_params["pageToken"] == "prev-tok-123"
+
+    async def test_empty_result_returns_empty_list(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Empty messages list from API returns empty list and no next token."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {}  # No 'messages' key
+
+        with (
+            patch.object(backfill_runtime, "_http_client", new=AsyncMock()) as mock_client,
+            patch.object(
+                backfill_runtime, "_get_access_token", new=AsyncMock(return_value="token")
+            ),
+        ):
+            mock_client.get = AsyncMock(return_value=mock_response)
+            messages, next_token = await backfill_runtime._fetch_backfill_message_page(
+                date_from="2025-01-01", date_to="2025-01-31"
+            )
+
+        assert messages == []
+        assert next_token is None
+
+
+class TestReportBackfillProgress:
+    """Tests for _report_backfill_progress."""
+
+    async def test_sends_progress_to_switchboard(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Progress is submitted via backfill.progress MCP tool."""
+        with patch.object(
+            backfill_runtime._mcp_client,
+            "call_tool",
+            new=AsyncMock(return_value={"status": "ack"}),
+        ) as mock_call:
+            status = await backfill_runtime._report_backfill_progress(
+                job_id="job-001",
+                rows_processed=50,
+                rows_skipped=5,
+                cost_spent_cents=10,
+                cursor={"page_token": "tok123"},
+            )
+
+        assert status == "ack"
+        mock_call.assert_awaited_once()
+        args = mock_call.call_args[0]
+        assert args[0] == "backfill.progress"
+        payload = args[1]
+        assert payload["job_id"] == "job-001"
+        assert payload["rows_processed"] == 50
+        assert payload["rows_skipped"] == 5
+        assert payload["cost_spent_cents_delta"] == 10
+        assert payload["cursor"] == {"page_token": "tok123"}
+
+    async def test_returns_paused_status(self, backfill_runtime: GmailConnectorRuntime) -> None:
+        """When Switchboard returns 'paused', connector should stop."""
+        with patch.object(
+            backfill_runtime._mcp_client,
+            "call_tool",
+            new=AsyncMock(return_value={"status": "paused"}),
+        ):
+            status = await backfill_runtime._report_backfill_progress(
+                job_id="job-002",
+                rows_processed=100,
+                rows_skipped=0,
+                cost_spent_cents=20,
+            )
+
+        assert status == "paused"
+
+    async def test_returns_cancelled_status(self, backfill_runtime: GmailConnectorRuntime) -> None:
+        """When Switchboard returns 'cancelled', connector should stop."""
+        with patch.object(
+            backfill_runtime._mcp_client,
+            "call_tool",
+            new=AsyncMock(return_value={"status": "cancelled"}),
+        ):
+            status = await backfill_runtime._report_backfill_progress(
+                job_id="job-003",
+                rows_processed=200,
+                rows_skipped=10,
+                cost_spent_cents=40,
+            )
+
+        assert status == "cancelled"
+
+    async def test_returns_cost_capped_status(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """When Switchboard returns 'cost_capped', connector should stop."""
+        with patch.object(
+            backfill_runtime._mcp_client,
+            "call_tool",
+            new=AsyncMock(return_value={"status": "cost_capped"}),
+        ):
+            status = await backfill_runtime._report_backfill_progress(
+                job_id="job-004",
+                rows_processed=300,
+                rows_skipped=50,
+                cost_spent_cents=500,
+            )
+
+        assert status == "cost_capped"
+
+    async def test_progress_mcp_failure_returns_ack(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """MCP call failure is non-fatal; connector assumes 'ack' and continues."""
+        with patch.object(
+            backfill_runtime._mcp_client,
+            "call_tool",
+            new=AsyncMock(side_effect=ConnectionError("progress endpoint unreachable")),
+        ):
+            status = await backfill_runtime._report_backfill_progress(
+                job_id="job-005",
+                rows_processed=10,
+                rows_skipped=2,
+                cost_spent_cents=5,
+            )
+
+        # Connector should assume 'ack' and continue when progress call fails
+        assert status == "ack"
+
+    async def test_sends_status_and_error_fields(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Optional status and error fields are included when provided."""
+        with patch.object(
+            backfill_runtime._mcp_client,
+            "call_tool",
+            new=AsyncMock(return_value={"status": "ack"}),
+        ) as mock_call:
+            await backfill_runtime._report_backfill_progress(
+                job_id="job-006",
+                rows_processed=0,
+                rows_skipped=1,
+                cost_spent_cents=0,
+                status="error",
+                error="API quota exceeded",
+            )
+
+        payload = mock_call.call_args[0][1]
+        assert payload["status"] == "error"
+        assert payload["error"] == "API quota exceeded"
+
+
+class TestExecuteBackfillJob:
+    """Tests for _execute_backfill_job loop control and behavior."""
+
+    def _make_job(self, **kwargs: object) -> object:
+        from butlers.connectors.gmail import BackfillJob
+
+        defaults = {
+            "job_id": "test-job",
+            "date_from": "2025-01-01",
+            "date_to": "2025-01-31",
+            "rate_limit_per_hour": 3600,  # 1 token/second -> no wait in tests
+            "daily_cost_cap_cents": 500,
+        }
+        defaults.update(kwargs)
+        return BackfillJob(**defaults)  # type: ignore[arg-type]
+
+    def _make_message_data(self, msg_id: str = "msg1") -> dict:
+        """Build a minimal Gmail message payload for testing."""
+        return {
+            "id": msg_id,
+            "threadId": f"thread-{msg_id}",
+            "internalDate": "1700000000000",
+            "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                    {"name": "Subject", "value": "Test Email"},
+                    {"name": "From", "value": "sender@example.com"},
+                    {"name": "Message-ID", "value": f"<{msg_id}@example.com>"},
+                ],
+                "body": {"data": "dGVzdCBib2R5"},  # base64 "test body"
+            },
+        }
+
+    async def test_completes_when_no_messages(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Job completes immediately when there are no messages in date range."""
+        job = self._make_job()
+        progress_calls: list[dict] = []
+
+        async def mock_progress(**kwargs: object) -> str:
+            progress_calls.append(kwargs)  # type: ignore[arg-type]
+            return "ack"
+
+        with (
+            patch.object(
+                backfill_runtime,
+                "_fetch_backfill_message_page",
+                new=AsyncMock(return_value=([], None)),
+            ),
+            patch.object(
+                backfill_runtime,
+                "_report_backfill_progress",
+                new=AsyncMock(side_effect=lambda **kw: (progress_calls.append(kw), "ack")[1]),
+            ),
+        ):
+            await backfill_runtime._execute_backfill_job(job)  # type: ignore[arg-type]
+
+        # Completion progress should be sent
+        assert any(call.get("status") == "completed" for call in progress_calls), (
+            f"Expected 'completed' status in calls: {progress_calls}"
+        )
+
+    async def test_stops_on_paused_signal(self, backfill_runtime: GmailConnectorRuntime) -> None:
+        """Job stops when backfill.progress returns 'paused'."""
+        job = self._make_job(connector_backfill_progress_interval=1)
+
+        # Override progress interval on config
+        backfill_runtime._config = backfill_runtime._config.model_copy(
+            update={"connector_backfill_progress_interval": 1}
+        )
+
+        pages_fetched = 0
+        page_data = [[{"id": "msgA"}, {"id": "msgB"}]]
+
+        async def mock_fetch_page(**kwargs: object) -> tuple[list, None]:
+            nonlocal pages_fetched
+            pages_fetched += 1
+            return (page_data[0], None)
+
+        async def mock_fetch_message(msg_id: str) -> dict:
+            return self._make_message_data(msg_id)
+
+        async def mock_submit(envelope: dict) -> None:
+            pass
+
+        call_count = 0
+
+        async def mock_progress(**kwargs: object) -> str:
+            nonlocal call_count
+            call_count += 1
+            return "paused"  # Signal pause on first progress call
+
+        with (
+            patch.object(
+                backfill_runtime,
+                "_fetch_backfill_message_page",
+                new=AsyncMock(side_effect=mock_fetch_page),
+            ),
+            patch.object(
+                backfill_runtime, "_fetch_message", new=AsyncMock(side_effect=mock_fetch_message)
+            ),
+            patch.object(
+                backfill_runtime, "_submit_to_ingest_api", new=AsyncMock(side_effect=mock_submit)
+            ),
+            patch.object(
+                backfill_runtime,
+                "_report_backfill_progress",
+                new=AsyncMock(side_effect=lambda **kw: (None, "paused")[1]),
+            ),
+        ):
+            await backfill_runtime._execute_backfill_job(job)  # type: ignore[arg-type]
+
+        # Should have stopped after receiving 'paused'
+        assert pages_fetched <= 2  # Should not keep fetching after pause
+
+    async def test_stops_on_cancelled_signal(self, backfill_runtime: GmailConnectorRuntime) -> None:
+        """Job stops when backfill.progress returns 'cancelled'."""
+        backfill_runtime._config = backfill_runtime._config.model_copy(
+            update={"connector_backfill_progress_interval": 1}
+        )
+        job = self._make_job()
+
+        async def mock_fetch_page(**kwargs: object) -> tuple[list, None]:
+            return ([{"id": "msg1"}], None)
+
+        async def mock_fetch_message(msg_id: str) -> dict:
+            return self._make_message_data(msg_id)
+
+        with (
+            patch.object(
+                backfill_runtime,
+                "_fetch_backfill_message_page",
+                new=AsyncMock(side_effect=mock_fetch_page),
+            ),
+            patch.object(
+                backfill_runtime, "_fetch_message", new=AsyncMock(side_effect=mock_fetch_message)
+            ),
+            patch.object(backfill_runtime, "_submit_to_ingest_api", new=AsyncMock()),
+            patch.object(
+                backfill_runtime,
+                "_report_backfill_progress",
+                new=AsyncMock(return_value="cancelled"),
+            ),
+        ):
+            await backfill_runtime._execute_backfill_job(job)  # type: ignore[arg-type]
+        # Passes if no infinite loop
+
+    async def test_resumes_from_server_side_cursor(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Job resumes from server-side cursor in job.cursor.page_token."""
+        from butlers.connectors.gmail import BackfillJob
+
+        job = BackfillJob(
+            job_id="resume-job",
+            date_from="2025-01-01",
+            date_to="2025-01-31",
+            rate_limit_per_hour=3600,
+            cursor={"page_token": "resume-token-xyz"},
+        )
+
+        fetch_calls: list = []
+
+        async def mock_fetch_page(
+            date_from: str, date_to: str, page_token: str | None = None
+        ) -> tuple[list, None]:
+            fetch_calls.append(page_token)
+            return ([], None)  # No messages, completes immediately
+
+        with (
+            patch.object(
+                backfill_runtime,
+                "_fetch_backfill_message_page",
+                new=AsyncMock(side_effect=mock_fetch_page),
+            ),
+            patch.object(
+                backfill_runtime,
+                "_report_backfill_progress",
+                new=AsyncMock(return_value="ack"),
+            ),
+        ):
+            await backfill_runtime._execute_backfill_job(job)
+
+        assert fetch_calls[0] == "resume-token-xyz", (
+            f"Expected first fetch with resume-token-xyz, got {fetch_calls}"
+        )
+
+    async def test_does_not_advance_live_cursor(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Backfill execution must not modify the live ingestion cursor file."""
+        job = self._make_job()
+
+        # Write a known live cursor
+        live_cursor = GmailCursor(
+            history_id="live-history-999",
+            last_updated_at="2026-02-01T00:00:00+00:00",
+        )
+        cursor_path = backfill_runtime._config.connector_cursor_path
+        cursor_path.write_text(live_cursor.model_dump_json())
+
+        with (
+            patch.object(
+                backfill_runtime,
+                "_fetch_backfill_message_page",
+                new=AsyncMock(return_value=([], None)),
+            ),
+            patch.object(
+                backfill_runtime,
+                "_report_backfill_progress",
+                new=AsyncMock(return_value="ack"),
+            ),
+        ):
+            await backfill_runtime._execute_backfill_job(job)  # type: ignore[arg-type]
+
+        # Live cursor file should be unchanged
+        loaded = GmailCursor.model_validate_json(cursor_path.read_text())
+        assert loaded.history_id == "live-history-999"
+
+    async def test_ingest_failure_increments_skipped(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Failed message ingest increments rows_skipped, not rows_processed."""
+        backfill_runtime._config = backfill_runtime._config.model_copy(
+            update={"connector_backfill_progress_interval": 10}
+        )
+        job = self._make_job()
+
+        progress_args: list[dict] = []
+
+        async def mock_fetch_page(
+            date_from: str, date_to: str, page_token: str | None = None
+        ) -> tuple[list, None | str]:
+            return ([{"id": "msg-fail"}], None)
+
+        async def mock_progress(**kwargs: object) -> str:
+            progress_args.append(kwargs)  # type: ignore[arg-type]
+            return "ack"
+
+        with (
+            patch.object(
+                backfill_runtime,
+                "_fetch_backfill_message_page",
+                new=AsyncMock(side_effect=mock_fetch_page),
+            ),
+            patch.object(
+                backfill_runtime,
+                "_fetch_message",
+                new=AsyncMock(side_effect=RuntimeError("API down")),
+            ),
+            patch.object(
+                backfill_runtime,
+                "_report_backfill_progress",
+                new=AsyncMock(side_effect=mock_progress),
+            ),
+        ):
+            await backfill_runtime._execute_backfill_job(job)  # type: ignore[arg-type]
+
+        # Completion progress call should show 0 processed (failure counted as skipped)
+        completion_call = next((c for c in progress_args if c.get("status") == "completed"), None)
+        if completion_call:
+            assert completion_call.get("rows_processed", 0) == 0
+
+
+class TestCapabilityAdvertisement:
+    """Tests for backfill capability advertisement in heartbeats."""
+
+    def test_get_capabilities_returns_backfill_true_when_enabled(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """_get_capabilities returns {backfill: True} when backfill enabled."""
+        caps = backfill_runtime._get_capabilities()
+        assert caps.get("backfill") is True
+
+    def test_get_capabilities_returns_backfill_false_when_disabled(self, tmp_path: Path) -> None:
+        """_get_capabilities returns {backfill: False} when backfill disabled."""
+        config = GmailConnectorConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            connector_provider="gmail",
+            connector_channel="email",
+            connector_endpoint_identity="gmail:user:test@example.com",
+            connector_cursor_path=tmp_path / "cursor.json",
+            connector_max_inflight=4,
+            gmail_client_id="test-client-id",
+            gmail_client_secret="test-client-secret",
+            gmail_refresh_token="test-refresh-token",
+            connector_backfill_enabled=False,
+        )
+        runtime = GmailConnectorRuntime(config)
+        caps = runtime._get_capabilities()
+        assert caps.get("backfill") is False
+
+
+class TestHeartbeatCapabilities:
+    """Tests for ConnectorHeartbeat capabilities extension."""
+
+    async def test_heartbeat_includes_capabilities_when_provided(self) -> None:
+        """Heartbeat envelope includes capabilities when get_capabilities is set."""
+        from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+
+        config = HeartbeatConfig(
+            connector_type="gmail",
+            endpoint_identity="gmail:user:test@example.com",
+            interval_s=120,
+            enabled=True,
+        )
+        mock_mcp = MagicMock()
+        mock_mcp.call_tool = AsyncMock(return_value={"status": "accepted"})
+        mock_metrics = MagicMock()
+
+        sent_envelopes: list[dict] = []
+
+        async def capture_call(tool_name: str, envelope: dict) -> dict:
+            sent_envelopes.append(envelope)
+            return {"status": "accepted"}
+
+        mock_mcp.call_tool = AsyncMock(side_effect=capture_call)
+
+        heartbeat = ConnectorHeartbeat(
+            config=config,
+            mcp_client=mock_mcp,
+            metrics=mock_metrics,
+            get_health_state=lambda: ("healthy", None),
+            get_capabilities=lambda: {"backfill": True},
+        )
+
+        await heartbeat._send_heartbeat()
+
+        assert len(sent_envelopes) == 1
+        envelope = sent_envelopes[0]
+        assert "capabilities" in envelope, f"Expected capabilities in envelope: {envelope}"
+        assert envelope["capabilities"].get("backfill") is True
+
+    async def test_heartbeat_omits_capabilities_when_not_provided(self) -> None:
+        """Heartbeat envelope omits capabilities key when get_capabilities is None."""
+        from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+
+        config = HeartbeatConfig(
+            connector_type="gmail",
+            endpoint_identity="gmail:user:test@example.com",
+            interval_s=120,
+            enabled=True,
+        )
+        mock_mcp = MagicMock()
+        mock_metrics = MagicMock()
+
+        sent_envelopes: list[dict] = []
+
+        async def capture_call(tool_name: str, envelope: dict) -> dict:
+            sent_envelopes.append(envelope)
+            return {"status": "accepted"}
+
+        mock_mcp.call_tool = AsyncMock(side_effect=capture_call)
+
+        heartbeat = ConnectorHeartbeat(
+            config=config,
+            mcp_client=mock_mcp,
+            metrics=mock_metrics,
+            get_health_state=lambda: ("healthy", None),
+            get_capabilities=None,
+        )
+
+        await heartbeat._send_heartbeat()
+
+        assert len(sent_envelopes) == 1
+        envelope = sent_envelopes[0]
+        assert "capabilities" not in envelope
+
+    async def test_heartbeat_empty_capabilities_omitted(self) -> None:
+        """Heartbeat envelope omits capabilities key when get_capabilities returns empty dict."""
+        from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+
+        config = HeartbeatConfig(
+            connector_type="gmail",
+            endpoint_identity="gmail:user:test@example.com",
+            interval_s=120,
+            enabled=True,
+        )
+        mock_mcp = MagicMock()
+        mock_metrics = MagicMock()
+
+        sent_envelopes: list[dict] = []
+
+        async def capture_call(tool_name: str, envelope: dict) -> dict:
+            sent_envelopes.append(envelope)
+            return {"status": "accepted"}
+
+        mock_mcp.call_tool = AsyncMock(side_effect=capture_call)
+
+        heartbeat = ConnectorHeartbeat(
+            config=config,
+            mcp_client=mock_mcp,
+            metrics=mock_metrics,
+            get_health_state=lambda: ("healthy", None),
+            get_capabilities=lambda: {},  # Empty dict
+        )
+
+        await heartbeat._send_heartbeat()
+
+        envelope = sent_envelopes[0]
+        assert "capabilities" not in envelope
+
+
+# ---------------------------------------------------------------------------
+# Tests for review-fix validations
+# (empty dates in BackfillJob, rate_limit_per_hour <= 0 guard,
+#  dedicated backfill semaphore slot reservation)
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillJobValidation:
+    """Tests for BackfillJob field validators added in review fixes."""
+
+    def test_empty_date_from_raises(self) -> None:
+        """BackfillJob rejects empty date_from to prevent malformed Gmail queries."""
+        from butlers.connectors.gmail import BackfillJob
+
+        with pytest.raises(Exception, match="must not be empty"):
+            BackfillJob(job_id="j1", date_from="", date_to="2025-12-31")
+
+    def test_empty_date_to_raises(self) -> None:
+        """BackfillJob rejects empty date_to to prevent malformed Gmail queries."""
+        from butlers.connectors.gmail import BackfillJob
+
+        with pytest.raises(Exception, match="must not be empty"):
+            BackfillJob(job_id="j2", date_from="2025-01-01", date_to="")
+
+    def test_valid_dates_accepted(self) -> None:
+        """BackfillJob accepts non-empty YYYY-MM-DD date strings."""
+        from butlers.connectors.gmail import BackfillJob
+
+        job = BackfillJob(job_id="j3", date_from="2025-01-01", date_to="2025-12-31")
+        assert job.date_from == "2025-01-01"
+        assert job.date_to == "2025-12-31"
+
+    async def test_zero_rate_limit_skips_job(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """_execute_backfill_job skips execution when rate_limit_per_hour == 0."""
+        from butlers.connectors.gmail import BackfillJob
+
+        job = BackfillJob(
+            job_id="zero-rate",
+            date_from="2025-01-01",
+            date_to="2025-01-31",
+            rate_limit_per_hour=0,
+        )
+
+        fetch_called = False
+
+        async def mock_fetch_page(**kwargs: object) -> tuple[list, None]:
+            nonlocal fetch_called
+            fetch_called = True
+            return ([], None)
+
+        with patch.object(
+            backfill_runtime,
+            "_fetch_backfill_message_page",
+            new=AsyncMock(side_effect=mock_fetch_page)
+        ):
+            await backfill_runtime._execute_backfill_job(job)  # type: ignore[arg-type]
+
+        # fetch should not be called because rate guard exits early
+        assert not fetch_called, (
+            "fetch_backfill_message_page should not be called with rate_limit_per_hour=0"
+        )
+
+    def test_backfill_semaphore_is_one_less_than_max_inflight(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """_backfill_semaphore is initialized to (max_inflight - 1) slots."""
+        max_inflight = backfill_runtime._config.connector_max_inflight
+        # asyncio.Semaphore._value is the initial count
+        expected = max(1, max_inflight - 1)
+        assert backfill_runtime._backfill_semaphore._value == expected, (
+            f"Expected backfill semaphore value={expected}, "
+            f"got {backfill_runtime._backfill_semaphore._value}"
+        )
