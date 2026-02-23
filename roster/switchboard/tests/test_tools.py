@@ -2,21 +2,12 @@
 
 from __future__ import annotations
 
-import shutil
-
 import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-# Skip all tests in this module if Docker is not available
-docker_available = shutil.which("docker") is not None
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(not docker_available, reason="Docker not available"),
-]
 
 
 def _reset_otel_global_state():
