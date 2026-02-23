@@ -12,6 +12,7 @@ const navItems = [
   { path: '/approvals', label: 'Approvals' },
   { path: '/contacts', label: 'Contacts' },
   { path: '/butlers/calendar', label: 'Calendar' },
+  { path: '/ingestion', label: 'Ingestion' },
   { path: '/groups', label: 'Groups' },
   { path: '/health/measurements', label: 'Health' },
   { path: '/collections', label: 'Collections' },

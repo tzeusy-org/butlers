@@ -82,6 +82,9 @@ export function useKeyboardShortcuts() {
           case "h":
             navigate("/health/measurements");
             break;
+          case "e":
+            navigate("/ingestion");
+            break;
         }
       }
     }
