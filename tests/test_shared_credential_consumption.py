@@ -5,13 +5,34 @@ Verifies DB-backed credential behavior for:
 - Google credential resolution (`resolve_google_credentials`) with no env fallback
 - Gmail connector config hydration from explicitly injected DB-resolved secrets
 - Calendar module startup with CredentialStore-backed resolution
+
+Behavior matrix
+---------------
+Layer: asyncpg-conn / google_credentials module
+  - resolve_google_credentials: DB-only (ignores all env vars at this layer)
+  - store_google_credentials -> load_google_credentials round-trip
+
+Layer: gmail connector
+  - GmailConnectorConfig.from_env() accepts injected DB-resolved credentials
+  - Injected credentials take priority over any env vars
+
+Layer: calendar module model
+  - _GoogleOAuthCredentials.from_json parses shared credential payload
+  - from_env factory has been removed
+
+Cross-layer coverage note:
+  - resolve_google_credentials basic success/failure is canonical in
+    tests/test_google_credentials.py (TestResolveGoogleCredentials).
+  - CalendarModule.on_startup credential resolution is canonical in
+    tests/modules/test_module_credential_resolution.py
+    (TestCalendarModuleCredentialStore).
 """
 
 from __future__ import annotations
 
 import json
 import unittest.mock as mock
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -86,11 +107,21 @@ class TestGoogleCredentialsModelContract:
         assert not hasattr(GoogleCredentials, "from_env")
 
 
-class TestGoogleCredentialsFromJsonForCalendar:
-    """Verify calendar compatibility for stored JSON payload parsing."""
+# ---------------------------------------------------------------------------
+# Calendar model: from_env factory removed; from_json parses shared payload
+# ---------------------------------------------------------------------------
 
-    def test_calendar_from_json_accepts_shared_payload(self) -> None:
-        """Calendar helper parses shared credential payload JSON."""
+
+class TestCalendarModuleAcceptsSharedCredentialsFormat:
+    """Calendar module credential model compatibility with shared credential format."""
+
+    def test_calendar_from_env_factory_is_removed(self) -> None:
+        from butlers.modules.calendar import _GoogleOAuthCredentials
+
+        assert not hasattr(_GoogleOAuthCredentials, "from_env")
+
+    def test_shared_blob_is_compatible_with_calendar_json_parser(self) -> None:
+        """A shared credential blob is parseable via Calendar's from_json parser."""
         from butlers.modules.calendar import _GoogleOAuthCredentials
 
         shared_blob = json.dumps(
@@ -187,110 +218,42 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
 
 
 # ---------------------------------------------------------------------------
-# Calendar module accepts canonical env credentials
+# resolve_google_credentials: DB-only contract
+#
+# Basic success/failure paths are canonical in test_google_credentials.py.
+# This class verifies the cross-cutting contract that the function is
+# DB-only and ignores all env variable variants (legacy and bootstrap).
 # ---------------------------------------------------------------------------
 
 
-class TestCalendarModuleAcceptsSharedCredentialsFormat:
-    """Verify Calendar module credential resolution against shared credential format."""
+class TestResolveGoogleCredentialsIsDbOnly:
+    """resolve_google_credentials never falls back to env vars at any boundary."""
 
-    def test_calendar_from_env_factory_is_removed(self) -> None:
-        from butlers.modules.calendar import _GoogleOAuthCredentials
-
-        assert not hasattr(_GoogleOAuthCredentials, "from_env")
-
-    def test_shared_blob_is_compatible_with_calendar_json_parser(self) -> None:
-        """A shared credential blob is parseable via Calendar's from_json parser."""
-        from butlers.modules.calendar import _GoogleOAuthCredentials
-
-        shared_blob = json.dumps(
-            {
-                "client_id": _SHARED_CREDS["client_id"],
-                "client_secret": _SHARED_CREDS["client_secret"],
-                "refresh_token": _SHARED_CREDS["refresh_token"],
-                "scope": _SHARED_CREDS["scope"],
-                "stored_at": "2026-02-19T00:00:00+00:00",
-            }
-        )
-        creds = _GoogleOAuthCredentials.from_json(shared_blob)
-
-        assert creds.client_id == _SHARED_CREDS["client_id"]
-        assert creds.client_secret == _SHARED_CREDS["client_secret"]
-        assert creds.refresh_token == _SHARED_CREDS["refresh_token"]
-
-
-# ---------------------------------------------------------------------------
-# resolve_google_credentials: both callers get same credentials from DB
-# ---------------------------------------------------------------------------
-
-
-class TestResolveSharedCredentialsBothCallers:
-    """Both gmail and calendar callers resolve the same credentials from DB."""
-
-    async def test_gmail_caller_resolves_from_db(self) -> None:
-        """resolve_google_credentials(caller='gmail') returns DB credentials."""
-        conn = _make_db_conn_with_creds(_SHARED_CREDS)
-
-        result = await resolve_google_credentials(conn, caller="gmail")
-
-        assert result.client_id == _SHARED_CREDS["client_id"]
-        assert result.client_secret == _SHARED_CREDS["client_secret"]
-        assert result.refresh_token == _SHARED_CREDS["refresh_token"]
-
-    async def test_calendar_caller_resolves_from_db(self) -> None:
-        """resolve_google_credentials(caller='calendar') returns same DB credentials."""
-        conn = _make_db_conn_with_creds(_SHARED_CREDS)
-
-        result = await resolve_google_credentials(conn, caller="calendar")
-
-        assert result.client_id == _SHARED_CREDS["client_id"]
-        assert result.client_secret == _SHARED_CREDS["client_secret"]
-        assert result.refresh_token == _SHARED_CREDS["refresh_token"]
-
-    async def test_both_callers_get_identical_credentials_from_same_db_record(
-        self,
-    ) -> None:
-        """Gmail and Calendar resolve identical credentials from the same DB record."""
-        conn = _make_db_conn_with_creds(_SHARED_CREDS)
-
-        gmail_creds = await resolve_google_credentials(conn, caller="gmail")
-        calendar_creds = await resolve_google_credentials(conn, caller="calendar")
-
-        # Both must get the same credential material
-        assert gmail_creds.client_id == calendar_creds.client_id
-        assert gmail_creds.client_secret == calendar_creds.client_secret
-        assert gmail_creds.refresh_token == calendar_creds.refresh_token
-
-    async def test_resolve_rejects_legacy_gmail_env_vars_when_db_empty(self) -> None:
-        """resolve_google_credentials rejects legacy GMAIL_* env vars when DB is empty."""
-        conn = _make_conn(row_data=None)  # Empty DB
-
+    async def test_resolve_raises_with_legacy_gmail_env_when_db_empty(self) -> None:
+        """Legacy GMAIL_* env vars are rejected; DB is the only source."""
+        conn = _make_conn(row_data=None)
         with mock.patch.dict("os.environ", _LEGACY_GMAIL_ENV, clear=True):
             with pytest.raises(MissingGoogleCredentialsError):
                 await resolve_google_credentials(conn, caller="gmail")
 
-    async def test_resolve_raises_when_db_empty_even_if_env_is_populated(self) -> None:
-        """resolve_google_credentials is DB-only and ignores env variables."""
-        conn = _make_conn(row_data=None)  # Empty DB
-
+    async def test_resolve_raises_with_bootstrap_env_when_db_empty(self) -> None:
+        """Canonical GOOGLE_OAUTH_* env vars are also ignored; DB is required."""
+        conn = _make_conn(row_data=None)
         with mock.patch.dict("os.environ", _OAUTH_BOOTSTRAP_ENV, clear=True):
             with pytest.raises(MissingGoogleCredentialsError):
                 await resolve_google_credentials(conn, caller="calendar")
 
-    async def test_resolve_raises_when_db_empty_and_no_env_vars(self) -> None:
-        """resolve_google_credentials raises MissingGoogleCredentialsError when fully unset."""
-        conn = _make_conn(row_data=None)  # Empty DB
-
+    async def test_resolve_error_message_includes_caller_and_guidance(self) -> None:
+        """Error message names the caller and includes remediation guidance."""
+        conn = _make_conn(row_data=None)
         with pytest.raises(MissingGoogleCredentialsError) as exc_info:
             await resolve_google_credentials(conn, caller="gmail")
-
         msg = str(exc_info.value)
-        # Must explain how to fix the problem
         assert "bootstrap" in msg.lower() or "oauth" in msg.lower()
-        assert "gmail" in msg.lower()  # Caller name in message
+        assert "gmail" in msg.lower()
 
-    async def test_resolve_db_first_ignores_env_when_db_has_credentials(self) -> None:
-        """When DB has credentials, env vars are ignored (DB takes priority)."""
+    async def test_resolve_db_creds_take_priority_over_bootstrap_env(self) -> None:
+        """When DB has credentials, bootstrap env vars are ignored (DB wins)."""
         conn = _make_db_conn_with_creds(_SHARED_CREDS)
         different_env = {
             "GOOGLE_OAUTH_CLIENT_ID": "different-id-from-env",
@@ -301,13 +264,12 @@ class TestResolveSharedCredentialsBothCallers:
         with mock.patch.dict("os.environ", different_env, clear=True):
             result = await resolve_google_credentials(conn, caller="test")
 
-        # DB credentials take precedence over env vars
         assert result.client_id == _SHARED_CREDS["client_id"]
         assert result.client_secret == _SHARED_CREDS["client_secret"]
 
 
 # ---------------------------------------------------------------------------
-# store_google_credentials → load_google_credentials round-trip
+# store_google_credentials -> load_google_credentials round-trip
 # ---------------------------------------------------------------------------
 
 
@@ -379,52 +341,3 @@ class TestStoreAndLoadRoundTrip:
         result = await load_google_credentials(conn)
         assert result is not None
         assert result.scope is None
-
-
-# ---------------------------------------------------------------------------
-# CalendarModule.on_startup DB-first credential path
-# ---------------------------------------------------------------------------
-
-
-class TestCalendarModuleOnStartupDbFirst:
-    """Verify CalendarModule.on_startup resolves credentials from DB when pool available."""
-
-    async def test_on_startup_uses_credential_store_when_available(self) -> None:
-        """CalendarModule resolves Google credentials from credential_store during on_startup."""
-        from butlers.modules.calendar import CalendarModule
-
-        async def _resolve(key: str, env_fallback: bool = True) -> str | None:
-            values = {
-                "GOOGLE_OAUTH_CLIENT_ID": _SHARED_CREDS["client_id"],
-                "GOOGLE_OAUTH_CLIENT_SECRET": _SHARED_CREDS["client_secret"],
-                "GOOGLE_REFRESH_TOKEN": _SHARED_CREDS["refresh_token"],
-            }
-            assert env_fallback is False
-            return values.get(key)
-
-        credential_store = AsyncMock()
-        credential_store.resolve.side_effect = _resolve
-        db = MagicMock()
-
-        mod = CalendarModule()
-        with mock.patch.dict("os.environ", {}, clear=True):
-            await mod.on_startup(
-                {"provider": "google", "calendar_id": "primary"},
-                db=db,
-                credential_store=credential_store,
-            )
-
-        provider = getattr(mod, "_provider")
-        assert provider is not None
-        assert provider.name == "google"
-        # Verify the credentials on the OAuth client
-        assert provider._oauth._credentials.client_id == _SHARED_CREDS["client_id"]
-        assert provider._oauth._credentials.refresh_token == _SHARED_CREDS["refresh_token"]
-
-    async def test_on_startup_raises_when_no_credential_store_is_provided(self) -> None:
-        """CalendarModule startup fails without a DB-backed credential store."""
-        from butlers.modules.calendar import CalendarModule
-
-        mod = CalendarModule()
-        with pytest.raises(RuntimeError):
-            await mod.on_startup({"provider": "google", "calendar_id": "primary"}, db=None)

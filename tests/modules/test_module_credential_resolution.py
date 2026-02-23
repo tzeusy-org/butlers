@@ -328,19 +328,6 @@ class TestCalendarModuleCredentialStore:
         # Verify store was actually consulted
         store.resolve.assert_called()
 
-    async def test_startup_raises_when_no_credentials_available(self) -> None:
-        """RuntimeError is raised when credentials are not in store/DB."""
-        from butlers.modules.calendar import CalendarModule
-
-        store = _make_credential_store()  # empty
-        mod = CalendarModule()
-        with pytest.raises(RuntimeError):
-            await mod.on_startup(
-                {"provider": "google", "calendar_id": "primary"},
-                db=None,
-                credential_store=store,
-            )
-
     async def test_startup_without_store_raises(self) -> None:
         """Without CredentialStore, startup fails under DB-only contract."""
         from butlers.modules.calendar import CalendarModule
