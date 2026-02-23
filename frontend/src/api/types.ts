@@ -1499,4 +1499,113 @@ export interface ThreadOverrideEntry {
 /** Request body for PUT /api/switchboard/thread-affinity/overrides/:thread_id. */
 export interface ThreadOverrideUpsert {
   mode: string;
+
+// ---------------------------------------------------------------------------
+// Connector statistics and analytics types (docs/connectors/statistics.md)
+// ---------------------------------------------------------------------------
+
+export type IngestionPeriod = "24h" | "7d" | "30d";
+
+/** Today's ingestion summary attached to a connector list entry. */
+export interface ConnectorDaySummary {
+  messages_ingested: number;
+  messages_failed: number;
+  uptime_pct: number | null;
+}
+
+/** A connector with current liveness and today's stats (GET /api/connectors). */
+export interface ConnectorSummary {
+  connector_type: string;
+  endpoint_identity: string;
+  liveness: string; // "online" | "stale" | "offline"
+  state: string;    // "healthy" | "degraded" | "error"
+  error_message: string | null;
+  version: string | null;
+  uptime_s: number | null;
+  last_heartbeat_at: string | null;
+  first_seen_at: string;
+  today: ConnectorDaySummary | null;
+}
+
+/** Full connector detail (GET /api/connectors/:type/:identity). */
+export interface ConnectorDetail extends ConnectorSummary {
+  instance_id: string | null;
+  registered_via: string;
+  checkpoint: ConnectorCheckpoint | null;
+  counters: ConnectorCounters | null;
+}
+
+export interface ConnectorCheckpoint {
+  cursor: string | null;
+  updated_at: string | null;
+}
+
+export interface ConnectorCounters {
+  messages_ingested: number;
+  messages_failed: number;
+  source_api_calls: number;
+  checkpoint_saves: number;
+  dedupe_accepted: number;
+}
+
+/** One time bucket in a stats timeseries. */
+export interface ConnectorStatsBucket {
+  bucket: string;
+  messages_ingested: number;
+  messages_failed: number;
+  healthy_count: number;
+  degraded_count: number;
+  error_count: number;
+}
+
+export interface ConnectorStatsSummary {
+  messages_ingested: number;
+  messages_failed: number;
+  error_rate_pct: number;
+  uptime_pct: number | null;
+  avg_messages_per_hour: number;
+}
+
+/** Full stats response for a single connector (GET /api/connectors/:type/:identity/stats). */
+export interface ConnectorStats {
+  connector_type: string;
+  endpoint_identity: string;
+  period: IngestionPeriod;
+  summary: ConnectorStatsSummary;
+  timeseries: ConnectorStatsBucket[];
+}
+
+/** One row in the cross-connector summary. */
+export interface ConnectorSummaryEntry {
+  connector_type: string;
+  endpoint_identity: string;
+  liveness: string;
+  messages_ingested: number;
+  messages_failed: number;
+}
+
+/** Cross-connector aggregate summary (GET /api/connectors/summary). */
+export interface CrossConnectorSummary {
+  period: IngestionPeriod;
+  total_connectors: number;
+  connectors_online: number;
+  connectors_stale: number;
+  connectors_offline: number;
+  total_messages_ingested: number;
+  total_messages_failed: number;
+  overall_error_rate_pct: number;
+  by_connector: ConnectorSummaryEntry[];
+}
+
+/** One row in the fanout matrix. */
+export interface ConnectorFanoutEntry {
+  connector_type: string;
+  endpoint_identity: string;
+  targets: Record<string, number>; // butler_name -> message_count
+}
+
+/** Fanout distribution response (GET /api/connectors/fanout). */
+export interface ConnectorFanout {
+  period: IngestionPeriod;
+  matrix: ConnectorFanoutEntry[];
 }

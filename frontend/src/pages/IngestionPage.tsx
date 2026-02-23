@@ -1,9 +1,10 @@
 import { useSearchParams } from 'react-router'
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { BackfillHistoryTab } from '@/components/switchboard/BackfillHistoryTab'
 import { FiltersTab } from '@/components/switchboard/FiltersTab'
+import { OverviewTab } from '@/components/ingestion/OverviewTab'
+import { ConnectorsTab } from '@/components/ingestion/ConnectorsTab'
 
 // ---------------------------------------------------------------------------
 // Tab value constants
@@ -14,48 +15,6 @@ type IngestionTab = (typeof INGESTION_TABS)[number]
 
 function isValidTab(value: string | null): value is IngestionTab {
   return INGESTION_TABS.includes(value as IngestionTab)
-}
-
-// ---------------------------------------------------------------------------
-// Placeholder tab content components
-// These will be replaced by dedicated implementations in child issues:
-//   butlers-dsa4.4.5 - Overview and Connectors tab analytics
-// ---------------------------------------------------------------------------
-
-function OverviewTabContent() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Overview</CardTitle>
-        <CardDescription>
-          Aggregate ingestion telemetry and high-level routing economics.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p className="text-sm text-muted-foreground">
-          Overview analytics will be implemented in a follow-up task.
-        </p>
-      </CardContent>
-    </Card>
-  )
-}
-
-function ConnectorsTabContent() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Connectors</CardTitle>
-        <CardDescription>
-          Source connector health, volume, and fanout distribution.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p className="text-sm text-muted-foreground">
-          Connectors analytics will be implemented in a follow-up task.
-        </p>
-      </CardContent>
-    </Card>
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +32,13 @@ export default function IngestionPage() {
       // Omit `tab` param for the default tab to keep URLs clean
       setSearchParams({}, { replace: true })
     } else {
-      setSearchParams({ tab: value }, { replace: true })
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev)
+        next.set('tab', value)
+        // Clear period when switching tabs so each tab uses its own fresh default
+        next.delete('period')
+        return next
+      }, { replace: true })
     }
   }
 
@@ -95,11 +60,11 @@ export default function IngestionPage() {
         </TabsList>
 
         <TabsContent value="overview">
-          <OverviewTabContent />
+          <OverviewTab isActive={activeTab === 'overview'} />
         </TabsContent>
 
         <TabsContent value="connectors">
-          <ConnectorsTabContent />
+          <ConnectorsTab isActive={activeTab === 'connectors'} />
         </TabsContent>
 
         <TabsContent value="filters">
