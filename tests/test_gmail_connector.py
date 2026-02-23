@@ -1211,18 +1211,9 @@ class TestGmailAttachmentExtraction:
     async def test_process_attachments_success(
         self, gmail_runtime_with_blob_store: GmailConnectorRuntime, mock_blob_store: AsyncMock
     ) -> None:
-        """Test successful attachment processing and storage."""
+        """Test successful lazy-fetch attachment processing (JPEG — no download at ingest)."""
         runtime = gmail_runtime_with_blob_store
-        runtime._http_client = AsyncMock()
-        runtime._get_access_token = AsyncMock(return_value="test-token")
-
-        # Mock attachment download
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "data": base64.urlsafe_b64encode(b"fake image data").decode()
-        }
-        mock_response.raise_for_status = MagicMock()
-        runtime._http_client.get = AsyncMock(return_value=mock_response)
+        # No HTTP client needed: lazy-fetch attachments are not downloaded at ingest time.
 
         payload = {
             "mimeType": "multipart/mixed",
@@ -1243,18 +1234,27 @@ class TestGmailAttachmentExtraction:
         assert result is not None
         assert len(result) == 1
         assert result[0]["media_type"] == "image/jpeg"
-        assert result[0]["storage_ref"] == "local://2026/02/16/test.jpg"
+        # Lazy-fetched: storage_ref is None until on-demand materialization.
+        assert result[0]["storage_ref"] is None
+        assert result[0]["fetched"] is False
         assert result[0]["size_bytes"] == 1024
         assert result[0]["filename"] == "photo.jpg"
+        assert result[0]["message_id"] == "msg123"
+        assert result[0]["attachment_id"] == "att123"
 
-        # Verify blob store was called
-        mock_blob_store.put.assert_awaited_once()
+        # Blob store must NOT be called during lazy ingest.
+        mock_blob_store.put.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_process_attachments_no_blob_store(
         self, gmail_runtime: GmailConnectorRuntime
     ) -> None:
-        """Test that attachments are skipped when blob store is not configured."""
+        """Test that lazy-fetch attachments are returned even without a blob store.
+
+        Lazy-fetch model: metadata refs are written regardless of blob store
+        availability (DB pool permitting). Blob store is only needed for eager
+        paths (text/calendar) and on-demand materialization.
+        """
         payload = {
             "mimeType": "multipart/mixed",
             "parts": [
@@ -1271,7 +1271,12 @@ class TestGmailAttachmentExtraction:
 
         result = await gmail_runtime._process_attachments("msg123", payload)
 
-        assert result is None
+        # Lazy-fetch succeeds without blob store: metadata ref is returned.
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["media_type"] == "image/jpeg"
+        assert result[0]["fetched"] is False
+        assert result[0]["storage_ref"] is None
 
     @pytest.mark.asyncio
     async def test_process_attachments_oversized_skipped(
@@ -1302,50 +1307,33 @@ class TestGmailAttachmentExtraction:
         mock_blob_store.put.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_process_attachments_download_failure_continues(
+    async def test_process_attachments_lazy_returns_both_refs(
         self, gmail_runtime_with_blob_store: GmailConnectorRuntime, mock_blob_store: AsyncMock
     ) -> None:
-        """Test that download failures don't block other attachments."""
+        """Test that lazy-fetch returns metadata refs for multiple attachments without download.
+
+        Both images (JPEG, PNG) are lazy-fetched. No HTTP download occurs at ingest,
+        so both refs are returned regardless of any simulated download failure.
+        """
         runtime = gmail_runtime_with_blob_store
-        runtime._http_client = AsyncMock()
-        runtime._get_access_token = AsyncMock(return_value="test-token")
-
-        # First attachment fails, second succeeds
-        call_count = 0
-
-        async def mock_get(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                # First call fails
-                raise Exception("Download failed")
-            else:
-                # Second call succeeds
-                mock_response = MagicMock()
-                mock_response.json.return_value = {
-                    "data": base64.urlsafe_b64encode(b"good data").decode()
-                }
-                mock_response.raise_for_status = MagicMock()
-                return mock_response
-
-        runtime._http_client.get = mock_get
+        # No HTTP client needed: lazy-fetch attachments are not downloaded at ingest.
 
         payload = {
             "mimeType": "multipart/mixed",
             "parts": [
                 {
                     "mimeType": "image/jpeg",
-                    "filename": "bad.jpg",
+                    "filename": "first.jpg",
                     "body": {
-                        "attachmentId": "att_bad",
+                        "attachmentId": "att_first",
                         "size": 1024,
                     },
                 },
                 {
                     "mimeType": "image/png",
-                    "filename": "good.png",
+                    "filename": "second.png",
                     "body": {
-                        "attachmentId": "att_good",
+                        "attachmentId": "att_second",
                         "size": 2048,
                     },
                 },
@@ -1354,10 +1342,16 @@ class TestGmailAttachmentExtraction:
 
         result = await runtime._process_attachments("msg123", payload)
 
-        # Should have one attachment (the successful one)
+        # Both lazy-fetched: both refs returned.
         assert result is not None
-        assert len(result) == 1
-        assert result[0]["filename"] == "good.png"
+        assert len(result) == 2
+        assert all(r["fetched"] is False for r in result)
+        assert all(r["storage_ref"] is None for r in result)
+        filenames = {r["filename"] for r in result}
+        assert filenames == {"first.jpg", "second.png"}
+
+        # No blob store calls during lazy ingest.
+        mock_blob_store.put.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_build_ingest_envelope_with_attachments(
@@ -1765,3 +1759,781 @@ class TestGmailConnectorConfigCredentialInjection:
                 gmail_client_secret="db-client-secret",
                 gmail_refresh_token="db-refresh-token",
             )
+
+
+# ---------------------------------------------------------------------------
+# New tests for ATTACHMENT_POLICY, lazy/eager fetch, metrics, and on-demand
+# fetch — added for butlers-dsa4.2.4
+# ---------------------------------------------------------------------------
+
+
+class TestAttachmentPolicy:
+    """Unit tests for ATTACHMENT_POLICY map and derived constants."""
+
+    def test_attachment_policy_contains_all_categories(self) -> None:
+        """ATTACHMENT_POLICY covers images, PDF, spreadsheets, documents, and calendar."""
+        from butlers.connectors.gmail import ATTACHMENT_POLICY
+
+        # Images
+        for mime in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+            assert mime in ATTACHMENT_POLICY, f"Missing image type: {mime}"
+        # PDF
+        assert "application/pdf" in ATTACHMENT_POLICY
+        # Spreadsheets
+        for mime in (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+            "text/csv",
+        ):
+            assert mime in ATTACHMENT_POLICY, f"Missing spreadsheet type: {mime}"
+        # Documents
+        for mime in (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "message/rfc822",
+        ):
+            assert mime in ATTACHMENT_POLICY, f"Missing document type: {mime}"
+        # Calendar
+        assert "text/calendar" in ATTACHMENT_POLICY
+
+    def test_calendar_fetch_mode_is_eager(self) -> None:
+        """text/calendar uses eager fetch mode for direct calendar routing."""
+        from butlers.connectors.gmail import ATTACHMENT_POLICY
+
+        assert ATTACHMENT_POLICY["text/calendar"]["fetch_mode"] == "eager"
+
+    def test_non_calendar_fetch_modes_are_lazy(self) -> None:
+        """All non-calendar attachment types use lazy fetch mode."""
+        from butlers.connectors.gmail import ATTACHMENT_POLICY
+
+        for mime, policy in ATTACHMENT_POLICY.items():
+            if mime != "text/calendar":
+                assert policy["fetch_mode"] == "lazy", (
+                    f"Expected lazy fetch for {mime}, got {policy['fetch_mode']}"
+                )
+
+    def test_calendar_size_limit_is_1mb(self) -> None:
+        """text/calendar per-type limit is 1 MB."""
+        from butlers.connectors.gmail import ATTACHMENT_POLICY
+
+        assert ATTACHMENT_POLICY["text/calendar"]["max_size_bytes"] == 1 * 1024 * 1024
+
+    def test_pdf_size_limit_is_15mb(self) -> None:
+        """application/pdf per-type limit is 15 MB."""
+        from butlers.connectors.gmail import ATTACHMENT_POLICY
+
+        assert ATTACHMENT_POLICY["application/pdf"]["max_size_bytes"] == 15 * 1024 * 1024
+
+    def test_image_size_limit_is_5mb(self) -> None:
+        """Image types have 5 MB per-type limit."""
+        from butlers.connectors.gmail import ATTACHMENT_POLICY
+
+        for mime in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+            assert ATTACHMENT_POLICY[mime]["max_size_bytes"] == 5 * 1024 * 1024
+
+    def test_global_max_is_25mb(self) -> None:
+        """GLOBAL_MAX_ATTACHMENT_SIZE_BYTES is 25 MB (Gmail maximum)."""
+        from butlers.connectors.gmail import GLOBAL_MAX_ATTACHMENT_SIZE_BYTES
+
+        assert GLOBAL_MAX_ATTACHMENT_SIZE_BYTES == 25 * 1024 * 1024
+
+    def test_supported_attachment_types_derived_from_policy(self) -> None:
+        """SUPPORTED_ATTACHMENT_TYPES is exactly the set of ATTACHMENT_POLICY keys."""
+        from butlers.connectors.gmail import ATTACHMENT_POLICY, SUPPORTED_ATTACHMENT_TYPES
+
+        assert SUPPORTED_ATTACHMENT_TYPES == frozenset(ATTACHMENT_POLICY.keys())
+
+    def test_spreadsheet_size_limit_is_10mb(self) -> None:
+        """Spreadsheet types have 10 MB per-type limit."""
+        from butlers.connectors.gmail import ATTACHMENT_POLICY
+
+        for mime in (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-excel",
+            "text/csv",
+        ):
+            assert ATTACHMENT_POLICY[mime]["max_size_bytes"] == 10 * 1024 * 1024
+
+    def test_document_size_limit_is_10mb(self) -> None:
+        """Document types have 10 MB per-type limit."""
+        from butlers.connectors.gmail import ATTACHMENT_POLICY
+
+        for mime in (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "message/rfc822",
+        ):
+            assert ATTACHMENT_POLICY[mime]["max_size_bytes"] == 10 * 1024 * 1024
+
+
+class TestAttachmentPolicyEnforcement:
+    """Tests for per-type and global size cap enforcement in _process_attachments."""
+
+    @pytest.fixture
+    def mock_blob_store(self) -> AsyncMock:
+        store = AsyncMock()
+        store.put = AsyncMock(return_value="local://2026/02/blob.bin")
+        return store
+
+    @pytest.fixture
+    def runtime(
+        self, gmail_config: GmailConnectorConfig, mock_blob_store: AsyncMock
+    ) -> GmailConnectorRuntime:
+        return GmailConnectorRuntime(gmail_config, blob_store=mock_blob_store)
+
+    @pytest.mark.asyncio
+    async def test_oversized_image_skipped_by_per_type_limit(
+        self, runtime: GmailConnectorRuntime, mock_blob_store: AsyncMock
+    ) -> None:
+        """JPEG > 5 MB is skipped by per-type limit."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "image/jpeg",
+                    "filename": "huge.jpg",
+                    "body": {"attachmentId": "att1", "size": 6 * 1024 * 1024},
+                }
+            ],
+        }
+        result = await runtime._process_attachments("msg1", payload)
+        assert result is None
+        mock_blob_store.put.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pdf_under_15mb_accepted(self, runtime: GmailConnectorRuntime) -> None:
+        """PDF at 10 MB (< 15 MB limit) is lazy-accepted."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "report.pdf",
+                    "body": {"attachmentId": "att2", "size": 10 * 1024 * 1024},
+                }
+            ],
+        }
+        result = await runtime._process_attachments("msg2", payload)
+        assert result is not None
+        assert result[0]["media_type"] == "application/pdf"
+        assert result[0]["fetched"] is False
+
+    @pytest.mark.asyncio
+    async def test_pdf_over_15mb_skipped(self, runtime: GmailConnectorRuntime) -> None:
+        """PDF > 15 MB is skipped by per-type limit."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "huge.pdf",
+                    "body": {"attachmentId": "att3", "size": 16 * 1024 * 1024},
+                }
+            ],
+        }
+        result = await runtime._process_attachments("msg3", payload)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_oversized_attachment_skipped_by_global_cap(
+        self, runtime: GmailConnectorRuntime
+    ) -> None:
+        """Attachment > 25 MB is skipped by global cap regardless of per-type limit."""
+        # PDF limit is 15 MB but global cap is 25 MB — test with 26 MB
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "massive.pdf",
+                    "body": {"attachmentId": "att4", "size": 26 * 1024 * 1024},
+                }
+            ],
+        }
+        result = await runtime._process_attachments("msg4", payload)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_calendar_within_1mb_eager_fetched(
+        self,
+        runtime: GmailConnectorRuntime,
+        mock_blob_store: AsyncMock,
+    ) -> None:
+        """text/calendar within 1 MB is eagerly fetched and stored."""
+        import base64
+
+        runtime._http_client = AsyncMock()
+        runtime._get_access_token = AsyncMock(return_value="test-token")
+
+        ics_bytes = b"BEGIN:VCALENDAR\nEND:VCALENDAR"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"data": base64.urlsafe_b64encode(ics_bytes).decode()}
+        mock_response.raise_for_status = MagicMock()
+        runtime._http_client.get = AsyncMock(return_value=mock_response)
+
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/calendar",
+                    "filename": "invite.ics",
+                    "body": {"attachmentId": "att_ics", "size": 500},
+                }
+            ],
+        }
+
+        result = await runtime._process_attachments("msg5", payload)
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["media_type"] == "text/calendar"
+        assert result[0]["fetched"] is True
+        assert result[0]["storage_ref"] == "local://2026/02/blob.bin"
+        # Blob store must be called for eager fetch.
+        mock_blob_store.put.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_calendar_over_1mb_skipped(self, runtime: GmailConnectorRuntime) -> None:
+        """text/calendar > 1 MB is skipped by per-type limit."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/calendar",
+                    "filename": "big.ics",
+                    "body": {"attachmentId": "att_big_ics", "size": 2 * 1024 * 1024},
+                }
+            ],
+        }
+        result = await runtime._process_attachments("msg6", payload)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_calendar_no_blob_store_skipped(self, gmail_config: GmailConnectorConfig) -> None:
+        """text/calendar with no blob store is skipped (eager path requires blob store)."""
+        runtime = GmailConnectorRuntime(gmail_config)  # No blob store
+
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/calendar",
+                    "filename": "invite.ics",
+                    "body": {"attachmentId": "att_ics2", "size": 500},
+                }
+            ],
+        }
+        result = await runtime._process_attachments("msg7", payload)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_unsupported_type_not_extracted(self, runtime: GmailConnectorRuntime) -> None:
+        """Unsupported MIME types (e.g., application/zip) are excluded from MIME walk."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "application/zip",
+                    "filename": "archive.zip",
+                    "body": {"attachmentId": "att_zip", "size": 1024},
+                }
+            ],
+        }
+        result = await runtime._process_attachments("msg8", payload)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_mixed_types_lazy_and_eager(
+        self,
+        runtime: GmailConnectorRuntime,
+        mock_blob_store: AsyncMock,
+    ) -> None:
+        """JPEG (lazy) and text/calendar (eager) are processed correctly together."""
+        import base64
+
+        runtime._http_client = AsyncMock()
+        runtime._get_access_token = AsyncMock(return_value="test-token")
+
+        ics_bytes = b"BEGIN:VCALENDAR\nEND:VCALENDAR"
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"data": base64.urlsafe_b64encode(ics_bytes).decode()}
+        mock_response.raise_for_status = MagicMock()
+        runtime._http_client.get = AsyncMock(return_value=mock_response)
+
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "image/jpeg",
+                    "filename": "photo.jpg",
+                    "body": {"attachmentId": "att_jpg", "size": 1024},
+                },
+                {
+                    "mimeType": "text/calendar",
+                    "filename": "invite.ics",
+                    "body": {"attachmentId": "att_ics3", "size": 400},
+                },
+            ],
+        }
+
+        result = await runtime._process_attachments("msg9", payload)
+
+        assert result is not None
+        assert len(result) == 2
+
+        by_type = {r["media_type"]: r for r in result}
+
+        # JPEG: lazy
+        assert by_type["image/jpeg"]["fetched"] is False
+        assert by_type["image/jpeg"]["storage_ref"] is None
+
+        # Calendar: eager
+        assert by_type["text/calendar"]["fetched"] is True
+        assert by_type["text/calendar"]["storage_ref"] is not None
+
+        # Blob store called exactly once (for .ics only).
+        mock_blob_store.put.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_calendar_eager_fetch_error_is_visible(
+        self,
+        runtime: GmailConnectorRuntime,
+        mock_blob_store: AsyncMock,
+    ) -> None:
+        """Eager fetch failure for text/calendar is logged and the attachment is dropped."""
+        runtime._http_client = AsyncMock()
+        runtime._get_access_token = AsyncMock(return_value="test-token")
+        runtime._http_client.get = AsyncMock(side_effect=Exception("Network error"))
+
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/calendar",
+                    "filename": "invite.ics",
+                    "body": {"attachmentId": "att_ics_err", "size": 400},
+                }
+            ],
+        }
+
+        result = await runtime._process_attachments("msg10", payload)
+        # Failure is not silently dropped — result is None (no attachment processed).
+        assert result is None
+
+
+class TestAttachmentRefsWrite:
+    """Tests for _write_attachment_ref and DB pool interaction."""
+
+    @pytest.fixture
+    def gmail_config(self, tmp_path: Path) -> GmailConnectorConfig:
+        return GmailConnectorConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            connector_endpoint_identity="gmail:user:test@example.com",
+            connector_cursor_path=tmp_path / "cursor.json",
+            gmail_client_id="cid",
+            gmail_client_secret="csec",
+            gmail_refresh_token="rtoken",
+        )
+
+    @pytest.mark.asyncio
+    async def test_write_attachment_ref_no_pool(self, gmail_config: GmailConnectorConfig) -> None:
+        """_write_attachment_ref is a no-op when db_pool is None."""
+        runtime = GmailConnectorRuntime(gmail_config)
+        # Should not raise
+        await runtime._write_attachment_ref(
+            message_id="msg1",
+            attachment_id="att1",
+            filename="file.pdf",
+            media_type="application/pdf",
+            size_bytes=1024,
+        )
+
+    @pytest.mark.asyncio
+    async def test_write_attachment_ref_with_pool(self, gmail_config: GmailConnectorConfig) -> None:
+        """_write_attachment_ref executes upsert SQL when pool is available."""
+        mock_conn = AsyncMock()
+        mock_pool = AsyncMock()
+        mock_pool.acquire = MagicMock(return_value=mock_pool)
+        mock_pool.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.__aexit__ = AsyncMock(return_value=None)
+
+        runtime = GmailConnectorRuntime(gmail_config, db_pool=mock_pool)
+
+        await runtime._write_attachment_ref(
+            message_id="msg2",
+            attachment_id="att2",
+            filename="doc.pdf",
+            media_type="application/pdf",
+            size_bytes=2048,
+            fetched=False,
+            blob_ref=None,
+        )
+
+        mock_conn.execute.assert_awaited_once()
+        call_args = mock_conn.execute.call_args
+        sql = call_args[0][0]
+        assert "attachment_refs" in sql
+        assert "ON CONFLICT" in sql
+
+    @pytest.mark.asyncio
+    async def test_write_attachment_ref_db_error_does_not_raise(
+        self, gmail_config: GmailConnectorConfig
+    ) -> None:
+        """DB errors in _write_attachment_ref are swallowed (best-effort)."""
+        mock_conn = AsyncMock()
+        mock_conn.execute = AsyncMock(side_effect=Exception("DB error"))
+        mock_pool = AsyncMock()
+        mock_pool.acquire = MagicMock(return_value=mock_pool)
+        mock_pool.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.__aexit__ = AsyncMock(return_value=None)
+
+        runtime = GmailConnectorRuntime(gmail_config, db_pool=mock_pool)
+
+        # Must not raise
+        await runtime._write_attachment_ref(
+            message_id="msg3",
+            attachment_id="att3",
+            filename=None,
+            media_type="image/jpeg",
+            size_bytes=500,
+        )
+
+
+class TestOnDemandFetch:
+    """Tests for the fetch_attachment on-demand materialization path."""
+
+    @pytest.fixture
+    def mock_blob_store(self) -> AsyncMock:
+        store = AsyncMock()
+        store.put = AsyncMock(return_value="local://2026/02/lazy.bin")
+        return store
+
+    @pytest.fixture
+    def gmail_config(self, tmp_path: Path) -> GmailConnectorConfig:
+        return GmailConnectorConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            connector_endpoint_identity="gmail:user:test@example.com",
+            connector_cursor_path=tmp_path / "cursor.json",
+            gmail_client_id="cid",
+            gmail_client_secret="csec",
+            gmail_refresh_token="rtoken",
+        )
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_no_blob_store(self, gmail_config: GmailConnectorConfig) -> None:
+        """fetch_attachment returns None when blob store is not configured."""
+        runtime = GmailConnectorRuntime(gmail_config)
+        result = await runtime.fetch_attachment("msg1", "att1")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_idempotent_already_fetched(
+        self, gmail_config: GmailConnectorConfig, mock_blob_store: AsyncMock
+    ) -> None:
+        """fetch_attachment returns existing blob_ref if already materialized."""
+        # DB pool returns a row with fetched=True
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(
+            return_value={
+                "fetched": True,
+                "blob_ref": "local://existing/blob.pdf",
+                "filename": "doc.pdf",
+                "media_type": "application/pdf",
+                "size_bytes": 1024,
+            }
+        )
+        mock_pool = AsyncMock()
+        mock_pool.acquire = MagicMock(return_value=mock_pool)
+        mock_pool.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.__aexit__ = AsyncMock(return_value=None)
+
+        runtime = GmailConnectorRuntime(gmail_config, blob_store=mock_blob_store, db_pool=mock_pool)
+
+        result = await runtime.fetch_attachment("msg1", "att_existing")
+
+        assert result == "local://existing/blob.pdf"
+        # Blob store should NOT be called (idempotent short-circuit).
+        mock_blob_store.put.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_materializes_unfetched(
+        self, gmail_config: GmailConnectorConfig, mock_blob_store: AsyncMock
+    ) -> None:
+        """fetch_attachment downloads, stores, and returns blob_ref for unfetched attachment."""
+        import base64
+
+        # DB pool returns unfetched row on first call, then write_attachment_ref runs
+        mock_conn = AsyncMock()
+        # First fetchrow: unfetched row
+        # Second fetchrow (inside download path): metadata row
+        mock_conn.fetchrow = AsyncMock(
+            side_effect=[
+                {
+                    "fetched": False,
+                    "blob_ref": None,
+                    "filename": "doc.pdf",
+                    "media_type": "application/pdf",
+                    "size_bytes": 5000,
+                },
+                {
+                    "fetched": False,
+                    "blob_ref": None,
+                    "filename": "doc.pdf",
+                    "media_type": "application/pdf",
+                    "size_bytes": 5000,
+                },
+            ]
+        )
+        mock_conn.execute = AsyncMock()
+        mock_pool = AsyncMock()
+        mock_pool.acquire = MagicMock(return_value=mock_pool)
+        mock_pool.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.__aexit__ = AsyncMock(return_value=None)
+
+        runtime = GmailConnectorRuntime(gmail_config, blob_store=mock_blob_store, db_pool=mock_pool)
+        runtime._http_client = AsyncMock()
+        runtime._get_access_token = AsyncMock(return_value="test-token")
+
+        # Mock download
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": base64.urlsafe_b64encode(b"pdf content").decode()
+        }
+        mock_response.raise_for_status = MagicMock()
+        runtime._http_client.get = AsyncMock(return_value=mock_response)
+
+        result = await runtime.fetch_attachment("msg2", "att_lazy")
+
+        assert result == "local://2026/02/lazy.bin"
+        mock_blob_store.put.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_download_failure_returns_none(
+        self, gmail_config: GmailConnectorConfig, mock_blob_store: AsyncMock
+    ) -> None:
+        """fetch_attachment returns None on download failure."""
+        mock_conn = AsyncMock()
+        mock_conn.fetchrow = AsyncMock(return_value={"fetched": False, "blob_ref": None})
+        mock_pool = AsyncMock()
+        mock_pool.acquire = MagicMock(return_value=mock_pool)
+        mock_pool.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.__aexit__ = AsyncMock(return_value=None)
+
+        runtime = GmailConnectorRuntime(gmail_config, blob_store=mock_blob_store, db_pool=mock_pool)
+        runtime._http_client = AsyncMock()
+        runtime._get_access_token = AsyncMock(return_value="test-token")
+        runtime._http_client.get = AsyncMock(side_effect=Exception("Network fail"))
+
+        result = await runtime.fetch_attachment("msg3", "att_fail")
+        assert result is None
+
+
+class TestAttachmentMetrics:
+    """Tests for attachment-specific metrics on ConnectorMetrics."""
+
+    def test_record_attachment_fetched_eager(self) -> None:
+        """record_attachment_fetched with fetch_mode='eager' increments eager counter."""
+        from prometheus_client import REGISTRY
+
+        from butlers.connectors.metrics import ConnectorMetrics
+
+        metrics = ConnectorMetrics(
+            connector_type="gmail_test_eager",
+            endpoint_identity="test@test.com",
+        )
+        metrics.record_attachment_fetched(
+            media_type="text/calendar", fetch_mode="eager", result="success"
+        )
+        # Verify counter exists and was incremented (check via registry)
+        eager_counter = REGISTRY.get_sample_value(
+            "connector_attachment_fetched_eager_total",
+            labels={
+                "connector_type": "gmail_test_eager",
+                "endpoint_identity": "test@test.com",
+                "media_type": "text/calendar",
+                "result": "success",
+            },
+        )
+        assert eager_counter == 1.0
+
+    def test_record_attachment_fetched_lazy(self) -> None:
+        """record_attachment_fetched with fetch_mode='lazy' increments lazy counter."""
+        from prometheus_client import REGISTRY
+
+        from butlers.connectors.metrics import ConnectorMetrics
+
+        metrics = ConnectorMetrics(
+            connector_type="gmail_test_lazy",
+            endpoint_identity="test@test.com",
+        )
+        metrics.record_attachment_fetched(
+            media_type="image/jpeg", fetch_mode="lazy", result="success"
+        )
+        lazy_counter = REGISTRY.get_sample_value(
+            "connector_attachment_fetched_lazy_total",
+            labels={
+                "connector_type": "gmail_test_lazy",
+                "endpoint_identity": "test@test.com",
+                "media_type": "image/jpeg",
+                "result": "success",
+            },
+        )
+        assert lazy_counter == 1.0
+
+    def test_record_attachment_skipped_oversized(self) -> None:
+        """record_attachment_skipped_oversized increments the oversized counter."""
+        from prometheus_client import REGISTRY
+
+        from butlers.connectors.metrics import ConnectorMetrics
+
+        metrics = ConnectorMetrics(
+            connector_type="gmail_test_oversized",
+            endpoint_identity="test@test.com",
+        )
+        metrics.record_attachment_skipped_oversized(media_type="application/pdf")
+        counter = REGISTRY.get_sample_value(
+            "connector_attachment_skipped_oversized_total",
+            labels={
+                "connector_type": "gmail_test_oversized",
+                "endpoint_identity": "test@test.com",
+                "media_type": "application/pdf",
+            },
+        )
+        assert counter == 1.0
+
+    def test_record_attachment_type_distribution(self) -> None:
+        """record_attachment_type_distribution increments the distribution counter."""
+        from prometheus_client import REGISTRY
+
+        from butlers.connectors.metrics import ConnectorMetrics
+
+        metrics = ConnectorMetrics(
+            connector_type="gmail_test_dist",
+            endpoint_identity="test@test.com",
+        )
+        metrics.record_attachment_type_distribution(media_type="text/csv")
+        counter = REGISTRY.get_sample_value(
+            "connector_attachment_type_distribution_total",
+            labels={
+                "connector_type": "gmail_test_dist",
+                "endpoint_identity": "test@test.com",
+                "media_type": "text/csv",
+            },
+        )
+        assert counter == 1.0
+
+
+class TestExtractAttachmentsExpanded:
+    """Tests for _extract_attachments with expanded MIME types."""
+
+    @pytest.fixture
+    def runtime(self, tmp_path: Path) -> GmailConnectorRuntime:
+        config = GmailConnectorConfig(
+            switchboard_mcp_url="http://localhost:40100/sse",
+            connector_endpoint_identity="gmail:user:test@example.com",
+            connector_cursor_path=tmp_path / "cursor.json",
+            gmail_client_id="cid",
+            gmail_client_secret="csec",
+            gmail_refresh_token="rtoken",
+        )
+        return GmailConnectorRuntime(config)
+
+    def test_extract_spreadsheet_xlsx(self, runtime: GmailConnectorRuntime) -> None:
+        """Excel XLSX files are extracted."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "filename": "data.xlsx",
+                    "body": {"attachmentId": "att_xlsx", "size": 5000},
+                }
+            ],
+        }
+        result = runtime._extract_attachments(payload)
+        assert len(result) == 1
+        assert result[0]["mime_type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    def test_extract_csv(self, runtime: GmailConnectorRuntime) -> None:
+        """CSV files are extracted."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/csv",
+                    "filename": "export.csv",
+                    "body": {"attachmentId": "att_csv", "size": 3000},
+                }
+            ],
+        }
+        result = runtime._extract_attachments(payload)
+        assert len(result) == 1
+        assert result[0]["mime_type"] == "text/csv"
+
+    def test_extract_docx(self, runtime: GmailConnectorRuntime) -> None:
+        """Word DOCX files are extracted."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": (
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    ),
+                    "filename": "letter.docx",
+                    "body": {"attachmentId": "att_docx", "size": 4000},
+                }
+            ],
+        }
+        result = runtime._extract_attachments(payload)
+        assert len(result) == 1
+        assert result[0]["mime_type"] == (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+    def test_extract_eml(self, runtime: GmailConnectorRuntime) -> None:
+        """Forwarded email (message/rfc822) attachments are extracted."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "message/rfc822",
+                    "filename": "fwd.eml",
+                    "body": {"attachmentId": "att_eml", "size": 8000},
+                }
+            ],
+        }
+        result = runtime._extract_attachments(payload)
+        assert len(result) == 1
+        assert result[0]["mime_type"] == "message/rfc822"
+
+    def test_extract_ics_calendar(self, runtime: GmailConnectorRuntime) -> None:
+        """Calendar .ics (text/calendar) files are extracted."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "text/calendar",
+                    "filename": "invite.ics",
+                    "body": {"attachmentId": "att_ics", "size": 800},
+                }
+            ],
+        }
+        result = runtime._extract_attachments(payload)
+        assert len(result) == 1
+        assert result[0]["mime_type"] == "text/calendar"
+
+    def test_extract_xls(self, runtime: GmailConnectorRuntime) -> None:
+        """Legacy Excel XLS (application/vnd.ms-excel) files are extracted."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "application/vnd.ms-excel",
+                    "filename": "old.xls",
+                    "body": {"attachmentId": "att_xls", "size": 2000},
+                }
+            ],
+        }
+        result = runtime._extract_attachments(payload)
+        assert len(result) == 1
+        assert result[0]["mime_type"] == "application/vnd.ms-excel"
