@@ -760,3 +760,30 @@ async def test_monthly_spending_summary_period_label(provisioned_postgres_pool):
         expected = last_month_start.strftime("%Y-%m")
 
         assert result["period"] == expected
+
+
+async def test_monthly_spending_summary_notable_changes_disappeared_category(
+    provisioned_postgres_pool,
+):
+    """A category present two months ago but absent last month counts as notable."""
+    from roster.finance.jobs.finance_jobs import run_monthly_spending_summary
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_finance_schema(pool)
+
+        two_months_mid = _two_months_ago_mid()
+
+        # Category only present two months ago — it disappeared last month
+        await _insert_transaction(
+            pool,
+            merchant="Old Gym",
+            amount="40.00",
+            direction="debit",
+            category="fitness",
+            posted_at=two_months_mid,
+        )
+
+        result = await run_monthly_spending_summary(pool)
+
+        # "fitness" disappeared from last month — should be flagged as notable
+        assert result["notable_changes"] >= 1

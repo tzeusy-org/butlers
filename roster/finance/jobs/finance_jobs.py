@@ -41,7 +41,6 @@ async def run_upcoming_bills_check(db_pool: asyncpg.Pool) -> dict:
             FROM finance.bills
             WHERE
                 (due_date <= CURRENT_DATE + INTERVAL '14 days' AND status = 'pending')
-                OR (due_date < CURRENT_DATE AND status = 'pending')
                 OR status = 'overdue'
             ORDER BY
                 CASE
@@ -240,16 +239,6 @@ async def run_monthly_spending_summary(db_pool: asyncpg.Pool) -> dict:
             two_months_end,
         )
 
-    if not category_rows and not merchant_rows:
-        logger.info("Monthly spending summary: no transactions found for %s", period_label)
-        return {
-            "period": period_label,
-            "total_spend": "0.00",
-            "categories": 0,
-            "merchants": 0,
-            "notable_changes": 0,
-        }
-
     total_spend = Decimal("0.00")
     for row in category_rows:
         total_spend += Decimal(str(row["total"]))
@@ -258,6 +247,16 @@ async def run_monthly_spending_summary(db_pool: asyncpg.Pool) -> dict:
     prev_totals: dict[str, Decimal] = {}
     for row in prev_category_rows:
         prev_totals[row["category"]] = Decimal(str(row["total"]))
+
+    if not category_rows and not merchant_rows and not prev_totals:
+        logger.info("Monthly spending summary: no transactions found for %s", period_label)
+        return {
+            "period": period_label,
+            "total_spend": "0.00",
+            "categories": 0,
+            "merchants": 0,
+            "notable_changes": 0,
+        }
 
     # Find notable changes (>20% swing)
     notable_changes = 0
@@ -274,7 +273,7 @@ async def run_monthly_spending_summary(db_pool: asyncpg.Pool) -> dict:
             # New category this month — counts as notable
             notable_changes += 1
 
-    # New categories that disappeared (were in prev but not current)
+    # Categories that disappeared (were in prev but not in current)
     current_cats = {row["category"] for row in category_rows}
     for cat, prev_total in prev_totals.items():
         if cat not in current_cats and prev_total > 0:
