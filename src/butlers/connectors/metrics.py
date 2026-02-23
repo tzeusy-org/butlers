@@ -62,6 +62,31 @@ errors_total = Counter(
     labelnames=["connector_type", "endpoint_identity", "error_type", "operation"],
 )
 
+# Attachment fetch metrics — see docs/connectors/attachment_handling.md section 9
+attachment_fetched_eager_total = Counter(
+    "connector_attachment_fetched_eager_total",
+    "Total number of attachments fetched eagerly at ingest time",
+    labelnames=["connector_type", "endpoint_identity", "media_type", "result"],
+)
+
+attachment_fetched_lazy_total = Counter(
+    "connector_attachment_fetched_lazy_total",
+    "Total number of lazy attachment ref writes and on-demand materializations",
+    labelnames=["connector_type", "endpoint_identity", "media_type", "result"],
+)
+
+attachment_skipped_oversized_total = Counter(
+    "connector_attachment_skipped_oversized_total",
+    "Total number of attachments skipped due to per-type or global size cap",
+    labelnames=["connector_type", "endpoint_identity", "media_type"],
+)
+
+attachment_type_distribution_total = Counter(
+    "connector_attachment_type_distribution_total",
+    "Count of processed attachments by MIME type",
+    labelnames=["connector_type", "endpoint_identity", "media_type"],
+)
+
 
 class ConnectorMetrics:
     """Metrics collector for a specific connector instance.
@@ -164,6 +189,56 @@ class ConnectorMetrics:
             endpoint_identity=self._endpoint_identity,
             error_type=error_type,
             operation=operation,
+        ).inc()
+
+    def record_attachment_fetched(self, media_type: str, fetch_mode: str, result: str) -> None:
+        """Record an attachment fetch event (eager or lazy).
+
+        Args:
+            media_type: MIME type of the attachment (e.g., "text/calendar").
+            fetch_mode: "eager" for immediate ingest-time downloads, "lazy" for
+                        ref writes and on-demand materializations.
+            result: "success" or "error".
+        """
+        if fetch_mode == "eager":
+            attachment_fetched_eager_total.labels(
+                connector_type=self._connector_type,
+                endpoint_identity=self._endpoint_identity,
+                media_type=media_type,
+                result=result,
+            ).inc()
+        else:
+            attachment_fetched_lazy_total.labels(
+                connector_type=self._connector_type,
+                endpoint_identity=self._endpoint_identity,
+                media_type=media_type,
+                result=result,
+            ).inc()
+
+    def record_attachment_skipped_oversized(self, media_type: str) -> None:
+        """Record an attachment that was skipped due to size policy.
+
+        Args:
+            media_type: MIME type of the skipped attachment.
+        """
+        attachment_skipped_oversized_total.labels(
+            connector_type=self._connector_type,
+            endpoint_identity=self._endpoint_identity,
+            media_type=media_type,
+        ).inc()
+
+    def record_attachment_type_distribution(self, media_type: str) -> None:
+        """Record a processed attachment for type-distribution analytics.
+
+        Called once per successfully processed attachment regardless of fetch mode.
+
+        Args:
+            media_type: MIME type of the attachment.
+        """
+        attachment_type_distribution_total.labels(
+            connector_type=self._connector_type,
+            endpoint_identity=self._endpoint_identity,
+            media_type=media_type,
         ).inc()
 
 

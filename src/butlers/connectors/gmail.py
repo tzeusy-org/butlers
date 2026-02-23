@@ -48,7 +48,10 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Thread
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    import asyncpg
 
 import httpx
 import uvicorn
@@ -92,18 +95,42 @@ class HealthStatus(BaseModel):
     timestamp: str
 
 
-# Supported attachment MIME types
-SUPPORTED_ATTACHMENT_TYPES = frozenset(
-    {
-        "image/jpeg",
-        "image/png",
-        "image/gif",
-        "image/webp",
-        "application/pdf",
-    }
-)
+# Attachment policy: per-MIME-type size limits and fetch mode.
+# See docs/connectors/attachment_handling.md section 3 and 4.
+ATTACHMENT_POLICY: dict[str, dict[str, object]] = {
+    # Images — lazy fetch, 5 MB limit
+    "image/jpeg": {"max_size_bytes": 5 * 1024 * 1024, "fetch_mode": "lazy"},
+    "image/png": {"max_size_bytes": 5 * 1024 * 1024, "fetch_mode": "lazy"},
+    "image/gif": {"max_size_bytes": 5 * 1024 * 1024, "fetch_mode": "lazy"},
+    "image/webp": {"max_size_bytes": 5 * 1024 * 1024, "fetch_mode": "lazy"},
+    # PDF — lazy fetch, 15 MB limit
+    "application/pdf": {"max_size_bytes": 15 * 1024 * 1024, "fetch_mode": "lazy"},
+    # Spreadsheets — lazy fetch, 10 MB limit
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+        "max_size_bytes": 10 * 1024 * 1024,
+        "fetch_mode": "lazy",
+    },
+    "application/vnd.ms-excel": {"max_size_bytes": 10 * 1024 * 1024, "fetch_mode": "lazy"},
+    "text/csv": {"max_size_bytes": 10 * 1024 * 1024, "fetch_mode": "lazy"},
+    # Documents — lazy fetch, 10 MB limit
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+        "max_size_bytes": 10 * 1024 * 1024,
+        "fetch_mode": "lazy",
+    },
+    "message/rfc822": {"max_size_bytes": 10 * 1024 * 1024, "fetch_mode": "lazy"},
+    # Calendar — eager fetch, 1 MB limit; routed directly to calendar module
+    "text/calendar": {"max_size_bytes": 1 * 1024 * 1024, "fetch_mode": "eager"},
+}
 
-# Max attachment size: 5MB
+# Derived allowlist for MIME eligibility check (keeps existing API surface).
+SUPPORTED_ATTACHMENT_TYPES: frozenset[str] = frozenset(ATTACHMENT_POLICY.keys())
+
+# Global hard ceiling: Gmail attachment maximum (25 MB).
+# Any attachment exceeding this cap is skipped regardless of per-type limit.
+GLOBAL_MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024
+
+# Kept for backward compatibility; callers that reference MAX_ATTACHMENT_SIZE_BYTES
+# directly will continue to compile.  New code should use ATTACHMENT_POLICY.
 MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024
 
 
@@ -337,9 +364,17 @@ class GmailCursor(BaseModel):
 class GmailConnectorRuntime:
     """Gmail connector runtime using watch/history delta flow."""
 
-    def __init__(self, config: GmailConnectorConfig, blob_store: BlobStore | None = None) -> None:
+    def __init__(
+        self,
+        config: GmailConnectorConfig,
+        blob_store: BlobStore | None = None,
+        db_pool: asyncpg.Pool | None = None,
+    ) -> None:
         self._config = config
         self._blob_store = blob_store
+        # Optional DB pool for writing attachment_refs rows (lazy-fetch model).
+        # When None, attachment metadata persistence is skipped but ingest continues.
+        self._db_pool = db_pool
         self._http_client: httpx.AsyncClient | None = None
         self._mcp_client = CachedMCPClient(
             config.switchboard_mcp_url, client_name="gmail-connector"
@@ -1306,28 +1341,84 @@ class GmailConnectorRuntime:
             logger.error("Failed to download attachment %s: %s", attachment_id, exc)
             raise
 
+    async def _write_attachment_ref(
+        self,
+        message_id: str,
+        attachment_id: str,
+        filename: str | None,
+        media_type: str,
+        size_bytes: int,
+        fetched: bool = False,
+        blob_ref: str | None = None,
+    ) -> None:
+        """Persist an attachment_refs row in the switchboard schema.
+
+        This is a best-effort write: if the DB pool is unavailable or the upsert
+        fails, the error is logged and the caller continues without raising.
+
+        Args:
+            message_id: Gmail message ID (part of composite PK).
+            attachment_id: Gmail attachment ID (part of composite PK).
+            filename: Original filename, nullable.
+            media_type: MIME type.
+            size_bytes: Attachment size in bytes.
+            fetched: True when blob_ref is populated.
+            blob_ref: BlobStore reference; NULL until materialized.
+        """
+        if not self._db_pool:
+            return
+
+        try:
+            async with self._db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO attachment_refs
+                        (message_id, attachment_id, filename, media_type, size_bytes,
+                         fetched, blob_ref)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (message_id, attachment_id) DO UPDATE SET
+                        fetched = EXCLUDED.fetched,
+                        blob_ref = EXCLUDED.blob_ref
+                    """,
+                    message_id,
+                    attachment_id,
+                    filename,
+                    media_type,
+                    size_bytes,
+                    fetched,
+                    blob_ref,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to write attachment_ref (%s, %s): %s",
+                message_id,
+                attachment_id,
+                exc,
+            )
+
     async def _process_attachments(
         self, message_id: str, payload: dict[str, Any]
     ) -> tuple[dict[str, Any], ...] | None:
-        """Extract and store attachments from message payload.
+        """Extract and handle attachments from message payload.
+
+        Implements the lazy/eager fetch model from docs/connectors/attachment_handling.md:
+        - text/calendar (.ics): eager fetch, direct routing to calendar module.
+        - all other supported types: lazy fetch — write attachment_refs row, no download.
+        - Oversized or unsupported attachments are skipped; metrics are emitted.
 
         Args:
-            message_id: Gmail message ID for downloading attachments
-            payload: Gmail message payload dict
+            message_id: Gmail message ID for downloading attachments.
+            payload: Gmail message payload dict.
 
         Returns:
-            Tuple of IngestAttachment dicts, or None if no attachments
+            Tuple of attachment metadata dicts for the ingest envelope, or None.
         """
-        if not self._blob_store:
-            # Blob storage not configured, skip attachments
-            return None
-
-        # Extract attachment metadata
+        # Extract attachment metadata from MIME tree
         attachment_metas = self._extract_attachments(payload)
         if not attachment_metas:
             return None
 
-        processed_attachments = []
+        processed_attachments: list[dict[str, Any]] = []
 
         for meta in attachment_metas:
             attachment_id = meta["attachment_id"]
@@ -1335,61 +1426,263 @@ class GmailConnectorRuntime:
             mime_type = meta["mime_type"]
             filename = meta["filename"]
 
-            # Skip oversized attachments
-            if size_bytes > MAX_ATTACHMENT_SIZE_BYTES:
+            policy = ATTACHMENT_POLICY.get(mime_type, {})
+            per_type_limit: int = policy.get("max_size_bytes", 0)  # type: ignore[assignment]
+            fetch_mode: str = policy.get("fetch_mode", "lazy")  # type: ignore[assignment]
+
+            # --- Size enforcement ---
+            # Global hard ceiling always checked first.
+            if size_bytes > GLOBAL_MAX_ATTACHMENT_SIZE_BYTES:
                 logger.warning(
-                    "Skipping oversized attachment: %s (%d bytes > %d bytes limit)",
+                    "Skipping attachment exceeding global cap: %s (%d bytes > %d bytes global cap)",
                     filename or attachment_id,
                     size_bytes,
-                    MAX_ATTACHMENT_SIZE_BYTES,
+                    GLOBAL_MAX_ATTACHMENT_SIZE_BYTES,
                 )
+                self._metrics.record_attachment_skipped_oversized(media_type=mime_type)
                 continue
 
-            try:
-                # Download attachment bytes
-                attachment_bytes = await self._download_gmail_attachment(message_id, attachment_id)
+            # Per-type size limit.
+            if per_type_limit > 0 and size_bytes > per_type_limit:
+                logger.warning(
+                    "Skipping oversized attachment: %s (%d bytes > %d bytes per-type limit for %s)",
+                    filename or attachment_id,
+                    size_bytes,
+                    per_type_limit,
+                    mime_type,
+                )
+                self._metrics.record_attachment_skipped_oversized(media_type=mime_type)
+                continue
 
-                # Store via blob storage
-                storage_ref = await self._blob_store.put(
-                    attachment_bytes,
-                    content_type=mime_type,
+            # --- Fetch mode ---
+            if fetch_mode == "eager":
+                # Eager fetch: download and store immediately.
+                # Required for text/calendar to enable direct calendar routing.
+                if not self._blob_store:
+                    logger.warning(
+                        "Blob store not configured; skipping eager attachment %s",
+                        filename or attachment_id,
+                    )
+                    continue
+
+                try:
+                    attachment_bytes = await self._download_gmail_attachment(
+                        message_id, attachment_id
+                    )
+                    storage_ref = await self._blob_store.put(
+                        attachment_bytes,
+                        content_type=mime_type,
+                        filename=filename,
+                    )
+
+                    # Write ref row with fetched=True so idempotent re-fetch sees it.
+                    await self._write_attachment_ref(
+                        message_id=message_id,
+                        attachment_id=attachment_id,
+                        filename=filename,
+                        media_type=mime_type,
+                        size_bytes=size_bytes,
+                        fetched=True,
+                        blob_ref=storage_ref,
+                    )
+
+                    attachment_dict: dict[str, Any] = {
+                        "media_type": mime_type,
+                        "storage_ref": storage_ref,
+                        "size_bytes": size_bytes,
+                        "message_id": message_id,
+                        "attachment_id": attachment_id,
+                        "fetched": True,
+                    }
+                    if filename:
+                        attachment_dict["filename"] = filename
+
+                    processed_attachments.append(attachment_dict)
+                    self._metrics.record_attachment_fetched(
+                        media_type=mime_type, fetch_mode="eager", result="success"
+                    )
+
+                    logger.info(
+                        "Eager-fetched attachment: %s (%s, %d bytes) -> %s",
+                        filename or attachment_id,
+                        mime_type,
+                        size_bytes,
+                        storage_ref,
+                    )
+
+                except Exception as exc:
+                    # For calendar files: failure must be visible, not silently dropped.
+                    logger.error(
+                        "Failed to eager-fetch attachment %s (%s): %s",
+                        filename or attachment_id,
+                        mime_type,
+                        exc,
+                        exc_info=True,
+                    )
+                    self._metrics.record_attachment_fetched(
+                        media_type=mime_type, fetch_mode="eager", result="error"
+                    )
+                    # Continue with other attachments; text ingestion is not blocked.
+                    continue
+
+            else:
+                # Lazy fetch: persist metadata reference row, no download at ingest time.
+                await self._write_attachment_ref(
+                    message_id=message_id,
+                    attachment_id=attachment_id,
                     filename=filename,
+                    media_type=mime_type,
+                    size_bytes=size_bytes,
+                    fetched=False,
+                    blob_ref=None,
                 )
 
-                # Build IngestAttachment dict
                 attachment_dict = {
                     "media_type": mime_type,
-                    "storage_ref": storage_ref,
                     "size_bytes": size_bytes,
+                    "message_id": message_id,
+                    "attachment_id": attachment_id,
+                    "fetched": False,
+                    "storage_ref": None,
                 }
                 if filename:
                     attachment_dict["filename"] = filename
 
                 processed_attachments.append(attachment_dict)
+                self._metrics.record_attachment_fetched(
+                    media_type=mime_type, fetch_mode="lazy", result="success"
+                )
 
-                logger.info(
-                    "Stored attachment: %s (%s, %d bytes) -> %s",
+                logger.debug(
+                    "Lazy-ref attachment: %s (%s, %d bytes)",
                     filename or attachment_id,
                     mime_type,
                     size_bytes,
-                    storage_ref,
                 )
 
-            except Exception as exc:
-                # Log error but don't block text ingestion
-                logger.error(
-                    "Failed to process attachment %s: %s",
-                    filename or attachment_id,
-                    exc,
-                    exc_info=True,
-                )
-                # Continue with other attachments
-                continue
+            self._metrics.record_attachment_type_distribution(media_type=mime_type)
 
         if not processed_attachments:
             return None
 
         return tuple(processed_attachments)
+
+    async def fetch_attachment(self, message_id: str, attachment_id: str) -> str | None:
+        """On-demand fetch of a lazy attachment.
+
+        Resolves the attachment_refs row, downloads bytes, stores in BlobStore,
+        updates the row with fetched=True and the blob_ref, and returns the ref.
+
+        Idempotent: if the attachment has already been fetched (blob_ref set),
+        the existing blob_ref is returned immediately without re-downloading.
+
+        Args:
+            message_id: Gmail message ID.
+            attachment_id: Gmail attachment ID.
+
+        Returns:
+            BlobStore reference string, or None if fetch failed or not possible.
+        """
+        if not self._blob_store:
+            logger.warning("fetch_attachment: blob store not configured, cannot materialize")
+            return None
+
+        # Try to short-circuit if already fetched.
+        if self._db_pool:
+            try:
+                async with self._db_pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT fetched, blob_ref, filename, media_type, size_bytes
+                        FROM attachment_refs
+                        WHERE message_id = $1 AND attachment_id = $2
+                        """,
+                        message_id,
+                        attachment_id,
+                    )
+                if row and row["fetched"] and row["blob_ref"]:
+                    logger.debug(
+                        "fetch_attachment: already materialized (%s, %s) -> %s",
+                        message_id,
+                        attachment_id,
+                        row["blob_ref"],
+                    )
+                    self._metrics.record_attachment_fetched(
+                        media_type=row["media_type"], fetch_mode="lazy", result="success"
+                    )
+                    return row["blob_ref"]
+            except Exception as exc:
+                logger.warning(
+                    "fetch_attachment: DB lookup failed (%s, %s): %s",
+                    message_id,
+                    attachment_id,
+                    exc,
+                )
+
+        # Download and store.
+        try:
+            attachment_bytes = await self._download_gmail_attachment(message_id, attachment_id)
+
+            # Determine media_type from DB row if available.
+            media_type = "application/octet-stream"
+            filename = None
+            size_bytes = len(attachment_bytes)
+            if self._db_pool:
+                try:
+                    async with self._db_pool.acquire() as conn:
+                        row = await conn.fetchrow(
+                            "SELECT filename, media_type, size_bytes FROM attachment_refs "
+                            "WHERE message_id = $1 AND attachment_id = $2",
+                            message_id,
+                            attachment_id,
+                        )
+                    if row:
+                        media_type = row["media_type"]
+                        filename = row["filename"]
+                        size_bytes = row["size_bytes"]
+                except Exception:
+                    pass
+
+            blob_ref = await self._blob_store.put(
+                attachment_bytes,
+                content_type=media_type,
+                filename=filename,
+            )
+
+            # Persist updated ref.
+            await self._write_attachment_ref(
+                message_id=message_id,
+                attachment_id=attachment_id,
+                filename=filename,
+                media_type=media_type,
+                size_bytes=size_bytes,
+                fetched=True,
+                blob_ref=blob_ref,
+            )
+
+            self._metrics.record_attachment_fetched(
+                media_type=media_type, fetch_mode="lazy", result="success"
+            )
+            logger.info(
+                "fetch_attachment: materialized (%s, %s) -> %s",
+                message_id,
+                attachment_id,
+                blob_ref,
+            )
+            return blob_ref
+
+        except Exception as exc:
+            logger.error(
+                "fetch_attachment: failed to materialize (%s, %s): %s",
+                message_id,
+                attachment_id,
+                exc,
+                exc_info=True,
+            )
+            self._metrics.record_attachment_fetched(
+                media_type="unknown", fetch_mode="lazy", result="error"
+            )
+            return None
 
     async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
         """Submit ingest.v1 envelope to Switchboard via MCP ingest tool."""
