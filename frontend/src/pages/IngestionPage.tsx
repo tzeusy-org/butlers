@@ -2,6 +2,7 @@ import { useSearchParams } from 'react-router'
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { BackfillHistoryTab } from '@/components/switchboard/BackfillHistoryTab'
 
 // ---------------------------------------------------------------------------
 // Tab value constants
@@ -18,7 +19,6 @@ function isValidTab(value: string | null): value is IngestionTab {
 // Placeholder tab content components
 // These will be replaced by dedicated implementations in child issues:
 //   butlers-dsa4.4.3 - Filters tab
-//   butlers-dsa4.4.4 - History tab
 //   butlers-dsa4.4.5 - Overview and Connectors tab analytics
 // ---------------------------------------------------------------------------
 
@@ -76,24 +76,6 @@ function FiltersTabContent() {
   )
 }
 
-function HistoryTabContent() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>History</CardTitle>
-        <CardDescription>
-          Backfill jobs and replay cost controls.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p className="text-sm text-muted-foreground">
-          Backfill history controls will be implemented in a follow-up task.
-        </p>
-      </CardContent>
-    </Card>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // IngestionPage
 // ---------------------------------------------------------------------------
@@ -143,7 +125,7 @@ export default function IngestionPage() {
         </TabsContent>
 
         <TabsContent value="history">
-          <HistoryTabContent />
+          <BackfillHistoryTab />
         </TabsContent>
       </Tabs>
     </div>

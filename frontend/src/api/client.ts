@@ -1224,3 +1224,92 @@ export function deleteSecret(
     { method: "DELETE" },
   );
 }
+
+// ---------------------------------------------------------------------------
+// Backfill job API
+// ---------------------------------------------------------------------------
+
+import type {
+  BackfillJobEntry,
+  BackfillJobParams,
+  BackfillJobSummary,
+  BackfillLifecycleResponse,
+  ConnectorEntry,
+  CreateBackfillJobRequest,
+} from "./types.ts";
+
+/** List backfill jobs with optional filters. */
+export function listBackfillJobs(
+  params?: BackfillJobParams,
+): Promise<PaginatedResponse<BackfillJobSummary>> {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set("status", params.status);
+  if (params?.connector_type) sp.set("connector_type", params.connector_type);
+  if (params?.endpoint_identity) sp.set("endpoint_identity", params.endpoint_identity);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<BackfillJobSummary>>(
+    qs ? `/switchboard/backfill?${qs}` : "/switchboard/backfill",
+  );
+}
+
+/** Create a new backfill job. */
+export function createBackfillJob(
+  body: CreateBackfillJobRequest,
+): Promise<ApiResponse<BackfillJobEntry>> {
+  return apiFetch<ApiResponse<BackfillJobEntry>>("/switchboard/backfill", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Fetch a single backfill job by id. */
+export function getBackfillJob(jobId: string): Promise<ApiResponse<BackfillJobEntry>> {
+  return apiFetch<ApiResponse<BackfillJobEntry>>(
+    `/switchboard/backfill/${encodeURIComponent(jobId)}`,
+  );
+}
+
+/** Poll backfill job progress (alias for getBackfillJob). */
+export function getBackfillJobProgress(jobId: string): Promise<ApiResponse<BackfillJobEntry>> {
+  return apiFetch<ApiResponse<BackfillJobEntry>>(
+    `/switchboard/backfill/${encodeURIComponent(jobId)}/progress`,
+  );
+}
+
+/** Pause a backfill job. */
+export function pauseBackfillJob(
+  jobId: string,
+): Promise<ApiResponse<BackfillLifecycleResponse>> {
+  return apiFetch<ApiResponse<BackfillLifecycleResponse>>(
+    `/switchboard/backfill/${encodeURIComponent(jobId)}/pause`,
+    { method: "PATCH" },
+  );
+}
+
+/** Cancel a backfill job. */
+export function cancelBackfillJob(
+  jobId: string,
+): Promise<ApiResponse<BackfillLifecycleResponse>> {
+  return apiFetch<ApiResponse<BackfillLifecycleResponse>>(
+    `/switchboard/backfill/${encodeURIComponent(jobId)}/cancel`,
+    { method: "PATCH" },
+  );
+}
+
+/** Resume a paused backfill job. */
+export function resumeBackfillJob(
+  jobId: string,
+): Promise<ApiResponse<BackfillLifecycleResponse>> {
+  return apiFetch<ApiResponse<BackfillLifecycleResponse>>(
+    `/switchboard/backfill/${encodeURIComponent(jobId)}/resume`,
+    { method: "PATCH" },
+  );
+}
+
+/** List registered connectors. */
+export function listConnectors(): Promise<ApiResponse<ConnectorEntry[]>> {
+  return apiFetch<ApiResponse<ConnectorEntry[]>>("/switchboard/connectors");
+}
