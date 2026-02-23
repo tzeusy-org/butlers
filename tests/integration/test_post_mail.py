@@ -48,6 +48,8 @@ async def pool(provisioned_postgres_pool):
                 success BOOLEAN NOT NULL,
                 duration_ms INTEGER,
                 error TEXT,
+                thread_id TEXT,
+                source_channel TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)

@@ -56,6 +56,10 @@ from butlers.tools.switchboard.triage.evaluator import (
     make_triage_envelope_from_ingest,
 )
 from butlers.tools.switchboard.triage.telemetry import get_triage_telemetry
+from butlers.tools.switchboard.triage.thread_affinity import (
+    ThreadAffinitySettings,
+    lookup_thread_affinity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +221,7 @@ def _run_triage(
     *,
     cache_available: bool,
     source_channel: str,
+    thread_affinity_target: str | None = None,
 ) -> TriageDecision:
     """Run deterministic triage evaluation with telemetry.
 
@@ -232,6 +237,9 @@ def _run_triage(
         Whether the triage rule cache has ever successfully loaded.
     source_channel:
         Source channel string for telemetry attributes.
+    thread_affinity_target:
+        Pre-resolved thread affinity butler name (from lookup_thread_affinity).
+        When set, triage evaluator will use it as the highest-priority match.
     """
     telemetry = get_triage_telemetry()
     t0 = time.monotonic()
@@ -252,7 +260,11 @@ def _run_triage(
             return decision
 
         triage_envelope = make_triage_envelope_from_ingest(dict(payload))
-        decision = evaluate_triage(triage_envelope, rules)
+        decision = evaluate_triage(
+            triage_envelope,
+            rules,
+            thread_affinity_target=thread_affinity_target,
+        )
 
         if decision.decision == "pass_through":
             telemetry.record_pass_through(
@@ -293,13 +305,15 @@ async def ingest_v1(
     *,
     triage_rules: list[dict[str, Any]] | None = None,
     triage_cache_available: bool = True,
+    thread_affinity_settings: ThreadAffinitySettings | None = None,
+    enable_thread_affinity: bool = True,
 ) -> IngestAcceptedResponse:
     """Accept and persist an `ingest.v1` envelope submission.
 
     This is the canonical ingestion boundary for connector submissions.
     It parses, validates, deduplicates, applies deterministic pre-classification
-    triage, and persists the ingest envelope, returning a canonical request
-    reference.
+    triage (including thread-affinity lookup), and persists the ingest envelope,
+    returning a canonical request reference.
 
     Authentication and authorization are enforced at the MCP transport layer
     before this function is called. See module docstring for details.
@@ -317,6 +331,12 @@ async def ingest_v1(
     triage_cache_available:
         Whether the triage rule cache is available. False forces fail-open
         (pass_through with reason='cache_unavailable').
+    thread_affinity_settings:
+        Pre-loaded ThreadAffinitySettings. When None and enable_thread_affinity
+        is True, settings will be fetched from the DB on each call.
+    enable_thread_affinity:
+        When False, thread-affinity lookup is skipped entirely. Defaults True.
+        Set to False in tests or when thread-affinity is not yet deployed.
 
     Returns
     -------
@@ -361,10 +381,41 @@ async def ingest_v1(
         )
 
     # 4. Run deterministic triage (before classification runtime spawn, spec §5.1)
+    # Thread-affinity lookup runs before rule evaluation (spec §2 pipeline order):
+    #   1. Sender/header triage rules
+    #   2. Thread-affinity global/thread override checks
+    #   3. Thread-affinity lookup in routing history
+    #   4. LLM classification fallback
+    #
     # triage_rules=None means caller did not provide a cache — skip triage annotation
     # triage_rules=[] means cache loaded but no active rules — produces pass_through
     triage_decision: TriageDecision | None = None
     source_channel = envelope.source.channel
+    thread_id: str | None = None
+    if envelope.event.external_thread_id:
+        thread_id = str(envelope.event.external_thread_id)
+
+    # 4a. Thread-affinity lookup (email only, before rule evaluation)
+    affinity_target: str | None = None
+    if enable_thread_affinity and source_channel == "email" and thread_id:
+        try:
+            affinity_result = await lookup_thread_affinity(
+                pool,
+                thread_id,
+                source_channel,
+                settings=thread_affinity_settings,
+            )
+            if affinity_result.outcome.produces_route:
+                affinity_target = affinity_result.target_butler
+                logger.debug(
+                    "Thread affinity hit: thread=%s → butler=%s",
+                    thread_id,
+                    affinity_target,
+                )
+        except Exception:
+            logger.exception(
+                "Thread affinity lookup raised unexpectedly; failing open (no affinity)"
+            )
 
     if triage_rules is not None:
         triage_decision = _run_triage(
@@ -372,6 +423,7 @@ async def ingest_v1(
             triage_rules,
             cache_available=triage_cache_available,
             source_channel=source_channel,
+            thread_affinity_target=affinity_target,
         )
         logger.debug(
             "Triage decision for source=%s sender=%s: %s",

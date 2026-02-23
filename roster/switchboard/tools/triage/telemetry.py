@@ -171,8 +171,124 @@ def reset_triage_telemetry_for_tests() -> None:
     _TRIAGE_TELEMETRY = None
 
 
+# ---------------------------------------------------------------------------
+# Thread affinity telemetry
+# ---------------------------------------------------------------------------
+
+# Allowed miss reason values for thread affinity
+_ALLOWED_AFFINITY_MISS_REASONS = frozenset(
+    {"no_thread_id", "no_history", "conflict", "disabled", "error", "stale"}
+)
+
+
+class ThreadAffinityTelemetry:
+    """OpenTelemetry metrics for thread-affinity routing lookups.
+
+    Implements the metric contract from docs/switchboard/thread_affinity_routing.md §7.
+
+    Metrics:
+      - butlers.switchboard.thread_affinity.hit (counter)
+      - butlers.switchboard.thread_affinity.miss (counter, with reason attribute)
+      - butlers.switchboard.thread_affinity.stale (counter)
+
+    Cardinality policy (spec §7):
+      - MUST NOT include raw thread_id values.
+      - reason attribute is bounded to known-good values.
+      - destination_butler on hit is low-cardinality (butler names are bounded).
+    """
+
+    def __init__(self) -> None:
+        meter = metrics.get_meter(_METER_NAME)
+
+        self.hit = meter.create_counter(
+            "butlers.switchboard.thread_affinity.hit",
+            unit="1",
+            description=(
+                "Number of email thread affinity lookups that produced a routing decision "
+                "without LLM classification."
+            ),
+        )
+
+        self.miss = meter.create_counter(
+            "butlers.switchboard.thread_affinity.miss",
+            unit="1",
+            description=(
+                "Number of email thread affinity lookups that did not produce a route "
+                "and fell through to LLM classification."
+            ),
+        )
+
+        self.stale = meter.create_counter(
+            "butlers.switchboard.thread_affinity.stale",
+            unit="1",
+            description=(
+                "Number of email threads where historical routing exists but is "
+                "outside the configured TTL window."
+            ),
+        )
+
+    def record_hit(self, *, destination_butler: str) -> None:
+        """Record a successful affinity hit."""
+        self.hit.add(
+            1,
+            {
+                "source": "email",
+                "destination_butler": (
+                    str(destination_butler)[:64] if destination_butler else "unknown"
+                ),
+                "policy_tier": "affinity",
+                "schema_version": "thread_affinity.v1",
+            },
+        )
+
+    def record_miss(self, *, reason: str) -> None:
+        """Record an affinity miss.
+
+        reason must be one of: no_thread_id, no_history, conflict, disabled, error, stale.
+        """
+        safe_reason = reason if reason in _ALLOWED_AFFINITY_MISS_REASONS else "no_history"
+        self.miss.add(
+            1,
+            {
+                "source": "email",
+                "reason": safe_reason,
+                "schema_version": "thread_affinity.v1",
+            },
+        )
+
+    def record_stale(self) -> None:
+        """Record a stale affinity match (history exists but outside TTL)."""
+        self.stale.add(
+            1,
+            {
+                "source": "email",
+                "schema_version": "thread_affinity.v1",
+            },
+        )
+
+
+_THREAD_AFFINITY_TELEMETRY: ThreadAffinityTelemetry | None = None
+
+
+def get_thread_affinity_telemetry() -> ThreadAffinityTelemetry:
+    """Return the process-level thread affinity telemetry singleton."""
+    global _THREAD_AFFINITY_TELEMETRY
+    if _THREAD_AFFINITY_TELEMETRY is None:
+        _THREAD_AFFINITY_TELEMETRY = ThreadAffinityTelemetry()
+    return _THREAD_AFFINITY_TELEMETRY
+
+
+def reset_thread_affinity_telemetry_for_tests() -> None:
+    """Test helper to reset the thread affinity telemetry singleton."""
+    global _THREAD_AFFINITY_TELEMETRY
+    _THREAD_AFFINITY_TELEMETRY = None
+
+
 __all__ = [
     "TriageTelemetry",
+    "ThreadAffinityTelemetry",
     "get_triage_telemetry",
+    "get_thread_affinity_telemetry",
     "reset_triage_telemetry_for_tests",
+    "reset_thread_affinity_telemetry_for_tests",
 ]

@@ -501,13 +501,39 @@ async def _log_routing(
     success: bool,
     duration_ms: int,
     error: str | None,
+    *,
+    thread_id: str | None = None,
+    source_channel: str | None = None,
 ) -> None:
-    """Log a routing event."""
+    """Log a routing event.
+
+    Parameters
+    ----------
+    pool:
+        Database connection pool.
+    source:
+        Source butler name (caller).
+    target:
+        Target butler name.
+    tool_name:
+        Tool that was called.
+    success:
+        Whether the routing succeeded.
+    duration_ms:
+        Routing duration in milliseconds.
+    error:
+        Error message if routing failed.
+    thread_id:
+        External thread identity (email only). Used for thread-affinity lookup.
+    source_channel:
+        Source channel (e.g. 'email', 'telegram'). Enables thread-affinity index.
+    """
     await pool.execute(
         """
         INSERT INTO routing_log
-            (source_butler, target_butler, tool_name, success, duration_ms, error)
-        VALUES ($1, $2, $3, $4, $5, $6)
+            (source_butler, target_butler, tool_name, success, duration_ms, error,
+             thread_id, source_channel)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         """,
         source,
         target,
@@ -515,4 +541,6 @@ async def _log_routing(
         success,
         duration_ms,
         error,
+        thread_id,
+        source_channel,
     )

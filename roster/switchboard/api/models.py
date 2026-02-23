@@ -488,3 +488,60 @@ class BackfillLifecycleResponse(BaseModel):
 
     job_id: str
     status: str
+
+
+# ---------------------------------------------------------------------------
+# Thread affinity settings and override models
+# ---------------------------------------------------------------------------
+
+
+class ThreadAffinitySettings(BaseModel):
+    """Global thread-affinity settings row from thread_affinity_settings."""
+
+    enabled: bool = True
+    """Whether thread-affinity lookup is globally active."""
+
+    ttl_days: int = 30
+    """Max age in days for routing_log rows considered for affinity lookup."""
+
+    thread_overrides: dict[str, str] = {}
+    """Per-thread overrides: {thread_id: "disabled" | "force:<butler>"}."""
+
+    updated_at: str | None = None
+
+
+class ThreadAffinitySettingsUpdate(BaseModel):
+    """Request body for PATCH /api/switchboard/thread-affinity/settings."""
+
+    enabled: bool | None = None
+    """Toggle global thread-affinity routing."""
+
+    ttl_days: int | None = None
+    """Max age window in days (must be positive)."""
+
+
+class ThreadOverrideUpsert(BaseModel):
+    """Request body for PUT /api/switchboard/thread-affinity/overrides/:thread_id."""
+
+    mode: str
+    """Override mode: 'disabled' or 'force:<butler>'.
+
+    - 'disabled': suppress affinity for this thread.
+    - 'force:<butler>': route this thread directly to the named butler.
+    """
+
+    @field_validator("mode")
+    @classmethod
+    def mode_valid(cls, v: str) -> str:
+        if v == "disabled":
+            return v
+        if v.startswith("force:") and v[len("force:") :]:
+            return v
+        raise ValueError("mode must be 'disabled' or 'force:<butler>' with a non-empty butler name")
+
+
+class ThreadOverrideEntry(BaseModel):
+    """A single per-thread override entry."""
+
+    thread_id: str
+    mode: str
