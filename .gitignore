@@ -314,5 +314,6 @@ node_modules/
 .worktrees/parallel-agents/butlers-irbq/
 .worktrees/parallel-agents/butlers-902o/
 .worktrees/parallel-agents/butlers-lgps/
-# bd worktree
 .worktrees/parallel-agents/butlers-h9fs.2/
+# bd worktree
+.worktrees/parallel-agents/butlers-h9fs.3/
