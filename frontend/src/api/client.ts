@@ -106,6 +106,11 @@ import type {
   ThreadAffinitySettingsUpdate,
   ThreadOverrideEntry,
   ThreadOverrideUpsert,
+  ContactInfoEntry,
+  ContactMergeRequest,
+  ContactMergeResponse,
+  ContactPatchRequest,
+  OwnerSetupStatus,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -698,6 +703,56 @@ export function getContactFeed(contactId: string): Promise<ActivityFeedItem[]> {
   return apiFetch<ActivityFeedItem[]>(
     `/relationship/contacts/${encodeURIComponent(contactId)}/feed`,
   );
+}
+
+/** Fetch pending (temp) contacts awaiting identity resolution. */
+export function getPendingContacts(): Promise<ContactDetail[]> {
+  return apiFetch<ContactDetail[]>("/relationship/contacts/pending");
+}
+
+/** Reveal a secured contact_info entry value. */
+export function revealContactSecret(
+  contactId: string,
+  infoId: string,
+): Promise<ContactInfoEntry> {
+  return apiFetch<ContactInfoEntry>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/secrets/${encodeURIComponent(infoId)}`,
+  );
+}
+
+/** Update a contact's fields (full_name, nickname, company, job_title, roles). */
+export function patchContact(
+  contactId: string,
+  request: ContactPatchRequest,
+): Promise<ContactDetail> {
+  return apiFetch<ContactDetail>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}`,
+    { method: "PATCH", body: JSON.stringify(request) },
+  );
+}
+
+/** Merge a temp/pending contact into an existing contact. */
+export function mergeContact(
+  contactId: string,
+  request: ContactMergeRequest,
+): Promise<ContactMergeResponse> {
+  return apiFetch<ContactMergeResponse>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/merge`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+/** Confirm a pending disambiguation contact as a new known contact. */
+export function confirmContact(contactId: string): Promise<ContactDetail> {
+  return apiFetch<ContactDetail>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/confirm`,
+    { method: "POST" },
+  );
+}
+
+/** Get owner identity setup status. */
+export function getOwnerSetupStatus(): Promise<OwnerSetupStatus> {
+  return apiFetch<OwnerSetupStatus>("/relationship/owner/setup-status");
 }
 
 /** Build URLSearchParams from group query parameters. */

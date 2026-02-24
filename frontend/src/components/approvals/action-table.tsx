@@ -1,4 +1,6 @@
 import { formatDistanceToNow } from "date-fns";
+import { Link } from "react-router";
+
 import type { ApprovalAction } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -32,6 +34,18 @@ function statusBadgeVariant(status: string) {
   }
 }
 
+/** Return inline styles for a role badge in the target contact column. */
+function roleBadgeStyle(role: string): React.CSSProperties {
+  switch (role.toLowerCase()) {
+    case "owner":
+      return { backgroundColor: "#7c3aed", color: "#fff" };
+    case "admin":
+      return { backgroundColor: "#b45309", color: "#fff" };
+    default:
+      return { backgroundColor: "#0369a1", color: "#fff" };
+  }
+}
+
 export function ActionTable({ actions, onActionClick }: ActionTableProps) {
   return (
     <Table>
@@ -41,13 +55,14 @@ export function ActionTable({ actions, onActionClick }: ActionTableProps) {
           <TableHead>Status</TableHead>
           <TableHead>Requested</TableHead>
           <TableHead>Summary</TableHead>
+          <TableHead>Target Contact</TableHead>
           <TableHead>Session</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {actions.length === 0 ? (
           <TableRow>
-            <TableCell colSpan={5} className="text-center text-muted-foreground">
+            <TableCell colSpan={6} className="text-center text-muted-foreground">
               No actions found
             </TableCell>
           </TableRow>
@@ -71,6 +86,37 @@ export function ActionTable({ actions, onActionClick }: ActionTableProps) {
               </TableCell>
               <TableCell className="max-w-md truncate text-sm">
                 {action.agent_summary || "—"}
+              </TableCell>
+              <TableCell
+                className="text-sm"
+                onClick={(e) => {
+                  // Prevent dialog open when clicking the contact link
+                  if ((e.target as HTMLElement).closest("a")) {
+                    e.stopPropagation();
+                  }
+                }}
+              >
+                {action.target_contact ? (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <Link
+                      to={`/contacts/${encodeURIComponent(action.target_contact.id)}`}
+                      className="font-medium hover:underline text-sm"
+                    >
+                      {action.target_contact.name}
+                    </Link>
+                    {action.target_contact.roles.map((role) => (
+                      <Badge
+                        key={role}
+                        style={roleBadgeStyle(role)}
+                        className="text-xs capitalize"
+                      >
+                        {role}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
               </TableCell>
               <TableCell className="text-sm text-muted-foreground">
                 {action.session_id ? action.session_id.slice(0, 8) : "—"}
