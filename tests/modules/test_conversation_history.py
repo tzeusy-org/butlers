@@ -463,7 +463,7 @@ class TestPipelineHistoryIntegration:
 
         await pipeline.process(
             message_text="Hello",
-            tool_name="telegram.process_update",
+            tool_name="ingest",
             tool_args={
                 "source_channel": "telegram",
                 "chat_id": "123",
