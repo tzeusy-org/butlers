@@ -356,7 +356,7 @@ class TestApprovalsMigration:
             versions = [row[0] for row in result]
         engine.dispose()
 
-        assert "approvals_002" in versions
+        assert "approvals_003" in versions
 
     def test_approval_events_append_only(self, postgres_container):
         """approval_events should reject UPDATE/DELETE mutations."""

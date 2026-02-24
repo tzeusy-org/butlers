@@ -2828,7 +2828,7 @@ class TestNotifyTool:
             result = await notify_fn(channel="telegram", message="Scheduled update", intent="send")
 
         assert result["status"] == "ok"
-        # Should have tried TELEGRAM_CHAT_ID first, then BUTLER_TELEGRAM_CHAT_ID
+        # Should have tried TELEGRAM_CHAT_ID from butler_secrets (legacy fallback)
         resolve_calls = daemon._credential_store.resolve.await_args_list
         called_keys = [call.args[0] for call in resolve_calls]
         assert "TELEGRAM_CHAT_ID" in called_keys

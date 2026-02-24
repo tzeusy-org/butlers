@@ -50,6 +50,9 @@ async def pool(provisioned_postgres_pool):
                 error TEXT,
                 thread_id TEXT,
                 source_channel TEXT,
+                contact_id UUID,
+                entity_id UUID,
+                sender_roles TEXT[],
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)

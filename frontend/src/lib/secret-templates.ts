@@ -20,7 +20,7 @@ export const SECRET_TEMPLATES: SecretTemplate[] = [
   { key: "GEMINI_API_KEY", description: "Google Gemini API key", category: "gemini" },
   // Telegram — bot and user-client credentials
   { key: "BUTLER_TELEGRAM_TOKEN", description: "Telegram bot token (from @BotFather)", category: "telegram" },
-  { key: "BUTLER_TELEGRAM_CHAT_ID", description: "Telegram chat ID for bot messages", category: "telegram" },
+  { key: "TELEGRAM_CHAT_ID", description: "Telegram chat ID for bot messages", category: "telegram" },
   { key: "USER_TELEGRAM_TOKEN", description: "User Telegram bot token (for user-scoped ops)", category: "telegram" },
   { key: "TELEGRAM_API_ID", description: "Telegram API ID (from my.telegram.org)", category: "telegram" },
   { key: "TELEGRAM_API_HASH", description: "Telegram API hash (from my.telegram.org)", category: "telegram" },

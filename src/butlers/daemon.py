@@ -1796,14 +1796,14 @@ class ButlerDaemon:
             if chat_id:
                 return chat_id.strip() or None
 
-        # 2. Fall back to butler_secrets via TELEGRAM_CHAT_ID (legacy key name)
-        #    and legacy BUTLER_TELEGRAM_CHAT_ID for backwards compatibility.
+        # 2. Fall back to butler_secrets via TELEGRAM_CHAT_ID.
         credential_store = self._credential_store
         if credential_store is not None:
-            for key in ("TELEGRAM_CHAT_ID", "BUTLER_TELEGRAM_CHAT_ID"):
-                configured_chat_id = await credential_store.resolve(key, env_fallback=False)
-                if isinstance(configured_chat_id, str) and configured_chat_id.strip():
-                    return configured_chat_id.strip()
+            configured_chat_id = await credential_store.resolve(
+                "TELEGRAM_CHAT_ID", env_fallback=False
+            )
+            if isinstance(configured_chat_id, str) and configured_chat_id.strip():
+                return configured_chat_id.strip()
 
         return None
 

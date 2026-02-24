@@ -56,7 +56,7 @@ The Secrets page (`/secrets`) is the operator's primary surface for provisioning
 #### Scenario: Known secret template definitions
 
 - **WHEN** the Secrets page initializes its template set
-- **THEN** the following templates are defined: `ANTHROPIC_API_KEY` (core), `OPENAI_API_KEY` (core), `GOOGLE_API_KEY` (core), `GEMINI_API_KEY` (gemini), `BUTLER_TELEGRAM_TOKEN` (telegram), `BUTLER_TELEGRAM_CHAT_ID` (telegram), `USER_TELEGRAM_TOKEN` (telegram), `TELEGRAM_API_ID` (telegram), `TELEGRAM_API_HASH` (telegram), `TELEGRAM_USER_SESSION` (telegram), `BUTLER_EMAIL_ADDRESS` (email), `BUTLER_EMAIL_PASSWORD` (email), `USER_EMAIL_ADDRESS` (email), `USER_EMAIL_PASSWORD` (email), `GOOGLE_OAUTH_CLIENT_ID` (google), `GOOGLE_OAUTH_CLIENT_SECRET` (google)
+- **THEN** the following templates are defined: `ANTHROPIC_API_KEY` (core), `OPENAI_API_KEY` (core), `GOOGLE_API_KEY` (core), `GEMINI_API_KEY` (gemini), `BUTLER_TELEGRAM_TOKEN` (telegram), `TELEGRAM_CHAT_ID` (telegram), `USER_TELEGRAM_TOKEN` (telegram), `TELEGRAM_API_ID` (telegram), `TELEGRAM_API_HASH` (telegram), `TELEGRAM_USER_SESSION` (telegram), `BUTLER_EMAIL_ADDRESS` (email), `BUTLER_EMAIL_PASSWORD` (email), `USER_EMAIL_ADDRESS` (email), `USER_EMAIL_PASSWORD` (email), `GOOGLE_OAUTH_CLIENT_ID` (google), `GOOGLE_OAUTH_CLIENT_SECRET` (google)
 - **AND** each template includes a human-readable description and category assignment
 - **AND** templates serve as scaffolding rows (shown with `missing` state) for keys not yet configured
 
