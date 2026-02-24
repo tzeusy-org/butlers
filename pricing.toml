@@ -1,7 +1,7 @@
 # Per-model token pricing (USD per token)
 # Used by dashboard cost estimation
 #
-# Prices sourced from Anthropic's public pricing page.
+# Prices sourced from vendor public pricing pages.
 # Update this file when new models are released or prices change.
 
 [models]
@@ -17,3 +17,13 @@ output_price_per_token = 0.000004   # $4 / 1M tokens
 [models."claude-opus-4-6"]
 input_price_per_token = 0.000015    # $15 / 1M tokens
 output_price_per_token = 0.000075   # $75 / 1M tokens
+
+# OpenAI — unofficial estimates based on GPT-5.2-Codex ($1.75/M tokens).
+# Update when official pricing is published.
+[models."gpt-5.3-codex"]
+input_price_per_token = 0.00000175  # $1.75 / 1M tokens
+output_price_per_token = 0.00000175 # $1.75 / 1M tokens
+
+[models."gpt-5.3-codex-spark"]
+input_price_per_token = 0.00000175  # $1.75 / 1M tokens
+output_price_per_token = 0.00000175 # $1.75 / 1M tokens

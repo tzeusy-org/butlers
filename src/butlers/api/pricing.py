@@ -9,9 +9,12 @@ Uses :mod:`tomllib` (stdlib since Python 3.11) — no external dependencies.
 
 from __future__ import annotations
 
+import logging
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Default location: <repo-root>/pricing.toml
 _DEFAULT_PATH = Path(__file__).resolve().parents[3] / "pricing.toml"
@@ -125,6 +128,9 @@ def load_pricing(path: Path | None = None) -> PricingConfig:
     return PricingConfig(models)
 
 
+_warned_models: set[str] = set()
+
+
 def estimate_session_cost(
     config: PricingConfig,
     model_id: str,
@@ -133,4 +139,13 @@ def estimate_session_cost(
 ) -> float:
     """Estimate cost for a session, returning 0.0 for unknown models."""
     cost = config.estimate_cost(model_id, input_tokens, output_tokens)
-    return cost if cost is not None else 0.0
+    if cost is None:
+        if model_id and model_id not in _warned_models:
+            _warned_models.add(model_id)
+            logger.warning(
+                "No pricing entry for model %r — cost will be reported as $0. "
+                "Add it to pricing.toml to fix.",
+                model_id,
+            )
+        return 0.0
+    return cost
