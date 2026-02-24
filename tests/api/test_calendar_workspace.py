@@ -286,7 +286,7 @@ class TestWorkspaceMeta:
         assert payload["writable_calendars"][0]["calendar_id"] == "primary"
         assert len(payload["lane_definitions"]) == 1
         assert payload["lane_definitions"][0]["butler_name"] == "general"
-        assert payload["default_timezone"] == "UTC"
+        assert payload["default_timezone"] == "Asia/Singapore"
 
 
 class TestWorkspaceSync:

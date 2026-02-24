@@ -597,11 +597,36 @@ async def get_workspace_meta(
             )
         )
 
+    # Dedup sources by source_key — fan_out across butler schemas can return
+    # the same provider source from multiple schemas.
+    seen_keys: set[str] = set()
+    deduped_sources: list[CalendarWorkspaceSourceFreshness] = []
+    for source in connected_sources:
+        if source.source_key in seen_keys:
+            continue
+        seen_keys.add(source.source_key)
+        deduped_sources.append(source)
+
+    # Rebuild writable calendars from deduped list.
+    writable_calendars = []
+    for source in deduped_sources:
+        if source.lane != "user" or not source.writable or not source.calendar_id:
+            continue
+        writable_calendars.append(
+            CalendarWorkspaceWritableCalendar(
+                source_key=source.source_key,
+                provider=source.provider,
+                calendar_id=source.calendar_id,
+                display_name=source.display_name,
+                butler_name=source.butler_name,
+            )
+        )
+
     data = CalendarWorkspaceMetaResponse(
-        connected_sources=connected_sources,
+        connected_sources=deduped_sources,
         writable_calendars=writable_calendars,
-        lane_definitions=_build_lane_definitions(connected_sources),
-        default_timezone="UTC",
+        lane_definitions=_build_lane_definitions(deduped_sources),
+        default_timezone="Asia/Singapore",
     )
     return ApiResponse[CalendarWorkspaceMetaResponse](data=data)
 

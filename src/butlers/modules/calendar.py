@@ -1613,6 +1613,10 @@ class CalendarProvider(abc.ABC):
         """
         ...
 
+    async def get_calendar_summary(self, calendar_id: str) -> str | None:
+        """Return the human-readable summary/name for a calendar, or ``None``."""
+        return None
+
     @abc.abstractmethod
     async def shutdown(self) -> None:
         """Release provider resources."""
@@ -1800,6 +1804,20 @@ class _GoogleProvider(CalendarProvider):
         calendar_id = created["id"]
         logger.info("Created new calendar %r (id=%s)", name, calendar_id)
         return calendar_id
+
+    async def get_calendar_summary(self, calendar_id: str) -> str | None:
+        """Fetch the human-readable summary for a Google Calendar by its ID."""
+        normalized = quote(calendar_id, safe="")
+        try:
+            payload = await self._request_google_json(
+                "GET", f"/users/me/calendarList/{normalized}"
+            )
+            summary = payload.get("summaryOverride") or payload.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                return summary.strip()
+        except Exception:
+            logger.debug("Failed to fetch calendar summary for '%s'", calendar_id)
+        return None
 
     async def list_events(
         self,
@@ -5227,6 +5245,9 @@ class CalendarModule(Module):
 
         source_id: uuid.UUID | None = None
         source_key = f"provider:{provider.name}:{calendar_id}"
+        # Resolve a human-readable display name (e.g. "Work" instead of the raw
+        # Google Calendar ID like "ae06dba...@group.calendar.google.com").
+        display_name = await provider.get_calendar_summary(calendar_id) or calendar_id
         try:
             source_id = await self._ensure_calendar_source(
                 source_key=source_key,
@@ -5234,7 +5255,7 @@ class CalendarModule(Module):
                 lane="user",
                 provider=provider.name,
                 calendar_id=calendar_id,
-                display_name=calendar_id,
+                display_name=display_name,
                 writable=True,
                 metadata={"projection": "provider_sync"},
             )
@@ -5690,13 +5711,15 @@ class CalendarModule(Module):
         if source_kind == SOURCE_KIND_PROVIDER:
             provider = self._require_provider()
             resolved_calendar = calendar_id or self._require_config().calendar_id
+            summary = await provider.get_calendar_summary(resolved_calendar)
+            display_name = summary or resolved_calendar
             return await self._ensure_calendar_source(
                 source_key=f"provider:{provider.name}:{resolved_calendar}",
                 source_kind=SOURCE_KIND_PROVIDER,
                 lane="user",
                 provider=provider.name,
                 calendar_id=resolved_calendar,
-                display_name=resolved_calendar,
+                display_name=display_name,
                 writable=True,
                 metadata={"projection": "provider_sync"},
             )

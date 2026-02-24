@@ -193,7 +193,11 @@ function syncBadgeVariant(syncState: string): SyncBadgeVariant {
 }
 
 function sourceName(source: CalendarWorkspaceSourceFreshness): string {
-  return source.display_name || source.calendar_id || source.source_key;
+  const raw = source.display_name || source.source_key;
+  if (source.provider === "google") {
+    return `[Google] ${raw}`;
+  }
+  return raw;
 }
 
 function formatLaneTitle(butlerName: string): string {
@@ -830,7 +834,7 @@ export default function CalendarWorkspacePage() {
     return { butlerName, calendarId };
   }
 
-  function openUserCreateDialog() {
+  function openUserCreateDialog(forDate?: Date) {
     if (writableCalendars.length === 0) {
       toast.error("No writable calendar sources are available for user events.");
       return;
@@ -840,7 +844,7 @@ export default function CalendarWorkspacePage() {
       selectedSourceKey !== "all" && writableCalendars.some((c) => c.source_key === selectedSourceKey)
         ? selectedSourceKey
         : writableCalendars[0].source_key;
-    const { startAtLocal, endAtLocal } = defaultFormWindow(anchor);
+    const { startAtLocal, endAtLocal } = defaultFormWindow(forDate ?? anchor);
 
     setUserEventDialogMode("create");
     setActiveUserEntry(null);
@@ -1521,8 +1525,17 @@ export default function CalendarWorkspacePage() {
                     return (
                       <div
                         key={key}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => view === "user" && openUserCreateDialog(day)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            if (view === "user") openUserCreateDialog(day);
+                          }
+                        }}
                         className={cn(
-                          "rounded-md border border-border p-2",
+                          "rounded-md border border-border p-2 cursor-pointer hover:border-primary/50 transition-colors",
                           !isSameMonth(day, start) && "bg-muted/30 text-muted-foreground",
                         )}
                       >
@@ -1564,8 +1577,17 @@ export default function CalendarWorkspacePage() {
                     return (
                       <div
                         key={key}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => view === "user" && openUserCreateDialog(day)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            if (view === "user") openUserCreateDialog(day);
+                          }
+                        }}
                         className={cn(
-                          "rounded-md border border-border p-2",
+                          "rounded-md border border-border p-2 cursor-pointer hover:border-primary/50 transition-colors",
                           range === "day" && "min-h-[200px]",
                           isToday(day) && "ring-2 ring-primary/50",
                         )}
@@ -1684,7 +1706,6 @@ export default function CalendarWorkspacePage() {
                       </div>
                       <p className="text-xs text-muted-foreground">
                         <span className="font-medium">({source.lane})</span> {source.provider ?? source.source_kind}
-                        {source.calendar_id ? ` • ${source.calendar_id}` : ""}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {formatStaleness(source.staleness_ms)}
