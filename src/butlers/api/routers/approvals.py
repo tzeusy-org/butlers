@@ -31,6 +31,7 @@ from butlers.api.models.approval import (
     ApprovalRuleFromActionRequest,
     ExpireStaleActionsResponse,
     RuleConstraintSuggestion,
+    TargetContact,
 )
 from butlers.modules.approvals import operations as approvals_ops
 from butlers.modules.approvals.models import (
@@ -96,7 +97,10 @@ async def _find_approvals_pool(db_mgr: DatabaseManager, table_name: str = "pendi
     return None
 
 
-def _pending_action_to_api(action: PendingAction) -> ApprovalAction:
+def _pending_action_to_api(
+    action: PendingAction,
+    target_contact: TargetContact | None = None,
+) -> ApprovalAction:
     """Convert a PendingAction to API representation with redacted sensitive data."""
     return ApprovalAction(
         id=str(action.id),
@@ -111,7 +115,54 @@ def _pending_action_to_api(action: PendingAction) -> ApprovalAction:
         decided_at=action.decided_at,
         execution_result=action.execution_result,
         approval_rule_id=str(action.approval_rule_id) if action.approval_rule_id else None,
+        target_contact=target_contact,
     )
+
+
+async def _resolve_target_contact(
+    db_mgr: DatabaseManager,
+    action: PendingAction,
+) -> TargetContact | None:
+    """Resolve target_contact from contact_id in action tool_args.
+
+    Looks up shared.contacts when tool_args contains a non-empty 'contact_id' key.
+    Returns None if not found, pool unavailable, or contact_id is not present.
+    """
+    contact_id_raw = action.tool_args.get("contact_id")
+    if not contact_id_raw:
+        return None
+
+    try:
+        from uuid import UUID
+
+        contact_uuid = UUID(str(contact_id_raw))
+    except (ValueError, AttributeError):
+        return None
+
+    # Find a pool that has shared.contacts (try all butlers)
+    for butler_name in db_mgr.butler_names:
+        try:
+            pool = db_mgr.pool(butler_name)
+            row = await pool.fetchrow(
+                """
+                SELECT id, name, COALESCE(roles, '{}') AS roles
+                FROM shared.contacts
+                WHERE id = $1
+                """,
+                contact_uuid,
+            )
+            if row is not None:
+                raw_roles = row["roles"]
+                roles = list(raw_roles) if raw_roles else []
+                return TargetContact(
+                    id=str(row["id"]),
+                    name=row["name"] or "",
+                    roles=roles,
+                )
+        except Exception:  # noqa: BLE001
+            continue
+
+    return None
 
 
 def _approval_rule_to_api(rule: ApprovalRuleModel) -> ApprovalRule:
@@ -203,7 +254,11 @@ async def list_actions(
         )
         rows = await conn.fetch(query, *args, limit, offset)
 
-    actions = [_pending_action_to_api(PendingAction.from_row(row)) for row in rows]
+    pending_actions_list = [PendingAction.from_row(row) for row in rows]
+    actions = []
+    for pa in pending_actions_list:
+        tc = await _resolve_target_contact(db_mgr, pa)
+        actions.append(_pending_action_to_api(pa, tc))
 
     return PaginatedResponse(
         data=actions,
@@ -280,7 +335,11 @@ async def list_executed_actions(
         )
         rows = await conn.fetch(query, *args, limit, offset)
 
-    actions = [_pending_action_to_api(PendingAction.from_row(row)) for row in rows]
+    pending_actions_list = [PendingAction.from_row(row) for row in rows]
+    actions = []
+    for pa in pending_actions_list:
+        tc = await _resolve_target_contact(db_mgr, pa)
+        actions.append(_pending_action_to_api(pa, tc))
 
     return PaginatedResponse(
         data=actions,
@@ -310,7 +369,9 @@ async def get_action(
     if row is None:
         raise HTTPException(status_code=404, detail=f"Action not found: {action_id}")
 
-    action = _pending_action_to_api(PendingAction.from_row(row))
+    pa = PendingAction.from_row(row)
+    tc = await _resolve_target_contact(db_mgr, pa)
+    action = _pending_action_to_api(pa, tc)
     return ApiResponse(data=action)
 
 

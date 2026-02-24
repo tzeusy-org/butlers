@@ -879,3 +879,152 @@ async def test_get_metrics_no_approvals_subsystem():
     assert data["data"]["total_pending"] == 0
     assert data["data"]["total_approved_today"] == 0
     assert data["data"]["active_rules_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: target_contact enrichment in actions [butlers-h9fs.9]
+# ---------------------------------------------------------------------------
+
+
+def _make_app_with_contact_resolution(
+    *,
+    action_rows: list,
+    contact_row: dict | None = None,
+    has_approvals_tables: bool = True,
+):
+    """Create app with a mock that returns action rows and optionally resolves a contact.
+
+    The mock pool handles:
+    - information_schema.tables check (returns True for has_approvals_tables)
+    - COUNT query (returns len(action_rows))
+    - SELECT * FROM pending_actions (returns action_rows)
+    - shared.contacts lookup for contact_id in tool_args (returns contact_row)
+    """
+    action_count = len(action_rows)
+
+    async def mock_fetchval(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "information_schema.tables" in sql:
+            return has_approvals_tables
+        return action_count
+
+    async def mock_fetch(*args, **kwargs):
+        return action_rows
+
+    async def mock_fetchrow(*args, **kwargs):
+        sql = args[0] if args else ""
+        if "shared.contacts" in sql:
+            return contact_row
+        return None
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchval = AsyncMock(side_effect=mock_fetchval)
+    mock_conn.fetch = AsyncMock(side_effect=mock_fetch)
+    mock_conn.fetchrow = AsyncMock(side_effect=mock_fetchrow)
+
+    mock_pool = MagicMock()
+
+    class MockAcquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *args):
+            pass
+
+    mock_pool.acquire = MagicMock(return_value=MockAcquire())
+    mock_pool.fetchval = AsyncMock(side_effect=mock_fetchval)
+    mock_pool.fetchrow = AsyncMock(side_effect=mock_fetchrow)
+    mock_pool.fetch = AsyncMock(side_effect=mock_fetch)
+
+    mock_db = MagicMock(spec=DatabaseManager)
+    if has_approvals_tables:
+        mock_db.pool.return_value = mock_pool
+        mock_db.butler_names = ["general"]
+    else:
+        mock_db.pool.side_effect = KeyError("No pool")
+        mock_db.butler_names = []
+
+    app = create_app()
+    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+
+    return app
+
+
+@pytest.mark.asyncio
+async def test_list_actions_includes_target_contact_when_contact_id_in_tool_args():
+    """GET /api/approvals/actions includes target_contact when tool_args has contact_id."""
+    contact_uuid = uuid4()
+    action_row = _make_pending_action_record(
+        tool_args={"contact_id": str(contact_uuid), "message": "Hello"},
+    )
+    contact_row_data = {
+        "id": contact_uuid,
+        "name": "Alice Smith",
+        "roles": ["owner"],
+    }
+
+    app = _make_app_with_contact_resolution(
+        action_rows=[action_row],
+        contact_row=contact_row_data,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/actions")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["data"]) == 1
+    action = data["data"][0]
+    assert action["target_contact"] is not None
+    assert action["target_contact"]["id"] == str(contact_uuid)
+    assert action["target_contact"]["name"] == "Alice Smith"
+    assert action["target_contact"]["roles"] == ["owner"]
+
+
+@pytest.mark.asyncio
+async def test_list_actions_target_contact_null_when_no_contact_id():
+    """GET /api/approvals/actions returns target_contact=null when no contact_id in tool_args."""
+    action_row = _make_pending_action_record(
+        tool_args={"chat_id": "99999", "text": "Hello"},
+    )
+
+    app = _make_app_with_contact_resolution(
+        action_rows=[action_row],
+        contact_row=None,
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/actions")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["data"]) == 1
+    assert data["data"][0]["target_contact"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_actions_target_contact_null_when_contact_not_found():
+    """GET /api/approvals/actions: target_contact is null when contact_id not in DB."""
+    contact_uuid = uuid4()
+    action_row = _make_pending_action_record(
+        tool_args={"contact_id": str(contact_uuid)},
+    )
+
+    app = _make_app_with_contact_resolution(
+        action_rows=[action_row],
+        contact_row=None,  # DB returns None for this contact
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/approvals/actions")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["data"]) == 1
+    assert data["data"][0]["target_contact"] is None
