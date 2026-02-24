@@ -14,6 +14,13 @@ type = "codex"
 name = "butlers"
 schema = "general"
 
+[butler.switchboard]
+url = "http://localhost:40100/mcp"
+advertise = true
+liveness_ttl_s = 300
+route_contract_min = "route.v1"
+route_contract_max = "route.v1"
+
 [modules.calendar]
 provider = "google"
 
