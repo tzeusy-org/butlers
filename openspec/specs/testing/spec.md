@@ -144,8 +144,12 @@ Simple input-output test cases are defined as `E2EScenario` dataclass instances 
 
 #### Scenario: DbAssertion dataclass
 - **WHEN** database side effects are specified
-- **THEN** each `DbAssertion` checks for row existence in a specific butler's database table, using `where` clause for matching and `column_checks` for additional column value assertions
-- **AND** the assertion checks for existence, not uniqueness (at least one matching row satisfies all checks)
+- **THEN** each `DbAssertion` carries four fields: `butler` (str — whose DB to query), `query` (str — raw SQL to execute), `expected` (int|dict|list[dict]|None — see below), and `description` (str — human-readable label for test output)
+- **AND** the `expected` field controls validation behavior:
+  - **int**: the query must return a single row with a `count` column equal to this value (COUNT queries)
+  - **dict**: the query must return a single row whose columns match all key/value pairs in the dict
+  - **list[dict]**: the query must return multiple rows whose full list of dicts matches exactly
+  - **None**: the query must return no rows (assert absence)
 
 #### Scenario: Automatic test generation
 - **WHEN** a new `E2EScenario` is added to `scenarios.py`
@@ -348,7 +352,7 @@ E2E flow tests validate the complete message pipeline from ingestion through cla
 
 #### Scenario: Declarative scenario validation
 - **WHEN** a scenario specifies `expected_butler` and `db_assertions`
-- **THEN** the runner classifies the input, asserts the expected butler appears in routing entries, dispatches to the target, and checks that at least one row in each specified table matches the `where` clause and `column_checks`
+- **THEN** the runner dispatches to the target butler and executes each `DbAssertion` by running its raw SQL `query` against the named butler's DB pool and comparing the result to `expected`
 
 #### Scenario: Health butler flow
 - **WHEN** "Log my weight: 80kg" is sent through the pipeline
