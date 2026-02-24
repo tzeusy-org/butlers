@@ -47,7 +47,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 from urllib.parse import parse_qs, quote, quote_plus
@@ -3355,8 +3355,6 @@ class ButlerDaemon:
             time and calls ``notify()`` with the given message, channel, and
             optional request_context.
             """
-            from datetime import timedelta as _td
-
             # --- validate inputs ---
             if delay_minutes is not None and remind_at is not None:
                 return {
@@ -3377,9 +3375,10 @@ class ButlerDaemon:
             # --- compute target time ---
             now = datetime.now(UTC)
             if delay_minutes is not None:
-                target = now + _td(minutes=delay_minutes)
+                target = now + timedelta(minutes=delay_minutes)
             else:
-                assert remind_at is not None
+                if remind_at is None:
+                    return {"status": "error", "error": "Internal error: remind_at is None."}
                 # Ensure remind_at is timezone-aware (assume UTC if naive)
                 if remind_at.tzinfo is None:
                     target = remind_at.replace(tzinfo=UTC)
@@ -3409,10 +3408,10 @@ class ButlerDaemon:
             )
 
             # --- schedule a one-shot task ---
-            until_at = target + _td(minutes=1)
+            until_at = target + timedelta(minutes=1)
             task_id = await _schedule_create(
                 pool,
-                f"remind-{target.strftime('%Y%m%dT%H%M')}",
+                f"remind-{target.strftime('%Y%m%dT%H%M')}-{str(uuid.uuid4())[:8]}",
                 cron,
                 prompt,
                 stagger_key=daemon.config.name,
