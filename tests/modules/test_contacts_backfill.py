@@ -1004,3 +1004,399 @@ class TestContactBackfillEngine:
             "SELECT type FROM activity_feed WHERE contact_id = $1", local_id
         )
         assert any(r["type"] == "contact_sync_updated" for r in feed_rows)
+
+
+# ---------------------------------------------------------------------------
+# Fixture: CRM pool with identity columns (roles, secured) — tasks 9.1-9.3
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def crm_pool_with_identity(provisioned_postgres_pool):
+    """Provision a fresh Postgres DB with CRM tables plus identity columns.
+
+    Extends crm_pool with:
+    - roles TEXT[] NOT NULL DEFAULT '{}' on contacts
+    - secured BOOLEAN NOT NULL DEFAULT false on shared.contact_info
+    - UNIQUE(type, value) constraint on shared.contact_info
+    """
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS contacts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL,
+                first_name VARCHAR,
+                last_name VARCHAR,
+                nickname VARCHAR,
+                company VARCHAR,
+                job_title VARCHAR,
+                avatar_url VARCHAR,
+                listed BOOLEAN NOT NULL DEFAULT true,
+                archived_at TIMESTAMPTZ,
+                metadata JSONB,
+                roles TEXT[] NOT NULL DEFAULT '{}',
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS shared.contact_info (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL,
+                type VARCHAR NOT NULL,
+                value TEXT NOT NULL,
+                label VARCHAR,
+                is_primary BOOLEAN DEFAULT false,
+                secured BOOLEAN NOT NULL DEFAULT false,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                CONSTRAINT uq_shared_contact_info_type_value UNIQUE (type, value)
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS addresses (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                label VARCHAR NOT NULL DEFAULT 'Home',
+                line_1 TEXT NOT NULL,
+                line_2 TEXT,
+                city VARCHAR,
+                province VARCHAR,
+                postal_code VARCHAR,
+                country VARCHAR(2),
+                is_current BOOLEAN NOT NULL DEFAULT false,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS important_dates (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                label TEXT NOT NULL,
+                month INT NOT NULL,
+                day INT NOT NULL,
+                year INT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS labels (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL UNIQUE,
+                color TEXT,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS contact_labels (
+                label_id UUID NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                PRIMARY KEY (label_id, contact_id)
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS activity_feed (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                type TEXT NOT NULL,
+                description TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS contacts_source_accounts (
+                provider TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                subject_email TEXT,
+                connected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                last_success_at TIMESTAMPTZ,
+                PRIMARY KEY (provider, account_id)
+            )
+        """)
+        await pool.execute("""
+            CREATE TABLE IF NOT EXISTS contacts_source_links (
+                provider TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                external_contact_id TEXT NOT NULL,
+                local_contact_id UUID REFERENCES contacts(id) ON DELETE SET NULL,
+                source_etag TEXT,
+                first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                deleted_at TIMESTAMPTZ,
+                PRIMARY KEY (provider, account_id, external_contact_id)
+            )
+        """)
+        yield pool
+
+
+async def _insert_contact_with_roles(
+    pool,
+    *,
+    name: str = "Owner Contact",
+    roles: list[str] | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> uuid.UUID:
+    """Insert a contact with explicit roles for identity guard tests."""
+    import json
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO contacts (name, first_name, last_name, roles, metadata)
+        VALUES ($1, $2, $3, $4, $5::jsonb)
+        RETURNING id
+        """,
+        name,
+        first_name,
+        last_name,
+        roles or [],
+        json.dumps(metadata or {}),
+    )
+    return uuid.UUID(str(row["id"]))
+
+
+# ---------------------------------------------------------------------------
+# Task 9.1: Sync does not overwrite roles on shared.contacts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestSyncRolesGuard:
+    async def test_update_contact_never_modifies_roles(self, crm_pool_with_identity) -> None:
+        """Sync update_contact must never include roles in the UPDATE SET clause."""
+        pool = crm_pool_with_identity
+
+        # Create an owner contact with roles=['owner']
+        local_id = await _insert_contact_with_roles(
+            pool,
+            name="Owner User",
+            first_name="Owner",
+            last_name="User",
+            roles=["owner"],
+        )
+
+        writer = ContactBackfillWriter(pool, provider="google", account_id="acc1")
+        # Sync brings a contact with different name fields (roles not in CanonicalContact)
+        contact = _make_contact(
+            "people/owner_sync",
+            display_name="Owner User Updated",
+            first_name="Owner",
+            last_name="User",
+        )
+        # Stamp provenance so name fields are source-owned (update can proceed)
+        import json
+
+        meta: dict[str, Any] = {}
+        _deep_set(meta, "sources.contacts.google.first_name", "Owner")
+        await pool.execute(
+            "UPDATE contacts SET metadata = $1::jsonb WHERE id = $2",
+            json.dumps(meta),
+            local_id,
+        )
+
+        await writer.update_contact(local_id, contact, match_strategy="source_link")
+
+        # roles must remain ['owner'] — never overwritten by sync
+        row = await pool.fetchrow("SELECT roles FROM contacts WHERE id = $1", local_id)
+        assert list(row["roles"]) == ["owner"]
+
+    async def test_create_contact_does_not_set_roles(self, crm_pool_with_identity) -> None:
+        """Sync create_contact must not set roles (defaults to empty array)."""
+        pool = crm_pool_with_identity
+        writer = ContactBackfillWriter(pool, provider="google", account_id="acc1")
+        contact = _make_contact(
+            "people/new_noroles",
+            display_name="New Person",
+            first_name="New",
+            last_name="Person",
+        )
+        local_id = await writer.create_contact(contact)
+        row = await pool.fetchrow("SELECT roles FROM contacts WHERE id = $1", local_id)
+        # roles must remain at the DB default '{}' — sync never sets it
+        assert list(row["roles"]) == []
+
+    async def test_engine_does_not_overwrite_owner_roles(self, crm_pool_with_identity) -> None:
+        """Full engine run must preserve owner roles through create and update paths."""
+        pool = crm_pool_with_identity
+
+        # Pre-create an owner contact and register a source link
+        local_id = await _insert_contact_with_roles(
+            pool,
+            name="Owner Person",
+            first_name="Owner",
+            last_name="Person",
+            roles=["owner"],
+        )
+        await pool.execute(
+            """
+            INSERT INTO contacts_source_links (
+            provider, account_id, external_contact_id, local_contact_id)
+            VALUES ('google', 'acc1', 'people/owner_eng', $1)
+            """,
+            local_id,
+        )
+
+        engine = ContactBackfillEngine(pool, provider="google", account_id="acc1")
+        contact = _make_contact("people/owner_eng", first_name="Owner", last_name="Person")
+        await engine(contact)
+
+        row = await pool.fetchrow("SELECT roles FROM contacts WHERE id = $1", local_id)
+        assert list(row["roles"]) == ["owner"]
+
+
+# ---------------------------------------------------------------------------
+# Task 9.2: Sync does not flip secured flag on contact_info
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestSyncSecuredGuard:
+    async def test_upsert_contact_info_does_not_modify_secured_on_existing(
+        self, crm_pool_with_identity
+    ) -> None:
+        """upsert_contact_info must not flip the secured flag on existing rows."""
+        pool = crm_pool_with_identity
+
+        local_id = await _insert_local_contact(pool, name="Secured Test")
+
+        # Insert a secured contact_info row
+        await pool.execute(
+            """
+            INSERT INTO shared.contact_info (contact_id, type, value, is_primary, secured)
+            VALUES ($1, 'email', 'secure@example.com', true, true)
+            """,
+            local_id,
+        )
+
+        writer = ContactBackfillWriter(pool, provider="google", account_id="acc1")
+        # Sync brings the same email — should update is_primary status only
+        contact = _make_contact(
+            "people/sec_test",
+            emails=[
+                ContactEmail(
+                    value="secure@example.com",
+                    primary=False,  # Demote primary
+                    normalized_value="secure@example.com",
+                )
+            ],
+        )
+        await writer.upsert_contact_info(local_id, contact)
+
+        row = await pool.fetchrow(
+            "SELECT secured, is_primary FROM shared.contact_info WHERE contact_id = $1",
+            local_id,
+        )
+        # secured must still be True — sync never modifies it
+        assert row["secured"] is True
+
+    async def test_upsert_contact_info_new_row_does_not_set_secured(
+        self, crm_pool_with_identity
+    ) -> None:
+        """upsert_contact_info must never insert a row with secured=true."""
+        pool = crm_pool_with_identity
+
+        local_id = await _insert_local_contact(pool, name="No Secured Insert")
+
+        writer = ContactBackfillWriter(pool, provider="google", account_id="acc1")
+        contact = _make_contact(
+            "people/nosec",
+            emails=[
+                ContactEmail(
+                    value="public@example.com",
+                    primary=True,
+                    normalized_value="public@example.com",
+                )
+            ],
+        )
+        await writer.upsert_contact_info(local_id, contact)
+
+        row = await pool.fetchrow(
+            "SELECT secured FROM shared.contact_info WHERE contact_id = $1",
+            local_id,
+        )
+        # sync never sets secured=true — must remain false (default)
+        assert row["secured"] is False
+
+
+# ---------------------------------------------------------------------------
+# Task 9.3: Sync handles UNIQUE(type, value) constraint gracefully
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+class TestSyncUniqueConstraintGuard:
+    async def test_upsert_contact_info_handles_unique_constraint_gracefully(
+        self, crm_pool_with_identity
+    ) -> None:
+        """When (type, value) already exists for another contact, sync skips insert."""
+        pool = crm_pool_with_identity
+
+        # Contact A owns the email
+        contact_a_id = await _insert_local_contact(pool, name="Contact A")
+        await pool.execute(
+            """
+            INSERT INTO shared.contact_info (contact_id, type, value, is_primary)
+            VALUES ($1, 'email', 'shared@example.com', true)
+            """,
+            contact_a_id,
+        )
+
+        # Contact B attempts to sync the same email
+        contact_b_id = await _insert_local_contact(pool, name="Contact B")
+        writer = ContactBackfillWriter(pool, provider="google", account_id="acc1")
+        contact = _make_contact(
+            "people/contactb",
+            emails=[
+                ContactEmail(
+                    value="shared@example.com",
+                    primary=True,
+                    normalized_value="shared@example.com",
+                )
+            ],
+        )
+        # Must not raise despite UNIQUE(type, value) constraint
+        await writer.upsert_contact_info(contact_b_id, contact)
+
+        # The email row must still belong to contact A only
+        rows = await pool.fetch(
+            "SELECT contact_id FROM shared.contact_info WHERE type = 'email' AND value = $1",
+            "shared@example.com",
+        )
+        assert len(rows) == 1
+        assert uuid.UUID(str(rows[0]["contact_id"])) == contact_a_id
+
+    async def test_engine_does_not_raise_on_unique_constraint_collision(
+        self, crm_pool_with_identity
+    ) -> None:
+        """Full engine run does not raise when another contact owns the same value."""
+        pool = crm_pool_with_identity
+
+        # Pre-seed an email owned by contact A
+        contact_a_id = await _insert_local_contact(pool, name="Existing Owner A")
+        await pool.execute(
+            """
+            INSERT INTO shared.contact_info (contact_id, type, value, is_primary)
+            VALUES ($1, 'email', 'collision@example.com', true)
+            """,
+            contact_a_id,
+        )
+
+        engine = ContactBackfillEngine(pool, provider="google", account_id="acc1")
+        # Sync a new contact that carries the same email — should not raise
+        contact = _make_contact(
+            "people/collide",
+            display_name="Collide Person",
+            first_name="Collide",
+            last_name="Person",
+            emails=[
+                ContactEmail(
+                    value="collision@example.com",
+                    primary=True,
+                    normalized_value="collision@example.com",
+                )
+            ],
+        )
+        # Must succeed without raising UniqueViolationError
+        await engine(contact)
