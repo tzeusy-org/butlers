@@ -93,10 +93,10 @@ Canonical Telegram/Email examples:
 
 Approval behavior:
 - Send/reply outputs are approval-gated per the module's `tool_metadata()` configuration.
-- Bot-scoped outputs are not default-gated; they become gated only when policy/config opts in.
+- Outputs are not default-gated; they become gated only when policy/config opts in.
 
 Switchboard dispatch policy:
-- Default outbound notify execution should target bot-scoped channel outputs unless policy explicitly requests user-scoped identity.
+- Default outbound notify execution uses channel tools directly (e.g. telegram_send_message, email_send_message).
 
 ### 5.1 Operational Domain Tools
 
@@ -304,12 +304,12 @@ Secrets policy:
 - Inline secret literals in `butler.toml` are prohibited.
 
 ### 11.2 Typical Default Environment Variables
-Typical bot-scoped production defaults:
+Typical production defaults:
 - `BUTLER_TELEGRAM_TOKEN`
 - `BUTLER_EMAIL_ADDRESS`
 - `BUTLER_EMAIL_PASSWORD`
 
-Optional user-scoped defaults when enabled:
+Optional credential overrides:
 - `USER_TELEGRAM_TOKEN`
 - `USER_EMAIL_ADDRESS`
 - `USER_EMAIL_PASSWORD`
@@ -462,12 +462,6 @@ Operational rule:
    - Implement operational health tools (`messenger_circuit_status`, `messenger_rate_limit_status`, `messenger_queue_depth`, `messenger_delivery_stats`) against runtime state.
 5. Operations hardening:
    - Enforce telemetry/SLI coverage and alerting tied to error-budget burn and delivery stability.
-
-## 20. Channel Egress Ownership Enforcement (Migration Guidance)
-
-### 20.1 Current Enforcement Mechanism
-
-
 
 ## 21. Non-Goals
 - Replacing Switchboard as ingress orchestration owner.

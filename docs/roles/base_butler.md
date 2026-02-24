@@ -191,11 +191,9 @@ Module loading rules:
 Module tool contract:
 - Base contract enforces channel delivery ownership boundaries in section `11` (`messenger_butler` owns external user-channel delivery). Module tool naming details remain role-specific.
 - Modules register tools via `register_tools()` using plain `<channel>_<verb>` naming.
-- When descriptors are declared, registered tool names must match declared descriptors.
-- When descriptors are declared, missing declared tools or undeclared registered tools are startup-blocking errors.
 
 Approval and sensitivity contract:
-- Output tools may define `approval_default` semantics (`none`, `conditional`, `always`).
+- Output tools may declare approval sensitivity via `tool_metadata()` on the module.
 - Sensitive argument metadata may be declared per tool.
 - Approval gating policy must be centrally enforceable without module code changes.
 
@@ -209,9 +207,7 @@ Approval gating is a centralized execution-control surface, not per-tool ad hoc 
 Approval policy/config rules:
 - Approval gating is configured under `[modules.approvals]` and applied after module tool registration.
 - Gated-tool config is authoritative (`gated_tools` with optional per-tool expiry overrides).
-- Identity-aware defaults are mandatory:
-  - User-scoped send/reply outputs (`approval_default="always"` and user send/reply safety fallback) are default-gated.
-  - Bot-scoped outputs are gated only when explicitly configured.
+- Approval defaults are configured via `[modules.approvals.gated_tools]`; no implicit identity-based auto-gating.
 
 Gate interception rules:
 - A gated tool invocation must be intercepted before calling the original tool handler.

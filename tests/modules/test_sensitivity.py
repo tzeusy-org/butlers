@@ -284,7 +284,7 @@ class TestResolutionOrder:
     def test_heuristic_fallback_when_arg_not_in_tool_meta(self):
         """Heuristic applies for args not listed in tool's ToolMeta."""
         mod = _AnnotatedModule()
-        # bot_email_send_message is in metadata, but "recipient" is not explicitly listed
+        # email_send_message is in metadata, but "recipient" is not explicitly listed
         # "recipient" IS heuristically sensitive
         assert resolve_arg_sensitivity("email_send_message", "recipient", mod) is True
 
