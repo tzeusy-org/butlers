@@ -429,6 +429,88 @@ async def ensure_secrets_schema(pool: asyncpg.Pool) -> None:
         await conn.execute(_SECRETS_CATEGORY_INDEX_DDL)
 
 
+async def resolve_owner_contact_info(pool: asyncpg.Pool, info_type: str) -> str | None:
+    """Resolve a credential value from the owner contact's ``shared.contact_info``.
+
+    Queries ``shared.contacts`` for the owner contact (``'owner' = ANY(roles)``)
+    and returns the ``value`` from the matching ``shared.contact_info`` row for
+    the given *info_type*.  Primary entries (``is_primary = true``) are preferred
+    over non-primary entries.  Returns ``None`` when:
+
+    - ``shared.contacts`` or ``shared.contact_info`` do not exist.
+    - No owner contact is found.
+    - No ``contact_info`` row exists for the given type on the owner contact.
+
+    This function is the DB-side counterpart to ``credential_store.resolve()``
+    for identity-bound credentials that have been migrated to ``contact_info``
+    (e.g. ``TELEGRAM_CHAT_ID`` → ``type='telegram'``).
+
+    Parameters
+    ----------
+    pool:
+        An asyncpg connection pool connected to the shared database.
+    info_type:
+        The ``type`` value to look up (e.g. ``'telegram'``, ``'email'``,
+        ``'telegram_bot_token'``, etc.).
+
+    Returns
+    -------
+    str | None
+        The credential value, or ``None`` if not found.
+    """
+    try:
+        async with _acquire_conn(pool) as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT ci.value
+                FROM shared.contact_info ci
+                JOIN shared.contacts c ON c.id = ci.contact_id
+                WHERE 'owner' = ANY(c.roles)
+                  AND ci.type = $1
+                ORDER BY ci.is_primary DESC NULLS LAST, ci.created_at ASC
+                LIMIT 1
+                """,
+                info_type,
+            )
+            if row is None:
+                return None
+            value = row["value"]
+            if not value:
+                return None
+            stripped = value.strip()
+            if not stripped:
+                return None
+            logger.debug("Resolved owner contact_info type=%r from DB", info_type)
+            return stripped
+    except Exception as exc:  # noqa: BLE001
+        if _is_missing_table_error(exc) or _is_missing_column_or_schema_error(exc):
+            logger.debug(
+                "resolve_owner_contact_info skipped for type=%r; table/column not available: %s",
+                info_type,
+                exc,
+            )
+            return None
+        raise
+
+
+def _is_missing_column_or_schema_error(exc: Exception) -> bool:
+    """Return True when an exception indicates a missing column or schema.
+
+    Uses asyncpg exception class names when available (preferred) and falls
+    back to ``"does not exist"`` string matching.  Intentionally avoids bare
+    ``"column"`` / ``"schema"`` substring matches to prevent false-positives on
+    data-integrity errors (e.g. NOT NULL / FK violations) whose messages
+    incidentally contain those words.
+    """
+    cls = exc.__class__.__name__
+    if cls in ("UndefinedColumnError", "InvalidSchemaNameError", "UndefinedTableError"):
+        return True
+    msg = str(exc).lower()
+    # "does not exist" is precise enough: covers both missing-table and
+    # missing-column PostgreSQL error text without matching FK/NOT-NULL messages.
+    return "does not exist" in msg
+
+
 async def _safe_fetch_secret_row(
     pool: asyncpg.Pool,
     key: str,
