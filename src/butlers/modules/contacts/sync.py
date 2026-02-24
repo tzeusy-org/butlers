@@ -603,8 +603,10 @@ class GoogleContactsProvider(ContactsProvider):
                 },
             )
 
-        if response.status_code == 410 and has_sync_token:
-            raise ContactsSyncTokenExpiredError("Google People sync token expired/invalid")
+        if has_sync_token and response.status_code in (400, 410):
+            msg = _safe_google_error_message(response)
+            if "sync token" in msg.lower():
+                raise ContactsSyncTokenExpiredError(msg)
 
         if response.status_code < 200 or response.status_code >= 300:
             raise ContactsRequestError(
