@@ -504,6 +504,9 @@ async def _log_routing(
     *,
     thread_id: str | None = None,
     source_channel: str | None = None,
+    contact_id: Any | None = None,
+    entity_id: Any | None = None,
+    sender_roles: list[str] | None = None,
 ) -> None:
     """Log a routing event.
 
@@ -527,13 +530,19 @@ async def _log_routing(
         External thread identity (email only). Used for thread-affinity lookup.
     source_channel:
         Source channel (e.g. 'email', 'telegram'). Enables thread-affinity index.
+    contact_id:
+        Resolved contact UUID for the sender (from shared.contacts). Nullable.
+    entity_id:
+        Linked memory entity UUID for the sender. Nullable.
+    sender_roles:
+        Snapshot of the sender's roles at routing time (e.g. ``['owner']``). Nullable.
     """
     await pool.execute(
         """
         INSERT INTO routing_log
             (source_butler, target_butler, tool_name, success, duration_ms, error,
-             thread_id, source_channel)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             thread_id, source_channel, contact_id, entity_id, sender_roles)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         """,
         source,
         target,
@@ -543,4 +552,7 @@ async def _log_routing(
         error,
         thread_id,
         source_channel,
+        contact_id,
+        entity_id,
+        sender_roles,
     )

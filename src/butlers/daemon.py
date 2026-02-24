@@ -3063,7 +3063,11 @@ class ButlerDaemon:
                     else None
                 )
 
-                _input: dict[str, Any] = {"prompt": prompt, "context": context}
+                # Prepend identity preamble to prompt if present in routing context.
+                identity_preamble = _routing_ctx.get("identity_preamble")
+                effective_prompt = f"{identity_preamble}\n{prompt}" if identity_preamble else prompt
+
+                _input: dict[str, Any] = {"prompt": effective_prompt, "context": context}
                 if conversation_history:
                     _input["conversation_history"] = conversation_history
 

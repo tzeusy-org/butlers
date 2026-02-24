@@ -627,6 +627,8 @@ class MessagePipeline:
         classify_fn: Callable[..., Coroutine] | None = None,
         route_fn: Callable[..., Coroutine] | None = None,
         enable_ingress_dedupe: bool = False,
+        enable_identity_resolution: bool = False,
+        notify_owner_fn: Callable[..., Coroutine] | None = None,
     ) -> None:
         self._pool = switchboard_pool
         self._dispatch_fn = dispatch_fn
@@ -634,6 +636,8 @@ class MessagePipeline:
         self._classify_fn = classify_fn
         self._route_fn = route_fn
         self._enable_ingress_dedupe = enable_ingress_dedupe
+        self._enable_identity_resolution = enable_identity_resolution
+        self._notify_owner_fn = notify_owner_fn
 
     def _set_routing_context(
         self,
@@ -642,6 +646,7 @@ class MessagePipeline:
         request_context: dict[str, Any] | None = None,
         request_id: str = "unknown",
         conversation_history: str | None = None,
+        identity_preamble: str | None = None,
     ) -> None:
         """Populate the per-task routing context via ContextVar before runtime spawn.
 
@@ -654,6 +659,7 @@ class MessagePipeline:
                 "request_context": request_context,
                 "request_id": request_id,
                 "conversation_history": conversation_history,
+                "identity_preamble": identity_preamble,
             }
         )
 
@@ -1202,6 +1208,35 @@ class MessagePipeline:
                     if attachments and not isinstance(attachments, list):
                         attachments = None
 
+                    # Identity resolution: resolve sender → preamble injection
+                    identity_preamble: str | None = None
+                    if self._enable_identity_resolution:
+                        with tracer.start_as_current_span(
+                            "butlers.switchboard.routing.identity_resolution"
+                        ):
+                            try:
+                                from butlers.tools.switchboard.identity.inject import (
+                                    resolve_and_inject_identity,
+                                )
+
+                                sender_value = source_metadata.get(
+                                    "source_id"
+                                ) or source_metadata.get("identity")
+                                if sender_value and source:
+                                    identity_result = await resolve_and_inject_identity(
+                                        self._pool,
+                                        channel_type=source,
+                                        channel_value=sender_value,
+                                        display_name=args.get("sender_name"),
+                                        notify_owner_fn=self._notify_owner_fn,
+                                    )
+                                    identity_preamble = identity_result.preamble or None
+                            except Exception:
+                                logger.debug(
+                                    "Identity resolution failed; proceeding without preamble",
+                                    exc_info=True,
+                                )
+
                     with tracer.start_as_current_span("butlers.switchboard.routing.build_prompt"):
                         butlers = await _load_available_butlers(self._pool)
                         routing_prompt = _build_routing_prompt(
@@ -1214,6 +1249,7 @@ class MessagePipeline:
                         request_context=request_context,
                         request_id=request_id,
                         conversation_history=conversation_history or None,
+                        identity_preamble=identity_preamble,
                     )
 
                     # Spawn CC — it calls route_to_butler tool(s) directly
