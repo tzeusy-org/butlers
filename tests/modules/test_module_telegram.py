@@ -186,14 +186,6 @@ class TestToolRegistration:
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
         assert set(mock_mcp._registered_tools.keys()) == EXPECTED_TELEGRAM_TOOLS
 
-    async def test_no_get_updates_tools_registered(
-        self, telegram_module: TelegramModule, mock_mcp: MagicMock
-    ):
-        """register_tools does not create any get_updates tools."""
-        await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        for tool_name in mock_mcp._registered_tools:
-            assert "get_updates" not in tool_name
-
     async def test_registered_tool_names_stay_identity_prefixed(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock
     ):
@@ -494,22 +486,3 @@ class TestIdentityScopedToolFlows:
         assert send_mock.await_args_list[1].args == ("2", "hi")
         assert reply_mock.await_args_list[0].args == ("3", 11, "user reply")
         assert reply_mock.await_args_list[1].args == ("4", 12, "bot reply")
-
-    async def test_no_get_updates_tools_in_registration(self):
-        """get_updates tools are absent from registration surfaces."""
-        mod = TelegramModule()
-        mcp = MagicMock()
-        tools: dict[str, object] = {}
-
-        def capture_tool():
-            def decorator(fn):
-                tools[fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        mcp.tool = capture_tool
-        await mod.register_tools(mcp=mcp, config=None, db=None)
-
-        assert "user_telegram_get_updates" not in tools
-        assert "bot_telegram_get_updates" not in tools

@@ -73,8 +73,9 @@ class TestConnectorModuleBoundary:
         telegram_module = TelegramModule()
         email_module = EmailModule()
 
-        # Modules should initialize without requiring pipeline
-        assert telegram_module._pipeline is None
+        # TelegramModule no longer has _pipeline (ingestion moved to connector).
+        assert not hasattr(telegram_module, "_pipeline")
+        # EmailModule still supports optional pipeline attachment.
         assert email_module._pipeline is None
 
         # User-scoped tools should still work without pipeline
