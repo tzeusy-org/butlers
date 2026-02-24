@@ -287,6 +287,11 @@ class ContactBackfillWriter:
     ) -> dict[str, str]:
         """Update an existing CRM contact, respecting provenance/conflict policy.
 
+        Security contract: ``roles`` is intentionally excluded from all UPDATE SET
+        clauses. Role assignment is a privileged operation managed exclusively by
+        the identity layer (owner bootstrap, dashboard PATCH endpoint). Google
+        Contacts sync must never overwrite roles.
+
         Returns
         -------
         dict[str, str]
@@ -299,6 +304,9 @@ class ContactBackfillWriter:
         existing_meta = _parse_jsonb(row["metadata"])
         field_results: dict[str, str] = {}
 
+        # NOTE: ``roles`` is explicitly excluded from the writable set below.
+        # Any field not listed in one of the sections below (name, org, avatar,
+        # metadata) will never be written by the sync path.
         updates: dict[str, Any] = {}
 
         # --- Name fields ---
@@ -392,7 +400,16 @@ class ContactBackfillWriter:
         local_id: uuid.UUID,
         contact: CanonicalContact,
     ) -> None:
-        """Upsert email, phone, url, and username rows in contact_info."""
+        """Upsert email, phone, url, and username rows in contact_info.
+
+        Security contract:
+        - ``secured`` is intentionally excluded from all UPDATE SET clauses.
+          Sync must never flip the secured flag; only privileged identity-layer
+          operations may set it.
+        - INSERT uses ``ON CONFLICT DO NOTHING`` so that the UNIQUE(type, value)
+          constraint on shared.contact_info never raises; when a (type, value)
+          pair already exists for another contact we silently skip insertion.
+        """
         # Build the full set of contact_info entries to sync
         entries: list[tuple[str, str, str | None, bool]] = []  # (type, value, label, primary)
 
@@ -410,7 +427,8 @@ class ContactBackfillWriter:
             entries.append(("other", username.value, service, False))
 
         for type_, value, label, primary in entries:
-            # Check if this value already exists for this contact
+            # Check if this value already exists for this contact.
+            # NOTE: Only is_primary is updated on existing rows; secured is never modified.
             existing = await self._pool.fetchrow(
                 """
                 SELECT id, is_primary FROM shared.contact_info
@@ -421,7 +439,7 @@ class ContactBackfillWriter:
                 value,
             )
             if existing is not None:
-                # Update primary status if needed
+                # Update primary status only — never touch secured.
                 if primary and not existing["is_primary"]:
                     await self._pool.execute(
                         """
@@ -437,7 +455,8 @@ class ContactBackfillWriter:
                     )
                 continue
 
-            # If setting as primary, clear existing primaries for this type
+            # If setting as primary, clear existing primaries for this type.
+            # (Still does not touch secured on any row.)
             if primary:
                 await self._pool.execute(
                     """
@@ -448,6 +467,10 @@ class ContactBackfillWriter:
                     type_,
                 )
 
+            # ON CONFLICT DO NOTHING handles:
+            # 1. Concurrent duplicate inserts for the same (contact_id, type, value).
+            # 2. The UNIQUE(type, value) constraint: if this value is already
+            #    linked to a *different* contact, we skip insertion silently.
             await self._pool.execute(
                 """
                 INSERT INTO shared.contact_info (contact_id, type, value, label, is_primary)

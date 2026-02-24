@@ -759,3 +759,121 @@ class TestEntityMerge:
         assert len(tombstone_calls) == 1, f"Tombstone call not found in: {execute_calls}"
         tombstone_meta = json.loads(tombstone_calls[0][0][1])
         assert tombstone_meta.get("merged_into") == str(ENTITY_UUID2)
+
+
+# ---------------------------------------------------------------------------
+# Task 10.1-10.2: contact_update MCP tool strips roles (security guard)
+# ---------------------------------------------------------------------------
+
+
+class TestContactUpdateRolesGuard:
+    """Verify that contact_update never modifies the roles column.
+
+    Runtime LLM instances must not be able to grant themselves or others
+    identity roles (e.g. 'owner') via the contact_update MCP tool.
+    """
+
+    def _make_pool_for_update(self, contact_row: dict) -> AsyncMock:
+        """Return a mock pool suitable for contact_update tests."""
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            side_effect=[
+                _asyncpg_record(contact_row),  # SELECT existing
+                _asyncpg_record(contact_row),  # UPDATE RETURNING
+            ]
+        )
+        return pool
+
+    async def test_roles_in_args_is_silently_ignored(self):
+        """contact_update with roles=['owner'] in args does not modify roles."""
+        contact_row = _make_contact_row()
+        pool = self._make_pool_for_update(contact_row)
+
+        with (
+            patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
+            patch.object(_contacts_mod, "_log_activity", AsyncMock()),
+        ):
+            result = await contact_update(
+                pool,
+                CONTACT_UUID,
+                first_name="Alice",
+                roles=["owner"],  # Should be stripped — never written
+            )
+
+        # Verify the UPDATE SQL issued by pool.fetchrow (second call) does NOT
+        # include 'roles' in the SET clause.
+        update_call = pool.fetchrow.call_args_list[1]
+        sql_fragment = update_call[0][0]
+        assert "roles" not in sql_fragment, (
+            f"'roles' found in UPDATE SQL: {sql_fragment!r} — contact_update must strip roles"
+        )
+        # Result still returned successfully
+        assert result is not None
+
+    async def test_roles_not_in_update_even_when_column_exists(self):
+        """contact_update never includes roles in SET even if roles is a valid column."""
+        contact_row = _make_contact_row()
+        pool = self._make_pool_for_update(contact_row)
+
+        # Pretend roles is a valid column — the guard must still prevent writing it
+        cols_with_roles = _FULL_COLS | {"roles"}
+
+        with (
+            patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=cols_with_roles)),
+            patch.object(_contacts_mod, "_log_activity", AsyncMock()),
+        ):
+            await contact_update(
+                pool,
+                CONTACT_UUID,
+                first_name="Alice",
+                roles=["admin"],  # Must be stripped before building the query
+            )
+
+        update_call = pool.fetchrow.call_args_list[1]
+        sql_fragment = update_call[0][0]
+        assert "roles" not in sql_fragment, (
+            f"'roles' found in UPDATE SQL even with column present: {sql_fragment!r}"
+        )
+
+    async def test_valid_fields_still_updated_after_roles_stripped(self):
+        """Stripping roles does not prevent other valid fields from being updated."""
+        contact_row = _make_contact_row()
+        updated_row = _make_contact_row(first_name="NewName")
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(
+            side_effect=[
+                _asyncpg_record(contact_row),
+                _asyncpg_record(updated_row),
+            ]
+        )
+
+        with (
+            patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
+            patch.object(_contacts_mod, "_log_activity", AsyncMock()),
+        ):
+            result = await contact_update(
+                pool,
+                CONTACT_UUID,
+                first_name="NewName",
+                roles=["owner"],  # Stripped
+            )
+
+        # first_name update still went through
+        assert result["first_name"] == "NewName"
+
+    async def test_only_roles_in_args_raises_no_fields_error(self):
+        """contact_update with only roles in args raises ValueError (nothing to update)."""
+        contact_row = _make_contact_row()
+        pool = AsyncMock()
+        pool.fetchrow = AsyncMock(return_value=_asyncpg_record(contact_row))
+
+        with (
+            patch.object(_contacts_mod, "table_columns", AsyncMock(return_value=_FULL_COLS)),
+            patch.object(_contacts_mod, "_log_activity", AsyncMock()),
+        ):
+            with pytest.raises(ValueError, match="At least one field"):
+                await contact_update(
+                    pool,
+                    CONTACT_UUID,
+                    roles=["owner"],  # Stripped, leaving nothing to update
+                )

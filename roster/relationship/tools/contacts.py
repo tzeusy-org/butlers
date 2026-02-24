@@ -266,10 +266,19 @@ async def contact_update(
 ) -> dict[str, Any]:
     """Update a contact's fields across legacy/spec schemas.
 
+    Security contract: ``roles`` is stripped from ``fields`` before any UPDATE
+    is built. Runtime LLM instances must never modify roles; that is a
+    privileged operation reserved for the identity layer (owner bootstrap,
+    dashboard PATCH endpoint). Any ``roles`` key passed by a caller is silently
+    ignored.
+
     When ``memory_pool`` is provided and the contact has a linked entity,
     name changes (first_name, last_name, nickname) are synced to the entity.
     Contacts without an entity_id are handled gracefully (no crash).
     """
+    # Strip roles — runtime instances must never modify roles.
+    fields.pop("roles", None)
+
     existing = await pool.fetchrow("SELECT * FROM contacts WHERE id = $1", contact_id)
     if existing is None:
         raise ValueError(f"Contact {contact_id} not found")
