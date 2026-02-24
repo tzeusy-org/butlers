@@ -158,7 +158,7 @@ class ContactBackfillResolver:
         normalized = email_value.strip().lower()
         row = await self._pool.fetchrow(
             """
-            SELECT ci.contact_id FROM contact_info ci
+            SELECT ci.contact_id FROM shared.contact_info ci
             WHERE ci.type = 'email'
               AND lower(ci.value) = $1
             LIMIT 1
@@ -173,7 +173,7 @@ class ContactBackfillResolver:
         normalized = phone_value.strip()
         row = await self._pool.fetchrow(
             """
-            SELECT ci.contact_id FROM contact_info ci
+            SELECT ci.contact_id FROM shared.contact_info ci
             WHERE ci.type = 'phone'
               AND (ci.value = $1 OR ci.value = $2)
             LIMIT 1
@@ -413,7 +413,7 @@ class ContactBackfillWriter:
             # Check if this value already exists for this contact
             existing = await self._pool.fetchrow(
                 """
-                SELECT id, is_primary FROM contact_info
+                SELECT id, is_primary FROM shared.contact_info
                 WHERE contact_id = $1 AND type = $2 AND lower(value) = lower($3)
                 """,
                 local_id,
@@ -425,14 +425,14 @@ class ContactBackfillWriter:
                 if primary and not existing["is_primary"]:
                     await self._pool.execute(
                         """
-                        UPDATE contact_info SET is_primary = false
+                        UPDATE shared.contact_info SET is_primary = false
                         WHERE contact_id = $1 AND type = $2
                         """,
                         local_id,
                         type_,
                     )
                     await self._pool.execute(
-                        "UPDATE contact_info SET is_primary = true WHERE id = $1",
+                        "UPDATE shared.contact_info SET is_primary = true WHERE id = $1",
                         existing["id"],
                     )
                 continue
@@ -441,7 +441,7 @@ class ContactBackfillWriter:
             if primary:
                 await self._pool.execute(
                     """
-                    UPDATE contact_info SET is_primary = false
+                    UPDATE shared.contact_info SET is_primary = false
                     WHERE contact_id = $1 AND type = $2
                     """,
                     local_id,
@@ -450,7 +450,7 @@ class ContactBackfillWriter:
 
             await self._pool.execute(
                 """
-                INSERT INTO contact_info (contact_id, type, value, label, is_primary)
+                INSERT INTO shared.contact_info (contact_id, type, value, label, is_primary)
                 VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT DO NOTHING
                 """,

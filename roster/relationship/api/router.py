@@ -222,13 +222,13 @@ async def list_contacts(
             c.name AS full_name,
             c.nickname,
             (
-                SELECT ci.value FROM contact_info ci
+                SELECT ci.value FROM shared.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'email'
                 ORDER BY ci.is_primary DESC NULLS LAST, ci.id
                 LIMIT 1
             ) AS email,
             (
-                SELECT ci.value FROM contact_info ci
+                SELECT ci.value FROM shared.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'phone'
                 ORDER BY ci.is_primary DESC NULLS LAST, ci.id
                 LIMIT 1
@@ -396,13 +396,13 @@ async def get_contact(
             c.created_at,
             c.updated_at,
             (
-                SELECT ci.value FROM contact_info ci
+                SELECT ci.value FROM shared.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'email'
                 ORDER BY ci.is_primary DESC NULLS LAST, ci.id
                 LIMIT 1
             ) AS email,
             (
-                SELECT ci.value FROM contact_info ci
+                SELECT ci.value FROM shared.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'phone'
                 ORDER BY ci.is_primary DESC NULLS LAST, ci.id
                 LIMIT 1

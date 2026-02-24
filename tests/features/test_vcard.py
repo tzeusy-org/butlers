@@ -95,10 +95,11 @@ async def pool(postgres_container):
             created_at TIMESTAMPTZ DEFAULT now()
         )
     """)
+    await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
     await p.execute("""
-        CREATE TABLE IF NOT EXISTS contact_info (
+        CREATE TABLE IF NOT EXISTS shared.contact_info (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            contact_id UUID NOT NULL,
             type TEXT NOT NULL,
             value TEXT NOT NULL,
             label TEXT,

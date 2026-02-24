@@ -56,11 +56,13 @@ async def pool(provisioned_postgres_pool):
                 ON activity_feed (contact_id, created_at)
         """)
 
-        # Create contact_info table (from 002 migration)
+        # Create shared schema and shared.contact_info
+        # (moved from per-butler schema in contacts_002)
+        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS contact_info (
+            CREATE TABLE IF NOT EXISTS shared.contact_info (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL,
                 type VARCHAR NOT NULL,
                 value TEXT NOT NULL,
                 label VARCHAR,
@@ -69,12 +71,12 @@ async def pool(provisioned_postgres_pool):
             )
         """)
         await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contact_info_type_value
-                ON contact_info (type, value)
+            CREATE INDEX IF NOT EXISTS idx_shared_contact_info_type_value
+                ON shared.contact_info (type, value)
         """)
         await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contact_info_contact_id
-                ON contact_info (contact_id)
+            CREATE INDEX IF NOT EXISTS idx_shared_contact_info_contact_id
+                ON shared.contact_info (contact_id)
         """)
 
         yield p
@@ -495,20 +497,30 @@ async def test_contact_info_remove_logs_activity(pool):
 
 
 # ------------------------------------------------------------------
-# Cascade delete
+# Cascade delete (application-layer)
 # ------------------------------------------------------------------
 
 
-async def test_contact_info_cascade_on_contact_delete(pool):
-    """contact_info rows are deleted when the parent contact is deleted."""
+async def test_contact_info_orphan_after_contact_delete(pool):
+    """shared.contact_info rows persist after contact deletion (no DB-level FK cascade).
+
+    shared.contact_info intentionally has no REFERENCES contacts(id) ON DELETE CASCADE,
+    since it lives in the shared schema and must be accessible from multiple butler schemas.
+    Referential integrity is enforced at the application layer.  This test verifies the
+    current DB behaviour: contact_info rows are NOT automatically removed when the parent
+    contact is hard-deleted.  Application code that performs hard contact deletes must
+    explicitly clean up shared.contact_info rows.
+    """
     from butlers.tools.relationship import contact_create, contact_info_add
 
     c = await contact_create(pool, "CascadeTest")
     await contact_info_add(pool, c["id"], "email", "cascade@example.com")
 
-    # Hard delete the contact
+    # Hard delete the contact — no FK cascade, so shared.contact_info rows persist
     await pool.execute("DELETE FROM contacts WHERE id = $1", c["id"])
 
-    # Verify contact_info is also gone
-    rows = await pool.fetch("SELECT * FROM contact_info WHERE contact_id = $1", c["id"])
-    assert len(rows) == 0
+    # Rows still exist: application layer must clean them up explicitly
+    rows = await pool.fetch("SELECT * FROM shared.contact_info WHERE contact_id = $1", c["id"])
+    assert len(rows) == 1, (
+        "shared.contact_info has no FK cascade; orphan rows persist after contact deletion"
+    )

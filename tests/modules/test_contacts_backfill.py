@@ -64,10 +64,12 @@ async def crm_pool(provisioned_postgres_pool):
                 updated_at TIMESTAMPTZ DEFAULT now()
             )
         """)
+        # Create shared schema and shared.contact_info (moved from per-butler schema)
+        await pool.execute("CREATE SCHEMA IF NOT EXISTS shared")
         await pool.execute("""
-            CREATE TABLE IF NOT EXISTS contact_info (
+            CREATE TABLE IF NOT EXISTS shared.contact_info (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+                contact_id UUID NOT NULL,
                 type VARCHAR NOT NULL,
                 value TEXT NOT NULL,
                 label VARCHAR,
@@ -76,8 +78,8 @@ async def crm_pool(provisioned_postgres_pool):
             )
         """)
         await pool.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contact_info_type_value
-                ON contact_info (type, value)
+            CREATE INDEX IF NOT EXISTS idx_shared_contact_info_type_value
+                ON shared.contact_info (type, value)
         """)
         await pool.execute("""
             CREATE TABLE IF NOT EXISTS addresses (
@@ -315,7 +317,7 @@ class TestContactBackfillResolver:
         local_id = await _insert_local_contact(crm_pool, name="Bob Jones")
         # Add email to contact_info
         await crm_pool.execute(
-            "INSERT INTO contact_info (contact_id, type, value) VALUES ($1, 'email', $2)",
+            "INSERT INTO shared.contact_info (contact_id, type, value) VALUES ($1, 'email', $2)",
             local_id,
             "bob@example.com",
         )
@@ -338,7 +340,7 @@ class TestContactBackfillResolver:
     async def test_resolve_via_phone_match(self, crm_pool) -> None:
         local_id = await _insert_local_contact(crm_pool, name="Carol White")
         await crm_pool.execute(
-            "INSERT INTO contact_info (contact_id, type, value) VALUES ($1, 'phone', $2)",
+            "INSERT INTO shared.contact_info (contact_id, type, value) VALUES ($1, 'phone', $2)",
             local_id,
             "+15551234567",
         )
@@ -508,7 +510,7 @@ class TestContactBackfillWriter:
         )
         await writer.upsert_contact_info(local_id, contact)
         rows = await crm_pool.fetch(
-            "SELECT * FROM contact_info WHERE contact_id = $1 ORDER BY is_primary DESC",
+            "SELECT * FROM shared.contact_info WHERE contact_id = $1 ORDER BY is_primary DESC",
             local_id,
         )
         assert len(rows) == 2
@@ -530,7 +532,7 @@ class TestContactBackfillWriter:
         await writer.upsert_contact_info(local_id, contact)
         await writer.upsert_contact_info(local_id, contact)  # Second call
         rows = await crm_pool.fetch(
-            "SELECT * FROM contact_info WHERE contact_id = $1 AND type = 'email'",
+            "SELECT * FROM shared.contact_info WHERE contact_id = $1 AND type = 'email'",
             local_id,
         )
         assert len(rows) == 1
@@ -711,7 +713,8 @@ class TestContactBackfillEngine:
 
         # Verify contact_info
         info_rows = await crm_pool.fetch(
-            "SELECT type, value FROM contact_info WHERE contact_id = $1 ORDER BY type", local_id
+            "SELECT type, value FROM shared.contact_info WHERE contact_id = $1 ORDER BY type",
+            local_id,
         )
         types_values = {(r["type"], r["value"].lower()) for r in info_rows}
         assert ("email", "full@example.com") in types_values
@@ -763,7 +766,7 @@ class TestContactBackfillEngine:
         # Create an existing contact with email
         local_id = await _insert_local_contact(crm_pool, name="Bob Existing", first_name="Bob")
         await crm_pool.execute(
-            "INSERT INTO contact_info (contact_id, type, value) VALUES ($1, 'email', $2)",
+            "INSERT INTO shared.contact_info (contact_id, type, value) VALUES ($1, 'email', $2)",
             local_id,
             "bob@existing.com",
         )
@@ -788,7 +791,7 @@ class TestContactBackfillEngine:
 
         # Email not duplicated
         email_rows = await crm_pool.fetch(
-            "SELECT id FROM contact_info WHERE contact_id = $1 AND type = 'email'", local_id
+            "SELECT id FROM shared.contact_info WHERE contact_id = $1 AND type = 'email'", local_id
         )
         assert len(email_rows) == 1
 
@@ -962,7 +965,7 @@ class TestContactBackfillEngine:
         await engine(contact)
 
         rows = await crm_pool.fetch(
-            "SELECT type, value FROM contact_info WHERE value IN ($1, $2)",
+            "SELECT type, value FROM shared.contact_info WHERE value IN ($1, $2)",
             "https://example.com/profile",
             "alice_handle",
         )
