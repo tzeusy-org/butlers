@@ -193,7 +193,7 @@ Module tool contract:
 - Modules register tools via `register_tools()` using plain `<channel>_<verb>` naming.
 
 Approval and sensitivity contract:
-- Output tools may declare approval sensitivity via `tool_metadata()` on the module.
+- Argument sensitivity metadata may be declared via `tool_metadata()` on the module; approval gating is driven by `[modules.approvals.gated_tools]` config.
 - Sensitive argument metadata may be declared per tool.
 - Approval gating policy must be centrally enforceable without module code changes.
 

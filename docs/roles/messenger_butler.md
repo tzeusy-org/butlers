@@ -92,7 +92,7 @@ Canonical Telegram/Email examples:
 - Email tools: `email_send_message`, `email_reply_to_thread`, `email_search_inbox`, `email_read_message`, `email_check_and_route_inbox`
 
 Approval behavior:
-- Send/reply outputs are approval-gated per the module's `tool_metadata()` configuration.
+- Send/reply outputs are approval-gated when configured in `[modules.approvals.gated_tools]` in `butler.toml`.
 - Outputs are not default-gated; they become gated only when policy/config opts in.
 
 Switchboard dispatch policy:

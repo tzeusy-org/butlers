@@ -756,10 +756,6 @@ class _SpanWrappingMCP:
 
         return wrapper
 
-    def missing_declared_tool_names(self) -> set[str]:
-        """Return declared tool names that were never registered (always empty)."""
-        return set()
-
     def __getattr__(self, name: str) -> Any:
         return getattr(self._mcp, name)
 
