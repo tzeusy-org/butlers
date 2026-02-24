@@ -25,10 +25,15 @@ logger = logging.getLogger(__name__)
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Reaction lifecycle emoji keys (map to emoji via REACTION_TO_EMOJI).
+REACTION_IN_PROGRESS = ":eye"
+REACTION_SUCCESS = ":done"
+REACTION_FAILURE = ":space invader"
+
 REACTION_TO_EMOJI = {
-    ":eye": "\U0001f440",
-    ":done": "\u2705",
-    ":space invader": "\U0001f47e",
+    REACTION_IN_PROGRESS: "\U0001f440",
+    REACTION_SUCCESS: "\u2705",
+    REACTION_FAILURE: "\U0001f47e",
 }
 
 
@@ -257,6 +262,56 @@ class TelegramModule(Module):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
+    async def react_for_ingest(
+        self,
+        *,
+        external_thread_id: str | None,
+        reaction: str,
+    ) -> None:
+        """Set a Telegram reaction for a message received via the ingest pipeline.
+
+        Called by the daemon's ingest→pipeline flow to fire lifecycle reactions
+        (👀 on receive, ✅ on success, 👾 on error) when messages arrive through
+        the external TelegramBotConnector → MCP ingest path.
+
+        Parses the ``external_thread_id`` from the ingest.v1 envelope
+        (format: ``"<chat_id>:<message_id>"``).  No-ops silently when the
+        thread identity cannot be resolved to a valid chat/message pair.
+
+        Parameters
+        ----------
+        external_thread_id:
+            The ``event.external_thread_id`` field from the ingest.v1 envelope.
+            Expected format: ``"<chat_id>:<message_id>"`` where message_id is an
+            integer.  If ``None`` or unparseable, the call is a no-op.
+        reaction:
+            One of the ``REACTION_*`` constants (e.g. ``REACTION_IN_PROGRESS``).
+        """
+        if not external_thread_id:
+            return
+
+        # Parse "chat_id:message_id" — the format written by TelegramBotConnector.
+        try:
+            chat_str, sep, message_str = external_thread_id.partition(":")
+            if not sep or not chat_str or not message_str:
+                return
+            message_id = int(message_str)
+        except (ValueError, AttributeError):
+            return
+
+        try:
+            await self._set_message_reaction(
+                chat_id=chat_str,
+                message_id=message_id,
+                reaction=reaction,
+            )
+        except Exception:
+            logger.debug(
+                "react_for_ingest: failed to set reaction %r for %s",
+                reaction,
+                external_thread_id,
+            )
 
     # ------------------------------------------------------------------
     # Telegram API helpers

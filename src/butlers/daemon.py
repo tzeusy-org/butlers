@@ -1402,25 +1402,56 @@ class ButlerDaemon:
         )
         self._pipeline = pipeline
 
+        # Capture TelegramModule reference for reaction lifecycle in the ingest path.
+        # If not active (module absent or disabled), telegram_mod is None and
+        # reaction calls are silently skipped.
+        telegram_mod = next(
+            (m for m in self._active_modules if m.name == "telegram"),
+            None,
+        )
+
         # Build the process function that wraps pipeline.process()
         async def _buffer_process(ref: Any) -> None:
             from butlers.core.buffer import _MessageRef
+            from butlers.modules.telegram import (
+                REACTION_FAILURE,
+                REACTION_IN_PROGRESS,
+                REACTION_SUCCESS,
+            )
 
             if not isinstance(ref, _MessageRef):
                 return
             channel = ref.source.get("channel", "unknown")
             endpoint_identity = ref.source.get("endpoint_identity", "unknown")
+            external_thread_id = ref.event.get("external_thread_id")
             request_context = {
                 "request_id": ref.request_id,
                 "received_at": ref.event.get("observed_at", ""),
                 "source_channel": channel,
                 "source_endpoint_identity": f"{channel}:{endpoint_identity}",
                 "source_sender_identity": ref.sender.get("identity", "unknown"),
-                "source_thread_identity": ref.event.get("external_thread_id"),
+                "source_thread_identity": external_thread_id,
                 "trace_context": {},
             }
+
+            # Fire 👀 reaction before pipeline processing (telegram only).
+            if channel == "telegram" and telegram_mod is not None:
+                react_fn = getattr(telegram_mod, "react_for_ingest", None)
+                if callable(react_fn):
+                    try:
+                        await react_fn(
+                            external_thread_id=external_thread_id,
+                            reaction=REACTION_IN_PROGRESS,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "DurableBuffer: failed to set in-progress reaction for request_id=%s",
+                            ref.request_id,
+                        )
+
+            routing_failed = False
             try:
-                await pipeline.process(
+                result = await pipeline.process(
                     message_text=ref.message_text,
                     tool_name="bot_switchboard_handle_message",
                     tool_args={
@@ -1430,18 +1461,37 @@ class ButlerDaemon:
                         "source_endpoint_identity": f"{channel}:{endpoint_identity}",
                         "sender_identity": ref.sender.get("identity", "unknown"),
                         "external_event_id": ref.event.get("external_event_id", ""),
-                        "external_thread_id": ref.event.get("external_thread_id"),
+                        "external_thread_id": external_thread_id,
                         "source_tool": "ingest",
                         "request_id": ref.request_id,
                         "request_context": request_context,
                     },
                     message_inbox_id=ref.message_inbox_id,
                 )
+                if result.classification_error or result.routing_error or result.failed_targets:
+                    routing_failed = True
             except Exception:
+                routing_failed = True
                 logger.exception(
                     "DurableBuffer: pipeline processing failed for request_id=%s",
                     ref.request_id,
                 )
+
+            # Fire ✅ or 👾 reaction after pipeline processing (telegram only).
+            if channel == "telegram" and telegram_mod is not None:
+                react_fn = getattr(telegram_mod, "react_for_ingest", None)
+                if callable(react_fn):
+                    terminal_reaction = REACTION_FAILURE if routing_failed else REACTION_SUCCESS
+                    try:
+                        await react_fn(
+                            external_thread_id=external_thread_id,
+                            reaction=terminal_reaction,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "DurableBuffer: failed to set terminal reaction for request_id=%s",
+                            ref.request_id,
+                        )
 
         # Create and start the durable buffer
         from butlers.core.buffer import DurableBuffer
@@ -2816,19 +2866,50 @@ class ButlerDaemon:
                 message_inbox_id: Any,
             ) -> None:
                 """Background task: classify and route an ingested message."""
+                from butlers.modules.telegram import (
+                    REACTION_FAILURE,
+                    REACTION_IN_PROGRESS,
+                    REACTION_SUCCESS,
+                )
+
+                channel = source.get("channel", "unknown")
+                endpoint_identity = source.get("endpoint_identity", "unknown")
+                external_thread_id = event.get("external_thread_id")
+                request_context = {
+                    "request_id": request_id,
+                    "received_at": event.get("observed_at", ""),
+                    "source_channel": channel,
+                    "source_endpoint_identity": f"{channel}:{endpoint_identity}",
+                    "source_sender_identity": sender.get("identity", "unknown"),
+                    "source_thread_identity": external_thread_id,
+                    "trace_context": {},
+                }
+
+                # Resolve TelegramModule for reaction lifecycle (telegram-only).
+                _telegram_mod = (
+                    next((m for m in daemon._active_modules if m.name == "telegram"), None)
+                    if channel == "telegram"
+                    else None
+                )
+
+                # Fire 👀 reaction before pipeline processing (telegram only).
+                if _telegram_mod is not None:
+                    _react_fn = getattr(_telegram_mod, "react_for_ingest", None)
+                    if callable(_react_fn):
+                        try:
+                            await _react_fn(
+                                external_thread_id=external_thread_id,
+                                reaction=REACTION_IN_PROGRESS,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Ingest: failed to set in-progress reaction for request_id=%s",
+                                request_id,
+                            )
+
+                routing_failed = False
                 try:
-                    channel = source.get("channel", "unknown")
-                    endpoint_identity = source.get("endpoint_identity", "unknown")
-                    request_context = {
-                        "request_id": request_id,
-                        "received_at": event.get("observed_at", ""),
-                        "source_channel": channel,
-                        "source_endpoint_identity": f"{channel}:{endpoint_identity}",
-                        "source_sender_identity": sender.get("identity", "unknown"),
-                        "source_thread_identity": event.get("external_thread_id"),
-                        "trace_context": {},
-                    }
-                    await pipeline.process(
+                    result = await pipeline.process(
                         message_text=message_text,
                         tool_name="bot_switchboard_handle_message",
                         tool_args={
@@ -2838,18 +2919,37 @@ class ButlerDaemon:
                             "source_endpoint_identity": f"{channel}:{endpoint_identity}",
                             "sender_identity": sender.get("identity", "unknown"),
                             "external_event_id": event.get("external_event_id", ""),
-                            "external_thread_id": event.get("external_thread_id"),
+                            "external_thread_id": external_thread_id,
                             "source_tool": "ingest",
                             "request_id": request_id,
                             "request_context": request_context,
                         },
                         message_inbox_id=message_inbox_id,
                     )
+                    if result.classification_error or result.routing_error or result.failed_targets:
+                        routing_failed = True
                 except Exception:
+                    routing_failed = True
                     logger.exception(
                         "Background pipeline processing failed for request_id=%s",
                         request_id,
                     )
+
+                # Fire ✅ or 👾 reaction after pipeline processing (telegram only).
+                if _telegram_mod is not None:
+                    _react_fn = getattr(_telegram_mod, "react_for_ingest", None)
+                    if callable(_react_fn):
+                        terminal_reaction = REACTION_FAILURE if routing_failed else REACTION_SUCCESS
+                        try:
+                            await _react_fn(
+                                external_thread_id=external_thread_id,
+                                reaction=terminal_reaction,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Ingest: failed to set terminal reaction for request_id=%s",
+                                request_id,
+                            )
 
             @mcp.tool()
             @tool_span("ingest", butler_name=butler_name)

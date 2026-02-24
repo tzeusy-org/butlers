@@ -486,3 +486,198 @@ class TestIdentityScopedToolFlows:
         assert send_mock.await_args_list[1].args == ("2", "hi")
         assert reply_mock.await_args_list[0].args == ("3", 11, "user reply")
         assert reply_mock.await_args_list[1].args == ("4", 12, "bot reply")
+
+
+# ---------------------------------------------------------------------------
+# react_for_ingest — ingest→pipeline reaction lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestReactForIngest:
+    """Tests for TelegramModule.react_for_ingest() called by the ingest pipeline."""
+
+    async def test_valid_thread_id_fires_in_progress_reaction(
+        self, telegram_module: TelegramModule, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """react_for_ingest calls _set_message_reaction for a valid thread identity."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        calls: list[dict] = []
+
+        async def mock_set_reaction(**kwargs: Any) -> None:
+            calls.append(kwargs)
+
+        telegram_module._set_message_reaction = mock_set_reaction  # type: ignore[method-assign]
+
+        await telegram_module.react_for_ingest(
+            external_thread_id="42:100",
+            reaction=":eye",
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["chat_id"] == "42"
+        assert calls[0]["message_id"] == 100
+        assert calls[0]["reaction"] == ":eye"
+
+    async def test_valid_thread_id_fires_success_reaction(
+        self, telegram_module: TelegramModule, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """react_for_ingest fires success reaction via _set_message_reaction."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        calls: list[dict] = []
+
+        async def mock_set_reaction(**kwargs: Any) -> None:
+            calls.append(kwargs)
+
+        telegram_module._set_message_reaction = mock_set_reaction  # type: ignore[method-assign]
+
+        await telegram_module.react_for_ingest(
+            external_thread_id="123:456",
+            reaction=":done",
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["reaction"] == ":done"
+
+    async def test_valid_thread_id_fires_failure_reaction(
+        self, telegram_module: TelegramModule, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """react_for_ingest fires failure reaction via _set_message_reaction."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        calls: list[dict] = []
+
+        async def mock_set_reaction(**kwargs: Any) -> None:
+            calls.append(kwargs)
+
+        telegram_module._set_message_reaction = mock_set_reaction  # type: ignore[method-assign]
+
+        await telegram_module.react_for_ingest(
+            external_thread_id="99:200",
+            reaction=":space invader",
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["reaction"] == ":space invader"
+
+    async def test_none_thread_id_is_noop(self, telegram_module: TelegramModule) -> None:
+        """react_for_ingest silently no-ops when external_thread_id is None."""
+        called = False
+
+        async def mock_set_reaction(**kwargs: Any) -> None:
+            nonlocal called
+            called = True
+
+        telegram_module._set_message_reaction = mock_set_reaction  # type: ignore[method-assign]
+
+        await telegram_module.react_for_ingest(
+            external_thread_id=None,
+            reaction=":eye",
+        )
+
+        assert not called
+
+    async def test_empty_thread_id_is_noop(self, telegram_module: TelegramModule) -> None:
+        """react_for_ingest silently no-ops when external_thread_id is empty string."""
+        called = False
+
+        async def mock_set_reaction(**kwargs: Any) -> None:
+            nonlocal called
+            called = True
+
+        telegram_module._set_message_reaction = mock_set_reaction  # type: ignore[method-assign]
+
+        await telegram_module.react_for_ingest(
+            external_thread_id="",
+            reaction=":eye",
+        )
+
+        assert not called
+
+    async def test_malformed_thread_id_no_separator_is_noop(
+        self, telegram_module: TelegramModule
+    ) -> None:
+        """react_for_ingest no-ops when thread id has no colon separator."""
+        called = False
+
+        async def mock_set_reaction(**kwargs: Any) -> None:
+            nonlocal called
+            called = True
+
+        telegram_module._set_message_reaction = mock_set_reaction  # type: ignore[method-assign]
+
+        await telegram_module.react_for_ingest(
+            external_thread_id="nocolon",
+            reaction=":eye",
+        )
+
+        assert not called
+
+    async def test_malformed_thread_id_non_integer_message_id_is_noop(
+        self, telegram_module: TelegramModule
+    ) -> None:
+        """react_for_ingest no-ops when message_id part is not an integer."""
+        called = False
+
+        async def mock_set_reaction(**kwargs: Any) -> None:
+            nonlocal called
+            called = True
+
+        telegram_module._set_message_reaction = mock_set_reaction  # type: ignore[method-assign]
+
+        await telegram_module.react_for_ingest(
+            external_thread_id="42:notanumber",
+            reaction=":eye",
+        )
+
+        assert not called
+
+    async def test_malformed_thread_id_empty_chat_id_is_noop(
+        self, telegram_module: TelegramModule
+    ) -> None:
+        """react_for_ingest no-ops when chat_id part is empty."""
+        called = False
+
+        async def mock_set_reaction(**kwargs: Any) -> None:
+            nonlocal called
+            called = True
+
+        telegram_module._set_message_reaction = mock_set_reaction  # type: ignore[method-assign]
+
+        await telegram_module.react_for_ingest(
+            external_thread_id=":100",
+            reaction=":eye",
+        )
+
+        assert not called
+
+    async def test_api_error_is_swallowed(self, telegram_module: TelegramModule) -> None:
+        """react_for_ingest swallows exceptions from _set_message_reaction."""
+
+        async def mock_set_reaction(**kwargs: Any) -> None:
+            raise RuntimeError("Telegram API unavailable")
+
+        telegram_module._set_message_reaction = mock_set_reaction  # type: ignore[method-assign]
+
+        # Should not raise
+        await telegram_module.react_for_ingest(
+            external_thread_id="123:456",
+            reaction=":eye",
+        )
+
+    async def test_negative_chat_id_parsed_correctly(self, telegram_module: TelegramModule) -> None:
+        """react_for_ingest handles negative chat IDs (groups/supergroups)."""
+        calls: list[dict] = []
+
+        async def mock_set_reaction(**kwargs: Any) -> None:
+            calls.append(kwargs)
+
+        telegram_module._set_message_reaction = mock_set_reaction  # type: ignore[method-assign]
+
+        await telegram_module.react_for_ingest(
+            external_thread_id="-100123456789:42",
+            reaction=":eye",
+        )
+
+        # Negative chat IDs should parse successfully
+        assert len(calls) == 1
+        assert calls[0]["chat_id"] == "-100123456789"
+        assert calls[0]["message_id"] == 42
