@@ -146,6 +146,33 @@ Consumption rules:
 - If transport fails before a valid envelope is returned, Switchboard must synthesize `target_unavailable` (or `timeout` when timeout-class).
 - Raw downstream response payloads and normalized failure class must both be persisted for auditability.
 
+### 6.4 Identity Disambiguation Flow
+
+Before the routing LLM is invoked, Switchboard must resolve sender identity and inject a structured preamble into the prompt.
+
+Identity resolution pipeline (implemented in `roster/switchboard/tools/identity/inject.py`):
+
+1. **Reverse-lookup**: call `resolve_contact_by_channel(pool, channel_type, channel_value)` to map the sender identifier to a known `shared.contacts` record.
+2. **If known**: build an identity preamble from the resolved `ResolvedContact` and proceed to routing.
+3. **If unknown**: create a temporary contact via `create_temp_contact(pool, channel_type, channel_value)` with `metadata.needs_disambiguation = true`; notify the owner once (idempotent via `butler_state` KV); build an unknown-sender preamble.
+
+Preamble formats injected into the routing prompt:
+
+| Sender | Preamble |
+|---|---|
+| Owner | `[Source: Owner, via {channel}]` |
+| Known non-owner | `[Source: {name} (contact_id: {cid}, entity_id: {eid}), via {channel}]` |
+| Unknown (temp contact) | `[Source: Unknown sender (contact_id: {cid}), via {channel} -- pending disambiguation]` |
+
+Identity propagation to routing log:
+- `contact_id`, `entity_id`, and `sender_roles` from the resolution result must be persisted to the `routing_log` row for every routed message.
+- This enables full identity lineage from ingress through downstream routing.
+
+Disambiguation resolution:
+- The owner receives a one-time notification for each new unknown sender with a link to the contacts management surface.
+- Once the owner assigns a contact record (resolving `needs_disambiguation = true`), future messages from that sender resolve as known contacts.
+- Until resolved, the temp contact's `contact_id` remains the stable routing token for the conversation.
+
 ## 7. Asynchronous Ingestion Contract
 Switchboard must support multiple simultaneous ingress channels without blocking ingestion.
 

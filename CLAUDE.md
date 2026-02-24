@@ -62,6 +62,12 @@ Every butler has **core components** (always present) and **modules** (opt-in pe
 
 Target-state isolation is schema-based in a single PostgreSQL database: each butler role can access only its own schema plus `shared`. Inter-butler communication remains MCP-only through the Switchboard.
 
+The `shared` schema contains cross-butler identity tables:
+- **`shared.contacts`** — canonical contact registry; one row per known person/actor. Includes a `roles` array (e.g. `['owner']`) and optional `entity_id` FK to the memory butler's entity graph.
+- **`shared.contact_info`** — per-channel identifiers linked to contacts (e.g. Telegram chat ID, email address). UNIQUE on `(type, value)`. `secured=true` marks credential entries.
+
+These tables power identity resolution for all ingress routing (Switchboard reverse-lookup) and outbound targeting (`notify()` with `contact_id`). The owner contact is bootstrapped automatically on daemon startup.
+
 ### Butler Config Directory (git-based, `roster/`)
 
 ```
