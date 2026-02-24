@@ -1,11 +1,13 @@
 /**
  * Tier breakdown donut chart for the Overview tab.
  *
- * Since the current API aggregates into ingested/failed (not T1/T2/T3 directly),
- * we derive approximate tiers:
+ * Prefers real tier counts from IngestionOverviewStats (tier1_full_count,
+ * tier2_metadata_count, tier3_skip_count) when available.
+ *
+ * Falls back to approximating tiers from CrossConnectorSummary:
  *   T1 (full ingested): messages_ingested - messages_failed
  *   T3 (skip/failed):   messages_failed
- *   T2 (metadata-only): not exposed by current summary; placeholder 0
+ *   T2 (metadata-only): not exposed by summary; placeholder 0
  *
  * This component renders cleanly when real tier data is unavailable.
  */
@@ -13,7 +15,7 @@
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { CrossConnectorSummary } from "@/api/index.ts";
+import type { CrossConnectorSummary, IngestionOverviewStats } from "@/api/index.ts";
 
 const TIER_COLORS = [
   "hsl(var(--primary))",
@@ -28,18 +30,32 @@ interface TierEntry {
 
 interface TierBreakdownDonutProps {
   summary: CrossConnectorSummary | undefined;
+  overview?: IngestionOverviewStats | undefined;
   isLoading: boolean;
 }
 
-export function TierBreakdownDonut({ summary, isLoading }: TierBreakdownDonutProps) {
-  const ingested = summary?.total_messages_ingested ?? 0;
-  const failed = summary?.total_messages_failed ?? 0;
-  const t1 = Math.max(0, ingested - failed);
-  const t3 = failed;
+export function TierBreakdownDonut({ summary, overview, isLoading }: TierBreakdownDonutProps) {
+  // Prefer real tier counts from the ingestion overview endpoint when available
+  let t1: number;
+  let t2: number;
+  let t3: number;
+
+  if (overview) {
+    t1 = overview.tier1_full_count;
+    t2 = overview.tier2_metadata_count;
+    t3 = overview.tier3_skip_count;
+  } else {
+    // Fallback: approximate from cross-connector summary
+    const ingested = summary?.total_messages_ingested ?? 0;
+    const failed = summary?.total_messages_failed ?? 0;
+    t1 = Math.max(0, ingested - failed);
+    t2 = 0;
+    t3 = failed;
+  }
 
   const data: TierEntry[] = [
     { name: "T1 Full", value: t1 },
-    { name: "T2 Metadata", value: 0 }, // placeholder — not in current API
+    { name: "T2 Metadata", value: t2 },
     { name: "T3 Skip", value: t3 },
   ].filter((d) => d.value > 0);
 

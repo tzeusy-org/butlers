@@ -287,6 +287,7 @@ export {
   getConnectorDetail,
   getConnectorFanout,
   getConnectorStats,
+  getIngestionOverview,
   listConnectorSummaries,
 } from "./client.ts";
 
@@ -303,5 +304,6 @@ export type {
   ConnectorSummary,
   ConnectorSummaryEntry,
   CrossConnectorSummary,
+  IngestionOverviewStats,
   IngestionPeriod,
 } from "./types.ts";

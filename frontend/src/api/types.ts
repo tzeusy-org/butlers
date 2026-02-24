@@ -1576,6 +1576,19 @@ export interface ConnectorStats {
   timeseries: ConnectorStatsBucket[];
 }
 
+/** Period-scoped ingestion overview statistics from GET /api/switchboard/ingestion/overview. */
+export interface IngestionOverviewStats {
+  period: IngestionPeriod;
+  total_ingested: number;
+  total_skipped: number;
+  total_metadata_only: number;
+  llm_calls_saved: number;
+  active_connectors: number;
+  tier1_full_count: number;
+  tier2_metadata_count: number;
+  tier3_skip_count: number;
+}
+
 /** One row in the cross-connector summary. */
 export interface ConnectorSummaryEntry {
   connector_type: string;

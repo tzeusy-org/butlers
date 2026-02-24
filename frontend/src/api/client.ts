@@ -1448,6 +1448,7 @@ import type {
   ConnectorSummary,
   ConnectorSummaryEntry,
   CrossConnectorSummary,
+  IngestionOverviewStats,
   IngestionPeriod,
 } from "./types.ts";
 
@@ -1465,6 +1466,7 @@ export type {
   ConnectorSummary,
   ConnectorSummaryEntry,
   CrossConnectorSummary,
+  IngestionOverviewStats,
   IngestionPeriod,
 };
 
@@ -1559,7 +1561,11 @@ function _toConnectorSummary(entry: _BackendConnectorEntry): ConnectorSummary {
     uptime_s: entry.uptime_s,
     last_heartbeat_at: entry.last_heartbeat_at,
     first_seen_at: entry.first_seen_at,
-    today: null,
+    today: {
+      messages_ingested: entry.counter_messages_ingested,
+      messages_failed: entry.counter_messages_failed,
+      uptime_pct: null,
+    },
   };
 }
 
@@ -1723,6 +1729,15 @@ export async function getCrossConnectorSummary(
     ...resp,
     data: _toCrossConnectorSummary(resp.data, period),
   };
+}
+
+/** Get period-scoped ingestion overview statistics (message_inbox-based). */
+export async function getIngestionOverview(
+  period: IngestionPeriod = "24h",
+): Promise<ApiResponse<IngestionOverviewStats>> {
+  return apiFetch<ApiResponse<IngestionOverviewStats>>(
+    `/switchboard/ingestion/overview?period=${period}`,
+  );
 }
 
 /** Get fanout distribution matrix. */

@@ -4,6 +4,7 @@
  * Shared query-key strategy (spec §7):
  * - ingestionKeys.connectorsList()            → list of ConnectorSummary
  * - ingestionKeys.connectorsSummary(period)   → CrossConnectorSummary
+ * - ingestionKeys.ingestionOverview(period)   → IngestionOverviewStats
  * - ingestionKeys.fanout(period)              → ConnectorFanout matrix
  * - ingestionKeys.connectorDetail(type, id)           → ConnectorDetail
  * - ingestionKeys.connectorStats(type, id, period)  → ConnectorStats timeseries
@@ -19,6 +20,7 @@ import {
   getConnectorDetail,
   getConnectorFanout,
   getConnectorStats,
+  getIngestionOverview,
   listConnectorSummaries,
 } from "@/api/index.ts";
 import type { IngestionPeriod } from "@/api/index.ts";
@@ -32,6 +34,8 @@ export const ingestionKeys = {
   connectorsList: () => [...ingestionKeys.all, "connectors-list"] as const,
   connectorsSummary: (period: IngestionPeriod) =>
     [...ingestionKeys.all, "connectors-summary", period] as const,
+  ingestionOverview: (period: IngestionPeriod) =>
+    [...ingestionKeys.all, "ingestion-overview", period] as const,
   fanout: (period: IngestionPeriod) =>
     [...ingestionKeys.all, "fanout", period] as const,
   connectorDetail: (connectorType: string, endpointIdentity: string) =>
@@ -76,6 +80,22 @@ export function useCrossConnectorSummary(
   return useQuery({
     queryKey: ingestionKeys.connectorsSummary(period),
     queryFn: () => getCrossConnectorSummary(period),
+    refetchInterval: 60_000,
+    enabled: options?.enabled !== false,
+  });
+}
+
+/**
+ * Period-scoped ingestion overview statistics from message_inbox.
+ * Used for the Overview tab stat row (replaces getCrossConnectorSummary for that purpose).
+ */
+export function useIngestionOverview(
+  period: IngestionPeriod,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ingestionKeys.ingestionOverview(period),
+    queryFn: () => getIngestionOverview(period),
     refetchInterval: 60_000,
     enabled: options?.enabled !== false,
   });

@@ -20,6 +20,7 @@ import { ConnectorHealthRow } from "./ConnectorHealthRow";
 import {
   useConnectorSummaries,
   useCrossConnectorSummary,
+  useIngestionOverview,
   useConnectorFanout,
   useConnectorStats,
 } from "@/hooks/use-ingestion";
@@ -54,8 +55,13 @@ export function OverviewTab({ isActive }: OverviewTabProps) {
   const { data: connectorsResp, isLoading: connectorsLoading } =
     useConnectorSummaries({ enabled: isActive });
 
+  // Cross-connector summary: used for TierBreakdownDonut fallback and ConnectorHealthRow context
   const { data: summaryResp, isLoading: summaryLoading } =
     useCrossConnectorSummary(period, { enabled: isActive });
+
+  // Ingestion overview: period-scoped stats from message_inbox for the stat row
+  const { data: overviewResp, isLoading: overviewLoading } =
+    useIngestionOverview(period, { enabled: isActive });
 
   // Fanout uses 7d/30d only; fall back to 7d when period is 24h
   const fanoutPeriod: IngestionPeriod = period === "24h" ? "7d" : period;
@@ -83,11 +89,12 @@ export function OverviewTab({ isActive }: OverviewTabProps) {
 
   const timeseries = statsResp?.data?.timeseries ?? [];
   const summary = summaryResp?.data;
+  const overview = overviewResp?.data;
 
   return (
     <div className="space-y-6">
-      {/* Aggregate stat row */}
-      <IngestionStatRow summary={summary} isLoading={summaryLoading} />
+      {/* Aggregate stat row — uses period-scoped message_inbox counts */}
+      <IngestionStatRow overview={overview} isLoading={overviewLoading} />
 
       {/* Volume trend + Tier breakdown */}
       <div className="grid gap-6 lg:grid-cols-3">
@@ -105,7 +112,7 @@ export function OverviewTab({ isActive }: OverviewTabProps) {
           />
         </div>
         <div>
-          <TierBreakdownDonut summary={summary} isLoading={summaryLoading} />
+          <TierBreakdownDonut summary={summary} overview={overview} isLoading={summaryLoading || overviewLoading} />
         </div>
       </div>
 

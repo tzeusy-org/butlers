@@ -42,6 +42,7 @@ import {
   getConnectorStats,
   getCrossConnectorSummary,
   getConnectorFanout,
+  getIngestionOverview,
 } from "./client.ts";
 
 // ---------------------------------------------------------------------------
@@ -371,5 +372,121 @@ describe("getConnectorDetail counters and checkpoint mapping", () => {
     });
     const resp = await getConnectorDetail("gmail", "u@x.com");
     expect(resp.data.checkpoint).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 1 fix: _toConnectorSummary maps counter_messages_ingested to today
+// ---------------------------------------------------------------------------
+
+describe("listConnectorSummaries today field mapping (Bug 1)", () => {
+  function makeEntry(overrides: Partial<{ counter_messages_ingested: number; counter_messages_failed: number }> = {}) {
+    return {
+      connector_type: "gmail",
+      endpoint_identity: "u@example.com",
+      instance_id: null,
+      version: "1.0",
+      state: "healthy",
+      error_message: null,
+      uptime_s: null,
+      last_heartbeat_at: null,
+      first_seen_at: "2026-01-01T00:00:00Z",
+      registered_via: "self",
+      counter_messages_ingested: 0,
+      counter_messages_failed: 0,
+      counter_source_api_calls: 0,
+      counter_checkpoint_saves: 0,
+      counter_dedupe_accepted: 0,
+      checkpoint_cursor: null,
+      checkpoint_updated_at: null,
+      ...overrides,
+    };
+  }
+
+  it("maps counter_messages_ingested to today.messages_ingested (not null)", async () => {
+    mockResponse({ data: [makeEntry({ counter_messages_ingested: 42, counter_messages_failed: 3 })] });
+    const resp = await listConnectorSummaries();
+    const connector = resp.data[0];
+    expect(connector.today).not.toBeNull();
+    expect(connector.today!.messages_ingested).toBe(42);
+    expect(connector.today!.messages_failed).toBe(3);
+  });
+
+  it("maps zero counters to today with zeroes (not null)", async () => {
+    mockResponse({ data: [makeEntry({ counter_messages_ingested: 0, counter_messages_failed: 0 })] });
+    const resp = await listConnectorSummaries();
+    const connector = resp.data[0];
+    expect(connector.today).not.toBeNull();
+    expect(connector.today!.messages_ingested).toBe(0);
+    expect(connector.today!.messages_failed).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug 2 fix: getIngestionOverview — period-scoped stats from message_inbox
+// ---------------------------------------------------------------------------
+
+describe("getIngestionOverview (Bug 2)", () => {
+  it("calls /api/switchboard/ingestion/overview with period param", async () => {
+    mockResponse({
+      data: {
+        period: "24h",
+        total_ingested: 0,
+        total_skipped: 0,
+        total_metadata_only: 0,
+        llm_calls_saved: 0,
+        active_connectors: 0,
+        tier1_full_count: 0,
+        tier2_metadata_count: 0,
+        tier3_skip_count: 0,
+      },
+    });
+    await getIngestionOverview("24h");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("/api/switchboard/ingestion/overview");
+    expect(url).toContain("period=24h");
+  });
+
+  it("returns period-scoped tier counts from backend", async () => {
+    mockResponse({
+      data: {
+        period: "7d",
+        total_ingested: 500,
+        total_skipped: 10,
+        total_metadata_only: 20,
+        llm_calls_saved: 30,
+        active_connectors: 3,
+        tier1_full_count: 470,
+        tier2_metadata_count: 20,
+        tier3_skip_count: 10,
+      },
+    });
+    const resp = await getIngestionOverview("7d");
+    const overview = resp.data;
+    expect(overview.period).toBe("7d");
+    expect(overview.total_ingested).toBe(500);
+    expect(overview.tier1_full_count).toBe(470);
+    expect(overview.tier2_metadata_count).toBe(20);
+    expect(overview.tier3_skip_count).toBe(10);
+    expect(overview.active_connectors).toBe(3);
+  });
+
+  it("passes period=30d to the endpoint", async () => {
+    mockResponse({
+      data: {
+        period: "30d",
+        total_ingested: 0,
+        total_skipped: 0,
+        total_metadata_only: 0,
+        llm_calls_saved: 0,
+        active_connectors: 0,
+        tier1_full_count: 0,
+        tier2_metadata_count: 0,
+        tier3_skip_count: 0,
+      },
+    });
+    await getIngestionOverview("30d");
+    const url: string = mockFetch.mock.calls[0][0];
+    expect(url).toContain("period=30d");
   });
 });
