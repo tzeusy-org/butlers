@@ -32,6 +32,7 @@ from butlers.api.models.approval import (
     ExpireStaleActionsResponse,
     RuleConstraintSuggestion,
 )
+from butlers.modules.approvals import operations as approvals_ops
 from butlers.modules.approvals.models import (
     ApprovalRule as ApprovalRuleModel,
 )
@@ -317,24 +318,71 @@ async def get_action(
 async def approve_action(
     action_id: str,
     request: ApprovalActionApproveRequest = Body(default=ApprovalActionApproveRequest()),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Approve a pending action and execute it."""
-    raise HTTPException(
-        status_code=501,
-        detail="Approval execution via REST API not yet implemented. Use MCP tool for now.",
-    )
+    try:
+        UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    if target_pool is None:
+        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+
+    async with target_pool.acquire() as conn:
+        result = await approvals_ops.approve_action(
+            conn,
+            action_id=action_id,
+            create_rule=request.create_rule,
+        )
+
+    if "error" in result:
+        error_msg = result["error"]
+        if "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        if "cannot transition" in error_msg.lower():
+            raise HTTPException(status_code=409, detail=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    # Build the ApprovalAction from the result dict
+    action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})
+    return ApiResponse(data=action)
 
 
 @router.post("/actions/{action_id}/reject")
 async def reject_action(
     action_id: str,
     request: ApprovalActionRejectRequest = Body(default=ApprovalActionRejectRequest()),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Reject a pending action with optional reason."""
-    raise HTTPException(
-        status_code=501,
-        detail="Approval rejection via REST API not yet implemented. Use MCP tool for now.",
-    )
+    try:
+        UUID(action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+
+    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    if target_pool is None:
+        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+
+    async with target_pool.acquire() as conn:
+        result = await approvals_ops.reject_action(
+            conn,
+            action_id=action_id,
+            reason=request.reason,
+        )
+
+    if "error" in result:
+        error_msg = result["error"]
+        if "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        if "cannot transition" in error_msg.lower():
+            raise HTTPException(status_code=409, detail=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})
+    return ApiResponse(data=action)
 
 
 @router.post("/actions/expire-stale")
@@ -373,23 +421,60 @@ async def expire_stale_actions(
 @router.post("/rules")
 async def create_rule(
     request: ApprovalRuleCreateRequest = Body(...),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ApprovalRule]:
     """Create a new standing approval rule."""
-    raise HTTPException(
-        status_code=501,
-        detail="Rule creation via REST API not yet implemented. Use MCP tool for now.",
-    )
+    target_pool = await _find_approvals_pool(db_mgr, "approval_rules")
+    if target_pool is None:
+        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+
+    async with target_pool.acquire() as conn:
+        result = await approvals_ops.create_approval_rule(
+            conn,
+            tool_name=request.tool_name,
+            arg_constraints=request.arg_constraints,
+            description=request.description,
+            expires_at=request.expires_at,
+            max_uses=request.max_uses,
+        )
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    rule = ApprovalRule(**{k: result[k] for k in ApprovalRule.model_fields if k in result})
+    return ApiResponse(data=rule)
 
 
 @router.post("/rules/from-action")
 async def create_rule_from_action(
     request: ApprovalRuleFromActionRequest = Body(...),
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[ApprovalRule]:
     """Create a standing rule from a pending action."""
-    raise HTTPException(
-        status_code=501,
-        detail="Rule creation via REST API not yet implemented. Use MCP tool for now.",
-    )
+    try:
+        UUID(request.action_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {request.action_id}")
+
+    target_pool = await _find_approvals_pool(db_mgr, "pending_actions")
+    if target_pool is None:
+        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+
+    async with target_pool.acquire() as conn:
+        result = await approvals_ops.create_rule_from_action(
+            conn,
+            action_id=request.action_id,
+            constraint_overrides=request.constraint_overrides,
+        )
+
+    if "error" in result:
+        error_msg = result["error"]
+        if "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    rule = ApprovalRule(**{k: result[k] for k in ApprovalRule.model_fields if k in result})
+    return ApiResponse(data=rule)
 
 
 @router.get("/rules")
@@ -470,12 +555,36 @@ async def get_rule(
 
 
 @router.post("/rules/{rule_id}/revoke")
-async def revoke_rule(rule_id: str) -> ApiResponse[ApprovalRule]:
+async def revoke_rule(
+    rule_id: str,
+    db_mgr: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[ApprovalRule]:
     """Revoke (deactivate) a standing approval rule."""
-    raise HTTPException(
-        status_code=501,
-        detail="Rule revocation via REST API not yet implemented. Use MCP tool for now.",
-    )
+    try:
+        UUID(rule_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
+
+    target_pool = await _find_approvals_pool(db_mgr, "approval_rules")
+    if target_pool is None:
+        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+
+    async with target_pool.acquire() as conn:
+        result = await approvals_ops.revoke_approval_rule(
+            conn,
+            rule_id=rule_id,
+        )
+
+    if "error" in result:
+        error_msg = result["error"]
+        if "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        if "already revoked" in error_msg.lower():
+            raise HTTPException(status_code=409, detail=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    rule = ApprovalRule(**{k: result[k] for k in ApprovalRule.model_fields if k in result})
+    return ApiResponse(data=rule)
 
 
 @router.get("/rules/suggestions/{action_id}")
