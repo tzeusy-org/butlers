@@ -445,7 +445,7 @@ async def tick(
         now = datetime.now(UTC)
         rows = await pool.fetch(
             """
-            SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args
+            SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args, until_at
             FROM scheduled_tasks
             WHERE enabled = true AND next_run_at <= $1
             ORDER BY next_run_at
@@ -465,6 +465,8 @@ async def tick(
             dispatch_mode = row["dispatch_mode"]
             job_name = row["job_name"]
             job_args = _jsonb_to_dict(row["job_args"], context=f"scheduled_tasks[{name}]")
+
+            until_at = row["until_at"]
 
             result_json: str | None = None
             try:
@@ -487,24 +489,42 @@ async def tick(
                 logger.exception("Failed to dispatch scheduled task: %s", name)
                 result_json = _result_to_jsonb({"error": str(exc)})
 
-            # Always advance next_run_at whether dispatch succeeded or failed
+            # Always advance next_run_at whether dispatch succeeded or failed.
+            # If the computed next run would exceed until_at, auto-disable the task.
             next_run_at = _next_run(
                 cron,
                 stagger_key=stagger_key,
                 max_stagger_seconds=max_stagger_seconds,
             )
-            await pool.execute(
-                """
-                UPDATE scheduled_tasks
-                SET next_run_at = $2, last_run_at = $3, last_result = $4::jsonb,
-                    updated_at = now()
-                WHERE id = $1
-                """,
-                task_id,
-                next_run_at,
-                now,
-                result_json,
-            )
+            if until_at is not None and next_run_at > until_at:
+                logger.info(
+                    "Scheduled task %s has passed until_at (%s); auto-disabling", name, until_at
+                )
+                await pool.execute(
+                    """
+                    UPDATE scheduled_tasks
+                    SET enabled = false, next_run_at = NULL,
+                        last_run_at = $2, last_result = $3::jsonb,
+                        updated_at = now()
+                    WHERE id = $1
+                    """,
+                    task_id,
+                    now,
+                    result_json,
+                )
+            else:
+                await pool.execute(
+                    """
+                    UPDATE scheduled_tasks
+                    SET next_run_at = $2, last_run_at = $3, last_result = $4::jsonb,
+                        updated_at = now()
+                    WHERE id = $1
+                    """,
+                    task_id,
+                    next_run_at,
+                    now,
+                    result_json,
+                )
 
         span.set_attribute("tasks_run", dispatched)
         return dispatched

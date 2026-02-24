@@ -1156,6 +1156,184 @@ async def test_update_multiple_fields_with_cron_is_atomic(pool):
     assert updated["next_run_at"] is None
 
 
+# ---------------------------------------------------------------------------
+# tick — until_at enforcement
+# ---------------------------------------------------------------------------
+
+
+async def test_tick_auto_disables_task_when_next_run_exceeds_until_at(pool):
+    """tick() auto-disables a task when the computed next_run_at would exceed until_at."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    # Set until_at to a time in the past (so any future next_run_at will exceed it)
+    until_at = datetime.now(UTC) - timedelta(minutes=1)
+    task_id = await schedule_create(
+        pool,
+        "until-at-task",
+        "*/1 * * * *",
+        "should be disabled after tick",
+        until_at=until_at,
+    )
+    # Force next_run_at to the past so the task is due
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+        task_id,
+        datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+    dispatch = _Dispatch()
+    count = await tick(pool, dispatch)
+
+    # Task should have been dispatched this one time
+    assert count == 1
+    assert len(dispatch.calls) == 1
+
+    # But after the tick, it should be auto-disabled with next_run_at=NULL
+    row = await pool.fetchrow(
+        "SELECT enabled, next_run_at FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert row["enabled"] is False
+    assert row["next_run_at"] is None
+
+
+async def test_tick_does_not_disable_task_when_next_run_within_until_at(pool):
+    """tick() leaves a task enabled when the next_run_at is still before until_at."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    # Set until_at far in the future so the task should continue running
+    until_at = datetime.now(UTC) + timedelta(days=365)
+    task_id = await schedule_create(
+        pool,
+        "until-at-future-task",
+        "*/1 * * * *",
+        "should stay enabled after tick",
+        until_at=until_at,
+    )
+    # Force next_run_at to the past so the task is due
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+        task_id,
+        datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+    dispatch = _Dispatch()
+    count = await tick(pool, dispatch)
+
+    assert count == 1
+    assert len(dispatch.calls) == 1
+
+    # Task should still be enabled and have a future next_run_at
+    row = await pool.fetchrow(
+        "SELECT enabled, next_run_at FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert row["enabled"] is True
+    assert row["next_run_at"] is not None
+    assert row["next_run_at"] > datetime.now(UTC) - timedelta(seconds=5)
+
+
+async def test_tick_unaffected_for_tasks_without_until_at(pool):
+    """tick() leaves tasks without until_at completely unaffected by the until_at check."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    task_id = await schedule_create(
+        pool,
+        "no-until-at-task",
+        "*/1 * * * *",
+        "no until_at set",
+    )
+    # Force next_run_at to the past so the task is due
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+        task_id,
+        datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+    dispatch = _Dispatch()
+    count = await tick(pool, dispatch)
+
+    assert count == 1
+
+    # Task should remain enabled and have a future next_run_at
+    row = await pool.fetchrow(
+        "SELECT enabled, next_run_at FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert row["enabled"] is True
+    assert row["next_run_at"] is not None
+    assert row["next_run_at"] > datetime.now(UTC) - timedelta(seconds=5)
+
+
+async def test_tick_auto_disables_and_stores_last_run_at(pool):
+    """When auto-disabled via until_at, tick() still stores last_run_at."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    until_at = datetime.now(UTC) - timedelta(minutes=1)
+    task_id = await schedule_create(
+        pool,
+        "until-at-last-run",
+        "*/1 * * * *",
+        "last run check",
+        until_at=until_at,
+    )
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+        task_id,
+        datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+    dispatch = _Dispatch(result={"status": "done"})
+    await tick(pool, dispatch)
+
+    row = await pool.fetchrow(
+        "SELECT enabled, next_run_at, last_run_at, last_result FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert row["enabled"] is False
+    assert row["next_run_at"] is None
+    assert row["last_run_at"] is not None
+    assert row["last_result"] is not None
+    result_data = json.loads(row["last_result"])
+    assert result_data["status"] == "done"
+
+
+async def test_tick_auto_disables_on_dispatch_failure_with_until_at(pool):
+    """tick() auto-disables via until_at even when dispatch fails."""
+    from butlers.core.scheduler import schedule_create, tick
+
+    until_at = datetime.now(UTC) - timedelta(minutes=1)
+    task_id = await schedule_create(
+        pool,
+        "until-at-fail-task",
+        "*/1 * * * *",
+        "I will fail and be disabled",
+        until_at=until_at,
+    )
+    await pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
+        task_id,
+        datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+    dispatch = _Dispatch(fail_on={"I will fail and be disabled"})
+    count = await tick(pool, dispatch)
+
+    # Dispatch failed, so count stays 0
+    assert count == 0
+
+    row = await pool.fetchrow(
+        "SELECT enabled, next_run_at, last_result FROM scheduled_tasks WHERE id = $1",
+        task_id,
+    )
+    assert row["enabled"] is False
+    assert row["next_run_at"] is None
+    # Error should still be stored in last_result
+    assert row["last_result"] is not None
+    result_data = json.loads(row["last_result"])
+    assert "error" in result_data
+
+
 # Telemetry — butler.tick span
 # ---------------------------------------------------------------------------
 
