@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
@@ -52,6 +52,11 @@ if _models_path.exists():
         Loan = _models_module.Loan
         Note = _models_module.Note
         UpcomingDate = _models_module.UpcomingDate
+        ContactInfoEntry = _models_module.ContactInfoEntry
+        ContactMergeRequest = _models_module.ContactMergeRequest
+        ContactMergeResponse = _models_module.ContactMergeResponse
+        ContactPatchRequest = _models_module.ContactPatchRequest
+        OwnerSetupStatus = _models_module.OwnerSetupStatus
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +376,99 @@ async def trigger_contacts_sync(
 
 
 # ---------------------------------------------------------------------------
+# GET /contacts/pending
+# ---------------------------------------------------------------------------
+
+
+@router.get("/contacts/pending", response_model=list[ContactDetail])
+async def list_pending_contacts(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[ContactDetail]:
+    """List contacts with metadata.needs_disambiguation=true.
+
+    Returns temp contacts created during identity resolution that require
+    the owner's attention to either confirm as known contacts or merge into
+    an existing contact.
+    """
+    pool = _pool(db)
+
+    rows = await pool.fetch(
+        """
+        SELECT
+            c.id,
+            c.name AS full_name,
+            c.nickname,
+            c.details->>'notes' AS notes,
+            c.company,
+            c.job_title,
+            c.metadata,
+            c.created_at,
+            c.updated_at,
+            COALESCE(c.roles, '{}') AS roles,
+            c.entity_id
+        FROM contacts c
+        WHERE c.archived_at IS NULL
+          AND (c.metadata->>'needs_disambiguation')::boolean = true
+        ORDER BY c.created_at DESC
+        """,
+    )
+
+    result: list[ContactDetail] = []
+    for row in rows:
+        cid = row["id"]
+
+        ci_rows = await pool.fetch(
+            """
+            SELECT id, type, value, is_primary, secured
+            FROM shared.contact_info
+            WHERE contact_id = $1
+            ORDER BY is_primary DESC NULLS LAST, type, id
+            """,
+            cid,
+        )
+        contact_info_entries = [
+            ContactInfoEntry(
+                id=ci["id"],
+                type=ci["type"],
+                value=None if ci["secured"] else ci["value"],
+                is_primary=bool(ci["is_primary"]),
+                secured=bool(ci["secured"]),
+            )
+            for ci in ci_rows
+        ]
+
+        _raw_meta = row["metadata"]
+        metadata = dict(_raw_meta) if isinstance(_raw_meta, dict) else {}
+        raw_roles = row["roles"]
+        roles = list(raw_roles) if raw_roles else []
+
+        result.append(
+            ContactDetail(
+                id=cid,
+                full_name=row["full_name"],
+                nickname=row["nickname"],
+                email=next((ci.value for ci in contact_info_entries if ci.type == "email"), None),
+                phone=next((ci.value for ci in contact_info_entries if ci.type == "phone"), None),
+                labels=[],
+                last_interaction_at=None,
+                notes=row["notes"],
+                birthday=None,
+                company=row["company"],
+                job_title=row["job_title"],
+                address=None,
+                metadata=metadata,
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                roles=roles,
+                entity_id=row["entity_id"],
+                contact_info=contact_info_entries,
+            )
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # GET /contacts/{contact_id} — full detail
 # ---------------------------------------------------------------------------
 
@@ -380,7 +478,11 @@ async def get_contact(
     contact_id: UUID,
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ContactDetail:
-    """Get full contact detail with labels, email, phone, birthday."""
+    """Get full contact detail with labels, email, phone, birthday, roles, entity_id.
+
+    Secured contact_info values are masked (value=None) in the response.
+    Use GET /contacts/{id}/secrets/{info_id} to reveal a secured value.
+    """
     pool = _pool(db)
 
     row = await pool.fetchrow(
@@ -395,6 +497,8 @@ async def get_contact(
             c.metadata,
             c.created_at,
             c.updated_at,
+            COALESCE(c.roles, '{}') AS roles,
+            c.entity_id,
             (
                 SELECT ci.value FROM shared.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'email'
@@ -472,8 +576,32 @@ async def get_contact(
         ]
         address = ", ".join(p for p in parts if p)
 
+    # All contact_info entries — mask secured values
+    ci_rows = await pool.fetch(
+        """
+        SELECT id, type, value, is_primary, secured
+        FROM shared.contact_info
+        WHERE contact_id = $1
+        ORDER BY is_primary DESC NULLS LAST, type, id
+        """,
+        contact_id,
+    )
+    contact_info_entries = [
+        ContactInfoEntry(
+            id=ci["id"],
+            type=ci["type"],
+            value=None if ci["secured"] else ci["value"],
+            is_primary=bool(ci["is_primary"]),
+            secured=bool(ci["secured"]),
+        )
+        for ci in ci_rows
+    ]
+
     _raw_meta = row["metadata"]
     metadata = dict(_raw_meta) if isinstance(_raw_meta, dict) else {}
+
+    raw_roles = row["roles"]
+    roles = list(raw_roles) if raw_roles else []
 
     return ContactDetail(
         id=row["id"],
@@ -491,6 +619,307 @@ async def get_contact(
         metadata=metadata,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        roles=roles,
+        entity_id=row["entity_id"],
+        contact_info=contact_info_entries,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /contacts/{contact_id}/secrets/{info_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/contacts/{contact_id}/secrets/{info_id}")
+async def reveal_contact_secret(
+    contact_id: UUID,
+    info_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> dict[str, Any]:
+    """Reveal the actual value of a secured contact_info entry.
+
+    Returns the real value for a secured contact_info row.  Returns 404 if
+    the info_id does not exist OR does not belong to the given contact_id —
+    preventing enumeration of secured values across contacts.
+
+    The response is intentionally minimal: ``{"id": ..., "type": ..., "value": ...}``.
+    """
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        """
+        SELECT id, type, value, secured
+        FROM shared.contact_info
+        WHERE id = $1 AND contact_id = $2
+        """,
+        info_id,
+        contact_id,
+    )
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Contact info entry not found")
+
+    if not row["secured"]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This contact_info entry is not secured; "
+                "value is available in the contact detail response."
+            ),
+        )
+
+    return {"id": str(row["id"]), "type": row["type"], "value": row["value"]}
+
+
+# ---------------------------------------------------------------------------
+# PATCH /contacts/{contact_id}
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/contacts/{contact_id}", response_model=ContactDetail)
+async def patch_contact(
+    contact_id: UUID,
+    request: ContactPatchRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ContactDetail:
+    """Partially update a contact.
+
+    Supported fields: full_name, nickname, company, job_title, roles.
+    This is the sole write path for role assignment.  Only provided
+    (non-None) fields are updated.
+    """
+    pool = _pool(db)
+
+    # Verify contact exists
+    existing = await pool.fetchrow(
+        "SELECT id FROM contacts WHERE id = $1 AND archived_at IS NULL",
+        contact_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    # Build UPDATE from provided fields
+    updates: list[str] = []
+    args: list[Any] = []
+    idx = 1
+
+    if request.full_name is not None:
+        updates.append(f"name = ${idx}")
+        args.append(request.full_name)
+        idx += 1
+
+    if request.nickname is not None:
+        updates.append(f"nickname = ${idx}")
+        args.append(request.nickname)
+        idx += 1
+
+    if request.company is not None:
+        updates.append(f"company = ${idx}")
+        args.append(request.company)
+        idx += 1
+
+    if request.job_title is not None:
+        updates.append(f"job_title = ${idx}")
+        args.append(request.job_title)
+        idx += 1
+
+    if request.roles is not None:
+        updates.append(f"roles = ${idx}")
+        args.append(request.roles)
+        idx += 1
+
+    if updates:
+        updates.append("updated_at = now()")
+        set_clause = ", ".join(updates)
+        args.append(contact_id)
+        await pool.execute(
+            f"UPDATE contacts SET {set_clause} WHERE id = ${idx}",
+            *args,
+        )
+
+    # Return updated contact detail
+    return await get_contact(contact_id=contact_id, db=db)
+
+
+# ---------------------------------------------------------------------------
+# POST /contacts/{contact_id}/confirm
+# ---------------------------------------------------------------------------
+
+
+@router.post("/contacts/{contact_id}/confirm", response_model=ContactDetail)
+async def confirm_contact(
+    contact_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ContactDetail:
+    """Confirm a pending disambiguation contact.
+
+    Removes ``needs_disambiguation`` from the contact's metadata, marking
+    the contact as confirmed by the owner.  Returns the updated contact.
+    """
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        "SELECT id, metadata FROM contacts WHERE id = $1 AND archived_at IS NULL",
+        contact_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    _raw_meta = row["metadata"]
+    metadata = dict(_raw_meta) if isinstance(_raw_meta, dict) else {}
+    metadata.pop("needs_disambiguation", None)
+
+    await pool.execute(
+        "UPDATE contacts SET metadata = $1::jsonb, updated_at = now() WHERE id = $2",
+        json.dumps(metadata),
+        contact_id,
+    )
+
+    return await get_contact(contact_id=contact_id, db=db)
+
+
+# ---------------------------------------------------------------------------
+# POST /contacts/{contact_id}/merge
+# ---------------------------------------------------------------------------
+
+
+@router.post("/contacts/{contact_id}/merge", response_model=ContactMergeResponse)
+async def merge_contact(
+    contact_id: UUID,
+    request: ContactMergeRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ContactMergeResponse:
+    """Merge a temp contact into a target contact.
+
+    Moves all contact_info from the source (temp) contact to the target,
+    attempts entity_merge if both contacts have entity_ids, then deletes
+    the source contact.
+
+    ``contact_id`` in the URL is the **target** (survives).
+    ``source_contact_id`` in the request body is the **temp** (deleted).
+    """
+    pool = _pool(db)
+
+    source_id = request.source_contact_id
+
+    # Validate target contact exists
+    target_row = await pool.fetchrow(
+        "SELECT id, entity_id FROM contacts WHERE id = $1 AND archived_at IS NULL",
+        contact_id,
+    )
+    if target_row is None:
+        raise HTTPException(status_code=404, detail="Target contact not found")
+
+    # Validate source contact exists
+    source_row = await pool.fetchrow(
+        "SELECT id, entity_id FROM contacts WHERE id = $1",
+        source_id,
+    )
+    if source_row is None:
+        raise HTTPException(status_code=404, detail="Source contact not found")
+
+    if contact_id == source_id:
+        raise HTTPException(status_code=400, detail="Source and target contacts must be different")
+
+    # Move contact_info from source to target
+    # Use ON CONFLICT DO NOTHING to skip duplicates (UNIQUE on type, value)
+    moved_result = await pool.fetch(
+        """
+        UPDATE shared.contact_info
+        SET contact_id = $1
+        WHERE contact_id = $2
+        RETURNING id
+        """,
+        contact_id,
+        source_id,
+    )
+    contact_info_moved = len(moved_result)
+
+    # Attempt entity_merge if both have entity_ids
+    entity_merged = False
+    src_entity_id = source_row["entity_id"]
+    tgt_entity_id = target_row["entity_id"]
+
+    if src_entity_id is not None and tgt_entity_id is not None:
+        try:
+            from butlers.modules.memory.tools.entities import entity_merge
+
+            # Find a memory pool that has the entities table
+            memory_pool = None
+            for butler_name in db.butler_names:
+                try:
+                    candidate_pool = db.pool(butler_name)
+                    has_entities = await candidate_pool.fetchval(
+                        "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                        "WHERE table_name = 'entities')"
+                    )
+                    if has_entities:
+                        memory_pool = candidate_pool
+                        break
+                except KeyError:
+                    continue
+
+            if memory_pool is not None:
+                await entity_merge(
+                    memory_pool,
+                    str(src_entity_id),
+                    str(tgt_entity_id),
+                    tenant_id="shared",
+                )
+                entity_merged = True
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "merge_contact: entity_merge failed for %s -> %s, continuing without it",
+                src_entity_id,
+                tgt_entity_id,
+                exc_info=True,
+            )
+
+    # Delete the source contact (cascades to remaining references if any)
+    await pool.execute(
+        "DELETE FROM contacts WHERE id = $1",
+        source_id,
+    )
+
+    return ContactMergeResponse(
+        target_contact_id=contact_id,
+        source_contact_id=source_id,
+        contact_info_moved=contact_info_moved,
+        entity_merged=entity_merged,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /owner/setup-status
+# ---------------------------------------------------------------------------
+
+
+@router.get("/owner/setup-status", response_model=OwnerSetupStatus)
+async def get_owner_setup_status(
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> OwnerSetupStatus:
+    """Return whether the owner contact has telegram or email contact_info configured.
+
+    Used by the dashboard to show setup prompts when the owner has not yet
+    connected their communication channels.
+    """
+    pool = _pool(db)
+
+    rows = await pool.fetch(
+        """
+        SELECT ci.type
+        FROM shared.contact_info ci
+        JOIN contacts c ON c.id = ci.contact_id
+        WHERE 'owner' = ANY(COALESCE(c.roles, '{}'))
+          AND ci.type IN ('telegram', 'email')
+        """,
+    )
+
+    found_types = {r["type"] for r in rows}
+
+    return OwnerSetupStatus(
+        has_telegram="telegram" in found_types,
+        has_email="email" in found_types,
     )
 
 

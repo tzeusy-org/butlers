@@ -11,6 +11,18 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class TargetContact(BaseModel):
+    """Compact contact object resolved from a contact_id in action constraints.
+
+    Included in ApprovalAction when ``tool_args`` contains a ``contact_id`` that
+    resolves to a known contact in shared.contacts.
+    """
+
+    id: str
+    name: str
+    roles: list[str] = Field(default_factory=list)
+
+
 class ApprovalAction(BaseModel):
     """Approval action representation for dashboard API.
 
@@ -30,6 +42,7 @@ class ApprovalAction(BaseModel):
     decided_at: datetime | None = None
     execution_result: dict[str, Any] | None = None
     approval_rule_id: str | None = None
+    target_contact: TargetContact | None = None
 
 
 class ApprovalRule(BaseModel):

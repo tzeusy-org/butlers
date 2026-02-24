@@ -22,6 +22,21 @@ class Label(BaseModel):
     color: str | None = None
 
 
+class ContactInfoEntry(BaseModel):
+    """A single contact_info row for a contact.
+
+    The ``value`` field is set to ``None`` when ``secured=True`` and the
+    caller has not been granted reveal access (masked in list views).
+    Use GET /contacts/{id}/secrets/{info_id} to retrieve the real value.
+    """
+
+    id: UUID
+    type: str
+    value: str | None  # None means masked (secured=True)
+    is_primary: bool = False
+    secured: bool = False
+
+
 class ContactSummary(BaseModel):
     """Compact contact representation for list views."""
 
@@ -35,7 +50,7 @@ class ContactSummary(BaseModel):
 
 
 class ContactDetail(ContactSummary):
-    """Full contact with all fields."""
+    """Full contact with all fields including identity fields."""
 
     notes: str | None = None
     birthday: date | None = None
@@ -45,6 +60,50 @@ class ContactDetail(ContactSummary):
     metadata: dict = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
+    # Identity fields (added by contacts-identity-model migration)
+    roles: list[str] = Field(default_factory=list)
+    entity_id: UUID | None = None
+    contact_info: list[ContactInfoEntry] = Field(default_factory=list)
+
+
+class ContactPatchRequest(BaseModel):
+    """Request body for PATCH /contacts/{id}.
+
+    All fields are optional; only provided fields are updated.
+    ``roles`` is the sole write path for role assignment.
+    """
+
+    full_name: str | None = None
+    nickname: str | None = None
+    company: str | None = None
+    job_title: str | None = None
+    roles: list[str] | None = None
+
+
+class ContactMergeRequest(BaseModel):
+    """Request body for POST /contacts/{id}/merge.
+
+    Merges the temp contact identified by ``source_contact_id`` into
+    the contact identified by the URL path parameter (target).
+    """
+
+    source_contact_id: UUID
+
+
+class ContactMergeResponse(BaseModel):
+    """Response for POST /contacts/{id}/merge."""
+
+    target_contact_id: UUID
+    source_contact_id: UUID
+    contact_info_moved: int
+    entity_merged: bool
+
+
+class OwnerSetupStatus(BaseModel):
+    """Response for GET /owner/setup-status."""
+
+    has_telegram: bool
+    has_email: bool
 
 
 class Group(BaseModel):
