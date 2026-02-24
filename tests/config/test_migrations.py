@@ -632,27 +632,10 @@ def test_relationship_reminder_calendar_projection_columns(postgres_container):
 
     asyncio.run(run_migrations(db_url, chain="core"))
 
-    # rel_008 FKs contacts.entity_id -> entities(id) via search_path.
-    # The full memory chain requires pgvector (unavailable in CI), so create
-    # the entities table as a minimal prerequisite directly.
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            conn.execute(
-                text(
-                    """
-                    CREATE TABLE IF NOT EXISTS entities (
-                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        tenant_id TEXT NOT NULL,
-                        canonical_name VARCHAR NOT NULL,
-                        entity_type VARCHAR NOT NULL DEFAULT 'other'
-                    )
-                    """
-                )
-            )
-    finally:
-        engine.dispose()
-
+    # rel_008 conditionally adds contacts.entity_id -> entities(id) FK only when the
+    # entities table exists in search_path.  Running the relationship chain before the
+    # memory module migration (which creates entities) is a valid scenario; the FK is
+    # simply skipped and can be added later once memory is migrated.
     asyncio.run(run_migrations(db_url, chain="relationship"))
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")

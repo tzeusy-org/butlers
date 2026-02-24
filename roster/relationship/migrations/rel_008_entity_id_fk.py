@@ -24,18 +24,38 @@ def upgrade() -> None:
     op.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS entity_id UUID")
 
     # FK resolves via search_path (butler schema, shared, public) — no hardcoded schema prefix.
+    # The constraint is added only when the entities table already exists in the search_path
+    # (i.e. when the memory module migration has already run).  When entities is absent (e.g.
+    # during butler-chain-only migration runs that precede module migration runs) the column is
+    # still added; the FK is a DO block so it is safe to re-run after memory is migrated.
     op.execute(
         """
-        ALTER TABLE contacts
-        ADD CONSTRAINT contacts_entity_id_fkey
-        FOREIGN KEY (entity_id)
-        REFERENCES entities(id)
-        ON DELETE SET NULL
-        NOT VALID
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relname = 'entities'
+                  AND c.relkind = 'r'
+                  AND n.nspname = ANY(current_schemas(false))
+            ) THEN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'contacts_entity_id_fkey'
+                ) THEN
+                    ALTER TABLE contacts
+                    ADD CONSTRAINT contacts_entity_id_fkey
+                    FOREIGN KEY (entity_id)
+                    REFERENCES entities(id)
+                    ON DELETE SET NULL
+                    NOT VALID;
+                    ALTER TABLE contacts VALIDATE CONSTRAINT contacts_entity_id_fkey;
+                END IF;
+            END IF;
+        END
+        $$;
         """
     )
-
-    op.execute("ALTER TABLE contacts VALIDATE CONSTRAINT contacts_entity_id_fkey")
 
     op.execute(
         """
