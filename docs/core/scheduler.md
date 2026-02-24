@@ -190,10 +190,10 @@ Initial state after creation:
 - **Re-enabling:** `schedule_update(..., enabled=True)` recalculates `next_run_at` from the current cron expression.
 
 ### 8.3 Auto-disable via until_at
-- **Until boundary:** if a task has `until_at` set, the tick handler checks whether `now() > until_at` before dispatching.
-- **Current behavior:** if the until boundary has passed, the task is skipped during this tick. Future ticks will also skip it.
-- **Target state:** an automatic disable step should mark `enabled=false` when the boundary passes, for clearer UI indication and reduced query overhead.
-- **Use case:** "remind me daily until March 1st" — the task continues to run but becomes inactive after the date.
+- **Until boundary:** if a task has `until_at` set, `tick()` checks after computing the next run whether `next_run_at > until_at`.
+- **Implemented behavior:** when the boundary is exceeded, the task is automatically set to `enabled=false` and `next_run_at=NULL`. `last_run_at` and `last_result` are still recorded for the final dispatch.
+- **Use case:** "remind me daily until March 1st" — the task runs normally until its boundary, then auto-disables for clearer UI indication and reduced query overhead.
+- **One-shot reminders:** the `remind` MCP tool uses this mechanism to create tasks with `until_at = target + 1 minute`, guaranteeing exactly-once delivery.
 
 ### 8.4 Deletion
 - **DB-sourced tasks:** `schedule_delete(pool, task_id)` removes the row entirely.
@@ -396,6 +396,39 @@ Deletes a runtime scheduled task.
 - `ValueError` if `task_id` is not found.
 - `ValueError` if the task has `source='toml'`.
 
+### 13.5 remind (MCP tool)
+The `remind` tool is a high-level MCP tool that creates one-shot scheduled tasks. It wraps `schedule_create` with automatic cron generation and `until_at` wiring.
+
+**Signature (daemon.py):**
+```python
+async def remind(
+    message: str,
+    channel: Literal["telegram", "email"],
+    delay_minutes: int | None = None,
+    remind_at: datetime | None = None,
+    request_context: NotifyRequestContextInput | None = None,
+) -> dict
+```
+
+**Parameters:**
+- `message`: the reminder text to deliver.
+- `channel`: delivery channel — `"telegram"` or `"email"`.
+- `delay_minutes`: minutes from now to fire the reminder. Mutually exclusive with `remind_at`.
+- `remind_at`: absolute UTC datetime to fire the reminder. Mutually exclusive with `delay_minutes`. Naive datetimes are assumed UTC.
+- `request_context`: optional context forwarded to `notify()` (e.g., Telegram chat ID).
+
+**Behavior:**
+1. Computes the target datetime (`now + delay_minutes` or the given `remind_at`).
+2. Generates a one-shot cron: `"{minute} {hour} {day} {month} *"`.
+3. Builds a prompt instructing the runtime to call `notify(message=..., channel=..., intent="send")`.
+4. Calls `schedule_create` with `until_at = target + 1 minute`.
+5. After the task fires, the scheduler auto-disables it via the `until_at` mechanism (section 8.3).
+
+**Returns:** `{"id": "<task-uuid>", "status": "scheduled", "remind_at": "<ISO datetime>", "channel": "...", "message": "..."}`
+
+**Errors:** `{"status": "error", "error": "<reason>"}` when inputs are invalid (both/neither timing args, `delay_minutes < 1`, `remind_at` in the past).
+
+
 ## 14. Validation and Error Handling
 
 ### 14.1 Validation helpers
@@ -515,6 +548,23 @@ task_id = await schedule_create(
 
 At dispatch time: `dispatch_fn(job_name="sync_inbox", job_args={"folder": "INBOX", ...}, trigger_source="schedule:sync_gmail")`.
 
+### 17.4 One-shot reminder via remind tool
+MCP tool call:
+```python
+result = await remind(
+    message="Pick up groceries on the way home.",
+    channel="telegram",
+    delay_minutes=60,
+)
+# result: {"id": "...", "status": "scheduled", "remind_at": "2026-02-24T10:00:00+00:00", ...}
+```
+
+Internally creates a scheduled task:
+- `cron = "0 10 24 2 *"` (fires at 10:00 UTC on Feb 24)
+- `until_at = 2026-02-24T10:01:00+00:00` (one minute after target)
+- After firing, `tick()` auto-disables the task (enabled=false, next_run_at=NULL).
+
+
 ## 18. Non-Goals and Future Work
 
 ### Non-Goals
@@ -524,7 +574,6 @@ At dispatch time: `dispatch_fn(job_name="sync_inbox", job_args={"folder": "INBOX
 - Recurrence rule (RRULE) evaluation (use calendar module for RRULE; scheduler is cron-only).
 
 ### Future work (target state)
-- Auto-disable tasks when `until_at` passes (currently skipped by tick but not marked disabled).
 - Structured job result schema and validation.
 - Sub-minute cadence support (current granularity is 1 minute via tick loop).
 - Scheduler dashboard page showing pending tasks, last run status, and next scheduled times.
