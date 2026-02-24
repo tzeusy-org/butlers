@@ -3859,6 +3859,7 @@ class ButlerDaemon:
                 )
                 if contact_identifier is None:
                     # No matching contact_info entry — park as pending_action and notify owner
+                    action_id: uuid.UUID | None = None
                     pool = daemon.db.pool if daemon.db is not None else None
                     if pool is not None:
                         import datetime as _dt
@@ -3903,7 +3904,9 @@ class ButlerDaemon:
                             channel,
                             action_id,
                         )
-                    # Notify the owner about the missing identifier
+                    # Notify the owner about the missing identifier.
+                    # Note: _resolve_default_notify_recipient only handles telegram+send;
+                    # owner_identifier will be None for non-telegram channels.
                     owner_identifier = await daemon._resolve_default_notify_recipient(
                         channel=channel,
                         intent="send",
@@ -3945,7 +3948,7 @@ class ButlerDaemon:
                         "status": "pending_missing_identifier",
                         "contact_id": str(contact_id),
                         "channel": channel,
-                        "pending_action_id": str(action_id) if pool is not None else None,
+                        "pending_action_id": str(action_id) if action_id is not None else None,
                     }
                 resolved_recipient = contact_identifier
             else:
