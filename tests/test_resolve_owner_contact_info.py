@@ -174,6 +174,27 @@ class TestResolveOwnerContactInfoMissingTable:
         with pytest.raises(RuntimeError, match="DB connection timeout"):
             await resolve_owner_contact_info(pool, "telegram")
 
+    async def test_reraises_not_null_constraint_violation(self) -> None:
+        """NOT NULL constraint errors are re-raised (not swallowed as 'missing table')."""
+        # asyncpg NOT NULL violations mention 'column' in their message;
+        # _is_missing_column_or_schema_error must NOT match them.
+        err = Exception(
+            'null value in column "contact_id" of relation "shared.contact_info" '
+            "violates not-null constraint"
+        )
+        pool, _conn = _make_pool(raises=err)
+
+        with pytest.raises(Exception, match="not-null constraint"):
+            await resolve_owner_contact_info(pool, "telegram")
+
+    async def test_reraises_permission_denied_for_schema(self) -> None:
+        """Schema permission errors are re-raised (not swallowed as 'missing schema')."""
+        err = Exception("permission denied for schema shared")
+        pool, _conn = _make_pool(raises=err)
+
+        with pytest.raises(Exception, match="permission denied"):
+            await resolve_owner_contact_info(pool, "telegram")
+
 
 # ---------------------------------------------------------------------------
 # Logging

@@ -494,19 +494,21 @@ async def resolve_owner_contact_info(pool: asyncpg.Pool, info_type: str) -> str 
 
 
 def _is_missing_column_or_schema_error(exc: Exception) -> bool:
-    """Return True when an exception indicates a missing column or schema."""
+    """Return True when an exception indicates a missing column or schema.
+
+    Uses asyncpg exception class names when available (preferred) and falls
+    back to ``"does not exist"`` string matching.  Intentionally avoids bare
+    ``"column"`` / ``"schema"`` substring matches to prevent false-positives on
+    data-integrity errors (e.g. NOT NULL / FK violations) whose messages
+    incidentally contain those words.
+    """
+    cls = exc.__class__.__name__
+    if cls in ("UndefinedColumnError", "InvalidSchemaNameError", "UndefinedTableError"):
+        return True
     msg = str(exc).lower()
-    return any(
-        phrase in msg
-        for phrase in (
-            "column",
-            "does not exist",
-            "schema",
-            "invalid_schema_name",
-            "undefined_column",
-            "undefined_table",
-        )
-    )
+    # "does not exist" is precise enough: covers both missing-table and
+    # missing-column PostgreSQL error text without matching FK/NOT-NULL messages.
+    return "does not exist" in msg
 
 
 async def _safe_fetch_secret_row(
