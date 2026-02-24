@@ -313,32 +313,171 @@ async def test_get_action_invalid_id():
 
 
 @pytest.mark.asyncio
-async def test_approve_action_not_implemented():
-    """POST /api/approvals/actions/{action_id}/approve returns 501 (not implemented)."""
-    app, _ = _app_with_mock_db()
+async def test_approve_action_success():
+    """POST /api/approvals/actions/{action_id}/approve approves and returns updated action."""
+    action_id = uuid4()
+    pending = _make_pending_action_record(action_id=action_id, status="pending")
+    approved = _make_pending_action_record(action_id=action_id, status="approved")
+    executed = _make_pending_action_record(
+        action_id=action_id,
+        status="executed",
+        decided_by="human:dashboard:rest-api",
+        decided_at=_NOW,
+    )
+
+    # fetchrow calls: initial SELECT, CAS approve RETURNING, CAS execute RETURNING, final SELECT
+    app, mock_conn = _app_with_mock_db(
+        fetchrow_return=pending,
+    )
+    mock_conn.fetchrow = AsyncMock(side_effect=[pending, approved, executed, executed])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/actions/{action_id}/approve")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"]["id"] == str(action_id)
+    assert data["data"]["status"] == "executed"
+
+
+@pytest.mark.asyncio
+async def test_approve_action_not_found():
+    """POST /api/approvals/actions/{action_id}/approve returns 404 when action not found."""
+    app, mock_conn = _app_with_mock_db()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post(f"/api/approvals/actions/{uuid4()}/approve")
 
-    assert response.status_code == 501
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_reject_action_not_implemented():
-    """POST /api/approvals/actions/{action_id}/reject returns 501 (not implemented)."""
+async def test_approve_action_invalid_id():
+    """POST /api/approvals/actions/{action_id}/approve returns 400 for invalid UUID."""
     app, _ = _app_with_mock_db()
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
+        response = await client.post("/api/approvals/actions/not-a-uuid/approve")
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_approve_action_conflict():
+    """POST /api/approvals/actions/{action_id}/approve returns 409 for non-pending action."""
+    action_id = uuid4()
+    rejected = _make_pending_action_record(action_id=action_id, status="rejected")
+
+    app, mock_conn = _app_with_mock_db()
+    mock_conn.fetchrow = AsyncMock(return_value=rejected)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/actions/{action_id}/approve")
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_approve_action_no_subsystem():
+    """POST /api/approvals/actions/{action_id}/approve returns 503 when no subsystem."""
+    app, _ = _app_with_mock_db(has_approvals_tables=False)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/actions/{uuid4()}/approve")
+
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_reject_action_success():
+    """POST /api/approvals/actions/{action_id}/reject rejects and returns updated action."""
+    action_id = uuid4()
+    pending = _make_pending_action_record(action_id=action_id, status="pending")
+    rejected = _make_pending_action_record(
+        action_id=action_id,
+        status="rejected",
+        decided_by="human:dashboard:rest-api (reason: Not needed)",
+        decided_at=_NOW,
+    )
+
+    app, mock_conn = _app_with_mock_db()
+    # fetchrow calls: initial SELECT, CAS reject RETURNING, final SELECT
+    mock_conn.fetchrow = AsyncMock(side_effect=[pending, rejected, rejected])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         response = await client.post(
-            f"/api/approvals/actions/{uuid4()}/reject",
+            f"/api/approvals/actions/{action_id}/reject",
             json={"reason": "Not needed"},
         )
 
-    assert response.status_code == 501
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"]["id"] == str(action_id)
+    assert data["data"]["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_reject_action_no_reason():
+    """POST /api/approvals/actions/{action_id}/reject works without a reason body."""
+    action_id = uuid4()
+    pending = _make_pending_action_record(action_id=action_id, status="pending")
+    rejected = _make_pending_action_record(action_id=action_id, status="rejected")
+
+    app, mock_conn = _app_with_mock_db()
+    mock_conn.fetchrow = AsyncMock(side_effect=[pending, rejected, rejected])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/actions/{action_id}/reject")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"]["status"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_reject_action_not_found():
+    """POST /api/approvals/actions/{action_id}/reject returns 404 when action not found."""
+    app, mock_conn = _app_with_mock_db()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/actions/{uuid4()}/reject")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reject_action_conflict():
+    """POST /api/approvals/actions/{action_id}/reject returns 409 for non-pending action."""
+    action_id = uuid4()
+    approved = _make_pending_action_record(action_id=action_id, status="approved")
+
+    app, mock_conn = _app_with_mock_db()
+    mock_conn.fetchrow = AsyncMock(return_value=approved)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/actions/{action_id}/reject")
+
+    assert response.status_code == 409
 
 
 @pytest.mark.asyncio
@@ -458,9 +597,15 @@ async def test_get_rule_not_found():
 
 
 @pytest.mark.asyncio
-async def test_create_rule_not_implemented():
-    """POST /api/approvals/rules returns 501 (not yet implemented)."""
-    app, _ = _app_with_mock_db()
+async def test_create_rule_success():
+    """POST /api/approvals/rules creates and returns a new rule."""
+    rule = _make_approval_rule_record(
+        rule_id=_RULE_ID,
+        tool_name="telegram_send_message",
+        arg_constraints={"chat_id": {"type": "exact", "value": "12345"}},
+    )
+
+    app, mock_conn = _app_with_mock_db(fetchrow_return=rule)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -470,17 +615,86 @@ async def test_create_rule_not_implemented():
             json={
                 "tool_name": "telegram_send_message",
                 "arg_constraints": {"chat_id": {"type": "exact", "value": "12345"}},
+                "description": "Auto-approve messages to support chat",
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"]["tool_name"] == "telegram_send_message"
+    assert data["data"]["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_rule_invalid_max_uses():
+    """POST /api/approvals/rules returns 400 for invalid max_uses."""
+    app, _ = _app_with_mock_db()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/approvals/rules",
+            json={
+                "tool_name": "telegram_send_message",
+                "arg_constraints": {},
+                "description": "Test rule",
+                "max_uses": 0,
+            },
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_create_rule_no_subsystem():
+    """POST /api/approvals/rules returns 503 when no subsystem."""
+    app, _ = _app_with_mock_db(has_approvals_tables=False)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/approvals/rules",
+            json={
+                "tool_name": "telegram_send_message",
+                "arg_constraints": {},
                 "description": "Test rule",
             },
         )
 
-    assert response.status_code == 501
+    assert response.status_code == 503
 
 
 @pytest.mark.asyncio
-async def test_create_rule_from_action_not_implemented():
-    """POST /api/approvals/rules/from-action returns 501 (not yet implemented)."""
-    app, _ = _app_with_mock_db()
+async def test_create_rule_from_action_success():
+    """POST /api/approvals/rules/from-action creates rule from existing action."""
+    action = _make_pending_action_record(
+        action_id=_ACTION_ID,
+        tool_args={"chat_id": "12345", "text": "Hello"},
+    )
+
+    app, mock_conn = _app_with_mock_db(fetchrow_return=action)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/approvals/rules/from-action",
+            json={"action_id": str(_ACTION_ID)},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"]["tool_name"] == "telegram_send_message"
+    assert data["data"]["active"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_rule_from_action_not_found():
+    """POST /api/approvals/rules/from-action returns 404 when action not found."""
+    app, mock_conn = _app_with_mock_db()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -490,20 +704,100 @@ async def test_create_rule_from_action_not_implemented():
             json={"action_id": str(uuid4())},
         )
 
-    assert response.status_code == 501
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_revoke_rule_not_implemented():
-    """POST /api/approvals/rules/{rule_id}/revoke returns 501 (not yet implemented)."""
+async def test_create_rule_from_action_invalid_id():
+    """POST /api/approvals/rules/from-action returns 400 for invalid UUID."""
     app, _ = _app_with_mock_db()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/approvals/rules/from-action",
+            json={"action_id": "not-a-uuid"},
+        )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_revoke_rule_success():
+    """POST /api/approvals/rules/{rule_id}/revoke deactivates the rule and returns it."""
+    active_rule = _make_approval_rule_record(rule_id=_RULE_ID, active=True)
+    revoked_rule = _make_approval_rule_record(rule_id=_RULE_ID, active=False)
+
+    app, mock_conn = _app_with_mock_db()
+    # fetchrow calls: initial SELECT, final SELECT after revoke
+    mock_conn.fetchrow = AsyncMock(side_effect=[active_rule, revoked_rule])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/rules/{_RULE_ID}/revoke")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["data"]["id"] == str(_RULE_ID)
+    assert data["data"]["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_revoke_rule_not_found():
+    """POST /api/approvals/rules/{rule_id}/revoke returns 404 when rule not found."""
+    app, mock_conn = _app_with_mock_db()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post(f"/api/approvals/rules/{uuid4()}/revoke")
 
-    assert response.status_code == 501
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_revoke_rule_already_revoked():
+    """POST /api/approvals/rules/{rule_id}/revoke returns 409 for already revoked rule."""
+    revoked_rule = _make_approval_rule_record(rule_id=_RULE_ID, active=False)
+
+    app, mock_conn = _app_with_mock_db()
+    mock_conn.fetchrow = AsyncMock(return_value=revoked_rule)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/rules/{_RULE_ID}/revoke")
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_revoke_rule_invalid_id():
+    """POST /api/approvals/rules/{rule_id}/revoke returns 400 for invalid UUID."""
+    app, _ = _app_with_mock_db()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/approvals/rules/not-a-uuid/revoke")
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_revoke_rule_no_subsystem():
+    """POST /api/approvals/rules/{rule_id}/revoke returns 503 when no subsystem."""
+    app, _ = _app_with_mock_db(has_approvals_tables=False)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/approvals/rules/{uuid4()}/revoke")
+
+    assert response.status_code == 503
 
 
 @pytest.mark.asyncio
