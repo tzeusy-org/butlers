@@ -49,6 +49,7 @@ pgdata/
 /tmp/butler_*/
 
 # bv (beads viewer) local config and caches
+.beads/issues.jsonl
 .bv/
 
 .worktrees
