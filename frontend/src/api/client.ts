@@ -85,6 +85,7 @@ import type {
   SymptomParams,
   RegistryEntry,
   RoutingEntry,
+  SetEligibilityResponse,
   RoutingLogParams,
   UpcomingDate,
   Episode,
@@ -836,6 +837,20 @@ export function getRoutingLog(
 /** Fetch the switchboard butler registry. */
 export function getRegistry(): Promise<ApiResponse<RegistryEntry[]>> {
   return apiFetch<ApiResponse<RegistryEntry[]>>("/switchboard/registry");
+}
+
+/** Set a butler's eligibility state in the switchboard registry. */
+export function setButlerEligibility(
+  name: string,
+  eligibilityState: string,
+): Promise<ApiResponse<SetEligibilityResponse>> {
+  return apiFetch<ApiResponse<SetEligibilityResponse>>(
+    `/switchboard/registry/${encodeURIComponent(name)}/eligibility`,
+    {
+      method: "POST",
+      body: JSON.stringify({ eligibility_state: eligibilityState }),
+    },
+  );
 }
 
 

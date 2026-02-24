@@ -15,6 +15,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useButler } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
+import { useRegistry, useSetEligibility } from "@/hooks/use-general";
 import { useButlerNotifications } from "@/hooks/use-notifications";
 
 // ---------------------------------------------------------------------------
@@ -80,6 +81,48 @@ function moduleHealthBadge(name: string, status: string) {
         </Badge>
       );
   }
+}
+
+/** Map eligibility state to a badge. Quarantined/stale are clickable to restore. */
+function eligibilityBadge(
+  state: string,
+  onClick?: () => void,
+  isPending?: boolean,
+) {
+  if (state === "active") {
+    return (
+      <Badge className="bg-emerald-600 text-white hover:bg-emerald-600/90">Active</Badge>
+    );
+  }
+  if (state === "quarantined") {
+    return (
+      <Badge
+        variant="destructive"
+        className={isPending ? "opacity-50" : "cursor-pointer"}
+        onClick={isPending ? undefined : onClick}
+        title="Click to restore to active"
+      >
+        {isPending ? "Restoring..." : "Quarantined"}
+      </Badge>
+    );
+  }
+  if (state === "stale") {
+    return (
+      <Badge
+        variant="outline"
+        className={
+          isPending
+            ? "border-amber-500 text-amber-600 opacity-50"
+            : "border-amber-500 text-amber-600 cursor-pointer"
+        }
+        onClick={isPending ? undefined : onClick}
+        title="Click to restore to active"
+      >
+        {isPending ? "Restoring..." : "Stale"}
+      </Badge>
+    );
+  }
+  return <Badge variant="secondary">{state}</Badge>;
 }
 
 /** Format a USD cost value. */
@@ -155,6 +198,8 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
     data: notificationsResponse,
     isLoading: notificationsLoading,
   } = useButlerNotifications(butlerName, { limit: 5 });
+  const { data: registryResponse } = useRegistry();
+  const setEligibility = useSetEligibility();
 
   if (butlerLoading) {
     return <OverviewSkeleton />;
@@ -177,6 +222,9 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
           | undefined
       : undefined;
 
+  // Find this butler's registry entry for eligibility state
+  const registryEntry = registryResponse?.data?.find((r) => r.name === butlerName);
+
   return (
     <div className="space-y-6">
       {/* Identity Card */}
@@ -198,6 +246,27 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
             <dd>{butler?.port ?? "--"}</dd>
             <dt className="text-muted-foreground font-medium">Status</dt>
             <dd className="capitalize">{butler?.status ?? "unknown"}</dd>
+            {registryEntry && (
+              <>
+                <dt className="text-muted-foreground font-medium">Eligibility</dt>
+                <dd>
+                  {eligibilityBadge(
+                    registryEntry.eligibility_state,
+                    () =>
+                      setEligibility.mutate({
+                        name: butlerName,
+                        state: "active",
+                      }),
+                    setEligibility.isPending,
+                  )}
+                  {registryEntry.quarantine_reason && (
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {registryEntry.quarantine_reason}
+                    </span>
+                  )}
+                </dd>
+              </>
+            )}
           </dl>
         </CardContent>
       </Card>

@@ -2,11 +2,12 @@
  * TanStack Query hooks for the General butler and Switchboard APIs.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getRegistry,
   getRoutingLog,
+  setButlerEligibility,
 } from "@/api/index.ts";
 import type { RoutingLogParams } from "@/api/index.ts";
 
@@ -25,5 +26,18 @@ export function useRegistry() {
     queryKey: ["switchboard-registry"],
     queryFn: () => getRegistry(),
     refetchInterval: 30_000,
+  });
+}
+
+/** Mutation to set a butler's eligibility state. */
+export function useSetEligibility() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ name, state }: { name: string; state: string }) =>
+      setButlerEligibility(name, state),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["switchboard-registry"] });
+    },
   });
 }

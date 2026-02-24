@@ -959,7 +959,17 @@ export interface RegistryEntry {
   description: string | null;
   modules: unknown[];
   last_seen_at: string | null;
+  eligibility_state: string;
+  quarantined_at: string | null;
+  quarantine_reason: string | null;
   registered_at: string;
+}
+
+/** Response from setting a butler's eligibility state. */
+export interface SetEligibilityResponse {
+  name: string;
+  previous_state: string;
+  new_state: string;
 }
 
 /** Query parameters for routing log. */

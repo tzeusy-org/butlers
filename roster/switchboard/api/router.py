@@ -38,6 +38,8 @@ if _spec is not None and _spec.loader is not None:
     RoutingEntry = _models.RoutingEntry
     HeartbeatRequest = _models.HeartbeatRequest
     HeartbeatResponse = _models.HeartbeatResponse
+    SetEligibilityRequest = _models.SetEligibilityRequest
+    SetEligibilityResponse = _models.SetEligibilityResponse
     ConnectorEntry = _models.ConnectorEntry
     ConnectorSummary = _models.ConnectorSummary
     ConnectorStatsHourly = _models.ConnectorStatsHourly
@@ -403,6 +405,105 @@ async def receive_heartbeat(
     )
 
     return HeartbeatResponse(status="ok", eligibility_state=new_state)
+
+
+# ---------------------------------------------------------------------------
+# POST /registry/{name}/eligibility — operator eligibility state transition
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/registry/{name}/eligibility",
+    response_model=ApiResponse[SetEligibilityResponse],
+)
+async def set_butler_eligibility(
+    name: str,
+    body: SetEligibilityRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SetEligibilityResponse]:
+    """Transition a butler's eligibility state (operator action).
+
+    Allows an operator to move a butler between eligibility states, e.g.
+    un-quarantining a butler that has recovered.  All transitions are
+    audited to the eligibility log.
+    """
+    pool = _pool(db)
+    now = datetime.datetime.now(datetime.UTC)
+
+    row = await pool.fetchrow(
+        "SELECT eligibility_state, last_seen_at FROM butler_registry WHERE name = $1",
+        name,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Butler '{name}' not found in registry")
+
+    previous_state: str = row["eligibility_state"]
+    if previous_state == body.eligibility_state:
+        return ApiResponse[SetEligibilityResponse](
+            data=SetEligibilityResponse(
+                name=name,
+                previous_state=previous_state,
+                new_state=previous_state,
+            )
+        )
+
+    # Build update fields
+    update_fields = {
+        "eligibility_state": body.eligibility_state,
+        "eligibility_updated_at": now,
+    }
+    if body.eligibility_state != "quarantined":
+        update_fields["quarantined_at"] = None
+        update_fields["quarantine_reason"] = None
+
+    await pool.execute(
+        "UPDATE butler_registry"
+        " SET eligibility_state = $1,"
+        "     eligibility_updated_at = $2,"
+        "     quarantined_at = $3,"
+        "     quarantine_reason = $4"
+        " WHERE name = $5",
+        body.eligibility_state,
+        now,
+        update_fields.get("quarantined_at", now),
+        update_fields.get("quarantine_reason"),
+        name,
+    )
+
+    # Audit the transition
+    try:
+        await pool.execute(
+            """
+            INSERT INTO butler_registry_eligibility_log (
+                butler_name, previous_state, new_state, reason,
+                previous_last_seen_at, new_last_seen_at, observed_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $5, $6)
+            """,
+            name,
+            previous_state,
+            body.eligibility_state,
+            "operator_action",
+            row["last_seen_at"],
+            now,
+        )
+    except Exception:
+        logger.warning("Failed to write eligibility audit log for %s", name, exc_info=True)
+
+    logger.info(
+        "Operator eligibility transition for butler %r: %s → %s",
+        name,
+        previous_state,
+        body.eligibility_state,
+    )
+
+    return ApiResponse[SetEligibilityResponse](
+        data=SetEligibilityResponse(
+            name=name,
+            previous_state=previous_state,
+            new_state=body.eligibility_state,
+        )
+    )
 
 
 def _row_to_connector_entry(r: dict) -> Any:

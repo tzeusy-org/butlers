@@ -56,6 +56,28 @@ class HeartbeatResponse(BaseModel):
     eligibility_state: str
 
 
+class SetEligibilityRequest(BaseModel):
+    """Request body for POST /api/switchboard/registry/{name}/eligibility."""
+
+    eligibility_state: str
+
+    @field_validator("eligibility_state")
+    @classmethod
+    def state_valid(cls, v: str) -> str:
+        allowed = {"active", "stale", "quarantined"}
+        if v not in allowed:
+            raise ValueError(f"eligibility_state must be one of {sorted(allowed)}")
+        return v
+
+
+class SetEligibilityResponse(BaseModel):
+    """Response body for POST /api/switchboard/registry/{name}/eligibility."""
+
+    name: str
+    previous_state: str
+    new_state: str
+
+
 # ---------------------------------------------------------------------------
 # Connector ingestion models
 # ---------------------------------------------------------------------------
