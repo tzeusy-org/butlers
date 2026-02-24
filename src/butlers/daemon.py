@@ -106,6 +106,7 @@ from butlers.core.tool_call_capture import (
 from butlers.credential_store import (
     CredentialStore,
     ensure_secrets_schema,
+    resolve_owner_contact_info,
     shared_db_name_from_env,
 )
 from butlers.credentials import (
@@ -156,10 +157,10 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
-_DEFAULT_TELEGRAM_CHAT_SECRET = "BUTLER_TELEGRAM_CHAT_ID"
+_DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE = "telegram"
 _NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
     "No bot <-> user telegram chat has been configured - please set "
-    "BUTLER_TELEGRAM_CHAT_ID in /secrets"
+    "TELEGRAM_CHAT_ID in /secrets or add a telegram contact_info entry for the owner contact"
 )
 
 
@@ -1772,7 +1773,13 @@ class ButlerDaemon:
     async def _resolve_default_notify_recipient(
         self, *, channel: str, intent: str, recipient: str | None
     ) -> str | None:
-        """Resolve notify recipient, including schedule-safe Telegram default chat mapping."""
+        """Resolve notify recipient, including schedule-safe Telegram default chat mapping.
+
+        For Telegram send without an explicit recipient, looks up the owner contact's
+        ``contact_info`` entry with ``type='telegram'`` in ``shared.contact_info``.
+        Falls back to ``butler_secrets`` (via ``TELEGRAM_CHAT_ID``) for backwards
+        compatibility when the contact_info row is absent.
+        """
         resolved_recipient = recipient.strip() if isinstance(recipient, str) else None
         if resolved_recipient:
             return resolved_recipient
@@ -1780,19 +1787,25 @@ class ButlerDaemon:
         if channel != "telegram" or intent != "send":
             return None
 
+        # 1. Try owner contact_info (new path: contact_info type='telegram')
+        pool = self.db.pool if self.db is not None else None
+        if pool is not None:
+            chat_id = await resolve_owner_contact_info(
+                pool, _DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE
+            )
+            if chat_id:
+                return chat_id.strip() or None
+
+        # 2. Fall back to butler_secrets via TELEGRAM_CHAT_ID (legacy key name)
+        #    and legacy BUTLER_TELEGRAM_CHAT_ID for backwards compatibility.
         credential_store = self._credential_store
-        if credential_store is None:
-            return None
+        if credential_store is not None:
+            for key in ("TELEGRAM_CHAT_ID", "BUTLER_TELEGRAM_CHAT_ID"):
+                configured_chat_id = await credential_store.resolve(key, env_fallback=False)
+                if isinstance(configured_chat_id, str) and configured_chat_id.strip():
+                    return configured_chat_id.strip()
 
-        configured_chat_id = await credential_store.resolve(
-            _DEFAULT_TELEGRAM_CHAT_SECRET,
-            env_fallback=False,
-        )
-        if not isinstance(configured_chat_id, str):
-            return None
-
-        normalized_chat_id = configured_chat_id.strip()
-        return normalized_chat_id or None
+        return None
 
     async def _dispatch_scheduled_task(
         self,
