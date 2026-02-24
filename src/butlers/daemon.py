@@ -3508,13 +3508,16 @@ class ButlerDaemon:
             )
 
             # --- schedule a one-shot task ---
+            # No stagger_key: stagger is designed for recurring tasks to spread load
+            # across butlers.  One-shot reminders must fire as close to the target
+            # minute as possible — adding stagger can push next_run_at past the next
+            # tick boundary and delay delivery by a full extra tick interval.
             until_at = target + timedelta(minutes=1)
             task_id = await _schedule_create(
                 pool,
                 f"remind-{target.strftime('%Y%m%dT%H%M')}-{str(uuid.uuid4())[:8]}",
                 cron,
                 prompt,
-                stagger_key=daemon.config.name,
                 until_at=until_at,
             )
 

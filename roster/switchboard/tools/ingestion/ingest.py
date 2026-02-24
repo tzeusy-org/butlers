@@ -492,65 +492,83 @@ async def ingest_v1(
             ]
         )
 
-    # 7. Ensure partition exists for received_at
-    await pool.execute(
-        "SELECT switchboard_message_inbox_ensure_partition($1)",
-        received_at,
-    )
-
-    # 8. Insert into message_inbox lifecycle store
-    # Tier 2 (metadata-only) uses a distinct lifecycle_state to signal
-    # that LLM classification should be bypassed by the processing pipeline.
+    # 7–8. Dedup-safe insert: acquire a dedicated connection and serialise on
+    # the dedupe_key via pg_advisory_xact_lock so that concurrent submissions
+    # for the same logical event cannot both pass the duplicate check.
+    #
+    # Background: the unique index on message_inbox includes received_at
+    # (required by PostgreSQL partitioning) so two rows with the same
+    # dedupe_key but different received_at timestamps can both INSERT
+    # successfully.  The advisory lock eliminates that race.
     lifecycle_state = "metadata_ref" if ingestion_tier == "metadata" else "accepted"
 
     try:
-        await pool.execute(
-            """
-            INSERT INTO message_inbox (
-                id,
-                received_at,
-                request_context,
-                raw_payload,
-                normalized_text,
-                attachments,
-                lifecycle_state,
-                schema_version,
-                processing_metadata,
-                created_at,
-                updated_at
-            ) VALUES (
-                $1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb,
-                $7, 'message_inbox.v2', '{}'::jsonb, $2, $2
-            )
-            """,
-            request_id,
-            received_at,
-            json.dumps(request_context),
-            json.dumps(raw_payload),
-            normalized_text,
-            attachments_json,
-            lifecycle_state,
-        )
-    except asyncpg.UniqueViolationError:
-        # Race condition: another worker already inserted this dedupe_key
-        # Re-fetch and return existing request_id
-        existing = await _find_request_by_dedupe_key(pool, dedupe_key)
-        if existing:
-            logger.info(
-                "Race condition: duplicate insertion detected for dedupe_key=%s, "
-                "returning existing request_id=%s",
-                dedupe_key,
-                existing["request_id"],
-            )
-            return IngestAcceptedResponse(
-                request_id=existing["request_id"],
-                status="accepted",
-                duplicate=True,
-            )
-        # Should not reach here, but fail-safe
-        raise RuntimeError(
-            f"Unique violation for dedupe_key={dedupe_key} but no existing row found"
-        )
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Serialise concurrent inserts for the same dedupe_key
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", dedupe_key)
+
+                # Re-check inside lock — another insert may have committed
+                # between the optimistic check (step 3) and acquiring the lock
+                existing = await conn.fetchrow(
+                    """
+                    SELECT (request_context ->> 'request_id')::uuid AS request_id
+                    FROM message_inbox
+                    WHERE request_context ->> 'dedupe_key' = $1
+                    ORDER BY received_at DESC
+                    LIMIT 1
+                    """,
+                    dedupe_key,
+                )
+                if existing:
+                    logger.info(
+                        "Duplicate detected inside advisory lock for dedupe_key=%s, "
+                        "returning existing request_id=%s",
+                        dedupe_key,
+                        existing["request_id"],
+                    )
+                    return IngestAcceptedResponse(
+                        request_id=existing["request_id"],
+                        status="accepted",
+                        duplicate=True,
+                        triage_decision=None,
+                        triage_target=None,
+                    )
+
+                # Ensure partition exists for received_at
+                await conn.execute(
+                    "SELECT switchboard_message_inbox_ensure_partition($1)",
+                    received_at,
+                )
+
+                # Insert into message_inbox lifecycle store
+                await conn.execute(
+                    """
+                    INSERT INTO message_inbox (
+                        id,
+                        received_at,
+                        request_context,
+                        raw_payload,
+                        normalized_text,
+                        attachments,
+                        lifecycle_state,
+                        schema_version,
+                        processing_metadata,
+                        created_at,
+                        updated_at
+                    ) VALUES (
+                        $1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb,
+                        $7, 'message_inbox.v2', '{}'::jsonb, $2, $2
+                    )
+                    """,
+                    request_id,
+                    received_at,
+                    json.dumps(request_context),
+                    json.dumps(raw_payload),
+                    normalized_text,
+                    attachments_json,
+                    lifecycle_state,
+                )
     except Exception as exc:
         logger.error("Failed to persist ingest envelope: %s", exc, exc_info=True)
         raise RuntimeError(f"Failed to persist ingest envelope: {exc}") from exc

@@ -364,6 +364,28 @@ class TestRemindTool:
 
         assert result["status"] == "scheduled"
 
+    async def test_remind_does_not_use_stagger(self, tmp_path):
+        """One-shot reminders must not use stagger — it delays delivery."""
+        butler_dir = _make_butler_toml(tmp_path)
+        patches = _patch_infra()
+        _, tools = await _start_daemon_capture_tools(butler_dir, patches)
+
+        task_id = uuid4()
+        with patch(
+            "butlers.daemon._schedule_create",
+            new_callable=AsyncMock,
+            return_value=task_id,
+        ) as mock_create:
+            await tools["remind"](
+                message="Test",
+                channel="telegram",
+                delay_minutes=15,
+            )
+
+        # stagger_key must not be passed (or must be None)
+        kwargs = mock_create.call_args[1]
+        assert kwargs.get("stagger_key") is None
+
     async def test_remind_name_includes_timestamp(self, tmp_path):
         """The schedule name includes a timestamp for uniqueness."""
         butler_dir = _make_butler_toml(tmp_path)
