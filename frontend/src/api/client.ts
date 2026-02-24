@@ -83,9 +83,6 @@ import type {
   ResearchParams,
   Symptom,
   SymptomParams,
-  EntityParams,
-  GeneralCollection,
-  GeneralEntity,
   RegistryEntry,
   RoutingEntry,
   RoutingLogParams,
@@ -818,57 +815,6 @@ export function getResearch(params?: ResearchParams): Promise<PaginatedResponse<
 // ---------------------------------------------------------------------------
 // General / Switchboard
 // ---------------------------------------------------------------------------
-
-/** Fetch a paginated list of collections. */
-export function getCollections(
-  params?: { offset?: number; limit?: number },
-): Promise<PaginatedResponse<GeneralCollection>> {
-  const sp = new URLSearchParams();
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<GeneralCollection>>(
-    qs ? `/general/collections?${qs}` : "/general/collections",
-  );
-}
-
-/** Fetch entities within a specific collection. */
-export function getCollectionEntities(
-  collectionId: string,
-  params?: { offset?: number; limit?: number },
-): Promise<PaginatedResponse<GeneralEntity>> {
-  const sp = new URLSearchParams();
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  const base = `/general/collections/${encodeURIComponent(collectionId)}/entities`;
-  return apiFetch<PaginatedResponse<GeneralEntity>>(qs ? `${base}?${qs}` : base);
-}
-
-/** Fetch a paginated list of entities with optional search/filter. */
-export function getEntities(
-  params?: EntityParams,
-): Promise<PaginatedResponse<GeneralEntity>> {
-  const sp = new URLSearchParams();
-  if (params?.q) sp.set("q", params.q);
-  if (params?.collection) sp.set("collection", params.collection);
-  if (params?.tag) sp.set("tag", params.tag);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<GeneralEntity>>(
-    qs ? `/general/entities?${qs}` : "/general/entities",
-  );
-}
-
-/** Fetch a single entity by ID. */
-export function getEntity(
-  entityId: string,
-): Promise<ApiResponse<GeneralEntity>> {
-  return apiFetch<ApiResponse<GeneralEntity>>(
-    `/general/entities/${encodeURIComponent(entityId)}`,
-  );
-}
 
 /** Fetch the switchboard routing log. */
 export function getRoutingLog(

@@ -898,26 +898,6 @@ export interface HealthResearch {
 // General / Switchboard
 // ---------------------------------------------------------------------------
 
-/** A collection in the General butler. */
-export interface GeneralCollection {
-  id: string;
-  name: string;
-  description: string | null;
-  entity_count: number;
-  created_at: string;
-}
-
-/** An entity stored in a General butler collection. */
-export interface GeneralEntity {
-  id: string;
-  collection_id: string;
-  collection_name: string | null;
-  data: Record<string, unknown>;
-  tags: string[];
-  created_at: string;
-  updated_at: string;
-}
-
 /** Query parameters for measurement endpoints. */
 export interface MeasurementParams {
   type?: string;
@@ -955,15 +935,6 @@ export interface MealParams {
 /** Query parameters for research endpoints. */
 export interface ResearchParams {
   q?: string;
-  tag?: string;
-  offset?: number;
-  limit?: number;
-}
-
-/** Query parameters for entity search. */
-export interface EntityParams {
-  q?: string;
-  collection?: string;
   tag?: string;
   offset?: number;
   limit?: number;

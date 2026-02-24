@@ -61,9 +61,7 @@ const navItems: NavItem[] = [
   { path: '/calendar', label: 'Calendar' },
   { path: '/ingestion', label: 'Ingestion' },
   { path: '/health/measurements', label: 'Health' },
-  { path: '/collections', label: 'Collections' },
   { path: '/memory', label: 'Memory' },
-  { path: '/entities', label: 'Entities' },
   { path: '/secrets', label: 'Secrets' },
   { path: '/settings', label: 'Settings' },
 ]

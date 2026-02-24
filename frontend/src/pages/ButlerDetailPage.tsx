@@ -41,14 +41,6 @@ const ButlerStateTab = lazy(
   () => import("@/components/butler-detail/ButlerStateTab.tsx"),
 );
 
-// General butler tabs (lazy)
-const ButlerCollectionsTab = lazy(
-  () => import("@/components/butler-detail/ButlerCollectionsTab.tsx"),
-);
-const ButlerEntitiesTab = lazy(
-  () => import("@/components/butler-detail/ButlerEntitiesTab.tsx"),
-);
-
 // Switchboard butler tabs (lazy)
 const ButlerMemoryTab = lazy(
   () => import("@/components/butler-detail/ButlerMemoryTab.tsx"),
@@ -79,22 +71,17 @@ const BASE_TABS = [
 ] as const;
 
 const HEALTH_TABS = ["health"] as const;
-const GENERAL_TABS = ["collections", "entities"] as const;
 const SWITCHBOARD_TABS = ["routing-log", "registry"] as const;
 
 type TabValue =
   | (typeof BASE_TABS)[number]
   | (typeof HEALTH_TABS)[number]
-  | (typeof GENERAL_TABS)[number]
   | (typeof SWITCHBOARD_TABS)[number];
 
 function getAllTabs(butlerName: string): readonly string[] {
   const tabs: string[] = [...BASE_TABS];
   if (butlerName === "health") {
     tabs.push(...HEALTH_TABS);
-  }
-  if (butlerName === "general") {
-    tabs.push(...GENERAL_TABS);
   }
   if (butlerName === "switchboard") {
     tabs.push(...SWITCHBOARD_TABS);
@@ -383,7 +370,6 @@ export default function ButlerDetailPage() {
   const tabParam = searchParams.get("tab");
   const activeTab: TabValue = isValidTab(tabParam, name) ? tabParam : "overview";
 
-  const isGeneral = name === "general";
   const isSwitchboard = name === "switchboard";
 
   function handleTabChange(value: string) {
@@ -415,12 +401,6 @@ export default function ButlerDetailPage() {
           <TabsTrigger value="crm">CRM</TabsTrigger>
           <TabsTrigger value="memory">Memory</TabsTrigger>
           {showHealthTab && <TabsTrigger value="health">Health</TabsTrigger>}
-          {isGeneral && (
-            <>
-              <TabsTrigger value="collections">Collections</TabsTrigger>
-              <TabsTrigger value="entities">Entities</TabsTrigger>
-            </>
-          )}
           {isSwitchboard && (
             <>
               <TabsTrigger value="routing-log">Routing Log</TabsTrigger>
@@ -485,21 +465,6 @@ export default function ButlerDetailPage() {
           <TabsContent value="health">
             <ButlerHealthTab butlerName={name} />
           </TabsContent>
-        )}
-
-        {isGeneral && (
-          <>
-            <TabsContent value="collections">
-              <Suspense fallback={<TabFallback label="collections" />}>
-                <ButlerCollectionsTab />
-              </Suspense>
-            </TabsContent>
-            <TabsContent value="entities">
-              <Suspense fallback={<TabFallback label="entities" />}>
-                <ButlerEntitiesTab />
-              </Suspense>
-            </TabsContent>
-          </>
         )}
 
         {isSwitchboard && (
