@@ -3455,10 +3455,11 @@ class ButlerDaemon:
                 NotifyRequestContextInput | None,
                 Field(
                     description=(
-                        "Context lineage for reply/react targeting. Required keys for reply/react: "
-                        "request_id, source_channel, source_endpoint_identity, "
-                        "source_sender_identity. For telegram reply/react include "
-                        "source_thread_identity."
+                        "Context lineage for reply/react targeting. Must be a "
+                        "dict/object — do NOT pass as a JSON string. Required keys "
+                        "for reply/react: request_id, source_channel, "
+                        "source_endpoint_identity, source_sender_identity. For "
+                        "telegram reply/react include source_thread_identity."
                     )
                 ),
             ] = None,
@@ -3474,7 +3475,7 @@ class ButlerDaemon:
             - `subject` (string)
             - `intent` (string enum): `send` | `reply` | `react`
             - `emoji` (string): required when `intent="react"`
-            - `request_context` (object): required for `reply`/`react` and must include
+            - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must include
               `request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`
               plus `source_thread_identity` for telegram `reply`/`react`.
 

@@ -602,6 +602,19 @@ class CodexAdapter(RuntimeAdapter):
                 raise RuntimeError(f"Codex CLI exited with code {returncode}: {error_detail}")
 
             result_text, tool_calls, usage = _parse_codex_output(stdout, stderr, returncode)
+
+            # Warn when MCP servers were configured but no tools were called —
+            # this usually indicates the Codex CLI failed to connect to the MCP
+            # server (e.g. transport mismatch, server unreachable, missing env).
+            if mcp_servers and not tool_calls:
+                diag = stderr.strip()[:500] if stderr.strip() else "(no stderr)"
+                logger.warning(
+                    "Codex CLI returned 0 tool calls despite %d MCP server(s) configured. "
+                    "MCP connection may have failed silently. stderr: %s",
+                    len(mcp_servers),
+                    diag,
+                )
+
             return result_text, tool_calls, usage
 
         except TimeoutError:
