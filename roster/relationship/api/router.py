@@ -821,8 +821,23 @@ async def merge_contact(
     if contact_id == source_id:
         raise HTTPException(status_code=400, detail="Source and target contacts must be different")
 
-    # Move contact_info from source to target
-    # Use ON CONFLICT DO NOTHING to skip duplicates (UNIQUE on type, value)
+    # Move contact_info from source to target.
+    # First delete source rows whose (type, value) already exist on the target to
+    # avoid producing duplicates (shared.contact_info has no unique constraint on
+    # (contact_id, type, value), so a plain UPDATE would silently create them).
+    await pool.execute(
+        """
+        DELETE FROM shared.contact_info
+        WHERE contact_id = $1
+          AND (type, value) IN (
+              SELECT type, value
+              FROM shared.contact_info
+              WHERE contact_id = $2
+          )
+        """,
+        source_id,
+        contact_id,
+    )
     moved_result = await pool.fetch(
         """
         UPDATE shared.contact_info

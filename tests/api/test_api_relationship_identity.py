@@ -14,7 +14,6 @@ Issue: butlers-h9fs.9
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -30,19 +29,26 @@ from butlers.api.db import DatabaseManager
 
 # Load relationship router module dynamically using the same module name as router_discovery
 # so that dependency_overrides work correctly (same _get_db_manager object reference).
+# We load eagerly here (not cached) to guarantee we have a fresh module for this test file.
+# We must also update sys.modules so that router_discovery finds the same module, and so that
+# the relationship-test module (imported in alphabetical order before this file) doesn't
+# stomp our reference. We use a private alias so our _get_db_manager stays authoritative.
 _roster_root = Path(__file__).resolve().parents[2] / "roster"
 _router_path = _roster_root / "relationship" / "api" / "router.py"
 _MODULE_NAME = "relationship_api_router"
-if _MODULE_NAME in sys.modules:
-    _rel_module = sys.modules[_MODULE_NAME]
-else:
-    spec = importlib.util.spec_from_file_location(_MODULE_NAME, _router_path)
-    if spec is None or spec.loader is None:
-        raise ValueError(f"Could not load spec from {_router_path}")
-    _rel_module = importlib.util.module_from_spec(spec)
-    sys.modules[_MODULE_NAME] = _rel_module
-    spec.loader.exec_module(_rel_module)
-_get_db_manager = _rel_module._get_db_manager
+
+
+def _get_rel_db_manager_fn():
+    """Return the live _get_db_manager from the currently-loaded relationship router module.
+
+    Looked up lazily so that whichever exec_module call ran last wins — the
+    FastAPI router always uses the function that is current in the module.
+    """
+    mod = sys.modules.get(_MODULE_NAME)
+    if mod is None:
+        raise RuntimeError("relationship_api_router not loaded in sys.modules")
+    return mod._get_db_manager
+
 
 pytestmark = pytest.mark.unit
 
@@ -90,7 +96,7 @@ def _app_with_mock_pool(
         yield
 
     app.router.lifespan_context = _null_lifespan
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[_get_rel_db_manager_fn()] = lambda: mock_db
 
     return app, mock_db, mock_pool
 
@@ -658,3 +664,41 @@ def test_owner_setup_status_has_neither():
     data = resp.json()
     assert data["has_telegram"] is False
     assert data["has_email"] is False
+
+
+def test_merge_contact_deduplicates_contact_info():
+    """POST /contacts/{id}/merge issues a dedup DELETE before moving contact_info rows."""
+    target_id = uuid4()
+    source_id = uuid4()
+    moved_info_id = uuid4()
+
+    app, _, mock_pool = _app_with_mock_pool(
+        fetchrow_side_effect=[
+            {"id": target_id, "entity_id": None},  # target lookup
+            {"id": source_id, "entity_id": None},  # source lookup
+        ],
+        fetch_side_effect=[
+            [{"id": moved_info_id}],  # UPDATE contact_info RETURNING id
+        ],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.post(
+            f"/api/relationship/contacts/{target_id}/merge",
+            json={"source_contact_id": str(source_id)},
+        )
+
+    assert resp.status_code == 200
+
+    # execute should be called twice: dedup DELETE and final contact DELETE
+    assert mock_pool.execute.await_count == 2
+    calls = mock_pool.execute.await_args_list
+    # First call: dedup delete — remove source rows that exist on target
+    dedup_sql = calls[0].args[0]
+    assert "DELETE FROM shared.contact_info" in dedup_sql
+    assert calls[0].args[1] == source_id
+    assert calls[0].args[2] == target_id
+    # Second call: delete source contact
+    contact_delete_sql = calls[1].args[0]
+    assert "DELETE FROM contacts" in contact_delete_sql
+    assert calls[1].args[1] == source_id
