@@ -9,18 +9,14 @@ import httpx
 import pytest
 from pydantic import BaseModel
 
-from butlers.modules import telegram as telegram_module_impl
 from butlers.modules.base import Module
-from butlers.modules.pipeline import RoutingResult
 from butlers.modules.telegram import TelegramConfig, TelegramModule
 
 pytestmark = pytest.mark.unit
 
 EXPECTED_TELEGRAM_TOOLS = {
-    "user_telegram_get_updates",
     "user_telegram_send_message",
     "user_telegram_reply_to_message",
-    "bot_telegram_get_updates",
     "bot_telegram_send_message",
     "bot_telegram_reply_to_message",
 }
@@ -92,18 +88,16 @@ class TestModuleABCCompliance:
         """Module declares BUTLER_TELEGRAM_TOKEN as required credential."""
         assert telegram_module.credentials_env == ["BUTLER_TELEGRAM_TOKEN"]
 
-    def test_io_descriptors_expose_identity_prefixed_tools(
+    def test_io_descriptors_expose_identity_prefixed_output_tools(
         self, telegram_module: TelegramModule
     ) -> None:
-        """Module I/O descriptors expose the expected prefixed Telegram tools."""
-        assert tuple(d.name for d in telegram_module.user_inputs()) == (
-            "user_telegram_get_updates",
-        )
+        """Module I/O descriptors expose send/reply output tools only (no input tools)."""
+        assert telegram_module.user_inputs() == ()
+        assert telegram_module.bot_inputs() == ()
         assert tuple(d.name for d in telegram_module.user_outputs()) == (
             "user_telegram_send_message",
             "user_telegram_reply_to_message",
         )
-        assert tuple(d.name for d in telegram_module.bot_inputs()) == ("bot_telegram_get_updates",)
         assert tuple(d.name for d in telegram_module.bot_outputs()) == (
             "bot_telegram_send_message",
             "bot_telegram_reply_to_message",
@@ -122,6 +116,18 @@ class TestModuleABCCompliance:
         """Bot send/reply descriptors default to conditional approvals."""
         defaults = {d.approval_default for d in telegram_module.bot_outputs()}
         assert defaults == {"conditional"}
+
+    def test_no_pipeline_attribute(self, telegram_module: TelegramModule) -> None:
+        """TelegramModule has no pipeline attribute (ingestion removed)."""
+        assert not hasattr(telegram_module, "_pipeline")
+
+    def test_no_set_pipeline_method(self, telegram_module: TelegramModule) -> None:
+        """TelegramModule has no set_pipeline method (ingestion removed)."""
+        assert not hasattr(telegram_module, "set_pipeline")
+
+    def test_no_process_update_method(self, telegram_module: TelegramModule) -> None:
+        """TelegramModule has no process_update method (ingestion removed)."""
+        assert not hasattr(telegram_module, "process_update")
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +182,7 @@ class TestToolRegistration:
     async def test_registers_prefixed_tools(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock
     ):
-        """register_tools creates only identity-prefixed Telegram tools."""
+        """register_tools creates only identity-prefixed send/reply tools."""
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
         assert set(mock_mcp._registered_tools.keys()) == EXPECTED_TELEGRAM_TOOLS
 
@@ -293,428 +299,6 @@ class TestReplyToMessage:
         )
 
 
-class TestGetUpdates:
-    """Test _get_updates API interaction."""
-
-    async def test_calls_correct_endpoint(self, telegram_module: TelegramModule, monkeypatch):
-        """_get_updates GETs the getUpdates endpoint."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token-123")
-
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.get.return_value = _mock_response(
-            {
-                "ok": True,
-                "result": [
-                    {"update_id": 1, "message": {"text": "hi"}},
-                    {"update_id": 2, "message": {"text": "hello"}},
-                ],
-            }
-        )
-        telegram_module._client = mock_client
-
-        updates = await telegram_module._get_updates()
-
-        mock_client.get.assert_called_once()
-        call_args = mock_client.get.call_args
-        assert "getUpdates" in call_args[0][0]
-        assert len(updates) == 2
-        assert updates[0]["message"]["text"] == "hi"
-
-    async def test_updates_last_update_id(self, telegram_module: TelegramModule, monkeypatch):
-        """_get_updates advances _last_update_id to the latest."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.get.return_value = _mock_response(
-            {"ok": True, "result": [{"update_id": 100, "message": {"text": "x"}}]}
-        )
-        telegram_module._client = mock_client
-
-        await telegram_module._get_updates()
-        assert telegram_module._last_update_id == 100
-
-    async def test_uses_offset_after_first_call(self, telegram_module: TelegramModule, monkeypatch):
-        """After receiving updates, subsequent calls use offset parameter."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.get.return_value = _mock_response(
-            {"ok": True, "result": [{"update_id": 50, "message": {"text": "a"}}]}
-        )
-        telegram_module._client = mock_client
-
-        # First call
-        await telegram_module._get_updates()
-        assert telegram_module._last_update_id == 50
-
-        # Second call should include offset=51
-        mock_client.get.return_value = _mock_response({"ok": True, "result": []})
-        await telegram_module._get_updates()
-
-        second_call = mock_client.get.call_args
-        assert second_call[1]["params"]["offset"] == 51
-
-    async def test_empty_updates(self, telegram_module: TelegramModule, monkeypatch):
-        """_get_updates returns empty list when no new messages."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.get.return_value = _mock_response({"ok": True, "result": []})
-        telegram_module._client = mock_client
-
-        updates = await telegram_module._get_updates()
-        assert updates == []
-        assert telegram_module._last_update_id == 0
-
-    async def test_conflict_returns_empty_updates(
-        self, telegram_module: TelegramModule, monkeypatch, caplog: pytest.LogCaptureFixture
-    ):
-        """409 Conflict returns no updates and logs an actionable warning."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.get.return_value = _mock_response(
-            {"ok": False, "description": "Conflict: terminated by other getUpdates request"},
-            status_code=409,
-        )
-        telegram_module._client = mock_client
-
-        with caplog.at_level("WARNING"):
-            updates = await telegram_module._get_updates()
-
-        assert updates == []
-        assert telegram_module._last_update_id == 0
-        assert any("getUpdates conflict" in rec.message for rec in caplog.records)
-
-    @pytest.mark.parametrize("tool_name", ["user_telegram_get_updates", "bot_telegram_get_updates"])
-    async def test_get_updates_via_tools(
-        self,
-        telegram_module: TelegramModule,
-        mock_mcp: MagicMock,
-        monkeypatch,
-        tool_name: str,
-    ):
-        """Identity-prefixed get-updates tools delegate to _get_updates."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.get.return_value = _mock_response({"ok": True, "result": []})
-        telegram_module._client = mock_client
-
-        await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        tool_fn = mock_mcp._registered_tools[tool_name]
-        result = await tool_fn()
-
-        assert result == []
-
-
-class TestPipelineIntegration:
-    """Verify classification pipeline integration for incoming updates."""
-
-    async def test_process_update_forwards_to_pipeline(
-        self, telegram_module: TelegramModule, monkeypatch
-    ):
-        """process_update forwards text and metadata into pipeline.process()."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        mock_pipeline = MagicMock()
-        mock_result = RoutingResult(target_butler="general", route_result={"status": "ok"})
-        mock_pipeline.process = AsyncMock(return_value=mock_result)
-        telegram_module.set_pipeline(mock_pipeline)
-
-        update = {"message": {"text": "Need help", "chat": {"id": 12345}}}
-        result = await telegram_module.process_update(update)
-
-        assert result is mock_result
-        mock_pipeline.process.assert_awaited_once()
-        _, call_kwargs = mock_pipeline.process.await_args
-        assert call_kwargs["message_text"] == "Need help"
-        assert call_kwargs["tool_name"] == "bot_telegram_handle_message"
-        # external_event_id is message_key or chat_id (here: "12345")
-        # request_id is generated, so we check it exists but not the value
-        tool_args = call_kwargs["tool_args"]
-        assert "request_id" in tool_args
-        assert tool_args["source"] == "telegram"
-        assert tool_args["source_channel"] == "telegram"
-        assert tool_args["source_identity"] == "bot"
-        assert tool_args["source_endpoint_identity"] == "telegram:bot"
-        assert tool_args["sender_identity"] == "12345"
-        assert tool_args["external_event_id"] == "12345"
-        assert tool_args["external_thread_id"] == "12345"
-        assert tool_args["source_tool"] == "bot_telegram_get_updates"
-        assert tool_args["chat_id"] == "12345"
-        assert tool_args["source_id"] is None
-        assert tool_args["raw_metadata"] == update
-        assert call_kwargs["message_inbox_id"] is None
-        assert telegram_module._routed_messages == [mock_result]
-
-    async def test_reaction_lifecycle_single_route_success(
-        self, telegram_module: TelegramModule, monkeypatch
-    ):
-        """Single-route success transitions :eye -> :done."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
-            return_value={"ok": True}
-        )
-
-        mock_pipeline = MagicMock()
-        mock_pipeline.process = AsyncMock(
-            return_value=RoutingResult(
-                target_butler="general",
-                route_result={"result": "ok"},
-                routed_targets=["general"],
-                acked_targets=["general"],
-            )
-        )
-        telegram_module.set_pipeline(mock_pipeline)
-
-        update = {
-            "update_id": 101,
-            "message": {
-                "message_id": 77,
-                "text": "Need help",
-                "chat": {"id": 12345},
-            },
-        }
-
-        await telegram_module.process_update(update)
-
-        assert telegram_module._set_message_reaction.await_count == 2
-        calls = telegram_module._set_message_reaction.await_args_list
-        assert calls[0].kwargs["reaction"] == ":eye"
-        assert calls[1].kwargs["reaction"] == ":done"
-
-    async def test_reaction_lifecycle_multi_route_waits_for_all_acks(
-        self, telegram_module: TelegramModule, monkeypatch
-    ):
-        """Fan-out keeps :eye until all routed targets are acknowledged."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
-            return_value={"ok": True}
-        )
-
-        first = RoutingResult(
-            target_butler="multi",
-            route_result={"result": "partial"},
-            routed_targets=["health", "general"],
-            acked_targets=["health"],
-            failed_targets=[],
-        )
-        second = RoutingResult(
-            target_butler="multi",
-            route_result={"result": "done"},
-            routed_targets=["general"],
-            acked_targets=["general"],
-            failed_targets=[],
-        )
-
-        mock_pipeline = MagicMock()
-        mock_pipeline.process = AsyncMock(side_effect=[first, second])
-        telegram_module.set_pipeline(mock_pipeline)
-
-        update = {
-            "update_id": 202,
-            "message": {
-                "message_id": 88,
-                "text": "Split this message",
-                "chat": {"id": 222},
-            },
-        }
-
-        await telegram_module.process_update(update)
-        await telegram_module.process_update(update)
-
-        calls = telegram_module._set_message_reaction.await_args_list
-        reactions = [call.kwargs["reaction"] for call in calls]
-        assert reactions == [":eye", ":eye", ":done"]
-
-    async def test_reaction_lifecycle_any_failed_route_sets_failure(
-        self, telegram_module: TelegramModule, monkeypatch
-    ):
-        """Any sub-route failure transitions to :space invader."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
-            return_value={"ok": True}
-        )
-
-        mock_pipeline = MagicMock()
-        mock_pipeline.process = AsyncMock(
-            return_value=RoutingResult(
-                target_butler="multi",
-                route_result={"result": "partial"},
-                routing_error="general: ConnectionError: timeout",
-                routed_targets=["health", "general"],
-                acked_targets=["health"],
-                failed_targets=["general"],
-            )
-        )
-        telegram_module.set_pipeline(mock_pipeline)
-
-        update = {
-            "update_id": 303,
-            "message": {
-                "message_id": 99,
-                "text": "Fanout with error",
-                "chat": {"id": 333},
-            },
-        }
-
-        await telegram_module.process_update(update)
-
-        calls = telegram_module._set_message_reaction.await_args_list
-        reactions = [call.kwargs["reaction"] for call in calls]
-        assert reactions == [":eye", ":space invader"]
-
-    async def test_failure_reaction_400_logs_warning_and_skips_stack_trace(
-        self, telegram_module: TelegramModule, monkeypatch
-    ) -> None:
-        """Terminal failure reaction 400 is treated as expected and non-fatal."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        response = _mock_response(
-            {
-                "ok": False,
-                "error_code": 400,
-                "description": "Bad Request: message reactions are disabled in this chat",
-            },
-            status_code=400,
-        )
-        status_error = httpx.HTTPStatusError(
-            "400 Client Error",
-            request=response.request,
-            response=response,
-        )
-
-        async def mock_set_message_reaction(**kwargs: Any) -> dict[str, Any]:
-            if kwargs["reaction"] == ":space invader":
-                raise status_error
-            return {"ok": True}
-
-        telegram_module._set_message_reaction = mock_set_message_reaction  # type: ignore[method-assign]
-
-        warning_mock = MagicMock()
-        exception_mock = MagicMock()
-        monkeypatch.setattr(telegram_module_impl.logger, "warning", warning_mock)
-        monkeypatch.setattr(telegram_module_impl.logger, "exception", exception_mock)
-
-        mock_pipeline = MagicMock()
-        mock_pipeline.process = AsyncMock(
-            return_value=RoutingResult(
-                target_butler="multi",
-                route_result={"result": "partial"},
-                routing_error="general: ConnectionError: timeout",
-                routed_targets=["health", "general"],
-                acked_targets=["health"],
-                failed_targets=["general"],
-            )
-        )
-        telegram_module.set_pipeline(mock_pipeline)
-
-        update = {
-            "update_id": 304,
-            "message": {
-                "message_id": 100,
-                "text": "Fanout with reaction-disabled error",
-                "chat": {"id": 334},
-            },
-        }
-
-        result = await telegram_module.process_update(update)
-
-        assert result is not None
-        exception_mock.assert_not_called()
-        warning_mock.assert_called_once()
-        warning_extra = warning_mock.call_args.kwargs["extra"]
-        assert warning_extra["reaction"] == ":space invader"
-        assert warning_extra["telegram_status_code"] == 400
-        assert warning_extra["telegram_error_description"] == (
-            "Bad Request: message reactions are disabled in this chat"
-        )
-        assert telegram_module._terminal_reactions["334:100"] == ":space invader"
-
-    async def test_terminal_reaction_does_not_regress_to_in_progress(
-        self, telegram_module: TelegramModule, monkeypatch
-    ):
-        """Terminal reaction is idempotent and never regresses back to :eye."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
-            return_value={"ok": True}
-        )
-
-        done = RoutingResult(
-            target_butler="general",
-            route_result={"result": "ok"},
-            routed_targets=["general"],
-            acked_targets=["general"],
-        )
-        mock_pipeline = MagicMock()
-        mock_pipeline.process = AsyncMock(side_effect=[done, done])
-        telegram_module.set_pipeline(mock_pipeline)
-
-        update = {
-            "update_id": 404,
-            "message": {
-                "message_id": 1001,
-                "text": "Finalize once",
-                "chat": {"id": 444},
-            },
-        }
-
-        await telegram_module.process_update(update)
-        first_count = telegram_module._set_message_reaction.await_count
-        assert first_count == 2
-
-        await telegram_module.process_update(update)
-
-        assert telegram_module._set_message_reaction.await_count == first_count
-
-    async def test_terminal_cleanup_prunes_per_message_tracking(
-        self, telegram_module: TelegramModule, monkeypatch
-    ):
-        """Terminal transitions clear per-message lock/lifecycle tracking."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-        telegram_module._set_message_reaction = AsyncMock(  # type: ignore[method-assign]
-            return_value={"ok": True}
-        )
-
-        mock_pipeline = MagicMock()
-        mock_pipeline.process = AsyncMock(
-            return_value=RoutingResult(
-                target_butler="general",
-                route_result={"result": "ok"},
-                routed_targets=["general"],
-                acked_targets=["general"],
-            )
-        )
-        telegram_module.set_pipeline(mock_pipeline)
-
-        update = {
-            "update_id": 505,
-            "message": {
-                "message_id": 111,
-                "text": "cleanup tracking",
-                "chat": {"id": 555},
-            },
-        }
-
-        await telegram_module.process_update(update)
-
-        message_key = "555:111"
-        assert message_key not in telegram_module._processing_lifecycle
-        assert message_key not in telegram_module._reaction_locks
-        assert telegram_module._terminal_reactions[message_key] == ":done"
-
-    def test_terminal_reaction_cache_is_bounded(self, telegram_module: TelegramModule, monkeypatch):
-        """Terminal cache evicts oldest keys to avoid unbounded growth."""
-        monkeypatch.setattr(telegram_module_impl, "TERMINAL_REACTION_CACHE_SIZE", 2)
-
-        telegram_module._record_terminal_reaction("one", ":done")
-        telegram_module._record_terminal_reaction("two", ":done")
-        telegram_module._record_terminal_reaction("three", ":done")
-
-        assert list(telegram_module._terminal_reactions.keys()) == ["two", "three"]
-
-
 # ---------------------------------------------------------------------------
 # Startup — webhook mode
 # ---------------------------------------------------------------------------
@@ -726,17 +310,6 @@ class TestWebhookMode:
     async def test_calls_set_webhook(self, telegram_module: TelegramModule, monkeypatch):
         """Webhook mode calls setWebhook API on startup."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post.return_value = _mock_response({"ok": True, "result": True})
-
-        # We need to inject the client before on_startup creates a new one
-        original_startup = telegram_module.on_startup
-
-        async def patched_startup(config, db):
-            await original_startup(config, db)
-            # This won't work because on_startup creates a new client.
-            # Instead, patch _set_webhook directly.
 
         telegram_module._set_webhook = AsyncMock(  # type: ignore[method-assign]
             return_value={"ok": True}
@@ -785,7 +358,6 @@ class TestShutdown:
     async def test_shutdown_idempotent(self, telegram_module: TelegramModule):
         """Calling shutdown twice does not raise."""
         telegram_module._client = None
-        telegram_module._poll_task = None
 
         # Should not raise
         await telegram_module.on_shutdown()
@@ -862,198 +434,55 @@ class TestRegistryIntegration:
 
 
 # ---------------------------------------------------------------------------
-# connector_registry counter increment
+# Send/reply tool delegation
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_db_pool() -> tuple[MagicMock, AsyncMock]:
-    """Create a mock asyncpg pool that supports `async with pool.acquire() as conn`.
+class TestIdentityScopedToolFlows:
+    """Verify user/bot send/reply tool behavior."""
 
-    Returns a (db, conn) tuple where db is what gets assigned to telegram_module._db.
-    The db mock does NOT have a .pool attribute (so _get_db_pool falls through to the
-    .acquire path), and supports `async with db.acquire() as conn`.
-    """
-    mock_conn = AsyncMock()
-    mock_conn.fetchval = AsyncMock(return_value=42)
-    mock_conn.execute = AsyncMock(return_value=None)
-
-    # Use a real object to avoid MagicMock auto-creating a .pool attribute
-    class FakePool:
-        """Minimal asyncpg-pool-like object used in tests."""
-
-        def acquire(self):
-            return self
-
-        async def __aenter__(self):
-            return mock_conn
-
-        async def __aexit__(self, *args):
-            return False
-
-    fake_pool = FakePool()
-    return fake_pool, mock_conn
-
-
-class TestConnectorCounterIncrement:
-    """Verify connector_registry counters are updated from process_update."""
-
-    async def test_increment_connector_counter_ingested_on_success(
-        self, telegram_module: TelegramModule, monkeypatch
+    async def test_user_and_bot_send_reply_tools_delegate_helpers(
+        self, monkeypatch: pytest.MonkeyPatch
     ):
-        """After a successful message_inbox INSERT, counter_messages_ingested is incremented."""
+        """Both identity-scoped send/reply tools invoke shared helpers."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        mod = TelegramModule()
+        mcp = MagicMock()
+        tools: dict[str, object] = {}
 
-        mock_pool, mock_conn = _make_mock_db_pool()
-        telegram_module._db = mock_pool
+        def capture_tool():
+            def decorator(fn):
+                tools[fn.__name__] = fn
+                return fn
 
-        mock_pipeline = MagicMock()
-        mock_result = RoutingResult(
-            target_butler="general",
-            route_result={"status": "ok"},
-            routed_targets=["general"],
-            acked_targets=["general"],
+            return decorator
+
+        mcp.tool = capture_tool
+        await mod.register_tools(mcp=mcp, config=None, db=None)
+
+        send_mock = AsyncMock(return_value={"ok": True, "type": "send"})
+        reply_mock = AsyncMock(return_value={"ok": True, "type": "reply"})
+        mod._send_message = send_mock  # type: ignore[method-assign]
+        mod._reply_to_message = reply_mock  # type: ignore[method-assign]
+
+        user_send = await tools["user_telegram_send_message"](chat_id="1", text="hello")  # type: ignore[index]
+        bot_send = await tools["bot_telegram_send_message"](chat_id="2", text="hi")  # type: ignore[index]
+        user_reply = await tools["user_telegram_reply_to_message"](  # type: ignore[index]
+            chat_id="3",
+            message_id=11,
+            text="user reply",
         )
-        mock_pipeline.process = AsyncMock(return_value=mock_result)
-        telegram_module.set_pipeline(mock_pipeline)
-        telegram_module._set_message_reaction = AsyncMock(return_value={"ok": True})
-
-        update = {
-            "update_id": 1001,
-            "message": {"message_id": 10, "text": "Hello", "chat": {"id": 999}},
-        }
-        await telegram_module.process_update(update)
-
-        # conn.execute is called for: partition ensure (x2), counter increment
-        execute_calls = mock_conn.execute.call_args_list
-        increment_calls = [
-            call for call in execute_calls if "counter_messages_ingested" in str(call)
-        ]
-        assert len(increment_calls) == 1, (
-            f"Expected 1 counter_messages_ingested UPDATE call, got {len(increment_calls)}"
-        )
-        call_args = increment_calls[0].args
-        assert call_args[1] == "telegram_bot"
-        assert call_args[2] == "telegram:bot"
-
-    async def test_increment_connector_counter_failed_on_routing_error(
-        self, telegram_module: TelegramModule, monkeypatch
-    ):
-        """On routing failure, counter_messages_failed is incremented."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        mock_pool, mock_conn = _make_mock_db_pool()
-        telegram_module._db = mock_pool
-
-        mock_pipeline = MagicMock()
-        mock_result = RoutingResult(
-            target_butler="general",
-            route_result={"error": "routing failed"},
-            routing_error="routing failed",
-        )
-        mock_pipeline.process = AsyncMock(return_value=mock_result)
-        telegram_module.set_pipeline(mock_pipeline)
-        telegram_module._set_message_reaction = AsyncMock(return_value={"ok": True})
-
-        update = {
-            "update_id": 1002,
-            "message": {"message_id": 11, "text": "Hello", "chat": {"id": 998}},
-        }
-        await telegram_module.process_update(update)
-
-        # Ingested counter should be incremented on INSERT success
-        ingested_calls = [
-            call
-            for call in mock_conn.execute.call_args_list
-            if "counter_messages_ingested" in str(call)
-        ]
-        assert len(ingested_calls) == 1
-
-        # Failed counter is incremented via a separate pool.acquire() call
-        failed_calls = [
-            call
-            for call in mock_conn.execute.call_args_list
-            if "counter_messages_failed" in str(call)
-        ]
-        assert len(failed_calls) == 1, (
-            f"Expected 1 counter_messages_failed UPDATE call, got {len(failed_calls)}"
-        )
-        call_args = failed_calls[0].args
-        assert call_args[1] == "telegram_bot"
-        assert call_args[2] == "telegram:bot"
-
-    async def test_counter_increment_failure_is_non_fatal(
-        self, telegram_module: TelegramModule, monkeypatch
-    ):
-        """A failure in counter increment does not prevent message processing."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        mock_pool, mock_conn = _make_mock_db_pool()
-        telegram_module._db = mock_pool
-
-        # Make execute raise for counter_messages_ingested but not for partition calls
-        async def execute_side_effect(query, *args):
-            if "counter_messages_ingested" in query:
-                raise RuntimeError("DB counter update failed")
-            return None
-
-        mock_conn.execute.side_effect = execute_side_effect
-
-        mock_pipeline = MagicMock()
-        mock_result = RoutingResult(
-            target_butler="general",
-            route_result={"status": "ok"},
-            routed_targets=["general"],
-            acked_targets=["general"],
-        )
-        mock_pipeline.process = AsyncMock(return_value=mock_result)
-        telegram_module.set_pipeline(mock_pipeline)
-        telegram_module._set_message_reaction = AsyncMock(return_value={"ok": True})
-
-        update = {
-            "update_id": 1003,
-            "message": {"message_id": 12, "text": "Hello", "chat": {"id": 997}},
-        }
-        # Should NOT raise even though counter increment fails
-        result = await telegram_module.process_update(update)
-        assert result is not None
-        assert result.target_butler == "general"
-
-    async def test_no_counter_increment_without_db_pool(
-        self, telegram_module: TelegramModule, monkeypatch
-    ):
-        """When no db pool is configured, process_update completes without DB calls."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-
-        # _db is None by default — no pool available
-        assert telegram_module._db is None
-
-        mock_pipeline = MagicMock()
-        mock_result = RoutingResult(
-            target_butler="general",
-            route_result={"status": "ok"},
-        )
-        mock_pipeline.process = AsyncMock(return_value=mock_result)
-        telegram_module.set_pipeline(mock_pipeline)
-
-        update = {"message": {"text": "Hello", "chat": {"id": 111}}}
-        result = await telegram_module.process_update(update)
-        # No error and result is returned correctly
-        assert result is not None
-        assert result.target_butler == "general"
-
-    async def test_increment_connector_counter_unknown_field_logs_warning(
-        self, telegram_module: TelegramModule
-    ):
-        """Passing an unknown field name to _increment_connector_counter logs a warning."""
-        mock_conn = AsyncMock()
-
-        # Should not raise, just log a warning
-        await telegram_module._increment_connector_counter(
-            mock_conn,
-            connector_type="telegram_bot",
-            endpoint_identity="telegram:bot",
-            field="counter_unknown_field",
+        bot_reply = await tools["bot_telegram_reply_to_message"](  # type: ignore[index]
+            chat_id="4",
+            message_id=12,
+            text="bot reply",
         )
 
-        # execute should NOT have been called with an unknown field
-        mock_conn.execute.assert_not_called()
+        assert user_send["type"] == "send"
+        assert bot_send["type"] == "send"
+        assert user_reply["type"] == "reply"
+        assert bot_reply["type"] == "reply"
+        assert send_mock.await_args_list[0].args == ("1", "hello")
+        assert send_mock.await_args_list[1].args == ("2", "hi")
+        assert reply_mock.await_args_list[0].args == ("3", 11, "user reply")
+        assert reply_mock.await_args_list[1].args == ("4", 12, "bot reply")

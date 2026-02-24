@@ -310,7 +310,7 @@ class TestTelegramDescriptorContract:
 
     def test_user_inputs_names(self) -> None:
         mod = TelegramModule()
-        assert [d.name for d in mod.user_inputs()] == ["user_telegram_get_updates"]
+        assert mod.user_inputs() == ()
 
     def test_user_outputs_names(self) -> None:
         mod = TelegramModule()
@@ -321,7 +321,7 @@ class TestTelegramDescriptorContract:
 
     def test_bot_inputs_names(self) -> None:
         mod = TelegramModule()
-        assert [d.name for d in mod.bot_inputs()] == ["bot_telegram_get_updates"]
+        assert mod.bot_inputs() == ()
 
     def test_bot_outputs_names(self) -> None:
         mod = TelegramModule()
@@ -348,10 +348,8 @@ class TestTelegramDescriptorContract:
         mod = TelegramModule()
         names = daemon._validate_module_io_descriptors(mod)
         expected = {
-            "user_telegram_get_updates",
             "user_telegram_send_message",
             "user_telegram_reply_to_message",
-            "bot_telegram_get_updates",
             "bot_telegram_send_message",
             "bot_telegram_reply_to_message",
         }
@@ -443,16 +441,6 @@ class TestTelegramUserVsBotToolRegistration:
         bot_reply = mcp._registered_tools["bot_telegram_reply_to_message"]
         assert user_reply is not bot_reply
 
-    async def test_user_and_bot_get_updates_are_distinct(self) -> None:
-        """User and bot get-updates tools are separate functions."""
-        mod = TelegramModule()
-        mcp = _mock_mcp()
-        await mod.register_tools(mcp=mcp, config={}, db=None)
-
-        user_get = mcp._registered_tools["user_telegram_get_updates"]
-        bot_get = mcp._registered_tools["bot_telegram_get_updates"]
-        assert user_get is not bot_get
-
     async def test_no_unprefixed_telegram_tools_registered(self) -> None:
         """No tools without user_/bot_ prefix are registered."""
         mod = TelegramModule()
@@ -517,49 +505,6 @@ class TestEmailUserVsBotToolRegistration:
             assert name.startswith(("user_email_", "bot_email_")), (
                 f"Unexpected tool name without identity prefix: {name}"
             )
-
-
-class TestTelegramIngestIdentityRouting:
-    """Verify Telegram process_update routes via the bot identity pipeline."""
-
-    async def test_process_update_uses_bot_prefixed_tool_name(self, monkeypatch: Any) -> None:
-        """Inbound Telegram messages route via bot_telegram_handle_message."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-        mod = TelegramModule()
-        mod._log_message_inbox = AsyncMock(return_value=None)
-
-        mock_pipeline = MagicMock()
-        mock_pipeline.process = AsyncMock(
-            return_value=RoutingResult(target_butler="general", route_result={"status": "ok"})
-        )
-        mod.set_pipeline(mock_pipeline)
-
-        update = {"message": {"text": "Hello", "chat": {"id": 12345}}}
-        await mod.process_update(update)
-
-        _, call_kwargs = mock_pipeline.process.await_args
-        assert call_kwargs["tool_name"] == "bot_telegram_handle_message"
-
-    async def test_process_update_sets_bot_identity_metadata(self, monkeypatch: Any) -> None:
-        """Inbound Telegram metadata includes bot identity and source tool."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
-        mod = TelegramModule()
-        mod._log_message_inbox = AsyncMock(return_value=None)
-
-        mock_pipeline = MagicMock()
-        mock_pipeline.process = AsyncMock(
-            return_value=RoutingResult(target_butler="general", route_result={"status": "ok"})
-        )
-        mod.set_pipeline(mock_pipeline)
-
-        update = {"message": {"text": "Hello", "chat": {"id": 99}}}
-        await mod.process_update(update)
-
-        _, call_kwargs = mock_pipeline.process.await_args
-        assert call_kwargs["tool_args"]["source_identity"] == "bot"
-        assert call_kwargs["tool_args"]["source_channel"] == "telegram"
-        assert call_kwargs["tool_args"]["source_tool"] == "bot_telegram_get_updates"
-        assert call_kwargs["tool_args"]["source_endpoint_identity"] == "telegram:bot"
 
 
 class TestEmailIngestIdentityRouting:

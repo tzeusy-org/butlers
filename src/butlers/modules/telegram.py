@@ -1,8 +1,8 @@
 """Telegram module — identity-prefixed Telegram MCP tools.
 
 Ingestion is handled by ``TelegramBotConnector`` which submits messages through
-the canonical ingest API. This module provides identity-prefixed MCP tools for
-sending/receiving messages and webhook setup.
+the canonical ingest API. This module is output-only: it provides send/reply MCP
+tools and webhook setup. Polling and pipeline wiring have been removed.
 
 Configured via [modules.telegram] with optional
 [modules.telegram.user] and [modules.telegram.bot] credential scopes in butler.toml.
@@ -10,27 +10,26 @@ Configured via [modules.telegram] with optional
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import os
 import re
-from collections import OrderedDict
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.modules.base import Module, ToolIODescriptor
-from butlers.modules.pipeline import MessagePipeline, RoutingResult
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+REACTION_TO_EMOJI = {
+    ":eye": "\U0001f440",
+    ":done": "\u2705",
+    ":space invader": "\U0001f47e",
+}
 
 
 def _validate_env_var_name(value: str, *, scope: str, field_name: str) -> str:
@@ -74,47 +73,6 @@ class TelegramBotCredentialsConfig(BaseModel):
         return _validate_env_var_name(value, scope="bot", field_name="token_env")
 
 
-REACTION_IN_PROGRESS = ":eye"
-REACTION_SUCCESS = ":done"
-# Internal lifecycle alias; Telegram receives the mapped Unicode emoji (👾), not this key.
-REACTION_FAILURE = ":space invader"
-REACTION_TO_EMOJI = {
-    REACTION_IN_PROGRESS: "\U0001f440",
-    REACTION_SUCCESS: "\u2705",
-    REACTION_FAILURE: "\U0001f47e",
-}
-TERMINAL_REACTION_CACHE_SIZE = 2048
-_REACTION_400_HINTS = (
-    "reaction_invalid",
-    "reaction is invalid",
-    "unsupported reaction",
-    "reactions are disabled",
-    "can't be reacted",
-    "cannot be reacted",
-    "reaction not available",
-    "reaction unavailable",
-)
-
-
-@dataclass
-class ProcessingLifecycle:
-    """Tracks per-message routing progress and terminal reaction state."""
-
-    routed_targets: set[str] = field(default_factory=set)
-    acked_targets: set[str] = field(default_factory=set)
-    failed_targets: set[str] = field(default_factory=set)
-    terminal_reaction: str | None = None
-
-
-@dataclass(frozen=True)
-class IngressPersistenceResult:
-    """Outcome of persisting an inbound Telegram payload."""
-
-    request_id: Any
-    decision: str
-    dedupe_key: str | None = None
-
-
 class TelegramConfig(BaseModel):
     """Configuration for the Telegram module."""
 
@@ -127,21 +85,14 @@ class TelegramConfig(BaseModel):
 class TelegramModule(Module):
     """Telegram module providing identity-prefixed Telegram MCP tools.
 
-    When a ``MessagePipeline`` is set via ``set_pipeline()``, incoming
-    Telegram messages are forwarded through ``classify_message()`` then
-    ``route()`` to the appropriate butler.
+    Output-only: provides send/reply tools and webhook setup.
+    Ingestion is owned by TelegramBotConnector via the canonical ingest API.
     """
 
     def __init__(self) -> None:
         self._config: TelegramConfig = TelegramConfig()
         self._client: httpx.AsyncClient | None = None
-        self._last_update_id: int = 0
-        self._pipeline: MessagePipeline | None = None
-        self._routed_messages: list[RoutingResult] = []
         self._db: Any = None
-        self._processing_lifecycle: dict[str, ProcessingLifecycle] = {}
-        self._reaction_locks: dict[str, asyncio.Lock] = {}
-        self._terminal_reactions: OrderedDict[str, str] = OrderedDict()
         # Credentials cached at startup via CredentialStore (DB-first, then env).
         # Keys are the env var names configured in TelegramConfig (e.g. "BUTLER_TELEGRAM_TOKEN").
         self._resolved_credentials: dict[str, str] = {}
@@ -159,13 +110,8 @@ class TelegramModule(Module):
         return []
 
     def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        """User-identity Telegram input tools."""
-        return (
-            ToolIODescriptor(
-                name="user_telegram_get_updates",
-                description="Read updates from the user Telegram identity.",
-            ),
-        )
+        """User-identity Telegram input tools — none (ingestion owned by connector)."""
+        return ()
 
     def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
         """User-identity Telegram output tools.
@@ -186,13 +132,8 @@ class TelegramModule(Module):
         )
 
     def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        """Bot-identity Telegram input tools."""
-        return (
-            ToolIODescriptor(
-                name="bot_telegram_get_updates",
-                description="Read updates from the bot Telegram identity.",
-            ),
-        )
+        """Bot-identity Telegram input tools — none (ingestion owned by connector)."""
+        return ()
 
     def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
         """Bot-identity Telegram output tools."""
@@ -221,14 +162,6 @@ class TelegramModule(Module):
 
     def migration_revisions(self) -> str | None:
         return None  # No custom tables needed
-
-    def set_pipeline(self, pipeline: MessagePipeline) -> None:
-        """Attach a classification/routing pipeline for incoming messages.
-
-        When set, incoming messages from polling or webhook processing will
-        be classified and routed to the appropriate butler.
-        """
-        self._pipeline = pipeline
 
     def _get_bot_token(self) -> str:
         """Resolve Telegram bot token — startup-cached store first, then environment variable.
@@ -259,332 +192,8 @@ class TelegramModule(Module):
             self._client = httpx.AsyncClient()
         return self._client
 
-    def _get_db_pool(self) -> Any | None:
-        """Return an asyncpg-compatible pool-like object if available."""
-        if self._db is None:
-            return None
-        pool = getattr(self._db, "pool", None)
-        if pool is not None:
-            return pool
-        if hasattr(self._db, "acquire"):
-            return self._db
-        return None
-
-    async def _increment_connector_counter(
-        self,
-        conn: Any,
-        connector_type: str,
-        endpoint_identity: str,
-        field: str,
-    ) -> None:
-        """Atomically increment a counter column in connector_registry.
-
-        This is non-fatal: any failure is logged but does not block message processing.
-
-        Args:
-            conn: An active asyncpg connection (already acquired from the pool).
-            connector_type: The connector type identifier (e.g. ``"telegram_bot"``).
-            endpoint_identity: The endpoint identity (e.g. ``"telegram:bot"``).
-            field: Column name to increment — either ``"counter_messages_ingested"``
-                or ``"counter_messages_failed"``.
-        """
-        allowed_fields = {"counter_messages_ingested", "counter_messages_failed"}
-        if field not in allowed_fields:
-            logger.warning("Ignoring unknown connector_registry counter field: %s", field)
-            return
-        try:
-            await conn.execute(
-                f"UPDATE connector_registry"
-                f" SET {field} = {field} + 1"
-                f" WHERE connector_type = $1 AND endpoint_identity = $2",
-                connector_type,
-                endpoint_identity,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to increment connector_registry.%s for %s/%s",
-                field,
-                connector_type,
-                endpoint_identity,
-                exc_info=True,
-            )
-
-    async def _store_message_inbox_entry(
-        self,
-        *,
-        sender_id: str,
-        message_text: str,
-        update: dict[str, Any],
-        chat_id: str | None,
-        message_key: str | None,
-    ) -> IngressPersistenceResult | None:
-        """Persist raw inbound Telegram payload for downstream routing/audit linkage."""
-        pool = self._get_db_pool()
-        if pool is None:
-            return None
-
-        dedupe_key = f"telegram:telegram:bot:update:{message_key}" if message_key else None
-        raw_metadata_payload = {
-            "source_metadata": {
-                "channel": "telegram",
-                "identity": "bot",
-                "tool_name": "bot_telegram_get_updates",
-            },
-            "telegram_update": update,
-        }
-
-        try:
-            async with pool.acquire() as conn:
-                request_context = {
-                    "source_channel": "telegram",
-                    "source_endpoint_identity": "telegram:bot",
-                    "source_sender_identity": sender_id,
-                    "source_thread_identity": chat_id,
-                    "dedupe_key": dedupe_key,
-                    "dedupe_strategy": "telegram_update_id_endpoint",
-                }
-                raw_payload = {
-                    "content": message_text,
-                    "metadata": raw_metadata_payload,
-                }
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO message_inbox (
-                        received_at,
-                        request_context,
-                        raw_payload,
-                        normalized_text,
-                        lifecycle_state,
-                        schema_version
-                    ) VALUES (
-                        now(), $1::jsonb, $2::jsonb, $3,
-                        'accepted', 'message_inbox.v2'
-                    )
-                    ON CONFLICT ((request_context ->> 'dedupe_key'), received_at)
-                    WHERE request_context ->> 'dedupe_key' IS NOT NULL
-                    DO UPDATE SET updated_at = now()
-                    RETURNING id AS request_id, (xmax = 0) AS inserted
-                    """,
-                    json.dumps(request_context),
-                    json.dumps(raw_payload),
-                    message_text,
-                )
-        except Exception:
-            logger.exception("Failed to insert Telegram message_inbox row")
-            return None
-
-        if row is None:
-            return None
-
-        decision = "accepted" if bool(row["inserted"]) else "deduped"
-        return IngressPersistenceResult(
-            request_id=row["request_id"],
-            decision=decision,
-            dedupe_key=dedupe_key,
-        )
-
-    @staticmethod
-    def _result_has_failure(result: RoutingResult) -> bool:
-        if result.classification_error or result.routing_error:
-            return True
-        if result.failed_targets:
-            return True
-        route_error = result.route_result.get("error")
-        return route_error not in (None, "")
-
-    def _message_lock(self, message_key: str) -> asyncio.Lock:
-        lock = self._reaction_locks.get(message_key)
-        if lock is not None:
-            return lock
-        lock = asyncio.Lock()
-        return self._reaction_locks.setdefault(message_key, lock)
-
-    def _lifecycle(self, message_key: str) -> ProcessingLifecycle:
-        lifecycle = self._processing_lifecycle.get(message_key)
-        if lifecycle is not None:
-            return lifecycle
-        lifecycle = ProcessingLifecycle()
-        return self._processing_lifecycle.setdefault(message_key, lifecycle)
-
-    def _record_terminal_reaction(self, message_key: str, reaction: str) -> None:
-        self._terminal_reactions[message_key] = reaction
-        self._terminal_reactions.move_to_end(message_key)
-        while len(self._terminal_reactions) > TERMINAL_REACTION_CACHE_SIZE:
-            self._terminal_reactions.popitem(last=False)
-
-    def _cached_terminal_reaction(self, message_key: str) -> str | None:
-        reaction = self._terminal_reactions.get(message_key)
-        if reaction is not None:
-            self._terminal_reactions.move_to_end(message_key)
-        return reaction
-
-    def _cleanup_message_state(self, message_key: str) -> None:
-        lifecycle = self._processing_lifecycle.get(message_key)
-        if lifecycle is None or lifecycle.terminal_reaction is None:
-            return
-        self._processing_lifecycle.pop(message_key, None)
-        lock = self._reaction_locks.get(message_key)
-        if lock is not None and not lock.locked():
-            self._reaction_locks.pop(message_key, None)
-
-    @staticmethod
-    def _telegram_error_description(response: httpx.Response | None) -> str | None:
-        if response is None:
-            return None
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = None
-        if isinstance(payload, dict):
-            description = payload.get("description")
-            if isinstance(description, str):
-                description = description.strip()
-                if description:
-                    return description
-        return None
-
-    @classmethod
-    def _describe_get_updates_conflict(cls, response: httpx.Response | None) -> str:
-        description = cls._telegram_error_description(response)
-        if description is None:
-            return (
-                "Telegram rejected getUpdates with 409 Conflict. "
-                "Ensure only one poller is active and webhook mode is not enabled for this token."
-            )
-
-        normalized = description.lower()
-        if "webhook" in normalized:
-            return (
-                f"{description} Disable webhook mode for this token "
-                "or switch this caller to webhook ingestion."
-            )
-        if "terminated by other getupdates request" in normalized:
-            return (
-                f"{description} Another consumer is polling with this token; "
-                "ensure only one polling process is active."
-            )
-        return description
-
-    @staticmethod
-    def _is_expected_reaction_http_400(
-        *, reaction: str, error: httpx.HTTPStatusError, description: str | None
-    ) -> bool:
-        response = error.response
-        if response is None or response.status_code != 400:
-            return False
-
-        normalized = description.lower() if description is not None else None
-        if normalized is not None:
-            if any(hint in normalized for hint in _REACTION_400_HINTS):
-                return True
-            if "reaction" in normalized and any(
-                token in normalized for token in ("not available", "disabled", "unsupported")
-            ):
-                return True
-
-        # Terminal failure reaction is best-effort; some chats reject this lifecycle emoji.
-        return reaction == REACTION_FAILURE
-
-    def _track_routing_progress(
-        self, lifecycle: ProcessingLifecycle, result: RoutingResult
-    ) -> None:
-        if result.routed_targets:
-            lifecycle.routed_targets.update(result.routed_targets)
-        elif result.target_butler and result.target_butler != "multi":
-            lifecycle.routed_targets.add(result.target_butler)
-
-        if result.acked_targets:
-            lifecycle.acked_targets.update(result.acked_targets)
-        if result.failed_targets:
-            lifecycle.failed_targets.update(result.failed_targets)
-
-        if (
-            not result.failed_targets
-            and not result.routing_error
-            and not result.classification_error
-            and result.target_butler
-            and result.target_butler != "multi"
-            and not result.acked_targets
-        ):
-            lifecycle.acked_targets.add(result.target_butler)
-
-    async def _update_reaction(
-        self,
-        *,
-        chat_id: str | None,
-        message_id: int | None,
-        message_key: str | None,
-        reaction: str,
-    ) -> None:
-        if chat_id in (None, "") or message_id is None or message_key is None:
-            return
-        # Check token availability via resolved cache or env var fallback.
-        token_available = self._resolved_credentials.get(
-            self._config.bot.token_env
-        ) or os.environ.get(self._config.bot.token_env, "")
-        if not token_available:
-            return
-        if reaction not in REACTION_TO_EMOJI:
-            return
-
-        terminal_reaction = self._cached_terminal_reaction(message_key)
-        if terminal_reaction is not None:
-            if reaction == REACTION_IN_PROGRESS:
-                return
-            if reaction == terminal_reaction:
-                return
-            return
-
-        lifecycle = self._lifecycle(message_key)
-        if lifecycle.terminal_reaction is not None:
-            if lifecycle.terminal_reaction == reaction:
-                return
-            if reaction == REACTION_IN_PROGRESS:
-                return
-            return
-
-        if reaction in (REACTION_SUCCESS, REACTION_FAILURE):
-            lifecycle.terminal_reaction = reaction
-            self._record_terminal_reaction(message_key, reaction)
-
-        try:
-            await self._set_message_reaction(
-                chat_id=chat_id,
-                message_id=message_id,
-                reaction=reaction,
-            )
-        except Exception as error:
-            if isinstance(error, httpx.HTTPStatusError):
-                description = self._telegram_error_description(error.response)
-                if self._is_expected_reaction_http_400(
-                    reaction=reaction,
-                    error=error,
-                    description=description,
-                ):
-                    logger.warning(
-                        "Skipping Telegram message reaction after expected API constraint",
-                        extra={
-                            "source": "telegram",
-                            "chat_id": chat_id,
-                            "message_id": message_id,
-                            "reaction": reaction,
-                            "telegram_status_code": error.response.status_code,
-                            "telegram_error_description": description,
-                        },
-                    )
-                    return
-            logger.exception(
-                "Failed to set Telegram message reaction",
-                extra={
-                    "source": "telegram",
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "reaction": reaction,
-                },
-            )
-
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        """Register identity-prefixed Telegram MCP tools."""
+        """Register identity-prefixed Telegram send/reply MCP tools."""
         self._config = (
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))
         )
@@ -608,18 +217,9 @@ class TelegramModule(Module):
             reply_to_message_tool.__doc__ = f"Reply as the {identity} Telegram identity."
             mcp.tool()(reply_to_message_tool)
 
-        def _register_get_updates_tool(identity: str) -> None:
-            async def get_updates_tool() -> list[dict[str, Any]]:
-                return await module._get_updates()
-
-            get_updates_tool.__name__ = f"{identity}_telegram_get_updates"
-            get_updates_tool.__doc__ = f"Get recent updates for the {identity} Telegram identity."
-            mcp.tool()(get_updates_tool)
-
         for identity in ("user", "bot"):
             _register_send_tool(identity)
             _register_reply_tool(identity)
-            _register_get_updates_tool(identity)
 
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Set webhook if configured. Ingestion is handled by TelegramBotConnector.
@@ -639,7 +239,6 @@ class TelegramModule(Module):
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))
         )
         self._client = httpx.AsyncClient()
-        self._last_update_id = 0
         self._db = db
         self._resolved_credentials = {}
         if credential_store is not None:
@@ -658,204 +257,6 @@ class TelegramModule(Module):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
-        self._processing_lifecycle.clear()
-        self._reaction_locks.clear()
-        self._terminal_reactions.clear()
-
-    # ------------------------------------------------------------------
-    # Classification pipeline integration
-    # ------------------------------------------------------------------
-
-    async def process_update(self, update: dict[str, Any]) -> RoutingResult | None:
-        """Process a single Telegram update through the classification pipeline.
-
-        Extracts the message text from the update, classifies it via
-        ``classify_message()``, and routes it to the target butler via
-        ``route()``.
-
-        Returns ``None`` if no pipeline is configured or the update has
-        no extractable text.
-        """
-        chat_id = _extract_chat_id(update)
-        message_id = _extract_message_id(update)
-        message_key = _message_tracking_key(update, chat_id=chat_id, message_id=message_id)
-        if self._pipeline is None:
-            logger.warning(
-                "Skipping Telegram update because no classification pipeline is configured",
-                extra={
-                    "source": "telegram",
-                    "chat_id": chat_id,
-                    "target_butler": None,
-                    "latency_ms": None,
-                    "update_id": update.get("update_id"),
-                },
-            )
-            return None
-
-        text = _extract_text(update)
-        if not text:
-            return None
-        lock = self._message_lock(message_key) if message_key is not None else None
-        if lock is not None:
-            await lock.acquire()
-        try:
-            await self._update_reaction(
-                chat_id=chat_id,
-                message_id=message_id,
-                message_key=message_key,
-                reaction=REACTION_IN_PROGRESS,
-            )
-
-            # Phase 1: Log receipt
-            request_id = str(uuid4())
-            received_at = datetime.now(UTC)
-            sender_identity = _extract_sender_identity(update, fallback=chat_id)
-            request_context = {
-                "request_id": message_key,
-                "received_at": received_at.isoformat(),
-                "source_channel": "telegram",
-                "source_endpoint_identity": "telegram:bot",
-                "source_sender_identity": sender_identity,
-                "source_thread_identity": message_key or chat_id,
-                "trace_context": {},
-            }
-            message_inbox_id = None
-            db_pool = self._get_db_pool()
-            if db_pool is not None:
-                processing_metadata = {
-                    "ingest_tool": "bot_telegram_get_updates",
-                    "source_metadata": {
-                        "channel": "telegram",
-                        "identity": "bot",
-                        "tool_name": "bot_telegram_get_updates",
-                        "source_id": message_key,
-                    },
-                }
-                async with db_pool.acquire() as conn:
-                    await conn.execute(
-                        "SELECT switchboard_message_inbox_ensure_partition($1)",
-                        received_at,
-                    )
-                    await conn.execute(
-                        "SELECT switchboard_message_inbox_ensure_partition("
-                        "date_trunc('month', $1::timestamptz) + INTERVAL '1 month'"
-                        ")",
-                        received_at,
-                    )
-                    # NOTE: expired partition cleanup is deferred to periodic background
-                    # jobs (e.g. scheduler tick) to avoid catalog queries on the hot path.
-                    message_inbox_id = await conn.fetchval(
-                        """
-                        INSERT INTO message_inbox
-                            (
-                                request_context,
-                                raw_payload,
-                                normalized_text,
-                                received_at,
-                                lifecycle_state,
-                                schema_version,
-                                processing_metadata
-                            )
-                        VALUES
-                            ($1::jsonb, $2::jsonb, $3, $4, $5, $6, $7::jsonb)
-                        RETURNING id
-                        """,
-                        json.dumps(request_context),
-                        json.dumps(update),
-                        text,
-                        received_at,
-                        "accepted",
-                        "message_inbox.v2",
-                        json.dumps(processing_metadata),
-                    )
-                    # Increment ingested counter atomically on the same connection.
-                    # Non-fatal: failure is logged but does not block message processing.
-                    await self._increment_connector_counter(
-                        conn,
-                        connector_type="telegram_bot",
-                        endpoint_identity="telegram:bot",
-                        field="counter_messages_ingested",
-                    )
-
-            result = await self._pipeline.process(
-                message_text=text,
-                tool_name="bot_telegram_handle_message",
-                tool_args={
-                    "source": "telegram",
-                    "source_channel": "telegram",
-                    "source_identity": "bot",
-                    "source_endpoint_identity": "telegram:bot",
-                    "sender_identity": chat_id,
-                    "external_event_id": message_key or chat_id,
-                    "external_thread_id": chat_id,
-                    "source_tool": "bot_telegram_get_updates",
-                    "chat_id": chat_id,
-                    "source_id": message_key,
-                    "raw_metadata": update,
-                    "request_id": request_id,
-                    "request_context": request_context,
-                },
-                message_inbox_id=message_inbox_id,
-            )
-
-            routing_failed = self._result_has_failure(result)
-            if message_key is not None:
-                lifecycle = self._lifecycle(message_key)
-                self._track_routing_progress(lifecycle, result)
-                pending_targets = (
-                    lifecycle.routed_targets - lifecycle.acked_targets - lifecycle.failed_targets
-                )
-                if routing_failed or lifecycle.failed_targets:
-                    routing_failed = True
-                    await self._update_reaction(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        message_key=message_key,
-                        reaction=REACTION_FAILURE,
-                    )
-                elif lifecycle.routed_targets and not pending_targets:
-                    await self._update_reaction(
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        message_key=message_key,
-                        reaction=REACTION_SUCCESS,
-                    )
-            # Increment routing failure counter if routing encountered an error.
-            # Acquire a fresh connection since the inbox INSERT connection is closed.
-            # Non-fatal: failure is logged but does not block message processing.
-            if routing_failed and db_pool is not None:
-                async with db_pool.acquire() as conn:
-                    await self._increment_connector_counter(
-                        conn,
-                        connector_type="telegram_bot",
-                        endpoint_identity="telegram:bot",
-                        field="counter_messages_failed",
-                    )
-        except Exception:
-            await self._update_reaction(
-                chat_id=chat_id,
-                message_id=message_id,
-                message_key=message_key,
-                reaction=REACTION_FAILURE,
-            )
-            raise
-        finally:
-            if lock is not None and lock.locked():
-                lock.release()
-            if message_key is not None:
-                self._cleanup_message_state(message_key)
-
-        self._routed_messages.append(result)
-        logger.info(
-            "Telegram message routed",
-            extra={
-                "source": "telegram",
-                "chat_id": chat_id,
-                "target_butler": result.target_butler,
-                "latency_ms": None,
-            },
-        )
-        return result
 
     # ------------------------------------------------------------------
     # Telegram API helpers
@@ -878,40 +279,6 @@ class TelegramModule(Module):
     async def _reply_to_message(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:
         """Reply to a specific Telegram message."""
         return await self._send_message(chat_id, text, reply_to_message_id=message_id)
-
-    async def _get_updates(self) -> list[dict[str, Any]]:
-        """Call Telegram getUpdates API and return new messages."""
-        url = f"{self._base_url()}/getUpdates"
-        params: dict[str, Any] = {"timeout": 0}
-        if self._last_update_id:
-            params["offset"] = self._last_update_id + 1
-
-        client = self._get_client()
-        try:
-            resp = await client.get(url, params=params)
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            if exc.response is not None and exc.response.status_code == 409:
-                description = self._telegram_error_description(exc.response)
-                hint = self._describe_get_updates_conflict(exc.response)
-                logger.warning(
-                    "Telegram getUpdates conflict; returning no updates",
-                    extra={
-                        "source": "telegram",
-                        "telegram_status_code": 409,
-                        "telegram_error_description": description,
-                        "hint": hint,
-                    },
-                )
-                return []
-            raise
-        data = resp.json()
-        updates: list[dict[str, Any]] = data.get("result", [])
-
-        if updates:
-            self._last_update_id = updates[-1]["update_id"]
-
-        return updates
 
     async def _set_webhook(self, url: str) -> dict[str, Any]:
         """Call Telegram setWebhook API."""
@@ -989,77 +356,3 @@ def _extract_message_id(update: dict[str, Any]) -> int | None:
             except (TypeError, ValueError):
                 return None
     return None
-
-
-def _extract_sender_identity(update: dict[str, Any], *, fallback: str | None) -> str:
-    """Extract a stable sender identity from a Telegram update."""
-    for key in ("message", "edited_message", "channel_post"):
-        msg = update.get(key)
-        if msg and isinstance(msg, dict):
-            sender = msg.get("from")
-            if sender and isinstance(sender, dict):
-                sender_id = sender.get("id")
-                if sender_id not in (None, ""):
-                    return str(sender_id)
-                username = sender.get("username")
-                if username:
-                    return str(username)
-            sender_chat = msg.get("sender_chat")
-            if sender_chat and isinstance(sender_chat, dict):
-                sender_chat_id = sender_chat.get("id")
-                if sender_chat_id not in (None, ""):
-                    return str(sender_chat_id)
-    if fallback not in (None, ""):
-        return str(fallback)
-    return "telegram:unknown"
-
-
-def _message_tracking_key(
-    update: dict[str, Any], *, chat_id: str | None, message_id: int | None
-) -> str | None:
-    """Build a stable per-message key for lifecycle serialization and tracking."""
-    if chat_id not in (None, "") and message_id is not None:
-        return f"{chat_id}:{message_id}"
-    update_id = update.get("update_id")
-    if update_id is None:
-        return None
-    return f"update:{update_id}"
-
-
-def _extract_sender_identity(update: dict[str, Any], *, fallback: str | None = None) -> str:
-    """Extract sender identity from an update, falling back to chat identity."""
-    for key in ("message", "edited_message", "channel_post"):
-        msg = update.get(key)
-        if not isinstance(msg, dict):
-            continue
-
-        sender = msg.get("from")
-        if isinstance(sender, dict):
-            sender_id = sender.get("id")
-            if sender_id not in (None, ""):
-                return str(sender_id)
-            username = sender.get("username")
-            if username not in (None, ""):
-                return str(username)
-
-        sender_chat = msg.get("sender_chat")
-        if isinstance(sender_chat, dict):
-            sender_chat_id = sender_chat.get("id")
-            if sender_chat_id not in (None, ""):
-                return str(sender_chat_id)
-
-    if fallback not in (None, ""):
-        return str(fallback)
-    return "unknown"
-
-
-def _extract_update_id(update: dict[str, Any]) -> str | None:
-    """Extract a stable external event ID for pipeline dedupe metadata."""
-    update_id = update.get("update_id")
-    if update_id not in (None, ""):
-        return str(update_id)
-
-    message_id = _extract_message_id(update)
-    if message_id is None:
-        return None
-    return str(message_id)
