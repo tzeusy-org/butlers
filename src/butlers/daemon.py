@@ -1807,6 +1807,60 @@ class ButlerDaemon:
 
         return None
 
+    async def _resolve_contact_channel_identifier(
+        self, *, contact_id: uuid.UUID, channel: str
+    ) -> str | None:
+        """Resolve the channel identifier for a specific contact_id and channel type.
+
+        Queries ``shared.contact_info`` for rows matching the given ``contact_id``
+        and ``type=channel``, preferring the primary entry (``is_primary=true``).
+
+        Returns the identifier value on success, ``None`` if:
+        - No DB pool is available.
+        - No ``contact_info`` row exists for the given contact_id and channel.
+        - The ``shared.contact_info`` table does not exist.
+        """
+        pool = self.db.pool if self.db is not None else None
+        if pool is None:
+            return None
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT ci.value
+                    FROM shared.contact_info ci
+                    WHERE ci.contact_id = $1
+                      AND ci.type = $2
+                    ORDER BY ci.is_primary DESC NULLS LAST, ci.created_at ASC
+                    LIMIT 1
+                    """,
+                    contact_id,
+                    channel,
+                )
+                if row is None:
+                    return None
+                value = row["value"]
+                if not value:
+                    return None
+                stripped = value.strip()
+                return stripped or None
+        except Exception as exc:  # noqa: BLE001
+            from butlers.credential_store import (
+                _is_missing_column_or_schema_error,
+                _is_missing_table_error,
+            )
+
+            if _is_missing_table_error(exc) or _is_missing_column_or_schema_error(exc):
+                logger.debug(
+                    "_resolve_contact_channel_identifier skipped for contact_id=%s channel=%r; "
+                    "table/column not available: %s",
+                    contact_id,
+                    channel,
+                    exc,
+                )
+                return None
+            raise
+
     async def _dispatch_scheduled_task(
         self,
         *,
@@ -3674,6 +3728,17 @@ class ButlerDaemon:
                     )
                 ),
             ] = None,
+            contact_id: Annotated[
+                uuid.UUID | None,
+                Field(
+                    description=(
+                        "Optional contact UUID. When provided, the channel identifier is resolved "
+                        "from shared.contact_info (primary entry preferred). If no matching "
+                        "contact_info entry exists, the notification is parked as a "
+                        "pending_action and {status: pending_missing_identifier} is returned."
+                    )
+                ),
+            ] = None,
         ) -> dict:
             """Send a `notify.v1` envelope through Switchboard `deliver()`.
 
@@ -3682,13 +3747,21 @@ class ButlerDaemon:
             - `message` (string): required for `send`/`reply`, omitted for `react`
 
             Optional fields:
-            - `recipient` (string)
+            - `recipient` (string): explicit recipient identity (e.g. email address or chat ID)
+            - `contact_id` (UUID): resolve recipient from shared.contact_info; primary entry
+              preferred. If no matching entry exists the notification is parked as a pending_action
+              and `{"status": "pending_missing_identifier"}` is returned.
             - `subject` (string)
             - `intent` (string enum): `send` | `reply` | `react`
             - `emoji` (string): required when `intent="react"`
             - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must
               include `request_id`, `source_channel`, `source_endpoint_identity`,
               `source_sender_identity` plus `source_thread_identity` for telegram `reply`/`react`.
+
+            Recipient resolution priority:
+            1. `contact_id` provided → look up channel identifier from shared.contact_info
+            2. `recipient` string provided → use as-is
+            3. Neither → resolve owner contact's channel identifier (default)
 
             Valid JSON example:
             {
@@ -3775,11 +3848,113 @@ class ButlerDaemon:
                     "error": ("Switchboard is not connected. Cannot deliver notification."),
                 }
 
-            resolved_recipient = await daemon._resolve_default_notify_recipient(
-                channel=channel,
-                intent=intent,
-                recipient=recipient,
-            )
+            # Resolution priority:
+            # (1) contact_id → query shared.contact_info WHERE contact_id = X AND type = channel
+            # (2) recipient string → use as-is (inside _resolve_default_notify_recipient)
+            # (3) neither → resolve owner contact's channel identifier (default path)
+            if contact_id is not None:
+                contact_identifier = await daemon._resolve_contact_channel_identifier(
+                    contact_id=contact_id,
+                    channel=channel,
+                )
+                if contact_identifier is None:
+                    # No matching contact_info entry — park as pending_action and notify owner
+                    pool = daemon.db.pool if daemon.db is not None else None
+                    if pool is not None:
+                        import datetime as _dt
+
+                        from butlers.modules.approvals.models import ActionStatus
+
+                        action_id = uuid.uuid4()
+                        now = _dt.datetime.now(_dt.UTC)
+                        expires_at = now + _dt.timedelta(hours=72)
+                        agent_summary = (
+                            f"notify() could not deliver a {channel!r} notification: "
+                            f"contact {contact_id} has no {channel!r} identifier in "
+                            f"shared.contact_info. The message was: {message!r}. "
+                            f"To resolve, add a {channel!r} contact_info entry for this contact "
+                            f"and re-trigger the notification."
+                        )
+                        await pool.execute(
+                            "INSERT INTO pending_actions "
+                            "(id, tool_name, tool_args, agent_summary, session_id, status, "
+                            "requested_at, expires_at) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                            action_id,
+                            "notify",
+                            json.dumps(
+                                {
+                                    "channel": channel,
+                                    "message": message,
+                                    "contact_id": str(contact_id),
+                                    "intent": intent,
+                                }
+                            ),
+                            agent_summary,
+                            None,  # session_id
+                            ActionStatus.PENDING.value,
+                            now,
+                            expires_at,
+                        )
+                        logger.warning(
+                            "notify() parked as pending_missing_identifier: "
+                            "contact_id=%s has no %r contact_info entry (action=%s)",
+                            contact_id,
+                            channel,
+                            action_id,
+                        )
+                    # Notify the owner about the missing identifier
+                    owner_identifier = await daemon._resolve_default_notify_recipient(
+                        channel=channel,
+                        intent="send",
+                        recipient=None,
+                    )
+                    if owner_identifier is not None:
+                        owner_notify_request: dict[str, Any] = {
+                            "schema_version": "notify.v1",
+                            "origin_butler": butler_name,
+                            "delivery": {
+                                "intent": "send",
+                                "channel": channel,
+                                "message": (
+                                    f"A notification could not be delivered to contact "
+                                    f"{contact_id} via {channel!r}: missing {channel!r} "
+                                    f"channel identifier. The pending action has been queued "
+                                    f"for review."
+                                ),
+                                "recipient": owner_identifier,
+                            },
+                        }
+                        try:
+                            await asyncio.wait_for(
+                                client.call_tool(
+                                    "deliver",
+                                    {
+                                        "source_butler": butler_name,
+                                        "notify_request": owner_notify_request,
+                                    },
+                                ),
+                                timeout=15,
+                            )
+                        except Exception as _owner_exc:  # noqa: BLE001
+                            logger.warning(
+                                "notify() failed to alert owner about missing identifier: %s",
+                                _owner_exc,
+                            )
+                    return {
+                        "status": "pending_missing_identifier",
+                        "contact_id": str(contact_id),
+                        "channel": channel,
+                        "pending_action_id": str(action_id) if pool is not None else None,
+                    }
+                resolved_recipient = contact_identifier
+            else:
+                resolved_recipient = await daemon._resolve_default_notify_recipient(
+                    channel=channel,
+                    intent=intent,
+                    recipient=recipient,
+                )
+
             if channel == "telegram" and intent == "send" and resolved_recipient is None:
                 return {
                     "status": "error",
