@@ -1,6 +1,6 @@
 # Butlers
 
-A personal AI agent framework where each **butler** is a long-running MCP server daemon that you interact with day-to-day. Butlers handle recurring tasks, manage integrations, and act on your behalf — powered by Claude Code under the hood.
+A personal AI agent framework where each **butler** is a long-running MCP server daemon that you interact with day-to-day. Butlers handle recurring tasks, manage integrations, and act on your behalf — powered by an agentic framework under the hood. Fully modular and extensible.
 
 ## WARNING
 
@@ -14,12 +14,13 @@ I've always wanted to build a 'Jarvis' for myself - a system where I could offlo
 
 Each butler runs as a persistent daemon with built-in infrastructure:
 
-- **State store** — remembers things between sessions (key-value JSONB)
+- **State store** — remembers things between sessions (see docs/modules/memory.md)
 - **Task scheduler** — runs prompts on cron schedules (e.g., morning briefings, inbox triage)
 - **LLM CLI spawner** — spins up ephemeral LLM CLI instances to reason and act
 - **Session log** — tracks what happened and when
+- **Custom tools** — Tools specific to a butler's functionality
 
-On top of that, butlers gain capabilities through **modules** — pluggable integrations like email, Telegram, calendar, Slack, and GitHub. Mix and match modules to build the butler you need.
+On top of that, butlers gain capabilities through **modules** — pluggable integrations like Emails, Telegram, Calendars, Slack, and GitHub. Mix and match modules to build the butler you need.
 
 ## Example
 
@@ -36,19 +37,10 @@ name = "morning-briefing"
 cron = "0 8 * * *"
 prompt = "Check my calendar for today, summarize meetings, and email me a briefing."
 
-[[butler.schedule]]
-name = "inbox-triage"
-cron = "*/30 * * * *"
-prompt = "Check for new emails. Flag anything urgent and draft replies for routine items."
-
 [modules.email]
 
 [modules.email.user]
 enabled = false
-
-[modules.email.bot]
-address_env = "BUTLER_EMAIL_ADDRESS"
-password_env = "BUTLER_EMAIL_PASSWORD"
 
 [modules.calendar]
 provider = "google"
@@ -57,9 +49,7 @@ default_conflict_policy = "suggest"
 ```
 
 Calendar setup requires Google OAuth credentials stored via the dashboard
-OAuth bootstrap flow (DB-first). A dedicated subcalendar per calendar-enabled
-butler is also required. See `docs/CALENDAR_SETUP_RUNBOOK.md` for the full
-provisioning and validation workflow.
+OAuth bootstrap flow (DB-first). A dedicated 'butler' subcalendar is also required.
 
 ## Architecture
 
@@ -81,10 +71,7 @@ LLM CLI instances ── ephemeral, locked-down, reason + act
 
 - Runtime topology target is **one PostgreSQL database with per-butler schemas + `shared`**
 - Butlers communicate only via MCP tools through the Switchboard
-- Butler configs are **git-based directories** with personality (`CLAUDE.md`), skills, and config (`butler.toml`)
-- Operator source-of-truth for migration/cutover: `docs/operations/one-db-multi-schema-migration.md`
-- Destructive reset rehearsal workflow: `docs/operations/migration-rewrite-reset-runbook.md`
-- Runtime MCP transport rollout/fallback runbook: `docs/operations/spawner-streamable-http-rollout.md`
+- Butler configs are **git-based directories** with personality (`CLAUDE.md`), manifestoes (`MANIFESTO.md`), skills, and config (`butler.toml`)
 
 ### Detailed Architecture
 
