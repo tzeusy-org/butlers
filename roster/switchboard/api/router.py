@@ -769,8 +769,15 @@ async def get_ingestion_overview(
 
     Also provides tier breakdown counts for the donut chart.
 
-    Data is sourced from connector_stats_hourly/daily rollup tables and
-    connector_registry.  Falls back gracefully when tables are missing.
+    ``total_ingested`` is derived from ``message_inbox`` as the sum of all
+    tier1 + tier2 + tier3 messages in the period.  This ensures that messages
+    processed by internal modules (which do not write to the connector rollup
+    tables) are counted correctly.  The connector rollup tables
+    (``connector_stats_hourly`` / ``connector_stats_daily``) are still
+    populated by external connectors and are used by the per-connector stats
+    endpoints.
+
+    Falls back gracefully when tables are missing.
     """
     pool = _pool(db)
 
@@ -790,48 +797,22 @@ async def get_ingestion_overview(
         logger.warning("connector_registry not available for active count", exc_info=True)
         active_connectors = 0
 
-    # Volume aggregates from rollup tables
-    total_ingested = 0
     tier1_full_count = 0
     tier2_metadata_count = 0
     tier3_skip_count = 0
 
-    if period == "24h":
-        cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=24)
-        try:
-            agg = await pool.fetchrow(
-                "SELECT coalesce(sum(messages_ingested), 0) AS total_ingested"
-                " FROM connector_stats_hourly"
-                " WHERE hour >= $1",
-                cutoff,
-            )
-            if agg:
-                total_ingested = int(agg["total_ingested"] or 0)
-        except Exception:
-            logger.warning("connector_stats_hourly not available for overview", exc_info=True)
-    else:
-        days = 7 if period == "7d" else 30
-        cutoff_date = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)).date()
-        try:
-            agg = await pool.fetchrow(
-                "SELECT coalesce(sum(messages_ingested), 0) AS total_ingested"
-                " FROM connector_stats_daily"
-                " WHERE day >= $1",
-                cutoff_date,
-            )
-            if agg:
-                total_ingested = int(agg["total_ingested"] or 0)
-        except Exception:
-            logger.warning("connector_stats_daily not available for overview", exc_info=True)
-
-    # Tier breakdown from message_inbox lifecycle/processing_metadata JSONB.
-    # This is a best-effort query — if message_inbox is missing we skip gracefully.
+    # Compute inbox_cutoff for both tier breakdown and total_ingested.
     inbox_cutoff: Any = datetime.datetime.now(datetime.UTC) - (
         datetime.timedelta(hours=24)
         if period == "24h"
         else datetime.timedelta(days=7 if period == "7d" else 30)
     )
 
+    # Tier breakdown from message_inbox processing_metadata JSONB.
+    # total_ingested is derived here as tier1+tier2+tier3 so that messages
+    # ingested via internal modules (which bypass the connector rollup tables)
+    # are always counted.  No double-counting occurs because each message_inbox
+    # row has exactly one policy_tier assignment.
     try:
         tier_row = await pool.fetchrow(
             """
@@ -857,6 +838,10 @@ async def get_ingestion_overview(
             tier3_skip_count = int(tier_row["tier3_skip"] or 0)
     except Exception:
         logger.warning("message_inbox not available for tier breakdown; using zeros", exc_info=True)
+
+    # total_ingested = all rows in message_inbox for the period (tier1+tier2+tier3).
+    # This is the canonical source of truth for ingestion volume.
+    total_ingested = tier1_full_count + tier2_metadata_count + tier3_skip_count
 
     # LLM calls saved = tier2 + tier3 (messages handled without full LLM classification)
     llm_calls_saved = tier2_metadata_count + tier3_skip_count

@@ -565,15 +565,16 @@ class TestIngestionOverview:
         self,
         *,
         active_connectors: int = 2,
-        agg_row: dict | None = None,
         tier_row: dict | None = None,
         fetchval_side_effect: Exception | None = None,
         fetchrow_side_effect: Exception | None = None,
     ):
         """Build a mock app for the overview endpoint.
 
-        overview calls: fetchval (active connectors), fetchrow (agg), fetchrow (tier breakdown)
-        We need a mock pool that sequences correctly.
+        overview calls: fetchval (active connectors), fetchrow (tier breakdown
+        from message_inbox — also the source for total_ingested).
+        total_ingested is derived as tier1+tier2+tier3, so no rollup-table
+        fetchrow is needed.
         """
         mock_pool = AsyncMock()
 
@@ -582,13 +583,12 @@ class TestIngestionOverview:
         else:
             mock_pool.fetchval = AsyncMock(return_value=active_connectors)
 
-        _agg = agg_row or {"total_ingested": 100, "total_failed": 5}
         _tier = tier_row or {"tier1_full": 80, "tier2_metadata": 15, "tier3_skip": 5}
 
         if fetchrow_side_effect is not None:
             mock_pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
         else:
-            mock_pool.fetchrow = AsyncMock(side_effect=[_agg, _tier])
+            mock_pool.fetchrow = AsyncMock(return_value=_tier)
 
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
@@ -617,6 +617,28 @@ class TestIngestionOverview:
         assert "tier1_full_count" in data
         assert "tier2_metadata_count" in data
         assert "tier3_skip_count" in data
+
+    async def test_total_ingested_is_sum_of_tiers_from_message_inbox(self):
+        """total_ingested equals tier1+tier2+tier3 from message_inbox (not rollup tables).
+
+        This verifies the fix for the bug where internal-module messages were
+        not counted because connector_stats_hourly only covers external connectors.
+        """
+        app = await self._make_overview_app(
+            tier_row={"tier1_full": 70, "tier2_metadata": 20, "tier3_skip": 10}
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/switchboard/ingestion/overview")
+
+        body = resp.json()
+        data = body["data"]
+        # total_ingested = tier1 + tier2 + tier3 = 70 + 20 + 10 = 100
+        assert data["total_ingested"] == 100
+        assert data["tier1_full_count"] == 70
+        assert data["tier2_metadata_count"] == 20
+        assert data["tier3_skip_count"] == 10
 
     async def test_active_connectors_counted(self):
         """active_connectors field reflects healthy connector count."""
@@ -681,7 +703,6 @@ class TestIngestionOverview:
         """When no data exists, all numeric fields are zero."""
         app = await self._make_overview_app(
             active_connectors=0,
-            agg_row={"total_ingested": 0, "total_failed": 0},
             tier_row={"tier1_full": 0, "tier2_metadata": 0, "tier3_skip": 0},
         )
         async with httpx.AsyncClient(
