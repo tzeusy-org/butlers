@@ -875,6 +875,17 @@ class GmailConnectorRuntime:
             "Backfill loop starting: poll_interval=%ds",
             self._config.connector_backfill_poll_interval_s,
         )
+        # Wait for Switchboard MCP to be ready before first poll attempt
+        initial_delay = 10
+        logger.debug(
+            "Backfill loop: waiting %ds before first poll for Switchboard readiness",
+            initial_delay,
+        )
+        try:
+            await asyncio.sleep(initial_delay)
+        except asyncio.CancelledError:
+            raise
+
         while self._running:
             try:
                 await self._poll_and_execute_backfill_job()

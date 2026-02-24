@@ -2872,6 +2872,41 @@ class TestBackfillPollAndExecute:
 
         assert call_count >= 2
 
+    async def test_backfill_loop_has_initial_delay_before_first_poll(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """_run_backfill_loop waits for initial delay before first poll."""
+        sleep_calls: list[float] = []
+        poll_call_count = 0
+
+        async def mock_sleep(delay: float) -> None:
+            """Track sleep calls."""
+            sleep_calls.append(delay)
+
+        async def mock_poll_and_execute() -> None:
+            """Track that poll was called."""
+            nonlocal poll_call_count
+            poll_call_count += 1
+            # Stop after first poll to keep test fast
+            backfill_runtime._running = False
+
+        backfill_runtime._running = True
+
+        with (
+            patch.object(
+                backfill_runtime, "_poll_and_execute_backfill_job", new=mock_poll_and_execute
+            ),
+            patch("asyncio.sleep", new=mock_sleep),
+        ):
+            await backfill_runtime._run_backfill_loop()
+
+        # Should have at least 2 sleep calls: initial delay (10s) + interval sleep
+        assert len(sleep_calls) >= 2
+        # First sleep should be the initial 10s delay
+        assert sleep_calls[0] == 10
+        # Poll should only be called once since we stopped after first
+        assert poll_call_count == 1
+
 
 class TestFetchBackfillMessagePage:
     """Tests for _fetch_backfill_message_page."""
