@@ -140,7 +140,7 @@ Simple input-output test cases are defined as `E2EScenario` dataclass instances 
 
 #### Scenario: E2EScenario dataclass
 - **WHEN** a new scenario is defined
-- **THEN** it specifies: `id` (unique identifier), `description` (human-readable), `input_prompt` (message text), `expected_butler` (target butler name), `expected_tool_calls` (list of tool names), `db_assertions` (list of DbAssertion), `tags` (for pytest `-k` filtering), `timeout_seconds` (default 120), and optional `skip_reason`
+- **THEN** it specifies: `id` (unique identifier), `description` (human-readable), `input_prompt` (message text), `expected_butler` (target butler name), `expected_tool_calls` (list of tool names), `db_assertions` (list of DbAssertion), `tags` (for pytest `-k` filtering), `timeout_seconds` (default 30), and optional `skip_reason`
 
 #### Scenario: DbAssertion dataclass
 - **WHEN** database side effects are specified
