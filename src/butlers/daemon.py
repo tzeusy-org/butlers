@@ -47,7 +47,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 from urllib.parse import parse_qs, quote, quote_plus
@@ -152,6 +152,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "top_sessions",
         "schedule_costs",
         "notify",
+        "remind",
         "get_attachment",
         "module.states",
         "module.set_enabled",
@@ -3307,6 +3308,122 @@ class ButlerDaemon:
                 "until_at": until_at.isoformat() if until_at else None,
                 "display_title": display_title,
                 "calendar_event_id": calendar_event_id,
+            }
+
+        @mcp.tool()
+        async def remind(
+            message: Annotated[
+                str,
+                Field(description="The reminder message to deliver."),
+            ],
+            channel: Annotated[
+                Literal["telegram", "email"],
+                Field(description="Delivery channel for the reminder."),
+            ],
+            delay_minutes: Annotated[
+                int | None,
+                Field(
+                    description=(
+                        "Minutes from now to deliver the reminder. "
+                        "Mutually exclusive with remind_at."
+                    )
+                ),
+            ] = None,
+            remind_at: Annotated[
+                datetime | None,
+                Field(
+                    description=(
+                        "Absolute UTC datetime to deliver the reminder. "
+                        "Mutually exclusive with delay_minutes."
+                    )
+                ),
+            ] = None,
+            request_context: Annotated[
+                NotifyRequestContextInput | None,
+                Field(
+                    description=(
+                        "Optional request context passed through to notify(). "
+                        "Must be a dict/object — do NOT pass as a JSON string."
+                    )
+                ),
+            ] = None,
+        ) -> dict:
+            """Set a one-shot reminder that delivers a message via notify().
+
+            Exactly one of ``delay_minutes`` or ``remind_at`` must be provided.
+            Internally creates a one-shot scheduled task that fires at the target
+            time and calls ``notify()`` with the given message, channel, and
+            optional request_context.
+            """
+            # --- validate inputs ---
+            if delay_minutes is not None and remind_at is not None:
+                return {
+                    "status": "error",
+                    "error": ("Provide exactly one of delay_minutes or remind_at, not both."),
+                }
+            if delay_minutes is None and remind_at is None:
+                return {
+                    "status": "error",
+                    "error": ("Provide exactly one of delay_minutes or remind_at."),
+                }
+            if delay_minutes is not None and delay_minutes < 1:
+                return {
+                    "status": "error",
+                    "error": "delay_minutes must be at least 1.",
+                }
+
+            # --- compute target time ---
+            now = datetime.now(UTC)
+            if delay_minutes is not None:
+                target = now + timedelta(minutes=delay_minutes)
+            else:
+                if remind_at is None:
+                    return {"status": "error", "error": "Internal error: remind_at is None."}
+                # Ensure remind_at is timezone-aware (assume UTC if naive)
+                if remind_at.tzinfo is None:
+                    target = remind_at.replace(tzinfo=UTC)
+                else:
+                    target = remind_at
+                if target <= now:
+                    return {
+                        "status": "error",
+                        "error": "remind_at must be in the future.",
+                    }
+
+            # --- build cron expression for the target minute ---
+            cron = f"{target.minute} {target.hour} {target.day} {target.month} *"
+
+            # --- build prompt that calls notify() ---
+            notify_args: dict[str, Any] = {
+                "channel": channel,
+                "message": message,
+                "intent": "send",
+            }
+            if request_context is not None:
+                notify_args["request_context"] = request_context
+
+            prompt = (
+                f"Deliver this reminder by calling the notify tool with "
+                f"the following arguments: {json.dumps(notify_args)}"
+            )
+
+            # --- schedule a one-shot task ---
+            until_at = target + timedelta(minutes=1)
+            task_id = await _schedule_create(
+                pool,
+                f"remind-{target.strftime('%Y%m%dT%H%M')}-{str(uuid.uuid4())[:8]}",
+                cron,
+                prompt,
+                stagger_key=daemon.config.name,
+                until_at=until_at,
+            )
+
+            return {
+                "id": str(task_id),
+                "status": "scheduled",
+                "remind_at": target.isoformat(),
+                "channel": channel,
+                "message": message,
             }
 
         def _resolve_schedule_tool_id(
