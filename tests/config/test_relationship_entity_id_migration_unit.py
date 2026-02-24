@@ -77,11 +77,17 @@ class TestUpgradeSQL:
         # Should NOT force NOT NULL at column creation
         assert "NOT NULL" not in source.split("entity_id")[1].split("REFERENCES")[0]
 
-    def test_cross_schema_fk_references_memory_entities(self) -> None:
-        """FK constraint references memory.entities with explicit schema qualification."""
+    def test_fk_references_entities_without_schema_prefix(self) -> None:
+        """FK constraint references entities(id) without schema prefix.
+
+        In per-butler schema isolation mode there is no separate memory schema.
+        The reference must be unqualified so PostgreSQL resolves it via search_path
+        (butler schema, shared, public) set by the Alembic env before migrations run.
+        """
         mod = _load_migration()
         source = inspect.getsource(mod.upgrade)
-        assert "memory.entities" in source
+        assert "REFERENCES entities(id)" in source
+        assert "memory.entities" not in source
 
     def test_fk_on_delete_set_null(self) -> None:
         """FK uses ON DELETE SET NULL so deleting an entity nullifies contacts."""

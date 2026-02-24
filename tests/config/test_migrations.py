@@ -631,6 +631,11 @@ def test_relationship_reminder_calendar_projection_columns(postgres_container):
     db_url = create_migration_db(postgres_container, db_name)
 
     asyncio.run(run_migrations(db_url, chain="core"))
+
+    # rel_008 conditionally adds contacts.entity_id -> entities(id) FK only when the
+    # entities table exists in search_path.  Running the relationship chain before the
+    # memory module migration (which creates entities) is a valid scenario; the FK is
+    # simply skipped and can be added later once memory is migrated.
     asyncio.run(run_migrations(db_url, chain="relationship"))
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
