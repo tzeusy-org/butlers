@@ -99,7 +99,7 @@ async def approve_action(
     await record_approval_event(
         pool,
         ApprovalEventType.ACTION_APPROVED,
-        actor="user:manual",
+        actor=f"user:{actor_id}",
         action_id=parsed_id,
         reason="approved via REST API",
         metadata={"tool_name": action.tool_name},
@@ -122,7 +122,7 @@ async def approve_action(
     await record_approval_event(
         pool,
         ApprovalEventType.ACTION_EXECUTION_SUCCEEDED,
-        actor="system:rest-api",
+        actor=f"system:{actor_id}",
         action_id=parsed_id,
         reason="approved via REST API",
         metadata={"tool_name": action.tool_name},
@@ -218,7 +218,7 @@ async def reject_action(
     await record_approval_event(
         pool,
         ApprovalEventType.ACTION_REJECTED,
-        actor="user:manual",
+        actor=f"user:{actor_id}",
         action_id=parsed_id,
         reason=reason or "rejected via REST API",
         metadata={"tool_name": action.tool_name},
@@ -307,7 +307,7 @@ async def create_approval_rule(
     await record_approval_event(
         pool,
         ApprovalEventType.RULE_CREATED,
-        actor="user:manual",
+        actor=f"user:{actor_id}",
         rule_id=rule.id,
         reason="create_approval_rule via REST API",
         metadata={"tool_name": rule.tool_name},
@@ -394,7 +394,7 @@ async def create_rule_from_action(
     await record_approval_event(
         pool,
         ApprovalEventType.RULE_CREATED,
-        actor="user:manual",
+        actor=f"user:{actor_id}",
         action_id=parsed_id,
         rule_id=rule.id,
         reason="create_rule_from_action via REST API",
@@ -452,7 +452,7 @@ async def revoke_approval_rule(
     await record_approval_event(
         pool,
         ApprovalEventType.RULE_REVOKED,
-        actor="user:manual",
+        actor=f"user:{actor_id}",
         rule_id=parsed_id,
         reason="rule revoked via REST API",
         metadata={"tool_name": rule.tool_name},
