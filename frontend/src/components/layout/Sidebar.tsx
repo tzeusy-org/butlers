@@ -113,11 +113,11 @@ function navLinkClassName(
   return [
     'flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors',
     collapsed ? 'justify-center' : 'gap-3',
-    indented && !collapsed ? 'pl-9' : '',
+    indented && !collapsed ? 'pl-9' : null,
     isActive
       ? 'bg-accent text-accent-foreground'
       : 'text-muted-foreground hover:bg-accent/50 hover:text-accent-foreground',
-  ].join(' ')
+  ].filter(Boolean).join(' ')
 }
 
 function FlatNavLink({
@@ -226,6 +226,7 @@ function NavGroup({
 
       {/* Children (with smooth height transition) */}
       <div
+        aria-hidden={!expanded}
         className={`overflow-hidden transition-all duration-200 ${
           expanded ? 'max-h-96 opacity-100' : 'max-h-0 opacity-0'
         }`}

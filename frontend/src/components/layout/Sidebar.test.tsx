@@ -111,20 +111,28 @@ describe("Sidebar", () => {
     it("shows children when group is expanded via click", () => {
       render();
 
-      // Initially collapsed (no child route active) — children hidden via max-h-0
       const groupButton = Array.from(container.querySelectorAll("button")).find(
         (btn) => btn.textContent?.includes("Relationships"),
       );
       expect(groupButton).toBeTruthy();
+
+      // Find the children container — it should be aria-hidden before click
+      const childrenContainer = groupButton!.parentElement?.querySelector(
+        '[aria-hidden]',
+      ) as HTMLElement | null;
+      expect(childrenContainer).toBeTruthy();
+      expect(childrenContainer!.getAttribute("aria-hidden")).toBe("true");
 
       // Click to expand
       act(() => {
         groupButton!.click();
       });
 
-      // Children should now be visible
-      const contactsLink = container.querySelector('a[href="/contacts"]');
-      const groupsLink = container.querySelector('a[href="/groups"]');
+      // Children container should now be visible (aria-hidden="false")
+      expect(childrenContainer!.getAttribute("aria-hidden")).toBe("false");
+      // Child links should be present inside
+      const contactsLink = childrenContainer!.querySelector('a[href="/contacts"]');
+      const groupsLink = childrenContainer!.querySelector('a[href="/groups"]');
       expect(contactsLink).toBeInstanceOf(HTMLAnchorElement);
       expect(groupsLink).toBeInstanceOf(HTMLAnchorElement);
     });
