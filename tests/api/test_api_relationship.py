@@ -346,6 +346,8 @@ def test_get_contact_detail():
                 "email": "bob@acme.com",
                 "phone": None,
                 "last_interaction_at": None,
+                "roles": [],
+                "entity_id": None,
             },
             {"month": 3, "day": 15, "year": 1990},
             None,  # address
@@ -388,6 +390,8 @@ def test_get_contact_detail_with_null_metadata_google_sync():
                 "email": "guser@google.com",
                 "phone": None,
                 "last_interaction_at": None,
+                "roles": [],
+                "entity_id": None,
             },
             None,  # no birthday
             None,  # no address
@@ -429,6 +433,8 @@ def test_get_contact_detail_reads_dedicated_columns_not_details_jsonb():
                 "email": "jane@acme.com",
                 "phone": "555-0000",
                 "last_interaction_at": None,
+                "roles": [],
+                "entity_id": None,
             },
             None,  # no birthday
             None,  # no address
