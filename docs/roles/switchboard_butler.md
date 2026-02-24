@@ -334,7 +334,7 @@ Rules:
 - Ingress connectors/entrypoint adapters remain Switchboard-owned and must feed the canonical ingest boundary.
 - Non-messenger butlers must not expose direct user-channel tools for external delivery and must use `notify.v1` intents routed through Switchboard.
 - Switchboard must enforce this ownership boundary in routing/registry policy and reject or quarantine non-messenger channel-tool surfaces when detected.
-- Identity-scoped channel tool naming conventions (for example `user_*` / `bot_*`) are defined for messenger/channel integration surfaces and are not a generic base-butler requirement.
+- Channel tool naming conventions are defined for messenger/channel integration surfaces and are not a generic base-butler requirement.
 
 ### 10.11 Scheduled Execution Mode Contract
 Switchboard scheduled tasks use dual-mode dispatch via the scheduler hook.

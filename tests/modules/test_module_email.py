@@ -47,49 +47,6 @@ class TestModuleABC:
 
 
 # ---------------------------------------------------------------------------
-# I/O descriptors
-# ---------------------------------------------------------------------------
-
-
-class TestIODDescriptors:
-    """Verify user/bot I/O descriptor declarations."""
-
-    def test_user_inputs_declared(self):
-        mod = EmailModule()
-        names = {descriptor.name for descriptor in mod.user_inputs()}
-        assert names == {"user_email_search_inbox", "user_email_read_message"}
-
-    def test_user_outputs_declared(self):
-        mod = EmailModule()
-        names = {descriptor.name for descriptor in mod.user_outputs()}
-        assert names == {"user_email_send_message", "user_email_reply_to_thread"}
-
-    def test_bot_inputs_declared(self):
-        mod = EmailModule()
-        names = {descriptor.name for descriptor in mod.bot_inputs()}
-        assert names == {
-            "bot_email_search_inbox",
-            "bot_email_read_message",
-            "bot_email_check_and_route_inbox",
-        }
-
-    def test_bot_outputs_declared(self):
-        mod = EmailModule()
-        names = {descriptor.name for descriptor in mod.bot_outputs()}
-        assert names == {"bot_email_send_message", "bot_email_reply_to_thread"}
-
-    def test_user_outputs_marked_approval_required(self):
-        mod = EmailModule()
-        defaults = {descriptor.approval_default for descriptor in mod.user_outputs()}
-        assert defaults == {"always"}
-
-    def test_bot_outputs_marked_conditional_by_default(self):
-        mod = EmailModule()
-        defaults = {descriptor.approval_default for descriptor in mod.bot_outputs()}
-        assert defaults == {"conditional"}
-
-
-# ---------------------------------------------------------------------------
 # Credentials declaration
 # ---------------------------------------------------------------------------
 
@@ -201,7 +158,7 @@ class TestLifecycle:
 class TestRegisterTools:
     """Verify that register_tools creates the expected MCP tools."""
 
-    async def test_registers_nine_tools(self):
+    async def test_registers_five_tools(self):
         mod = EmailModule()
         mcp = MagicMock()
         # mcp.tool() returns a decorator that returns the function unchanged
@@ -209,10 +166,8 @@ class TestRegisterTools:
 
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
-        # 9 prefixed tools:
-        # user: send/reply/search/read
-        # bot: send/reply/search/read/check_and_route
-        assert mcp.tool.call_count == 9
+        # 5 tools: send, reply, search, read, check_and_route
+        assert mcp.tool.call_count == 5
 
     async def test_tool_decorator_called(self):
         mod = EmailModule()
@@ -231,25 +186,15 @@ class TestRegisterTools:
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
         expected_tools = {
-            "user_email_send_message",
-            "user_email_reply_to_thread",
-            "user_email_search_inbox",
-            "user_email_read_message",
-            "bot_email_send_message",
-            "bot_email_reply_to_thread",
-            "bot_email_search_inbox",
-            "bot_email_read_message",
-            "bot_email_check_and_route_inbox",
+            "email_send_message",
+            "email_reply_to_thread",
+            "email_search_inbox",
+            "email_read_message",
+            "email_check_and_route_inbox",
         }
         assert set(registered_tools) == expected_tools
-        assert "user-scoped tool surface" in (
-            registered_tools["user_email_send_message"].__doc__ or ""
-        )
-        assert "bot-scoped tool surface" in (
-            registered_tools["bot_email_send_message"].__doc__ or ""
-        )
 
-    async def test_registered_tools_stay_identity_prefixed(self):
+    async def test_registered_tools_use_plain_names(self):
         mod = EmailModule()
         mcp = MagicMock()
         registered_tools: dict[str, Any] = {}
@@ -265,9 +210,7 @@ class TestRegisterTools:
 
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
-        assert all(
-            name.startswith(("user_email_", "bot_email_")) for name in registered_tools.keys()
-        )
+        assert all(name.startswith("email_") for name in registered_tools.keys())
 
     async def test_registered_tools_are_async(self):
         mod = EmailModule()

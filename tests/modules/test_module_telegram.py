@@ -15,10 +15,8 @@ from butlers.modules.telegram import TelegramConfig, TelegramModule
 pytestmark = pytest.mark.unit
 
 EXPECTED_TELEGRAM_TOOLS = {
-    "user_telegram_send_message",
-    "user_telegram_reply_to_message",
-    "bot_telegram_send_message",
-    "bot_telegram_reply_to_message",
+    "telegram_send_message",
+    "telegram_reply_to_message",
 }
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -88,35 +86,6 @@ class TestModuleABCCompliance:
         """Module declares BUTLER_TELEGRAM_TOKEN as required credential."""
         assert telegram_module.credentials_env == ["BUTLER_TELEGRAM_TOKEN"]
 
-    def test_io_descriptors_expose_identity_prefixed_output_tools(
-        self, telegram_module: TelegramModule
-    ) -> None:
-        """Module I/O descriptors expose send/reply output tools only (no input tools)."""
-        assert telegram_module.user_inputs() == ()
-        assert telegram_module.bot_inputs() == ()
-        assert tuple(d.name for d in telegram_module.user_outputs()) == (
-            "user_telegram_send_message",
-            "user_telegram_reply_to_message",
-        )
-        assert tuple(d.name for d in telegram_module.bot_outputs()) == (
-            "bot_telegram_send_message",
-            "bot_telegram_reply_to_message",
-        )
-
-    def test_user_output_descriptors_mark_approval_required_default(
-        self, telegram_module: TelegramModule
-    ) -> None:
-        """User send/reply descriptors are marked as approval-required defaults."""
-        defaults = {d.approval_default for d in telegram_module.user_outputs()}
-        assert defaults == {"always"}
-
-    def test_bot_output_descriptors_mark_conditional_default(
-        self, telegram_module: TelegramModule
-    ) -> None:
-        """Bot send/reply descriptors default to conditional approvals."""
-        defaults = {d.approval_default for d in telegram_module.bot_outputs()}
-        assert defaults == {"conditional"}
-
     def test_no_pipeline_attribute(self, telegram_module: TelegramModule) -> None:
         """TelegramModule has no pipeline attribute (ingestion removed)."""
         assert not hasattr(telegram_module, "_pipeline")
@@ -179,22 +148,17 @@ class TestTelegramConfig:
 class TestToolRegistration:
     """Verify register_tools creates the expected MCP tools."""
 
-    async def test_registers_prefixed_tools(
-        self, telegram_module: TelegramModule, mock_mcp: MagicMock
-    ):
-        """register_tools creates only identity-prefixed send/reply tools."""
+    async def test_registers_tools(self, telegram_module: TelegramModule, mock_mcp: MagicMock):
+        """register_tools creates send/reply tools."""
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
         assert set(mock_mcp._registered_tools.keys()) == EXPECTED_TELEGRAM_TOOLS
 
-    async def test_registered_tool_names_stay_identity_prefixed(
+    async def test_registered_tool_names_are_plain(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock
     ):
-        """Registered Telegram tools stay within user_/bot_ namespaces."""
+        """Registered Telegram tools use plain telegram_ prefix."""
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        assert all(
-            name.startswith(("user_telegram_", "bot_telegram_"))
-            for name in mock_mcp._registered_tools.keys()
-        )
+        assert all(name.startswith("telegram_") for name in mock_mcp._registered_tools.keys())
 
     async def test_all_registered_tools_are_callable(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock
@@ -239,10 +203,10 @@ class TestSendMessage:
         assert result["ok"] is True
         assert result["result"]["message_id"] == 42
 
-    async def test_user_send_message_via_tool(
+    async def test_send_message_via_tool(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock, monkeypatch
     ):
-        """user_telegram_send_message delegates to _send_message."""
+        """telegram_send_message delegates to _send_message."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -250,7 +214,7 @@ class TestSendMessage:
         telegram_module._client = mock_client
 
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        tool_fn = mock_mcp._registered_tools["user_telegram_send_message"]
+        tool_fn = mock_mcp._registered_tools["telegram_send_message"]
         result = await tool_fn(chat_id="999", text="Test msg")
 
         assert result["ok"] is True
@@ -278,10 +242,10 @@ class TestReplyToMessage:
             json={"chat_id": "12345", "text": "Reply text", "reply_to_message_id": 77},
         )
 
-    async def test_user_reply_tool_via_registration(
+    async def test_reply_tool_via_registration(
         self, telegram_module: TelegramModule, mock_mcp: MagicMock, monkeypatch
     ):
-        """user_telegram_reply_to_message delegates to reply helper."""
+        """telegram_reply_to_message delegates to reply helper."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
@@ -289,7 +253,7 @@ class TestReplyToMessage:
         telegram_module._client = mock_client
 
         await telegram_module.register_tools(mcp=mock_mcp, config={}, db=None)
-        tool_fn = mock_mcp._registered_tools["user_telegram_reply_to_message"]
+        tool_fn = mock_mcp._registered_tools["telegram_reply_to_message"]
         result = await tool_fn(chat_id="999", message_id=12, text="Thread reply")
 
         assert result["ok"] is True
@@ -438,13 +402,11 @@ class TestRegistryIntegration:
 # ---------------------------------------------------------------------------
 
 
-class TestIdentityScopedToolFlows:
-    """Verify user/bot send/reply tool behavior."""
+class TestToolFlows:
+    """Verify send/reply tool behavior."""
 
-    async def test_user_and_bot_send_reply_tools_delegate_helpers(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Both identity-scoped send/reply tools invoke shared helpers."""
+    async def test_send_and_reply_tools_delegate_helpers(self, monkeypatch: pytest.MonkeyPatch):
+        """Send/reply tools invoke shared helpers."""
         monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
         mod = TelegramModule()
         mcp = MagicMock()
@@ -465,27 +427,17 @@ class TestIdentityScopedToolFlows:
         mod._send_message = send_mock  # type: ignore[method-assign]
         mod._reply_to_message = reply_mock  # type: ignore[method-assign]
 
-        user_send = await tools["user_telegram_send_message"](chat_id="1", text="hello")  # type: ignore[index]
-        bot_send = await tools["bot_telegram_send_message"](chat_id="2", text="hi")  # type: ignore[index]
-        user_reply = await tools["user_telegram_reply_to_message"](  # type: ignore[index]
+        send_result = await tools["telegram_send_message"](chat_id="1", text="hello")  # type: ignore[index]
+        reply_result = await tools["telegram_reply_to_message"](  # type: ignore[index]
             chat_id="3",
             message_id=11,
-            text="user reply",
-        )
-        bot_reply = await tools["bot_telegram_reply_to_message"](  # type: ignore[index]
-            chat_id="4",
-            message_id=12,
-            text="bot reply",
+            text="reply",
         )
 
-        assert user_send["type"] == "send"
-        assert bot_send["type"] == "send"
-        assert user_reply["type"] == "reply"
-        assert bot_reply["type"] == "reply"
+        assert send_result["type"] == "send"
+        assert reply_result["type"] == "reply"
         assert send_mock.await_args_list[0].args == ("1", "hello")
-        assert send_mock.await_args_list[1].args == ("2", "hi")
-        assert reply_mock.await_args_list[0].args == ("3", 11, "user reply")
-        assert reply_mock.await_args_list[1].args == ("4", 12, "bot reply")
+        assert reply_mock.await_args_list[0].args == ("3", 11, "reply")
 
 
 # ---------------------------------------------------------------------------

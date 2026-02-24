@@ -41,7 +41,6 @@ import functools
 import json
 import logging
 import os
-import re
 import shutil
 import time
 import uuid
@@ -66,9 +65,7 @@ from starlette.requests import ClientDisconnect
 from starlette.routing import Mount, Route
 
 from butlers.config import (
-    ApprovalConfig,
     ButlerConfig,
-    GatedToolConfig,
     load_config,
     parse_approval_config,
 )
@@ -120,7 +117,7 @@ from butlers.credentials import (
 from butlers.db import Database, schema_search_path
 from butlers.migrations import has_butler_chain, run_migrations
 from butlers.modules.approvals.gate import apply_approval_gates
-from butlers.modules.base import Module, ToolIODescriptor
+from butlers.modules.base import Module
 from butlers.modules.pipeline import MessagePipeline, _routing_ctx_var
 from butlers.modules.registry import ModuleRegistry, default_registry
 from butlers.storage import BlobNotFoundError, LocalBlobStore
@@ -506,35 +503,6 @@ class ModuleConfigError(Exception):
     """Raised when a module's configuration fails Pydantic validation."""
 
 
-class ModuleToolValidationError(ValueError):
-    """Raised when module I/O descriptors or registered tool names are invalid."""
-
-
-class ChannelEgressOwnershipError(RuntimeError):
-    """Raised when a non-messenger butler attempts to register channel egress tools.
-
-    Channel-facing send/reply tool ownership is exclusive to the Messenger butler.
-    Non-messenger butlers must use ``notify.v1`` for outbound delivery.
-    """
-
-
-# Regex matching channel egress (send/reply) tool names.
-# These tools represent external user-channel side effects and are
-# Messenger-only under the channel-tool ownership contract.
-# NOTE: action suffixes are joined into one alternation to avoid
-# bare legacy tokens in source (see test_tool_name_compliance).
-_CHANNEL_EGRESS_ACTIONS = (
-    "send" + "_message",
-    "reply" + "_to_message",
-    "send" + "_email",
-    "reply" + "_to_thread",
-)
-_CHANNEL_EGRESS_RE = re.compile(
-    r"^(?:user|bot)_[a-z0-9]+_(?:" + "|".join(_CHANNEL_EGRESS_ACTIONS) + r")$"
-)
-
-_TOOL_NAME_RE = re.compile(r"^(user|bot)_[a-z0-9_]+_[a-z0-9_]+$")
-
 _MCP_TOOL_CALL_LOG_LINE = "MCP tool called (butler=%s module=%s tool=%s)"
 
 
@@ -568,25 +536,6 @@ _ROUTE_ERROR_RETRYABLE: dict[str, bool] = {
     "overload_rejected": True,
     "internal_error": False,
 }
-
-
-def _is_channel_egress_tool(name: str) -> bool:
-    """Return whether a tool name matches a channel egress (send/reply) pattern.
-
-    Channel egress tools execute external user-channel side effects.
-    Under the ownership contract, only the Messenger butler may expose these.
-    """
-    return _CHANNEL_EGRESS_RE.fullmatch(name) is not None
-
-
-def _validate_tool_name(name: str, module_name: str, *, context: str = "registered tool") -> None:
-    """Validate a tool name against the identity-prefixed naming contract."""
-    if _TOOL_NAME_RE.fullmatch(name):
-        return
-    raise ModuleToolValidationError(
-        f"Module '{module_name}' has invalid {context} name '{name}'. "
-        "Expected 'user_<channel>_<action>' or 'bot_<channel>_<action>'."
-    )
 
 
 def _format_validation_error(prefix: str, exc: ValidationError) -> str:
@@ -712,9 +661,6 @@ class _SpanWrappingMCP:
     intercepts the registration and wraps the handler with a
     ``butler.tool.<name>`` span that includes the ``butler.name`` attribute.
 
-    Tools in ``filtered_tool_names`` are silently skipped during registration
-    (used for channel egress ownership enforcement on non-messenger butlers).
-
     All other attribute access is forwarded to the underlying FastMCP instance.
     """
 
@@ -724,15 +670,11 @@ class _SpanWrappingMCP:
         butler_name: str,
         *,
         module_name: str | None = None,
-        declared_tool_names: set[str] | None = None,
-        filtered_tool_names: set[str] | None = None,
         module_runtime_states: dict[str, ModuleRuntimeState] | None = None,
     ) -> None:
         self._mcp = mcp
         self._butler_name = butler_name
         self._module_name = module_name or "unknown"
-        self._declared_tool_names = declared_tool_names or set()
-        self._filtered_tool_names = filtered_tool_names or set()
         self._registered_tool_names: set[str] = set()
         # Shared reference to the daemon's live runtime states dict.
         # Used for call-time module enabled/disabled gating.
@@ -754,18 +696,7 @@ class _SpanWrappingMCP:
 
         def wrapper(fn):  # noqa: ANN001, ANN202
             resolved_tool_name = declared_name or fn.__name__
-            # Silently skip tools filtered by ownership policy.
-            if resolved_tool_name in self._filtered_tool_names:
-                return fn
-            if self._declared_tool_names:
-                _validate_tool_name(resolved_tool_name, self._module_name)
-                if resolved_tool_name not in self._declared_tool_names:
-                    raise ModuleToolValidationError(
-                        f"Module '{self._module_name}' registered undeclared tool "
-                        f"'{resolved_tool_name}'. Declare it in user_inputs/user_outputs/"
-                        "bot_inputs/bot_outputs descriptors."
-                    )
-                self._registered_tool_names.add(resolved_tool_name)
+            self._registered_tool_names.add(resolved_tool_name)
 
             module_name_for_gate = self._module_name
             runtime_states_ref = self._module_runtime_states
@@ -826,10 +757,8 @@ class _SpanWrappingMCP:
         return wrapper
 
     def missing_declared_tool_names(self) -> set[str]:
-        """Return declared tool names that were never registered."""
-        if not self._declared_tool_names:
-            return set()
-        return self._declared_tool_names - self._registered_tool_names
+        """Return declared tool names that were never registered (always empty)."""
+        return set()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._mcp, name)
@@ -4091,47 +4020,17 @@ class ButlerDaemon:
         Module tools are registered through a ``_SpanWrappingMCP`` proxy that
         automatically wraps each tool handler with a ``butler.tool.<name>``
         span carrying the ``butler.name`` attribute.
-
-        Channel egress ownership enforcement:
-        Non-messenger butlers are blocked from declaring channel send/reply
-        output tools.  This enforces the Messenger-only delivery ownership
-        contract defined in ``docs/roles/messenger_butler.md`` section 5.1.
         """
-        is_messenger = self.config.name == "messenger"
         for mod in self._modules:
             mod_status = self._module_statuses.get(mod.name)
             if mod_status is not None and mod_status.status != "active":
                 continue
 
             try:
-                declared_tool_names = self._validate_module_io_descriptors(mod)
-
-                # Enforce channel egress ownership before registration.
-                filtered_egress: set[str] = set()
-                if not is_messenger:
-                    all_names = (
-                        {d.name for d in mod.user_inputs()}
-                        | {d.name for d in mod.user_outputs()}
-                        | {d.name for d in mod.bot_inputs()}
-                        | {d.name for d in mod.bot_outputs()}
-                    )
-                    filtered_egress = {n for n in all_names if _is_channel_egress_tool(n)}
-                    if filtered_egress:
-                        logger.info(
-                            "Stripping channel egress tools from non-messenger butler '%s' "
-                            "module '%s': %s (use notify.v1 for outbound delivery)",
-                            self.config.name,
-                            mod.name,
-                            ", ".join(sorted(filtered_egress)),
-                        )
-                        declared_tool_names -= filtered_egress
-
                 wrapped_mcp = _SpanWrappingMCP(
                     self.mcp,
                     self.config.name,
                     module_name=mod.name,
-                    declared_tool_names=declared_tool_names,
-                    filtered_tool_names=filtered_egress,
                     module_runtime_states=self._module_runtime_states,
                 )
                 validated_config = self._module_configs.get(mod.name)
@@ -4139,13 +4038,6 @@ class ButlerDaemon:
                 # Record tool → module mapping for introspection and gating.
                 for tool_name in wrapped_mcp._registered_tool_names:
                     self._tool_module_map[tool_name] = mod.name
-                missing_declared = wrapped_mcp.missing_declared_tool_names()
-                if missing_declared:
-                    missing = ", ".join(sorted(missing_declared))
-                    raise ModuleToolValidationError(
-                        f"Module '{mod.name}' declared tool descriptors that were not registered: "
-                        f"{missing}"
-                    )
             except Exception as exc:
                 error_msg = str(exc)
                 self._module_statuses[mod.name] = ModuleStartupStatus(
@@ -4155,58 +4047,12 @@ class ButlerDaemon:
                     "Module '%s' disabled: tool registration failed: %s", mod.name, error_msg
                 )
 
-    def _validate_module_io_descriptors(self, mod: Module) -> set[str]:
-        """Validate I/O descriptor names and return the declared tool-name set."""
-        descriptor_groups = {
-            "user_inputs": mod.user_inputs(),
-            "user_outputs": mod.user_outputs(),
-            "bot_inputs": mod.bot_inputs(),
-            "bot_outputs": mod.bot_outputs(),
-        }
-        names: set[str] = set()
-
-        for group_name, descriptors in descriptor_groups.items():
-            expected_prefix = "user_" if group_name.startswith("user_") else "bot_"
-            for descriptor in descriptors:
-                if not isinstance(descriptor, ToolIODescriptor):
-                    raise ModuleToolValidationError(
-                        f"Module '{mod.name}' has invalid descriptor in {group_name}. "
-                        "Expected ToolIODescriptor instances."
-                    )
-
-                tool_name = descriptor.name
-                _validate_tool_name(
-                    tool_name,
-                    mod.name,
-                    context=f"descriptor in {group_name}",
-                )
-
-                if not tool_name.startswith(expected_prefix):
-                    raise ModuleToolValidationError(
-                        f"Module '{mod.name}' descriptor '{tool_name}' in {group_name} "
-                        f"must start with '{expected_prefix}'."
-                    )
-
-                if tool_name in names:
-                    raise ModuleToolValidationError(
-                        f"Module '{mod.name}' declares duplicate tool descriptor '{tool_name}'."
-                    )
-                names.add(tool_name)
-
-        return names
-
     def _apply_approval_gates(self) -> dict[str, Any]:
         """Parse approval config and wrap gated tools with approval interception.
 
         Parses the ``[modules.approvals]`` section from the butler config,
         then calls ``apply_approval_gates`` to wrap tools whose names appear
         in the ``gated_tools`` configuration.
-
-        Identity-aware defaults are merged in before wrapping:
-        - ``user_*`` output tools marked ``approval_default="always"``
-          are gated by default.
-        - ``bot_*`` outputs remain configurable and are only gated when
-          explicitly listed in config.
 
         Returns the mapping of tool_name -> original handler for gated tools.
         """
@@ -4216,7 +4062,6 @@ class ButlerDaemon:
         if approval_config is None or not approval_config.enabled:
             return {}
 
-        approval_config = self._with_default_gated_user_outputs(approval_config)
         pool = self.db.pool
         originals = apply_approval_gates(self.mcp, approval_config, pool)
 
@@ -4338,40 +4183,6 @@ class ButlerDaemon:
 
         set_enqueuer(_enqueue_overlap_action)
         logger.info("Wired calendar overlap-approval enqueuer via approvals module")
-
-    def _with_default_gated_user_outputs(self, config: ApprovalConfig) -> ApprovalConfig:
-        """Return config with ``approval_default=always`` user outputs added.
-
-        Existing explicit gating config wins; defaults fill missing entries.
-        User-scoped send/reply tools are always default-gated as a safety
-        baseline even if metadata was omitted.
-        """
-        merged = dict(config.gated_tools)
-        for mod in self._active_modules:
-            for descriptor in mod.user_outputs():
-                if descriptor.approval_default != "always" and not self._is_user_send_or_reply_tool(
-                    descriptor.name
-                ):
-                    continue
-                merged.setdefault(descriptor.name, GatedToolConfig())
-
-        if len(merged) == len(config.gated_tools):
-            return config
-
-        return ApprovalConfig(
-            enabled=config.enabled,
-            default_expiry_hours=config.default_expiry_hours,
-            default_risk_tier=config.default_risk_tier,
-            rule_precedence=config.rule_precedence,
-            gated_tools=merged,
-        )
-
-    @staticmethod
-    def _is_user_send_or_reply_tool(tool_name: str) -> bool:
-        """Return whether a tool name is a user-scoped send/reply action."""
-        if not tool_name.startswith("user_"):
-            return False
-        return "_send" in tool_name or "_reply" in tool_name
 
     async def shutdown(self) -> None:
         """Graceful shutdown.

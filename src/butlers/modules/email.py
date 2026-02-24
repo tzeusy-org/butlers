@@ -1,15 +1,11 @@
-"""Email module — identity-prefixed email MCP tools.
+"""Email module — email MCP tools.
 
 Uses IMAP for inbox access and SMTP for sending.
 Configured via [modules.email] with optional
 [modules.email.user] and [modules.email.bot] credential scopes in butler.toml.
 
 When a ``MessagePipeline`` is attached, incoming emails can be classified
-and routed to the appropriate butler via ``bot_email_check_and_route_inbox``.
-
-The ``user_*`` and ``bot_*`` tool prefixes model caller scope for routing
-and approvals. Today both scopes use the same configured email account
-(``SOURCE_EMAIL`` / ``SOURCE_EMAIL_PASSWORD``).
+and routed to the appropriate butler via ``email_check_and_route_inbox``.
 """
 
 from __future__ import annotations
@@ -27,7 +23,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from butlers.modules.base import Module, ToolIODescriptor
+from butlers.modules.base import Module
 from butlers.modules.pipeline import MessagePipeline, RoutingResult
 
 logger = logging.getLogger(__name__)
@@ -101,19 +97,16 @@ class EmailConfig(BaseModel):
 
 
 class EmailModule(Module):
-    """Email module providing user_*/bot_* email tools.
+    """Email module providing email MCP tools.
 
-    **DEPRECATED**: The ``bot_email_check_and_route_inbox`` tool is deprecated.
+    **DEPRECATED**: The ``email_check_and_route_inbox`` tool is deprecated.
     Use ``GmailConnector`` for canonical ingestion instead.
 
     When a ``MessagePipeline`` is set via ``set_pipeline()``, the
-    ``bot_email_check_and_route_inbox`` tool becomes functional: it fetches unseen
+    ``email_check_and_route_inbox`` tool becomes functional: it fetches unseen
     emails, classifies each via ``classify_message()``, and routes them
     to the appropriate butler. This bypasses the canonical ingest API
     and should not be used in production deployments.
-
-    The ``user_*`` and ``bot_*`` prefixes represent tool scope. Both currently
-    use the same configured SMTP/IMAP credentials.
     """
 
     def __init__(self) -> None:
@@ -136,83 +129,6 @@ class EmailModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
-    def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        """Declare user-identity email input tools."""
-        return (
-            ToolIODescriptor(
-                name="user_email_search_inbox",
-                description="Search inbox from user-scoped tool surface.",
-            ),
-            ToolIODescriptor(
-                name="user_email_read_message",
-                description="Read a specific message from user-scoped tool surface.",
-            ),
-        )
-
-    def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        """Declare user-identity email output tools.
-
-        User send/reply actions are approval-required defaults.
-        """
-        return (
-            ToolIODescriptor(
-                name="user_email_send_message",
-                description=(
-                    "Send outbound email from user-scoped tool surface (approval-required default)."
-                ),
-                approval_default="always",
-            ),
-            ToolIODescriptor(
-                name="user_email_reply_to_thread",
-                description=(
-                    "Reply to email thread from user-scoped tool surface "
-                    "(approval-required default)."
-                ),
-                approval_default="always",
-            ),
-        )
-
-    def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        """Declare bot-identity email input tools."""
-        return (
-            ToolIODescriptor(
-                name="bot_email_search_inbox",
-                description="Search inbox from bot-scoped tool surface.",
-            ),
-            ToolIODescriptor(
-                name="bot_email_read_message",
-                description="Read a specific message from bot-scoped tool surface.",
-            ),
-            ToolIODescriptor(
-                name="bot_email_check_and_route_inbox",
-                description="Classify and route unseen bot-inbox emails.",
-            ),
-        )
-
-    def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        """Declare bot-identity email output tools.
-
-        Bot send/reply actions are conditionally approval-gated by policy.
-        """
-        return (
-            ToolIODescriptor(
-                name="bot_email_send_message",
-                description=(
-                    "Send outbound email from bot-scoped tool surface "
-                    "(approval_default=conditional)."
-                ),
-                approval_default="conditional",
-            ),
-            ToolIODescriptor(
-                name="bot_email_reply_to_thread",
-                description=(
-                    "Reply to email thread from bot-scoped tool surface "
-                    "(approval_default=conditional)."
-                ),
-                approval_default="conditional",
-            ),
-        )
-
     @property
     def credentials_env(self) -> list[str]:
         """Environment variables required for email authentication."""
@@ -229,72 +145,43 @@ class EmailModule(Module):
     def set_pipeline(self, pipeline: MessagePipeline) -> None:
         """Attach a classification/routing pipeline for incoming messages.
 
-        When set, ``bot_email_check_and_route_inbox`` will classify and route each
+        When set, ``email_check_and_route_inbox`` will classify and route each
         unseen email to the appropriate butler.
         """
         self._pipeline = pipeline
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        """Register identity-prefixed email MCP tools.
-
-        Tool prefixes represent caller scope only; all handlers currently use
-        the same configured email account credentials.
-        """
+        """Register email MCP tools."""
         self._config = config if isinstance(config, EmailConfig) else EmailConfig(**(config or {}))
         module = self  # capture for closures
 
         @mcp.tool()
-        async def user_email_send_message(to: str, subject: str, body: str) -> dict:
-            """Send an email via SMTP from the user-scoped tool surface."""
+        async def email_send_message(to: str, subject: str, body: str) -> dict:
+            """Send an email via SMTP."""
             return await module._send_email(to, subject, body)
 
         @mcp.tool()
-        async def user_email_reply_to_thread(
+        async def email_reply_to_thread(
             to: str,
             thread_id: str,
             body: str,
             subject: str | None = None,
         ) -> dict:
-            """Reply to an email thread from the user-scoped tool surface."""
+            """Reply to an email thread."""
             return await module._reply_to_thread(to, thread_id, body, subject)
 
         @mcp.tool()
-        async def user_email_search_inbox(query: str) -> list[dict]:
-            """Search inbox via IMAP SEARCH from the user-scoped tool surface."""
+        async def email_search_inbox(query: str) -> list[dict]:
+            """Search inbox via IMAP SEARCH."""
             return await module._search_inbox(query)
 
         @mcp.tool()
-        async def user_email_read_message(message_id: str) -> dict:
-            """Read a specific email by message ID from the user-scoped tool surface."""
+        async def email_read_message(message_id: str) -> dict:
+            """Read a specific email by message ID."""
             return await module._read_email(message_id)
 
         @mcp.tool()
-        async def bot_email_send_message(to: str, subject: str, body: str) -> dict:
-            """Send an email via SMTP from the bot-scoped tool surface."""
-            return await module._send_email(to, subject, body)
-
-        @mcp.tool()
-        async def bot_email_reply_to_thread(
-            to: str,
-            thread_id: str,
-            body: str,
-            subject: str | None = None,
-        ) -> dict:
-            """Reply to an email thread from the bot-scoped tool surface."""
-            return await module._reply_to_thread(to, thread_id, body, subject)
-
-        @mcp.tool()
-        async def bot_email_search_inbox(query: str) -> list[dict]:
-            """Search inbox via IMAP SEARCH from the bot-scoped tool surface."""
-            return await module._search_inbox(query)
-
-        @mcp.tool()
-        async def bot_email_read_message(message_id: str) -> dict:
-            """Read a specific email by message ID from the bot-scoped tool surface."""
-            return await module._read_email(message_id)
-
-        @mcp.tool()
-        async def bot_email_check_and_route_inbox() -> dict:
+        async def email_check_and_route_inbox() -> dict:
             """Check unseen emails and route each through the classification pipeline."""
             return await module._check_and_route_inbox()
 
@@ -364,12 +251,12 @@ class EmailModule(Module):
 
         result = await self._pipeline.process(
             message_text=text,
-            tool_name="bot_email_handle_message",
+            tool_name="email_handle_message",
             tool_args={
                 "source": "email",
                 "source_channel": "email",
-                "source_identity": "bot",
-                "source_tool": "bot_email_check_and_route_inbox",
+                "source_identity": "unknown",
+                "source_tool": "email_check_and_route_inbox",
                 "source_endpoint_identity": endpoint_identity,
                 "sender_identity": sender or "unknown",
                 "external_event_id": rfc_message_id,
@@ -412,7 +299,7 @@ class EmailModule(Module):
             stacklevel=2,
         )
         logger.warning(
-            "Called DEPRECATED bot_email_check_and_route_inbox tool. "
+            "Called DEPRECATED email_check_and_route_inbox tool. "
             "Migrate to GmailConnector to use the canonical ingest API."
         )
 

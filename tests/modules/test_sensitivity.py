@@ -91,14 +91,14 @@ class _AnnotatedModule(Module):
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         return {
-            "bot_email_send_message": ToolMeta(
+            "email_send_message": ToolMeta(
                 arg_sensitivities={
                     "to": True,
                     "subject": False,
                     "body": True,
                 }
             ),
-            "bot_email_read_message": ToolMeta(
+            "email_read_message": ToolMeta(
                 arg_sensitivities={
                     "folder": False,
                 }
@@ -151,10 +151,10 @@ class TestModuleToolMetadataDefault:
         """A module that overrides tool_metadata() returns its declarations."""
         mod = _AnnotatedModule()
         metadata = mod.tool_metadata()
-        assert "bot_email_send_message" in metadata
-        assert "bot_email_read_message" in metadata
-        assert metadata["bot_email_send_message"].arg_sensitivities["to"] is True
-        assert metadata["bot_email_send_message"].arg_sensitivities["subject"] is False
+        assert "email_send_message" in metadata
+        assert "email_read_message" in metadata
+        assert metadata["email_send_message"].arg_sensitivities["to"] is True
+        assert metadata["email_send_message"].arg_sensitivities["subject"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +243,7 @@ class TestResolutionOrder:
         """Explicit declaration of sensitive=True wins over heuristic."""
         mod = _AnnotatedModule()
         # "to" is heuristically sensitive AND explicitly marked True
-        assert resolve_arg_sensitivity("bot_email_send_message", "to", mod) is True
+        assert resolve_arg_sensitivity("email_send_message", "to", mod) is True
 
     def test_explicit_false_overrides_heuristic(self):
         """Explicit declaration of sensitive=False wins over heuristic.
@@ -254,7 +254,7 @@ class TestResolutionOrder:
         would match a heuristic.
         """
         mod = _AnnotatedModule()
-        assert resolve_arg_sensitivity("bot_email_send_message", "subject", mod) is False
+        assert resolve_arg_sensitivity("email_send_message", "subject", mod) is False
 
     def test_explicit_false_overrides_heuristic_for_sensitive_name(self):
         """Module can explicitly mark a heuristically-sensitive name as safe."""
@@ -273,7 +273,7 @@ class TestResolutionOrder:
         """When no explicit declaration, heuristic kicks in."""
         mod = _MinimalModule()  # No tool_metadata override
         # "to" is heuristically sensitive
-        assert resolve_arg_sensitivity("bot_email_send_message", "to", mod) is True
+        assert resolve_arg_sensitivity("email_send_message", "to", mod) is True
 
     def test_heuristic_fallback_when_tool_not_in_metadata(self):
         """Heuristic applies for tools not listed in module metadata."""
@@ -286,7 +286,7 @@ class TestResolutionOrder:
         mod = _AnnotatedModule()
         # bot_email_send_message is in metadata, but "recipient" is not explicitly listed
         # "recipient" IS heuristically sensitive
-        assert resolve_arg_sensitivity("bot_email_send_message", "recipient", mod) is True
+        assert resolve_arg_sensitivity("email_send_message", "recipient", mod) is True
 
     def test_default_not_sensitive(self):
         """When neither explicit nor heuristic match, default is not sensitive."""
@@ -312,12 +312,12 @@ class TestClassifyToolArgs:
 
     def test_classifies_all_args(self):
         """Returns a dict with an entry for every argument."""
-        result = classify_tool_args("bot_email_send_message", ["to", "body", "subject"])
+        result = classify_tool_args("email_send_message", ["to", "body", "subject"])
         assert set(result.keys()) == {"to", "body", "subject"}
 
     def test_mixed_sensitivity(self):
         """Correctly classifies a mix of sensitive and non-sensitive args."""
-        result = classify_tool_args("bot_email_send_message", ["to", "body", "subject"])
+        result = classify_tool_args("email_send_message", ["to", "body", "subject"])
         assert result["to"] is True  # heuristic
         assert result["body"] is False  # default
         assert result["subject"] is False  # default
@@ -325,7 +325,7 @@ class TestClassifyToolArgs:
     def test_with_explicit_module(self):
         """Uses module declarations when available."""
         mod = _AnnotatedModule()
-        result = classify_tool_args("bot_email_send_message", ["to", "subject", "body"], mod)
+        result = classify_tool_args("email_send_message", ["to", "subject", "body"], mod)
         assert result["to"] is True  # explicit True
         assert result["subject"] is False  # explicit False
         assert result["body"] is True  # explicit True

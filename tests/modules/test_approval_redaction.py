@@ -32,7 +32,7 @@ class TestRedactToolArgs:
             "body": "Hello world",
         }
 
-        redacted = redact_tool_args("bot_email_send", tool_args)
+        redacted = redact_tool_args("email_send", tool_args)
 
         assert redacted["to"] == REDACTION_MARKER
         assert redacted["subject"] == "Test email"
@@ -46,7 +46,7 @@ class TestRedactToolArgs:
             "priority": 1,
         }
 
-        redacted = redact_tool_args("bot_telegram_send", tool_args)
+        redacted = redact_tool_args("telegram_send", tool_args)
 
         assert redacted == tool_args
 
@@ -65,7 +65,7 @@ class TestRedactToolArgs:
             "RECIPIENT": "charlie@example.com",
         }
 
-        redacted = redact_tool_args("bot_email_send", tool_args)
+        redacted = redact_tool_args("email_send", tool_args)
 
         assert redacted["TO"] == REDACTION_MARKER
         assert redacted["Email"] == REDACTION_MARKER
@@ -95,7 +95,7 @@ class TestRedactToolArgs:
             "message": "Hello",
         }
 
-        redacted = redact_tool_args("bot_telegram_send", tool_args)
+        redacted = redact_tool_args("telegram_send", tool_args)
 
         assert set(redacted.keys()) == set(tool_args.keys())
         assert len(redacted) == len(tool_args)

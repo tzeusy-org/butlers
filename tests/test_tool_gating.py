@@ -23,7 +23,7 @@ from butlers.daemon import (
     ModuleRuntimeState,
     _SpanWrappingMCP,
 )
-from butlers.modules.base import Module, ToolIODescriptor
+from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
 
 pytestmark = pytest.mark.unit
@@ -56,29 +56,17 @@ class _CalendarModule(Module):
     def credentials_env(self) -> list[str]:
         return []
 
-    def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        return (ToolIODescriptor(name="user_calendar_get_events"),)
-
-    def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        return (ToolIODescriptor(name="bot_calendar_check_availability"),)
-
-    def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        return ()
-
-    def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        return ()
-
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         calls = self.calls
 
         @mcp.tool()
-        async def user_calendar_get_events(**kwargs: Any) -> dict:
-            calls.append("user_calendar_get_events")
+        async def calendar_get_events(**kwargs: Any) -> dict:
+            calls.append("calendar_get_events")
             return {"events": []}
 
         @mcp.tool()
-        async def bot_calendar_check_availability(**kwargs: Any) -> dict:
-            calls.append("bot_calendar_check_availability")
+        async def calendar_check_availability(**kwargs: Any) -> dict:
+            calls.append("calendar_check_availability")
             return {"available": True}
 
     def migration_revisions(self) -> str | None:
@@ -113,24 +101,12 @@ class _EmailModule(Module):
     def credentials_env(self) -> list[str]:
         return []
 
-    def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        return (ToolIODescriptor(name="user_email_read_inbox"),)
-
-    def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        return ()
-
-    def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        return ()
-
-    def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        return ()
-
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         calls = self.calls
 
         @mcp.tool()
-        async def user_email_read_inbox(**kwargs: Any) -> dict:
-            calls.append("user_email_read_inbox")
+        async def email_read_inbox(**kwargs: Any) -> dict:
+            calls.append("email_read_inbox")
             return {"messages": []}
 
     def migration_revisions(self) -> str | None:
@@ -314,13 +290,13 @@ class TestSpanWrappingMCPGating:
         call_count = 0
 
         @proxy.tool()
-        async def user_calendar_get_events(**kwargs: Any) -> dict:
+        async def calendar_get_events(**kwargs: Any) -> dict:
             nonlocal call_count
             call_count += 1
             return {"events": []}
 
         # The decorator returns the instrumented wrapper; call it.
-        result = await user_calendar_get_events()
+        result = await calendar_get_events()
         assert result == {
             "error": "module_disabled",
             "module": "calendar",
@@ -348,12 +324,12 @@ class TestSpanWrappingMCPGating:
         call_count = 0
 
         @proxy.tool()
-        async def user_calendar_get_events(**kwargs: Any) -> dict:
+        async def calendar_get_events(**kwargs: Any) -> dict:
             nonlocal call_count
             call_count += 1
             return {"events": ["ev1"]}
 
-        result = await user_calendar_get_events()
+        result = await calendar_get_events()
         assert result == {"events": ["ev1"]}
         assert call_count == 1
 
@@ -372,12 +348,12 @@ class TestSpanWrappingMCPGating:
         call_count = 0
 
         @proxy.tool()
-        async def user_calendar_get_events(**kwargs: Any) -> dict:
+        async def calendar_get_events(**kwargs: Any) -> dict:
             nonlocal call_count
             call_count += 1
             return {"events": []}
 
-        result = await user_calendar_get_events()
+        result = await calendar_get_events()
         assert result == {"events": []}
         assert call_count == 1
 
@@ -400,13 +376,13 @@ class TestSpanWrappingMCPGating:
         call_count = 0
 
         @proxy.tool()
-        async def user_calendar_get_events(**kwargs: Any) -> dict:
+        async def calendar_get_events(**kwargs: Any) -> dict:
             nonlocal call_count
             call_count += 1
             return {"events": ["ev1"]}
 
         # First call: disabled → structured error.
-        result = await user_calendar_get_events()
+        result = await calendar_get_events()
         assert result["error"] == "module_disabled"
         assert call_count == 0
 
@@ -414,7 +390,7 @@ class TestSpanWrappingMCPGating:
         runtime_states["calendar"].enabled = True
 
         # Second call: now enabled → normal execution.
-        result = await user_calendar_get_events()
+        result = await calendar_get_events()
         assert result == {"events": ["ev1"]}
         assert call_count == 1
 
@@ -437,13 +413,13 @@ class TestSpanWrappingMCPGating:
         call_count = 0
 
         @proxy.tool()
-        async def user_calendar_get_events(**kwargs: Any) -> dict:
+        async def calendar_get_events(**kwargs: Any) -> dict:
             nonlocal call_count
             call_count += 1
             return {"events": ["ev1"]}
 
         # First call: enabled → normal.
-        result = await user_calendar_get_events()
+        result = await calendar_get_events()
         assert result == {"events": ["ev1"]}
         assert call_count == 1
 
@@ -451,7 +427,7 @@ class TestSpanWrappingMCPGating:
         runtime_states["calendar"].enabled = False
 
         # Second call: disabled → gated.
-        result = await user_calendar_get_events()
+        result = await calendar_get_events()
         assert result["error"] == "module_disabled"
         assert call_count == 1  # unchanged
 
@@ -472,10 +448,10 @@ class TestSpanWrappingMCPGating:
         )
 
         @proxy.tool()
-        async def user_email_read_inbox(**kwargs: Any) -> dict:
+        async def email_read_inbox(**kwargs: Any) -> dict:
             return {"messages": []}
 
-        result = await user_email_read_inbox()
+        result = await email_read_inbox()
         assert result["error"] == "module_disabled"
         assert result["module"] == "email"
         assert "email" in result["message"]
@@ -499,12 +475,12 @@ class TestSpanWrappingMCPGating:
         call_count = 0
 
         @proxy.tool()
-        async def user_calendar_get_events(**kwargs: Any) -> dict:
+        async def calendar_get_events(**kwargs: Any) -> dict:
             nonlocal call_count
             call_count += 1
             return {"events": []}
 
-        result = await user_calendar_get_events()
+        result = await calendar_get_events()
         assert result == {"events": []}
         assert call_count == 1
 
@@ -524,12 +500,12 @@ class TestDaemonToolGating:
         daemon = await _start_daemon(butler_dir, registry=registry, state_store={})
 
         tool_map = daemon._tool_module_map
-        assert "user_calendar_get_events" in tool_map
-        assert tool_map["user_calendar_get_events"] == "calendar"
-        assert "bot_calendar_check_availability" in tool_map
-        assert tool_map["bot_calendar_check_availability"] == "calendar"
-        assert "user_email_read_inbox" in tool_map
-        assert tool_map["user_email_read_inbox"] == "email"
+        assert "calendar_get_events" in tool_map
+        assert tool_map["calendar_get_events"] == "calendar"
+        assert "calendar_check_availability" in tool_map
+        assert tool_map["calendar_check_availability"] == "calendar"
+        assert "email_read_inbox" in tool_map
+        assert tool_map["email_read_inbox"] == "email"
 
     async def test_tool_module_map_empty_without_modules(self, tmp_path: Path) -> None:
         """With no modules registered, the tool_module_map is empty."""
@@ -576,12 +552,12 @@ class TestDaemonToolGating:
         tool_map = daemon._tool_module_map
         # All calendar tools map to "calendar".
         calendar_tools = {k for k, v in tool_map.items() if v == "calendar"}
-        assert "user_calendar_get_events" in calendar_tools
-        assert "bot_calendar_check_availability" in calendar_tools
+        assert "calendar_get_events" in calendar_tools
+        assert "calendar_check_availability" in calendar_tools
 
         # All email tools map to "email".
         email_tools = {k for k, v in tool_map.items() if v == "email"}
-        assert "user_email_read_inbox" in email_tools
+        assert "email_read_inbox" in email_tools
 
 
 # ---------------------------------------------------------------------------

@@ -190,8 +190,7 @@ Module loading rules:
 
 Module tool contract:
 - Base contract enforces channel delivery ownership boundaries in section `11` (`messenger_butler` owns external user-channel delivery). Module tool naming details remain role-specific.
-- Modules may declare tool I/O descriptors via `user_inputs`, `user_outputs`, `bot_inputs`, `bot_outputs` when identity-scoped I/O surfaces are part of that role contract.
-- For roles that define identity-scoped channel tools (for example `messenger_butler`), user-vs-bot identity split must be explicit in descriptor metadata and tool names (for example `user_<channel>_<verb>` / `bot_<channel>_<verb>`).
+- Modules register tools via `register_tools()` using plain `<channel>_<verb>` naming.
 - When descriptors are declared, registered tool names must match declared descriptors.
 - When descriptors are declared, missing declared tools or undeclared registered tools are startup-blocking errors.
 

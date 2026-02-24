@@ -84,20 +84,15 @@ Messenger must provide:
 - One Switchboard-facing `route.execute` delivery entrypoint for normalized notify execution.
 - Channel adapter tools for concrete provider operations.
 
-Channel tool naming and identity scope rules:
-- Channel tools must be identity-prefixed: `user_<channel>_<verb>` and `bot_<channel>_<verb>`.
-- User-scoped send/reply outputs must default to `approval_default="always"`.
-- Bot-scoped send/reply outputs may default to `approval_default="conditional"` and remain policy-gated.
-- Legacy non-prefixed channel tool names are not allowed in target state.
+Channel tool naming:
+- Tools use plain `<channel>_<verb>` format (e.g. `telegram_send_message`, `email_reply_to_thread`).
 
 Canonical Telegram/Email examples:
-- Telegram inputs: `user_telegram_get_updates`, `bot_telegram_get_updates`
-- Telegram outputs: `user_telegram_send_message`, `user_telegram_reply_to_message`, `bot_telegram_send_message`, `bot_telegram_reply_to_message`
-- Email inputs: `user_email_search_inbox`, `bot_email_search_inbox`
-- Email outputs: `user_email_send_message`, `user_email_reply_to_thread`, `bot_email_send_message`, `bot_email_reply_to_thread`
+- Telegram tools: `telegram_send_message`, `telegram_reply_to_message`
+- Email tools: `email_send_message`, `email_reply_to_thread`, `email_search_inbox`, `email_read_message`, `email_check_and_route_inbox`
 
-Approval behavior by identity:
-- User-scoped send/reply outputs are always approval-gated by default.
+Approval behavior:
+- Send/reply outputs are approval-gated per the module's `tool_metadata()` configuration.
 - Bot-scoped outputs are not default-gated; they become gated only when policy/config opts in.
 
 Switchboard dispatch policy:
@@ -432,7 +427,6 @@ Operational rule:
 - Centralized delivery ownership reduces policy drift and duplicate channel logic across specialist butlers.
 - At-least-once upstream fanout requires strong idempotency at Messenger to avoid duplicate user-facing sends.
 - Layered rate limits are required because provider quotas, user anti-spam constraints, and local runtime capacity are different control problems.
-- Identity-scoped credentials (`user_*` vs `bot_*`) keep approval and auditing semantics explicit and enforceable.
 - Durable delivery audit surfaces are required for post-incident reconstruction and safe replay.
 
 ## 17. Target-State Deltas from Current Implementation
@@ -473,62 +467,7 @@ Operational rule:
 
 ### 20.1 Current Enforcement Mechanism
 
-The daemon module loader (`ButlerDaemon._register_module_tools`) enforces
-Messenger-only channel egress ownership at startup. For any butler whose
-`config.name` is not `"messenger"`, the loader:
 
-1. Inspects each module's declared I/O tools (`user_inputs()`,
-   `user_outputs()`, `bot_inputs()`, and `bot_outputs()`) defensively.
-2. Identifies tools matching the channel egress pattern:
-   `^(?:user|bot)_<channel>_<action>$` where `<action>` is a channel
-   send or reply verb (for example `user_telegram_send_message`,
-   `bot_email_reply_to_thread`).
-3. Strips matching tools from the declared set and suppresses their
-   registration via the `_SpanWrappingMCP` filtered-tool mechanism.
-4. Logs the stripped tools at INFO level with a reminder to use `notify.v1`.
-
-Modules loaded by non-messenger butlers (including Switchboard) retain full
-ingress capability; only outbound egress tools are filtered.
-
-### 20.2 Compatibility Shims
-
-| Shim | Behavior | Removal Target |
-|---|---|---|
-| Silent egress stripping | Egress tools on non-messenger modules are silently filtered instead of raising a hard startup error. Modules can still declare egress descriptors without causing crashes. | Phase 2 (hard error) |
-| Ingress-only module loading | Switchboard and other butlers can load channel modules (telegram, email) for ingress connectors without triggering egress enforcement. | Permanent (by design) |
-
-### 20.3 Migration Path
-
-**Phase 1 (current):** Silent filter/strip with INFO-level logging.
-- Non-messenger butlers that previously relied on direct channel send/reply
-  tools will find those tools absent at runtime.
-- Migrate outbound delivery to the `notify.v1` envelope contract
-  (see `docs/roles/base_butler.md` section 11.1).
-
-**Phase 2 (target):** Hard startup error.
-- Once all non-messenger modules have removed egress output descriptors,
-  upgrade enforcement from silent stripping to `ChannelEgressOwnershipError`
-  at startup.
-- Timeline: After all roster butlers pass clean startup with zero stripped
-  tools logged.
-
-**Phase 3 (cleanup):** Remove compatibility shims.
-- Remove the silent-strip code path from `_register_module_tools`.
-- Remove `ChannelEgressOwnershipError` (no longer reachable).
-- Egress output descriptors on non-messenger modules become a schema
-  validation error in module registration.
-
-### 20.4 Developer Checklist for Module Migration
-
-1. Remove channel egress tool descriptors from `user_outputs()` and
-   `bot_outputs()` in non-messenger module classes.
-2. Replace direct `user_telegram_send_message` / `bot_email_send_email`
-   calls with `notify.v1` envelope submissions through the butler's
-   `notify` core tool.
-3. Verify the module loads cleanly with zero "Stripping channel egress
-   tools" log lines on non-messenger butlers.
-4. Update module tests to assert egress tools are absent from the
-   non-messenger tool surface.
 
 ## 21. Non-Goals
 - Replacing Switchboard as ingress orchestration owner.

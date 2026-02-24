@@ -547,7 +547,7 @@ make test-qg
 
 ### Switchboard MCP routing contract
 - `roster/switchboard/tools/routing/route.py::_call_butler_tool` calls butler endpoints via `fastmcp.Client` and should return `CallToolResult.data` when present.
-- If a target returns `Unknown tool` for an identity-prefixed routing tool name, routing retries `trigger` with mapped args (`prompt` from `prompt`/`message`, optional `context`).
+- If a target returns `Unknown tool` for a routing tool name, routing retries `trigger` with mapped args (`prompt` from `prompt`/`message`, optional `context`).
 
 ### Route/notify envelope contract
 - `roster/switchboard/tools/routing/contracts.py` exports `NotifyDeliveryV1`, `NotifyRequestV1`, and `parse_notify_request`; daemon messenger `route.execute` validation depends on these for `notify.v1` payload parsing.
@@ -570,11 +570,6 @@ make test-qg
 
 ### Notify react message normalization contract
 - `src/butlers/daemon.py::notify` must normalize omitted `message` to `""` before building `notify_request.delivery` so `intent="react"` payloads remain valid through downstream `notify.v1` validation paths that require a string-typed `delivery.message`.
-
-### Pipeline identity-routing contract
-- `src/butlers/modules/pipeline.py` should route inbound channel messages with identity-prefixed tool names (default `bot_switchboard_handle_message`) and include `source_metadata` (`channel`, `identity`, `tool_name`, optional `source_id`) in routed args.
-- `roster/switchboard/tools/routing/dispatch.py::dispatch_decomposed` should pass through identity-aware source metadata and the prefixed logical `tool_name` for each sub-route.
-- `roster/switchboard/tools/routing/route.py::_call_butler_tool` should retry `trigger` for unknown identity-prefixed tool names, preserving source metadata via trigger context.
 
 ### Spawner trigger-source/failure contract
 - Core daemon `trigger` MCP tool should dispatch with `trigger_source="trigger"` (not `trigger_tool`) to stay aligned with `core.sessions` validation.
@@ -607,33 +602,9 @@ make test-qg
 ### MCP SSE disconnect guard contract
 - `src/butlers/daemon.py::_McpSseDisconnectGuard` wraps the FastMCP SSE ASGI app and suppresses expected `starlette.requests.ClientDisconnect` only for `POST .../messages` requests.
 - The guard logs a concise DEBUG line with butler/path/session context and attempts a lightweight empty `202` response when possible; non-`/messages` disconnects and non-disconnect exceptions must still bubble.
-### Telegram identity tool contract
-- `src/butlers/modules/telegram.py` registers only identity-prefixed tools: `user_telegram_get_updates`, `user_telegram_send_message`, `user_telegram_reply_to_message`, `bot_telegram_get_updates`, `bot_telegram_send_message`, and `bot_telegram_reply_to_message`.
-- Legacy unprefixed Telegram tool names must not be registered.
-- User-output descriptors (`user_telegram_send_message`, `user_telegram_reply_to_message`) are marked as approval-required defaults in descriptor descriptions (`approval_default=always`).
-
 ### Telegram inbox logging contract
 - `TelegramModule.process_update()` should log inbound payloads via `db.pool.acquire()` when DB is available and pass the returned `message_inbox_id` into `pipeline.process(...)`.
 - Keep Telegram `pipeline.process` tool args aligned with tests (`source`, `source_channel`, `source_identity`, `source_tool`, `chat_id`, `source_id`); additional metadata should not be forced into this call path without updating tests/contracts.
-
-### Email tool scope/approval contract
-- In `src/butlers/modules/email.py`, `user_*` and `bot_*` prefixes currently represent scoped tool surfaces; both still use the same configured SMTP/IMAP credentials (`SOURCE_EMAIL` / `SOURCE_EMAIL_PASSWORD`).
-- Both `user_*` and `bot_*` email send/reply output descriptors are documented as `approval-required default`; tests in `tests/modules/test_module_email.py` assert this marker.
-
-### Telegram/Email identity-credential config contract
-- Telegram and Email module config now supports identity-scoped credential tables: `[modules.telegram.user]` / `[modules.telegram.bot]` and `[modules.email.user]` / `[modules.email.bot]`.
-- Env var name fields in those scopes (`*_env`) must be valid environment variable identifiers and are schema-validated in module config models.
-- Butler startup credential validation collects enabled identity-scope env vars and reports missing values with scope-qualified sources (for example `module:telegram.bot`, `module:email.bot`).
-
-### Identity-aware approval defaults contract
-- `ToolIODescriptor` includes `approval_default` (`none`, `conditional`, `always`) and module output descriptors should set it explicitly.
-- `ButlerDaemon._apply_approval_gates()` merges default-gated user output tools before wrapping gates: user send/reply outputs (`approval_default="always"` and `user_*_*send*` / `user_*_*reply*` safety fallback) are auto-gated whenever approvals are enabled.
-- Bot outputs are **not** auto-gated by defaults; they remain configurable via `[modules.approvals.gated_tools]` entries.
-- `tests/daemon/test_approval_defaults.py::test_user_send_and_reply_outputs_are_gated_by_name_safety_net` verifies the name-based safety fallback still gates user send/reply tools even when descriptor `approval_default` is not `always`.
-
-### Tool-name compliance scan contract
-- `tests/test_tool_name_compliance.py::test_legacy_unprefixed_tool_names_absent_from_repo_text_surfaces` scans docs/spec text in addition to code; avoid bare legacy tool tokens in prose/examples and use identity-prefixed names instead (for example `bot_switchboard_handle_message`).
-- The same compliance scan also flags standalone legacy tokens in test literals/fixtures; when asserting legacy-name rejection, construct those names dynamically (for example `"send" + "_message"`) rather than embedding bare tokens directly.
 
 ### Route.execute authn/authz contract
 - `src/butlers/daemon.py` `route.execute` enforces `request_context.source_endpoint_identity` against `ButlerConfig.trusted_route_callers` (default: `("switchboard",)`) before any spawner trigger or delivery adapter call.
@@ -658,14 +629,6 @@ make test-qg
 ### Approvals immutable event-log contract
 - Approvals migrations include `approvals_002` with append-only `approval_events` and a trigger (`trg_approval_events_immutable`) that rejects `UPDATE`/`DELETE`; event rows must be written via inserts only.
 - Canonical approval event types are `action_queued`, `action_auto_approved`, `action_approved`, `action_rejected`, `action_expired`, `action_execution_succeeded`, `action_execution_failed`, `rule_created`, and `rule_revoked`.
-
-### Channel egress ownership enforcement contract
-- `src/butlers/daemon.py::_register_module_tools` enforces Messenger-only channel egress ownership at startup: for non-messenger butlers, tools matching channel send/reply egress patterns (for example `user_telegram_send_message`, `bot_email_reply_to_thread`) are silently stripped from declared tool sets and filtered during registration. All I/O descriptors (inputs + outputs) are scanned defensively to catch misclassified egress tools.
-- Switchboard and other butlers can still load channel modules (telegram, email) for ingress; only egress output tools are filtered.
-- `_SpanWrappingMCP` accepts `filtered_tool_names` to suppress registration of stripped tools without raising errors.
-- `_CHANNEL_EGRESS_ACTIONS` uses string concatenation (`"send" + "_message"`) to avoid triggering the tool-name compliance scanner.
-- Migration path: Phase 1 (current) is silent filter/strip with INFO logging; Phase 2 upgrades to hard `ChannelEgressOwnershipError`; Phase 3 removes compatibility shims.
-- Migration guidance documented in `docs/roles/messenger_butler.md` section 20.
 
 ### Approvals risk-tier + precedence runtime contract
 - `src/butlers/config.py::ApprovalConfig` now includes `default_risk_tier` plus per-tool `GatedToolConfig.risk_tier`; `parse_approval_config` validates both against `ApprovalRiskTier` (`low|medium|high|critical`).

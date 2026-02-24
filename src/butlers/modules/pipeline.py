@@ -662,22 +662,13 @@ class MessagePipeline:
         _routing_ctx_var.set(None)
 
     @staticmethod
-    def _default_identity_for_tool(tool_name: str) -> str:
-        if tool_name.startswith("user_"):
-            return "user"
-        if tool_name.startswith("bot_"):
-            return "bot"
-        return "unknown"
-
-    @classmethod
     def _build_source_metadata(
-        cls,
         args: dict[str, Any],
         *,
         tool_name: str,
     ) -> dict[str, str]:
         channel = str(args.get("source_channel") or args.get("source") or "unknown")
-        identity = str(args.get("source_identity") or cls._default_identity_for_tool(tool_name))
+        identity = str(args.get("source_identity") or "unknown")
         source_tool = str(args.get("source_tool") or tool_name)
 
         metadata: dict[str, str] = {
