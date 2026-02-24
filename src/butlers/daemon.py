@@ -826,6 +826,49 @@ class _ToolCallLoggingMCP:
         return getattr(self._mcp, name)
 
 
+async def _ensure_owner_contact(pool: asyncpg.Pool) -> None:
+    """Bootstrap the owner contact in shared.contacts (idempotent).
+
+    Creates exactly one contact row with roles=[''owner''] on first boot.
+    The partial unique index ix_contacts_owner_singleton (created by core_007
+    migration) prevents duplicate owner contacts even under concurrent startup.
+
+    Safe to call if:
+    - shared.contacts does not yet exist (skips silently)
+    - owner contact already exists (ON CONFLICT DO NOTHING)
+    - migration has not yet run (graceful no-op)
+    """
+    try:
+        async with pool.acquire() as conn:
+            # Check whether shared.contacts exists and has the roles column.
+            table_exists = await conn.fetchval("SELECT to_regclass('shared.contacts') IS NOT NULL")
+            if not table_exists:
+                return
+
+            roles_col_exists = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'shared'
+                      AND table_name = 'contacts'
+                      AND column_name = 'roles'
+                )
+                """
+            )
+            if not roles_col_exists:
+                return
+
+            # Insert owner contact; ON CONFLICT on the partial unique index
+            # (ix_contacts_owner_singleton) handles concurrent startups.
+            await conn.execute(
+                "INSERT INTO shared.contacts (name, roles) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                "Owner",
+                ["owner"],
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("Owner contact bootstrap skipped (non-fatal)", exc_info=True)
+
+
 class RuntimeBinaryNotFoundError(RuntimeError):
     """Raised when the runtime adapter's binary is not found on PATH."""
 
@@ -1178,6 +1221,12 @@ class ButlerDaemon:
             if k.split(".")[0] not in self._module_statuses
             or self._module_statuses[k.split(".")[0]].status == "active"
         }
+
+        # 8d. Bootstrap owner contact (idempotent; non-fatal).
+        #     Ensures exactly one contact with roles=[''owner''] exists in shared.contacts.
+        #     This is safe to call concurrently — the partial unique index + ON CONFLICT
+        #     prevent double-insertion even under race conditions.
+        await _ensure_owner_contact(pool)
 
         # 9. Call module on_startup (non-fatal per-module)
         started_modules: list[Module] = []
