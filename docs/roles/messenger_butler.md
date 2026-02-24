@@ -177,12 +177,31 @@ Mandatory validation:
 - When target channel requires thread targeting, `source_thread_identity` is required for `reply`.
 
 ### 6.2 Target Resolution Rules
-- `send` intent:
-  - Uses explicit `delivery.recipient` when provided.
-  - May use policy-defined default recipient only when channel policy allows it.
-- `reply` intent:
-  - Destination must derive from `request_context` lineage first.
-  - Explicit recipient overrides are allowed only when consistent with policy and lineage checks.
+
+#### contact_id-based resolution
+
+`notify.v1` supports an optional `contact_id` field. When provided, Messenger (or the originating butler's `notify()` tool) resolves the channel identifier from `shared.contact_info`:
+
+```sql
+SELECT ci.value
+FROM shared.contact_info ci
+WHERE ci.contact_id = $1 AND ci.type = $2
+ORDER BY ci.is_primary DESC NULLS LAST, ci.created_at ASC
+LIMIT 1
+```
+
+Priority order for `send` intent recipient resolution:
+1. `contact_id` provided → resolve from `shared.contact_info WHERE contact_id=X AND type=channel`. Primary entries (`is_primary=true`) preferred.
+2. Explicit `delivery.recipient` provided → use as-is (backwards-compatible direct addressing).
+3. Neither → resolve owner contact's channel identifier (default path for scheduled/proactive sends).
+
+When `contact_id` is provided but no matching `contact_info` row exists for the requested channel, the delivery is parked as a `pending_action` and the owner is notified that the identifier is missing. `notify()` returns `{status: pending_missing_identifier, ...}`.
+
+#### reply intent rules
+- Destination must derive from `request_context` lineage first.
+- Explicit recipient overrides are allowed only when consistent with policy and lineage checks.
+
+#### validation failure
 - Missing required targeting fields must fail as `validation_error` with no side effect.
 
 ### 6.3 Content and Identity Presentation Rules

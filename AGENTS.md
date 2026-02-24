@@ -342,10 +342,34 @@ make test-qg
 - `notify` tool metadata (description + parameter schema) should explicitly document required/optional fields, include a valid JSON example, constrain `channel`/`intent` enums, and describe `request_context` required keys (`request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`) plus `source_thread_identity` for telegram reply/react.
 - `memory_store_fact` tool metadata should explicitly document required/optional fields, include a valid JSON example, keep `permanence` as enum (`permanent|stable|standard|volatile|ephemeral`), and state that `tags` must be a JSON array of strings (not a comma-separated string).
 
-### Telegram scheduled notify targeting contract
-- `notify(channel="telegram", intent="send")` must resolve recipient chat ID from `BUTLER_TELEGRAM_CHAT_ID` (DB-backed secret via `CredentialStore`, `env_fallback=False`) when `recipient` is omitted.
-- If no explicit recipient and no configured `BUTLER_TELEGRAM_CHAT_ID`, `notify` should return: `No bot <-> user telegram chat has been configured - please set BUTLER_TELEGRAM_CHAT_ID in /secrets`.
-- Scheduled prompts that are not replying to ingress context (for example `roster/general/butler.toml` `eod-tomorrow-prep`) should use `intent="send"` instead of `intent="reply"`.
+### Contacts-identity model contracts
+
+#### Identity schema (shared)
+- `shared.contacts` and `shared.contact_info` are the canonical identity store in PostgreSQL; all channel-to-person resolution goes through this shared schema.
+- `shared.contacts.roles` (text[]) encodes contact relationship: `owner` marks the single human operator. A partial unique index (`ix_contacts_owner_singleton`) enforces owner singleton.
+- `shared.contact_info` links channel identifiers to contacts: `(type, value)` UNIQUE constraint guarantees at most one contact per channel identifier.
+- `contact_info.secured = true` marks credential entries (e.g. `type='telegram_bot_token'`); secured entries are filtered from default read paths.
+
+#### Owner bootstrap
+- `_ensure_owner_contact(pool)` in `src/butlers/daemon.py` bootstraps the owner contact row on every daemon startup (idempotent via `ON CONFLICT DO NOTHING`).
+
+#### Identity resolution (ingress / Switchboard)
+- `resolve_contact_by_channel(pool, channel_type, channel_value)` in `src/butlers/identity.py` is the canonical reverse-lookup: maps `(type, value)` → `ResolvedContact` (contact_id, name, roles, entity_id).
+- Unknown senders: `create_temp_contact(pool, channel_type, channel_value)` creates a temp contact with `metadata.needs_disambiguation = true`; owner is notified once per new unknown sender (idempotent via `butler_state` KV: `identity:unknown_notified:{type}:{value}`).
+- `build_identity_preamble(resolved, channel)` formats the preamble injected before every routing prompt; `contact_id`, `entity_id`, and `sender_roles` are persisted to `routing_log`.
+- Switchboard identity injection pipeline lives in `roster/switchboard/tools/identity/inject.py`.
+
+#### notify() contact resolution
+- `notify()` supports three-tier recipient resolution: (1) `contact_id` UUID → `shared.contact_info WHERE contact_id=X AND type=channel` (primary preferred), (2) explicit `recipient` string (backwards-compatible), (3) owner contact's channel identifier (default/scheduled sends).
+- `_resolve_contact_channel_identifier(contact_id, channel)` in `src/butlers/daemon.py` handles path (1).
+- `resolve_owner_contact_info(pool, info_type)` in `src/butlers/credential_store.py` handles path (3); falls back to `TELEGRAM_CHAT_ID` in `butler_secrets` for backwards compatibility.
+- `notify()` returns `{status: pending_missing_identifier, ...}` when `contact_id` is provided but no matching `contact_info` entry exists for the requested channel; owner is notified.
+- Scheduled prompts that are not replying to ingress context should use `intent="send"` (not `intent="reply"`).
+
+#### Approval gate: role-based gating
+- The approval gate uses role-based target resolution, not tool-name prefix heuristics (`user_*`/`bot_*` prefixes were removed in the h9fs epic).
+- Gate resolution order: (1) extract `(channel_type, channel_value)` or `contact_id` from tool args → (2) resolve to `ResolvedContact` → (3) auto-approve if `owner` role, check standing rules otherwise.
+- Tool-name-based prefixes in `approval_rules.tool_name` were renamed to plain tool names via Alembic migration (h9fs.7).
 
 ### Switchboard registry liveness/compat contract
 - `butler_registry` includes liveness + compatibility metadata: `eligibility_state`, `liveness_ttl_seconds`, quarantine fields, `route_contract_min/max`, and `capabilities`.

@@ -45,7 +45,7 @@ This document is the authoritative module contract for approval-gated actions (f
 
 ### 4.2 Mandatory runtime flows
 1. `Startup gate application`
-- Daemon parses `[modules.approvals]`, merges identity-aware default-gated user outputs, and wraps gated tools.
+- Daemon parses `[modules.approvals]` and wraps configured gated tools.
 - Wrapped originals are handed to `ApprovalsModule.set_tool_executor(...)` for manual approvals.
 2. `Gated invocation`
 - Wrapper serializes invocation into a pending action payload.
@@ -107,12 +107,25 @@ Invalid transitions must be rejected (`InvalidTransitionError` path in module lo
 ### 6.1 Config-driven gating
 - Only tools in `gated_tools` are intercepted.
 - Effective expiry is per-tool `expiry_hours` override or module `default_expiry_hours`.
-- Identity-aware defaults are merged before wrapping:
-  - user outputs with `approval_default="always"` are default-gated.
-  - user `send/reply` name safety-net tools are default-gated even without metadata.
-  - bot outputs are not default-gated unless explicitly configured.
+- Tools are gated strictly by config; there are no implicit defaults based on tool name patterns or I/O model classifications.
 
-### 6.2 Standing rule checks (gate path)
+### 6.2 Role-based auto-approval
+
+The gate wrapper resolves the target contact for every gated tool invocation and applies role-based policy:
+
+1. **Owner-targeted**: if the resolved contact has the `owner` role, the action is auto-approved immediately — no standing rule required. The rational: owners are pre-trusted by definition.
+2. **Known non-owner**: standing approval rules are checked. If a rule matches, the action is auto-approved and executed. If no rule matches, the action is parked as `pending`.
+3. **Unresolvable target**: the action is parked as `pending` (conservative default).
+
+Target contact resolution uses `_extract_channel_identity` + `_resolve_target_contact` from `src/butlers/modules/approvals/gate.py`, which inspects tool args for:
+- `contact_id` (explicit UUID → direct `shared.contacts` lookup)
+- `channel` + `recipient` (notify tool pattern)
+- `chat_id` (Telegram send/reply)
+- `to` (email send/reply)
+
+This replaces the previous tool-name prefix heuristic (`user_*` / `bot_*` prefixes) that was removed in the h9fs epic.
+
+### 6.3 Standing rule checks (gate path)
 Rule must satisfy all:
 - tool name matches
 - rule is active
@@ -128,7 +141,7 @@ Constraint formats:
 Matching precedence is deterministic (`constraint_specificity_desc`, `bounded_scope_desc`,
 `created_at_desc`, `rule_id_asc`) and is surfaced in gate responses.
 
-### 6.3 Constraint suggestions
+### 6.4 Constraint suggestions
 - `suggest_rule_constraints` and `create_rule_from_action` use sensitivity classification.
 - Sensitivity resolution order:
   1. Module-declared tool metadata (`ToolMeta.arg_sensitivities`)
