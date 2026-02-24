@@ -3,6 +3,8 @@ import { toast } from "sonner";
 
 import { triggerContactsSync } from "@/api/index.ts";
 import type { ContactParams } from "@/api/types";
+import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
+import { PendingIdentitiesSection } from "@/components/relationship/PendingIdentitiesSection";
 import ContactTable from "@/components/relationship/ContactTable";
 import { Button } from "@/components/ui/button";
 import {
@@ -103,6 +105,12 @@ export default function ContactsPage() {
         </Button>
       </div>
 
+      {/* Owner setup banner — shown when identity not configured */}
+      <OwnerSetupBanner />
+
+      {/* Pending identities — shown when temp contacts exist */}
+      <PendingIdentitiesSection />
+
       {/* Contact table */}
       <Card>
         <CardHeader>
@@ -128,7 +136,7 @@ export default function ContactsPage() {
       {total > 0 && (
         <div className="flex items-center justify-between">
           <p className="text-muted-foreground text-sm">
-            Showing {rangeStart}–{rangeEnd} of {total.toLocaleString()}
+            Showing {rangeStart}&ndash;{rangeEnd} of {total.toLocaleString()}
           </p>
           <div className="flex gap-2">
             <Button

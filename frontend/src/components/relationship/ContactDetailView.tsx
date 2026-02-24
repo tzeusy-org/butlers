@@ -1,14 +1,17 @@
+import { useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
 
 import type {
   ActivityFeedItem,
   ContactDetail,
+  ContactInfoEntry,
   Gift,
   Interaction,
   Loan,
   Note,
 } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -32,6 +35,7 @@ import {
   useContactInteractions,
   useContactLoans,
   useContactNotes,
+  useRevealContactSecret,
 } from "@/hooks/use-contacts";
 
 // ---------------------------------------------------------------------------
@@ -67,6 +71,18 @@ function formatRelative(iso: string): string {
   return formatDistanceToNow(new Date(iso), { addSuffix: true });
 }
 
+/** Return a Tailwind-friendly color class for a role badge. */
+function roleBadgeStyle(role: string): React.CSSProperties {
+  switch (role.toLowerCase()) {
+    case "owner":
+      return { backgroundColor: "#7c3aed", color: "#fff" }; // violet-700
+    case "admin":
+      return { backgroundColor: "#b45309", color: "#fff" }; // amber-700
+    default:
+      return { backgroundColor: "#0369a1", color: "#fff" }; // sky-700
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Loading skeleton for tab content
 // ---------------------------------------------------------------------------
@@ -85,6 +101,134 @@ function EmptyTab({ message }: { message: string }) {
   return (
     <div className="text-muted-foreground flex items-center justify-center py-12 text-sm">
       {message}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Secured contact_info entry with click-to-reveal
+// ---------------------------------------------------------------------------
+
+function SecuredInfoEntry({
+  entry,
+  contactId,
+}: {
+  entry: ContactInfoEntry;
+  contactId: string;
+}) {
+  const [revealed, setRevealed] = useState<string | null>(null);
+  const [isRevealing, setIsRevealing] = useState(false);
+  const revealMutation = useRevealContactSecret();
+
+  const displayValue = revealed ?? entry.value;
+
+  async function handleReveal() {
+    if (isRevealing || revealed !== null) return;
+    setIsRevealing(true);
+    revealMutation.mutate(
+      { contactId, infoId: entry.id },
+      {
+        onSuccess: (data) => {
+          setRevealed(data.value ?? "");
+          setIsRevealing(false);
+        },
+        onError: () => {
+          setIsRevealing(false);
+        },
+      },
+    );
+  }
+
+  if (!entry.secured) {
+    return (
+      <span className="text-sm">
+        {displayValue ?? <span className="text-muted-foreground italic">—</span>}
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-2">
+      {displayValue !== null ? (
+        <span className="text-sm font-mono">{displayValue}</span>
+      ) : (
+        <span className="text-muted-foreground text-sm font-mono tracking-widest">••••••••</span>
+      )}
+      {revealed === null && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-6 px-2 text-xs"
+          onClick={handleReveal}
+          disabled={isRevealing}
+        >
+          {isRevealing ? "Revealing..." : "Reveal"}
+        </Button>
+      )}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Contact Info section (new identity-aware structured entries)
+// ---------------------------------------------------------------------------
+
+function ContactInfoSection({
+  contact,
+}: {
+  contact: ContactDetail;
+}) {
+  const hasContactInfo = contact.contact_info && contact.contact_info.length > 0;
+  const hasBasicInfo =
+    contact.email || contact.phone || contact.address || contact.birthday;
+
+  if (!hasContactInfo && !hasBasicInfo) return null;
+
+  return (
+    <div className="space-y-1.5">
+      {/* Structured contact_info entries */}
+      {hasContactInfo &&
+        contact.contact_info.map((entry) => (
+          <div key={entry.id} className="flex gap-2 items-start">
+            <span className="text-muted-foreground text-sm w-28 shrink-0 capitalize">
+              {entry.type}
+              {entry.is_primary && (
+                <span className="ml-1 text-xs text-blue-500">(primary)</span>
+              )}
+            </span>
+            <SecuredInfoEntry entry={entry} contactId={contact.id} />
+          </div>
+        ))}
+
+      {/* Legacy flat fields (shown if no contact_info entries cover them) */}
+      {!hasContactInfo && (
+        <>
+          {contact.email && (
+            <div className="flex gap-2">
+              <span className="text-muted-foreground text-sm w-24 shrink-0">Email</span>
+              <span className="text-sm">{contact.email}</span>
+            </div>
+          )}
+          {contact.phone && (
+            <div className="flex gap-2">
+              <span className="text-muted-foreground text-sm w-24 shrink-0">Phone</span>
+              <span className="text-sm">{contact.phone}</span>
+            </div>
+          )}
+          {contact.address && (
+            <div className="flex gap-2">
+              <span className="text-muted-foreground text-sm w-24 shrink-0">Address</span>
+              <span className="text-sm">{contact.address}</span>
+            </div>
+          )}
+          {contact.birthday && (
+            <div className="flex gap-2">
+              <span className="text-muted-foreground text-sm w-24 shrink-0">Birthday</span>
+              <span className="text-sm">{formatDate(contact.birthday)}</span>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -308,20 +452,6 @@ function ActivityTab({ contactId }: { contactId: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Contact detail header + info
-// ---------------------------------------------------------------------------
-
-function InfoRow({ label, value }: { label: string; value: string | null }) {
-  if (!value) return null;
-  return (
-    <div className="flex gap-2">
-      <span className="text-muted-foreground text-sm w-24 shrink-0">{label}</span>
-      <span className="text-sm">{value}</span>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // ContactDetailView
 // ---------------------------------------------------------------------------
 
@@ -333,11 +463,25 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
         <CardHeader>
           <div className="flex items-start justify-between">
             <div>
-              <CardTitle className="text-xl">
+              <CardTitle className="text-xl flex items-center gap-2 flex-wrap">
                 {contact.full_name}
                 {contact.nickname && (
-                  <span className="text-muted-foreground ml-2 text-base font-normal">
+                  <span className="text-muted-foreground text-base font-normal">
                     ({contact.nickname})
+                  </span>
+                )}
+                {/* Role badges */}
+                {contact.roles && contact.roles.length > 0 && (
+                  <span className="flex gap-1 flex-wrap">
+                    {contact.roles.map((role) => (
+                      <Badge
+                        key={role}
+                        style={roleBadgeStyle(role)}
+                        className="text-xs capitalize"
+                      >
+                        {role}
+                      </Badge>
+                    ))}
                   </span>
                 )}
               </CardTitle>
@@ -347,7 +491,7 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
                 </CardDescription>
               )}
             </div>
-            <div className="flex gap-1.5">
+            <div className="flex gap-1.5 flex-wrap justify-end">
               {contact.labels.map((label) => (
                 <Badge
                   key={label.id}
@@ -363,15 +507,7 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="space-y-1.5">
-            <InfoRow label="Email" value={contact.email} />
-            <InfoRow label="Phone" value={contact.phone} />
-            <InfoRow label="Address" value={contact.address} />
-            <InfoRow
-              label="Birthday"
-              value={contact.birthday ? formatDate(contact.birthday) : null}
-            />
-          </div>
+          <ContactInfoSection contact={contact} />
         </CardContent>
       </Card>
 

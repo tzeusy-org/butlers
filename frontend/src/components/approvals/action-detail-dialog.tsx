@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { format } from "date-fns";
+import { Link } from "react-router";
+
 import type { ApprovalAction } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +25,18 @@ interface ActionDetailDialogProps {
   action: ApprovalAction | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+}
+
+/** Role badge inline styles, consistent with action-table and ContactDetailView. */
+function roleBadgeStyle(role: string): React.CSSProperties {
+  switch (role.toLowerCase()) {
+    case "owner":
+      return { backgroundColor: "#7c3aed", color: "#fff" };
+    case "admin":
+      return { backgroundColor: "#b45309", color: "#fff" };
+    default:
+      return { backgroundColor: "#0369a1", color: "#fff" };
+  }
 }
 
 export function ActionDetailDialog({
@@ -100,6 +114,31 @@ export function ActionDetailDialog({
             <div>
               <Label className="text-muted-foreground">Agent Summary</Label>
               <p className="mt-1 text-sm">{action.agent_summary}</p>
+            </div>
+          )}
+
+          {/* Target contact section */}
+          {action.target_contact && (
+            <div>
+              <Label className="text-muted-foreground">Target Contact</Label>
+              <div className="mt-1 flex items-center gap-2 flex-wrap">
+                <Link
+                  to={`/contacts/${encodeURIComponent(action.target_contact.id)}`}
+                  className="text-sm font-medium hover:underline"
+                  onClick={() => onOpenChange(false)}
+                >
+                  {action.target_contact.name}
+                </Link>
+                {action.target_contact.roles.map((role) => (
+                  <Badge
+                    key={role}
+                    style={roleBadgeStyle(role)}
+                    className="text-xs capitalize"
+                  >
+                    {role}
+                  </Badge>
+                ))}
+              </div>
             </div>
           )}
 

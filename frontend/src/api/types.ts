@@ -688,7 +688,18 @@ export interface ContactSummary {
   last_interaction_at: string | null;
 }
 
-/** Full contact detail with additional fields. */
+/** A single contact_info entry (phone, email, address, etc.).
+ * When secured=true and value is null, the value is masked. Use revealContactSecret() to fetch it.
+ */
+export interface ContactInfoEntry {
+  id: string;
+  type: string;
+  value: string | null; // null when secured=true and not yet revealed
+  is_primary: boolean;
+  secured: boolean;
+}
+
+/** Full contact detail with all fields including identity fields. */
 export interface ContactDetail extends ContactSummary {
   notes: string | null;
   birthday: string | null;
@@ -698,6 +709,38 @@ export interface ContactDetail extends ContactSummary {
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  // Identity fields
+  roles: string[];
+  entity_id: string | null;
+  contact_info: ContactInfoEntry[];
+}
+
+/** Request body for PATCH /contacts/{id}. */
+export interface ContactPatchRequest {
+  full_name?: string | null;
+  nickname?: string | null;
+  company?: string | null;
+  job_title?: string | null;
+  roles?: string[] | null;
+}
+
+/** Request body for POST /contacts/{id}/merge. */
+export interface ContactMergeRequest {
+  source_contact_id: string;
+}
+
+/** Response for POST /contacts/{id}/merge. */
+export interface ContactMergeResponse {
+  target_contact_id: string;
+  source_contact_id: string;
+  contact_info_moved: number;
+  entity_merged: boolean;
+}
+
+/** Response for GET /owner/setup-status. */
+export interface OwnerSetupStatus {
+  has_telegram: boolean;
+  has_email: boolean;
 }
 
 /** A contact group. */
@@ -1097,6 +1140,13 @@ export interface RuleParams {
 // Approvals
 // ---------------------------------------------------------------------------
 
+/** Compact contact object linked from an approval action. */
+export interface TargetContact {
+  id: string;
+  name: string;
+  roles: string[];
+}
+
 export interface ApprovalAction {
   id: string;
   tool_name: string;
@@ -1110,6 +1160,7 @@ export interface ApprovalAction {
   decided_at?: string | null;
   execution_result?: Record<string, unknown> | null;
   approval_rule_id?: string | null;
+  target_contact?: TargetContact | null;
 }
 
 export interface ApprovalRule {
