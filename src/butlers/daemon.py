@@ -826,7 +826,7 @@ class _ToolCallLoggingMCP:
         return getattr(self._mcp, name)
 
 
-async def _ensure_owner_contact(pool: Any) -> None:
+async def _ensure_owner_contact(pool: asyncpg.Pool) -> None:
     """Bootstrap the owner contact in shared.contacts (idempotent).
 
     Creates exactly one contact row with roles=[''owner''] on first boot.
@@ -861,11 +861,9 @@ async def _ensure_owner_contact(pool: Any) -> None:
             # Insert owner contact; ON CONFLICT on the partial unique index
             # (ix_contacts_owner_singleton) handles concurrent startups.
             await conn.execute(
-                """
-                INSERT INTO shared.contacts (name, roles)
-                VALUES ('Owner', '{owner}')
-                ON CONFLICT DO NOTHING
-                """
+                "INSERT INTO shared.contacts (name, roles) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                "Owner",
+                ["owner"],
             )
     except Exception:  # noqa: BLE001
         logger.warning("Owner contact bootstrap skipped (non-fatal)", exc_info=True)

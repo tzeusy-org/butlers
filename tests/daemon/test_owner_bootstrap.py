@@ -57,7 +57,10 @@ class TestEnsureOwnerContactFirstBoot:
         conn.execute.assert_awaited_once()
         call_sql = conn.execute.call_args[0][0]
         assert "INSERT INTO shared.contacts" in call_sql
-        assert "owner" in call_sql
+        # "owner" is passed as a parameterized value; check the roles parameter
+        call_args = conn.execute.call_args
+        all_args = list(call_args[0])
+        assert any("owner" in str(arg) for arg in all_args)
 
     async def test_insert_uses_on_conflict_do_nothing(self) -> None:
         """INSERT uses ON CONFLICT DO NOTHING for idempotency."""
@@ -69,13 +72,15 @@ class TestEnsureOwnerContactFirstBoot:
         assert "ON CONFLICT DO NOTHING" in call_sql
 
     async def test_roles_column_includes_owner(self) -> None:
-        """Inserted row has 'owner' in the roles array."""
+        """Inserted row has 'owner' in the roles array (passed as parameter)."""
         pool, conn = _make_pool()
 
         await _ensure_owner_contact(pool)
 
-        call_sql = conn.execute.call_args[0][0]
-        assert "owner" in call_sql
+        call_args = conn.execute.call_args
+        # SQL uses parameterized $1/$2; "owner" is in the roles parameter, not the SQL string
+        all_args = list(call_args[0]) + list(call_args[1].values() if call_args[1] else [])
+        assert any("owner" in str(arg) for arg in all_args)
 
 
 class TestEnsureOwnerContactSubsequentBoot:
@@ -158,10 +163,10 @@ class TestEnsureOwnerContactErrorHandling:
 class TestConcurrentStartupSafety:
     async def test_concurrent_calls_do_not_raise(self) -> None:
         """Multiple concurrent calls to _ensure_owner_contact complete without error."""
-        insert_calls: list[str] = []
+        insert_calls: list[tuple] = []
 
-        async def recording_execute(sql: str) -> None:
-            insert_calls.append(sql)
+        async def recording_execute(sql: str, *args) -> None:
+            insert_calls.append((sql, args))
 
         # Create multiple independent pools that all simulate the first-boot scenario
         pools = []
@@ -175,15 +180,15 @@ class TestConcurrentStartupSafety:
 
         # All five calls should have issued the INSERT (ON CONFLICT handles concurrency)
         assert len(insert_calls) == 5
-        for sql in insert_calls:
+        for sql, _args in insert_calls:
             assert "ON CONFLICT DO NOTHING" in sql
 
     async def test_concurrent_calls_all_contain_owner_role(self) -> None:
-        """Every concurrent INSERT attempt includes the 'owner' role value."""
-        insert_sqls: list[str] = []
+        """Every concurrent INSERT attempt includes the 'owner' role value (as parameter)."""
+        insert_calls: list[tuple] = []
 
-        async def capturing_execute(sql: str) -> None:
-            insert_sqls.append(sql)
+        async def capturing_execute(sql: str, *args) -> None:
+            insert_calls.append((sql, args))
 
         pools = []
         for _ in range(3):
@@ -193,5 +198,6 @@ class TestConcurrentStartupSafety:
 
         await asyncio.gather(*[_ensure_owner_contact(p) for p in pools])
 
-        for sql in insert_sqls:
-            assert "owner" in sql.lower()
+        for sql, args in insert_calls:
+            # "owner" is a parameterized value; check the args contain it
+            assert any("owner" in str(arg).lower() for arg in args)
