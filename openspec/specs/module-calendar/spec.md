@@ -38,7 +38,7 @@ Configuration is declared under `[modules.calendar]` in `butler.toml` with field
 
 ### Requirement: Calendar Event CRUD Tools
 
-The module registers MCP tools for calendar event lifecycle management: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`.
+The module registers 13 MCP tools total. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`.
 
 #### Scenario: List events with time window
 
@@ -124,15 +124,49 @@ The module enforces conflict detection policies when creating or rescheduling ev
 - **THEN** the event is created if no approval enqueuer is set
 - **AND** if an approval enqueuer is wired, high-impact overlaps produce `status=approval_required`
 
-### Requirement: Attendee Management
+### Requirement: Butler Event Management Tools
 
-The module supports adding and removing attendees from calendar events.
+The module registers MCP tools for managing butler-owned workspace events (scheduled tasks and reminders projected as calendar entries): `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`.
+
+#### Scenario: Create butler event
+
+- **WHEN** `calendar_create_butler_event` is called with title, timing, and source type (reminder or scheduled task)
+- **THEN** a butler-managed event is created with recurrence support (RRULE or cron)
+- **AND** the event is tagged with butler metadata for unified calendar projection
+
+#### Scenario: Update butler event
+
+- **WHEN** `calendar_update_butler_event` is called with an event ID and partial fields
+- **THEN** only the provided fields are updated (timing, recurrence, enabled status)
+
+#### Scenario: Delete butler event
+
+- **WHEN** `calendar_delete_butler_event` is called with an event ID
+- **THEN** the butler event is deleted (series-scoped in v1)
+- **AND** high-impact mutations require approval gate
+
+#### Scenario: Toggle butler event
+
+- **WHEN** `calendar_toggle_butler_event` is called with an event ID and enabled flag
+- **THEN** the butler event is paused or resumed without deletion
+- **AND** high-impact mutations require approval gate
+
+### Requirement: Attendee Management Tools
+
+The module registers MCP tools for managing event attendees: `calendar_add_attendees` and `calendar_remove_attendees`.
 
 #### Scenario: Add attendees to event
 
-- **WHEN** attendees are added to an event via the provider
-- **THEN** the attendee list is updated with email-based entries
-- **AND** response statuses are tracked (accepted, declined, tentative, needs-action)
+- **WHEN** `calendar_add_attendees` is called with an event ID and list of email addresses
+- **THEN** attendees are added to the event with deduplication
+- **AND** notification policy controls whether attendees are notified
+- **AND** provider failures return a fail-closed structured error
+
+#### Scenario: Remove attendees from event
+
+- **WHEN** `calendar_remove_attendees` is called with an event ID and list of email addresses
+- **THEN** matching attendees are removed (case-insensitive email match)
+- **AND** cancellation notifications follow the send_updates policy
 
 ### Requirement: Google OAuth and Rate Limiting
 
@@ -153,6 +187,23 @@ The Google provider handles OAuth token refresh and rate-limited retries.
 
 - **WHEN** an error message might contain credential values
 - **THEN** patterns like `client_secret=...`, `refresh_token=...`, `access_token=...` are redacted before logging or returning to the caller
+
+### Requirement: Calendar Sync Tools
+
+The module registers MCP tools for sync observability and manual triggering: `calendar_sync_status` and `calendar_force_sync`.
+
+#### Scenario: Query sync status
+
+- **WHEN** `calendar_sync_status` is called
+- **THEN** it returns the current sync state: last sync time, sync token validity, pending changes count, and last error
+- **AND** if sync is not configured, returns `sync_enabled=False` (fail-open)
+
+#### Scenario: Force immediate sync
+
+- **WHEN** `calendar_force_sync` is called
+- **THEN** an immediate sync is triggered outside the normal polling schedule
+- **AND** if a background poller is running, it is signaled; otherwise an inline one-off sync runs
+- **AND** provider errors are recorded in `last_sync_error` rather than raised (fail-open)
 
 ### Requirement: [TARGET-STATE] Calendar Sync and Projection
 

@@ -54,6 +54,18 @@ Valid trigger sources are: `tick`, `external`, `trigger`, `route`, and `schedule
 - **WHEN** `trigger_source="route"` is provided
 - **THEN** validation passes (exact match in the `TRIGGER_SOURCES` frozenset)
 
+### Requirement: Session Detail Query
+Return a full session record by UUID, with JSONB fields deserialized to native Python objects.
+
+#### Scenario: Successful session retrieval
+- **WHEN** `sessions_get(pool, session_id)` is called with a valid session UUID
+- **THEN** a complete session record is returned with all persisted fields
+- **AND** `tool_calls` and `cost` JSONB fields are deserialized to Python lists/dicts
+
+#### Scenario: Non-existent session
+- **WHEN** `sessions_get(pool, session_id)` is called with a UUID that does not exist
+- **THEN** `None` is returned (no exception raised)
+
 ### Requirement: Session List (Paginated)
 Return sessions ordered by `started_at DESC` with `limit` and `offset` parameters for pagination.
 
