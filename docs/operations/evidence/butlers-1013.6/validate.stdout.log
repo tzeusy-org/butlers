@@ -1,3 +1,0 @@
-VALIDATE status=ok target_db=butlers
-  validation: schemas=6 tables=36 revisions=9 missing_schemas=0 missing_tables=0 missing_revisions=0
-Report written to docs/operations/evidence/butlers-1013.6/validate.json
