@@ -19,7 +19,7 @@ pytestmark = [
 ]
 
 REQUIRED_SCHEMAS = ("shared", "general", "health", "messenger", "relationship", "switchboard")
-CORE_HEAD_REVISION = "core_007"
+CORE_HEAD_REVISION = "core_008"
 RUNTIME_ROLES = {
     "general": "butler_general_rw",
     "health": "butler_health_rw",

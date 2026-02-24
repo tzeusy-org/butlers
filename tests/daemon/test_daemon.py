@@ -2773,10 +2773,38 @@ class TestNotifyTool:
         deliver_args = call_args[0][1]
         assert "recipient" not in deliver_args
 
-    async def test_notify_telegram_send_uses_default_chat_id_from_secret(
+    async def test_notify_telegram_send_uses_default_chat_id_from_contact_info(
         self, butler_dir: Path
     ) -> None:
-        """Telegram send without recipient should resolve BUTLER_TELEGRAM_CHAT_ID."""
+        """Telegram send without recipient should resolve chat ID from owner contact_info."""
+        patches = _patch_infra()
+        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
+        assert notify_fn is not None
+
+        mock_call_result = MagicMock()
+        mock_call_result.is_error = False
+        mock_call_result.data = {"notification_id": "jkl-012", "status": "sent"}
+
+        mock_client = AsyncMock()
+        mock_client.call_tool = AsyncMock(return_value=mock_call_result)
+        daemon.switchboard_client = mock_client
+
+        # contact_info returns the chat ID — credential_store fallback is not needed
+        with patch(
+            "butlers.daemon.resolve_owner_contact_info",
+            new=AsyncMock(return_value="123456789"),
+        ):
+            result = await notify_fn(channel="telegram", message="Scheduled update", intent="send")
+
+        assert result["status"] == "ok"
+        call_args = mock_client.call_tool.await_args
+        payload = call_args.args[1]
+        assert payload["notify_request"]["delivery"]["recipient"] == "123456789"
+
+    async def test_notify_telegram_send_falls_back_to_secret_when_no_contact_info(
+        self, butler_dir: Path
+    ) -> None:
+        """Telegram send falls back to TELEGRAM_CHAT_ID secret when contact_info is absent."""
         patches = _patch_infra()
         daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
         assert notify_fn is not None
@@ -2790,17 +2818,23 @@ class TestNotifyTool:
         daemon.switchboard_client = mock_client
 
         daemon._credential_store = AsyncMock()
-        daemon._credential_store.resolve = AsyncMock(return_value="123456789")
+        daemon._credential_store.resolve = AsyncMock(return_value="987654321")
 
-        result = await notify_fn(channel="telegram", message="Scheduled update", intent="send")
+        # contact_info returns None → fall back to credential_store
+        with patch(
+            "butlers.daemon.resolve_owner_contact_info",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await notify_fn(channel="telegram", message="Scheduled update", intent="send")
 
         assert result["status"] == "ok"
-        daemon._credential_store.resolve.assert_awaited_once_with(
-            "BUTLER_TELEGRAM_CHAT_ID", env_fallback=False
-        )
+        # Should have tried TELEGRAM_CHAT_ID first, then BUTLER_TELEGRAM_CHAT_ID
+        resolve_calls = daemon._credential_store.resolve.await_args_list
+        called_keys = [call.args[0] for call in resolve_calls]
+        assert "TELEGRAM_CHAT_ID" in called_keys
         call_args = mock_client.call_tool.await_args
         payload = call_args.args[1]
-        assert payload["notify_request"]["delivery"]["recipient"] == "123456789"
+        assert payload["notify_request"]["delivery"]["recipient"] == "987654321"
 
     async def test_notify_telegram_send_errors_when_no_default_chat_id(
         self, butler_dir: Path
@@ -2817,13 +2851,15 @@ class TestNotifyTool:
         daemon._credential_store = AsyncMock()
         daemon._credential_store.resolve = AsyncMock(return_value=None)
 
-        result = await notify_fn(channel="telegram", message="Scheduled update", intent="send")
+        with patch(
+            "butlers.daemon.resolve_owner_contact_info",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await notify_fn(channel="telegram", message="Scheduled update", intent="send")
 
         assert result["status"] == "error"
-        assert (
-            result["error"] == "No bot <-> user telegram chat has been configured - please set "
-            "BUTLER_TELEGRAM_CHAT_ID in /secrets"
-        )
+        assert "No bot <-> user telegram chat has been configured" in result["error"]
+        assert "TELEGRAM_CHAT_ID" in result["error"]
         mock_client.call_tool.assert_not_awaited()
 
     async def test_notify_switchboard_returns_error(self, butler_dir: Path) -> None:
