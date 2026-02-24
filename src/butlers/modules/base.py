@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -20,21 +20,6 @@ class ToolMeta:
     """
 
     arg_sensitivities: dict[str, bool] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class ToolIODescriptor:
-    """Structured descriptor for a module's MCP tool I/O surface.
-
-    Attributes:
-        name: Registered MCP tool name.
-        description: Optional short description of the tool intent.
-        approval_default: Default approval behavior for output tools.
-    """
-
-    name: str
-    description: str = ""
-    approval_default: Literal["none", "conditional", "always"] = "none"
 
 
 class Module(abc.ABC):
@@ -105,19 +90,3 @@ class Module(abc.ABC):
         approvals subsystem will fall back to heuristic classification.
         """
         return {}
-
-    def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        """Return user-facing input tool descriptors declared by this module."""
-        return ()
-
-    def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        """Return user-facing output tool descriptors declared by this module."""
-        return ()
-
-    def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        """Return bot-facing input tool descriptors declared by this module."""
-        return ()
-
-    def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        """Return bot-facing output tool descriptors declared by this module."""
-        return ()

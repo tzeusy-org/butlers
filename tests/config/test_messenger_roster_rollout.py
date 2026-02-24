@@ -21,7 +21,7 @@ def test_messenger_roster_identity_files_exist() -> None:
 
 
 def test_messenger_butler_toml_has_delivery_module_wiring() -> None:
-    """Messenger config should wire telegram/email identity-scoped modules."""
+    """Messenger config should wire telegram/email modules."""
     with (MESSENGER_DIR / "butler.toml").open("rb") as fh:
         data = tomllib.load(fh)
 
@@ -37,17 +37,9 @@ def test_messenger_butler_toml_has_delivery_module_wiring() -> None:
 
     telegram = modules.get("telegram")
     assert isinstance(telegram, dict)
-    assert telegram.get("user", {}).get("enabled") is False
-    telegram_bot_env = telegram.get("bot", {}).get("token_env")
-    assert isinstance(telegram_bot_env, str) and telegram_bot_env.strip()
 
     email = modules.get("email")
     assert isinstance(email, dict)
-    assert email.get("user", {}).get("enabled") is False
-    email_address_env = email.get("bot", {}).get("address_env")
-    email_password_env = email.get("bot", {}).get("password_env")
-    assert isinstance(email_address_env, str) and email_address_env.strip()
-    assert isinstance(email_password_env, str) and email_password_env.strip()
 
 
 def test_messenger_claude_guidance_mentions_notify_route_contract() -> None:
@@ -57,8 +49,8 @@ def test_messenger_claude_guidance_mentions_notify_route_contract() -> None:
         "route.execute",
         "notify.v1",
         "must not recursively call `notify`",
-        "bot_telegram_send_message",
-        "bot_email_send_message",
+        "telegram_send_message",
+        "email_send_message",
     )
     for fragment in required_fragments:
         assert fragment in guidance

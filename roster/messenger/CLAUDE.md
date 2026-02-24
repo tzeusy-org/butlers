@@ -14,12 +14,10 @@ Execute Switchboard-routed `notify.v1` delivery intents and return normalized ou
 ## Channel Ownership
 
 Messenger owns outbound send/reply execution for channel surfaces:
-- `bot_telegram_send_message`
-- `bot_telegram_reply_to_message`
-- `bot_email_send_message`
-- `bot_email_reply_to_thread`
-
-Use bot-scoped outputs by default. User-scoped outputs require explicit policy/approval.
+- `telegram_send_message`
+- `telegram_reply_to_message`
+- `email_send_message`
+- `email_reply_to_thread`
 
 Non-messenger butlers should never call channel send/reply tools directly.
 

@@ -560,12 +560,11 @@ Calendar tools are registered on each hosting butler MCP server when the module 
 - `calendar_workspace_query(view, start_at, end_at, timezone?, butlers?, calendars?, include_metadata?)`: Backing query for `/butlers/calendar` month/week/day/list surfaces.
 - `calendar_workspace_mutate(action, payload)`: Thin action gateway for UI interactions that need routing to provider, scheduler, or reminder adapters.
 
-### 13.8 Tool identity and I/O model
-Calendar tools operate on the butler's configured calendar credentials. Following the I/O model contract:
-- Calendar tools that only read data are inputs with `approval_default="none"`.
-- Calendar tools that create, update, or delete events are outputs with `approval_default="conditional"`.
+### 13.8 Tool approval model
+Calendar tools operate on the butler's configured calendar credentials.
+- Calendar tools that only read data use `approval_default="none"`.
+- Calendar tools that create, update, or delete events use `approval_default="conditional"`.
 - Overlap overrides are additionally gated through the approvals module when configured (see section 7.4).
-- v1 does not distinguish user-identity vs. bot-identity for calendar operations (the butler acts through a single set of OAuth credentials). Target state: support `user_calendar_*` and `bot_calendar_*` tool prefixes when user-delegated calendar access is available.
 - Butler-view mutations target explicit `butler_name` ownership and translate to `scheduled_tasks` and/or module reminder records.
 
 ### 13.9 Lineage propagation

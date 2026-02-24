@@ -2,7 +2,7 @@
 
 Verifies that:
 - EmailModule.process_incoming() classifies and routes emails
-- bot_email_check_and_route_inbox fetches unseen emails and routes them
+- email_check_and_route_inbox fetches unseen emails and routes them
 - _build_classification_text builds sensible text for classification
 - Pipeline errors are handled gracefully
 """
@@ -201,8 +201,8 @@ class TestProcessIncoming:
 
         assert captured_args["source"] == "email"
         assert captured_args["source_channel"] == "email"
-        assert captured_args["source_identity"] == "bot"
-        assert captured_args["source_tool"] == "bot_email_check_and_route_inbox"
+        assert captured_args["source_identity"] == "unknown"
+        assert captured_args["source_tool"] == "email_check_and_route_inbox"
         assert captured_args["from"] == "sender@example.com"
         assert captured_args["subject"] == "Important"
         assert captured_args["message_id"] == "42"
@@ -264,13 +264,13 @@ class TestProcessIncoming:
 
 
 # ---------------------------------------------------------------------------
-# bot_email_check_and_route_inbox
+# email_check_and_route_inbox
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.filterwarnings("ignore:.*_check_and_route_inbox.*:DeprecationWarning")
 class TestCheckAndRouteInbox:
-    """Test the bot_email_check_and_route_inbox tool."""
+    """Test the email_check_and_route_inbox tool."""
 
     async def test_no_pipeline_returns_no_pipeline_status(self):
         """Without a pipeline, returns status 'no_pipeline'."""
@@ -379,7 +379,7 @@ class TestCheckAndRouteInbox:
         assert result["results"] == []
 
     async def test_registers_check_and_route_tool(self):
-        """register_tools creates a bot_email_check_and_route_inbox tool."""
+        """register_tools creates an email_check_and_route_inbox tool."""
         mod = EmailModule()
         mcp = MagicMock()
         tools: dict[str, Any] = {}
@@ -395,15 +395,15 @@ class TestCheckAndRouteInbox:
 
         await mod.register_tools(mcp=mcp, config=None, db=None)
 
-        assert "bot_email_check_and_route_inbox" in tools
-        assert callable(tools["bot_email_check_and_route_inbox"])
+        assert "email_check_and_route_inbox" in tools
+        assert callable(tools["email_check_and_route_inbox"])
 
 
-class TestIdentityScopedToolFlows:
-    """Verify user/bot send and ingest tool behavior."""
+class TestToolFlows:
+    """Verify send and ingest tool behavior."""
 
-    async def test_user_and_bot_send_reply_tools_delegate_helpers(self):
-        """Both identity-scoped send/reply tools invoke shared helpers."""
+    async def test_send_reply_tools_delegate_helpers(self):
+        """Send/reply tools invoke shared helpers."""
         mod = EmailModule()
         mcp = MagicMock()
         tools: dict[str, Any] = {}
@@ -423,12 +423,10 @@ class TestIdentityScopedToolFlows:
         mod._send_email = send_mock  # type: ignore[method-assign]
         mod._reply_to_thread = reply_mock  # type: ignore[method-assign]
 
-        user_send = await tools["user_email_send_message"]("a@example.com", "Hi", "Hello")
-        bot_send = await tools["bot_email_send_message"]("b@example.com", "Yo", "Sup")
-        user_reply = await tools["user_email_reply_to_thread"](
-            "a@example.com", "thread-1", "Reply body"
-        )
-        bot_reply = await tools["bot_email_reply_to_thread"](
+        user_send = await tools["email_send_message"]("a@example.com", "Hi", "Hello")
+        bot_send = await tools["email_send_message"]("b@example.com", "Yo", "Sup")
+        user_reply = await tools["email_reply_to_thread"]("a@example.com", "thread-1", "Reply body")
+        bot_reply = await tools["email_reply_to_thread"](
             "b@example.com", "thread-2", "Another reply"
         )
 
@@ -451,8 +449,8 @@ class TestIdentityScopedToolFlows:
             None,
         )
 
-    async def test_user_and_bot_ingest_tools_delegate_helpers(self):
-        """Identity-scoped inbox tools and bot route-ingest tool remain callable."""
+    async def test_inbox_tools_delegate_helpers(self):
+        """Inbox tools and route-ingest tool remain callable."""
         mod = EmailModule()
         mcp = MagicMock()
         tools: dict[str, Any] = {}
@@ -476,21 +474,15 @@ class TestIdentityScopedToolFlows:
         mod._read_email = read_mock  # type: ignore[method-assign]
         mod._check_and_route_inbox = route_mock  # type: ignore[method-assign]
 
-        user_search = await tools["user_email_search_inbox"]("UNSEEN")
-        bot_search = await tools["bot_email_search_inbox"]("ALL")
-        user_read = await tools["user_email_read_message"]("1")
-        bot_read = await tools["bot_email_read_message"]("2")
-        bot_ingest = await tools["bot_email_check_and_route_inbox"]()
+        search_result = await tools["email_search_inbox"]("UNSEEN")
+        read_result = await tools["email_read_message"]("1")
+        ingest_result = await tools["email_check_and_route_inbox"]()
 
-        assert user_search == [{"message_id": "1"}]
-        assert bot_search == [{"message_id": "1"}]
-        assert user_read["message_id"] == "1"
-        assert bot_read["message_id"] == "1"
-        assert bot_ingest["status"] == "ok"
+        assert search_result == [{"message_id": "1"}]
+        assert read_result["message_id"] == "1"
+        assert ingest_result["status"] == "ok"
         assert search_mock.await_args_list[0].args == ("UNSEEN",)
-        assert search_mock.await_args_list[1].args == ("ALL",)
         assert read_mock.await_args_list[0].args == ("1",)
-        assert read_mock.await_args_list[1].args == ("2",)
         route_mock.assert_awaited_once_with()
 
     async def test_legacy_unprefixed_email_tool_names_are_not_callable(self):

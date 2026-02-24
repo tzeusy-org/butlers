@@ -1,4 +1,4 @@
-"""Telegram module — identity-prefixed Telegram MCP tools.
+"""Telegram module — Telegram MCP tools.
 
 Ingestion is handled by ``TelegramBotConnector`` which submits messages through
 the canonical ingest API. This module is output-only: it provides send/reply MCP
@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from butlers.modules.base import Module, ToolIODescriptor
+from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
 
@@ -114,47 +114,6 @@ class TelegramModule(Module):
     def dependencies(self) -> list[str]:
         return []
 
-    def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        """User-identity Telegram input tools — none (ingestion owned by connector)."""
-        return ()
-
-    def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        """User-identity Telegram output tools.
-
-        User send/reply tools are marked as approval-required defaults.
-        """
-        return (
-            ToolIODescriptor(
-                name="user_telegram_send_message",
-                description="Send as user. approval_default=always (approval required).",
-                approval_default="always",
-            ),
-            ToolIODescriptor(
-                name="user_telegram_reply_to_message",
-                description="Reply as user. approval_default=always (approval required).",
-                approval_default="always",
-            ),
-        )
-
-    def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        """Bot-identity Telegram input tools — none (ingestion owned by connector)."""
-        return ()
-
-    def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        """Bot-identity Telegram output tools."""
-        return (
-            ToolIODescriptor(
-                name="bot_telegram_send_message",
-                description="Send as bot. approval_default=conditional.",
-                approval_default="conditional",
-            ),
-            ToolIODescriptor(
-                name="bot_telegram_reply_to_message",
-                description="Reply as bot. approval_default=conditional.",
-                approval_default="conditional",
-            ),
-        )
-
     @property
     def credentials_env(self) -> list[str]:
         """Environment variables required by this module."""
@@ -198,33 +157,24 @@ class TelegramModule(Module):
         return self._client
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        """Register identity-prefixed Telegram send/reply MCP tools."""
+        """Register Telegram send/reply MCP tools."""
         self._config = (
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))
         )
         module = self  # capture for closures
 
-        def _register_send_tool(identity: str) -> None:
-            async def send_message_tool(chat_id: str, text: str) -> dict[str, Any]:
-                return await module._send_message(chat_id, text)
+        async def telegram_send_message(chat_id: str, text: str) -> dict[str, Any]:
+            """Send a Telegram message."""
+            return await module._send_message(chat_id, text)
 
-            send_message_tool.__name__ = f"{identity}_telegram_send_message"
-            send_message_tool.__doc__ = f"Send a message as the {identity} Telegram identity."
-            mcp.tool()(send_message_tool)
+        async def telegram_reply_to_message(
+            chat_id: str, message_id: int, text: str
+        ) -> dict[str, Any]:
+            """Reply to a Telegram message."""
+            return await module._reply_to_message(chat_id, message_id, text)
 
-        def _register_reply_tool(identity: str) -> None:
-            async def reply_to_message_tool(
-                chat_id: str, message_id: int, text: str
-            ) -> dict[str, Any]:
-                return await module._reply_to_message(chat_id, message_id, text)
-
-            reply_to_message_tool.__name__ = f"{identity}_telegram_reply_to_message"
-            reply_to_message_tool.__doc__ = f"Reply as the {identity} Telegram identity."
-            mcp.tool()(reply_to_message_tool)
-
-        for identity in ("user", "bot"):
-            _register_send_tool(identity)
-            _register_reply_tool(identity)
+        mcp.tool()(telegram_send_message)
+        mcp.tool()(telegram_reply_to_message)
 
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Set webhook if configured. Ingestion is handled by TelegramBotConnector.

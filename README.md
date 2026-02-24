@@ -190,38 +190,9 @@ Module ABC
 ├── credentials_env   → env vars this module needs
 ├── register_tools()  → add MCP tools to the FastMCP server
 ├── migration_revisions() → Alembic branch label for DB tables
-├── user_inputs()     → declare user-identity input tool descriptors
-├── user_outputs()    → declare user-identity output tool descriptors
-├── bot_inputs()      → declare bot-identity input tool descriptors
-├── bot_outputs()     → declare bot-identity output tool descriptors
 ├── on_startup()      → post-migration initialization
 └── on_shutdown()     → cleanup (reverse topological order)
 ```
-
-### Identity-Scoped I/O and Approvals
-
-Channel modules (Telegram/Email) use identity-scoped tool surfaces:
-
-- `user_*` tools act through user-scoped credentials and represent user-identity I/O.
-- `bot_*` tools act through butler/bot-scoped credentials and represent bot-identity I/O.
-
-Naming contract:
-
-- `user_<channel>_<verb>`
-- `bot_<channel>_<verb>`
-
-Telegram and Email examples:
-
-- Telegram outputs: `user_telegram_send_message`, `user_telegram_reply_to_message`, `bot_telegram_send_message`, `bot_telegram_reply_to_message`
-- Email outputs: `user_email_send_message`, `user_email_reply_to_thread`, `bot_email_send_message`, `bot_email_reply_to_thread`
-- Identity-scoped inputs follow the same prefix convention (for example `user_telegram_get_updates`, `bot_email_search_inbox`).
-
-Approval defaults:
-
-- User-scoped send/reply outputs are default-gated (`approval_default="always"`).
-- Bot-scoped outputs are policy-driven and only gated when configured (or when descriptor defaults require it).
-
-See `docs/modules/io_model.md` for the complete identity-scoped I/O architecture contract.
 
 ## Getting Started
 

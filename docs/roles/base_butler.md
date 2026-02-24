@@ -190,13 +190,10 @@ Module loading rules:
 
 Module tool contract:
 - Base contract enforces channel delivery ownership boundaries in section `11` (`messenger_butler` owns external user-channel delivery). Module tool naming details remain role-specific.
-- Modules may declare tool I/O descriptors via `user_inputs`, `user_outputs`, `bot_inputs`, `bot_outputs` when identity-scoped I/O surfaces are part of that role contract.
-- For roles that define identity-scoped channel tools (for example `messenger_butler`), user-vs-bot identity split must be explicit in descriptor metadata and tool names (for example `user_<channel>_<verb>` / `bot_<channel>_<verb>`).
-- When descriptors are declared, registered tool names must match declared descriptors.
-- When descriptors are declared, missing declared tools or undeclared registered tools are startup-blocking errors.
+- Modules register tools via `register_tools()` using plain `<channel>_<verb>` naming.
 
 Approval and sensitivity contract:
-- Output tools may define `approval_default` semantics (`none`, `conditional`, `always`).
+- Argument sensitivity metadata may be declared via `tool_metadata()` on the module; approval gating is driven by `[modules.approvals.gated_tools]` config.
 - Sensitive argument metadata may be declared per tool.
 - Approval gating policy must be centrally enforceable without module code changes.
 
@@ -210,9 +207,7 @@ Approval gating is a centralized execution-control surface, not per-tool ad hoc 
 Approval policy/config rules:
 - Approval gating is configured under `[modules.approvals]` and applied after module tool registration.
 - Gated-tool config is authoritative (`gated_tools` with optional per-tool expiry overrides).
-- Identity-aware defaults are mandatory:
-  - User-scoped send/reply outputs (`approval_default="always"` and user send/reply safety fallback) are default-gated.
-  - Bot-scoped outputs are gated only when explicitly configured.
+- Approval defaults are configured via `[modules.approvals.gated_tools]`; no implicit identity-based auto-gating.
 
 Gate interception rules:
 - A gated tool invocation must be intercepted before calling the original tool handler.

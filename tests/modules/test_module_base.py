@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from butlers.modules.base import Module, ToolIODescriptor
+from butlers.modules.base import Module
 
 pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
@@ -73,46 +73,6 @@ class ModuleWithDeps(Module):
 
     async def on_shutdown(self) -> None:
         pass
-
-
-class ModuleWithIODescriptors(Module):
-    """Module that declares user/bot I/O tool descriptors."""
-
-    @property
-    def name(self) -> str:
-        return "io_descriptors"
-
-    @property
-    def config_schema(self) -> type[BaseModel]:
-        return EmptyConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        pass
-
-    def migration_revisions(self) -> str | None:
-        return None
-
-    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
-        pass
-
-    async def on_shutdown(self) -> None:
-        pass
-
-    def user_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        return (ToolIODescriptor(name="user_email_receive", description="Receive inbound email"),)
-
-    def user_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        return (ToolIODescriptor(name="user_email_send", description="Send outbound email"),)
-
-    def bot_inputs(self) -> tuple[ToolIODescriptor, ...]:
-        return (ToolIODescriptor(name="bot_email_receive"),)
-
-    def bot_outputs(self) -> tuple[ToolIODescriptor, ...]:
-        return (ToolIODescriptor(name="bot_email_send"),)
 
 
 # ---------------------------------------------------------------------------
@@ -235,31 +195,3 @@ async def test_on_shutdown_signature():
     """on_shutdown is callable with no arguments (besides self)."""
     mod = MinimalModule()
     await mod.on_shutdown()
-
-
-def test_default_io_descriptors_are_empty():
-    """Modules default to no declared user/bot I/O descriptors."""
-    mod = MinimalModule()
-    assert mod.user_inputs() == ()
-    assert mod.user_outputs() == ()
-    assert mod.bot_inputs() == ()
-    assert mod.bot_outputs() == ()
-
-
-def test_module_can_declare_structured_io_descriptors():
-    """Modules can declare structured user/bot input/output descriptors."""
-    mod = ModuleWithIODescriptors()
-    assert mod.user_inputs() == (
-        ToolIODescriptor(name="user_email_receive", description="Receive inbound email"),
-    )
-    assert mod.user_outputs() == (
-        ToolIODescriptor(name="user_email_send", description="Send outbound email"),
-    )
-    assert mod.bot_inputs() == (ToolIODescriptor(name="bot_email_receive"),)
-    assert mod.bot_outputs() == (ToolIODescriptor(name="bot_email_send"),)
-
-
-def test_tool_io_descriptor_approval_default_field():
-    """ToolIODescriptor supports explicit approval-default policy declarations."""
-    descriptor = ToolIODescriptor(name="user_email_send", approval_default="always")
-    assert descriptor.approval_default == "always"

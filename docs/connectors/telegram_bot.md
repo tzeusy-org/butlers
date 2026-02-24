@@ -92,9 +92,9 @@ Behavior:
 
 ## 5. Interactivity Surface
 Supported interactive behavior:
-- Send message: `bot_telegram_send_message` / `user_telegram_send_message`
-- Reply to a specific message: `bot_telegram_reply_to_message` / `user_telegram_reply_to_message`
-- Read updates: `bot_telegram_get_updates` / `user_telegram_get_updates`
+- Send message: `telegram_send_message`
+- Reply to a specific message: `telegram_reply_to_message`
+- Read updates: `telegram_get_updates`
 
 Lifecycle reactions on inbound messages are supported as best-effort:
 - In-progress: `:eye:` (mapped to Telegram eyes emoji)

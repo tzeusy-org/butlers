@@ -293,7 +293,7 @@ class TestDeliverTelegramSuccess:
         )
 
         assert len(captured) == 1
-        assert captured[0]["tool"] == "bot_telegram_send_message"
+        assert captured[0]["tool"] == "telegram_send_message"
         assert captured[0]["args"]["chat_id"] == "99999"
         assert captured[0]["args"]["text"] == "Hi there"
 
@@ -382,7 +382,7 @@ class TestDeliverEmailSuccess:
         )
 
         assert len(captured) == 1
-        assert captured[0]["tool"] == "bot_email_send_message"
+        assert captured[0]["tool"] == "email_send_message"
         assert captured[0]["args"]["to"] == "user@example.com"
         assert captured[0]["args"]["subject"] == "Health Report"
         assert captured[0]["args"]["body"] == "Body text"

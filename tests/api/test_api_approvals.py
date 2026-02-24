@@ -44,7 +44,7 @@ _RULE_ID = uuid4()
 def _make_pending_action_record(
     *,
     action_id=None,
-    tool_name="user_telegram_send_message",
+    tool_name="telegram_send_message",
     tool_args=None,
     status="pending",
     requested_at=_NOW,
@@ -76,7 +76,7 @@ def _make_pending_action_record(
 def _make_approval_rule_record(
     *,
     rule_id=None,
-    tool_name="user_telegram_send_message",
+    tool_name="telegram_send_message",
     arg_constraints=None,
     description="Auto-approve messages to support chat",
     created_from=None,
@@ -214,10 +214,10 @@ async def test_list_actions_uses_global_db_dependency_wiring(monkeypatch):
 async def test_list_actions_with_results():
     """GET /api/approvals/actions returns paginated pending actions."""
     action1 = _make_pending_action_record(
-        action_id=uuid4(), tool_name="user_telegram_send_message", status="pending"
+        action_id=uuid4(), tool_name="telegram_send_message", status="pending"
     )
     action2 = _make_pending_action_record(
-        action_id=uuid4(), tool_name="user_email_send", status="approved"
+        action_id=uuid4(), tool_name="email_send", status="approved"
     )
 
     app, mock_conn = _app_with_mock_db(fetch_rows=[action1, action2], fetchval_return=2)
@@ -230,8 +230,8 @@ async def test_list_actions_with_results():
     assert response.status_code == 200
     data = response.json()
     assert len(data["data"]) == 2
-    assert data["data"][0]["tool_name"] == "user_telegram_send_message"
-    assert data["data"][1]["tool_name"] == "user_email_send"
+    assert data["data"][0]["tool_name"] == "telegram_send_message"
+    assert data["data"][1]["tool_name"] == "email_send"
     assert data["meta"]["total"] == 2
     assert data["meta"]["limit"] == 10
 
@@ -283,7 +283,7 @@ async def test_get_action_by_id():
     assert response.status_code == 200
     data = response.json()
     assert data["data"]["id"] == str(_ACTION_ID)
-    assert data["data"]["tool_name"] == "user_telegram_send_message"
+    assert data["data"]["tool_name"] == "telegram_send_message"
 
 
 @pytest.mark.asyncio
@@ -411,8 +411,8 @@ async def test_list_rules_empty():
 @pytest.mark.asyncio
 async def test_list_rules_with_results():
     """GET /api/approvals/rules returns paginated rules."""
-    rule1 = _make_approval_rule_record(rule_id=uuid4(), tool_name="user_telegram_send_message")
-    _make_approval_rule_record(rule_id=uuid4(), tool_name="user_email_send", active=False)
+    rule1 = _make_approval_rule_record(rule_id=uuid4(), tool_name="telegram_send_message")
+    _make_approval_rule_record(rule_id=uuid4(), tool_name="email_send", active=False)
 
     app, mock_conn = _app_with_mock_db(fetch_rows=[rule1], fetchval_return=1)
 
@@ -441,7 +441,7 @@ async def test_get_rule_by_id():
     assert response.status_code == 200
     data = response.json()
     assert data["data"]["id"] == str(_RULE_ID)
-    assert data["data"]["tool_name"] == "user_telegram_send_message"
+    assert data["data"]["tool_name"] == "telegram_send_message"
 
 
 @pytest.mark.asyncio
@@ -468,7 +468,7 @@ async def test_create_rule_not_implemented():
         response = await client.post(
             "/api/approvals/rules",
             json={
-                "tool_name": "user_telegram_send_message",
+                "tool_name": "telegram_send_message",
                 "arg_constraints": {"chat_id": {"type": "exact", "value": "12345"}},
                 "description": "Test rule",
             },
@@ -523,7 +523,7 @@ async def test_get_rule_suggestions():
     assert response.status_code == 200
     data = response.json()
     assert data["data"]["action_id"] == str(_ACTION_ID)
-    assert data["data"]["tool_name"] == "user_telegram_send_message"
+    assert data["data"]["tool_name"] == "telegram_send_message"
     assert "suggested_constraints" in data["data"]
 
 
