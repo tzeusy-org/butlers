@@ -97,6 +97,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
     "contacts": {"contacts_source_accounts", "contacts_source_links", "contacts_sync_state"},
     "mailbox": {"mailbox"},
     "memory": {"episodes", "facts", "rules", "memory_links"},
+    "travel": {"trips", "legs", "accommodations", "reservations", "documents"},
 }
 
 
