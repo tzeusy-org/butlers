@@ -107,6 +107,72 @@ class TestMem002UpgradeEntitiesTable:
         assert "updated_at TIMESTAMPTZ" in source
 
 
+class TestMem002UpgradeIdempotentColumns:
+    """Verify that upgrade() adds required columns idempotently via ALTER TABLE.
+
+    A pre-existing entities table (e.g. from a partial previous migration run)
+    causes CREATE TABLE IF NOT EXISTS to silently skip.  The migration must
+    then ensure every required column exists using ADD COLUMN IF NOT EXISTS so
+    that the subsequent index creations do not fail with 'column does not exist'.
+    """
+
+    def test_alter_table_adds_tenant_id_if_not_exists(self) -> None:
+        """Upgrade adds tenant_id idempotently via ALTER TABLE ADD COLUMN IF NOT EXISTS."""
+        mod = _load_migration_002()
+        source = inspect.getsource(mod.upgrade)
+        assert "ADD COLUMN IF NOT EXISTS tenant_id" in source
+
+    def test_alter_table_adds_canonical_name_if_not_exists(self) -> None:
+        """Upgrade adds canonical_name idempotently via ALTER TABLE ADD COLUMN IF NOT EXISTS."""
+        mod = _load_migration_002()
+        source = inspect.getsource(mod.upgrade)
+        assert "ADD COLUMN IF NOT EXISTS canonical_name" in source
+
+    def test_alter_table_adds_entity_type_if_not_exists(self) -> None:
+        """Upgrade adds entity_type idempotently via ALTER TABLE ADD COLUMN IF NOT EXISTS."""
+        mod = _load_migration_002()
+        source = inspect.getsource(mod.upgrade)
+        assert "ADD COLUMN IF NOT EXISTS entity_type" in source
+
+    def test_alter_table_adds_aliases_if_not_exists(self) -> None:
+        """Upgrade adds aliases idempotently via ALTER TABLE ADD COLUMN IF NOT EXISTS."""
+        mod = _load_migration_002()
+        source = inspect.getsource(mod.upgrade)
+        assert "ADD COLUMN IF NOT EXISTS aliases" in source
+
+    def test_alter_table_adds_metadata_if_not_exists(self) -> None:
+        """Upgrade adds metadata idempotently via ALTER TABLE ADD COLUMN IF NOT EXISTS."""
+        mod = _load_migration_002()
+        source = inspect.getsource(mod.upgrade)
+        assert "ADD COLUMN IF NOT EXISTS metadata" in source
+
+    def test_alter_table_adds_created_at_if_not_exists(self) -> None:
+        """Upgrade adds created_at idempotently via ALTER TABLE ADD COLUMN IF NOT EXISTS."""
+        mod = _load_migration_002()
+        source = inspect.getsource(mod.upgrade)
+        assert "ADD COLUMN IF NOT EXISTS created_at" in source
+
+    def test_alter_table_adds_updated_at_if_not_exists(self) -> None:
+        """Upgrade adds updated_at idempotently via ALTER TABLE ADD COLUMN IF NOT EXISTS."""
+        mod = _load_migration_002()
+        source = inspect.getsource(mod.upgrade)
+        assert "ADD COLUMN IF NOT EXISTS updated_at" in source
+
+    def test_alter_table_statements_precede_index_creation(self) -> None:
+        """ALTER TABLE idempotent column additions appear before the index creation statements.
+
+        This ordering is critical: indexes on tenant_id, canonical_name, aliases, and metadata
+        must only be created after those columns are guaranteed to exist.
+        """
+        mod = _load_migration_002()
+        source = inspect.getsource(mod.upgrade)
+        tenant_id_alter_pos = source.index("ADD COLUMN IF NOT EXISTS tenant_id")
+        first_index_pos = source.index("CREATE INDEX IF NOT EXISTS idx_entities_tenant_canonical")
+        assert tenant_id_alter_pos < first_index_pos, (
+            "ALTER TABLE tenant_id must appear before index creation"
+        )
+
+
 class TestMem002UpgradeIndexes:
     def test_gin_index_on_aliases(self) -> None:
         """Upgrade creates a GIN index on entities.aliases."""

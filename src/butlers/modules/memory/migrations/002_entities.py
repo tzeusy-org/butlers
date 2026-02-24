@@ -36,6 +36,44 @@ def upgrade() -> None:
         )
     """)
 
+    # Idempotent column additions to handle pre-existing entities tables created by partial
+    # previous runs (CREATE TABLE IF NOT EXISTS silently skips when the table exists, so we
+    # must explicitly ensure every required column is present before creating indexes on them).
+    op.execute("""
+        ALTER TABLE entities
+        ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''
+    """)
+
+    op.execute("""
+        ALTER TABLE entities
+        ADD COLUMN IF NOT EXISTS canonical_name VARCHAR NOT NULL DEFAULT ''
+    """)
+
+    op.execute("""
+        ALTER TABLE entities
+        ADD COLUMN IF NOT EXISTS entity_type VARCHAR NOT NULL DEFAULT 'other'
+    """)
+
+    op.execute("""
+        ALTER TABLE entities
+        ADD COLUMN IF NOT EXISTS aliases TEXT[] NOT NULL DEFAULT '{}'
+    """)
+
+    op.execute("""
+        ALTER TABLE entities
+        ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb
+    """)
+
+    op.execute("""
+        ALTER TABLE entities
+        ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    """)
+
+    op.execute("""
+        ALTER TABLE entities
+        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    """)
+
     op.execute("""
         CREATE INDEX IF NOT EXISTS idx_entities_tenant_canonical
         ON entities (tenant_id, canonical_name)
