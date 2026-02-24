@@ -50,6 +50,23 @@ class MockPool:
         self.approval_rules: list[dict[str, Any]] = []
         self.approval_events: list[dict[str, Any]] = []
         self.execute_calls: list[tuple[str, tuple]] = []
+        # contact_info lookup for role-based gating: (channel_type, channel_value) -> contact dict
+        self._contact_info: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def register_contact(
+        self,
+        channel_type: str,
+        channel_value: str,
+        roles: list[str] | None = None,
+    ) -> None:
+        """Register a (channel_type, channel_value) -> contact mapping for tests."""
+        contact_id = uuid.uuid4()
+        self._contact_info[(channel_type, channel_value)] = {
+            "contact_id": contact_id,
+            "name": "Test Contact",
+            "roles": roles or [],
+            "entity_id": None,
+        }
 
     def add_rule(
         self,
@@ -84,6 +101,19 @@ class MockPool:
         self.execute_calls.append((query, args))
         if "INSERT INTO pending_actions" in query:
             action_id = args[0]
+            # Parse decided_by and approval_rule_id from query column list.
+            # Owner path: (..., expires_at, decided_by) → 9 args
+            # Rule path:  (..., expires_at, approval_rule_id, decided_by) → 10 args
+            # Pending path: (..., expires_at) → 8 args
+            if "decided_by" in query and "approval_rule_id" in query:
+                approval_rule_id = args[8] if len(args) > 8 else None
+                decided_by = args[9] if len(args) > 9 else None
+            elif "decided_by" in query:
+                approval_rule_id = None
+                decided_by = args[8] if len(args) > 8 else None
+            else:
+                approval_rule_id = None
+                decided_by = None
             self.pending_actions[action_id] = {
                 "id": action_id,
                 "tool_name": args[1],
@@ -93,8 +123,8 @@ class MockPool:
                 "status": args[5] if len(args) > 5 else "pending",
                 "requested_at": args[6] if len(args) > 6 else datetime.now(UTC),
                 "expires_at": args[7] if len(args) > 7 else None,
-                "approval_rule_id": args[8] if len(args) > 8 else None,
-                "decided_by": args[9] if len(args) > 9 else None,
+                "approval_rule_id": approval_rule_id,
+                "decided_by": decided_by,
                 "decided_at": None,
                 "execution_result": None,
             }
@@ -151,11 +181,19 @@ class MockPool:
         return []
 
     async def fetchrow(self, query: str, *args: Any) -> dict[str, Any] | None:
-        """Simulate asyncpg fetchrow() for pending_actions lookups."""
+        """Simulate asyncpg fetchrow() for pending_actions and contact lookups."""
         if "pending_actions" in query and args:
             action_id = args[0]
             row = self.pending_actions.get(action_id)
             return dict(row) if row else None
+        # shared.contact_info JOIN shared.contacts lookup (channel-based)
+        if "shared.contact_info" in query and args and len(args) >= 2:
+            channel_type = str(args[0])
+            channel_value = str(args[1])
+            return self._contact_info.get((channel_type, channel_value))
+        # shared.contacts lookup by contact_id UUID (direct lookup)
+        if "shared.contacts" in query and "WHERE id" in query:
+            return None
         return None
 
 
@@ -659,6 +697,8 @@ class TestApplyApprovalGates:
             gated_tools={"email_send": GatedToolConfig()},
         )
 
+        # Register alice as a known non-owner contact for role-based gating
+        pool.register_contact("email", "alice@example.com", roles=["friend"])
         # Add a standing rule that matches
         pool.add_rule("email_send", arg_constraints={"to": "alice@example.com"})
 
@@ -683,6 +723,8 @@ class TestApplyApprovalGates:
             return {"status": "sent"}
 
         config = _make_approval_config(gated_tools={"email_send": GatedToolConfig()})
+        # Register alice as a known non-owner contact for role-based gating
+        pool.register_contact("email", "alice@example.com", roles=["friend"])
         pool.add_rule("email_send", arg_constraints={"to": "alice@example.com"})
         apply_approval_gates(mock_mcp, config, pool)
 
@@ -708,6 +750,8 @@ class TestApplyApprovalGates:
             gated_tools={"email_send": GatedToolConfig()},
         )
 
+        # Register alice as a known non-owner contact for role-based gating
+        pool.register_contact("email", "alice@example.com", roles=["colleague"])
         rule_id = pool.add_rule("email_send", arg_constraints={})
         apply_approval_gates(mock_mcp, config, pool)
 
@@ -734,6 +778,8 @@ class TestApplyApprovalGates:
             gated_tools={"email_send": GatedToolConfig()},
         )
 
+        # Register alice as a known non-owner contact for role-based gating
+        pool.register_contact("email", "alice@example.com", roles=["friend"])
         rule_id = pool.add_rule("email_send", arg_constraints={})
         apply_approval_gates(mock_mcp, config, pool)
 

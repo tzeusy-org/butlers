@@ -36,3 +36,17 @@ enabled = false
 [modules.email.bot]
 address_env = "BUTLER_EMAIL_ADDRESS"
 password_env = "BUTLER_EMAIL_PASSWORD"
+
+[modules.approvals]
+enabled = true
+default_expiry_hours = 48
+default_risk_tier = "medium"
+
+[modules.approvals.gated_tools.telegram_send_message]
+risk_tier = "medium"
+
+[modules.approvals.gated_tools.email_send_message]
+risk_tier = "medium"
+
+[modules.approvals.gated_tools.notify]
+risk_tier = "medium"
