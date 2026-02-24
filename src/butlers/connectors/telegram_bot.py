@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -242,6 +243,9 @@ class TelegramBotConnector:
         # Heartbeat
         self._heartbeat: ConnectorHeartbeat | None = None
 
+        # Backoff tracking for polling loop
+        self._consecutive_failures: int = 0
+
     @property
     def _telegram_api_base(self) -> str:
         return TELEGRAM_API_BASE.format(token=self._config.telegram_token)
@@ -340,9 +344,17 @@ class TelegramBotConnector:
             "healthy", "degraded", "error"
         """
         if self._source_api_ok is False:
-            return ("error", "Telegram API unreachable or authentication failed")
+            error_msg = "Telegram API unreachable or authentication failed"
+            if self._consecutive_failures > 0:
+                error_msg += f" (consecutive_failures={self._consecutive_failures})"
+            return ("error", error_msg)
 
-        # Could add degraded state for high error rates
+        if self._consecutive_failures > 0:
+            return (
+                "degraded",
+                f"Polling recovering after {self._consecutive_failures} consecutive failure(s)",
+            )
+
         return ("healthy", None)
 
     def _get_checkpoint(self) -> tuple[str | None, datetime | None]:
@@ -406,15 +418,28 @@ class TelegramBotConnector:
                     # Save checkpoint after successful batch
                     self._save_checkpoint()
 
+                # Successful poll — reset backoff
+                self._consecutive_failures = 0
+                sleep_s = self._config.poll_interval_s
+
             except asyncio.CancelledError:
                 raise
             except Exception:
+                self._consecutive_failures += 1
                 logger.exception(
                     "Error polling Telegram updates",
-                    extra={"endpoint_identity": self._config.endpoint_identity},
+                    extra={
+                        "endpoint_identity": self._config.endpoint_identity,
+                        "consecutive_failures": self._consecutive_failures,
+                    },
                 )
+                # Exponential backoff with ±10% jitter, capped at 60s
+                base_backoff = self._config.poll_interval_s * (2**self._consecutive_failures)
+                capped_backoff = min(base_backoff, 60.0)
+                jitter = capped_backoff * 0.1 * (2 * random.random() - 1)
+                sleep_s = capped_backoff + jitter
 
-            await asyncio.sleep(self._config.poll_interval_s)
+            await asyncio.sleep(sleep_s)
 
     async def start_webhook(self) -> None:
         """Register webhook for prod mode.

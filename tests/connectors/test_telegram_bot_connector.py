@@ -860,3 +860,209 @@ async def test_run_telegram_bot_connector_uses_db_token_when_env_missing(
     passed_config = cls.call_args[0][0]
     assert passed_config.telegram_token == "db-token-123"
     mock_connector.start_polling.assert_awaited_once()
+
+
+# -----------------------------------------------------------------------------
+# Exponential backoff tests
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_polling_backoff_resets_after_success(
+    connector: TelegramBotConnector,
+    mock_config: TelegramBotConnectorConfig,
+) -> None:
+    """After a successful poll, consecutive_failures resets to 0 and poll_interval_s is used."""
+    # Pre-seed failure count as if prior errors occurred
+    connector._consecutive_failures = 3
+
+    mock_response = Mock()
+    mock_response.json.return_value = {"ok": True, "result": []}
+    mock_response.raise_for_status = Mock()
+
+    sleep_calls: list[float] = []
+
+    async def record_sleep(secs: float) -> None:
+        sleep_calls.append(secs)
+        # Stop the loop after first sleep so the test doesn't hang
+        connector._running = False
+
+    connector._running = True
+
+    with (
+        patch.object(connector._http_client, "get", return_value=mock_response),
+        patch("butlers.connectors.telegram_bot.asyncio.sleep", side_effect=record_sleep),
+        patch.object(connector, "_start_health_server"),
+        patch.object(connector, "_start_heartbeat"),
+        patch.object(connector, "_load_checkpoint"),
+    ):
+        await connector.start_polling()
+
+    assert connector._consecutive_failures == 0
+    assert len(sleep_calls) == 1
+    assert sleep_calls[0] == mock_config.poll_interval_s
+
+
+@pytest.mark.asyncio
+async def test_polling_backoff_increases_on_consecutive_failures(
+    connector: TelegramBotConnector,
+    mock_config: TelegramBotConnectorConfig,
+) -> None:
+    """Each consecutive network error doubles the sleep duration (capped at 60s)."""
+    poll_interval = mock_config.poll_interval_s  # 0.1s in mock_config
+
+    sleep_calls: list[float] = []
+    call_count = 0
+
+    async def record_sleep(secs: float) -> None:
+        sleep_calls.append(secs)
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 3:
+            connector._running = False
+
+    connector._running = True
+
+    with (
+        patch.object(
+            connector,
+            "_get_updates",
+            side_effect=httpx.ReadError("Network error", request=None),
+        ),
+        patch("butlers.connectors.telegram_bot.asyncio.sleep", side_effect=record_sleep),
+        patch("butlers.connectors.telegram_bot.random.random", return_value=0.5),
+        patch.object(connector, "_start_health_server"),
+        patch.object(connector, "_start_heartbeat"),
+        patch.object(connector, "_load_checkpoint"),
+    ):
+        await connector.start_polling()
+
+    # With random.random() == 0.5, jitter term = capped_backoff * 0.1 * (2*0.5 - 1) = 0
+    # So sleep_s == capped_backoff exactly
+    assert len(sleep_calls) == 3
+
+    # Failure 1: base = 0.1 * 2^1 = 0.2, cap = min(0.2, 60) = 0.2, jitter = 0 → 0.2
+    assert sleep_calls[0] == pytest.approx(poll_interval * 2**1, rel=1e-9)
+    # Failure 2: base = 0.1 * 2^2 = 0.4, cap = min(0.4, 60) = 0.4, jitter = 0 → 0.4
+    assert sleep_calls[1] == pytest.approx(poll_interval * 2**2, rel=1e-9)
+    # Failure 3: base = 0.1 * 2^3 = 0.8, cap = min(0.8, 60) = 0.8, jitter = 0 → 0.8
+    assert sleep_calls[2] == pytest.approx(poll_interval * 2**3, rel=1e-9)
+
+    # Consecutive failures counter matches number of errors raised
+    assert connector._consecutive_failures == 3
+
+
+@pytest.mark.asyncio
+async def test_polling_backoff_capped_at_60_seconds(
+    connector: TelegramBotConnector,
+    mock_config: TelegramBotConnectorConfig,
+) -> None:
+    """Backoff is capped at 60 seconds regardless of failure count."""
+    connector._consecutive_failures = 20  # Pre-seed very high failure count
+
+    sleep_calls: list[float] = []
+
+    async def record_sleep(secs: float) -> None:
+        sleep_calls.append(secs)
+        connector._running = False
+
+    connector._running = True
+
+    with (
+        patch.object(
+            connector,
+            "_get_updates",
+            side_effect=httpx.ReadError("Network error", request=None),
+        ),
+        patch("butlers.connectors.telegram_bot.asyncio.sleep", side_effect=record_sleep),
+        patch("butlers.connectors.telegram_bot.random.random", return_value=0.5),
+        patch.object(connector, "_start_health_server"),
+        patch.object(connector, "_start_heartbeat"),
+        patch.object(connector, "_load_checkpoint"),
+    ):
+        await connector.start_polling()
+
+    assert len(sleep_calls) == 1
+    # With jitter factor of 0 (random=0.5), sleep should be exactly 60.0
+    assert sleep_calls[0] == pytest.approx(60.0, rel=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_polling_backoff_resets_after_recovery(
+    connector: TelegramBotConnector,
+    mock_config: TelegramBotConnectorConfig,
+) -> None:
+    """After errors, a successful poll resets backoff to base poll_interval_s."""
+    poll_interval = mock_config.poll_interval_s
+
+    error_response = httpx.ReadError("Network error", request=None)
+    success_response = Mock()
+    success_response.json.return_value = {"ok": True, "result": []}
+    success_response.raise_for_status = Mock()
+
+    responses = iter([error_response, success_response])
+
+    async def get_updates_side_effect() -> list:
+        resp = next(responses)
+        if isinstance(resp, Exception):
+            raise resp
+        connector._http_client.get = Mock(return_value=resp)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("result", [])
+
+    sleep_calls: list[float] = []
+    call_count = 0
+
+    async def record_sleep(secs: float) -> None:
+        sleep_calls.append(secs)
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            connector._running = False
+
+    connector._running = True
+
+    with (
+        patch.object(connector, "_get_updates", side_effect=get_updates_side_effect),
+        patch("butlers.connectors.telegram_bot.asyncio.sleep", side_effect=record_sleep),
+        patch("butlers.connectors.telegram_bot.random.random", return_value=0.5),
+        patch.object(connector, "_start_health_server"),
+        patch.object(connector, "_start_heartbeat"),
+        patch.object(connector, "_load_checkpoint"),
+    ):
+        await connector.start_polling()
+
+    assert len(sleep_calls) == 2
+    # First sleep: error → backoff (0.1 * 2^1 = 0.2, jitter=0)
+    assert sleep_calls[0] == pytest.approx(poll_interval * 2, rel=1e-9)
+    # Second sleep: success → back to poll_interval_s
+    assert sleep_calls[1] == pytest.approx(poll_interval, rel=1e-9)
+    # After recovery, failures reset
+    assert connector._consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_polling_backoff_consecutive_failures_in_health_state(
+    connector: TelegramBotConnector,
+) -> None:
+    """_consecutive_failures is reflected in heartbeat health state reporting."""
+    # No failures — healthy
+    connector._source_api_ok = True
+    connector._consecutive_failures = 0
+    state, msg = connector._get_health_state()
+    assert state == "healthy"
+    assert msg is None
+
+    # Failures present but source_api_ok still True → degraded
+    connector._consecutive_failures = 2
+    state, msg = connector._get_health_state()
+    assert state == "degraded"
+    assert "2" in (msg or "")
+
+    # source_api_ok is False → error with failure count in message
+    connector._source_api_ok = False
+    connector._consecutive_failures = 5
+    state, msg = connector._get_health_state()
+    assert state == "error"
+    assert "5" in (msg or "")
