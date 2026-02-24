@@ -71,7 +71,7 @@ async def list_measurements(
     since: str | None = Query(None, description="Filter from this timestamp (inclusive)"),
     until: str | None = Query(None, description="Filter up to this timestamp (inclusive)"),
     offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Measurement]:
     """List measurements with optional type and date range filters."""
@@ -137,7 +137,7 @@ async def list_measurements(
 async def list_medications(
     active: bool | None = Query(None, description="Filter by active status"),
     offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Medication]:
     """List medications with optional active status filter."""
@@ -246,7 +246,7 @@ async def list_medication_doses(
 @router.get("/conditions", response_model=PaginatedResponse[Condition])
 async def list_conditions(
     offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Condition]:
     """List health conditions."""
@@ -293,7 +293,7 @@ async def list_symptoms(
     since: str | None = Query(None, description="Filter from this timestamp (inclusive)"),
     until: str | None = Query(None, description="Filter up to this timestamp (inclusive)"),
     offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Symptom]:
     """List symptoms with optional name and date range filters."""
@@ -362,7 +362,7 @@ async def list_meals(
     since: str | None = Query(None, description="Filter from this timestamp (inclusive)"),
     until: str | None = Query(None, description="Filter up to this timestamp (inclusive)"),
     offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Meal]:
     """List meals with optional type and date range filters."""
@@ -430,7 +430,7 @@ async def list_research(
     q: str | None = Query(None, description="Full-text search in title and content"),
     tag: str | None = Query(None, description="Filter by tag"),
     offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=500),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> PaginatedResponse[Research]:
     """List or search research entries."""
