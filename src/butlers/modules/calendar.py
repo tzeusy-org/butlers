@@ -1809,9 +1809,7 @@ class _GoogleProvider(CalendarProvider):
         """Fetch the human-readable summary for a Google Calendar by its ID."""
         normalized = quote(calendar_id, safe="")
         try:
-            payload = await self._request_google_json(
-                "GET", f"/users/me/calendarList/{normalized}"
-            )
+            payload = await self._request_google_json("GET", f"/users/me/calendarList/{normalized}")
             summary = payload.get("summaryOverride") or payload.get("summary")
             if isinstance(summary, str) and summary.strip():
                 return summary.strip()
@@ -2372,6 +2370,9 @@ class CalendarModule(Module):
         self._projection_tables_available_cache: bool | None = None
         # Calendar ID resolved at startup from credential store or auto-discovery.
         self._resolved_calendar_id: str | None = None
+        # True when the calendar ID was explicitly configured (credential store),
+        # False when it was auto-discovered (shared "Butlers" calendar).
+        self._calendar_is_butler_specific: bool = False
 
     @property
     def name(self) -> str:
@@ -4066,6 +4067,9 @@ class CalendarModule(Module):
         2. Auto-discover a calendar named "Butlers" via the Google Calendar API.
            If it does not exist, create it.
         3. Persist the discovered/created ID back to the credential store.
+
+        Side-effect: sets ``_calendar_is_butler_specific`` so downstream code
+        can distinguish butler-owned calendars from the shared project calendar.
         """
         # 1. Try credential store.
         if credential_store is not None:
@@ -4074,6 +4078,7 @@ class CalendarModule(Module):
             )
             if stored_id:
                 logger.debug("CalendarModule: resolved calendar ID from credential store")
+                self._calendar_is_butler_specific = True
                 return stored_id
 
         # 2. Auto-discover or create.
@@ -4083,6 +4088,7 @@ class CalendarModule(Module):
                 "does not support auto-discovery"
             )
         discovered_id = await self._provider.discover_or_create_calendar(_CALENDAR_DISCOVERY_NAME)
+        self._calendar_is_butler_specific = False
 
         # 3. Persist for future restarts.
         if credential_store is not None:
@@ -5248,6 +5254,9 @@ class CalendarModule(Module):
         # Resolve a human-readable display name (e.g. "Work" instead of the raw
         # Google Calendar ID like "ae06dba...@group.calendar.google.com").
         display_name = await provider.get_calendar_summary(calendar_id) or calendar_id
+        # Butler-specific calendars (from credential store) are owned by this
+        # butler; the shared project calendar (auto-discovered) is not.
+        is_butler_cal = self._calendar_is_butler_specific
         try:
             source_id = await self._ensure_calendar_source(
                 source_key=source_key,
@@ -5255,9 +5264,13 @@ class CalendarModule(Module):
                 lane="user",
                 provider=provider.name,
                 calendar_id=calendar_id,
+                butler_name=self._butler_name,
                 display_name=display_name,
                 writable=True,
-                metadata={"projection": "provider_sync"},
+                metadata={
+                    "projection": "provider_sync",
+                    "butler_specific": is_butler_cal,
+                },
             )
         except Exception as exc:
             logger.debug("Failed to ensure provider calendar source '%s': %s", source_key, exc)

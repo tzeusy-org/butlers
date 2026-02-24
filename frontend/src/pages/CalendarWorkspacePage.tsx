@@ -192,12 +192,38 @@ function syncBadgeVariant(syncState: string): SyncBadgeVariant {
   return "outline";
 }
 
-function sourceName(source: CalendarWorkspaceSourceFreshness): string {
-  const raw = source.display_name || source.source_key;
-  if (source.provider === "google") {
-    return `[Google] ${raw}`;
+/** Titleize a raw identifier: replace separators, capitalize words. */
+function titleize(value: string): string {
+  const result = value.replace(/[_-]/g, " ");
+  return result === result.toLowerCase()
+    ? result.replace(/\b\w/g, (s) => s.toUpperCase())
+    : result;
+}
+
+/** Truncate hashed Google Calendar IDs (e.g. ae06dba...@group.calendar.google.com). */
+function truncateCalendarId(value: string): string {
+  if (/^[a-f0-9]{20,}@group\.calendar\.google\.com$/i.test(value)) {
+    return value.slice(0, 8) + "\u2026";
   }
-  return raw;
+  return value;
+}
+
+function sourceName(source: CalendarWorkspaceSourceFreshness): string {
+  const raw = truncateCalendarId(source.display_name || source.source_key);
+  const isButlerSpecific = Boolean(source.metadata?.butler_specific);
+
+  // Butler-lane internal sources (scheduler, reminders).
+  if (source.butler_name && source.lane === "butler") {
+    return `[Butler] ${titleize(source.butler_name)}`;
+  }
+  // User-lane provider sources configured for a specific butler.
+  if (source.butler_name && isButlerSpecific) {
+    return `[Butler] ${titleize(source.butler_name)}`;
+  }
+  if (source.provider === "google") {
+    return `[Google] ${titleize(raw)}`;
+  }
+  return titleize(raw);
 }
 
 function formatLaneTitle(butlerName: string): string {
@@ -710,7 +736,8 @@ export default function CalendarWorkspacePage() {
     userSources.forEach((source) => {
       if (!source.calendar_id) return;
       if (!deduped.has(source.calendar_id)) {
-        deduped.set(source.calendar_id, source.display_name || source.calendar_id);
+        const raw = truncateCalendarId(source.display_name || source.calendar_id);
+        deduped.set(source.calendar_id, titleize(raw));
       }
     });
     return Array.from(deduped.entries()).map(([calendarId, label]) => ({ calendarId, label }));

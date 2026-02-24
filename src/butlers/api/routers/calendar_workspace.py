@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -39,6 +40,52 @@ logger = logging.getLogger(__name__)
 
 _WORKSPACE_STALE_THRESHOLD = timedelta(minutes=10)
 _WORKSPACE_MAX_RANGE = timedelta(days=90)
+
+# Regex for hashed Google Calendar IDs like "ae06dba...@group.calendar.google.com"
+_GOOGLE_GROUP_CALENDAR_RE = re.compile(r"^[a-f0-9]{20,}@group\.calendar\.google\.com$", re.I)
+
+
+def _titleize(value: str) -> str:
+    """Titleize a raw identifier: replace separators, capitalize words."""
+    result = value.replace("_", " ").replace("-", " ")
+    if result == result.lower():
+        result = result.title()
+    return result
+
+
+def _format_writable_calendar_label(
+    *,
+    butler_name: str | None,
+    display_name: str | None,
+    calendar_id: str | None,
+    provider: str | None,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    """Build a user-friendly label for a writable calendar source.
+
+    Uses ``metadata["butler_specific"]`` to distinguish butler-owned calendars
+    (configured via credential store) from the shared project calendar
+    (auto-discovered "Butlers").
+
+    Format:
+      [Butler] Health          — butler-owned calendar, label is the butler name
+      [Google] Butlers         — shared project calendar or generic Google calendar
+    """
+    is_butler_cal = bool((metadata or {}).get("butler_specific"))
+
+    raw = display_name or calendar_id or "Calendar"
+    # Truncate ugly hashed Google Calendar IDs.
+    if _GOOGLE_GROUP_CALENDAR_RE.match(raw):
+        raw = raw[:8] + "\u2026"
+    formatted = _titleize(raw)
+
+    if butler_name and is_butler_cal:
+        label = _titleize(butler_name)
+        return f"[Butler] {label}"
+
+    if provider == "google":
+        return f"[Google] {formatted}"
+    return formatted
 
 
 def _get_db_manager() -> DatabaseManager:
@@ -607,7 +654,7 @@ async def get_workspace_meta(
         seen_keys.add(source.source_key)
         deduped_sources.append(source)
 
-    # Rebuild writable calendars from deduped list.
+    # Rebuild writable calendars from deduped list with formatted display names.
     writable_calendars = []
     for source in deduped_sources:
         if source.lane != "user" or not source.writable or not source.calendar_id:
@@ -617,7 +664,13 @@ async def get_workspace_meta(
                 source_key=source.source_key,
                 provider=source.provider,
                 calendar_id=source.calendar_id,
-                display_name=source.display_name,
+                display_name=_format_writable_calendar_label(
+                    butler_name=source.butler_name,
+                    display_name=source.display_name,
+                    calendar_id=source.calendar_id,
+                    provider=source.provider,
+                    metadata=source.metadata,
+                ),
                 butler_name=source.butler_name,
             )
         )
