@@ -221,6 +221,54 @@ class TestGoogleContactsProvider:
         finally:
             await provider.shutdown()
 
+    async def test_incremental_sync_400_with_sync_token_message_raises_token_expired(self):
+        """Google can return HTTP 400 (not just 410) for expired sync tokens."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if str(request.url) == GOOGLE_OAUTH_TOKEN_URL:
+                return httpx.Response(200, json={"access_token": "tok-1", "expires_in": 3600})
+            if str(request.url).startswith(GOOGLE_PEOPLE_API_CONNECTIONS_URL):
+                return httpx.Response(
+                    400,
+                    json={
+                        "error": {
+                            "message": (
+                                "Sync token is expired. Clear local cache and retry call"
+                                " without the sync token."
+                            )
+                        }
+                    },
+                )
+            return httpx.Response(500)
+
+        provider = await self._make_provider(handler)
+        try:
+            with pytest.raises(ContactsSyncTokenExpiredError):
+                await provider.incremental_sync(account_id="acct-1", cursor="expired-cursor")
+        finally:
+            await provider.shutdown()
+
+    async def test_incremental_sync_400_without_sync_token_message_raises_request_error(self):
+        """HTTP 400 without a sync-token message must NOT be misidentified as token expiry."""
+        from butlers.modules.contacts.sync import ContactsRequestError
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if str(request.url) == GOOGLE_OAUTH_TOKEN_URL:
+                return httpx.Response(200, json={"access_token": "tok-1", "expires_in": 3600})
+            if str(request.url).startswith(GOOGLE_PEOPLE_API_CONNECTIONS_URL):
+                return httpx.Response(
+                    400,
+                    json={"error": {"message": "Bad Request: invalid personFields value"}},
+                )
+            return httpx.Response(500)
+
+        provider = await self._make_provider(handler)
+        try:
+            with pytest.raises(ContactsRequestError):
+                await provider.incremental_sync(account_id="acct-1", cursor="some-cursor")
+        finally:
+            await provider.shutdown()
+
 
 class TestGoogleContactsProviderValidateCredentials:
     async def _make_provider(

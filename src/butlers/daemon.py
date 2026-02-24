@@ -3475,9 +3475,9 @@ class ButlerDaemon:
             - `subject` (string)
             - `intent` (string enum): `send` | `reply` | `react`
             - `emoji` (string): required when `intent="react"`
-            - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must include
-              `request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`
-              plus `source_thread_identity` for telegram `reply`/`react`.
+            - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must
+              include `request_id`, `source_channel`, `source_endpoint_identity`,
+              `source_sender_identity` plus `source_thread_identity` for telegram `reply`/`react`.
 
             Valid JSON example:
             {
