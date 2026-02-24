@@ -859,3 +859,201 @@ class TestRegistryIntegration:
         modules = reg.load_from_config({"telegram": {}})
         assert len(modules) == 1
         assert modules[0].name == "telegram"
+
+
+# ---------------------------------------------------------------------------
+# connector_registry counter increment
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_db_pool() -> tuple[MagicMock, AsyncMock]:
+    """Create a mock asyncpg pool that supports `async with pool.acquire() as conn`.
+
+    Returns a (db, conn) tuple where db is what gets assigned to telegram_module._db.
+    The db mock does NOT have a .pool attribute (so _get_db_pool falls through to the
+    .acquire path), and supports `async with db.acquire() as conn`.
+    """
+    mock_conn = AsyncMock()
+    mock_conn.fetchval = AsyncMock(return_value=42)
+    mock_conn.execute = AsyncMock(return_value=None)
+
+    # Use a real object to avoid MagicMock auto-creating a .pool attribute
+    class FakePool:
+        """Minimal asyncpg-pool-like object used in tests."""
+
+        def acquire(self):
+            return self
+
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *args):
+            return False
+
+    fake_pool = FakePool()
+    return fake_pool, mock_conn
+
+
+class TestConnectorCounterIncrement:
+    """Verify connector_registry counters are updated from process_update."""
+
+    async def test_increment_connector_counter_ingested_on_success(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """After a successful message_inbox INSERT, counter_messages_ingested is incremented."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+
+        mock_pool, mock_conn = _make_mock_db_pool()
+        telegram_module._db = mock_pool
+
+        mock_pipeline = MagicMock()
+        mock_result = RoutingResult(
+            target_butler="general",
+            route_result={"status": "ok"},
+            routed_targets=["general"],
+            acked_targets=["general"],
+        )
+        mock_pipeline.process = AsyncMock(return_value=mock_result)
+        telegram_module.set_pipeline(mock_pipeline)
+        telegram_module._set_message_reaction = AsyncMock(return_value={"ok": True})
+
+        update = {
+            "update_id": 1001,
+            "message": {"message_id": 10, "text": "Hello", "chat": {"id": 999}},
+        }
+        await telegram_module.process_update(update)
+
+        # conn.execute is called for: partition ensure (x2), counter increment
+        execute_calls = mock_conn.execute.call_args_list
+        increment_calls = [
+            call for call in execute_calls if "counter_messages_ingested" in str(call)
+        ]
+        assert len(increment_calls) == 1, (
+            f"Expected 1 counter_messages_ingested UPDATE call, got {len(increment_calls)}"
+        )
+        call_args = increment_calls[0].args
+        assert call_args[1] == "telegram_bot"
+        assert call_args[2] == "telegram:bot"
+
+    async def test_increment_connector_counter_failed_on_routing_error(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """On routing failure, counter_messages_failed is incremented."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+
+        mock_pool, mock_conn = _make_mock_db_pool()
+        telegram_module._db = mock_pool
+
+        mock_pipeline = MagicMock()
+        mock_result = RoutingResult(
+            target_butler="general",
+            route_result={"error": "routing failed"},
+            routing_error="routing failed",
+        )
+        mock_pipeline.process = AsyncMock(return_value=mock_result)
+        telegram_module.set_pipeline(mock_pipeline)
+        telegram_module._set_message_reaction = AsyncMock(return_value={"ok": True})
+
+        update = {
+            "update_id": 1002,
+            "message": {"message_id": 11, "text": "Hello", "chat": {"id": 998}},
+        }
+        await telegram_module.process_update(update)
+
+        # Ingested counter should be incremented on INSERT success
+        ingested_calls = [
+            call
+            for call in mock_conn.execute.call_args_list
+            if "counter_messages_ingested" in str(call)
+        ]
+        assert len(ingested_calls) == 1
+
+        # Failed counter is incremented via a separate pool.acquire() call
+        failed_calls = [
+            call
+            for call in mock_conn.execute.call_args_list
+            if "counter_messages_failed" in str(call)
+        ]
+        assert len(failed_calls) == 1, (
+            f"Expected 1 counter_messages_failed UPDATE call, got {len(failed_calls)}"
+        )
+        call_args = failed_calls[0].args
+        assert call_args[1] == "telegram_bot"
+        assert call_args[2] == "telegram:bot"
+
+    async def test_counter_increment_failure_is_non_fatal(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """A failure in counter increment does not prevent message processing."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+
+        mock_pool, mock_conn = _make_mock_db_pool()
+        telegram_module._db = mock_pool
+
+        # Make execute raise for counter_messages_ingested but not for partition calls
+        async def execute_side_effect(query, *args):
+            if "counter_messages_ingested" in query:
+                raise RuntimeError("DB counter update failed")
+            return None
+
+        mock_conn.execute.side_effect = execute_side_effect
+
+        mock_pipeline = MagicMock()
+        mock_result = RoutingResult(
+            target_butler="general",
+            route_result={"status": "ok"},
+            routed_targets=["general"],
+            acked_targets=["general"],
+        )
+        mock_pipeline.process = AsyncMock(return_value=mock_result)
+        telegram_module.set_pipeline(mock_pipeline)
+        telegram_module._set_message_reaction = AsyncMock(return_value={"ok": True})
+
+        update = {
+            "update_id": 1003,
+            "message": {"message_id": 12, "text": "Hello", "chat": {"id": 997}},
+        }
+        # Should NOT raise even though counter increment fails
+        result = await telegram_module.process_update(update)
+        assert result is not None
+        assert result.target_butler == "general"
+
+    async def test_no_counter_increment_without_db_pool(
+        self, telegram_module: TelegramModule, monkeypatch
+    ):
+        """When no db pool is configured, process_update completes without DB calls."""
+        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+
+        # _db is None by default — no pool available
+        assert telegram_module._db is None
+
+        mock_pipeline = MagicMock()
+        mock_result = RoutingResult(
+            target_butler="general",
+            route_result={"status": "ok"},
+        )
+        mock_pipeline.process = AsyncMock(return_value=mock_result)
+        telegram_module.set_pipeline(mock_pipeline)
+
+        update = {"message": {"text": "Hello", "chat": {"id": 111}}}
+        result = await telegram_module.process_update(update)
+        # No error and result is returned correctly
+        assert result is not None
+        assert result.target_butler == "general"
+
+    async def test_increment_connector_counter_unknown_field_logs_warning(
+        self, telegram_module: TelegramModule
+    ):
+        """Passing an unknown field name to _increment_connector_counter logs a warning."""
+        mock_conn = AsyncMock()
+
+        # Should not raise, just log a warning
+        await telegram_module._increment_connector_counter(
+            mock_conn,
+            connector_type="telegram_bot",
+            endpoint_identity="telegram:bot",
+            field="counter_unknown_field",
+        )
+
+        # execute should NOT have been called with an unknown field
+        mock_conn.execute.assert_not_called()

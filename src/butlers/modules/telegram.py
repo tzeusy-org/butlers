@@ -270,6 +270,45 @@ class TelegramModule(Module):
             return self._db
         return None
 
+    async def _increment_connector_counter(
+        self,
+        conn: Any,
+        connector_type: str,
+        endpoint_identity: str,
+        field: str,
+    ) -> None:
+        """Atomically increment a counter column in connector_registry.
+
+        This is non-fatal: any failure is logged but does not block message processing.
+
+        Args:
+            conn: An active asyncpg connection (already acquired from the pool).
+            connector_type: The connector type identifier (e.g. ``"telegram_bot"``).
+            endpoint_identity: The endpoint identity (e.g. ``"telegram:bot"``).
+            field: Column name to increment — either ``"counter_messages_ingested"``
+                or ``"counter_messages_failed"``.
+        """
+        allowed_fields = {"counter_messages_ingested", "counter_messages_failed"}
+        if field not in allowed_fields:
+            logger.warning("Ignoring unknown connector_registry counter field: %s", field)
+            return
+        try:
+            await conn.execute(
+                f"UPDATE connector_registry"
+                f" SET {field} = {field} + 1"
+                f" WHERE connector_type = $1 AND endpoint_identity = $2",
+                connector_type,
+                endpoint_identity,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to increment connector_registry.%s for %s/%s",
+                field,
+                connector_type,
+                endpoint_identity,
+                exc_info=True,
+            )
+
     async def _store_message_inbox_entry(
         self,
         *,
@@ -729,6 +768,14 @@ class TelegramModule(Module):
                         "message_inbox.v2",
                         json.dumps(processing_metadata),
                     )
+                    # Increment ingested counter atomically on the same connection.
+                    # Non-fatal: failure is logged but does not block message processing.
+                    await self._increment_connector_counter(
+                        conn,
+                        connector_type="telegram_bot",
+                        endpoint_identity="telegram:bot",
+                        field="counter_messages_ingested",
+                    )
 
             result = await self._pipeline.process(
                 message_text=text,
@@ -751,13 +798,15 @@ class TelegramModule(Module):
                 message_inbox_id=message_inbox_id,
             )
 
+            routing_failed = self._result_has_failure(result)
             if message_key is not None:
                 lifecycle = self._lifecycle(message_key)
                 self._track_routing_progress(lifecycle, result)
                 pending_targets = (
                     lifecycle.routed_targets - lifecycle.acked_targets - lifecycle.failed_targets
                 )
-                if self._result_has_failure(result) or lifecycle.failed_targets:
+                if routing_failed or lifecycle.failed_targets:
+                    routing_failed = True
                     await self._update_reaction(
                         chat_id=chat_id,
                         message_id=message_id,
@@ -770,6 +819,17 @@ class TelegramModule(Module):
                         message_id=message_id,
                         message_key=message_key,
                         reaction=REACTION_SUCCESS,
+                    )
+            # Increment routing failure counter if routing encountered an error.
+            # Acquire a fresh connection since the inbox INSERT connection is closed.
+            # Non-fatal: failure is logged but does not block message processing.
+            if routing_failed and db_pool is not None:
+                async with db_pool.acquire() as conn:
+                    await self._increment_connector_counter(
+                        conn,
+                        connector_type="telegram_bot",
+                        endpoint_identity="telegram:bot",
+                        field="counter_messages_failed",
                     )
         except Exception:
             await self._update_reaction(
