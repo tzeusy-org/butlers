@@ -57,7 +57,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "addresses",
         "contact_info",
         "contact_labels",
-        "contacts",
+        # contacts moved to shared schema by core_007 migration
         "gifts",
         "group_members",
         "groups",
