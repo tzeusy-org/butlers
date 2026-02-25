@@ -740,7 +740,9 @@ export interface ContactMergeResponse {
 /** Response for GET /owner/setup-status. */
 export interface OwnerSetupStatus {
   contact_id: string | null;
+  has_name: boolean;
   has_telegram: boolean;
+  has_telegram_chat_id: boolean;
   has_email: boolean;
 }
 

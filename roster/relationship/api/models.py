@@ -103,7 +103,9 @@ class OwnerSetupStatus(BaseModel):
     """Response for GET /owner/setup-status."""
 
     contact_id: UUID | None = None
+    has_name: bool
     has_telegram: bool
+    has_telegram_chat_id: bool
     has_email: bool
 
 

@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
+import { Pencil, Plus, X, Check } from "lucide-react";
+import { toast } from "sonner";
 
 import type {
   ActivityFeedItem,
@@ -19,6 +21,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -35,6 +46,8 @@ import {
   useContactInteractions,
   useContactLoans,
   useContactNotes,
+  useCreateContactInfo,
+  usePatchContact,
   useRevealContactSecret,
 } from "@/hooks/use-contacts";
 
@@ -142,7 +155,7 @@ function SecuredInfoEntry({
   if (!entry.secured) {
     return (
       <span className="text-sm">
-        {displayValue ?? <span className="text-muted-foreground italic">—</span>}
+        {displayValue ?? <span className="text-muted-foreground italic">&mdash;</span>}
       </span>
     );
   }
@@ -152,7 +165,9 @@ function SecuredInfoEntry({
       {displayValue !== null ? (
         <span className="text-sm font-mono">{displayValue}</span>
       ) : (
-        <span className="text-muted-foreground text-sm font-mono tracking-widest">••••••••</span>
+        <span className="text-muted-foreground text-sm font-mono tracking-widest">
+          ••••••••
+        </span>
       )}
       {revealed === null && (
         <Button
@@ -170,14 +185,10 @@ function SecuredInfoEntry({
 }
 
 // ---------------------------------------------------------------------------
-// Contact Info section (new identity-aware structured entries)
+// Contact Info section (read-only)
 // ---------------------------------------------------------------------------
 
-function ContactInfoSection({
-  contact,
-}: {
-  contact: ContactDetail;
-}) {
+function ContactInfoSection({ contact }: { contact: ContactDetail }) {
   const hasContactInfo = contact.contact_info && contact.contact_info.length > 0;
   const hasBasicInfo =
     contact.email || contact.phone || contact.address || contact.birthday;
@@ -223,12 +234,234 @@ function ContactInfoSection({
           )}
           {contact.birthday && (
             <div className="flex gap-2">
-              <span className="text-muted-foreground text-sm w-24 shrink-0">Birthday</span>
+              <span className="text-muted-foreground text-sm w-24 shrink-0">
+                Birthday
+              </span>
               <span className="text-sm">{formatDate(contact.birthday)}</span>
             </div>
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Add contact_info inline form
+// ---------------------------------------------------------------------------
+
+const CONTACT_INFO_TYPES = [
+  "email",
+  "phone",
+  "telegram",
+  "telegram_chat_id",
+  "website",
+  "other",
+] as const;
+
+function AddContactInfoForm({
+  contactId,
+  onDone,
+}: {
+  contactId: string;
+  onDone: () => void;
+}) {
+  const createInfo = useCreateContactInfo();
+  const [type, setType] = useState<string>("email");
+  const [value, setValue] = useState("");
+  const [isPrimary, setIsPrimary] = useState(false);
+
+  async function handleSubmit() {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      toast.error("Value cannot be empty.");
+      return;
+    }
+    try {
+      await createInfo.mutateAsync({
+        contactId,
+        request: { type, value: trimmed, is_primary: isPrimary },
+      });
+      toast.success(`Added ${type} entry.`);
+      onDone();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      toast.error(`Failed to add: ${msg}`);
+    }
+  }
+
+  return (
+    <div className="flex items-end gap-2 pt-2 border-t mt-2">
+      <div className="space-y-1">
+        <Label className="text-xs">Type</Label>
+        <Select value={type} onValueChange={setType}>
+          <SelectTrigger className="h-8 w-28 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONTACT_INFO_TYPES.map((t) => (
+              <SelectItem key={t} value={t} className="text-xs capitalize">
+                {t}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex-1 space-y-1">
+        <Label className="text-xs">Value</Label>
+        <Input
+          className="h-8 text-sm"
+          placeholder={type === "email" ? "you@example.com" : type === "telegram" ? "@handle" : ""}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          disabled={createInfo.isPending}
+          autoFocus
+        />
+      </div>
+      <label className="flex items-center gap-1 text-xs text-muted-foreground pb-0.5">
+        <input
+          type="checkbox"
+          checked={isPrimary}
+          onChange={(e) => setIsPrimary(e.target.checked)}
+          className="accent-primary"
+        />
+        Primary
+      </label>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-8 w-8 p-0"
+        onClick={handleSubmit}
+        disabled={createInfo.isPending}
+      >
+        <Check className="h-4 w-4" />
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-8 w-8 p-0"
+        onClick={onDone}
+        disabled={createInfo.isPending}
+      >
+        <X className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Edit header form (inline within the card)
+// ---------------------------------------------------------------------------
+
+interface EditHeaderFormProps {
+  contact: ContactDetail;
+  onDone: () => void;
+}
+
+function EditHeaderForm({ contact, onDone }: EditHeaderFormProps) {
+  const patchContact = usePatchContact();
+  const [fullName, setFullName] = useState(contact.full_name);
+  const [nickname, setNickname] = useState(contact.nickname ?? "");
+  const [company, setCompany] = useState(contact.company ?? "");
+  const [jobTitle, setJobTitle] = useState(contact.job_title ?? "");
+
+  const isSaving = patchContact.isPending;
+
+  async function handleSave() {
+    const trimmedName = fullName.trim();
+    if (!trimmedName) {
+      toast.error("Name cannot be empty.");
+      return;
+    }
+
+    // Only send changed fields
+    const request: Record<string, string | null> = {};
+    if (trimmedName !== contact.full_name) request.full_name = trimmedName;
+    const nick = nickname.trim() || null;
+    if (nick !== (contact.nickname ?? null)) request.nickname = nick ?? "";
+    const comp = company.trim() || null;
+    if (comp !== (contact.company ?? null)) request.company = comp ?? "";
+    const jt = jobTitle.trim() || null;
+    if (jt !== (contact.job_title ?? null)) request.job_title = jt ?? "";
+
+    if (Object.keys(request).length === 0) {
+      onDone();
+      return;
+    }
+
+    try {
+      await patchContact.mutateAsync({
+        contactId: contact.id,
+        request,
+      });
+      toast.success("Contact updated.");
+      onDone();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      toast.error(`Failed to update: ${msg}`);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <Label htmlFor="edit-name" className="text-xs">
+            Full name
+          </Label>
+          <Input
+            id="edit-name"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            disabled={isSaving}
+            autoFocus
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="edit-nickname" className="text-xs">
+            Nickname
+          </Label>
+          <Input
+            id="edit-nickname"
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
+            disabled={isSaving}
+            placeholder="Optional"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="edit-company" className="text-xs">
+            Company
+          </Label>
+          <Input
+            id="edit-company"
+            value={company}
+            onChange={(e) => setCompany(e.target.value)}
+            disabled={isSaving}
+            placeholder="Optional"
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="edit-jobtitle" className="text-xs">
+            Job title
+          </Label>
+          <Input
+            id="edit-jobtitle"
+            value={jobTitle}
+            onChange={(e) => setJobTitle(e.target.value)}
+            disabled={isSaving}
+            placeholder="Optional"
+          />
+        </div>
+      </div>
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" size="sm" onClick={onDone} disabled={isSaving}>
+          Cancel
+        </Button>
+        <Button size="sm" onClick={handleSave} disabled={isSaving}>
+          {isSaving ? "Saving..." : "Save"}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -456,58 +689,98 @@ function ActivityTab({ contactId }: { contactId: string }) {
 // ---------------------------------------------------------------------------
 
 export default function ContactDetailView({ contact }: ContactDetailViewProps) {
+  const [editing, setEditing] = useState(false);
+  const [addingInfo, setAddingInfo] = useState(false);
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <Card>
         <CardHeader>
           <div className="flex items-start justify-between">
-            <div>
-              <CardTitle className="text-xl flex items-center gap-2 flex-wrap">
-                {contact.full_name}
-                {contact.nickname && (
-                  <span className="text-muted-foreground text-base font-normal">
-                    ({contact.nickname})
-                  </span>
-                )}
-                {/* Role badges */}
-                {contact.roles && contact.roles.length > 0 && (
-                  <span className="flex gap-1 flex-wrap">
-                    {contact.roles.map((role) => (
-                      <Badge
-                        key={role}
-                        style={roleBadgeStyle(role)}
-                        className="text-xs capitalize"
-                      >
-                        {role}
-                      </Badge>
-                    ))}
-                  </span>
-                )}
-              </CardTitle>
-              {(contact.company || contact.job_title) && (
-                <CardDescription className="mt-1">
-                  {[contact.job_title, contact.company].filter(Boolean).join(" at ")}
-                </CardDescription>
+            <div className="flex-1">
+              {editing ? (
+                <EditHeaderForm contact={contact} onDone={() => setEditing(false)} />
+              ) : (
+                <>
+                  <CardTitle className="text-xl flex items-center gap-2 flex-wrap">
+                    {contact.full_name}
+                    {contact.nickname && (
+                      <span className="text-muted-foreground text-base font-normal">
+                        ({contact.nickname})
+                      </span>
+                    )}
+                    {/* Role badges */}
+                    {contact.roles && contact.roles.length > 0 && (
+                      <span className="flex gap-1 flex-wrap">
+                        {contact.roles.map((role) => (
+                          <Badge
+                            key={role}
+                            style={roleBadgeStyle(role)}
+                            className="text-xs capitalize"
+                          >
+                            {role}
+                          </Badge>
+                        ))}
+                      </span>
+                    )}
+                  </CardTitle>
+                  {(contact.company || contact.job_title) && (
+                    <CardDescription className="mt-1">
+                      {[contact.job_title, contact.company]
+                        .filter(Boolean)
+                        .join(" at ")}
+                    </CardDescription>
+                  )}
+                </>
               )}
             </div>
-            <div className="flex gap-1.5 flex-wrap justify-end">
-              {contact.labels.map((label) => (
-                <Badge
-                  key={label.id}
-                  style={{
-                    backgroundColor: labelStyle(label),
-                    color: "#fff",
-                  }}
+            {!editing && (
+              <div className="flex items-center gap-2">
+                <div className="flex gap-1.5 flex-wrap justify-end">
+                  {contact.labels.map((label) => (
+                    <Badge
+                      key={label.id}
+                      style={{
+                        backgroundColor: labelStyle(label),
+                        color: "#fff",
+                      }}
+                    >
+                      {label.name}
+                    </Badge>
+                  ))}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 p-0"
+                  onClick={() => setEditing(true)}
+                  title="Edit contact"
                 >
-                  {label.name}
-                </Badge>
-              ))}
-            </div>
+                  <Pencil className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
           </div>
         </CardHeader>
         <CardContent>
           <ContactInfoSection contact={contact} />
+          {addingInfo ? (
+            <AddContactInfoForm
+              contactId={contact.id}
+              onDone={() => setAddingInfo(false)}
+            />
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mt-2 h-7 text-xs text-muted-foreground"
+              onClick={() => setAddingInfo(true)}
+            >
+              <Plus className="mr-1 h-3 w-3" />
+              Add contact info
+            </Button>
+          )}
         </CardContent>
       </Card>
 

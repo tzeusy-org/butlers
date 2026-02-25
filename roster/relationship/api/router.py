@@ -924,9 +924,12 @@ async def get_owner_setup_status(
 
     # Find the owner contact
     owner_row = await pool.fetchrow(
-        "SELECT id FROM contacts WHERE 'owner' = ANY(COALESCE(roles, '{}')) LIMIT 1",
+        "SELECT id, name FROM contacts WHERE 'owner' = ANY(COALESCE(roles, '{}')) LIMIT 1",
     )
     owner_id = owner_row["id"] if owner_row else None
+    # The bootstrap name "Owner" is a placeholder — treat it as not yet set
+    owner_name = owner_row["name"] if owner_row else None
+    has_name = bool(owner_name and owner_name.strip().lower() != "owner")
 
     rows = await pool.fetch(
         """
@@ -934,7 +937,7 @@ async def get_owner_setup_status(
         FROM shared.contact_info ci
         JOIN contacts c ON c.id = ci.contact_id
         WHERE 'owner' = ANY(COALESCE(c.roles, '{}'))
-          AND ci.type IN ('telegram', 'email')
+          AND ci.type IN ('telegram', 'telegram_chat_id', 'email')
         """,
     )
 
@@ -942,7 +945,9 @@ async def get_owner_setup_status(
 
     return OwnerSetupStatus(
         contact_id=owner_id,
+        has_name=has_name,
         has_telegram="telegram" in found_types,
+        has_telegram_chat_id="telegram_chat_id" in found_types,
         has_email="email" in found_types,
     )
 
