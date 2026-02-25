@@ -34,17 +34,40 @@ policy = "suggest"
 [[butler.schedule]]
 name = "upcoming-bills-check"
 cron = "0 8 * * *"
-dispatch_mode = "job"
-job_name = "upcoming_bills_check"
+prompt = """
+Daily bills check. Use upcoming_bills(days_ahead=14, include_overdue=true) to surface bills due
+in the next two weeks, ranked by urgency:
+- Overdue bills first
+- Bills due today
+- Bills due this week
+- Bills due within 14 days
+
+Notify the owner via Telegram with the urgency-ranked list and total amount due.
+If no bills are upcoming or overdue, do not send a message.
+"""
 
 [[butler.schedule]]
 name = "subscription-renewal-alerts"
 cron = "30 8 * * *"
-dispatch_mode = "job"
-job_name = "subscription_renewal_alerts"
+prompt = """
+Daily subscription renewal scan. Check for subscriptions renewing within the next 7 days.
+For each upcoming renewal, include the service name, amount, and renewal date.
+
+Flag any subscriptions where the user may want to review before auto-renewal.
+Notify the owner via Telegram if any renewals are approaching.
+If no renewals are upcoming, do not send a message.
+"""
 
 [[butler.schedule]]
 name = "monthly-spending-summary"
 cron = "0 9 1 * *"
-dispatch_mode = "job"
-job_name = "monthly_spending_summary"
+prompt = """
+Monthly spending summary. Use spending_summary for the previous calendar month, grouped by category.
+Include:
+- Total spend for the month
+- Top spending categories with amounts
+- Notable changes compared to the prior month (if data available)
+- Any outstanding obligations carried forward
+
+Notify the owner via Telegram with the formatted monthly overview.
+"""

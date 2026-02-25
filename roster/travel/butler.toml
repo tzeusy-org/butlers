@@ -34,11 +34,27 @@ policy = "suggest"
 [[butler.schedule]]
 name = "upcoming-travel-check"
 cron = "0 8 * * *"
-dispatch_mode = "job"
-job_name = "upcoming_travel_check"
+prompt = """
+Daily pre-trip scan. Check for upcoming departures and check-ins within the next 48 hours.
+Use upcoming_travel(within_days=2, include_pretrip_actions=true) to surface:
+- Flights departing soon (with terminal, gate, PNR)
+- Hotel check-ins approaching
+- Missing boarding passes or travel documents
+- Pending online check-in windows (24h before departure)
+- Tight layover warnings
+
+If any actionable items are found, notify the owner via Telegram with an urgency-ranked summary.
+If nothing is upcoming, do not send a message.
+"""
 
 [[butler.schedule]]
 name = "trip-document-expiry"
 cron = "0 9 * * 1"
-dispatch_mode = "job"
-job_name = "trip_document_expiry"
+prompt = """
+Weekly travel document expiry scan. Check all stored travel documents (passports, visas, insurance policies)
+for expiry dates within the next 90 days.
+
+For documents expiring within 30 days, create a calendar reminder if one does not already exist.
+Notify the owner via Telegram with any documents approaching expiry, ranked by urgency.
+If all documents are current, do not send a message.
+"""
