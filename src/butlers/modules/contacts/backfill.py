@@ -232,6 +232,26 @@ class ContactBackfillWriter:
         self._pool = pool
         self._provider = provider
         self._account_id = account_id
+        # Relationship-schema tables that may not exist in other butler schemas
+        # (e.g. general, health). Populated lazily by _ensure_table_flags().
+        self._table_flags: dict[str, bool] | None = None
+
+    async def _ensure_table_flags(self) -> None:
+        """Probe once which relationship-only tables exist in the current search_path."""
+        if self._table_flags is not None:
+            return
+        tables = ("addresses", "important_dates", "labels", "contact_labels", "activity_feed")
+        flags: dict[str, bool] = {}
+        for tbl in tables:
+            row = await self._pool.fetchrow(
+                "SELECT to_regclass($1) IS NOT NULL AS exists", tbl
+            )
+            flags[tbl] = bool(row and row["exists"])
+        self._table_flags = flags
+
+    def _has_table(self, name: str) -> bool:
+        """Return True if the named table was found during init probe."""
+        return self._table_flags is not None and self._table_flags.get(name, False)
 
     async def create_contact(self, contact: CanonicalContact) -> uuid.UUID:
         """Create a new CRM contact from a canonical contact."""
@@ -490,6 +510,9 @@ class ContactBackfillWriter:
         contact: CanonicalContact,
     ) -> None:
         """Upsert addresses from canonical contact into the addresses table."""
+        await self._ensure_table_flags()
+        if not self._has_table("addresses"):
+            return
         for addr in contact.addresses:
             # Build a stable line_1 from street or city fallback
             line_1 = addr.street or addr.city or "Unknown"
@@ -551,6 +574,9 @@ class ContactBackfillWriter:
         contact: CanonicalContact,
     ) -> None:
         """Upsert birthdays and anniversaries into important_dates."""
+        await self._ensure_table_flags()
+        if not self._has_table("important_dates"):
+            return
         date_entries: list[tuple[str, int | None, int | None, int | None]] = []
 
         for bday in contact.birthdays:
@@ -602,6 +628,9 @@ class ContactBackfillWriter:
         contact: CanonicalContact,
     ) -> None:
         """Upsert contact group memberships as labels + contact_labels."""
+        await self._ensure_table_flags()
+        if not self._has_table("labels"):
+            return
         for group_resource in contact.group_memberships:
             # Normalize: use the last segment of the resource name as label
             label_name = _normalize_group_label(group_resource)
