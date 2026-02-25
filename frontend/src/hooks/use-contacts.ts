@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import {
   confirmContact,
+  createContactInfo,
   getContact,
   getContactFeed,
   getContactGifts,
@@ -23,7 +24,7 @@ import {
   revealContactSecret,
   getUpcomingDates,
 } from "@/api/index.ts";
-import type { ContactMergeRequest, ContactPatchRequest, ContactParams, GroupParams } from "@/api/index.ts";
+import type { ContactMergeRequest, ContactPatchRequest, CreateContactInfoRequest, ContactParams, GroupParams } from "@/api/index.ts";
 
 /** Fetch a paginated list of contacts. */
 export function useContacts(params?: ContactParams) {
@@ -177,6 +178,25 @@ export function useConfirmContact() {
     },
     onError: (err) => {
       toast.error(`Confirm failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    },
+  });
+}
+
+/** Add a contact_info entry to a contact. */
+export function useCreateContactInfo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      contactId,
+      request,
+    }: {
+      contactId: string;
+      request: CreateContactInfoRequest;
+    }) => createContactInfo(contactId, request),
+    onSuccess: (_, { contactId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
+      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      void queryClient.invalidateQueries({ queryKey: ["owner-setup-status"] });
     },
   });
 }

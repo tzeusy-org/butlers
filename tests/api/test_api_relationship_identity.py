@@ -666,6 +666,88 @@ def test_owner_setup_status_has_neither():
     assert data["has_email"] is False
 
 
+def test_owner_setup_status_includes_contact_id():
+    """GET /owner/setup-status includes the owner contact_id when found."""
+    owner_id = uuid4()
+    app, _, mock_pool = _app_with_mock_pool(
+        fetchrow_result={"id": owner_id},
+        fetch_rows=[{"type": "email"}],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.get("/api/relationship/owner/setup-status")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["contact_id"] == str(owner_id)
+    assert data["has_email"] is True
+
+
+def test_owner_setup_status_contact_id_null_when_no_owner():
+    """GET /owner/setup-status returns null contact_id when no owner contact exists."""
+    app, _, mock_pool = _app_with_mock_pool(fetch_rows=[])
+
+    with TestClient(app=app) as client:
+        resp = client.get("/api/relationship/owner/setup-status")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["contact_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# POST /api/relationship/contacts/{id}/contact-info
+# ---------------------------------------------------------------------------
+
+
+def test_create_contact_info_success():
+    """POST /contacts/{id}/contact-info creates a new contact_info entry."""
+    contact_id = uuid4()
+    info_id = uuid4()
+
+    app, _, mock_pool = _app_with_mock_pool(
+        fetchrow_side_effect=[
+            {"id": contact_id},  # contact exists check
+            {  # INSERT RETURNING
+                "id": info_id,
+                "contact_id": contact_id,
+                "type": "email",
+                "value": "alice@example.com",
+                "is_primary": True,
+                "secured": False,
+            },
+        ],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.post(
+            f"/api/relationship/contacts/{contact_id}/contact-info",
+            json={"type": "email", "value": "alice@example.com", "is_primary": True},
+        )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["id"] == str(info_id)
+    assert data["type"] == "email"
+    assert data["value"] == "alice@example.com"
+    assert data["is_primary"] is True
+    assert data["secured"] is False
+
+
+def test_create_contact_info_contact_not_found():
+    """POST /contacts/{id}/contact-info returns 404 for missing contact."""
+    contact_id = uuid4()
+    app, _, mock_pool = _app_with_mock_pool(fetchrow_result=None)
+
+    with TestClient(app=app) as client:
+        resp = client.post(
+            f"/api/relationship/contacts/{contact_id}/contact-info",
+            json={"type": "telegram", "value": "@alice"},
+        )
+
+    assert resp.status_code == 404
+
+
 def test_merge_contact_deduplicates_contact_info():
     """POST /contacts/{id}/merge issues a dedup DELETE before moving contact_info rows."""
     target_id = uuid4()

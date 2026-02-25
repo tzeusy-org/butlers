@@ -102,8 +102,28 @@ class ContactMergeResponse(BaseModel):
 class OwnerSetupStatus(BaseModel):
     """Response for GET /owner/setup-status."""
 
+    contact_id: UUID | None = None
     has_telegram: bool
     has_email: bool
+
+
+class CreateContactInfoRequest(BaseModel):
+    """Request body for POST /contacts/{id}/contact-info."""
+
+    type: str
+    value: str
+    is_primary: bool = False
+
+
+class CreateContactInfoResponse(BaseModel):
+    """Response for POST /contacts/{id}/contact-info."""
+
+    id: UUID
+    contact_id: UUID
+    type: str
+    value: str
+    is_primary: bool
+    secured: bool
 
 
 class Group(BaseModel):

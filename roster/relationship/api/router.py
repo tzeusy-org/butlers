@@ -56,6 +56,8 @@ if _models_path.exists():
         ContactMergeRequest = _models_module.ContactMergeRequest
         ContactMergeResponse = _models_module.ContactMergeResponse
         ContactPatchRequest = _models_module.ContactPatchRequest
+        CreateContactInfoRequest = _models_module.CreateContactInfoRequest
+        CreateContactInfoResponse = _models_module.CreateContactInfoResponse
         OwnerSetupStatus = _models_module.OwnerSetupStatus
 
 logger = logging.getLogger(__name__)
@@ -920,6 +922,12 @@ async def get_owner_setup_status(
     """
     pool = _pool(db)
 
+    # Find the owner contact
+    owner_row = await pool.fetchrow(
+        "SELECT id FROM contacts WHERE 'owner' = ANY(COALESCE(roles, '{}')) LIMIT 1",
+    )
+    owner_id = owner_row["id"] if owner_row else None
+
     rows = await pool.fetch(
         """
         SELECT ci.type
@@ -933,8 +941,57 @@ async def get_owner_setup_status(
     found_types = {r["type"] for r in rows}
 
     return OwnerSetupStatus(
+        contact_id=owner_id,
         has_telegram="telegram" in found_types,
         has_email="email" in found_types,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /contacts/{contact_id}/contact-info
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/contacts/{contact_id}/contact-info",
+    response_model=CreateContactInfoResponse,
+    status_code=201,
+)
+async def create_contact_info(
+    contact_id: UUID,
+    request: CreateContactInfoRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CreateContactInfoResponse:
+    """Add a contact_info entry (email, telegram, phone, etc.) to a contact."""
+    pool = _pool(db)
+
+    # Verify contact exists
+    existing = await pool.fetchrow(
+        "SELECT id FROM contacts WHERE id = $1 AND archived_at IS NULL",
+        contact_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO shared.contact_info (contact_id, type, value, is_primary)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, contact_id, type, value, is_primary, secured
+        """,
+        contact_id,
+        request.type,
+        request.value,
+        request.is_primary,
+    )
+
+    return CreateContactInfoResponse(
+        id=row["id"],
+        contact_id=row["contact_id"],
+        type=row["type"],
+        value=row["value"],
+        is_primary=row["is_primary"],
+        secured=row["secured"],
     )
 
 

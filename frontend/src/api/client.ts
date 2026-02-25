@@ -110,6 +110,8 @@ import type {
   ContactMergeRequest,
   ContactMergeResponse,
   ContactPatchRequest,
+  CreateContactInfoRequest,
+  CreateContactInfoResponse,
   OwnerSetupStatus,
 } from "./types.ts";
 
@@ -753,6 +755,17 @@ export function confirmContact(contactId: string): Promise<ContactDetail> {
 /** Get owner identity setup status. */
 export function getOwnerSetupStatus(): Promise<OwnerSetupStatus> {
   return apiFetch<OwnerSetupStatus>("/relationship/owner/setup-status");
+}
+
+/** Add a contact_info entry (email, telegram, etc.) to a contact. */
+export function createContactInfo(
+  contactId: string,
+  request: CreateContactInfoRequest,
+): Promise<CreateContactInfoResponse> {
+  return apiFetch<CreateContactInfoResponse>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/contact-info`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
 }
 
 /** Build URLSearchParams from group query parameters. */

@@ -739,8 +739,26 @@ export interface ContactMergeResponse {
 
 /** Response for GET /owner/setup-status. */
 export interface OwnerSetupStatus {
+  contact_id: string | null;
   has_telegram: boolean;
   has_email: boolean;
+}
+
+/** Request body for POST /contacts/{id}/contact-info. */
+export interface CreateContactInfoRequest {
+  type: string;
+  value: string;
+  is_primary?: boolean;
+}
+
+/** Response for POST /contacts/{id}/contact-info. */
+export interface CreateContactInfoResponse {
+  id: string;
+  contact_id: string;
+  type: string;
+  value: string;
+  is_primary: boolean;
+  secured: boolean;
 }
 
 /** A contact group. */
