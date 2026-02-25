@@ -760,7 +760,6 @@ export interface Note {
   contact_id: string;
   content: string;
   created_at: string;
-  updated_at: string;
 }
 
 /** An interaction record for a contact. */

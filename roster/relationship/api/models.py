@@ -125,7 +125,6 @@ class Note(BaseModel):
     contact_id: UUID
     content: str
     created_at: datetime
-    updated_at: datetime
 
 
 class Interaction(BaseModel):

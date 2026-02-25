@@ -952,7 +952,7 @@ async def list_contact_notes(
     pool = _pool(db)
     rows = await pool.fetch(
         """
-        SELECT id, contact_id, content, created_at, updated_at
+        SELECT id, contact_id, content, created_at
         FROM notes
         WHERE contact_id = $1
         ORDER BY created_at DESC
@@ -965,7 +965,6 @@ async def list_contact_notes(
             contact_id=r["contact_id"],
             content=r["content"],
             created_at=r["created_at"],
-            updated_at=r["updated_at"],
         )
         for r in rows
     ]
