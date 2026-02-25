@@ -209,7 +209,7 @@ async def _resolve_target_contact(
     return await resolve_contact_by_channel(pool, channel_type, channel_value)
 
 
-def apply_approval_gates(
+async def apply_approval_gates(
     mcp: Any,
     approval_config: ApprovalConfig | None,
     pool: Any,
@@ -244,7 +244,7 @@ def apply_approval_gates(
         return {}
 
     # Get the registered tools dict from FastMCP's tool manager
-    registered_tools = mcp._tool_manager.get_tools()
+    registered_tools = await mcp._tool_manager.get_tools()
 
     originals: dict[str, Any] = {}
 

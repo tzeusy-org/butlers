@@ -270,7 +270,10 @@ def _make_mock_mcp() -> MagicMock:
             self.name = name
             self.fn = fn
 
-    mock_mcp._tool_manager.get_tools.return_value = _tools_dict
+    async def get_tools():
+        return _tools_dict
+
+    mock_mcp._tool_manager.get_tools = get_tools
 
     def tool_decorator(*_args, **_kwargs):
         def decorator(fn):
@@ -447,9 +450,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("notify")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["notify"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["notify"].fn
         result = await wrapper(channel="telegram", recipient=OWNER_CHAT_ID, message="Hello owner")
 
         # Should execute immediately (not pending)
@@ -468,9 +471,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("notify")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["notify"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["notify"].fn
         await wrapper(channel="telegram", recipient=OWNER_CHAT_ID, message="Hello")
 
         # Find the inserted pending_action
@@ -492,9 +495,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("notify")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["notify"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["notify"].fn
         await wrapper(channel="telegram", recipient=OWNER_CHAT_ID, message="Hello")
 
         # Check INSERT args for decided_by
@@ -520,9 +523,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("email_send_message")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send_message"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send_message"].fn
         result = await wrapper(to=NON_OWNER_EMAIL, subject="Hi", body="Hello non-owner")
 
         assert result["status"] == "pending_approval"
@@ -544,9 +547,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("email_send_message")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send_message"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send_message"].fn
         result = await wrapper(to=NON_OWNER_EMAIL, subject="Hi", body="Hello")
 
         # Should execute via standing rule
@@ -567,9 +570,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("telegram_send_message")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["telegram_send_message"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["telegram_send_message"].fn
         result = await wrapper(chat_id="999999999", text="unknown target")
 
         assert result["status"] == "pending_approval"
@@ -590,9 +593,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("telegram_send_message")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["telegram_send_message"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["telegram_send_message"].fn
         result = await wrapper(chat_id="999999999", text="unknown target")
 
         # Unresolvable target → pend regardless of standing rules
@@ -610,9 +613,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("send_newsletter")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["send_newsletter"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["send_newsletter"].fn
         result = await wrapper(content="latest news")
 
         assert result["status"] == "pending_approval"
@@ -629,9 +632,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("notify")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["notify"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["notify"].fn
         await wrapper(channel="telegram", recipient=OWNER_CHAT_ID, message="Hi")
 
         event_types = [e["event_type"] for e in pool.approval_events]
@@ -655,9 +658,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("notify")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["notify"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["notify"].fn
         await wrapper(channel="telegram", recipient=OWNER_CHAT_ID, message="Hi")
 
         queued_events = [
@@ -679,9 +682,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("email_send_message")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send_message"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send_message"].fn
         await wrapper(to=NON_OWNER_EMAIL, subject="Hi", body="Hello")
 
         queued_events = [
@@ -705,9 +708,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("notify")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["notify"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["notify"].fn
         result = await wrapper(contact_id=str(OWNER_CONTACT_ID), message="Direct contact_id owner")
 
         assert result.get("status") == "sent"
@@ -725,9 +728,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("email_send_message")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send_message"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send_message"].fn
         result = await wrapper(to=NON_OWNER_EMAIL, subject="Hi", body="Hello")
 
         action_id = uuid.UUID(result["action_id"])
@@ -746,9 +749,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("telegram_send_message")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["telegram_send_message"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["telegram_send_message"].fn
         result = await wrapper(chat_id="999999", text="hi unknown")
 
         action_id = uuid.UUID(result["action_id"])
@@ -769,9 +772,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("email_send_message")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send_message"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send_message"].fn
         await wrapper(to=NON_OWNER_EMAIL, subject="Hi", body="Hello")
 
         rule = next((r for r in pool.approval_rules if r["id"] == rule_id), None)
@@ -791,9 +794,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("notify")
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["notify"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["notify"].fn
         await wrapper(channel="telegram", recipient=OWNER_CHAT_ID, message="Hi owner")
 
         rule = next((r for r in pool.approval_rules if r["id"] == rule_id), None)
@@ -812,9 +815,9 @@ class TestRoleBasedGating:
             return {"status": "sent"}
 
         config = _make_approval_config("telegram_send_message", risk_tier=ApprovalRiskTier.HIGH)
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["telegram_send_message"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["telegram_send_message"].fn
         result = await wrapper(chat_id="000000", text="test")
 
         assert result["status"] == "pending_approval"

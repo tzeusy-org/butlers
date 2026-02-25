@@ -222,10 +222,10 @@ def _make_mock_mcp(tools: dict[str, Any] | None = None) -> MagicMock:
             self.name = name
             self.fn = fn
 
-    def get_tools():
+    async def get_tools():
         return _tools_dict
 
-    mock_mcp._tool_manager.get_tools.return_value = _tools_dict
+    mock_mcp._tool_manager.get_tools = get_tools
 
     def tool_decorator(*_decorator_args, **decorator_kwargs):
         declared_name = decorator_kwargs.get("name")
@@ -506,7 +506,7 @@ class TestApplyApprovalGates:
 
         config = _make_approval_config(gated_tools={})
 
-        originals = apply_approval_gates(mock_mcp, config, pool)
+        originals = await apply_approval_gates(mock_mcp, config, pool)
 
         # The tool should not appear in the originals dict (not wrapped)
         assert "safe_tool" not in originals
@@ -526,14 +526,14 @@ class TestApplyApprovalGates:
         )
 
         original_fn = tools["email_send"]
-        originals = apply_approval_gates(mock_mcp, config, pool)
+        originals = await apply_approval_gates(mock_mcp, config, pool)
 
         # The original should be preserved
         assert "email_send" in originals
         assert originals["email_send"] is original_fn
 
         # The tool in the MCP should now be the wrapper (different from original)
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         assert wrapper is not original_fn
 
     async def test_wrapped_tool_returns_pending_approval(self):
@@ -550,10 +550,10 @@ class TestApplyApprovalGates:
             gated_tools={"email_send": GatedToolConfig()},
         )
 
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
         # Call the wrapper
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         result = await wrapper(to="alice@example.com", body="hello")
 
         assert result["status"] == "pending_approval"
@@ -577,8 +577,8 @@ class TestApplyApprovalGates:
             gated_tools={"wire_transfer": GatedToolConfig(risk_tier=ApprovalRiskTier.HIGH)},
         )
 
-        apply_approval_gates(mock_mcp, config, pool)
-        wrapper = mock_mcp._tool_manager.get_tools()["wire_transfer"].fn
+        await apply_approval_gates(mock_mcp, config, pool)
+        wrapper = (await mock_mcp._tool_manager.get_tools())["wire_transfer"].fn
         result = await wrapper(to_account="acct_123", amount=10.0)
 
         assert result["status"] == "pending_approval"
@@ -598,9 +598,9 @@ class TestApplyApprovalGates:
             gated_tools={"email_send": GatedToolConfig()},
         )
 
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         result = await wrapper(to="alice@example.com", body="hello")
 
         # Verify it was persisted
@@ -626,9 +626,9 @@ class TestApplyApprovalGates:
             gated_tools={"email_send": GatedToolConfig()},
         )
 
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         result = await wrapper(to="alice@example.com")
 
         action_id = uuid.UUID(result["action_id"])
@@ -650,9 +650,9 @@ class TestApplyApprovalGates:
             default_expiry_hours=48,
         )
 
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         result = await wrapper(to="alice@example.com")
 
         action_id = uuid.UUID(result["action_id"])
@@ -670,9 +670,9 @@ class TestApplyApprovalGates:
             return {"status": "sent"}
 
         config = _make_approval_config(gated_tools={"email_send": GatedToolConfig()})
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         result = await wrapper(to="alice@example.com")
 
         action_id = uuid.UUID(result["action_id"])
@@ -702,9 +702,9 @@ class TestApplyApprovalGates:
         # Add a standing rule that matches
         pool.add_rule("email_send", arg_constraints={"to": "alice@example.com"})
 
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         result = await wrapper(to="alice@example.com", body="hello")
 
         # Should have been auto-approved and executed
@@ -726,9 +726,9 @@ class TestApplyApprovalGates:
         # Register alice as a known non-owner contact for role-based gating
         pool.register_contact("email", "alice@example.com", roles=["friend"])
         pool.add_rule("email_send", arg_constraints={"to": "alice@example.com"})
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         await wrapper(to="alice@example.com")
 
         event_types = {event["event_type"] for event in pool.approval_events}
@@ -753,9 +753,9 @@ class TestApplyApprovalGates:
         # Register alice as a known non-owner contact for role-based gating
         pool.register_contact("email", "alice@example.com", roles=["colleague"])
         rule_id = pool.add_rule("email_send", arg_constraints={})
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         await wrapper(to="alice@example.com")
 
         # The action should have been persisted and auto-approved
@@ -781,9 +781,9 @@ class TestApplyApprovalGates:
         # Register alice as a known non-owner contact for role-based gating
         pool.register_contact("email", "alice@example.com", roles=["friend"])
         rule_id = pool.add_rule("email_send", arg_constraints={})
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         await wrapper(to="alice@example.com")
 
         # Check that use_count was incremented
@@ -807,9 +807,9 @@ class TestApplyApprovalGates:
 
         # Rule only matches alice, but we'll call with bob
         pool.add_rule("email_send", arg_constraints={"to": "alice@example.com"})
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         result = await wrapper(to="bob@example.com")
 
         assert result["status"] == "pending_approval"
@@ -839,7 +839,7 @@ class TestApplyApprovalGates:
             },
         )
 
-        originals = apply_approval_gates(mock_mcp, config, pool)
+        originals = await apply_approval_gates(mock_mcp, config, pool)
 
         # Both gated tools should be wrapped
         assert "email_send" in originals
@@ -861,7 +861,7 @@ class TestApplyApprovalGates:
             gated_tools={"email_send": GatedToolConfig()},
         )
 
-        originals = apply_approval_gates(mock_mcp, config, pool)
+        originals = await apply_approval_gates(mock_mcp, config, pool)
 
         # Call the original directly
         result = await originals["email_send"](to="alice@example.com")
@@ -881,9 +881,9 @@ class TestApplyApprovalGates:
             gated_tools={"email_send": GatedToolConfig()},
         )
 
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         result = await wrapper(to="alice@example.com", body="hello")
 
         # Required fields
@@ -911,9 +911,9 @@ class TestApplyApprovalGates:
             gated_tools={"complex_tool": GatedToolConfig()},
         )
 
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["complex_tool"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["complex_tool"].fn
         result = await wrapper(name="test", count=42, tags=["a", "b"])
 
         action_id = uuid.UUID(result["action_id"])
@@ -936,7 +936,7 @@ class TestApplyApprovalGates:
             gated_tools={"email_send": GatedToolConfig()},
         )
 
-        originals = apply_approval_gates(mock_mcp, config, pool)
+        originals = await apply_approval_gates(mock_mcp, config, pool)
         assert originals == {}
 
     async def test_none_approval_config_no_wrapping(self):
@@ -949,7 +949,7 @@ class TestApplyApprovalGates:
         async def email_send(to: str) -> dict:
             return {"status": "sent"}
 
-        originals = apply_approval_gates(mock_mcp, None, pool)
+        originals = await apply_approval_gates(mock_mcp, None, pool)
         assert originals == {}
 
     async def test_agent_summary_in_pending_action(self):
@@ -966,9 +966,9 @@ class TestApplyApprovalGates:
             gated_tools={"email_send": GatedToolConfig()},
         )
 
-        apply_approval_gates(mock_mcp, config, pool)
+        await apply_approval_gates(mock_mcp, config, pool)
 
-        wrapper = mock_mcp._tool_manager.get_tools()["email_send"].fn
+        wrapper = (await mock_mcp._tool_manager.get_tools())["email_send"].fn
         result = await wrapper(to="alice@example.com", body="hello")
 
         action_id = uuid.UUID(result["action_id"])

@@ -1302,7 +1302,7 @@ class ButlerDaemon:
         await self._register_module_tools()
 
         # 13b. Apply approval gates to configured gated tools
-        self._gated_tool_originals = self._apply_approval_gates()
+        self._gated_tool_originals = await self._apply_approval_gates()
 
         # 13c. Wire calendar overlap-approval enqueuer when both modules are loaded
         self._wire_calendar_approval_enqueuer()
@@ -4287,7 +4287,7 @@ class ButlerDaemon:
                     "Module '%s' disabled: tool registration failed: %s", mod.name, error_msg
                 )
 
-    def _apply_approval_gates(self) -> dict[str, Any]:
+    async def _apply_approval_gates(self) -> dict[str, Any]:
         """Parse approval config and wrap gated tools with approval interception.
 
         Parses the ``[modules.approvals]`` section from the butler config,
@@ -4303,7 +4303,7 @@ class ButlerDaemon:
             return {}
 
         pool = self.db.pool
-        originals = apply_approval_gates(self.mcp, approval_config, pool)
+        originals = await apply_approval_gates(self.mcp, approval_config, pool)
 
         for mod in self._active_modules:
             if mod.name == "approvals" and hasattr(mod, "set_approval_policy"):
@@ -4323,7 +4323,7 @@ class ButlerDaemon:
                     ) -> dict[str, Any]:
                         original_fn = _originals.get(tool_name)
                         if original_fn is None:
-                            tool_obj = self.mcp._tool_manager.get_tools().get(tool_name)
+                            tool_obj = (await self.mcp._tool_manager.get_tools()).get(tool_name)
                             if tool_obj is None:
                                 return {"error": f"No handler for tool: {tool_name}"}
                             original_fn = tool_obj.fn
