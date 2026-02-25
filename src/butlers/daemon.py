@@ -4217,7 +4217,7 @@ class ButlerDaemon:
         """
         validated: dict[str, Any] = {}
         # Keys consumed at the butler level (not part of module schemas)
-        _BUTLER_LEVEL_KEYS = {"credentials_env"}
+        _BUTLER_LEVEL_KEYS = {"credentials_env", "enabled"}
         for mod in self._modules:
             raw_config = {
                 k: v

@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastmcp.server.dependencies import AccessToken, get_access_token
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from butlers.config import ApprovalConfig, ApprovalRiskTier
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
@@ -71,7 +71,14 @@ def validate_transition(current: ActionStatus, target: ActionStatus) -> None:
 
 
 class ApprovalsConfig(BaseModel):
-    """Configuration for the Approvals module."""
+    """Configuration for the Approvals module.
+
+    Extra fields (default_expiry_hours, default_risk_tier, gated_tools) are
+    consumed by the daemon's approval-gate wiring via parse_approval_config()
+    and are intentionally ignored here.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     default_limit: int = 50
 

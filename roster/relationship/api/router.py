@@ -1076,7 +1076,7 @@ async def list_contact_gifts(
     pool = _pool(db)
     rows = await pool.fetch(
         """
-        SELECT id, contact_id, description, direction, occasion, date, value, created_at
+        SELECT id, contact_id, description, occasion, status, created_at, updated_at
         FROM gifts
         WHERE contact_id = $1
         ORDER BY created_at DESC
@@ -1088,11 +1088,10 @@ async def list_contact_gifts(
             id=r["id"],
             contact_id=r["contact_id"],
             description=r["description"],
-            direction=r["direction"],
             occasion=r["occasion"],
-            date=r["date"],
-            value=float(r["value"]) if r["value"] is not None else None,
+            status=r["status"],
             created_at=r["created_at"],
+            updated_at=r["updated_at"],
         )
         for r in rows
     ]
@@ -1112,8 +1111,8 @@ async def list_contact_loans(
     pool = _pool(db)
     rows = await pool.fetch(
         """
-        SELECT id, contact_id, description, direction, amount, currency,
-               status, date, due_date, created_at
+        SELECT id, contact_id, amount, direction, description,
+               settled, created_at, settled_at
         FROM loans
         WHERE contact_id = $1
         ORDER BY created_at DESC
@@ -1124,14 +1123,12 @@ async def list_contact_loans(
         Loan(
             id=r["id"],
             contact_id=r["contact_id"],
-            description=r["description"],
-            direction=r["direction"],
             amount=float(r["amount"]),
-            currency=r["currency"],
-            status=r["status"],
-            date=r["date"],
-            due_date=r["due_date"],
+            direction=r["direction"],
+            description=r["description"],
+            settled=r["settled"],
             created_at=r["created_at"],
+            settled_at=r["settled_at"],
         )
         for r in rows
     ]

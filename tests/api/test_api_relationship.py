@@ -12,7 +12,7 @@ import importlib.util
 import json
 import sys
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -563,17 +563,17 @@ def test_list_contact_gifts():
     """GET /contacts/{id}/gifts returns gifts."""
     cid = uuid4()
     gid = uuid4()
+    now = datetime(2025, 1, 15, tzinfo=UTC)
     app = _app_with_mock_db(
         fetch_rows=[
             {
                 "id": gid,
                 "contact_id": cid,
                 "description": "Coffee mug",
-                "direction": "given",
                 "occasion": "Birthday",
-                "date": date(2025, 1, 15),
-                "value": 25.0,
-                "created_at": datetime(2025, 1, 15, tzinfo=UTC),
+                "status": "idea",
+                "created_at": now,
+                "updated_at": now,
             }
         ]
     )
@@ -585,6 +585,7 @@ def test_list_contact_gifts():
     data = resp.json()
     assert len(data) == 1
     assert data[0]["description"] == "Coffee mug"
+    assert data[0]["status"] == "idea"
 
 
 # ---------------------------------------------------------------------------
@@ -601,14 +602,12 @@ def test_list_contact_loans():
             {
                 "id": lid,
                 "contact_id": cid,
-                "description": "Book: Clean Code",
+                "amount": 35.0,
                 "direction": "lent",
-                "amount": 0.0,
-                "currency": "USD",
-                "status": "active",
-                "date": date(2025, 1, 1),
-                "due_date": None,
+                "description": "Book: Clean Code",
+                "settled": False,
                 "created_at": datetime(2025, 1, 1, tzinfo=UTC),
+                "settled_at": None,
             }
         ]
     )
@@ -620,6 +619,7 @@ def test_list_contact_loans():
     data = resp.json()
     assert len(data) == 1
     assert data[0]["description"] == "Book: Clean Code"
+    assert data[0]["settled"] is False
 
 
 # ---------------------------------------------------------------------------

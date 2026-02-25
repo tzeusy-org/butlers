@@ -192,19 +192,19 @@ def test_gift():
     """Gift model."""
     gid = uuid4()
     cid = uuid4()
+    now = datetime(2025, 1, 15, tzinfo=UTC)
     gift = Gift(
         id=gid,
         contact_id=cid,
         description="Coffee mug",
-        direction="given",
         occasion="Birthday",
-        date=date(2025, 1, 15),
-        value=25.0,
-        created_at=datetime(2025, 1, 15, tzinfo=UTC),
+        status="idea",
+        created_at=now,
+        updated_at=now,
     )
     assert gift.description == "Coffee mug"
-    assert gift.direction == "given"
-    assert gift.value == 25.0
+    assert gift.status == "idea"
+    assert gift.occasion == "Birthday"
 
 
 # ---------------------------------------------------------------------------
@@ -219,18 +219,15 @@ def test_loan():
     loan = Loan(
         id=lid,
         contact_id=cid,
-        description="Book: Clean Code",
-        direction="lent",
         amount=35.0,
-        currency="USD",
-        status="active",
-        date=date(2025, 1, 1),
-        due_date=date(2025, 2, 1),
+        direction="lent",
+        description="Book: Clean Code",
+        settled=False,
         created_at=datetime(2025, 1, 1, tzinfo=UTC),
     )
     assert loan.description == "Book: Clean Code"
     assert loan.amount == 35.0
-    assert loan.status == "active"
+    assert loan.settled is False
 
 
 # ---------------------------------------------------------------------------

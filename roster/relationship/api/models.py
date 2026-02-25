@@ -165,11 +165,10 @@ class Gift(BaseModel):
     id: UUID
     contact_id: UUID
     description: str
-    direction: str  # "given" or "received"
     occasion: str | None = None
-    date: date
-    value: float | None = None
+    status: str = "idea"  # idea, purchased, wrapped, given, thanked
     created_at: datetime
+    updated_at: datetime
 
 
 class Loan(BaseModel):
@@ -177,14 +176,12 @@ class Loan(BaseModel):
 
     id: UUID
     contact_id: UUID
-    description: str
-    direction: str  # "lent" or "borrowed"
     amount: float
-    currency: str = "USD"
-    status: str = "active"  # active, repaid, forgiven
-    date: date
-    due_date: date | None = None
+    direction: str  # "lent" or "borrowed"
+    description: str | None = None
+    settled: bool = False
     created_at: datetime
+    settled_at: datetime | None = None
 
 
 class UpcomingDate(BaseModel):
