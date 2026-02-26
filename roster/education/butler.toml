@@ -1,0 +1,61 @@
+[butler]
+name = "education"
+port = 40107
+description = "Personalized tutor with spaced repetition, mind maps, and adaptive learning"
+
+[butler.runtime]
+model = "claude-opus-4-6"
+max_concurrent_sessions = 3
+
+[runtime]
+type = "claude-code"
+
+[butler.db]
+name = "butlers"
+schema = "education"
+
+[butler.switchboard]
+url = "http://localhost:40100/mcp"
+advertise = true
+liveness_ttl_s = 300
+route_contract_min = "route.v1"
+route_contract_max = "route.v1"
+
+[[butler.schedule]]
+name = "nightly-analytics"
+cron = "0 3 * * *"
+dispatch_mode = "prompt"
+prompt = """
+Compute and persist nightly analytics snapshots for all active mind maps. For each active mind
+map: aggregate total_nodes, mastered_nodes, learning_nodes, struggling_nodes, mastery_rate,
+retention_rate_7d, velocity_nodes_per_week, and estimated_completion_days. Write each snapshot
+to analytics_snapshots with snapshot_date=today. Skip maps with no activity in the past 30 days.
+"""
+
+[[butler.schedule]]
+name = "weekly-progress-digest"
+cron = "0 9 * * 0"
+dispatch_mode = "prompt"
+prompt = """
+Generate and send a weekly learning progress digest for the user. Read analytics snapshots for the
+past 7 days across all active mind maps. Identify trends (velocity, retention rates, struggling
+areas). Highlight achievements (nodes mastered, streaks, improvements). Flag any areas where
+retention_rate_7d < 0.60 or struggling_nodes >= 3. Compose a structured summary and deliver via
+notify() using the owner contact's preferred channel.
+"""
+
+[[butler.schedule]]
+name = "weekly-stale-flow-check"
+cron = "0 4 * * 1"
+dispatch_mode = "prompt"
+prompt = """
+Check for stale teaching flows and clean up associated pending review schedules. A flow is stale
+if last_session_at is more than 30 days ago and status is not completed or abandoned. For each
+stale flow: transition status to abandoned, call spaced_repetition_schedule_cleanup() to remove
+pending review schedules, and store a memory fact recording the abandonment.
+"""
+
+[modules.memory]
+
+[modules.contacts]
+provider = "google"
