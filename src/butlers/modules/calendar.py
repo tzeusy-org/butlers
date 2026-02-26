@@ -5659,6 +5659,16 @@ class CalendarModule(Module):
                     sync_token=None,
                     full_sync_window_days=config.sync.full_sync_window_days,
                 )
+            except CalendarRequestError as exc:
+                if exc.status_code == 404:
+                    logger.warning(
+                        "Calendar '%s' not found (404); deregistering from sync", calendar_id
+                    )
+                    self._all_provider_calendar_ids = [
+                        cid for cid in self._all_provider_calendar_ids if cid != calendar_id
+                    ]
+                    return
+                raise
             except CalendarAuthError as exc:
                 logger.error(
                     "Full re-sync failed for calendar '%s': %s",
@@ -5702,6 +5712,16 @@ class CalendarModule(Module):
                 )
                 await self._project_internal_sources()
                 return
+        except CalendarRequestError as exc:
+            if exc.status_code == 404:
+                logger.warning(
+                    "Calendar '%s' not found (404); deregistering from sync", calendar_id
+                )
+                self._all_provider_calendar_ids = [
+                    cid for cid in self._all_provider_calendar_ids if cid != calendar_id
+                ]
+                return
+            raise
         except CalendarAuthError as exc:
             logger.error(
                 "Incremental sync failed for calendar '%s': %s",
