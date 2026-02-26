@@ -243,9 +243,7 @@ class ContactBackfillWriter:
         tables = ("addresses", "important_dates", "labels", "contact_labels", "activity_feed")
         flags: dict[str, bool] = {}
         for tbl in tables:
-            row = await self._pool.fetchrow(
-                "SELECT to_regclass($1) IS NOT NULL AS exists", tbl
-            )
+            row = await self._pool.fetchrow("SELECT to_regclass($1) IS NOT NULL AS exists", tbl)
             flags[tbl] = bool(row and row["exists"])
         self._table_flags = flags
 

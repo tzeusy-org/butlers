@@ -198,6 +198,21 @@ async def test_fan_out_subset(mock_create: AsyncMock, mgr: DatabaseManager) -> N
 
 
 @patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_fan_out_empty_list_queries_none(
+    mock_create: AsyncMock, mgr: DatabaseManager
+) -> None:
+    """butler_names=[] queries no butlers (not a fallback to all)."""
+    pool_a = _make_mock_pool()
+    mock_create.return_value = pool_a
+    await mgr.add_butler("alpha")
+
+    results = await mgr.fan_out("SELECT 1", butler_names=[])
+
+    pool_a.fetch.assert_not_called()
+    assert results == {}
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
 async def test_fan_out_handles_query_failure(
     mock_create: AsyncMock, mgr: DatabaseManager, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -283,6 +298,44 @@ async def test_credential_shared_pool_raises_when_unset(mgr: DatabaseManager) ->
     """Accessing shared credential pool before configuration raises KeyError."""
     with pytest.raises(KeyError, match="Shared credential pool"):
         mgr.credential_shared_pool()
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_butlers_with_module_returns_matching(
+    mock_create: AsyncMock, mgr: DatabaseManager
+) -> None:
+    """butlers_with_module returns only butlers that have the module enabled."""
+    mock_create.return_value = _make_mock_pool()
+    await mgr.add_butler("general", modules=frozenset({"calendar", "contacts"}))
+    await mgr.add_butler("education", modules=frozenset({"memory", "contacts"}))
+    await mgr.add_butler("health", modules=frozenset({"calendar", "memory"}))
+
+    result = mgr.butlers_with_module("calendar")
+    assert result == ["general", "health"]
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_butlers_with_module_returns_none_when_no_metadata(
+    mock_create: AsyncMock, mgr: DatabaseManager
+) -> None:
+    """butlers_with_module returns None when no module metadata was registered."""
+    mock_create.return_value = _make_mock_pool()
+    await mgr.add_butler("general")  # no modules kwarg
+
+    result = mgr.butlers_with_module("calendar")
+    assert result is None
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_butlers_with_module_empty_when_no_match(
+    mock_create: AsyncMock, mgr: DatabaseManager
+) -> None:
+    """butlers_with_module returns an empty list when no butlers have the module."""
+    mock_create.return_value = _make_mock_pool()
+    await mgr.add_butler("education", modules=frozenset({"memory", "contacts"}))
+
+    result = mgr.butlers_with_module("calendar")
+    assert result == []
 
 
 @patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)

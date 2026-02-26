@@ -350,7 +350,10 @@ async def _fetch_sources(
         ORDER BY s.lane, s.source_kind, s.source_key
     """
 
-    query_targets = sorted(set(butlers)) if butlers else None
+    if butlers:
+        query_targets: list[str] | None = sorted(set(butlers))
+    else:
+        query_targets = db.butlers_with_module("calendar")
     results = await db.fan_out(query, tuple(args), butler_names=query_targets)
     flattened: list[dict[str, Any]] = []
     for butler_name, rows in results.items():
@@ -445,7 +448,10 @@ async def _fetch_workspace_rows(
         ORDER BY i.starts_at ASC, i.id ASC
     """
 
-    query_targets = sorted(set(butlers)) if butlers else None
+    if butlers:
+        query_targets: list[str] | None = sorted(set(butlers))
+    else:
+        query_targets = db.butlers_with_module("calendar")
     results = await db.fan_out(query, tuple(args), butler_names=query_targets)
     flattened: list[dict[str, Any]] = []
     for butler_name, rows in results.items():
@@ -644,9 +650,7 @@ async def get_workspace(
 
     noisy: set[tuple[str, str]] = {k for k, v in day_title_counts.items() if v > 20}
     if noisy:
-        entries = [
-            e for e in entries if (e.start_at.date().isoformat(), e.title) not in noisy
-        ]
+        entries = [e for e in entries if (e.start_at.date().isoformat(), e.title) not in noisy]
 
     data = CalendarWorkspaceReadResponse(
         entries=entries,
