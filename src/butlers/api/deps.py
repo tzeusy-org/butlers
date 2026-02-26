@@ -360,7 +360,7 @@ async def init_db_manager(
                 cfg.name,
                 db_name=effective_db_name,
                 db_schema=cfg.db_schema,
-                modules=cfg.modules if cfg.modules else None,
+                modules=cfg.modules,
             )
         except Exception:
             logger.warning("Failed to add DB pool for butler %s", cfg.name, exc_info=True)

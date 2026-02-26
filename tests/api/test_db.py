@@ -198,6 +198,21 @@ async def test_fan_out_subset(mock_create: AsyncMock, mgr: DatabaseManager) -> N
 
 
 @patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
+async def test_fan_out_empty_list_queries_none(
+    mock_create: AsyncMock, mgr: DatabaseManager
+) -> None:
+    """butler_names=[] queries no butlers (not a fallback to all)."""
+    pool_a = _make_mock_pool()
+    mock_create.return_value = pool_a
+    await mgr.add_butler("alpha")
+
+    results = await mgr.fan_out("SELECT 1", butler_names=[])
+
+    pool_a.fetch.assert_not_called()
+    assert results == {}
+
+
+@patch("butlers.api.db.asyncpg.create_pool", new_callable=AsyncMock)
 async def test_fan_out_handles_query_failure(
     mock_create: AsyncMock, mgr: DatabaseManager, caplog: pytest.LogCaptureFixture
 ) -> None:

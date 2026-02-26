@@ -206,7 +206,7 @@ class DatabaseManager:
             specific butler, that butler's entry will be an empty list and the
             error is logged.
         """
-        targets = butler_names or self.butler_names
+        targets = butler_names if butler_names is not None else self.butler_names
 
         async def _query_one(name: str) -> tuple[str, list[asyncpg.Record]]:
             try:
