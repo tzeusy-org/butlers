@@ -49,6 +49,7 @@ class DatabaseManager:
         self._max_pool_size = max_pool_size
         self._pools: dict[str, asyncpg.Pool] = {}
         self._shared_pool: asyncpg.Pool | None = None
+        self._butler_modules: dict[str, frozenset[str]] = {}
 
     async def _create_pool(
         self,
@@ -90,6 +91,7 @@ class DatabaseManager:
         butler_name: str,
         db_name: str | None = None,
         db_schema: str | None = None,
+        modules: frozenset[str] | None = None,
     ) -> None:
         """Add a butler database connection pool.
 
@@ -101,6 +103,10 @@ class DatabaseManager:
             The database name. Defaults to butler_name if not provided.
         db_schema:
             Optional schema name for one-db multi-schema topology.
+        modules:
+            Optional set of module names enabled for this butler (e.g.
+            ``frozenset({"calendar", "email"})``). Used by
+            ``butlers_with_module()`` to filter fan_out targets.
         """
         if butler_name in self._pools:
             logger.warning("Butler %s already has a pool; skipping", butler_name)
@@ -113,6 +119,8 @@ class DatabaseManager:
             schema=db_schema,
         )
         self._pools[butler_name] = pool
+        if modules is not None:
+            self._butler_modules[butler_name] = modules
         logger.info(
             "Added pool for butler: %s (db=%s, schema=%s)",
             butler_name,
@@ -151,6 +159,28 @@ class DatabaseManager:
     def butler_names(self) -> list[str]:
         """Return list of all registered butler names."""
         return list(self._pools.keys())
+
+    def butlers_with_module(self, module_name: str) -> list[str] | None:
+        """Return butler names that have *module_name* enabled, or None if unknown.
+
+        Returns ``None`` when no module metadata has been registered (e.g. in
+        tests or legacy deployments), so callers can fall back to querying all
+        butlers rather than silently returning an empty list.
+
+        Parameters
+        ----------
+        module_name:
+            The module key to filter by (e.g. ``"calendar"``).
+
+        Returns
+        -------
+        list[str] | None
+            Sorted list of butler names with the module enabled, or ``None`` if
+            module metadata is not available.
+        """
+        if not self._butler_modules:
+            return None
+        return sorted(name for name, mods in self._butler_modules.items() if module_name in mods)
 
     async def fan_out(
         self,

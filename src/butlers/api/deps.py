@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,6 +45,7 @@ class ButlerConnectionInfo:
     description: str | None = None
     db_name: str | None = None
     db_schema: str | None = None
+    modules: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def sse_url(self) -> str:
@@ -217,6 +218,7 @@ def discover_butlers(
                     description=config.description,
                     db_name=config.db_name or None,
                     db_schema=config.db_schema or None,
+                    modules=frozenset(config.modules.keys()),
                 )
             )
         except ConfigError as exc:
@@ -358,6 +360,7 @@ async def init_db_manager(
                 cfg.name,
                 db_name=effective_db_name,
                 db_schema=cfg.db_schema,
+                modules=cfg.modules if cfg.modules else None,
             )
         except Exception:
             logger.warning("Failed to add DB pool for butler %s", cfg.name, exc_info=True)

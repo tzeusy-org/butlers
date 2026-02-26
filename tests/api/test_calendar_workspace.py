@@ -114,9 +114,13 @@ def _build_app(
     workspace_rows: dict[str, list[dict]] | None = None,
     source_rows: dict[str, list[dict]] | None = None,
     mcp_clients: dict[str, AsyncMock] | None = None,
+    calendar_butlers: list[str] | None = None,
 ) -> tuple:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["general", "relationship"]
+    # When calendar_butlers is provided, simulate module-aware filtering.
+    # When None, simulate a deployment with no module metadata (legacy).
+    mock_db.butlers_with_module = MagicMock(return_value=calendar_butlers)
 
     async def _fan_out(query: str, args=(), butler_names=None):
         if "FROM calendar_event_instances AS i" in query:
@@ -128,7 +132,11 @@ def _build_app(
             if "s.source_key = ANY" in query and args and isinstance(args[-1], list):
                 want_sources = set(args[-1])
 
-            for butler, rows in (workspace_rows or {}).items():
+            rows_to_scan = workspace_rows or {}
+            if butler_names is not None:
+                rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
+
+            for butler, rows in rows_to_scan.items():
                 filtered = []
                 for row in rows:
                     row_butler = row.get("butler_name")
@@ -141,7 +149,10 @@ def _build_app(
                 result[butler] = filtered
             return result
         if "FROM calendar_sources AS s" in query:
-            return source_rows or {}
+            rows_to_scan = source_rows or {}
+            if butler_names is not None:
+                rows_to_scan = {k: v for k, v in rows_to_scan.items() if k in butler_names}
+            return rows_to_scan
         return {}
 
     mock_db.fan_out = AsyncMock(side_effect=_fan_out)
@@ -719,3 +730,164 @@ class TestCalendarWorkspaceButlerEvents:
         assert mock_client.call_tool.await_count == 2
         assert mock_client.call_tool.await_args_list[0].args[0] == "calendar_toggle_butler_event"
         assert mock_client.call_tool.await_args_list[1].args[0] == "calendar_sync_status"
+
+
+class TestCalendarFanOutModuleFiltering:
+    """fan_out is restricted to butlers with the calendar module enabled."""
+
+    async def test_workspace_read_skips_non_calendar_butlers(self):
+        """When module metadata is available, fan_out excludes non-calendar butlers."""
+        calendar_row = _workspace_event_row(
+            lane="user",
+            source_key="provider:google:primary",
+            source_kind="provider_event",
+            butler_name=None,
+            calendar_id="primary",
+            metadata={"source_type": "provider_event"},
+        )
+        # general has calendar, education does NOT
+        app, mock_db, _ = _build_app(
+            workspace_rows={"general": [calendar_row], "education": []},
+            calendar_butlers=["general"],
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/calendar/workspace",
+                params={
+                    "view": "user",
+                    "start": "2026-02-22T00:00:00Z",
+                    "end": "2026-02-23T00:00:00Z",
+                },
+            )
+
+        assert resp.status_code == 200
+        # fan_out should have been called with butler_names=["general"] (not education)
+        fan_out_calls = mock_db.fan_out.call_args_list
+        for call in fan_out_calls:
+            _, kwargs = call
+            butler_names_arg = kwargs.get(
+                "butler_names", call.args[2] if len(call.args) > 2 else None
+            )
+            if butler_names_arg is not None:
+                assert "education" not in butler_names_arg, (
+                    f"education was unexpectedly included in fan_out targets: {butler_names_arg}"
+                )
+
+    async def test_workspace_meta_skips_non_calendar_butlers(self):
+        """Meta endpoint fan_out excludes non-calendar butlers via module filter."""
+        source_row = _workspace_source_row(
+            source_key="provider:google:primary",
+            source_kind="provider_event",
+            lane="user",
+            butler_name=None,
+            provider="google",
+            calendar_id="primary",
+            writable=True,
+        )
+        app, mock_db, _ = _build_app(
+            source_rows={"general": [source_row], "education": []},
+            calendar_butlers=["general"],
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/calendar/workspace/meta")
+
+        assert resp.status_code == 200
+        fan_out_calls = mock_db.fan_out.call_args_list
+        for call in fan_out_calls:
+            _, kwargs = call
+            butler_names_arg = kwargs.get(
+                "butler_names", call.args[2] if len(call.args) > 2 else None
+            )
+            if butler_names_arg is not None:
+                assert "education" not in butler_names_arg
+
+    async def test_workspace_read_falls_back_to_all_butlers_when_no_module_metadata(self):
+        """When butlers_with_module returns None (no metadata), fan_out queries all butlers."""
+        calendar_row = _workspace_event_row(
+            lane="user",
+            source_key="provider:google:primary",
+            source_kind="provider_event",
+            butler_name=None,
+            calendar_id="primary",
+            metadata={"source_type": "provider_event"},
+        )
+        # calendar_butlers=None simulates no module metadata available
+        app, mock_db, _ = _build_app(
+            workspace_rows={"general": [calendar_row]},
+            calendar_butlers=None,
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/calendar/workspace",
+                params={
+                    "view": "user",
+                    "start": "2026-02-22T00:00:00Z",
+                    "end": "2026-02-23T00:00:00Z",
+                },
+            )
+
+        assert resp.status_code == 200
+        # When module metadata is unavailable, butler_names arg in fan_out should be None
+        # (meaning query all butlers)
+        fan_out_calls = mock_db.fan_out.call_args_list
+        instance_calls = [
+            c
+            for c in fan_out_calls
+            if "FROM calendar_event_instances" in (c.args[0] if c.args else "")
+        ]
+        # At least one fan_out call for instances; it should pass butler_names=None
+        assert len(instance_calls) >= 1
+        for call in instance_calls:
+            butler_names_arg = call.kwargs.get("butler_names")
+            assert butler_names_arg is None, (
+                f"Expected butler_names=None (all butlers) but got {butler_names_arg}"
+            )
+
+    async def test_workspace_explicit_butler_filter_overrides_module_filter(self):
+        """An explicit ?butlers= query param takes precedence over module filtering."""
+        general_row = _workspace_event_row(
+            lane="butler",
+            source_key="internal_scheduler:general",
+            source_kind="internal_scheduler",
+            butler_name="general",
+            metadata={"source_type": "internal_scheduler"},
+        )
+        health_row = _workspace_event_row(
+            lane="butler",
+            source_key="internal_scheduler:health",
+            source_kind="internal_scheduler",
+            butler_name="health",
+            metadata={"source_type": "internal_scheduler"},
+        )
+        # calendar_butlers reports general+health, but user only requests general
+        app, _, _ = _build_app(
+            workspace_rows={"general": [general_row], "health": [health_row]},
+            calendar_butlers=["general", "health"],
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/calendar/workspace",
+                params={
+                    "view": "butler",
+                    "start": "2026-02-22T00:00:00Z",
+                    "end": "2026-02-23T00:00:00Z",
+                    "butlers": ["general"],
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()["data"]
+        assert len(body["entries"]) == 1
+        assert body["entries"][0]["butler_name"] == "general"

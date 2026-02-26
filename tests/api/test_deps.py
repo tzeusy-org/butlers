@@ -300,6 +300,38 @@ class TestDiscoverButlers:
         assert result[0].db_name == "butlers"
         assert result[0].db_schema == "general"
 
+    def test_discover_includes_modules(self, tmp_path: Path):
+        """Module names from butler.toml are surfaced in ButlerConnectionInfo.modules."""
+        d = tmp_path / "general"
+        d.mkdir()
+        (d / "butler.toml").write_text(
+            '[butler]\nname = "general"\nport = 40101\n'
+            '[butler.db]\nname = "butlers"\nschema = "general"\n'
+            '[runtime]\ntype = "claude-code"\n'
+            '[modules.calendar]\nprovider = "google"\n'
+            "[modules.memory]\n"
+        )
+
+        result = discover_butlers(roster_dir=tmp_path)
+
+        assert len(result) == 1
+        assert result[0].modules == frozenset({"calendar", "memory"})
+
+    def test_discover_modules_empty_when_none_configured(self, tmp_path: Path):
+        """Butlers with no [modules.*] sections have an empty modules frozenset."""
+        d = tmp_path / "education"
+        d.mkdir()
+        (d / "butler.toml").write_text(
+            '[butler]\nname = "education"\nport = 40107\n'
+            '[butler.db]\nname = "butlers"\nschema = "education"\n'
+            '[runtime]\ntype = "claude-code"\n'
+        )
+
+        result = discover_butlers(roster_dir=tmp_path)
+
+        assert len(result) == 1
+        assert result[0].modules == frozenset()
+
 
 class TestInitDbManager:
     async def test_one_db_topology_uses_shared_schema_pool(self, monkeypatch: pytest.MonkeyPatch):
@@ -345,8 +377,12 @@ class TestInitDbManager:
         finally:
             deps_mod._db_manager = original_db_manager
 
-        mgr.add_butler.assert_any_await("general", db_name="butlers", db_schema="general")
-        mgr.add_butler.assert_any_await("switchboard", db_name="butlers", db_schema="switchboard")
+        mgr.add_butler.assert_any_await(
+            "general", db_name="butlers", db_schema="general", modules=None
+        )
+        mgr.add_butler.assert_any_await(
+            "switchboard", db_name="butlers", db_schema="switchboard", modules=None
+        )
         mgr.set_credential_shared_pool.assert_awaited_once_with("butlers", db_schema="shared")
 
 
