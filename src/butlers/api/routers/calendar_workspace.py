@@ -452,7 +452,22 @@ async def _fetch_workspace_rows(
             payload = dict(row)
             payload["db_butler"] = butler_name
             flattened.append(payload)
-    return flattened
+
+    # Deduplicate across butler databases: the same Google Calendar event
+    # is synced into every butler's projection tables.  Keep only one
+    # instance per (origin_instance_ref, source_kind, calendar_id) tuple.
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for row in flattened:
+        instance_ref = row.get("origin_instance_ref") or ""
+        source_kind = row.get("source_kind") or ""
+        calendar_id = row.get("calendar_id") or ""
+        key = (instance_ref, source_kind, calendar_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
 
 
 def _normalize_entry(
