@@ -6,7 +6,6 @@ Re-exports all public symbols from the education tool sub-modules so that
 
 from __future__ import annotations
 
-from butlers.tools.education._helpers import _row_to_dict
 from butlers.tools.education.mind_map_edges import (
     mind_map_edge_create,
     mind_map_edge_delete,
@@ -29,8 +28,6 @@ from butlers.tools.education.mind_maps import (
 )
 
 __all__ = [
-    # helpers
-    "_row_to_dict",
     # mind map CRUD
     "mind_map_create",
     "mind_map_get",

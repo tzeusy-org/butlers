@@ -36,7 +36,7 @@ async def mind_map_create(pool: asyncpg.Pool, title: str) -> str:
 
 
 async def mind_map_get(pool: asyncpg.Pool, mind_map_id: str) -> dict[str, Any] | None:
-    """Retrieve a mind map by ID.
+    """Retrieve a mind map by ID, including its nodes and edges.
 
     Parameters
     ----------
@@ -48,7 +48,8 @@ async def mind_map_get(pool: asyncpg.Pool, mind_map_id: str) -> dict[str, Any] |
     Returns
     -------
     dict or None
-        The mind map row as a dict, or None if not found.
+        The mind map row as a dict with ``nodes`` (list of node dicts) and
+        ``edges`` (list of edge dicts) fields, or None if not found.
     """
     row = await pool.fetchrow(
         "SELECT * FROM education.mind_maps WHERE id = $1",
@@ -56,7 +57,31 @@ async def mind_map_get(pool: asyncpg.Pool, mind_map_id: str) -> dict[str, Any] |
     )
     if row is None:
         return None
-    return _row_to_dict(row)
+    result = _row_to_dict(row)
+
+    node_rows = await pool.fetch(
+        """
+        SELECT * FROM education.mind_map_nodes
+        WHERE mind_map_id = $1
+        ORDER BY depth ASC, label ASC
+        """,
+        mind_map_id,
+    )
+    result["nodes"] = [_row_to_dict(nr) for nr in node_rows]
+
+    edge_rows = await pool.fetch(
+        """
+        SELECT parent_node_id::text, child_node_id::text, edge_type
+        FROM education.mind_map_edges e
+        JOIN education.mind_map_nodes n ON e.parent_node_id = n.id
+        WHERE n.mind_map_id = $1
+        ORDER BY e.parent_node_id, e.child_node_id
+        """,
+        mind_map_id,
+    )
+    result["edges"] = [dict(er) for er in edge_rows]
+
+    return result
 
 
 async def mind_map_list(

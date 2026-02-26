@@ -178,18 +178,43 @@ class TestMindMapCreate:
 
 
 class TestMindMapGet:
-    """mind_map_get returns a dict or None."""
+    """mind_map_get returns a dict with nodes and edges, or None."""
 
-    async def test_returns_dict_when_found(self) -> None:
+    async def test_returns_dict_with_nodes_and_edges(self) -> None:
         from butlers.tools.education import mind_map_get
 
         map_id = str(uuid.uuid4())
+        node_id = str(uuid.uuid4())
         row = _map_row(map_id=map_id, title="Physics")
-        pool = _make_pool(fetchrow_returns=[_make_row(row)])
+        node_row = _node_row(node_id=node_id, mind_map_id=map_id, label="Kinematics")
+        edge_row = {"parent_node_id": node_id, "child_node_id": node_id, "edge_type": "related"}
+        pool = _make_pool(
+            fetchrow_returns=[_make_row(row)],
+            fetch_returns=[[_make_row(node_row)], [_make_row(edge_row)]],
+        )
         result = await mind_map_get(pool, map_id)
         assert result is not None
         assert result["id"] == map_id
         assert result["title"] == "Physics"
+        assert "nodes" in result
+        assert "edges" in result
+        assert len(result["nodes"]) == 1
+        assert result["nodes"][0]["label"] == "Kinematics"
+        assert len(result["edges"]) == 1
+
+    async def test_returns_empty_nodes_and_edges_for_new_map(self) -> None:
+        from butlers.tools.education import mind_map_get
+
+        map_id = str(uuid.uuid4())
+        row = _map_row(map_id=map_id, title="Empty Map")
+        pool = _make_pool(
+            fetchrow_returns=[_make_row(row)],
+            fetch_returns=[[], []],
+        )
+        result = await mind_map_get(pool, map_id)
+        assert result is not None
+        assert result["nodes"] == []
+        assert result["edges"] == []
 
     async def test_returns_none_when_not_found(self) -> None:
         from butlers.tools.education import mind_map_get
@@ -701,6 +726,30 @@ class TestEdgeCreateCycleDetection:
         # Here parent != child so should succeed
         await mind_map_edge_create(pool, parent_id, child_id, "related")
         assert pool.execute.called
+
+    async def test_upsert_updates_edge_type_on_conflict(self) -> None:
+        """Conflicting (parent, child) pair updates edge_type via upsert (not silent drop)."""
+        from butlers.tools.education import mind_map_edge_create
+
+        parent_id = str(uuid.uuid4())
+        child_id = str(uuid.uuid4())
+        map_id = str(uuid.uuid4())
+
+        node_rows = [
+            _make_row({"id": parent_id, "mind_map_id": map_id}),
+            _make_row({"id": child_id, "mind_map_id": map_id}),
+        ]
+        # _check_cycle returns no cycle
+        no_cycle_row = _make_row({"has_cycle": False})
+        pool = _make_pool(
+            fetch_returns=[node_rows],
+            fetchrow_returns=[no_cycle_row],
+            execute_returns=["INSERT 0 1", "UPDATE 2"],
+        )
+        await mind_map_edge_create(pool, parent_id, child_id, "prerequisite")
+        # Verify ON CONFLICT DO UPDATE (not DO NOTHING) in the SQL
+        insert_sql = pool.execute.call_args_list[0].args[0]
+        assert "DO UPDATE" in insert_sql
 
 
 # ---------------------------------------------------------------------------

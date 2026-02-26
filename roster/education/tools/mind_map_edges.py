@@ -50,48 +50,47 @@ async def _recompute_depths(
     pool: asyncpg.Pool,
     start_node_id: str,
 ) -> None:
-    """Recompute depth for start_node_id and all its descendants.
+    """Recompute depth for all nodes in the same mind map as start_node_id.
 
     Depth = longest path from any root (node with no incoming prerequisite edges).
-    Uses a recursive CTE to find all descendants, then a second CTE to compute
-    the longest-path depth for each.
+    Uses a single efficient recursive query over the full map, avoiding
+    the N+1 correlated-subquery pattern.
     """
     await pool.execute(
         """
         WITH RECURSIVE
-        -- Step 1: walk all descendants of start_node_id (inclusive)
-        subtree AS (
-            SELECT $1::uuid AS node_id
-            UNION
-            SELECT e.child_node_id
+        -- All nodes in the same mind map as start_node_id
+        map_nodes AS (
+            SELECT id FROM education.mind_map_nodes
+            WHERE mind_map_id = (
+                SELECT mind_map_id FROM education.mind_map_nodes WHERE id = $1
+            )
+        ),
+        -- BFS from roots: root nodes (no incoming prerequisite edges) start at depth 0
+        node_depths AS (
+            SELECT mn.id, 0 AS depth
+            FROM map_nodes mn
+            WHERE NOT EXISTS (
+                SELECT 1 FROM education.mind_map_edges e
+                WHERE e.child_node_id = mn.id AND e.edge_type = 'prerequisite'
+            )
+            UNION ALL
+            SELECT e.child_node_id, nd.depth + 1
             FROM education.mind_map_edges e
-            JOIN subtree s ON e.parent_node_id = s.node_id
+            JOIN node_depths nd ON e.parent_node_id = nd.id
             WHERE e.edge_type = 'prerequisite'
         ),
-        -- Step 2: for every node in the subtree, compute longest path from any root
-        -- A root is a node with no incoming prerequisite edges
-        new_depths AS (
-            SELECT n.id AS node_id,
-                   (
-                     WITH RECURSIVE path_lengths AS (
-                         SELECT n2.id AS node_id, 0 AS d
-                         FROM education.mind_map_nodes n2
-                         WHERE n2.id = n.id
-                         UNION ALL
-                         SELECT e2.parent_node_id, pl.d + 1
-                         FROM education.mind_map_edges e2
-                         JOIN path_lengths pl ON e2.child_node_id = pl.node_id
-                         WHERE e2.edge_type = 'prerequisite'
-                     )
-                     SELECT COALESCE(MAX(d), 0) FROM path_lengths
-                   ) AS computed_depth
-            FROM education.mind_map_nodes n
-            WHERE n.id IN (SELECT node_id FROM subtree)
+        -- Longest path from any root wins
+        final_depths AS (
+            SELECT id, MAX(depth) AS computed_depth
+            FROM node_depths
+            GROUP BY id
         )
-        UPDATE education.mind_map_nodes
-        SET depth = nd.computed_depth, updated_at = now()
-        FROM new_depths nd
-        WHERE education.mind_map_nodes.id = nd.node_id
+        UPDATE education.mind_map_nodes n
+        SET depth = fd.computed_depth, updated_at = now()
+        FROM final_depths fd
+        WHERE n.id = fd.id
+          AND n.depth IS DISTINCT FROM fd.computed_depth
         """,
         start_node_id,
     )
@@ -162,7 +161,8 @@ async def mind_map_edge_create(
         """
         INSERT INTO education.mind_map_edges (parent_node_id, child_node_id, edge_type)
         VALUES ($1, $2, $3)
-        ON CONFLICT DO NOTHING
+        ON CONFLICT (parent_node_id, child_node_id) DO UPDATE
+            SET edge_type = EXCLUDED.edge_type
         """,
         parent_node_id,
         child_node_id,

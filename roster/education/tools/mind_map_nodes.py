@@ -23,8 +23,6 @@ _VALID_TRANSITIONS: dict[str, set[str]] = {
     "mastered": {"reviewing"},  # reviewing = spaced repetition
 }
 
-_ALL_STATUSES = {"unseen", "diagnosed", "learning", "reviewing", "mastered"}
-
 # Writable fields (all others are silently ignored)
 _WRITABLE_FIELDS = {
     "mastery_score",
