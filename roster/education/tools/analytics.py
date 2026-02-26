@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Callable, Coroutine
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -93,15 +94,21 @@ async def analytics_compute_snapshot(
             avg_ease_factor = 0.0
 
         # ------------------------------------------------------------------
-        # 3. Retention rates (review-type only)
+        # 3. Retention rates (review-type only, anchored to snapshot_date)
         # ------------------------------------------------------------------
-        retention_rate_7d = await _compute_retention_rate(conn, mind_map_id, days=7)
-        retention_rate_30d = await _compute_retention_rate(conn, mind_map_id, days=30)
+        retention_rate_7d = await _compute_retention_rate(
+            conn, mind_map_id, snapshot_date=snapshot_date, days=7
+        )
+        retention_rate_30d = await _compute_retention_rate(
+            conn, mind_map_id, snapshot_date=snapshot_date, days=30
+        )
 
         # ------------------------------------------------------------------
         # 4. Velocity: avg nodes mastered per week over last 4 weeks
+        #    Computed in-memory from node_rows already fetched in step 1,
+        #    anchored to snapshot_date for reproducibility.
         # ------------------------------------------------------------------
-        velocity = await _compute_velocity(conn, mind_map_id, node_rows)
+        velocity = _compute_velocity(node_rows, snapshot_date=snapshot_date)
 
         # ------------------------------------------------------------------
         # 5. Estimated completion days
@@ -150,29 +157,36 @@ async def analytics_compute_snapshot(
         )
 
         # ------------------------------------------------------------------
-        # 10. Sessions this period (distinct dates in last 30 days)
+        # 10. Sessions this period (distinct dates in last 30 days,
+        #     anchored to snapshot_date for reproducibility)
         # ------------------------------------------------------------------
         sessions_this_period = await conn.fetchval(
             """
             SELECT COUNT(DISTINCT responded_at::date)
             FROM education.quiz_responses
             WHERE mind_map_id = $1
-              AND responded_at >= now() - INTERVAL '30 days'
+              AND responded_at::date <= $2
+              AND responded_at::date > $2 - INTERVAL '30 days'
             """,
             mind_map_id,
+            snapshot_date,
         )
         sessions_this_period = int(sessions_this_period or 0)
 
         # ------------------------------------------------------------------
-        # 11. Time-of-day distribution
+        # 11. Time-of-day distribution (bounded to the 30-day session period
+        #     and anchored to snapshot_date for consistency with sessions_this_period)
         # ------------------------------------------------------------------
         time_rows = await conn.fetch(
             """
             SELECT EXTRACT(HOUR FROM responded_at AT TIME ZONE 'UTC')::int AS hour
             FROM education.quiz_responses
             WHERE mind_map_id = $1
+              AND responded_at::date <= $2
+              AND responded_at::date > $2 - INTERVAL '30 days'
             """,
             mind_map_id,
+            snapshot_date,
         )
         tod_dist: dict[str, int] = {"morning": 0, "afternoon": 0, "evening": 0}
         for row in time_rows:
@@ -202,8 +216,6 @@ async def analytics_compute_snapshot(
         # ------------------------------------------------------------------
         # Upsert into analytics_snapshots
         # ------------------------------------------------------------------
-        import json
-
         await conn.execute(
             """
             INSERT INTO education.analytics_snapshots (mind_map_id, snapshot_date, metrics)
@@ -222,9 +234,13 @@ async def analytics_compute_snapshot(
 async def _compute_retention_rate(
     conn: asyncpg.Connection,
     mind_map_id: str,
+    *,
+    snapshot_date: date,
     days: int,
 ) -> float | None:
     """Compute retention rate for review-type responses in the last N days.
+
+    Window is anchored to snapshot_date so historical backfills are reproducible.
 
     Returns float [0.0, 1.0] or None if no review responses in the window.
     """
@@ -236,9 +252,11 @@ async def _compute_retention_rate(
         FROM education.quiz_responses
         WHERE mind_map_id = $1
           AND response_type = 'review'
-          AND responded_at >= now() - ($2 || ' days')::interval
+          AND responded_at::date <= $2
+          AND responded_at::date > $2 - ($3 || ' days')::interval
         """,
         mind_map_id,
+        snapshot_date,
         str(days),
     )
     if row is None or int(row["total_review"]) == 0:
@@ -246,36 +264,35 @@ async def _compute_retention_rate(
     return round(int(row["passed_review"]) / int(row["total_review"]), 4)
 
 
-async def _compute_velocity(
-    conn: asyncpg.Connection,
-    mind_map_id: str,
+def _compute_velocity(
     node_rows: list[asyncpg.Record],
+    *,
+    snapshot_date: date,
 ) -> float:
     """Compute avg nodes mastered per week over last 4 weeks (28 days).
+
+    Operates in-memory on the already-fetched node_rows so no extra DB query
+    is needed. The 28-day window is anchored to snapshot_date for reproducibility.
 
     Each 7-day bucket counts nodes whose mastery_status='mastered' AND
     updated_at falls within that bucket. Then we average the 4 bucket counts.
     """
-    # Fetch mastered nodes with their updated_at timestamps
-    mastered_rows = await conn.fetch(
-        """
-        SELECT id, updated_at
-        FROM education.mind_map_nodes
-        WHERE mind_map_id = $1
-          AND mastery_status = 'mastered'
-          AND updated_at >= now() - INTERVAL '28 days'
-        """,
-        mind_map_id,
-    )
+    # Anchor the reference point to midnight UTC of snapshot_date
+    reference_dt = datetime(
+        snapshot_date.year, snapshot_date.month, snapshot_date.day, tzinfo=UTC
+    ) + timedelta(days=1)  # end-of-day: count everything up to and including snapshot_date
+    cutoff_dt = reference_dt - timedelta(days=28)
 
-    # Count per weekly bucket (0=most recent week, 3=oldest week)
     bucket_counts = [0, 0, 0, 0]
-    now = datetime.now(tz=UTC)
-    for row in mastered_rows:
+    for row in node_rows:
+        if row["mastery_status"] != "mastered":
+            continue
         updated_at = row["updated_at"]
         if updated_at.tzinfo is None:
             updated_at = updated_at.replace(tzinfo=UTC)
-        days_ago = (now - updated_at).total_seconds() / 86400
+        if updated_at < cutoff_dt or updated_at >= reference_dt:
+            continue
+        days_ago = (reference_dt - updated_at).total_seconds() / 86400
         bucket_idx = int(days_ago // 7)
         if 0 <= bucket_idx <= 3:
             bucket_counts[bucket_idx] += 1
@@ -326,6 +343,9 @@ async def _compute_strongest_subtree(
     """Return node_id with highest average mastery_score in its subtree.
 
     Uses a recursive CTE to compute subtree mastery for each node.
+    Uses UNION (not UNION ALL) to deduplicate rows and prevent infinite
+    loops when cyclic edges exist (e.g. 'related' edge types that bypass
+    the prerequisite-only DAG check).
     Returns None if the mind map has no nodes.
     """
     row = await conn.fetchrow(
@@ -334,7 +354,7 @@ async def _compute_strongest_subtree(
             SELECT id AS root_id, id AS node_id
             FROM education.mind_map_nodes
             WHERE mind_map_id = $1
-            UNION ALL
+            UNION
             SELECT s.root_id, e.child_node_id AS node_id
             FROM subtree s
             JOIN education.mind_map_edges e ON e.parent_node_id = s.node_id
@@ -556,8 +576,6 @@ async def analytics_get_cross_topic(
         ORDER BY s.mind_map_id, s.snapshot_date DESC
         """,
     )
-
-    import json
 
     topics = []
     total_mastered = 0

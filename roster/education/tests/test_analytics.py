@@ -192,7 +192,6 @@ def _build_snapshot_conn(
     node_rows: list[dict[str, Any]] | None = None,
     retention_rows_7d: dict[str, int] | None = None,  # {"total_review": N, "passed_review": M}
     retention_rows_30d: dict[str, int] | None = None,
-    mastered_recent_rows: list[dict[str, Any]] | None = None,
     struggling_rows: list[dict[str, Any]] | None = None,
     strongest_subtree_row: dict[str, Any] | None = None,
     total_quiz_responses: int = 0,
@@ -202,18 +201,19 @@ def _build_snapshot_conn(
 ) -> AsyncMock:
     """Build a mock connection wired for each query in analytics_compute_snapshot.
 
+    Velocity is now computed in-memory from node_rows (no separate DB fetch).
+
     The function calls these methods in this order:
       1. conn.fetch (node_rows)
       2. conn.fetchrow (retention 7d)
       3. conn.fetchrow (retention 30d)
-      4. conn.fetch (mastered_recent_rows for velocity)
-      5. conn.fetch (struggling_nodes CTE)
-      6. conn.fetchrow (strongest_subtree)
-      7. conn.fetchval (total_quiz_responses)
-      8. conn.fetchval (avg_quality_raw)
-      9. conn.fetchval (sessions_this_period)
-      10. conn.fetch (time_hour_rows)
-      11. conn.execute (upsert)
+      4. conn.fetch (struggling_nodes CTE)
+      5. conn.fetchrow (strongest_subtree)
+      6. conn.fetchval (total_quiz_responses)
+      7. conn.fetchval (avg_quality_raw)
+      8. conn.fetchval (sessions_this_period)
+      9. conn.fetch (time_hour_rows)
+      10. conn.execute (upsert)
     """
     conn = AsyncMock()
 
@@ -221,11 +221,9 @@ def _build_snapshot_conn(
     fetch_queue = [
         # 1. node_rows
         [_make_row(r) for r in (node_rows or [])],
-        # 4. mastered_recent for velocity
-        [_make_row(r) for r in (mastered_recent_rows or [])],
-        # 5. struggling_nodes
+        # 4. struggling_nodes
         [_make_row(r) for r in (struggling_rows or [])],
-        # 10. time_hour_rows
+        # 9. time_hour_rows
         [_make_row(r) for r in (time_hour_rows or [])],
     ]
     conn.fetch = AsyncMock(side_effect=list(fetch_queue))
@@ -241,18 +239,18 @@ def _build_snapshot_conn(
         _retention_row(retention_rows_7d),
         # 3. retention 30d
         _retention_row(retention_rows_30d),
-        # 6. strongest subtree
+        # 5. strongest subtree
         _make_row(strongest_subtree_row) if strongest_subtree_row else None,
     ]
     conn.fetchrow = AsyncMock(side_effect=list(fetchrow_queue))
 
     # --- fetchval calls ---
     fetchval_queue = [
-        # 7. total_quiz_responses
+        # 6. total_quiz_responses
         total_quiz_responses,
-        # 8. avg_quality_raw
+        # 7. avg_quality_raw
         avg_quality_raw,
-        # 9. sessions_this_period
+        # 8. sessions_this_period
         sessions_this_period,
     ]
     conn.fetchval = AsyncMock(side_effect=list(fetchval_queue))
@@ -300,13 +298,22 @@ class TestAnalyticsComputeSnapshot:
         assert metrics["avg_quality_score"] == 3.5
         assert metrics["sessions_this_period"] == 5
 
-    def test_mastery_pct_zero_when_no_nodes(self) -> None:
-        """mastery_pct is 0.0 when mind map has no nodes."""
-        # Test the computation inline (no pool needed)
-        total = 0
-        mastered = 0
-        mastery_pct = round(mastered / total, 2) if total > 0 else 0.0
-        assert mastery_pct == 0.0
+    async def test_mastery_pct_zero_when_no_nodes(self) -> None:
+        """mastery_pct is 0.0 when mind map has no nodes, and related metrics are sensible."""
+        from butlers.tools.education.analytics import analytics_compute_snapshot
+
+        map_id = str(uuid.uuid4())
+
+        conn = _build_snapshot_conn(node_rows=[])
+        pool = _make_pool_with_conn(conn)
+
+        metrics = await analytics_compute_snapshot(pool, map_id, date(2026, 2, 26))
+
+        assert metrics["total_nodes"] == 0
+        assert metrics["mastered_nodes"] == 0
+        assert metrics["mastery_pct"] == 0.0
+        assert metrics["avg_ease_factor"] == 0.0
+        assert metrics["estimated_completion_days"] is None
 
     async def test_avg_ease_factor_computed(self) -> None:
         """avg_ease_factor is mean of all node ease_factors."""
@@ -486,12 +493,10 @@ class TestVelocity:
         from butlers.tools.education.analytics import analytics_compute_snapshot
 
         map_id = str(uuid.uuid4())
+        # Velocity is computed in-memory from node_rows; a "learning" node has no mastery date
         nodes = [_node_row(mastery_status="learning")]
 
-        conn = _build_snapshot_conn(
-            node_rows=nodes,
-            mastered_recent_rows=[],
-        )
+        conn = _build_snapshot_conn(node_rows=nodes)
         pool = _make_pool_with_conn(conn)
 
         metrics = await analytics_compute_snapshot(pool, map_id, date(2026, 2, 26))
@@ -499,32 +504,26 @@ class TestVelocity:
         assert metrics["velocity_nodes_per_week"] == 0.0
 
     async def test_velocity_averages_4_weeks(self) -> None:
-        """4 nodes mastered in week 0 → velocity = 4/4 = 1.0 nodes/week."""
+        """4 nodes mastered in week 0 (relative to snapshot_date) → velocity = 4/4 = 1.0."""
         from butlers.tools.education.analytics import analytics_compute_snapshot
 
+        # snapshot_date = 2026-02-26; reference point = 2026-02-27 00:00 UTC
+        # Week 0 = 0-7 days before reference = 2026-02-20 to 2026-02-26
+        snap_date = date(2026, 2, 26)
+        reference = datetime(2026, 2, 27, tzinfo=UTC)
         map_id = str(uuid.uuid4())
         nodes = [
-            _node_row(mastery_status="mastered"),
-            _node_row(mastery_status="mastered"),
-            _node_row(mastery_status="mastered"),
-            _node_row(mastery_status="mastered"),
-        ]
-        # All 4 nodes mastered in the current week (3 days ago)
-        recent_ts = datetime.now(tz=UTC) - timedelta(days=3)
-        mastered_recent = [
-            {"id": str(uuid.uuid4()), "updated_at": recent_ts},
-            {"id": str(uuid.uuid4()), "updated_at": recent_ts},
-            {"id": str(uuid.uuid4()), "updated_at": recent_ts},
-            {"id": str(uuid.uuid4()), "updated_at": recent_ts},
+            # 4 mastered nodes updated 3 days before reference (in week 0)
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=3)),
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=3)),
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=3)),
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=3)),
         ]
 
-        conn = _build_snapshot_conn(
-            node_rows=nodes,
-            mastered_recent_rows=mastered_recent,
-        )
+        conn = _build_snapshot_conn(node_rows=nodes)
         pool = _make_pool_with_conn(conn)
 
-        metrics = await analytics_compute_snapshot(pool, map_id, date(2026, 2, 26))
+        metrics = await analytics_compute_snapshot(pool, map_id, snap_date)
 
         # 4 in week 0, 0 in weeks 1-3 → average = 4/4 = 1.0
         assert metrics["velocity_nodes_per_week"] == 1.0
@@ -533,27 +532,26 @@ class TestVelocity:
         """Nodes mastered across different weeks are averaged correctly."""
         from butlers.tools.education.analytics import analytics_compute_snapshot
 
+        # snapshot_date = 2026-02-26; reference = 2026-02-27 UTC
+        snap_date = date(2026, 2, 26)
+        reference = datetime(2026, 2, 27, tzinfo=UTC)
         map_id = str(uuid.uuid4())
-        nodes = [_node_row(mastery_status="mastered")]
-        now = datetime.now(tz=UTC)
-        mastered_recent = [
-            # week 0 (0-6 days ago): 2 nodes
-            {"id": str(uuid.uuid4()), "updated_at": now - timedelta(days=2)},
-            {"id": str(uuid.uuid4()), "updated_at": now - timedelta(days=4)},
-            # week 1 (7-13 days ago): 1 node
-            {"id": str(uuid.uuid4()), "updated_at": now - timedelta(days=9)},
-            # week 2 (14-20 days ago): 1 node
-            {"id": str(uuid.uuid4()), "updated_at": now - timedelta(days=15)},
-            # week 3 (21-27 days ago): 0 nodes
+        nodes = [
+            # week 0 (0-7 days before reference): 2 nodes
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=2)),
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=4)),
+            # week 1 (7-14 days before reference): 1 node
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=9)),
+            # week 2 (14-21 days before reference): 1 node
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=15)),
+            # week 3 (21-28 days before reference): 0 nodes (non-mastered filler)
+            _node_row(mastery_status="learning"),
         ]
 
-        conn = _build_snapshot_conn(
-            node_rows=nodes,
-            mastered_recent_rows=mastered_recent,
-        )
+        conn = _build_snapshot_conn(node_rows=nodes)
         pool = _make_pool_with_conn(conn)
 
-        metrics = await analytics_compute_snapshot(pool, map_id, date(2026, 2, 26))
+        metrics = await analytics_compute_snapshot(pool, map_id, snap_date)
 
         # Buckets: [2, 1, 1, 0] → average = 4/4 = 1.0
         assert metrics["velocity_nodes_per_week"] == 1.0
@@ -572,12 +570,13 @@ class TestEstimatedCompletion:
         from butlers.tools.education.analytics import analytics_compute_snapshot
 
         map_id = str(uuid.uuid4())
+        # No mastered nodes → velocity = 0
         nodes = [
             _node_row(mastery_status="learning"),
             _node_row(mastery_status="unseen"),
         ]
 
-        conn = _build_snapshot_conn(node_rows=nodes, mastered_recent_rows=[])
+        conn = _build_snapshot_conn(node_rows=nodes)
         pool = _make_pool_with_conn(conn)
 
         metrics = await analytics_compute_snapshot(pool, map_id, date(2026, 2, 26))
@@ -585,21 +584,19 @@ class TestEstimatedCompletion:
         assert metrics["estimated_completion_days"] is None
 
     async def test_estimated_completion_null_when_all_mastered(self) -> None:
-        """estimated_completion_days is None when all nodes are mastered."""
+        """estimated_completion_days is None when all nodes are mastered (unmastered=0)."""
         from butlers.tools.education.analytics import analytics_compute_snapshot
 
+        # snapshot_date = 2026-02-26; reference = 2026-02-27 UTC
+        snap_date = date(2026, 2, 26)
+        reference = datetime(2026, 2, 27, tzinfo=UTC)
         map_id = str(uuid.uuid4())
-        now = datetime.now(tz=UTC)
-        nodes = [_node_row(mastery_status="mastered")]
-        mastered_recent = [{"id": str(uuid.uuid4()), "updated_at": now - timedelta(days=1)}]
+        nodes = [_node_row(mastery_status="mastered", updated_at=reference - timedelta(days=1))]
 
-        conn = _build_snapshot_conn(
-            node_rows=nodes,
-            mastered_recent_rows=mastered_recent,
-        )
+        conn = _build_snapshot_conn(node_rows=nodes)
         pool = _make_pool_with_conn(conn)
 
-        metrics = await analytics_compute_snapshot(pool, map_id, date(2026, 2, 26))
+        metrics = await analytics_compute_snapshot(pool, map_id, snap_date)
 
         assert metrics["estimated_completion_days"] is None
 
@@ -608,27 +605,28 @@ class TestEstimatedCompletion:
 
         from butlers.tools.education.analytics import analytics_compute_snapshot
 
+        # snapshot_date = 2026-02-26; reference = 2026-02-27 UTC
+        # 4 nodes mastered in week 0 (1-4 days before reference) → velocity = 4/4 = 1.0
+        snap_date = date(2026, 2, 26)
+        reference = datetime(2026, 2, 27, tzinfo=UTC)
         map_id = str(uuid.uuid4())
-        now = datetime.now(tz=UTC)
         nodes = [
-            _node_row(mastery_status="mastered"),
+            # 1 mastered (in week 0) + 2 unmastered → velocity=0.25, but we want velocity=1.0
+            # Use 4 mastered nodes all in week 0 + 2 unmastered
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=1)),
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=2)),
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=3)),
+            _node_row(mastery_status="mastered", updated_at=reference - timedelta(days=4)),
             _node_row(mastery_status="learning"),
             _node_row(mastery_status="unseen"),
         ]
-        # 4 mastered nodes in current week → velocity = 4/4 = 1.0
-        mastered_recent = [
-            {"id": str(uuid.uuid4()), "updated_at": now - timedelta(days=i)} for i in range(1, 5)
-        ]
 
-        conn = _build_snapshot_conn(
-            node_rows=nodes,
-            mastered_recent_rows=mastered_recent,
-        )
+        conn = _build_snapshot_conn(node_rows=nodes)
         pool = _make_pool_with_conn(conn)
 
-        metrics = await analytics_compute_snapshot(pool, map_id, date(2026, 2, 26))
+        metrics = await analytics_compute_snapshot(pool, map_id, snap_date)
 
-        # velocity=1.0, unmastered=2 → ceil(2/1.0 * 7) = 14
+        # velocity=1.0 (4/4), unmastered=2 → ceil(2/1.0 * 7) = 14
         assert metrics["estimated_completion_days"] == 14
 
 
