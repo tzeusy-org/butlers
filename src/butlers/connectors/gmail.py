@@ -486,6 +486,9 @@ class GmailConnectorRuntime:
 
         # Backfill polling (docs/connectors/interface.md section 14)
         self._backfill_task: asyncio.Task[None] | None = None
+        # Track how many backfill.poll attempts have been made so we can
+        # suppress the first-attempt warning when Switchboard is still starting.
+        self._backfill_poll_attempts: int = 0
 
         # Label filter policy (per docs/connectors/email_ingestion_policy.md §9)
         self._label_filter = LabelFilterPolicy.from_lists(
@@ -909,6 +912,7 @@ class GmailConnectorRuntime:
         Calls backfill.poll(connector_type, endpoint_identity). If a job is
         returned, delegates execution to _execute_backfill_job().
         """
+        self._backfill_poll_attempts += 1
         try:
             result = await self._mcp_client.call_tool(
                 "backfill.poll",
@@ -918,7 +922,18 @@ class GmailConnectorRuntime:
                 },
             )
         except Exception as exc:
-            logger.warning("backfill.poll failed (non-fatal): %s", exc)
+            # Downgrade first-attempt failure to debug: Switchboard may still be
+            # starting up and the connector handles this correctly (60s retry loop,
+            # live ingestion unaffected).  Genuine persistent failures stay at
+            # warning level so operators are alerted.
+            if self._backfill_poll_attempts == 1:
+                logger.debug(
+                    "backfill.poll failed on first attempt (non-fatal,"
+                    " Switchboard may still be starting): %s",
+                    exc,
+                )
+            else:
+                logger.warning("backfill.poll failed (non-fatal): %s", exc)
             return
 
         if result is None:

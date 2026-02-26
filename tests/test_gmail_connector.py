@@ -2741,6 +2741,49 @@ class TestBackfillPollAndExecute:
             # Should not raise
             await backfill_runtime._poll_and_execute_backfill_job()
 
+    async def test_poll_first_attempt_failure_uses_debug_log(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """First backfill.poll failure is logged at DEBUG, not WARNING.
+
+        Switchboard may still be starting up during the first poll attempt,
+        so the warning is suppressed to avoid noise in normal startup.
+        """
+        with patch.object(
+            backfill_runtime._mcp_client,
+            "call_tool",
+            new=AsyncMock(side_effect=ConnectionError("switchboard not ready yet")),
+        ):
+            with patch("butlers.connectors.gmail.logger") as mock_logger:
+                await backfill_runtime._poll_and_execute_backfill_job()
+
+        mock_logger.debug.assert_called_once()
+        mock_logger.warning.assert_not_called()
+        assert backfill_runtime._backfill_poll_attempts == 1
+
+    async def test_poll_subsequent_failure_uses_warning_log(
+        self, backfill_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Subsequent backfill.poll failures (attempt > 1) are logged at WARNING.
+
+        After the first attempt, connection failures indicate a genuine problem
+        and must remain visible to operators.
+        """
+        # Simulate one prior successful attempt
+        backfill_runtime._backfill_poll_attempts = 1
+
+        with patch.object(
+            backfill_runtime._mcp_client,
+            "call_tool",
+            new=AsyncMock(side_effect=ConnectionError("persistent failure")),
+        ):
+            with patch("butlers.connectors.gmail.logger") as mock_logger:
+                await backfill_runtime._poll_and_execute_backfill_job()
+
+        mock_logger.warning.assert_called_once()
+        mock_logger.debug.assert_not_called()
+        assert backfill_runtime._backfill_poll_attempts == 2
+
     async def test_poll_returns_invalid_type_is_non_fatal(
         self, backfill_runtime: GmailConnectorRuntime
     ) -> None:
