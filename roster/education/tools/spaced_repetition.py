@@ -10,6 +10,7 @@ Implements the SM-2 algorithm for scheduling knowledge reviews:
 from __future__ import annotations
 
 import logging
+import uuid
 import warnings
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -252,7 +253,7 @@ async def spaced_repetition_record_response(
         # Transaction committed — now manage schedules outside the transaction.
 
     # 7. Delete prior schedule for this node (any rep number)
-    await _delete_node_schedules(node_id, schedule_delete)
+    await _delete_node_schedules(pool, node_id, schedule_delete)
 
     # 8. Create new schedule (individual or batch)
     if schedule_count >= _BATCH_CAP:
@@ -270,7 +271,7 @@ async def spaced_repetition_record_response(
                 f"Call spaced_repetition_pending_reviews(mind_map_id='{mind_map_id}') "
                 "to get all due nodes and review each one."
             ),
-            until_at=until_at.isoformat(),
+            until_at=until_at,
         )
     else:
         # Individual schedule for this specific node
@@ -287,7 +288,7 @@ async def spaced_repetition_record_response(
                 f"Repetition #{new_reps}, ease_factor={new_ef:.2f}. "
                 "Ask the user a focused recall question for this concept."
             ),
-            until_at=until_at.isoformat(),
+            until_at=until_at,
         )
 
     return {
@@ -334,10 +335,8 @@ async def spaced_repetition_pending_reviews(
     for row in rows:
         d = dict(row)
         # Serialize UUID and datetime fields
-        import uuid as _uuid_mod
-
         for key, val in list(d.items()):
-            if isinstance(val, _uuid_mod.UUID):
+            if isinstance(val, uuid.UUID):
                 d[key] = str(val)
             elif isinstance(val, datetime):
                 d[key] = val.isoformat()
@@ -442,40 +441,62 @@ def _determine_sr_status(current_status: str, quality: int) -> str | None:
 async def _count_pending_review_schedules(conn: asyncpg.Connection, mind_map_id: str) -> int:
     """Count pending review schedules for a mind map via the scheduler table.
 
-    Falls back to 0 if the core scheduler table does not exist (test environments).
+    Queries all per-node schedules (review-{node_id}-rep*) for nodes belonging
+    to this map, plus the batch schedule (review-{map_id}-batch).
+
+    Falls back to 0 if the scheduled_tasks table does not exist (test environments).
     """
     try:
-        count = await conn.fetchval(
-            """
-            SELECT COUNT(*) FROM core.schedules
-            WHERE name LIKE $1 AND status = 'pending'
-            """,
-            f"{_REVIEW_SCHEDULE_PREFIX}%-{mind_map_id[-8:]}%",
+        # Fetch node IDs for this map so we can match their schedule names.
+        node_rows = await conn.fetch(
+            "SELECT id FROM education.mind_map_nodes WHERE mind_map_id = $1",
+            mind_map_id,
         )
-        return int(count or 0)
+        node_ids = [str(row["id"]) for row in node_rows]
+
+        # Count per-node schedules (review-{node_id}-rep*)
+        node_count = 0
+        for node_id in node_ids:
+            n = await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM scheduled_tasks
+                WHERE name LIKE $1 AND enabled = true
+                """,
+                f"{_REVIEW_SCHEDULE_PREFIX}{node_id}-rep%",
+            )
+            node_count += int(n or 0)
+
+        # Count batch schedule for the map
+        batch_name = f"{_REVIEW_SCHEDULE_PREFIX}{mind_map_id}-batch"
+        batch_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM scheduled_tasks WHERE name = $1 AND enabled = true",
+            batch_name,
+        )
+
+        return node_count + int(batch_count or 0)
     except Exception:
         # Scheduler table not available in this environment
         return 0
 
 
 async def _delete_node_schedules(
+    pool: asyncpg.Pool,
     node_id: str,
     schedule_delete: ScheduleDeleteFn,
 ) -> None:
     """Best-effort deletion of any existing schedule for a node.
 
+    Queries the scheduler table for all schedules matching this node, then
+    deletes them. Falls back to a no-op if the table is not available.
     Silently ignores errors (e.g. schedule not found).
     """
-    # We try deleting schedules for rep 0 through a reasonable upper bound.
-    # In practice, the scheduler should provide a prefix-delete; we use a
-    # conservative range here. Errors are suppressed.
-    for rep in range(50):
-        name = f"{_REVIEW_SCHEDULE_PREFIX}{node_id}-rep{rep}"
+    schedule_names = await _list_node_schedule_names(pool, node_id)
+    for name in schedule_names:
         try:
             await schedule_delete(name)
         except Exception:
             # Schedule not found or already deleted — that's fine
-            break
+            pass
 
 
 async def _list_node_schedule_names(pool: asyncpg.Pool, node_id: str) -> list[str]:
@@ -486,10 +507,10 @@ async def _list_node_schedule_names(pool: asyncpg.Pool, node_id: str) -> list[st
     try:
         rows = await pool.fetch(
             """
-            SELECT name FROM core.schedules
+            SELECT name FROM scheduled_tasks
             WHERE name LIKE $1
             """,
-            f"{_REVIEW_SCHEDULE_PREFIX}{node_id}-%",
+            f"{_REVIEW_SCHEDULE_PREFIX}{node_id}-rep%",
         )
         return [str(row["name"]) for row in rows]
     except Exception:
@@ -505,7 +526,7 @@ async def _list_batch_schedule_names(pool: asyncpg.Pool, mind_map_id: str) -> li
     batch_name = f"{_REVIEW_SCHEDULE_PREFIX}{mind_map_id}-batch"
     try:
         rows = await pool.fetch(
-            "SELECT name FROM core.schedules WHERE name = $1",
+            "SELECT name FROM scheduled_tasks WHERE name = $1",
             batch_name,
         )
         return [str(row["name"]) for row in rows]

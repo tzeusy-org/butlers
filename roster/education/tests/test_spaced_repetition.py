@@ -682,15 +682,6 @@ class TestSpacedRepetitionRecordResponse:
             fetchrow_returns=[
                 _node_row(
                     node_id=node_id,
-                    mid_map_id=map_id,
-                    ease_factor=2.5,
-                    repetitions=0,
-                )
-            ]
-            if False
-            else [
-                _node_row(
-                    node_id=node_id,
                     ease_factor=2.5,
                     repetitions=0,
                     mastery_status="reviewing",
@@ -713,7 +704,9 @@ class TestSpacedRepetitionRecordResponse:
 
         next_review = datetime.fromisoformat(result["next_review_at"])
         call_kwargs = schedule_create.call_args.kwargs
-        until_at = datetime.fromisoformat(call_kwargs["until_at"])
+        # until_at is now passed as a datetime object (not an ISO string)
+        until_at = call_kwargs["until_at"]
+        assert isinstance(until_at, datetime)
         delta = until_at - next_review
         assert abs(delta.total_seconds() - 86400) < 2  # within 2 seconds
 
