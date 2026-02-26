@@ -5133,20 +5133,17 @@ class CalendarModule(Module):
                 SELECT e.id FROM calendar_events e
                 WHERE e.source_id = $1
                   AND e.metadata->>'butler_generated' = 'true'
-                  AND e.status != 'cancelled'
                 """,
                 source_id,
             )
             if stale_rows:
                 stale_ids = [r["id"] for r in stale_rows]
                 await pool.execute(
-                    "UPDATE calendar_event_instances SET status = 'cancelled', updated_at = now() "
-                    "WHERE event_id = ANY($1::uuid[])",
+                    "DELETE FROM calendar_event_instances WHERE event_id = ANY($1::uuid[])",
                     stale_ids,
                 )
                 await pool.execute(
-                    "UPDATE calendar_events SET status = 'cancelled', updated_at = now() "
-                    "WHERE id = ANY($1::uuid[])",
+                    "DELETE FROM calendar_events WHERE id = ANY($1::uuid[])",
                     stale_ids,
                 )
                 logger.info(
