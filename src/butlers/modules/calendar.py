@@ -4240,11 +4240,13 @@ class CalendarModule(Module):
                         calendar_id=cal_id, event_id=str(stale["calendar_event_id"])
                     )
                 except Exception as exc:
-                    logger.debug(
-                        "Failed to delete stale Google event for job task %s: %s",
+                    logger.warning(
+                        "Failed to delete stale Google event for job task %s: %s "
+                        "(will retry next sync)",
                         stale["id"],
                         exc,
                     )
+                    continue
                 await pool.execute(
                     "UPDATE scheduled_tasks SET calendar_event_id = NULL WHERE id = $1",
                     stale["id"],
@@ -4376,11 +4378,13 @@ class CalendarModule(Module):
                                 calendar_id=cal_id, event_id=str(google_event_id)
                             )
                         except Exception as exc:
-                            logger.debug(
-                                "Failed to delete Google event for reminder %s: %s",
+                            logger.warning(
+                                "Failed to delete Google event for reminder %s: %s "
+                                "(will retry next sync)",
                                 reminder_id,
                                 exc,
                             )
+                            continue
                         await pool.execute(
                             "UPDATE reminders SET calendar_event_id = NULL WHERE id = $1",
                             reminder_id,
@@ -4444,6 +4448,57 @@ class CalendarModule(Module):
                 updated,
                 deleted,
             )
+
+        # --- Orphan sweep ---
+        # Clean up butler-generated events on Google that no longer have a
+        # matching local record (e.g. job-task events whose calendar_event_id
+        # was cleared before the Google delete succeeded).
+        try:
+            known_event_ids: set[str] = set()
+            if await self._table_exists("scheduled_tasks"):
+                task_rows = await pool.fetch(
+                    "SELECT calendar_event_id FROM scheduled_tasks "
+                    "WHERE calendar_event_id IS NOT NULL"
+                )
+                known_event_ids.update(str(r["calendar_event_id"]) for r in task_rows)
+            if await self._table_exists("reminders"):
+                cols = await self._table_columns("reminders")
+                if "calendar_event_id" in cols:
+                    rem_rows = await pool.fetch(
+                        "SELECT calendar_event_id FROM reminders "
+                        "WHERE calendar_event_id IS NOT NULL"
+                    )
+                    known_event_ids.update(str(r["calendar_event_id"]) for r in rem_rows)
+
+            google_events = await provider.list_events(
+                calendar_id=cal_id,
+                start_at=datetime.now(UTC) - timedelta(days=90),
+                end_at=datetime.now(UTC) + timedelta(days=365),
+                limit=250,
+            )
+            orphan_count = 0
+            for ev in google_events:
+                if not ev.butler_generated:
+                    continue
+                if ev.event_id in known_event_ids:
+                    continue
+                # Butler-generated event with no local record — orphan
+                try:
+                    await provider.delete_event(calendar_id=cal_id, event_id=ev.event_id)
+                    orphan_count += 1
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to delete orphaned Google event %s: %s",
+                        ev.event_id,
+                        exc,
+                    )
+            if orphan_count:
+                logger.info(
+                    "Orphan sweep: deleted %d stale butler-generated events from Google",
+                    orphan_count,
+                )
+        except Exception as exc:
+            logger.debug("Orphan sweep skipped: %s", exc)
 
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Initialize the calendar provider with resolved Google OAuth credentials.
