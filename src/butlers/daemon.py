@@ -335,10 +335,26 @@ _MEMORY_MAINTENANCE_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "memory_episode_cleanup": _run_memory_episode_cleanup_job,
 }
 
+
+async def _run_education_compute_analytics_snapshots_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run education analytics snapshot computation as a deterministic job."""
+    del job_args
+    from butlers.tools.education.analytics import analytics_compute_all
+
+    count = await analytics_compute_all(pool=pool)
+    return {"snapshots_computed": count}
+
+
 _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicScheduleJobHandler]] = {
     "general": dict(_MEMORY_MAINTENANCE_JOB_HANDLERS),
     "health": dict(_MEMORY_MAINTENANCE_JOB_HANDLERS),
     "relationship": dict(_MEMORY_MAINTENANCE_JOB_HANDLERS),
+    "education": {
+        "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
+    },
     "switchboard": {
         "connector_stats_hourly_rollup": _run_switchboard_connector_stats_hourly_rollup_job,
         "connector_stats_daily_rollup": _run_switchboard_connector_stats_daily_rollup_job,

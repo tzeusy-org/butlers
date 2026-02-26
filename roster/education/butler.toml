@@ -24,13 +24,8 @@ route_contract_max = "route.v1"
 [[butler.schedule]]
 name = "nightly-analytics"
 cron = "0 3 * * *"
-dispatch_mode = "prompt"
-prompt = """
-Compute and persist nightly analytics snapshots for all active mind maps. For each active mind
-map: aggregate total_nodes, mastered_nodes, learning_nodes, struggling_nodes, mastery_rate,
-retention_rate_7d, velocity_nodes_per_week, and estimated_completion_days. Write each snapshot
-to analytics_snapshots with snapshot_date=today. Skip maps with no activity in the past 30 days.
-"""
+dispatch_mode = "job"
+job_name = "compute_analytics_snapshots"
 
 [[butler.schedule]]
 name = "weekly-progress-digest"
