@@ -10,7 +10,7 @@ mastery, and schedule a spaced repetition review. One session, one concept.
 
 Use this skill when:
 - The teaching flow state is `TEACHING` or `QUIZZING`
-- A `review-{node_id}` scheduled task fires (spaced repetition review — prefer review-session skill)
+- A scheduled teaching trigger fires for a flow in `TEACHING` status
 
 ## Token Budget
 
@@ -19,89 +19,170 @@ One concept per session — do not chain into the next concept even if it seems 
 
 ## Teaching Loop
 
+### Step 0: Read Flow State
+
+Call `teaching_flow_get(mind_map_id)` to read the current flow state. Note:
+- `status`: Should be `TEACHING` or `QUIZZING`
+- `current_node_id`: The node being taught (non-null when status is `TEACHING`)
+- `current_phase`: `explaining`, `questioning`, or `evaluating`
+
+If resuming a partially-complete session (e.g., `current_phase = "questioning"`), skip to the
+appropriate step below.
+
 ### Step 1: Select Concept
+
+If `current_node_id` is set in the flow state, use that node. Otherwise:
 
 Call `curriculum_next_node(mind_map_id)` to get the highest-priority frontier node.
 
-If no frontier nodes exist (all prerequisites unmastered): notify the user of the blocker and
-exit. Do not skip prerequisites.
+If no frontier nodes exist (all prerequisites unmastered or all concepts mastered): notify the
+user of the current state and exit. Do not skip prerequisites.
 
 ### Step 2: Memory Context
 
 Call `memory_recall(topic=<concept_label>)` and `memory_search(query=<concept_label>)` to check
-for any existing knowledge or prior struggle areas related to this concept.
+for any existing knowledge or prior struggle areas related to this concept. This informs how
+deep to start the explanation.
 
-### Step 3: Socratic Opening
+### Step 3: Socratic Opening (Explaining Phase)
 
-Ask one opening question: "Before I explain [concept], what do you already know about it?"
+Ask one opening question via `notify()`:
 
-Wait for the answer. Use it to calibrate:
-- If strong answer → start deeper, skip basic scaffolding
-- If partial answer → build on what they have
-- If no answer → start from first principles with an analogy
+```
+"Before I explain [concept], what do you already know about it?"
+```
+
+Wait for the answer. Use it to calibrate explanation depth:
+- Strong answer (prior knowledge evident) → start deeper, skip basic scaffolding
+- Partial answer (some familiarity) → build on what they have
+- No answer / "nothing" → start from first principles with a concrete analogy
+
+Deliver the opening via:
+```python
+notify(
+    channel="telegram",
+    message="Before I explain [concept], what do you already know about it?",
+    intent="send",
+    request_context=<session_request_context>
+)
+```
 
 ### Step 4: Explanation
 
-Explain the concept. Guidelines:
-- Lead with a concrete analogy or example
-- Follow with the abstract definition
-- Show a working code example (for programming topics)
-- Keep it focused — one concept, not a survey of related ideas
+After receiving the Socratic probe answer, explain the concept clearly:
+- Lead with a concrete analogy or real-world example
+- Follow with the precise definition
+- For programming topics: include a working code example
+- Keep it focused on one concept — do not survey related ideas
+- Deliver via `notify(channel="telegram", intent="reply", ...)`
 
-### Step 5: Comprehension Check (1-3 Questions)
+### Step 5: Comprehension Check (1–3 Questions, Questioning Phase)
 
-Ask 1-3 quiz questions. Use a mix of:
-- One factual recall question (can you define or identify it?)
-- One application question (can you use it in a new context?)
-- (Optional) One edge case or "what would happen if..." question for depth
+Ask 1–3 quiz questions. One per message. Wait for each answer.
 
-Ask one question per message. Wait for each answer.
+Question types to use:
+- **Factual recall**: "Can you define X?" or "What does X do?"
+- **Application**: "Given this code/scenario, what happens?"
+- **Edge case** (optional, for depth): "What would happen if..."
 
-For each answer, score quality 0-5:
-- 5: Correct, confident, demonstrates understanding
-- 4: Correct with minor gaps
-- 3: Essentially correct
-- 2: Partially correct — missing a key insight
-- 1: Largely incorrect but attempted
-- 0: No answer or complete misunderstanding
+Quality scoring rubric for each answer:
 
-Call `mastery_record_response(node_id, mind_map_id, question_text, user_answer, quality,
-response_type="teach")` for each response.
+| Score | Meaning |
+|-------|---------|
+| 5 | Correct, confident, demonstrates understanding |
+| 4 | Correct with minor gaps or slight hesitation |
+| 3 | Essentially correct — core right, minor detail missing |
+| 2 | Partially correct — missing a key insight |
+| 1 | Largely incorrect but clearly attempted |
+| 0 | No meaningful answer or complete misunderstanding |
 
-### Step 6: Schedule Spaced Repetition
+For each answer, call:
+```
+mastery_record_response(
+    node_id=<current_node_id>,
+    mind_map_id=<mind_map_id>,
+    question_text=<the question asked>,
+    user_answer=<user's answer>,
+    quality=<0-5 score>,
+    response_type="teach"
+)
+```
 
-After the comprehension check, call `spaced_repetition_record_response(node_id, quality=<avg>)`
-to schedule the first review interval.
+**Feedback protocol:**
+- Quality >= 3: React with emoji acknowledgment + brief positive note
+  (`notify(intent="react", emoji="✅", ...)` then `notify(intent="reply", ...)`)
+- Quality < 3: Never say "wrong." Use a Socratic nudge:
+  "Not quite — let's think about [guiding question]" then redirect
+
+### Step 6: Schedule Spaced Repetition Review
+
+After all comprehension questions are answered, call:
+```
+spaced_repetition_record_response(
+    node_id=<current_node_id>,
+    mind_map_id=<mind_map_id>,
+    quality=<average_quality_across_questions>
+)
+```
+
+This runs the SM-2 algorithm and schedules the first review interval. The returned
+`interval_days` tells you when the next review is due.
 
 ### Step 7: Persist Learning Outcome
 
-Call `memory_store_fact(subject=<concept>, predicate="learning_outcome", content=<what the user
-demonstrated>, permanence=<based on mastery>, importance=<7.0 for solid, 5.0 for partial>)`.
+Call `memory_store_fact()` to record what the user demonstrated:
 
-If struggles were detected (quality <= 2 on any question), also call:
-`memory_store_fact(subject=<concept>, predicate="struggle_area", content=<what was confusing>,
-permanence="volatile", importance=6.0)`.
+```python
+memory_store_fact(
+    subject=<concept_label>,
+    predicate="learning_outcome",
+    content=<brief summary of what the user understood or got right>,
+    permanence=<"stable" for transferable skills, "standard" for topic-specific knowledge>,
+    importance=<7.0 for solid mastery, 5.0 for partial understanding>,
+    tags=[<topic_tag>, <"mastered" or "learning">]
+)
+```
+
+If any question had quality <= 2, also record the struggle:
+```python
+memory_store_fact(
+    subject=<concept_label>,
+    predicate="struggle_area",
+    content=<what specifically confused the user>,
+    permanence="volatile",
+    importance=6.0,
+    tags=[<topic_tag>, "struggle"]
+)
+```
 
 ### Step 8: Advance Flow State
 
-Call `teaching_flow_advance(mind_map_id)` to transition to QUIZZING or REVIEWING.
+Call `teaching_flow_advance(mind_map_id)` to transition to `QUIZZING` (if additional quiz
+questions remain) or `REVIEWING` (based on frontier state and SM-2 schedule).
 
 ### Step 9: Exit
 
-Notify the user of the next review timing. Exit. Do not start the next concept.
+Notify the user of the next review timing and exit:
 
 ```python
-notify(channel="telegram",
-       message=f"[concept] covered. First review in {interval} days.",
-       intent="reply",
-       request_context=...)
+notify(
+    channel="telegram",
+    message=f"[concept] covered. Well done! I'll check back with you in {interval_days} days "
+            f"to make sure it sticks.",
+    intent="reply",
+    request_context=<session_request_context>
+)
 ```
+
+Do not start the next concept. The next session handles the next frontier node.
 
 ## Exit Criteria
 
-- Exactly one concept node has been taught
-- 1-3 quiz responses recorded via `mastery_record_response()`
+- Exactly one concept node has been taught in this session
+- 1–3 quiz responses recorded via `mastery_record_response(response_type="teach")`
 - Spaced repetition review scheduled via `spaced_repetition_record_response()`
-- Learning outcome stored in memory
-- Flow state advanced
-- User notified of next review timing
+- Learning outcome stored in memory via `memory_store_fact()`
+- Struggle area recorded (if any quality <= 2 response occurred)
+- Flow state advanced via `teaching_flow_advance()`
+- User notified of next review timing via `notify()`
+- Session exits without teaching a second concept
