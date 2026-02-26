@@ -1141,15 +1141,18 @@ class TestCalendarForceSyncTool:
             db=mod._db,
         )
 
+        # With no calendar_id, syncs all (falls back to resolved "primary").
         result = await mcp.tools["calendar_force_sync"]()
 
         assert result["status"] == "sync_completed"
-        assert result["calendar_id"] == "primary"
+        assert result["calendars_synced"] == 1
         assert provider.sync_calls, "sync_incremental should have been called"
 
-    async def test_force_sync_with_active_poller_signals_event(self):
-        """When the poller is running, force_sync sets the force-sync event."""
-        mod, mcp = self._make_module(sync_enabled=True)
+    async def test_force_sync_with_active_poller_syncs_all_inline(self):
+        """Even with poller active, no-arg force_sync syncs all calendars inline."""
+        event = _make_sample_event()
+        provider = _SyncCapableProviderDouble(sync_result=([event], [], "tok-force"))
+        mod, mcp = self._make_module(provider=provider, sync_enabled=True)
         # Simulate a running task.
         mod._sync_task = asyncio.create_task(asyncio.sleep(3600))
         await mod.register_tools(
@@ -1160,8 +1163,8 @@ class TestCalendarForceSyncTool:
 
         result = await mcp.tools["calendar_force_sync"]()
 
-        assert result["status"] == "sync_triggered"
-        assert mod._force_sync_event.is_set()
+        assert result["status"] == "sync_completed"
+        assert result["calendars_synced"] == 1
 
         mod._sync_task.cancel()
         try:
@@ -1169,12 +1172,12 @@ class TestCalendarForceSyncTool:
         except asyncio.CancelledError:
             pass
 
-    async def test_force_sync_error_is_recorded_in_last_sync_error(self):
-        """Provider errors during inline force_sync are recorded in last_sync_error.
+    async def test_force_sync_error_is_recorded(self):
+        """Provider errors during inline force_sync are surfaced in errors list.
 
         Per spec section 4.4, sync failures are logged but do not block butler
         operation.  The result status is still 'sync_completed' and the error
-        is surfaced via last_sync_error so the caller can inspect it.
+        is surfaced via the errors list so the caller can inspect it.
         """
         provider = _SyncCapableProviderDouble(
             sync_error=CalendarRequestError(status_code=503, message="Service unavailable")
@@ -1188,15 +1191,14 @@ class TestCalendarForceSyncTool:
 
         result = await mcp.tools["calendar_force_sync"]()
 
-        # Sync errors are swallowed (fail-open) — result is still sync_completed.
+        # Sync errors are captured per-calendar — overall status is still sync_completed.
         assert result["status"] == "sync_completed"
-        # The error is surfaced in last_sync_error for observability.
-        assert result["last_sync_error"] is not None
-        err = result["last_sync_error"]
-        assert "503" in err or "Service unavailable" in err
+        # Error is surfaced in the errors list.
+        assert result["errors"] is not None
+        assert any("503" in e or "Service unavailable" in e for e in result["errors"])
 
-    async def test_force_sync_returns_last_sync_at(self):
-        """After a successful inline sync, last_sync_at is returned."""
+    async def test_force_sync_returns_total_changes(self):
+        """After a successful inline sync, total_changes reflects batch counts."""
         provider = _SyncCapableProviderDouble(sync_result=([], [], "tok-out"))
         mod, mcp = self._make_module(provider=provider, sync_enabled=False)
         await mod.register_tools(
@@ -1208,7 +1210,7 @@ class TestCalendarForceSyncTool:
         result = await mcp.tools["calendar_force_sync"]()
 
         assert result["status"] == "sync_completed"
-        assert result["last_sync_at"] is not None  # Set by _sync_calendar.
+        assert result["calendars_synced"] == 1
 
     async def test_force_sync_respects_calendar_id_override(self):
         """When calendar_id is passed explicitly, it overrides the config default."""

@@ -1805,6 +1805,26 @@ class _GoogleProvider(CalendarProvider):
         logger.info("Created new calendar %r (id=%s)", name, calendar_id)
         return calendar_id
 
+    async def list_calendars(self) -> list[dict[str, Any]]:
+        """Return all calendars from the authenticated user's calendar list."""
+        calendars: list[dict[str, Any]] = []
+        page_token: str | None = None
+        while True:
+            params: dict[str, Any] = {"maxResults": 250}
+            if page_token is not None:
+                params["pageToken"] = page_token
+            payload = await self._request_google_json(
+                "GET", "/users/me/calendarList", params=params
+            )
+            for entry in payload.get("items", []):
+                if isinstance(entry, dict) and entry.get("id"):
+                    calendars.append(entry)
+            next_token = payload.get("nextPageToken")
+            if not next_token:
+                break
+            page_token = next_token
+        return calendars
+
     async def get_calendar_summary(self, calendar_id: str) -> str | None:
         """Fetch the human-readable summary for a Google Calendar by its ID."""
         normalized = quote(calendar_id, safe="")
@@ -2373,6 +2393,8 @@ class CalendarModule(Module):
         # True when the calendar ID was explicitly configured (credential store),
         # False when it was auto-discovered (shared "Butlers" calendar).
         self._calendar_is_butler_specific: bool = False
+        # All provider calendar IDs discovered at startup (for pull-all sync).
+        self._all_provider_calendar_ids: list[str] = []
 
     @property
     def name(self) -> str:
@@ -3969,42 +3991,66 @@ class CalendarModule(Module):
         ) -> dict[str, Any]:
             """Trigger an immediate sync outside the normal polling schedule (spec section 13.5).
 
-            If sync is not enabled in config, performs a one-off incremental sync
-            and returns the result immediately.  If the background poller is
-            running, signals it to execute immediately.
+            When ``calendar_id`` is omitted, syncs **all** registered provider
+            calendars (pull-all) and pushes internal events to the Butlers
+            calendar.  When a specific ``calendar_id`` is given, syncs only
+            that calendar.
 
             Fail-open: provider errors are recorded in last_sync_error rather than raised.
             """
-            resolved_calendar_id = module._resolve_calendar_id(calendar_id)
-            cfg = module._require_config()
             provider = module._require_provider()
 
-            if cfg.sync.enabled and module._sync_task is not None:
-                # Signal the background poller to sync immediately.
-                module._force_sync_event.set()
+            if calendar_id is not None:
+                # Sync a single specific calendar.
+                resolved = module._resolve_calendar_id(calendar_id)
+                await module._sync_calendar(resolved)
+                # Push internal events to the Butlers Google Calendar.
+                try:
+                    await module._push_internal_events_to_provider()
+                except Exception as exc:
+                    logger.error("Push to provider failed: %s", exc, exc_info=True)
+                sync_state = module._sync_states.get(resolved, CalendarSyncState())
                 return {
-                    "status": "sync_triggered",
+                    "status": "sync_completed",
                     "provider": provider.name,
-                    "calendar_id": resolved_calendar_id,
+                    "calendar_id": resolved,
+                    "last_sync_at": sync_state.last_sync_at,
+                    "last_batch_change_count": sync_state.last_batch_change_count,
+                    "last_sync_error": sync_state.last_sync_error,
                     "projection_freshness": await module._projection_freshness_metadata(),
-                    "message": (
-                        "Immediate sync has been triggered; check calendar_sync_status for results."
-                    ),
                 }
 
-            # Sync not running as background task: run a one-off sync inline.
-            # _sync_calendar swallows provider errors (fail-open, spec section 4.4).
-            # Any error is captured in the sync state's last_sync_error field.
-            await module._sync_calendar(resolved_calendar_id)
+            # No calendar_id: sync ALL registered provider calendars.
+            cal_ids = module._all_provider_calendar_ids
+            if not cal_ids:
+                resolved = module._resolve_calendar_id(None)
+                cal_ids = [resolved]
 
-            sync_state = module._sync_states.get(resolved_calendar_id, CalendarSyncState())
+            total_updated = 0
+            errors: list[str] = []
+            for cid in cal_ids:
+                try:
+                    await module._sync_calendar(cid)
+                except Exception as exc:
+                    errors.append(f"{cid}: {exc}")
+                state = module._sync_states.get(cid, CalendarSyncState())
+                total_updated += state.last_batch_change_count or 0
+                if state.last_sync_error:
+                    errors.append(f"{cid}: {state.last_sync_error}")
+
+            # Push internal events to the Butlers Google Calendar.
+            try:
+                await module._push_internal_events_to_provider()
+            except Exception as exc:
+                logger.error("Push to provider failed: %s", exc, exc_info=True)
+                errors.append(f"push: {exc}")
+
             return {
                 "status": "sync_completed",
                 "provider": provider.name,
-                "calendar_id": resolved_calendar_id,
-                "last_sync_at": sync_state.last_sync_at,
-                "last_batch_change_count": sync_state.last_batch_change_count,
-                "last_sync_error": sync_state.last_sync_error,
+                "calendars_synced": len(cal_ids),
+                "total_changes": total_updated,
+                "errors": errors or None,
                 "projection_freshness": await module._projection_freshness_metadata(),
             }
 
@@ -4103,6 +4149,273 @@ class CalendarModule(Module):
 
         return discovered_id
 
+    async def _discover_and_register_all_calendars(self) -> list[str]:
+        """Discover all Google calendars and register each as a provider source.
+
+        Returns the list of calendar IDs that were registered.
+        """
+        provider = self._require_provider()
+        if not hasattr(provider, "list_calendars"):
+            resolved = self._resolved_calendar_id
+            return [resolved] if resolved else []
+
+        try:
+            calendars = await provider.list_calendars()
+        except Exception as exc:
+            logger.warning("Failed to list calendars for discovery: %s", exc)
+            resolved = self._resolved_calendar_id
+            return [resolved] if resolved else []
+
+        calendar_ids: list[str] = []
+        for cal in calendars:
+            cal_id = cal.get("id")
+            if not cal_id or not isinstance(cal_id, str):
+                continue
+            display_name = cal.get("summaryOverride") or cal.get("summary") or cal_id
+            source_key = f"provider:{provider.name}:{cal_id}"
+            is_butlers_cal = cal_id == self._resolved_calendar_id
+            writable = cal.get("accessRole") in ("owner", "writer")
+            try:
+                await self._ensure_calendar_source(
+                    source_key=source_key,
+                    source_kind=SOURCE_KIND_PROVIDER,
+                    lane="user",
+                    provider=provider.name,
+                    calendar_id=cal_id,
+                    butler_name=self._butler_name if is_butlers_cal else None,
+                    display_name=display_name,
+                    writable=writable,
+                    metadata={
+                        "projection": "provider_sync",
+                        "butler_specific": is_butlers_cal,
+                    },
+                )
+            except Exception as exc:
+                logger.debug("Failed to register calendar source '%s': %s", source_key, exc)
+                continue
+            calendar_ids.append(cal_id)
+
+        logger.info(
+            "Discovered %d calendar(s) for butler '%s'",
+            len(calendar_ids),
+            self._butler_name,
+        )
+        return calendar_ids
+
+    async def _push_internal_events_to_provider(self) -> None:
+        """Push butler-generated events (scheduled tasks, reminders) to the Butlers Google Calendar.
+
+        Creates new Google Calendar events for internal source items that don't
+        yet have a ``calendar_event_id``, and updates existing ones if the title
+        or time has changed. Cancelled/disabled items are deleted from Google.
+        """
+        provider = self._provider
+        if provider is None or self._resolved_calendar_id is None:
+            return
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+
+        cal_id = self._resolved_calendar_id
+        pushed = 0
+        updated = 0
+        deleted = 0
+
+        # --- Push scheduled_tasks ---
+        if await self._table_exists("scheduled_tasks"):
+            rows = await pool.fetch(
+                """
+                SELECT id, name, cron, timezone, start_at, end_at, until_at,
+                       display_title, calendar_event_id, enabled, updated_at
+                FROM scheduled_tasks
+                """
+            )
+            for row in rows:
+                record = dict(row)
+                task_id = record["id"]
+                enabled = record.get("enabled", True)
+                google_event_id = record.get("calendar_event_id")
+                title = str(record.get("display_title") or record.get("name") or "Scheduled task")
+                timezone = str(record.get("timezone") or "UTC")
+                cron_expr = record.get("cron")
+                start_at = self._coerce_datetime(record.get("start_at"))
+                end_at = self._coerce_datetime(record.get("end_at"))
+
+                # Determine event times
+                if cron_expr and start_at is None:
+                    occ_start = _cron_next_occurrence(str(cron_expr), now=datetime.now(UTC))
+                    occ_end = occ_start + timedelta(minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES)
+                elif start_at is not None:
+                    occ_start = start_at
+                    occ_end = end_at or (
+                        start_at + timedelta(minutes=DEFAULT_SCHEDULED_TASK_DURATION_MINUTES)
+                    )
+                else:
+                    continue
+
+                if not enabled and google_event_id:
+                    # Delete from Google
+                    try:
+                        await provider.delete_event(
+                            calendar_id=cal_id, event_id=str(google_event_id)
+                        )
+                    except Exception as exc:
+                        logger.debug("Failed to delete Google event for task %s: %s", task_id, exc)
+                    await pool.execute(
+                        "UPDATE scheduled_tasks SET calendar_event_id = NULL WHERE id = $1",
+                        task_id,
+                    )
+                    deleted += 1
+                elif not enabled:
+                    continue
+                elif google_event_id is None:
+                    # Create in Google
+                    try:
+                        event = await provider.create_event(
+                            calendar_id=cal_id,
+                            payload=CalendarEventCreate(
+                                title=title,
+                                start_at=occ_start,
+                                end_at=occ_end,
+                                timezone=timezone,
+                                description=f"Cron: {cron_expr}" if cron_expr else None,
+                                private_metadata={
+                                    "butler_generated": "true",
+                                    "butler_name": self._butler_name,
+                                    "task_id": str(task_id),
+                                },
+                            ),
+                        )
+                        await pool.execute(
+                            "UPDATE scheduled_tasks SET calendar_event_id = $1 WHERE id = $2",
+                            event.event_id,
+                            task_id,
+                        )
+                        pushed += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to push task %s to Google Calendar: %s", task_id, exc
+                        )
+                else:
+                    # Update existing Google event
+                    try:
+                        await provider.update_event(
+                            calendar_id=cal_id,
+                            event_id=str(google_event_id),
+                            patch=CalendarEventUpdate(
+                                title=title,
+                                start_at=occ_start,
+                                end_at=occ_end,
+                                timezone=timezone,
+                            ),
+                        )
+                        updated += 1
+                    except Exception as exc:
+                        logger.debug("Failed to update Google event for task %s: %s", task_id, exc)
+
+        # --- Push reminders ---
+        if await self._table_exists("reminders"):
+            cols = await self._table_columns("reminders")
+            if "calendar_event_id" not in cols:
+                logger.debug("reminders table lacks calendar_event_id column; skipping push")
+            else:
+                rows = await pool.fetch(
+                    """
+                    SELECT id, title, remind_at, timezone, rrule, cron,
+                           calendar_event_id, status, updated_at
+                    FROM reminders
+                    """
+                )
+                for row in rows:
+                    record = dict(row)
+                    reminder_id = record["id"]
+                    status = str(record.get("status") or "active")
+                    google_event_id = record.get("calendar_event_id")
+                    title = str(record.get("title") or "Reminder")
+                    timezone = str(record.get("timezone") or "UTC")
+                    remind_at = self._coerce_datetime(record.get("remind_at"))
+
+                    if remind_at is None:
+                        continue
+
+                    remind_end = remind_at + timedelta(minutes=15)
+                    is_active = status in ("active", "pending", "snoozed")
+
+                    if not is_active and google_event_id:
+                        try:
+                            await provider.delete_event(
+                                calendar_id=cal_id, event_id=str(google_event_id)
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                "Failed to delete Google event for reminder %s: %s",
+                                reminder_id,
+                                exc,
+                            )
+                        await pool.execute(
+                            "UPDATE reminders SET calendar_event_id = NULL WHERE id = $1",
+                            reminder_id,
+                        )
+                        deleted += 1
+                    elif not is_active:
+                        continue
+                    elif google_event_id is None:
+                        try:
+                            event = await provider.create_event(
+                                calendar_id=cal_id,
+                                payload=CalendarEventCreate(
+                                    title=title,
+                                    start_at=remind_at,
+                                    end_at=remind_end,
+                                    timezone=timezone,
+                                    private_metadata={
+                                        "butler_generated": "true",
+                                        "butler_name": self._butler_name,
+                                        "reminder_id": str(reminder_id),
+                                    },
+                                ),
+                            )
+                            await pool.execute(
+                                "UPDATE reminders SET calendar_event_id = $1 WHERE id = $2",
+                                event.event_id,
+                                reminder_id,
+                            )
+                            pushed += 1
+                        except Exception as exc:
+                            logger.warning(
+                                "Failed to push reminder %s to Google Calendar: %s",
+                                reminder_id,
+                                exc,
+                            )
+                    else:
+                        try:
+                            await provider.update_event(
+                                calendar_id=cal_id,
+                                event_id=str(google_event_id),
+                                patch=CalendarEventUpdate(
+                                    title=title,
+                                    start_at=remind_at,
+                                    end_at=remind_end,
+                                    timezone=timezone,
+                                ),
+                            )
+                            updated += 1
+                        except Exception as exc:
+                            logger.debug(
+                                "Failed to update Google event for reminder %s: %s",
+                                reminder_id,
+                                exc,
+                            )
+
+        if pushed or updated or deleted:
+            logger.info(
+                "Push to Google Calendar complete (butler=%s, created=%d, updated=%d, deleted=%d)",
+                self._butler_name,
+                pushed,
+                updated,
+                deleted,
+            )
+
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Initialize the calendar provider with resolved Google OAuth credentials.
 
@@ -4134,6 +4447,11 @@ class CalendarModule(Module):
         self._provider = provider_cls(self._config, credentials)
 
         self._resolved_calendar_id = await self._resolve_startup_calendar_id(credential_store)
+
+        # Discover all user calendars and register them as sources for pull-all.
+        self._all_provider_calendar_ids = await self._discover_and_register_all_calendars()
+        if not self._all_provider_calendar_ids and self._resolved_calendar_id:
+            self._all_provider_calendar_ids = [self._resolved_calendar_id]
 
         if self._config.sync.enabled:
             self._sync_task = asyncio.create_task(
@@ -5516,10 +5834,19 @@ class CalendarModule(Module):
         logger.debug("Calendar sync poller loop started (interval=%ds)", interval_seconds)
         while True:
             try:
-                # Run sync for the primary calendar.
-                if self._resolved_calendar_id is None:
-                    raise RuntimeError("Calendar ID not resolved; call on_startup first")
-                await self._sync_calendar(self._resolved_calendar_id)
+                # Sync all registered provider calendars (pull-all).
+                cal_ids = self._all_provider_calendar_ids
+                if not cal_ids:
+                    if self._resolved_calendar_id is None:
+                        raise RuntimeError("Calendar ID not resolved; call on_startup first")
+                    cal_ids = [self._resolved_calendar_id]
+                for cal_id in cal_ids:
+                    try:
+                        await self._sync_calendar(cal_id)
+                    except Exception as inner_exc:
+                        logger.error(
+                            "Calendar sync failed for '%s': %s", cal_id, inner_exc, exc_info=True
+                        )
             except Exception as exc:
                 logger.error("Calendar sync poller error: %s", exc, exc_info=True)
 
@@ -5550,6 +5877,11 @@ class CalendarModule(Module):
                 await self._project_internal_sources()
             except Exception as exc:
                 logger.error("Calendar internal projection poller error: %s", exc, exc_info=True)
+            # Push butler events to the Butlers Google Calendar after projection.
+            try:
+                await self._push_internal_events_to_provider()
+            except Exception as exc:
+                logger.error("Push to provider after projection failed: %s", exc, exc_info=True)
             # Sleep for the configured interval before the next run.
             try:
                 await asyncio.sleep(interval_seconds)

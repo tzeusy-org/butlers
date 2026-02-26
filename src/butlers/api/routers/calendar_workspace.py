@@ -706,12 +706,25 @@ async def sync_workspace(
             raise HTTPException(status_code=404, detail="Requested source was not found")
         target_rows = source_rows
     else:
-        if request.butler:
-            if request.butler not in db.butler_names:
-                raise HTTPException(status_code=404, detail=f"Unknown butler: {request.butler}")
-            target_rows = [{"db_butler": request.butler}]
-        else:
-            target_rows = [{"db_butler": name} for name in db.butler_names]
+        # Fetch all provider_event sources so we sync every registered calendar,
+        # not just each butler's single default resolved calendar ID.
+        source_rows = await _fetch_sources(
+            db,
+            butlers=[request.butler] if request.butler else None,
+        )
+        if request.butler and request.butler not in db.butler_names:
+            raise HTTPException(status_code=404, detail=f"Unknown butler: {request.butler}")
+        # Keep only provider_event sources with a calendar_id; deduplicate by
+        # (butler, calendar_id) so we don't hit the same Google API twice.
+        seen: set[tuple[str, str]] = set()
+        for row in source_rows:
+            if row.get("source_kind") != "provider_event" or not row.get("calendar_id"):
+                continue
+            key = (str(row["db_butler"]), str(row["calendar_id"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            target_rows.append(row)
 
     async def _sync_target(
         *,
@@ -750,8 +763,17 @@ async def sync_workspace(
         targets = list(
             await asyncio.gather(
                 *[
-                    _sync_target(butler_name=str(target["db_butler"]), call_args={})
-                    for target in target_rows
+                    _sync_target(
+                        butler_name=str(source["db_butler"]),
+                        call_args=(
+                            {"calendar_id": source["calendar_id"]}
+                            if source.get("calendar_id")
+                            else {}
+                        ),
+                        source_key=source.get("source_key"),
+                        calendar_id=source.get("calendar_id"),
+                    )
+                    for source in target_rows
                 ]
             )
         )

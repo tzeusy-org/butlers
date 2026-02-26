@@ -291,6 +291,30 @@ class TestWorkspaceMeta:
 
 class TestWorkspaceSync:
     async def test_sync_all_triggers_each_target_butler(self):
+        source_rows = {
+            "general": [
+                _workspace_source_row(
+                    source_key="provider:google:primary",
+                    source_kind="provider_event",
+                    lane="user",
+                    butler_name=None,
+                    provider="google",
+                    calendar_id="primary",
+                    writable=True,
+                ),
+            ],
+            "relationship": [
+                _workspace_source_row(
+                    source_key="provider:google:butlers",
+                    source_kind="provider_event",
+                    lane="user",
+                    butler_name=None,
+                    provider="google",
+                    calendar_id="butlers-cal",
+                    writable=True,
+                ),
+            ],
+        }
         general_client = AsyncMock()
         relationship_client = AsyncMock()
         general_client.call_tool = AsyncMock(
@@ -300,7 +324,8 @@ class TestWorkspaceSync:
             return_value=_mock_mcp_result({"status": "sync_triggered"})
         )
         app, _, _ = _build_app(
-            mcp_clients={"general": general_client, "relationship": relationship_client}
+            source_rows=source_rows,
+            mcp_clients={"general": general_client, "relationship": relationship_client},
         )
 
         async with httpx.AsyncClient(
@@ -312,16 +337,45 @@ class TestWorkspaceSync:
         data = resp.json()["data"]
         assert data["scope"] == "all"
         assert data["triggered_count"] == 2
-        general_client.call_tool.assert_awaited_once_with("calendar_force_sync", {})
-        relationship_client.call_tool.assert_awaited_once_with("calendar_force_sync", {})
+        general_client.call_tool.assert_awaited_once_with(
+            "calendar_force_sync", {"calendar_id": "primary"}
+        )
+        relationship_client.call_tool.assert_awaited_once_with(
+            "calendar_force_sync", {"calendar_id": "butlers-cal"}
+        )
 
     async def test_sync_all_preserves_detail_for_string_payloads(self):
+        source_rows = {
+            "general": [
+                _workspace_source_row(
+                    source_key="provider:google:primary",
+                    source_kind="provider_event",
+                    lane="user",
+                    butler_name=None,
+                    provider="google",
+                    calendar_id="primary",
+                    writable=True,
+                ),
+            ],
+            "relationship": [
+                _workspace_source_row(
+                    source_key="provider:google:butlers",
+                    source_kind="provider_event",
+                    lane="user",
+                    butler_name=None,
+                    provider="google",
+                    calendar_id="butlers-cal",
+                    writable=True,
+                ),
+            ],
+        }
         general_client = AsyncMock()
         relationship_client = AsyncMock()
         general_client.call_tool = AsyncMock(return_value=_mock_mcp_result("triggered"))
         relationship_client.call_tool = AsyncMock(return_value=_mock_mcp_result("triggered"))
         app, _, _ = _build_app(
-            mcp_clients={"general": general_client, "relationship": relationship_client}
+            source_rows=source_rows,
+            mcp_clients={"general": general_client, "relationship": relationship_client},
         )
 
         async with httpx.AsyncClient(
