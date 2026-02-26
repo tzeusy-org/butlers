@@ -60,6 +60,9 @@ if _spec is not None and _spec.loader is not None:
     ThreadAffinitySettingsUpdate = _models.ThreadAffinitySettingsUpdate
     ThreadOverrideUpsert = _models.ThreadOverrideUpsert
     ThreadOverrideEntry = _models.ThreadOverrideEntry
+    RoutingInstruction = _models.RoutingInstruction
+    RoutingInstructionCreate = _models.RoutingInstructionCreate
+    RoutingInstructionUpdate = _models.RoutingInstructionUpdate
     validate_condition = _models.validate_condition
     validate_action = _models.validate_action
 else:
@@ -2047,3 +2050,221 @@ async def delete_thread_affinity_override(
         """,
         clean_thread_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Routing instructions — owner-defined routing directives
+# ---------------------------------------------------------------------------
+
+
+def _row_to_routing_instruction(row: Any) -> RoutingInstruction:
+    """Convert an asyncpg Record to a RoutingInstruction model."""
+    return RoutingInstruction(
+        id=str(row["id"]),
+        instruction=row["instruction"],
+        priority=row["priority"],
+        enabled=row["enabled"],
+        created_by=row["created_by"],
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /routing-instructions — list instructions
+# ---------------------------------------------------------------------------
+
+
+@router.get("/routing-instructions", response_model=ApiResponse[list[RoutingInstruction]])
+async def list_routing_instructions(
+    enabled: bool | None = Query(None, description="Filter by enabled state"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[RoutingInstruction]]:
+    """List active (non-deleted) routing instructions.
+
+    Results are ordered by priority ASC, created_at ASC for deterministic
+    prompt injection ordering.
+    """
+    pool = _pool(db)
+
+    conditions = ["deleted_at IS NULL"]
+    args: list[Any] = []
+    idx = 1
+
+    if enabled is not None:
+        conditions.append(f"enabled = ${idx}")
+        args.append(enabled)
+        idx += 1
+
+    where = " WHERE " + " AND ".join(conditions)
+
+    rows = await pool.fetch(
+        f"SELECT id, instruction, priority, enabled,"
+        f" created_by, created_at, updated_at"
+        f" FROM routing_instructions{where}"
+        f" ORDER BY priority ASC, created_at ASC, id ASC",
+        *args,
+    )
+
+    from butlers.api.models import ApiMeta
+
+    return ApiResponse[list[RoutingInstruction]](
+        data=[_row_to_routing_instruction(r) for r in rows],
+        meta=ApiMeta(total=len(rows)),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /routing-instructions — create instruction
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/routing-instructions",
+    response_model=ApiResponse[RoutingInstruction],
+    status_code=201,
+)
+async def create_routing_instruction(
+    body: RoutingInstructionCreate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[RoutingInstruction]:
+    """Create a new routing instruction."""
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        "INSERT INTO routing_instructions"
+        " (instruction, priority, enabled, created_by)"
+        " VALUES ($1, $2, $3, 'dashboard')"
+        " RETURNING id, instruction, priority, enabled,"
+        "           created_by, created_at, updated_at",
+        body.instruction,
+        body.priority,
+        body.enabled,
+    )
+
+    return ApiResponse[RoutingInstruction](data=_row_to_routing_instruction(row))
+
+
+# ---------------------------------------------------------------------------
+# PATCH /routing-instructions/{instruction_id} — update instruction
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/routing-instructions/{instruction_id}",
+    response_model=ApiResponse[RoutingInstruction],
+)
+async def update_routing_instruction(
+    instruction_id: str,
+    body: RoutingInstructionUpdate,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[RoutingInstruction]:
+    """Partially update a routing instruction.
+
+    Supports partial fields: instruction, priority, enabled.
+    Returns 404 when the instruction does not exist or has been soft-deleted.
+    """
+    pool = _pool(db)
+
+    try:
+        UUID(instruction_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="instruction_id must be a valid UUID")
+
+    existing = await pool.fetchrow(
+        "SELECT id FROM routing_instructions WHERE id = $1 AND deleted_at IS NULL",
+        instruction_id,
+    )
+    if existing is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Routing instruction '{instruction_id}' not found",
+        )
+
+    updates: dict[str, Any] = {}
+    if body.instruction is not None:
+        updates["instruction"] = body.instruction
+    if body.priority is not None:
+        updates["priority"] = body.priority
+    if body.enabled is not None:
+        updates["enabled"] = body.enabled
+
+    if not updates:
+        row = await pool.fetchrow(
+            "SELECT id, instruction, priority, enabled,"
+            " created_by, created_at, updated_at"
+            " FROM routing_instructions WHERE id = $1",
+            instruction_id,
+        )
+        return ApiResponse[RoutingInstruction](data=_row_to_routing_instruction(row))
+
+    set_parts: list[str] = []
+    args: list[Any] = []
+    idx = 1
+
+    for col, value in updates.items():
+        set_parts.append(f"{col} = ${idx}")
+        args.append(value)
+        idx += 1
+
+    set_parts.append(f"updated_at = ${idx}")
+    args.append(datetime.datetime.now(datetime.UTC))
+    idx += 1
+
+    args.append(instruction_id)
+
+    row = await pool.fetchrow(
+        f"UPDATE routing_instructions SET {', '.join(set_parts)}"
+        f" WHERE id = ${idx} AND deleted_at IS NULL"
+        f" RETURNING id, instruction, priority, enabled,"
+        f"           created_by, created_at, updated_at",
+        *args,
+    )
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Routing instruction '{instruction_id}' not found",
+        )
+
+    return ApiResponse[RoutingInstruction](data=_row_to_routing_instruction(row))
+
+
+# ---------------------------------------------------------------------------
+# DELETE /routing-instructions/{instruction_id} — soft-delete instruction
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/routing-instructions/{instruction_id}", status_code=204)
+async def delete_routing_instruction(
+    instruction_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Soft-delete a routing instruction.
+
+    Sets ``deleted_at=NOW()`` and ``enabled=FALSE``.
+    Returns 204 No Content on success.
+    Returns 404 when the instruction does not exist or is already deleted.
+    """
+    pool = _pool(db)
+
+    try:
+        UUID(instruction_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="instruction_id must be a valid UUID")
+
+    now = datetime.datetime.now(datetime.UTC)
+    result = await pool.execute(
+        "UPDATE routing_instructions"
+        " SET deleted_at = $1, enabled = FALSE, updated_at = $1"
+        " WHERE id = $2 AND deleted_at IS NULL",
+        now,
+        instruction_id,
+    )
+
+    rows_affected = int(result.split(" ")[-1]) if result else 0
+    if rows_affected == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Routing instruction '{instruction_id}' not found",
+        )

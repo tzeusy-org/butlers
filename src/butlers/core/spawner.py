@@ -178,18 +178,30 @@ def _merge_tool_call_records(
     return merged
 
 
-def _compose_system_prompt(base_system_prompt: str, memory_context: str | None) -> str:
-    """Compose the runtime system prompt from base instructions and memory context.
+def _compose_system_prompt(
+    base_system_prompt: str,
+    memory_context: str | None,
+    routing_instructions: str | None = None,
+) -> str:
+    """Compose the runtime system prompt from base instructions, routing instructions, and memory.
+
+    Layering order (stable for token-cache efficiency):
+    1. Base system prompt (CLAUDE.md — static)
+    2. Owner routing instructions (semi-static, sorted by priority)
+    3. Memory context (dynamic per-request)
 
     Contract:
     - Runtime always receives the raw CLAUDE.md-derived system prompt when no
-      memory context is available.
-    - When memory context is available, it is appended as a suffix separated
-      from the base prompt by exactly one blank line.
+      additional context is available.
+    - Each layer is appended as a suffix separated from the previous by exactly
+      one blank line.
     """
-    if not memory_context:
-        return base_system_prompt
-    return f"{base_system_prompt}\n\n{memory_context}"
+    prompt = base_system_prompt
+    if routing_instructions:
+        prompt = f"{prompt}\n\n{routing_instructions}"
+    if memory_context:
+        prompt = f"{prompt}\n\n{memory_context}"
+    return prompt
 
 
 def _capture_pipeline_routing_context() -> dict[str, Any] | None:
@@ -325,6 +337,59 @@ async def fetch_memory_context(
             exc_info=True,
         )
         return None
+
+
+_ROUTING_INSTRUCTIONS_TABLE = "routing_instructions"
+_missing_routing_instructions_warnings: set[str] = set()
+
+
+async def fetch_routing_instructions(
+    pool: asyncpg.Pool | None,
+    butler_name: str,
+) -> str | None:
+    """Fetch enabled routing instructions and format as a system prompt section.
+
+    Returns a markdown section string ready for injection, or ``None`` when
+    there are no instructions or the table doesn't exist.
+
+    Instructions are sorted by ``(priority ASC, created_at ASC)`` for
+    deterministic ordering that maximises token-cache hit rates.
+    """
+    if pool is None:
+        return None
+
+    try:
+        rows = await pool.fetch(
+            "SELECT instruction FROM routing_instructions"
+            " WHERE enabled = TRUE AND deleted_at IS NULL"
+            " ORDER BY priority ASC, created_at ASC, id ASC"
+        )
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "does not exist" in msg and "routing_instructions" in msg:
+            if butler_name not in _missing_routing_instructions_warnings:
+                _missing_routing_instructions_warnings.add(butler_name)
+                logger.debug(
+                    "routing_instructions table not yet created for %s; skipping",
+                    butler_name,
+                )
+            return None
+        logger.warning(
+            "Failed to fetch routing instructions for %s: %s",
+            butler_name,
+            exc,
+        )
+        return None
+
+    if not rows:
+        return None
+
+    lines = [f"- {row['instruction']}" for row in rows]
+    return (
+        "## Owner Routing Instructions\n\n"
+        "The following routing directives have been set by the owner."
+        " Follow these exactly when classifying and routing messages:\n\n" + "\n".join(lines)
+    )
 
 
 async def store_session_episode(
@@ -669,6 +734,11 @@ class Spawner:
             # Read system prompt
             system_prompt = read_system_prompt(self._config_dir, self._config.name)
 
+            # Fetch owner routing instructions (switchboard only)
+            routing_ctx: str | None = None
+            if self._config.name == "switchboard":
+                routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)
+
             memory_ctx: str | None = None
             memory_enabled = _memory_module_enabled(self._config)
             if memory_enabled:
@@ -678,7 +748,9 @@ class Spawner:
                     final_prompt,
                     token_budget=_memory_context_token_budget(self._config),
                 )
-            system_prompt = _compose_system_prompt(system_prompt, memory_ctx)
+            system_prompt = _compose_system_prompt(
+                system_prompt, memory_ctx, routing_instructions=routing_ctx
+            )
 
             # Build credential env
             env = await _build_env(

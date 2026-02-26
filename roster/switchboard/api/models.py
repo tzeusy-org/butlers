@@ -567,3 +567,69 @@ class ThreadOverrideEntry(BaseModel):
 
     thread_id: str
     mode: str
+
+
+# ---------------------------------------------------------------------------
+# Routing instruction models
+# ---------------------------------------------------------------------------
+
+
+class RoutingInstruction(BaseModel):
+    """A persisted routing instruction returned from the API."""
+
+    id: str
+    instruction: str
+    priority: int
+    enabled: bool
+    created_by: str
+    created_at: str
+    updated_at: str
+
+
+class RoutingInstructionCreate(BaseModel):
+    """Request body for POST /api/switchboard/routing-instructions."""
+
+    instruction: str
+    priority: int = 100
+    enabled: bool = True
+
+    @field_validator("instruction")
+    @classmethod
+    def instruction_nonempty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("instruction must be non-empty")
+        return v.strip()
+
+    @field_validator("priority")
+    @classmethod
+    def priority_non_negative(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("priority must be >= 0")
+        return v
+
+
+class RoutingInstructionUpdate(BaseModel):
+    """Request body for PATCH /api/switchboard/routing-instructions/{id}.
+
+    All fields are optional (partial update).
+    """
+
+    instruction: str | None = None
+    priority: int | None = None
+    enabled: bool | None = None
+
+    @field_validator("instruction")
+    @classmethod
+    def instruction_nonempty(cls, v: str | None) -> str | None:
+        if v is not None:
+            if not v.strip():
+                raise ValueError("instruction must be non-empty")
+            return v.strip()
+        return v
+
+    @field_validator("priority")
+    @classmethod
+    def priority_non_negative(cls, v: int | None) -> int | None:
+        if v is not None and v < 0:
+            raise ValueError("priority must be >= 0")
+        return v
