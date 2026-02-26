@@ -13,6 +13,11 @@ from butlers.tools.education.analytics import (
     analytics_get_snapshot,
     analytics_get_trend,
 )
+from butlers.tools.education.curriculum import (
+    curriculum_generate,
+    curriculum_next_node,
+    curriculum_replan,
+)
 from butlers.tools.education.diagnostic import (
     diagnostic_complete,
     diagnostic_record_probe,
@@ -88,4 +93,8 @@ __all__ = [
     "diagnostic_start",
     "diagnostic_record_probe",
     "diagnostic_complete",
+    # curriculum planning
+    "curriculum_generate",
+    "curriculum_replan",
+    "curriculum_next_node",
 ]
