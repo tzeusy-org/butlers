@@ -58,6 +58,7 @@ if _models_path.exists():
         ContactPatchRequest = _models_module.ContactPatchRequest
         CreateContactInfoRequest = _models_module.CreateContactInfoRequest
         CreateContactInfoResponse = _models_module.CreateContactInfoResponse
+        PatchContactInfoRequest = _models_module.PatchContactInfoRequest
         OwnerSetupStatus = _models_module.OwnerSetupStatus
 
 logger = logging.getLogger(__name__)
@@ -744,6 +745,44 @@ async def patch_contact(
 
 
 # ---------------------------------------------------------------------------
+# DELETE /contacts/{contact_id}
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/contacts/{contact_id}", status_code=204)
+async def delete_contact(
+    contact_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Hard-delete a contact and all its associated contact_info.
+
+    CASCADE on shared.contact_info FK handles info cleanup.
+    Source links in contacts_source_links are also removed so a
+    future sync can re-create the contact from scratch if needed.
+    """
+    pool = _pool(db)
+
+    existing = await pool.fetchrow(
+        "SELECT id FROM contacts WHERE id = $1",
+        contact_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    # Remove source links so re-sync can recreate cleanly
+    has_source_links = await pool.fetchval(
+        "SELECT to_regclass('contacts_source_links') IS NOT NULL"
+    )
+    if has_source_links:
+        await pool.execute(
+            "DELETE FROM contacts_source_links WHERE contact_id = $1",
+            contact_id,
+        )
+
+    await pool.execute("DELETE FROM contacts WHERE id = $1", contact_id)
+
+
+# ---------------------------------------------------------------------------
 # POST /contacts/{contact_id}/confirm
 # ---------------------------------------------------------------------------
 
@@ -998,6 +1037,97 @@ async def create_contact_info(
         value=row["value"],
         is_primary=row["is_primary"],
         secured=row["secured"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /contacts/{contact_id}/contact-info/{info_id}
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/contacts/{contact_id}/contact-info/{info_id}", status_code=204)
+async def delete_contact_info(
+    contact_id: UUID,
+    info_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Delete a single contact_info entry."""
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        "SELECT id FROM shared.contact_info WHERE id = $1 AND contact_id = $2",
+        info_id,
+        contact_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Contact info entry not found")
+
+    await pool.execute("DELETE FROM shared.contact_info WHERE id = $1", info_id)
+
+
+# ---------------------------------------------------------------------------
+# PATCH /contacts/{contact_id}/contact-info/{info_id}
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/contacts/{contact_id}/contact-info/{info_id}",
+    response_model=ContactInfoEntry,
+)
+async def patch_contact_info(
+    contact_id: UUID,
+    info_id: UUID,
+    request: PatchContactInfoRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ContactInfoEntry:
+    """Update a contact_info entry (type, value, is_primary)."""
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        "SELECT id FROM shared.contact_info WHERE id = $1 AND contact_id = $2",
+        info_id,
+        contact_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Contact info entry not found")
+
+    updates: list[str] = []
+    args: list[Any] = []
+    idx = 1
+
+    if request.type is not None:
+        updates.append(f"type = ${idx}")
+        args.append(request.type)
+        idx += 1
+
+    if request.value is not None:
+        updates.append(f"value = ${idx}")
+        args.append(request.value)
+        idx += 1
+
+    if request.is_primary is not None:
+        updates.append(f"is_primary = ${idx}")
+        args.append(request.is_primary)
+        idx += 1
+
+    if updates:
+        set_clause = ", ".join(updates)
+        args.append(info_id)
+        await pool.execute(
+            f"UPDATE shared.contact_info SET {set_clause} WHERE id = ${idx}",
+            *args,
+        )
+
+    updated = await pool.fetchrow(
+        "SELECT id, type, value, is_primary, secured FROM shared.contact_info WHERE id = $1",
+        info_id,
+    )
+    return ContactInfoEntry(
+        id=updated["id"],
+        type=updated["type"],
+        value=updated["value"],
+        is_primary=updated["is_primary"],
+        secured=updated["secured"],
     )
 
 

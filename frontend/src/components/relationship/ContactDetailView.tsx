@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { useNavigate } from "react-router";
 import { format, formatDistanceToNow } from "date-fns";
-import { Pencil, Plus, X, Check } from "lucide-react";
+import { Pencil, Plus, Trash2, X, Check } from "lucide-react";
 import { toast } from "sonner";
 
 import type {
@@ -47,7 +48,10 @@ import {
   useContactLoans,
   useContactNotes,
   useCreateContactInfo,
+  useDeleteContact,
+  useDeleteContactInfo,
   usePatchContact,
+  usePatchContactInfo,
   useRevealContactSecret,
 } from "@/hooks/use-contacts";
 
@@ -185,7 +189,137 @@ function SecuredInfoEntry({
 }
 
 // ---------------------------------------------------------------------------
-// Contact Info section (read-only)
+// Editable contact_info row
+// ---------------------------------------------------------------------------
+
+function ContactInfoRow({
+  entry,
+  contactId,
+}: {
+  entry: ContactInfoEntry;
+  contactId: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(entry.value ?? "");
+  const deleteInfo = useDeleteContactInfo();
+  const patchInfo = usePatchContactInfo();
+
+  function handleDelete() {
+    if (!window.confirm(`Delete this ${entry.type} entry?`)) return;
+    deleteInfo.mutate(
+      { contactId, infoId: entry.id },
+      {
+        onSuccess: () => toast.success(`Removed ${entry.type} entry.`),
+        onError: (err) =>
+          toast.error(`Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`),
+      },
+    );
+  }
+
+  function handleSaveEdit() {
+    const trimmed = editValue.trim();
+    if (!trimmed) {
+      toast.error("Value cannot be empty.");
+      return;
+    }
+    if (trimmed === entry.value) {
+      setEditing(false);
+      return;
+    }
+    patchInfo.mutate(
+      { contactId, infoId: entry.id, request: { value: trimmed } },
+      {
+        onSuccess: () => {
+          toast.success(`Updated ${entry.type} entry.`);
+          setEditing(false);
+        },
+        onError: (err) =>
+          toast.error(`Failed to update: ${err instanceof Error ? err.message : "Unknown error"}`),
+      },
+    );
+  }
+
+  return (
+    <div className="flex gap-2 items-center group">
+      <span className="text-muted-foreground text-sm w-28 shrink-0 capitalize">
+        {entry.type}
+        {entry.is_primary && (
+          <span className="ml-1 text-xs text-blue-500">(primary)</span>
+        )}
+      </span>
+      {editing ? (
+        <div className="flex items-center gap-1 flex-1">
+          <Input
+            className="h-7 text-sm flex-1"
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            disabled={patchInfo.isPending}
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleSaveEdit();
+              if (e.key === "Escape") setEditing(false);
+            }}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0"
+            onClick={handleSaveEdit}
+            disabled={patchInfo.isPending}
+          >
+            <Check className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0"
+            onClick={() => {
+              setEditValue(entry.value ?? "");
+              setEditing(false);
+            }}
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      ) : (
+        <>
+          <span className="flex-1">
+            <SecuredInfoEntry entry={entry} contactId={contactId} />
+          </span>
+          <span className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            {!entry.secured && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0"
+                onClick={() => {
+                  setEditValue(entry.value ?? "");
+                  setEditing(true);
+                }}
+                title="Edit"
+              >
+                <Pencil className="h-3 w-3" />
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 w-6 p-0 text-destructive hover:text-destructive"
+              onClick={handleDelete}
+              disabled={deleteInfo.isPending}
+              title="Delete"
+            >
+              <Trash2 className="h-3 w-3" />
+            </Button>
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Contact Info section
 // ---------------------------------------------------------------------------
 
 function ContactInfoSection({ contact }: { contact: ContactDetail }) {
@@ -200,15 +334,7 @@ function ContactInfoSection({ contact }: { contact: ContactDetail }) {
       {/* Structured contact_info entries */}
       {hasContactInfo &&
         contact.contact_info.map((entry) => (
-          <div key={entry.id} className="flex gap-2 items-start">
-            <span className="text-muted-foreground text-sm w-28 shrink-0 capitalize">
-              {entry.type}
-              {entry.is_primary && (
-                <span className="ml-1 text-xs text-blue-500">(primary)</span>
-              )}
-            </span>
-            <SecuredInfoEntry entry={entry} contactId={contact.id} />
-          </div>
+          <ContactInfoRow key={entry.id} entry={entry} contactId={contact.id} />
         ))}
 
       {/* Legacy flat fields (shown if no contact_info entries cover them) */}
@@ -689,8 +815,22 @@ function ActivityTab({ contactId }: { contactId: string }) {
 // ---------------------------------------------------------------------------
 
 export default function ContactDetailView({ contact }: ContactDetailViewProps) {
+  const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
   const [addingInfo, setAddingInfo] = useState(false);
+  const deleteContactMutation = useDeleteContact();
+
+  function handleDeleteContact() {
+    if (!window.confirm(`Delete "${contact.full_name}"? This cannot be undone.`)) return;
+    deleteContactMutation.mutate(contact.id, {
+      onSuccess: () => {
+        toast.success(`Deleted ${contact.full_name}.`);
+        navigate("/contacts");
+      },
+      onError: (err) =>
+        toast.error(`Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`),
+    });
+  }
 
   return (
     <div className="space-y-6">
@@ -758,6 +898,16 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
                   title="Edit contact"
                 >
                   <Pencil className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                  onClick={handleDeleteContact}
+                  disabled={deleteContactMutation.isPending}
+                  title="Delete contact"
+                >
+                  <Trash2 className="h-4 w-4" />
                 </Button>
               </div>
             )}

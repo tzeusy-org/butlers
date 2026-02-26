@@ -118,6 +118,17 @@ class CreateContactInfoRequest(BaseModel):
     secured: bool = False
 
 
+class PatchContactInfoRequest(BaseModel):
+    """Request body for PATCH /contacts/{id}/contact-info/{info_id}.
+
+    All fields are optional; only provided fields are updated.
+    """
+
+    type: str | None = None
+    value: str | None = None
+    is_primary: bool | None = None
+
+
 class CreateContactInfoResponse(BaseModel):
     """Response for POST /contacts/{id}/contact-info."""
 

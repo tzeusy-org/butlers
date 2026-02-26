@@ -112,6 +112,7 @@ import type {
   ContactPatchRequest,
   CreateContactInfoRequest,
   CreateContactInfoResponse,
+  PatchContactInfoRequest,
   OwnerSetupStatus,
 } from "./types.ts";
 
@@ -765,6 +766,37 @@ export function createContactInfo(
   return apiFetch<CreateContactInfoResponse>(
     `/relationship/contacts/${encodeURIComponent(contactId)}/contact-info`,
     { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+/** Delete a contact (hard-delete). */
+export function deleteContact(contactId: string): Promise<void> {
+  return apiFetch<void>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** Delete a contact_info entry. */
+export function deleteContactInfo(
+  contactId: string,
+  infoId: string,
+): Promise<void> {
+  return apiFetch<void>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/contact-info/${encodeURIComponent(infoId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** Update a contact_info entry (type, value, is_primary). */
+export function patchContactInfo(
+  contactId: string,
+  infoId: string,
+  request: PatchContactInfoRequest,
+): Promise<ContactInfoEntry> {
+  return apiFetch<ContactInfoEntry>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/contact-info/${encodeURIComponent(infoId)}`,
+    { method: "PATCH", body: JSON.stringify(request) },
   );
 }
 

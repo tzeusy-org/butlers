@@ -8,6 +8,8 @@ import { toast } from "sonner";
 import {
   confirmContact,
   createContactInfo,
+  deleteContact,
+  deleteContactInfo,
   getContact,
   getContactFeed,
   getContactGifts,
@@ -21,10 +23,11 @@ import {
   getPendingContacts,
   mergeContact,
   patchContact,
+  patchContactInfo,
   revealContactSecret,
   getUpcomingDates,
 } from "@/api/index.ts";
-import type { ContactMergeRequest, ContactPatchRequest, CreateContactInfoRequest, ContactParams, GroupParams } from "@/api/index.ts";
+import type { ContactMergeRequest, ContactPatchRequest, CreateContactInfoRequest, PatchContactInfoRequest, ContactParams, GroupParams } from "@/api/index.ts";
 
 /** Fetch a paginated list of contacts. */
 export function useContacts(params?: ContactParams) {
@@ -197,6 +200,51 @@ export function useCreateContactInfo() {
       void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
       void queryClient.invalidateQueries({ queryKey: ["owner-setup-status"] });
+    },
+  });
+}
+
+/** Hard-delete a contact. */
+export function useDeleteContact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (contactId: string) => deleteContact(contactId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
+    },
+  });
+}
+
+/** Delete a contact_info entry. */
+export function useDeleteContactInfo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contactId, infoId }: { contactId: string; infoId: string }) =>
+      deleteContactInfo(contactId, infoId),
+    onSuccess: (_, { contactId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
+      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      void queryClient.invalidateQueries({ queryKey: ["owner-setup-status"] });
+    },
+  });
+}
+
+/** Update a contact_info entry. */
+export function usePatchContactInfo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      contactId,
+      infoId,
+      request,
+    }: {
+      contactId: string;
+      infoId: string;
+      request: PatchContactInfoRequest;
+    }) => patchContactInfo(contactId, infoId, request),
+    onSuccess: (_, { contactId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
+      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
     },
   });
 }

@@ -764,6 +764,13 @@ export interface CreateContactInfoResponse {
   secured: boolean;
 }
 
+/** Request body for PATCH /contacts/{id}/contact-info/{info_id}. */
+export interface PatchContactInfoRequest {
+  type?: string | null;
+  value?: string | null;
+  is_primary?: boolean | null;
+}
+
 /** A contact group. */
 export interface Group {
   id: string;
