@@ -55,6 +55,15 @@ from butlers.tools.education.spaced_repetition import (
     spaced_repetition_record_response,
     spaced_repetition_schedule_cleanup,
 )
+from butlers.tools.education.teaching_flows import (
+    assemble_session_context,
+    check_stale_flows,
+    teaching_flow_abandon,
+    teaching_flow_advance,
+    teaching_flow_get,
+    teaching_flow_list,
+    teaching_flow_start,
+)
 
 __all__ = [
     # mind map CRUD
@@ -97,4 +106,12 @@ __all__ = [
     "curriculum_generate",
     "curriculum_replan",
     "curriculum_next_node",
+    # teaching flows
+    "teaching_flow_start",
+    "teaching_flow_get",
+    "teaching_flow_advance",
+    "teaching_flow_abandon",
+    "teaching_flow_list",
+    "assemble_session_context",
+    "check_stale_flows",
 ]
