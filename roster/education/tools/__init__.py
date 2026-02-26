@@ -1,4 +1,4 @@
-"""Education butler tools — mind maps, nodes, edges, queries, mastery, and spaced repetition.
+"""Education butler tools — mind maps, nodes, edges, queries, mastery, spaced repetition, and analytics.
 
 Re-exports all public symbols from the education tool sub-modules so that
 ``from butlers.tools.education import X`` works as a stable public API.
@@ -6,6 +6,13 @@ Re-exports all public symbols from the education tool sub-modules so that
 
 from __future__ import annotations
 
+from butlers.tools.education.analytics import (
+    analytics_compute_all,
+    analytics_compute_snapshot,
+    analytics_get_cross_topic,
+    analytics_get_snapshot,
+    analytics_get_trend,
+)
 from butlers.tools.education.mastery import (
     mastery_detect_struggles,
     mastery_get_map_summary,
@@ -66,4 +73,10 @@ __all__ = [
     "spaced_repetition_record_response",
     "spaced_repetition_pending_reviews",
     "spaced_repetition_schedule_cleanup",
+    # analytics
+    "analytics_compute_snapshot",
+    "analytics_compute_all",
+    "analytics_get_snapshot",
+    "analytics_get_trend",
+    "analytics_get_cross_topic",
 ]
