@@ -250,7 +250,7 @@ class TestListSchedules:
         start_at = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
         end_at = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
         until_at = datetime(2026, 4, 1, 14, 0, tzinfo=UTC)
-        calendar_event_id = uuid4()
+        calendar_event_id = "abc123def456ghi789jklmnop0"
         row = _make_schedule_record(
             schedule_id=uuid4(),
             name="medication-check",
@@ -274,7 +274,7 @@ class TestListSchedules:
         assert datetime.fromisoformat(schedule["end_at"].replace("Z", "+00:00")) == end_at
         assert datetime.fromisoformat(schedule["until_at"].replace("Z", "+00:00")) == until_at
         assert schedule["display_title"] == "Medication check"
-        assert schedule["calendar_event_id"] == str(calendar_event_id)
+        assert schedule["calendar_event_id"] == calendar_event_id
 
     async def test_legacy_schedule_row_defaults_to_prompt_mode(self):
         """Legacy DB rows without mode columns remain readable."""

@@ -35,9 +35,7 @@ def _normalize_schedule_projection_fields(
     display_title: Any,
     calendar_event_id: Any,
     context: str,
-) -> tuple[
-    str | None, datetime | None, datetime | None, datetime | None, str | None, uuid.UUID | None
-]:
+) -> tuple[str | None, datetime | None, datetime | None, datetime | None, str | None, str | None]:
     """Validate optional calendar-projection fields used by scheduler rows."""
     normalized_timezone: str | None = None
     if timezone is not None:
@@ -94,14 +92,17 @@ def _normalize_schedule_projection_fields(
             raise ValueError(f"{context}.display_title must be non-empty when set")
         normalized_display_title = stripped
 
-    normalized_calendar_event_id: uuid.UUID | None = None
+    normalized_calendar_event_id: str | None = None
     if calendar_event_id is not None:
         if isinstance(calendar_event_id, uuid.UUID):
-            normalized_calendar_event_id = calendar_event_id
+            normalized_calendar_event_id = str(calendar_event_id)
         elif isinstance(calendar_event_id, str):
-            normalized_calendar_event_id = uuid.UUID(calendar_event_id)
+            stripped = calendar_event_id.strip()
+            if not stripped:
+                raise ValueError(f"{context}.calendar_event_id must be non-empty when set")
+            normalized_calendar_event_id = stripped
         else:
-            raise ValueError(f"{context}.calendar_event_id must be UUID or UUID string when set")
+            raise ValueError(f"{context}.calendar_event_id must be a string when set")
 
     return (
         normalized_timezone,
@@ -572,7 +573,7 @@ async def schedule_create(
     end_at: datetime | None = None,
     until_at: datetime | None = None,
     display_title: str | None = None,
-    calendar_event_id: uuid.UUID | str | None = None,
+    calendar_event_id: str | None = None,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
 ) -> uuid.UUID:

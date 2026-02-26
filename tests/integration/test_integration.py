@@ -56,7 +56,7 @@ CORE_TABLES_SQL = """
         end_at TIMESTAMPTZ,
         until_at TIMESTAMPTZ,
         display_title TEXT,
-        calendar_event_id UUID,
+        calendar_event_id TEXT,
         source TEXT NOT NULL DEFAULT 'db',
         enabled BOOLEAN NOT NULL DEFAULT true,
         next_run_at TIMESTAMPTZ,

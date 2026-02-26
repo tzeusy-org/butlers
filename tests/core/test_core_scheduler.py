@@ -71,7 +71,7 @@ async def pool(postgres_container):
             end_at TIMESTAMPTZ,
             until_at TIMESTAMPTZ,
             display_title TEXT,
-            calendar_event_id UUID,
+            calendar_event_id TEXT,
             source TEXT NOT NULL DEFAULT 'db',
             enabled BOOLEAN NOT NULL DEFAULT true,
             next_run_at TIMESTAMPTZ,
@@ -626,7 +626,7 @@ async def test_schedule_list_includes_projection_linkage_fields(pool):
     """schedule_list returns timezone/window/linkage metadata."""
     from butlers.core.scheduler import schedule_create, schedule_list
 
-    calendar_event_id = uuid.uuid4()
+    calendar_event_id = "abc123def456ghi789jklmnop0"
     start_at = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
     end_at = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
     until_at = datetime(2026, 4, 1, 14, 0, tzinfo=UTC)
@@ -755,7 +755,7 @@ async def test_create_persists_calendar_projection_fields(pool):
     start_at = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
     end_at = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
     until_at = datetime(2026, 4, 1, 14, 0, tzinfo=UTC)
-    calendar_event_id = uuid.uuid4()
+    calendar_event_id = "def456ghi789jklmnop0abcxyz1"
     task_id = await schedule_create(
         pool,
         "projection-create",
@@ -902,7 +902,7 @@ async def test_update_calendar_projection_fields(pool):
     start_at = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
     end_at = datetime(2026, 3, 2, 15, 0, tzinfo=UTC)
     until_at = datetime(2026, 4, 2, 14, 0, tzinfo=UTC)
-    calendar_event_id = uuid.uuid4()
+    calendar_event_id = "ghi789jklmnop0abcxyz1def456"
     await schedule_update(
         pool,
         task_id,

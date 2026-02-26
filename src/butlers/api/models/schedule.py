@@ -58,7 +58,7 @@ class Schedule(BaseModel):
     end_at: datetime | None = None
     until_at: datetime | None = None
     display_title: str | None = None
-    calendar_event_id: UUID | None = None
+    calendar_event_id: str | None = None
     source: str = "db"
     enabled: bool = True
     next_run_at: datetime | None = None
@@ -81,7 +81,7 @@ class ScheduleCreate(BaseModel):
     end_at: AwareDatetime | None = None
     until_at: AwareDatetime | None = None
     display_title: str | None = None
-    calendar_event_id: UUID | None = None
+    calendar_event_id: str | None = None
 
     @model_validator(mode="after")
     def validate_dispatch_payload(self) -> ScheduleCreate:
@@ -130,7 +130,7 @@ class ScheduleUpdate(BaseModel):
     end_at: AwareDatetime | None = None
     until_at: AwareDatetime | None = None
     display_title: str | None = None
-    calendar_event_id: UUID | None = None
+    calendar_event_id: str | None = None
 
     @model_validator(mode="after")
     def validate_dispatch_payload(self) -> ScheduleUpdate:

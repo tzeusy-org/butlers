@@ -141,7 +141,7 @@ async def _create_core_and_shared_tables(dsn: str, schema: str) -> None:
                 end_at TIMESTAMPTZ,
                 until_at TIMESTAMPTZ,
                 display_title TEXT,
-                calendar_event_id UUID,
+                calendar_event_id TEXT,
                 source TEXT NOT NULL DEFAULT 'db',
                 enabled BOOLEAN NOT NULL DEFAULT true,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

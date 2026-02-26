@@ -90,7 +90,7 @@ async def pool(provisioned_postgres_pool):
                 next_trigger_at TIMESTAMPTZ,
                 timezone TEXT NOT NULL DEFAULT 'UTC',
                 until_at TIMESTAMPTZ,
-                calendar_event_id UUID,
+                calendar_event_id TEXT,
                 last_triggered_at TIMESTAMPTZ,
                 created_at TIMESTAMPTZ DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

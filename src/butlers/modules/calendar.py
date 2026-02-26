@@ -4321,25 +4321,25 @@ class CalendarModule(Module):
             else:
                 rows = await pool.fetch(
                     """
-                    SELECT id, title, remind_at, timezone, rrule, cron,
-                           calendar_event_id, status, updated_at
+                    SELECT id, label, message, next_trigger_at, timezone, cron,
+                           calendar_event_id, dismissed, updated_at
                     FROM reminders
                     """
                 )
                 for row in rows:
                     record = dict(row)
                     reminder_id = record["id"]
-                    status = str(record.get("status") or "active")
+                    dismissed = bool(record.get("dismissed", False))
                     google_event_id = record.get("calendar_event_id")
-                    title = str(record.get("title") or "Reminder")
+                    title = str(record.get("label") or record.get("message") or "Reminder")
                     timezone = str(record.get("timezone") or "UTC")
-                    remind_at = self._coerce_datetime(record.get("remind_at"))
+                    remind_at = self._coerce_datetime(record.get("next_trigger_at"))
 
                     if remind_at is None:
                         continue
 
                     remind_end = remind_at + timedelta(minutes=15)
-                    is_active = status in ("active", "pending", "snoozed")
+                    is_active = not dismissed
 
                     if not is_active and google_event_id:
                         try:
@@ -6226,52 +6226,56 @@ class CalendarModule(Module):
             result["due_at"] = result["next_trigger_at"]
         return result
 
-    async def _find_scheduled_task_target(self, event_uuid: uuid.UUID) -> uuid.UUID | None:
+    async def _find_scheduled_task_target(self, event_id: str) -> uuid.UUID | None:
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None or not await self._table_exists("scheduled_tasks"):
             return None
 
         columns = await self._table_columns("scheduled_tasks")
+        # Try calendar_event_id (text) first — works for Google Calendar IDs
         if "calendar_event_id" in columns:
             row = await pool.fetchrow(
-                """
-                SELECT id
-                FROM scheduled_tasks
-                WHERE id = $1 OR calendar_event_id = $1
-                LIMIT 1
-                """,
-                event_uuid,
+                "SELECT id FROM scheduled_tasks WHERE calendar_event_id = $1 LIMIT 1",
+                event_id,
             )
-        else:
-            row = await pool.fetchrow(
-                "SELECT id FROM scheduled_tasks WHERE id = $1 LIMIT 1",
-                event_uuid,
-            )
+            if row is not None:
+                return row["id"]
+        # Try as UUID primary key
+        try:
+            event_uuid = uuid.UUID(event_id)
+        except ValueError:
+            return None
+        row = await pool.fetchrow(
+            "SELECT id FROM scheduled_tasks WHERE id = $1 LIMIT 1",
+            event_uuid,
+        )
         if row is None:
             return None
         return row["id"]
 
-    async def _find_reminder_target(self, event_uuid: uuid.UUID) -> uuid.UUID | None:
+    async def _find_reminder_target(self, event_id: str) -> uuid.UUID | None:
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None or not await self._table_exists("reminders"):
             return None
 
         columns = await self._table_columns("reminders")
+        # Try calendar_event_id (text) first — works for Google Calendar IDs
         if "calendar_event_id" in columns:
             row = await pool.fetchrow(
-                """
-                SELECT id
-                FROM reminders
-                WHERE id = $1 OR calendar_event_id = $1
-                LIMIT 1
-                """,
-                event_uuid,
+                "SELECT id FROM reminders WHERE calendar_event_id = $1 LIMIT 1",
+                event_id,
             )
-        else:
-            row = await pool.fetchrow(
-                "SELECT id FROM reminders WHERE id = $1 LIMIT 1",
-                event_uuid,
-            )
+            if row is not None:
+                return row["id"]
+        # Try as UUID primary key
+        try:
+            event_uuid = uuid.UUID(event_id)
+        except ValueError:
+            return None
+        row = await pool.fetchrow(
+            "SELECT id FROM reminders WHERE id = $1 LIMIT 1",
+            event_uuid,
+        )
         if row is None:
             return None
         return row["id"]
@@ -6286,22 +6290,21 @@ class CalendarModule(Module):
         if not normalized:
             raise ValueError("event_id must be a non-empty string")
 
-        event_uuid = uuid.UUID(normalized)
         if source_hint == BUTLER_EVENT_SOURCE_SCHEDULED:
-            schedule_id = await self._find_scheduled_task_target(event_uuid)
+            schedule_id = await self._find_scheduled_task_target(normalized)
             if schedule_id is None:
                 raise ValueError(f"No scheduled task found for event_id '{event_id}'")
             return BUTLER_EVENT_SOURCE_SCHEDULED, schedule_id
         if source_hint == BUTLER_EVENT_SOURCE_REMINDER:
-            reminder_id = await self._find_reminder_target(event_uuid)
+            reminder_id = await self._find_reminder_target(normalized)
             if reminder_id is None:
                 raise ValueError(f"No reminder found for event_id '{event_id}'")
             return BUTLER_EVENT_SOURCE_REMINDER, reminder_id
 
-        schedule_id = await self._find_scheduled_task_target(event_uuid)
+        schedule_id = await self._find_scheduled_task_target(normalized)
         if schedule_id is not None:
             return BUTLER_EVENT_SOURCE_SCHEDULED, schedule_id
-        reminder_id = await self._find_reminder_target(event_uuid)
+        reminder_id = await self._find_reminder_target(normalized)
         if reminder_id is not None:
             return BUTLER_EVENT_SOURCE_REMINDER, reminder_id
         raise ValueError(f"No butler event found for event_id '{event_id}'")
@@ -6317,7 +6320,7 @@ class CalendarModule(Module):
         cron: str | None,
         action: str,
         action_args: dict[str, Any] | None,
-        calendar_event_id: uuid.UUID,
+        calendar_event_id: str,
     ) -> dict[str, Any]:
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
