@@ -2,9 +2,9 @@
 
 Implements a three-function diagnostic flow:
 
-1. diagnostic_start      — initialise DIAGNOSING state, return concept inventory
+1. diagnostic_start      — initialise diagnosing state, return concept inventory
 2. diagnostic_record_probe — record a probe result, conservatively seed mastery
-3. diagnostic_complete   — finalise diagnostic, transition flow state to PLANNING
+3. diagnostic_complete   — finalise diagnostic, transition flow state to planning
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ async def diagnostic_start(
 ) -> list[dict[str, Any]]:
     """Initialise a diagnostic assessment for a mind map.
 
-    Verifies the mind map exists, guards against re-starts on non-PENDING flows,
+    Verifies the mind map exists, guards against re-starts on non-pending flows,
     builds a concept inventory ranked by node depth, writes flow state to the KV
     store, and returns the inventory list.
 
@@ -61,7 +61,7 @@ async def diagnostic_start(
     Raises
     ------
     ValueError
-        If the mind map does not exist, or the flow is already past PENDING.
+        If the mind map does not exist, or the flow is already past pending.
     """
     # Verify mind map exists
     map_row = await pool.fetchrow(
@@ -76,10 +76,10 @@ async def diagnostic_start(
     existing = await _state_get(pool, flow_key)
     if existing is not None:
         status = existing.get("status", "")
-        if status not in ("", "PENDING"):
+        if status not in ("", "pending"):
             raise ValueError(
                 f"Cannot start diagnostic: flow is already in state {status!r}. "
-                "Only flows with status 'PENDING' (or no flow state) can be diagnosed."
+                "Only flows with status 'pending' (or no flow state) can be diagnosed."
             )
 
     # Fetch all nodes, use depth as proxy for difficulty_rank (0 = easiest)
@@ -106,7 +106,7 @@ async def diagnostic_start(
     # Initialise flow state
     now = _utc_now_iso()
     flow_state: dict[str, Any] = {
-        "status": "DIAGNOSING",
+        "status": "diagnosing",
         "mind_map_id": mind_map_id,
         "concept_inventory": concept_inventory,
         "probes_issued": 0,
@@ -154,7 +154,7 @@ async def diagnostic_record_probe(
     Raises
     ------
     ValueError
-        If validation fails or the flow is not in DIAGNOSING status.
+        If validation fails or the flow is not in diagnosing status.
     """
     # --- input validation ---
     if not (0 <= quality <= 5):
@@ -168,9 +168,9 @@ async def diagnostic_record_probe(
     # --- flow state check ---
     flow_key = _flow_key(mind_map_id)
     flow_state = await _state_get(pool, flow_key)
-    if flow_state is None or flow_state.get("status") != "DIAGNOSING":
+    if flow_state is None or flow_state.get("status") != "diagnosing":
         current = flow_state.get("status") if flow_state else None
-        raise ValueError(f"Cannot record probe: flow must be in DIAGNOSING status, got {current!r}")
+        raise ValueError(f"Cannot record probe: flow must be in diagnosing status, got {current!r}")
 
     # --- DB mutations (atomic) ---
     async with pool.acquire() as conn:
@@ -265,15 +265,15 @@ async def diagnostic_complete(
     Raises
     ------
     ValueError
-        If flow is not in DIAGNOSING status, or if no probes were issued.
+        If flow is not in diagnosing status, or if no probes were issued.
     """
     flow_key = _flow_key(mind_map_id)
     flow_state = await _state_get(pool, flow_key)
 
-    if flow_state is None or flow_state.get("status") != "DIAGNOSING":
+    if flow_state is None or flow_state.get("status") != "diagnosing":
         current = flow_state.get("status") if flow_state else None
         raise ValueError(
-            f"Cannot complete diagnostic: flow must be in DIAGNOSING status, got {current!r}"
+            f"Cannot complete diagnostic: flow must be in diagnosing status, got {current!r}"
         )
 
     if flow_state.get("probes_issued", 0) == 0:
@@ -324,8 +324,8 @@ async def diagnostic_complete(
     total_concepts = len(concept_inventory)
     unprobed_count = total_concepts - len(probed_node_ids)
 
-    # Transition flow state to PLANNING
-    flow_state["status"] = "PLANNING"
+    # Transition flow state to planning
+    flow_state["status"] = "planning"
     flow_state["last_session_at"] = _utc_now_iso()
     await _state_set(pool, flow_key, flow_state)
 

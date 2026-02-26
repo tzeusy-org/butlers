@@ -187,7 +187,7 @@ def _node_inventory_rows() -> list[_MockRecord]:
 
 
 class TestDiagnosticStart:
-    """diagnostic_start sets DIAGNOSING state and returns concept inventory."""
+    """diagnostic_start sets diagnosing state and returns concept inventory."""
 
     async def _make_start_pool(self, *, existing_flow: Any = None) -> tuple[AsyncMock, list]:
         """Helper: pool for diagnostic_start with given existing flow state."""
@@ -230,7 +230,7 @@ class TestDiagnosticStart:
         assert pool.fetchval.await_count == 2
         state_set_call_args = pool.fetchval.call_args_list[1][0]
         stored = json.loads(state_set_call_args[2])
-        assert stored["status"] == "DIAGNOSING"
+        assert stored["status"] == "diagnosing"
         assert stored["mind_map_id"] == MAP_ID
         assert stored["probes_issued"] == 0
         assert stored["diagnostic_results"] == {}
@@ -258,8 +258,8 @@ class TestDiagnosticStart:
     async def test_allows_start_with_pending_flow(self) -> None:
         from butlers.tools.education.diagnostic import diagnostic_start
 
-        pool, _nodes = await self._make_start_pool(existing_flow={"status": "PENDING"})
-        # Should not raise — PENDING is allowed
+        pool, _nodes = await self._make_start_pool(existing_flow={"status": "pending"})
+        # Should not raise — pending is allowed
         inventory = await diagnostic_start(pool, MAP_ID)
         assert len(inventory) == 3
 
@@ -267,7 +267,7 @@ class TestDiagnosticStart:
         from butlers.tools.education.diagnostic import diagnostic_start
 
         pool, _nodes = await self._make_start_pool(
-            existing_flow={"status": "DIAGNOSING", "probes_issued": 1}
+            existing_flow={"status": "diagnosing", "probes_issued": 1}
         )
         with pytest.raises(ValueError, match="already in state"):
             await diagnostic_start(pool, MAP_ID)
@@ -275,14 +275,14 @@ class TestDiagnosticStart:
     async def test_raises_if_flow_in_planning(self) -> None:
         from butlers.tools.education.diagnostic import diagnostic_start
 
-        pool, _nodes = await self._make_start_pool(existing_flow={"status": "PLANNING"})
+        pool, _nodes = await self._make_start_pool(existing_flow={"status": "planning"})
         with pytest.raises(ValueError, match="already in state"):
             await diagnostic_start(pool, MAP_ID)
 
     async def test_raises_if_flow_in_teaching(self) -> None:
         from butlers.tools.education.diagnostic import diagnostic_start
 
-        pool, _nodes = await self._make_start_pool(existing_flow={"status": "TEACHING"})
+        pool, _nodes = await self._make_start_pool(existing_flow={"status": "teaching"})
         with pytest.raises(ValueError, match="already in state"):
             await diagnostic_start(pool, MAP_ID)
 
@@ -318,7 +318,7 @@ def _make_record_probe_pool(
     - conn.execute[1]: UPDATE mastery (only when quality >= 3 and mastery_status='unseen')
     """
     default_flow: dict[str, Any] = {
-        "status": "DIAGNOSING",
+        "status": "diagnosing",
         "mind_map_id": MAP_ID,
         "probes_issued": 0,
         "diagnostic_results": {},
@@ -382,9 +382,9 @@ class TestDiagnosticRecordProbe:
         from butlers.tools.education.diagnostic import diagnostic_record_probe
 
         pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=json.dumps({"status": "PLANNING"}))
+        pool.fetchval = AsyncMock(return_value=json.dumps({"status": "planning"}))
 
-        with pytest.raises(ValueError, match="DIAGNOSING"):
+        with pytest.raises(ValueError, match="diagnosing"):
             await diagnostic_record_probe(pool, MAP_ID, NODE_ID_A, quality=3, inferred_mastery=0.5)
 
     async def test_no_flow_state_raises(self) -> None:
@@ -393,7 +393,7 @@ class TestDiagnosticRecordProbe:
         pool = MagicMock()
         pool.fetchval = AsyncMock(return_value=None)
 
-        with pytest.raises(ValueError, match="DIAGNOSING"):
+        with pytest.raises(ValueError, match="diagnosing"):
             await diagnostic_record_probe(pool, MAP_ID, NODE_ID_A, quality=3, inferred_mastery=0.5)
 
     async def test_node_not_in_map_raises(self) -> None:
@@ -516,7 +516,7 @@ class TestDiagnosticRecordProbe:
 
         # Simulate flow state already having 2 probes
         existing_flow: dict[str, Any] = {
-            "status": "DIAGNOSING",
+            "status": "diagnosing",
             "mind_map_id": MAP_ID,
             "probes_issued": 2,
             "diagnostic_results": {},
@@ -537,7 +537,7 @@ class TestDiagnosticRecordProbe:
             pool, MAP_ID, NODE_ID_A, quality=3, inferred_mastery=0.5
         )
 
-        assert result["status"] == "DIAGNOSING"
+        assert result["status"] == "diagnosing"
         assert result["mind_map_id"] == MAP_ID
         assert NODE_ID_A in result["diagnostic_results"]
 
@@ -603,7 +603,7 @@ def _make_complete_pool(
     - fetchval[1]: state_set RETURNING version — returns int
     """
     default_flow: dict[str, Any] = {
-        "status": "DIAGNOSING",
+        "status": "diagnosing",
         "mind_map_id": MAP_ID,
         "probes_issued": 2,
         "diagnostic_results": {
@@ -637,7 +637,7 @@ def _make_complete_pool(
 
 
 class TestDiagnosticComplete:
-    """diagnostic_complete finalises diagnostic and transitions to PLANNING."""
+    """diagnostic_complete finalises diagnostic and transitions to planning."""
 
     async def test_transitions_flow_to_planning(self) -> None:
         from butlers.tools.education.diagnostic import diagnostic_complete
@@ -650,14 +650,14 @@ class TestDiagnosticComplete:
         assert pool.fetchval.await_count == 2
         state_set_call_args = pool.fetchval.call_args_list[1][0]
         stored = json.loads(state_set_call_args[2])
-        assert stored["status"] == "PLANNING"
+        assert stored["status"] == "planning"
 
     async def test_raises_if_not_diagnosing(self) -> None:
         from butlers.tools.education.diagnostic import diagnostic_complete
 
-        flow: dict[str, Any] = {"status": "PLANNING", "probes_issued": 1, "diagnostic_results": {}}
+        flow: dict[str, Any] = {"status": "planning", "probes_issued": 1, "diagnostic_results": {}}
         pool = _make_complete_pool(flow_state=flow)
-        with pytest.raises(ValueError, match="DIAGNOSING"):
+        with pytest.raises(ValueError, match="diagnosing"):
             await diagnostic_complete(pool, MAP_ID)
 
     async def test_raises_if_no_flow_state(self) -> None:
@@ -665,14 +665,14 @@ class TestDiagnosticComplete:
 
         pool = MagicMock()
         pool.fetchval = AsyncMock(return_value=None)
-        with pytest.raises(ValueError, match="DIAGNOSING"):
+        with pytest.raises(ValueError, match="diagnosing"):
             await diagnostic_complete(pool, MAP_ID)
 
     async def test_raises_if_zero_probes_issued(self) -> None:
         from butlers.tools.education.diagnostic import diagnostic_complete
 
         flow: dict[str, Any] = {
-            "status": "DIAGNOSING",
+            "status": "diagnosing",
             "mind_map_id": MAP_ID,
             "probes_issued": 0,
             "diagnostic_results": {},
@@ -737,7 +737,7 @@ class TestDiagnosticComplete:
         from butlers.tools.education.diagnostic import diagnostic_complete
 
         flow: dict[str, Any] = {
-            "status": "DIAGNOSING",
+            "status": "diagnosing",
             "mind_map_id": MAP_ID,
             "probes_issued": 2,
             "diagnostic_results": {
@@ -773,7 +773,7 @@ class TestDiagnosticComplete:
         from butlers.tools.education.diagnostic import diagnostic_complete
 
         flow: dict[str, Any] = {
-            "status": "DIAGNOSING",
+            "status": "diagnosing",
             "mind_map_id": MAP_ID,
             "probes_issued": 3,
             "diagnostic_results": {
@@ -827,7 +827,7 @@ class TestDiagnosticComplete:
         from butlers.tools.education.diagnostic import diagnostic_complete
 
         flow: dict[str, Any] = {
-            "status": "DIAGNOSING",
+            "status": "diagnosing",
             "mind_map_id": MAP_ID,
             "probes_issued": 2,
             "diagnostic_results": {
