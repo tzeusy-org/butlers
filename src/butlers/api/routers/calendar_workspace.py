@@ -456,14 +456,19 @@ async def _fetch_workspace_rows(
 
     # Deduplicate across butler databases: the same Google Calendar event
     # is synced into every butler's projection tables.  Keep only one
-    # instance per (origin_instance_ref, source_kind, calendar_id) tuple.
-    seen: set[tuple[str, str, str]] = set()
+    # instance per unique event.  We key on (origin_ref, starts_epoch,
+    # calendar_id) instead of origin_instance_ref because the latter
+    # embeds an isoformat timestamp whose timezone offset can differ
+    # across butler DBs (e.g. +08:00 vs +00:00 for the same instant).
+    seen: set[tuple[str, int, str]] = set()
     deduped: list[dict[str, Any]] = []
     for row in flattened:
-        instance_ref = row.get("origin_instance_ref") or ""
-        source_kind = row.get("source_kind") or ""
+        origin_ref = row.get("origin_ref") or ""
         calendar_id = row.get("calendar_id") or ""
-        key = (instance_ref, source_kind, calendar_id)
+        starts_at = _coerce_datetime(row.get("instance_starts_at"))
+        # Convert to integer epoch (ms) so timezone representation is irrelevant
+        starts_epoch = int(starts_at.timestamp() * 1000) if starts_at else 0
+        key = (origin_ref, starts_epoch, calendar_id)
         if key in seen:
             continue
         seen.add(key)
