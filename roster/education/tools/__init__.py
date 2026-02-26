@@ -1,4 +1,4 @@
-"""Education butler tools — mind maps, nodes, edges, queries, mastery, spaced repetition, and analytics.
+"""Education butler tools — mind maps, nodes, edges, queries, mastery, spaced repetition, analytics, and diagnostic.
 
 Re-exports all public symbols from the education tool sub-modules so that
 ``from butlers.tools.education import X`` works as a stable public API.
@@ -12,6 +12,11 @@ from butlers.tools.education.analytics import (
     analytics_get_cross_topic,
     analytics_get_snapshot,
     analytics_get_trend,
+)
+from butlers.tools.education.diagnostic import (
+    diagnostic_complete,
+    diagnostic_record_probe,
+    diagnostic_start,
 )
 from butlers.tools.education.mastery import (
     mastery_detect_struggles,
@@ -79,4 +84,8 @@ __all__ = [
     "analytics_get_snapshot",
     "analytics_get_trend",
     "analytics_get_cross_topic",
+    # diagnostic assessment
+    "diagnostic_start",
+    "diagnostic_record_probe",
+    "diagnostic_complete",
 ]
