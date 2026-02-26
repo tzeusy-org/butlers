@@ -4222,12 +4222,41 @@ class CalendarModule(Module):
         deleted = 0
 
         # --- Push scheduled_tasks ---
+        # Only push user-facing (prompt) tasks. Job tasks are internal
+        # automation (e.g. eligibility-sweep) and shouldn't appear on the
+        # user's Google Calendar.
         if await self._table_exists("scheduled_tasks"):
+            # Clean up any job tasks that were previously pushed to Google
+            stale_job_rows = await pool.fetch(
+                """
+                SELECT id, calendar_event_id
+                FROM scheduled_tasks
+                WHERE dispatch_mode = 'job' AND calendar_event_id IS NOT NULL
+                """
+            )
+            for stale in stale_job_rows:
+                try:
+                    await provider.delete_event(
+                        calendar_id=cal_id, event_id=str(stale["calendar_event_id"])
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to delete stale Google event for job task %s: %s",
+                        stale["id"],
+                        exc,
+                    )
+                await pool.execute(
+                    "UPDATE scheduled_tasks SET calendar_event_id = NULL WHERE id = $1",
+                    stale["id"],
+                )
+                deleted += 1
+
             rows = await pool.fetch(
                 """
                 SELECT id, name, cron, timezone, start_at, end_at, until_at,
                        display_title, calendar_event_id, enabled, updated_at
                 FROM scheduled_tasks
+                WHERE dispatch_mode != 'job'
                 """
             )
             for row in rows:
