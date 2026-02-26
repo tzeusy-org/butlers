@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -377,6 +377,7 @@ async def _fetch_workspace_rows(
         "s.lane = $1",
         "i.starts_at < $2",
         "i.ends_at > $3",
+        "COALESCE(i.status, e.status) != 'cancelled'",
     ]
     args: list[Any] = [view, end, start]
     idx = 4
@@ -628,6 +629,19 @@ async def get_workspace(
             entries.append(_normalize_entry(row, view=view, display_tz=display_tz))
         except ValueError:
             continue
+
+    # Hide noisy events: if the same title appears >20 times on a single
+    # day, suppress all instances of that title for that day.
+    day_title_counts: Counter[tuple[str, str]] = Counter()
+    for entry in entries:
+        day_key = entry.start_at.date().isoformat()
+        day_title_counts[(day_key, entry.title)] += 1
+
+    noisy: set[tuple[str, str]] = {k for k, v in day_title_counts.items() if v > 20}
+    if noisy:
+        entries = [
+            e for e in entries if (e.start_at.date().isoformat(), e.title) not in noisy
+        ]
 
     data = CalendarWorkspaceReadResponse(
         entries=entries,
