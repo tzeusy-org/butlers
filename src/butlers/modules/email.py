@@ -186,32 +186,43 @@ class EmailModule(Module):
             return await module._check_and_route_inbox()
 
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
-        """Initialize email config and resolve credentials via CredentialStore.
+        """Initialize email config and resolve credentials.
 
-        Credentials are resolved at startup (DB-first, then env) and cached in
-        ``self._resolved_credentials`` so that sync IO helpers can use them
-        without needing to be async.
+        User-scope credentials (USER_EMAIL_ADDRESS, USER_EMAIL_PASSWORD) are
+        resolved from the owner contact's ``shared.contact_info`` entries
+        (types ``email`` and ``email_password``).  Bot-scope credentials are
+        resolved via :class:`~butlers.credential_store.CredentialStore`.
 
-        Parameters
-        ----------
-        config:
-            Module configuration (``EmailConfig`` or raw dict).
-        db:
-            Butler database instance.
-        credential_store:
-            Optional :class:`~butlers.credential_store.CredentialStore`.
-            When provided, secrets are resolved DB-first with env fallback.
-            When ``None`` (e.g. tests), resolution falls back to env vars only.
+        All resolved values are cached in ``self._resolved_credentials`` so
+        that sync IO helpers can use them without needing to be async.
         """
+        from butlers.credential_store import resolve_owner_contact_info
+
         self._config = config if isinstance(config, EmailConfig) else EmailConfig(**(config or {}))
         self._resolved_credentials = {}
+
+        # --- User-scope: resolve from owner contact_info first ---------------
+        pool = getattr(db, "pool", None) if db is not None else None
+        if pool is not None:
+            user_cfg = self._config.user
+            # contact_info type → env var key used by _get_credentials
+            _CI_MAP = {
+                "email": user_cfg.address_env,
+                "email_password": user_cfg.password_env,
+            }
+            for ci_type, env_key in _CI_MAP.items():
+                value = await resolve_owner_contact_info(pool, ci_type)
+                if value is not None:
+                    self._resolved_credentials[env_key] = value
+
+        # --- Bot-scope + any remaining: CredentialStore ----------------------
         if credential_store is not None:
-            # Resolve all configured credential keys at startup and cache them.
             for scope_cfg in [self._config.bot, self._config.user]:
                 for env_key in (scope_cfg.address_env, scope_cfg.password_env):
-                    value = await credential_store.resolve(env_key)
-                    if value is not None:
-                        self._resolved_credentials[env_key] = value
+                    if env_key not in self._resolved_credentials:
+                        value = await credential_store.resolve(env_key)
+                        if value is not None:
+                            self._resolved_credentials[env_key] = value
 
     async def on_shutdown(self) -> None:
         """No persistent connections to clean up."""

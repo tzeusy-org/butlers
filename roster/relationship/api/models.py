@@ -115,6 +115,7 @@ class CreateContactInfoRequest(BaseModel):
     type: str
     value: str
     is_primary: bool = False
+    secured: bool = False
 
 
 class CreateContactInfoResponse(BaseModel):

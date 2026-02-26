@@ -5,9 +5,14 @@
  * key identity fields (name, email, or telegram handle). Prompts the user
  * to fill them in via an inline dialog so that external syncs (e.g. Google
  * Contacts) can match the owner correctly instead of creating duplicates.
+ *
+ * An expandable "Credentials" section lets the user optionally set secrets
+ * (email password, Telegram API hash/ID) that were previously stored in
+ * butler_secrets but now live on the owner contact_info.
  */
 
 import { useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -39,7 +44,13 @@ export function OwnerSetupBanner() {
   const [telegram, setTelegram] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
 
-  // Don't render if loading or if all identity fields are already configured
+  // Credential fields (collapsible)
+  const [showCredentials, setShowCredentials] = useState(false);
+  const [emailPassword, setEmailPassword] = useState("");
+  const [telegramApiHash, setTelegramApiHash] = useState("");
+  const [telegramApiId, setTelegramApiId] = useState("");
+
+  // Don't render if loading or if all core identity fields are configured
   if (isLoading) return null;
   if (!status) return null;
   if (
@@ -66,9 +77,19 @@ export function OwnerSetupBanner() {
     const trimmedEmail = email.trim();
     const trimmedTelegram = telegram.trim();
     const trimmedChatId = telegramChatId.trim();
+    const trimmedEmailPw = emailPassword.trim();
+    const trimmedApiHash = telegramApiHash.trim();
+    const trimmedApiId = telegramApiId.trim();
 
-    // Must provide at least a name or one identifier
-    if (!trimmedName && !trimmedEmail && !trimmedTelegram && !trimmedChatId) {
+    if (
+      !trimmedName &&
+      !trimmedEmail &&
+      !trimmedTelegram &&
+      !trimmedChatId &&
+      !trimmedEmailPw &&
+      !trimmedApiHash &&
+      !trimmedApiId
+    ) {
       toast.error("Please fill in at least your name.");
       return;
     }
@@ -84,6 +105,8 @@ export function OwnerSetupBanner() {
           }),
         );
       }
+
+      // --- Identity fields ---
 
       if (trimmedEmail) {
         promises.push(
@@ -112,6 +135,50 @@ export function OwnerSetupBanner() {
         );
       }
 
+      // --- Secured credential fields ---
+
+      if (trimmedEmailPw) {
+        promises.push(
+          createInfo.mutateAsync({
+            contactId,
+            request: {
+              type: "email_password",
+              value: trimmedEmailPw,
+              is_primary: true,
+              secured: true,
+            },
+          }),
+        );
+      }
+
+      if (trimmedApiHash) {
+        promises.push(
+          createInfo.mutateAsync({
+            contactId,
+            request: {
+              type: "telegram_api_hash",
+              value: trimmedApiHash,
+              is_primary: true,
+              secured: true,
+            },
+          }),
+        );
+      }
+
+      if (trimmedApiId) {
+        promises.push(
+          createInfo.mutateAsync({
+            contactId,
+            request: {
+              type: "telegram_api_id",
+              value: trimmedApiId,
+              is_primary: true,
+              secured: true,
+            },
+          }),
+        );
+      }
+
       await Promise.all(promises);
       toast.success("Owner identity updated.");
       setOpen(false);
@@ -119,6 +186,9 @@ export function OwnerSetupBanner() {
       setEmail("");
       setTelegram("");
       setTelegramChatId("");
+      setEmailPassword("");
+      setTelegramApiHash("");
+      setTelegramApiId("");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       toast.error(`Failed to save identity: ${message}`);
@@ -208,10 +278,71 @@ export function OwnerSetupBanner() {
                     disabled={isSaving}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Numeric ID used for bot messaging. Send /start to @userinfobot to find yours.
+                    Numeric ID used for bot messaging. Send /start to @userinfobot to find
+                    yours.
                   </p>
                 </div>
               )}
+
+              {/* Collapsible credentials section */}
+              <div className="border-t pt-3">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+                  onClick={() => setShowCredentials((v) => !v)}
+                >
+                  {showCredentials ? (
+                    <ChevronDown className="h-4 w-4" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4" />
+                  )}
+                  Credentials (optional)
+                </button>
+                {showCredentials && (
+                  <div className="mt-3 space-y-4">
+                    <p className="text-xs text-muted-foreground">
+                      These were previously stored in /secrets. They are now managed as
+                      secured entries on your owner identity.
+                    </p>
+                    <div className="space-y-2">
+                      <Label htmlFor="owner-email-pw">Email password / app password</Label>
+                      <Input
+                        id="owner-email-pw"
+                        type="password"
+                        placeholder="••••••••"
+                        value={emailPassword}
+                        onChange={(e) => setEmailPassword(e.target.value)}
+                        disabled={isSaving}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="owner-tg-api-id">Telegram API ID</Label>
+                      <Input
+                        id="owner-tg-api-id"
+                        type="text"
+                        placeholder="12345678"
+                        value={telegramApiId}
+                        onChange={(e) => setTelegramApiId(e.target.value)}
+                        disabled={isSaving}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        From my.telegram.org &mdash; used for user-client (MTProto) connections.
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="owner-tg-api-hash">Telegram API hash</Label>
+                      <Input
+                        id="owner-tg-api-hash"
+                        type="password"
+                        placeholder="••••••••"
+                        value={telegramApiHash}
+                        onChange={(e) => setTelegramApiHash(e.target.value)}
+                        disabled={isSaving}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
             <DialogFooter>
               <Button onClick={handleSave} disabled={isSaving}>

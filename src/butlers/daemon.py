@@ -159,8 +159,8 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
 
 _DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE = "telegram"
 _NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
-    "No bot <-> user telegram chat has been configured - please set "
-    "TELEGRAM_CHAT_ID in /secrets or add a telegram contact_info entry for the owner contact"
+    "No bot <-> user telegram chat has been configured - please add a "
+    "telegram contact_info entry on the owner contact via the dashboard"
 )
 
 
@@ -1777,8 +1777,6 @@ class ButlerDaemon:
 
         For Telegram send without an explicit recipient, looks up the owner contact's
         ``contact_info`` entry with ``type='telegram'`` in ``shared.contact_info``.
-        Falls back to ``butler_secrets`` (via ``TELEGRAM_CHAT_ID``) for backwards
-        compatibility when the contact_info row is absent.
         """
         resolved_recipient = recipient.strip() if isinstance(recipient, str) else None
         if resolved_recipient:
@@ -1787,7 +1785,6 @@ class ButlerDaemon:
         if channel != "telegram" or intent != "send":
             return None
 
-        # 1. Try owner contact_info (new path: contact_info type='telegram')
         pool = self.db.pool if self.db is not None else None
         if pool is not None:
             chat_id = await resolve_owner_contact_info(
@@ -1795,15 +1792,6 @@ class ButlerDaemon:
             )
             if chat_id:
                 return chat_id.strip() or None
-
-        # 2. Fall back to butler_secrets via TELEGRAM_CHAT_ID.
-        credential_store = self._credential_store
-        if credential_store is not None:
-            configured_chat_id = await credential_store.resolve(
-                "TELEGRAM_CHAT_ID", env_fallback=False
-            )
-            if isinstance(configured_chat_id, str) and configured_chat_id.strip():
-                return configured_chat_id.strip()
 
         return None
 

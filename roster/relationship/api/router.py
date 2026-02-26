@@ -980,14 +980,15 @@ async def create_contact_info(
 
     row = await pool.fetchrow(
         """
-        INSERT INTO shared.contact_info (contact_id, type, value, is_primary)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO shared.contact_info (contact_id, type, value, is_primary, secured)
+        VALUES ($1, $2, $3, $4, $5)
         RETURNING id, contact_id, type, value, is_primary, secured
         """,
         contact_id,
         request.type,
         request.value,
         request.is_primary,
+        request.secured,
     )
 
     return CreateContactInfoResponse(

@@ -751,6 +751,7 @@ export interface CreateContactInfoRequest {
   type: string;
   value: string;
   is_primary?: boolean;
+  secured?: boolean;
 }
 
 /** Response for POST /contacts/{id}/contact-info. */

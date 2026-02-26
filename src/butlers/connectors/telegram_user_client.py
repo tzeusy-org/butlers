@@ -55,6 +55,7 @@ from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
+    resolve_owner_contact_info,
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env
@@ -554,10 +555,10 @@ class TelegramUserClientConnector:
 async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
     """Attempt DB-first credential resolution for the Telegram user-client connector.
 
-    Creates a short-lived asyncpg pool, resolves ``TELEGRAM_API_ID``,
-    ``TELEGRAM_API_HASH``, and ``TELEGRAM_USER_SESSION`` from the
-    ``butler_secrets`` table via :class:`~butlers.credential_store.CredentialStore`,
-    and closes the pool before returning.
+    Resolution order per credential:
+    1. Owner contact_info (``shared.contact_info`` with ``telegram_api_id``,
+       ``telegram_api_hash``, ``telegram_user_session`` types).
+    2. ``butler_secrets`` table via :class:`~butlers.credential_store.CredentialStore`.
 
     Returns a dict with keys ``TELEGRAM_API_ID``, ``TELEGRAM_API_HASH``,
     ``TELEGRAM_USER_SESSION`` if all three are found in the DB, or ``None`` if:
@@ -606,33 +607,40 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
     fallback_pools = [pool for _, pool in connected_pools[1:]]
     store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
 
-    try:
-        api_id = await store.resolve("TELEGRAM_API_ID", env_fallback=False)
-        api_hash = await store.resolve("TELEGRAM_API_HASH", env_fallback=False)
-        user_session = await store.resolve("TELEGRAM_USER_SESSION", env_fallback=False)
+    # contact_info type → result dict key
+    _CI_MAP: list[tuple[str, str]] = [
+        ("telegram_api_id", "TELEGRAM_API_ID"),
+        ("telegram_api_hash", "TELEGRAM_API_HASH"),
+        ("telegram_user_session", "TELEGRAM_USER_SESSION"),
+    ]
 
-        if api_id and api_hash and user_session:
+    try:
+        result: dict[str, str] = {}
+
+        # Phase 1: resolve from owner contact_info
+        for ci_type, result_key in _CI_MAP:
+            value = await resolve_owner_contact_info(primary_pool, ci_type)
+            if value:
+                result[result_key] = value
+
+        # Phase 2: fill gaps from butler_secrets
+        for _ci_type, result_key in _CI_MAP:
+            if result_key not in result:
+                value = await store.resolve(result_key, env_fallback=False)
+                if value:
+                    result[result_key] = value
+
+        expected_keys = {k for _, k in _CI_MAP}
+        if expected_keys <= result.keys():
             logger.info(
-                "Telegram user-client connector: resolved credentials from layered DB lookup "
+                "Telegram user-client connector: resolved credentials from DB "
                 "(primary_db=%s, fallbacks=%d)",
                 primary_db_name,
                 len(fallback_pools),
             )
-            return {
-                "TELEGRAM_API_ID": api_id,
-                "TELEGRAM_API_HASH": api_hash,
-                "TELEGRAM_USER_SESSION": user_session,
-            }
+            return result
 
-        missing = [
-            k
-            for k, v in [
-                ("TELEGRAM_API_ID", api_id),
-                ("TELEGRAM_API_HASH", api_hash),
-                ("TELEGRAM_USER_SESSION", user_session),
-            ]
-            if not v
-        ]
+        missing = sorted(expected_keys - result.keys())
         logger.debug(
             "Telegram user-client connector: secrets not found in DB (primary_db=%s): %s",
             primary_db_name,
