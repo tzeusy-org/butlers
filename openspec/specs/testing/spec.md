@@ -3,6 +3,120 @@
 ## Purpose
 Defines the test framework configuration, test categories and markers, test infrastructure (Docker PostgreSQL testcontainers, DB fixtures, resilient teardown), E2E staging harness architecture, E2E test domains (security, state, contracts, observability, approvals, resilience, flows, scheduling, performance, infrastructure), conftest fixture hierarchy, and test naming conventions.
 
+## Quick Start
+
+```bash
+# Install dependencies
+uv sync --dev
+
+# Run unit tests only (no Docker needed)
+uv run pytest tests/ --ignore=tests/e2e --ignore=tests/test_db.py --ignore=tests/test_migrations.py -q
+
+# Run integration tests (requires Docker)
+uv run pytest roster/ -q
+
+# Run E2E tests (requires Docker + ANTHROPIC_API_KEY + claude CLI)
+uv run pytest tests/e2e/ -v -s
+
+# Run a single E2E scenario by ID
+uv run pytest tests/e2e/test_scenario_runner.py -v -k "health-weight-log" -s
+
+# Run a single E2E flow module
+uv run pytest tests/e2e/test_health_flow.py -v -s --tb=long
+
+# Maximum verbosity (all logs to console)
+uv run pytest tests/e2e/ -v -s --log-cli-level=DEBUG --tb=long
+```
+
+## Debugging E2E Tests
+
+### Inspecting Databases During a Test Run
+
+While tests are running (or paused in a debugger), connect to any butler's database via the testcontainer's exposed port:
+
+```bash
+# The ecosystem fixture logs the actual port at session start.
+psql -h localhost -p $EXPOSED_PORT -U test -d butler_health
+```
+
+The `butler_ecosystem` fixture is session-scoped. If you set a breakpoint, all butlers remain running on their ports and all databases remain accessible.
+
+### Interactive Debugging
+
+From a debugger breakpoint inside a test, you can manually call MCP tools:
+
+```python
+from fastmcp import Client as MCPClient
+
+async with MCPClient("http://localhost:40103/sse") as client:
+    result = await client.call_tool("status", {})
+    print(result)
+```
+
+### Log Triage Commands
+
+All butler logs are captured to `.tmp/e2e-logs/e2e-latest.log`:
+
+```bash
+# All errors and exceptions
+grep -i 'error\|exception\|traceback' .tmp/e2e-logs/e2e-latest.log
+
+# Errors for a specific butler
+grep -i 'error.*health\|health.*error' .tmp/e2e-logs/e2e-latest.log
+
+# LLM invocations
+grep 'spawner.*trigger\|ClaudeCodeAdapter' .tmp/e2e-logs/e2e-latest.log
+
+# MCP tool calls
+grep 'tool_span\|call_tool' .tmp/e2e-logs/e2e-latest.log
+
+# Module failures (expected for telegram, email, calendar)
+grep 'Module.*disabled\|Module.*failed' .tmp/e2e-logs/e2e-latest.log
+
+# Routing decisions
+grep 'classify_message\|route.*target' .tmp/e2e-logs/e2e-latest.log
+```
+
+### Architecture Diagram
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    TEST HARNESS (pytest)                       │
+│                                                                │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐    │
+│  │  conftest.py  │  │ scenarios.py │  │ test_*_flow.py   │    │
+│  │              │  │              │  │                  │    │
+│  │ Ecosystem    │  │ E2EScenario  │  │ Per-butler       │    │
+│  │ bootstrap    │  │ dataclass    │  │ complex flows    │    │
+│  │ + fixtures   │  │ registry     │  │                  │    │
+│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘    │
+│         │                 │                    │               │
+│         ▼                 ▼                    ▼               │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │              BUTLER ECOSYSTEM (session-scoped)           │  │
+│  │                                                          │  │
+│  │  Switchboard ──► General ──► Relationship ──► Health     │  │
+│  │   :40100          :40101       :40102           :40103   │  │
+│  │                                                          │  │
+│  │  Messenger                                               │  │
+│  │   :40104                                                  │  │
+│  │                                                          │  │
+│  │  Each: ButlerDaemon + FastMCP SSE + Spawner + DB pool   │  │
+│  └──────────────────────┬──────────────────────────────────┘  │
+│                         │                                      │
+│                         ▼                                      │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │          TESTCONTAINER PostgreSQL (session-scoped)       │  │
+│  │                                                          │  │
+│  │  butler_switchboard  butler_general  butler_relationship │  │
+│  │  butler_health       butler_messenger                    │  │
+│  │                                                          │  │
+│  │  Core tables: state, scheduled_tasks, sessions           │  │
+│  │  Butler tables: measurements, contacts, butler_registry  │  │
+│  └─────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────┘
+```
+
 ## ADDED Requirements
 
 ### Requirement: Test Framework Configuration

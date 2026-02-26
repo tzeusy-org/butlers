@@ -47,6 +47,14 @@ All API responses use consistent wrapper types. Backend Pydantic models and fron
 - **THEN** the response body is `{ "error": { "code": string, "message": string, "butler": string | null, "details": object | null } }`
 - **AND** the HTTP status code reflects the error type (400, 404, 500, 502, 503)
 
+#### Scenario: Unwrapped response exceptions
+- **WHEN** certain domain endpoints return data
+- **THEN** the following endpoints use unwrapped typed payloads instead of the standard `ApiResponse<T>` wrapper:
+  - Timeline: `GET /api/timeline` returns `TimelineResponse` (unwrapped)
+  - Relationship domain: `GET /api/relationship/contacts/{contactId}` returns `ContactDetail` (unwrapped), and other relationship sub-resource endpoints return unwrapped arrays
+  - Trigger: `POST /api/butlers/{name}/trigger` returns `TriggerResponse` (unwrapped)
+- **AND** the frontend type layer accounts for these exceptions with dedicated response interfaces
+
 #### Scenario: TypeScript mirror types
 - **WHEN** the frontend imports from `frontend/src/api/types.ts`
 - **THEN** `ApiResponse<T>`, `PaginatedResponse<T>`, `ErrorResponse`, `ErrorDetail`, and `PaginationMeta` are available as generic interfaces matching the backend Pydantic shapes
@@ -260,6 +268,14 @@ The following is the complete endpoint inventory grouped by domain.
 | DELETE | `/api/butlers/{name}/schedules/{id}` | Delete schedule (MCP proxy) |
 | PATCH | `/api/butlers/{name}/schedules/{id}/toggle` | Toggle schedule enabled (MCP proxy) |
 
+#### Schedule Execution Semantics
+- **WHEN** the dashboard displays or interprets schedule data
+- **THEN** `Schedule.source` describes the schedule origin (`toml` for TOML-defined, `db` for dashboard-created); it is NOT the execution mode
+- **AND** runtime-mode schedules (those with a `prompt`) execute through `spawner.trigger(..., trigger_source="schedule:<task-name>")` and correlate with `sessions` rows
+- **AND** native-mode schedules (those with `dispatch_mode = "job"` and `job_name`) execute deterministic Python jobs directly and may not create `sessions` rows
+- **AND** the dashboard treats schedule status fields (`enabled`, `next_run_at`, `last_run_at`) as authoritative regardless of execution mode
+- **AND** schedule failures for both execution modes surface through `GET /api/issues` as `scheduled_task_failure:<schedule-name>`
+
 #### Costs
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -379,7 +395,9 @@ The frontend uses TanStack Query (`@tanstack/react-query`) via `frontend/src/hoo
 | Memory activity | 15s | `useMemoryActivity` |
 | Backfill job progress (active) | 5s | `useBackfillJobProgress` (when status is pending/active) |
 | Backfill job progress (idle) | 30s | `useBackfillJobProgress` (when status is completed/cancelled/paused) |
-| No auto-interval | n/a | Notifications, contacts, groups, labels, butler config/skills, session/trace detail, approval queries, triage rules (use staleTime: 60s instead) |
+| Approval pending actions | 15s | `useApprovalActions` (when status filter is `pending`) |
+| Approval rules / executed audit | 60s | `useApprovalRules`, `useExecutedActions` |
+| No auto-interval | n/a | Notifications, contacts, groups, labels, butler config/skills, session/trace detail, triage rules (use staleTime: 60s instead) |
 
 #### Scenario: Mutation invalidation pattern
 - **WHEN** a mutation hook succeeds (e.g., `useCreateSchedule`, `useSetState`, `useDeleteSecret`)

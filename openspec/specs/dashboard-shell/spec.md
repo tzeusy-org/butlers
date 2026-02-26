@@ -4,6 +4,33 @@
 
 The Butlers dashboard is the **primary administrative gateway** for operating the entire butler system. It is not a secondary monitoring view -- it IS the control plane through which human operators detect failures, diagnose runtime behavior, and take corrective action. Every butler, session, trace, notification, approval, and domain entity is accessible exclusively through this single-pane-of-glass interface.
 
+The backend is distributed across multiple butlers, modules, and databases. Without a unified UI, operators must jump between logs, DB queries, and daemon endpoints. The dashboard eliminates this by combining cross-butler status, connector health, session/trace visibility, approval governance, domain data browsing, and admin controls into a single pane. This reduces operational latency for three critical loops:
+
+- **Detect:** Identify what is failing, degraded, or expensive.
+- **Diagnose:** Inspect sessions, traces, state, and timeline context.
+- **Act:** Trigger runs, update schedules, correct state, and debug MCP tools from one UI.
+
+### Scope Boundaries
+
+**In scope:**
+- Monitoring and diagnostics across butlers.
+- Read-heavy data exploration across domain surfaces.
+- Selected write/admin operations through dashboard API endpoints.
+- Keyboard-first navigation and quick search for operational speed.
+
+**Out of scope:**
+- Replacing chat as the main user interaction path.
+- Full CRUD for every domain entity (many domain screens are read-focused).
+- End-user workflow UX (this is an operator/admin dashboard).
+
+### Cross-Cutting UX Contracts
+
+All data-bearing surfaces follow consistent state patterns:
+
+- **Loading:** Skeleton placeholders matching the layout of real-data counterparts.
+- **Empty:** Explicit empty-state message with contextual guidance toward the creation action.
+- **Error:** Explicit error text; in select cases (e.g., butler list), stale cached data remains visible with a warning banner.
+
 The application shell defines the outermost structural frame: the sidebar navigation, page header with breadcrumbs, command palette, keyboard shortcuts, theme system, loading/error/empty state patterns, auto-refresh architecture, and the full UI primitive library. All domain pages render inside this shell and inherit its design system, responsive behavior, and operational affordances.
 
 The technology stack is: React 18 with TypeScript, React Router v7 (browser router), TanStack Query v5 for server state, Tailwind CSS v4 with shadcn/ui components (backed by Radix UI primitives), Lucide icons, Sonner toast notifications, class-variance-authority for variant-driven styling, and Vite as the build tool.
