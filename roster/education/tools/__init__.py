@@ -1,4 +1,4 @@
-"""Education butler tools — mind maps, nodes, edges, and queries.
+"""Education butler tools — mind maps, nodes, edges, queries, and mastery tracking.
 
 Re-exports all public symbols from the education tool sub-modules so that
 ``from butlers.tools.education import X`` works as a stable public API.
@@ -6,6 +6,12 @@ Re-exports all public symbols from the education tool sub-modules so that
 
 from __future__ import annotations
 
+from butlers.tools.education.mastery import (
+    mastery_detect_struggles,
+    mastery_get_map_summary,
+    mastery_get_node_history,
+    mastery_record_response,
+)
 from butlers.tools.education.mind_map_edges import (
     mind_map_edge_create,
     mind_map_edge_delete,
@@ -44,4 +50,9 @@ __all__ = [
     # queries
     "mind_map_frontier",
     "mind_map_subtree",
+    # mastery tracking
+    "mastery_record_response",
+    "mastery_get_node_history",
+    "mastery_get_map_summary",
+    "mastery_detect_struggles",
 ]
