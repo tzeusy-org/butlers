@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 import asyncpg
@@ -198,12 +199,21 @@ async def mastery_record_response(
             qualities = [row["quality"] for row in reversed(rows)]
             new_score = _compute_mastery_score(qualities)
 
-            # 3. Fetch current node status
+            # 3. Fetch current node status and verify it belongs to the mind map
             node_row = await conn.fetchrow(
-                "SELECT mastery_status FROM education.mind_map_nodes WHERE id = $1",
+                """
+                SELECT mastery_status FROM education.mind_map_nodes
+                WHERE id = $1 AND mind_map_id = $2
+                """,
                 node_id,
+                mind_map_id,
             )
-            current_status = node_row["mastery_status"] if node_row else "unseen"
+            if not node_row:
+                raise ValueError(
+                    f"Node {node_id!r} not found in mind map {mind_map_id!r}. "
+                    "Ensure node_id and mind_map_id are consistent."
+                )
+            current_status = node_row["mastery_status"]
 
             # 4. Fetch last 3 review-type qualities for mastery graduation check
             review_rows = await conn.fetch(
@@ -345,16 +355,28 @@ async def mastery_get_map_summary(
         total_nodes, mastered_count, learning_count, reviewing_count,
         unseen_count, diagnosed_count, avg_mastery_score, struggling_node_ids
     """
-    # Aggregate status counts and avg mastery score in one query
+    # Aggregate status counts and avg mastery score in one query.
+    # COALESCE each SUM to 0: PostgreSQL returns NULL for SUM over an empty result set
+    # (no rows match the WHERE clause), which would cause int(None) → TypeError.
     summary_row = await pool.fetchrow(
         """
         SELECT
             COUNT(*) AS total_nodes,
-            SUM(CASE WHEN mastery_status = 'mastered'  THEN 1 ELSE 0 END) AS mastered_count,
-            SUM(CASE WHEN mastery_status = 'learning'  THEN 1 ELSE 0 END) AS learning_count,
-            SUM(CASE WHEN mastery_status = 'reviewing' THEN 1 ELSE 0 END) AS reviewing_count,
-            SUM(CASE WHEN mastery_status = 'unseen'    THEN 1 ELSE 0 END) AS unseen_count,
-            SUM(CASE WHEN mastery_status = 'diagnosed' THEN 1 ELSE 0 END) AS diagnosed_count,
+            COALESCE(
+                SUM(CASE WHEN mastery_status = 'mastered'  THEN 1 ELSE 0 END), 0
+            ) AS mastered_count,
+            COALESCE(
+                SUM(CASE WHEN mastery_status = 'learning'  THEN 1 ELSE 0 END), 0
+            ) AS learning_count,
+            COALESCE(
+                SUM(CASE WHEN mastery_status = 'reviewing' THEN 1 ELSE 0 END), 0
+            ) AS reviewing_count,
+            COALESCE(
+                SUM(CASE WHEN mastery_status = 'unseen'    THEN 1 ELSE 0 END), 0
+            ) AS unseen_count,
+            COALESCE(
+                SUM(CASE WHEN mastery_status = 'diagnosed' THEN 1 ELSE 0 END), 0
+            ) AS diagnosed_count,
             COALESCE(AVG(mastery_score), 0.0) AS avg_mastery_score
         FROM education.mind_map_nodes
         WHERE mind_map_id = $1
@@ -420,42 +442,58 @@ async def mastery_detect_struggles(
     if not node_rows:
         return []
 
+    node_ids = [str(row["id"]) for row in node_rows]
+
+    # Batch-fetch the last 3 quiz responses for all nodes in a single query,
+    # using ROW_NUMBER() to avoid an N+1 query per node.
+    # Responses are ordered newest-first within each node partition.
+    response_rows = await pool.fetch(
+        """
+        SELECT node_id::text AS node_id, quality, rn
+        FROM (
+            SELECT node_id, quality,
+                   ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY responded_at DESC) AS rn
+            FROM education.quiz_responses
+            WHERE node_id = ANY($1::uuid[])
+        ) ranked
+        WHERE rn <= 3
+        ORDER BY node_id, rn
+        """,
+        node_ids,
+    )
+
+    # Group qualities per node (rn=1 is newest)
+    qualities_by_node: dict[str, list[int]] = defaultdict(list)
+    for row in response_rows:
+        qualities_by_node[row["node_id"]].append(row["quality"])
+    # Each node's list is already ordered newest-first (rn=1..3), sorted by rn above.
+
+    node_index = {str(row["id"]): row for row in node_rows}
+
     results = []
-    for node_row in node_rows:
-        node_id = str(node_row["id"])
+    for node_id in node_ids:
+        qualities = qualities_by_node.get(node_id, [])  # newest first
 
-        # Fetch last 3 responses for this node
-        response_rows = await pool.fetch(
-            """
-            SELECT quality FROM education.quiz_responses
-            WHERE node_id = $1
-            ORDER BY responded_at DESC
-            LIMIT 3
-            """,
-            node_id,
-        )
-
-        if len(response_rows) < 3:
+        if len(qualities) < 3:
             # Insufficient history — not flagged
             continue
 
-        qualities = [row["quality"] for row in response_rows]  # newest first
-
+        node_row = node_index[node_id]
         reasons = []
 
         # Check condition 1: consecutive low quality (all 3 most recent quality <= 2)
         if all(q <= 2 for q in qualities):
             reasons.append("consecutive_low_quality")
 
-        # Check condition 2: declining mastery score over last 3 responses
-        # Compute score using windows of responses:
-        # - Window A (oldest 2): qualities[2], qualities[1] → oldest→newest
-        # - Window B (newest 2): qualities[1], qualities[0] → oldest→newest
-        # (We approximate decline by checking if each window gives lower score.)
-        # Score for most recent 1 response: qualities[0]
-        # Score for most recent 2 responses: qualities[1], qualities[0]
-        # Score for most recent 3 responses: qualities[2], qualities[1], qualities[0]
-        # A declining trend means score(3) > score(2) > score(1)
+        # Check condition 2: declining mastery score over last 3 responses.
+        # We compare recency-weighted scores computed from progressively larger windows:
+        # - score_1: weighted score of the newest response only
+        # - score_2: weighted score of the 2 most recent responses (oldest→newest order)
+        # - score_3: weighted score of the 3 most recent responses (oldest→newest order)
+        # If score_3 > score_2 > score_1, the further-back windows yield a higher score,
+        # meaning the student's performance has been declining over these 3 responses.
+        # This catches both strict-monotone declines and plateau-then-crash patterns
+        # (e.g. [3, 3, 0] — oldest to newest — is correctly flagged).
         score_1 = _compute_mastery_score([qualities[0]])
         score_2 = _compute_mastery_score([qualities[1], qualities[0]])
         score_3 = _compute_mastery_score([qualities[2], qualities[1], qualities[0]])

@@ -317,6 +317,27 @@ class TestMasteryRecordResponseValidation:
                 response_type="exam",
             )
 
+    async def test_node_not_in_map_raises(self) -> None:
+        """mastery_record_response raises ValueError if node_id does not belong to mind_map_id."""
+        from butlers.tools.education.mastery import mastery_record_response
+
+        response_id = str(uuid.uuid4())
+        conn = _make_conn_with_transaction(
+            _make_conn(
+                fetchval_returns=[response_id],
+                fetch_returns=[
+                    [_make_row({"quality": 3})],  # last 5 responses
+                ],
+                # fetchrow returns None → node not found in this map
+                fetchrow_returns=[None],
+            )
+        )
+        pool = _make_pool_with_conn(conn)
+        with pytest.raises(ValueError, match="not found in mind map"):
+            await mastery_record_response(
+                pool, str(uuid.uuid4()), str(uuid.uuid4()), "Q", "A", quality=3
+            )
+
     async def test_quality_zero_is_valid(self) -> None:
         """Quality=0 (blackout) is valid."""
         from butlers.tools.education.mastery import mastery_record_response
@@ -985,6 +1006,38 @@ class TestMasteryGetMapSummary:
         assert result["avg_mastery_score"] == 0.0
         assert result["struggling_node_ids"] == []
 
+    async def test_empty_map_sql_uses_coalesce_for_null_sums(self) -> None:
+        """SQL must use COALESCE on SUM columns to guard against empty-map NULL returns."""
+        from butlers.tools.education.mastery import mastery_get_map_summary
+
+        map_id = str(uuid.uuid4())
+        # With COALESCE in the SQL, DB always returns 0 (not NULL) for count columns
+        # when the mind map has no nodes. Verify the generated SQL includes COALESCE.
+        summary_row = _make_row(
+            {
+                "total_nodes": 0,
+                "mastered_count": 0,
+                "learning_count": 0,
+                "reviewing_count": 0,
+                "unseen_count": 0,
+                "diagnosed_count": 0,
+                "avg_mastery_score": 0.0,
+            }
+        )
+        pool = _make_pool(
+            fetchrow_returns=[summary_row],
+            fetch_returns=[[]],
+        )
+        result = await mastery_get_map_summary(pool, map_id)
+        # Verify the SQL sent to the DB includes COALESCE wrapping the SUM expressions
+        sql = pool.fetchrow.call_args.args[0]
+        assert "COALESCE" in sql.upper()
+        assert "mastered_count" in sql
+        # Verify the result correctly deserializes as integer 0 (not None)
+        assert result["mastered_count"] == 0
+        assert result["learning_count"] == 0
+        assert isinstance(result["mastered_count"], int)
+
     async def test_includes_struggling_node_ids(self) -> None:
         """struggling_node_ids is populated from mastery_detect_struggles."""
         from butlers.tools.education.mastery import mastery_get_map_summary
@@ -1004,7 +1057,8 @@ class TestMasteryGetMapSummary:
             }
         )
 
-        # mastery_detect_struggles will call pool.fetch for nodes, then per-node responses
+        # mastery_detect_struggles now uses a single batched query for responses.
+        # fetch calls: 1) node list from detect_struggles, 2) batched responses for all nodes.
         struggling_node_row = _make_row(
             _node_row(
                 node_id=struggling_node_id,
@@ -1013,18 +1067,19 @@ class TestMasteryGetMapSummary:
                 mastery_score=0.2,
             )
         )
-        low_quality_responses = [
-            _make_row({"quality": 1}),
-            _make_row({"quality": 0}),
-            _make_row({"quality": 2}),
+        # Batched response rows include node_id and rn (row number within partition, newest=1)
+        batched_response_rows = [
+            _make_row({"node_id": struggling_node_id, "quality": 1, "rn": 1}),
+            _make_row({"node_id": struggling_node_id, "quality": 0, "rn": 2}),
+            _make_row({"node_id": struggling_node_id, "quality": 2, "rn": 3}),
         ]
 
-        # fetch calls: 1) aggregate query uses fetchrow, 2) detect_struggles uses fetch
+        # fetch calls: 1) aggregate query uses fetchrow, 2) detect_struggles uses fetch (twice)
         pool = _make_pool(
             fetchrow_returns=[summary_row],
             fetch_returns=[
                 [struggling_node_row],  # node list from detect_struggles
-                low_quality_responses,  # response history for that node
+                batched_response_rows,  # batched response history for all nodes
             ],
         )
         result = await mastery_get_map_summary(pool, map_id)
@@ -1055,10 +1110,11 @@ class TestMasteryDetectStruggles:
         node_row = _make_row(
             _node_row(node_id=node_id, mind_map_id=map_id, mastery_status="learning")
         )
+        # Batched response rows: node_id + quality + rn (rn=1 is newest)
         responses = [
-            _make_row({"quality": 1}),
-            _make_row({"quality": 0}),
-            _make_row({"quality": 2}),
+            _make_row({"node_id": node_id, "quality": 1, "rn": 1}),
+            _make_row({"node_id": node_id, "quality": 0, "rn": 2}),
+            _make_row({"node_id": node_id, "quality": 2, "rn": 3}),
         ]
         pool = _make_pool(fetch_returns=[[node_row], responses])
         result = await mastery_detect_struggles(pool, map_id)
@@ -1077,10 +1133,11 @@ class TestMasteryDetectStruggles:
         )
         # quality=3 in most recent breaks consecutive_low_quality check
         # need to also not have declining score
+        # newest→oldest: [3, 1, 2] — score([3])=0.6, score([1,3])≈0.47; not declining
         responses = [
-            _make_row({"quality": 3}),
-            _make_row({"quality": 1}),
-            _make_row({"quality": 2}),
+            _make_row({"node_id": node_id, "quality": 3, "rn": 1}),  # newest
+            _make_row({"node_id": node_id, "quality": 1, "rn": 2}),
+            _make_row({"node_id": node_id, "quality": 2, "rn": 3}),  # oldest of 3
         ]
         pool = _make_pool(fetch_returns=[[node_row], responses])
         result = await mastery_detect_struggles(pool, map_id)
@@ -1099,23 +1156,17 @@ class TestMasteryDetectStruggles:
         node_row = _make_row(
             _node_row(node_id=node_id, mind_map_id=map_id, mastery_status="reviewing")
         )
-        # newest→oldest: [1, 3, 5]
-        # score([1]) = 0.2
-        # score([3, 1]) = 3*2/(3*5) ... hmm actually order matters
-        # In _compute_mastery_score, qualities should be oldest→newest
-        # DB returns newest→oldest: [1, 3, 5]
-        # In detect_struggles, we pass to _compute_mastery_score in order oldest→newest
-        # score_1 = _compute_mastery_score([qualities[0]]) = _compute([1]) = 0.2
-        # score_2 = _compute_mastery_score([qualities[1], qualities[0]]) = _compute([3, 1])
-        # score_3 = _compute_mastery_score([qualities[2], q[1], q[0]]) = _compute([5,3,1])
-        # score([5,3,1]): w=[1,2,4]/7, score = (5*1+3*2+1*4)/(7*5) = (5+6+4)/35 = 15/35 ≈ 0.43
-        # score([3,1]): w=[1,2]/3, score = (3*1+1*2)/(3*5) = 5/15 ≈ 0.33
-        # score([1]): = 0.2
-        # 0.43 > 0.33 > 0.2 → declining! Flag it.
+        # newest→oldest: [1, 3, 5] (rn=1 is newest)
+        # score_1 = _compute([qualities[0]]) = _compute([1]) = 0.2
+        # score_2 = _compute([qualities[1], qualities[0]]) = _compute([3, 1])
+        # score_3 = _compute([qualities[2], q[1], q[0]]) = _compute([5, 3, 1])
+        # score([5,3,1]): w=[1,2,4], score = (5*1+3*2+1*4)/(7*5) = (5+6+4)/35 ≈ 0.43
+        # score([3,1]): w=[1,2], score = (3*1+1*2)/(3*5) = 5/15 ≈ 0.33
+        # score([1]): = 0.2 → 0.43 > 0.33 > 0.2 → declining! Flag it.
         responses = [
-            _make_row({"quality": 1}),  # newest
-            _make_row({"quality": 3}),
-            _make_row({"quality": 5}),  # oldest
+            _make_row({"node_id": node_id, "quality": 1, "rn": 1}),  # newest
+            _make_row({"node_id": node_id, "quality": 3, "rn": 2}),
+            _make_row({"node_id": node_id, "quality": 5, "rn": 3}),  # oldest of 3
         ]
         pool = _make_pool(fetch_returns=[[node_row], responses])
         result = await mastery_detect_struggles(pool, map_id)
@@ -1142,10 +1193,10 @@ class TestMasteryDetectStruggles:
         node_row = _make_row(
             _node_row(node_id=node_id, mind_map_id=map_id, mastery_status="learning")
         )
-        # Only 2 responses
+        # Only 2 responses (rn=1 newest, rn=2)
         responses = [
-            _make_row({"quality": 0}),
-            _make_row({"quality": 0}),
+            _make_row({"node_id": node_id, "quality": 0, "rn": 1}),
+            _make_row({"node_id": node_id, "quality": 0, "rn": 2}),
         ]
         pool = _make_pool(fetch_returns=[[node_row], responses])
         result = await mastery_detect_struggles(pool, map_id)
@@ -1160,16 +1211,19 @@ class TestMasteryDetectStruggles:
         node_row = _make_row(
             _node_row(node_id=node_id, mind_map_id=map_id, mastery_status="learning")
         )
-        # All quality=0 → consecutive_low_quality
-        # Also declining: score([0]) < score([0,0]) < score([0,0,0]) — actually all equal 0.0
-        # Let's use qualities that trigger both: [0, 1, 2] (newest→oldest)
+        # newest→oldest: [0, 1, 2] (rn=1 is newest)
         # consecutive: all <=2 ✓
-        # declining: score_1=0.0, score_2=_compute([1,0])=... 1*2/(3*5)=2/15≈0.13, score_3=...
-        # score_3 > score_2 > score_1 → declining ✓
+        # declining: score_1=0.0, score_2=_compute([1,0])= 1*8/(24*5)=... hmm
+        # _compute([1,0]): weights=[8,16], (1*8+0*16)/(24*5)=8/120≈0.067
+        # Wait, quality order: score_2 = _compute([qualities[1], qualities[0]])
+        #   = _compute([1, 0]) (oldest=1, newest=0) → weights=[8,16], (1*8+0*16)/(24*5)=8/120≈0.067
+        # score_3 = _compute([qualities[2], qualities[1], qualities[0]])
+        #   = _compute([2, 1, 0]) → weights=[4,8,16], (2*4+1*8+0*16)/(28*5)=16/140≈0.114
+        # 0.114 > 0.067 > 0.0 → declining ✓
         responses = [
-            _make_row({"quality": 0}),  # newest
-            _make_row({"quality": 1}),
-            _make_row({"quality": 2}),  # oldest
+            _make_row({"node_id": node_id, "quality": 0, "rn": 1}),  # newest
+            _make_row({"node_id": node_id, "quality": 1, "rn": 2}),
+            _make_row({"node_id": node_id, "quality": 2, "rn": 3}),  # oldest of 3
         ]
         pool = _make_pool(fetch_returns=[[node_row], responses])
         result = await mastery_detect_struggles(pool, map_id)
@@ -1192,10 +1246,11 @@ class TestMasteryDetectStruggles:
                 mastery_status="reviewing",
             )
         )
+        # Batched response rows with node_id + rn fields
         responses = [
-            _make_row({"quality": 1}),
-            _make_row({"quality": 0}),
-            _make_row({"quality": 2}),
+            _make_row({"node_id": node_id, "quality": 1, "rn": 1}),
+            _make_row({"node_id": node_id, "quality": 0, "rn": 2}),
+            _make_row({"node_id": node_id, "quality": 2, "rn": 3}),
         ]
         pool = _make_pool(fetch_returns=[[node_row], responses])
         result = await mastery_detect_struggles(pool, map_id)
@@ -1216,11 +1271,11 @@ class TestMasteryDetectStruggles:
         node_row = _make_row(
             _node_row(node_id=node_id, mind_map_id=map_id, mastery_status="reviewing")
         )
-        # High quality responses, no decline
+        # High quality responses, no decline (all 5s → no consecutive_low_quality, no declining)
         responses = [
-            _make_row({"quality": 5}),
-            _make_row({"quality": 5}),
-            _make_row({"quality": 5}),
+            _make_row({"node_id": node_id, "quality": 5, "rn": 1}),
+            _make_row({"node_id": node_id, "quality": 5, "rn": 2}),
+            _make_row({"node_id": node_id, "quality": 5, "rn": 3}),
         ]
         pool = _make_pool(fetch_returns=[[node_row], responses])
         result = await mastery_detect_struggles(pool, map_id)
