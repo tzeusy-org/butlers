@@ -9,46 +9,13 @@ Implements a three-function diagnostic flow:
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
 
-# ---------------------------------------------------------------------------
-# KV-store helpers (thin wrappers so tests can mock them easily)
-# ---------------------------------------------------------------------------
-
-
-async def state_store_get(pool: asyncpg.Pool, key: str) -> Any | None:
-    """Read a JSONB value from the core state table by *key*.
-
-    Returns the deserialized Python object, or ``None`` if absent.
-    """
-    row = await pool.fetchval("SELECT value FROM state WHERE key = $1", key)
-    if row is None:
-        return None
-    if isinstance(row, str):
-        return json.loads(row)
-    return row
-
-
-async def state_store_set(pool: asyncpg.Pool, key: str, value: Any) -> None:
-    """Upsert *key* → *value* (JSON-serialisable) in the core state table."""
-    json_value = json.dumps(value)
-    await pool.execute(
-        """
-        INSERT INTO state (key, value, updated_at, version)
-        VALUES ($1, $2::jsonb, now(), 1)
-        ON CONFLICT (key) DO UPDATE
-            SET value      = EXCLUDED.value,
-                updated_at = now(),
-                version    = state.version + 1
-        """,
-        key,
-        json_value,
-    )
-
+from butlers.core.state import state_get as _state_get
+from butlers.core.state import state_set as _state_set
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -106,7 +73,7 @@ async def diagnostic_start(
 
     # Check existing flow state
     flow_key = _flow_key(mind_map_id)
-    existing = await state_store_get(pool, flow_key)
+    existing = await _state_get(pool, flow_key)
     if existing is not None:
         status = existing.get("status", "")
         if status not in ("", "PENDING"):
@@ -147,7 +114,7 @@ async def diagnostic_start(
         "started_at": now,
         "last_session_at": now,
     }
-    await state_store_set(pool, flow_key, flow_state)
+    await _state_set(pool, flow_key, flow_state)
 
     return concept_inventory
 
@@ -200,7 +167,7 @@ async def diagnostic_record_probe(
 
     # --- flow state check ---
     flow_key = _flow_key(mind_map_id)
-    flow_state = await state_store_get(pool, flow_key)
+    flow_state = await _state_get(pool, flow_key)
     if flow_state is None or flow_state.get("status") != "DIAGNOSING":
         current = flow_state.get("status") if flow_state else None
         raise ValueError(f"Cannot record probe: flow must be in DIAGNOSING status, got {current!r}")
@@ -239,6 +206,8 @@ async def diagnostic_record_probe(
 
             # Seed mastery only for quality >= 3 (correct answers)
             # Mastery seeds are ALWAYS in [0.3, 0.7] — never 1.0
+            # Only advance nodes that are currently 'unseen' — never demote
+            # nodes already in 'learning', 'reviewing', or 'mastered'.
             if quality >= 3:
                 # Clamp inferred_mastery to [0.3, 0.7] as a safety guard
                 seeded_score = max(0.3, min(0.7, inferred_mastery))
@@ -249,6 +218,7 @@ async def diagnostic_record_probe(
                         mastery_status = 'diagnosed',
                         updated_at     = now()
                     WHERE id = $2
+                      AND mastery_status = 'unseen'
                     """,
                     seeded_score,
                     node_id,
@@ -262,7 +232,7 @@ async def diagnostic_record_probe(
         "quality": quality,
         "inferred_mastery": inferred_mastery,
     }
-    await state_store_set(pool, flow_key, flow_state)
+    await _state_set(pool, flow_key, flow_state)
 
     return flow_state
 
@@ -298,7 +268,7 @@ async def diagnostic_complete(
         If flow is not in DIAGNOSING status, or if no probes were issued.
     """
     flow_key = _flow_key(mind_map_id)
-    flow_state = await state_store_get(pool, flow_key)
+    flow_state = await _state_get(pool, flow_key)
 
     if flow_state is None or flow_state.get("status") != "DIAGNOSING":
         current = flow_state.get("status") if flow_state else None
@@ -357,7 +327,7 @@ async def diagnostic_complete(
     # Transition flow state to PLANNING
     flow_state["status"] = "PLANNING"
     flow_state["last_session_at"] = _utc_now_iso()
-    await state_store_set(pool, flow_key, flow_state)
+    await _state_set(pool, flow_key, flow_state)
 
     return {
         "summary": summary,

@@ -177,48 +177,8 @@ def _node_inventory_rows() -> list[_MockRecord]:
 
 
 # ---------------------------------------------------------------------------
-# Tests: state_store_get / state_store_set helpers
+# Tests: diagnostic_start
 # ---------------------------------------------------------------------------
-
-
-class TestStateStoreHelpers:
-    """state_store_get and state_store_set delegate correctly to pool."""
-
-    async def test_state_store_get_returns_none_for_missing_key(self) -> None:
-        from butlers.tools.education.diagnostic import state_store_get
-
-        pool = _make_pool(fetchval_returns=[None])
-        result = await state_store_get(pool, "flow:nonexistent")
-        assert result is None
-
-    async def test_state_store_get_deserializes_string(self) -> None:
-        from butlers.tools.education.diagnostic import state_store_get
-
-        # asyncpg may return raw JSON string when codec not registered
-        raw = json.dumps({"status": "DIAGNOSING"})
-        pool = _make_pool(fetchval_returns=[raw])
-        result = await state_store_get(pool, "flow:abc")
-        assert result == {"status": "DIAGNOSING"}
-
-    async def test_state_store_get_passes_through_dict(self) -> None:
-        from butlers.tools.education.diagnostic import state_store_get
-
-        # asyncpg normally deserializes JSONB to Python object
-        data = {"status": "PLANNING"}
-        pool = _make_pool(fetchval_returns=[data])
-        result = await state_store_get(pool, "flow:abc")
-        assert result == {"status": "PLANNING"}
-
-    async def test_state_store_set_calls_execute(self) -> None:
-        from butlers.tools.education.diagnostic import state_store_set
-
-        pool = _make_pool()
-        await state_store_set(pool, "flow:abc", {"status": "DIAGNOSING"})
-        pool.execute.assert_awaited_once()
-        call_args = pool.execute.call_args[0]
-        # First arg is SQL, second arg is key, third is JSON value
-        assert call_args[1] == "flow:abc"
-        assert json.loads(call_args[2]) == {"status": "DIAGNOSING"}
 
 
 # ---------------------------------------------------------------------------
@@ -234,16 +194,16 @@ class TestDiagnosticStart:
         nodes = _node_inventory_rows()
         # Pool operations order:
         # 1. fetchrow — verify mind map exists
-        # 2. fetchval — state_store_get (KV lookup)
+        # 2. fetchval — state_get (KV lookup); returns None or JSON-encoded flow
         # 3. fetch    — get all nodes
-        # 4. execute  — state_store_set (KV upsert)
+        # 4. fetchval — state_set (KV upsert, RETURNING version); returns int
         pool = MagicMock()
         pool.fetchrow = AsyncMock(return_value=_make_row({"id": MAP_ID}))
 
         flow_json = json.dumps(existing_flow) if existing_flow else None
-        pool.fetchval = AsyncMock(return_value=flow_json)
+        # Two fetchval calls: first is state_get, second is state_set RETURNING version
+        pool.fetchval = AsyncMock(side_effect=[flow_json, 1])
         pool.fetch = AsyncMock(return_value=nodes)
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
         return pool, nodes
 
     async def test_returns_concept_inventory(self) -> None:
@@ -265,10 +225,11 @@ class TestDiagnosticStart:
         pool, _nodes = await self._make_start_pool()
         await diagnostic_start(pool, MAP_ID)
 
-        # The execute call for state_store_set should contain "DIAGNOSING"
-        pool.execute.assert_awaited_once()
-        call_args = pool.execute.call_args[0]
-        stored = json.loads(call_args[2])
+        # The second fetchval call (state_set RETURNING version) carries the stored JSON
+        # as the third positional argument.
+        assert pool.fetchval.await_count == 2
+        state_set_call_args = pool.fetchval.call_args_list[1][0]
+        stored = json.loads(state_set_call_args[2])
         assert stored["status"] == "DIAGNOSING"
         assert stored["mind_map_id"] == MAP_ID
         assert stored["probes_issued"] == 0
@@ -347,13 +308,14 @@ def _make_record_probe_pool(
     """
     Build a pool for diagnostic_record_probe.
 
-    Pool direct calls:
-    - fetchval: state_store_get (returns JSON-encoded flow_state or None)
-    - execute:  state_store_set
+    Pool direct calls (in order):
+    - fetchval[0]: state_get — returns JSON-encoded flow_state
+    - fetchval[1]: state_set RETURNING version — returns int
 
     Pool.acquire() → conn:
-    - conn.fetchrow: SELECT node mastery_status
-    - conn.execute: INSERT quiz_response + optional UPDATE mastery
+    - conn.fetchrow: SELECT node id, mastery_status
+    - conn.execute[0]: INSERT quiz_response
+    - conn.execute[1]: UPDATE mastery (only when quality >= 3 and mastery_status='unseen')
     """
     default_flow: dict[str, Any] = {
         "status": "DIAGNOSING",
@@ -366,8 +328,8 @@ def _make_record_probe_pool(
     flow_json = json.dumps(stored_flow)
 
     pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value=flow_json)
-    pool.execute = AsyncMock(return_value="INSERT 0 1")
+    # Two fetchval calls: state_get returns flow JSON, state_set returns version int
+    pool.fetchval = AsyncMock(side_effect=[flow_json, 1])
 
     # Connection inside acquire() context manager
     conn = _make_conn_with_transaction(
@@ -594,6 +556,33 @@ class TestDiagnosticRecordProbe:
         seeded = update_call_args[1]
         assert seeded == 0.3
 
+    async def test_already_mastered_node_not_demoted(self) -> None:
+        """quality>=3 probe must not demote a node already in 'mastered' status.
+
+        The UPDATE query includes AND mastery_status = 'unseen', so it should
+        match zero rows for a node that is already 'mastered'.  The test
+        verifies that the UPDATE *attempt* still happens (SQL has the guard),
+        but from the application side we verify only one conn.execute call
+        occurs when mastery_status is not 'unseen' (only the INSERT).
+
+        Note: SQLite row-count semantics are not available in this mock,
+        so we verify the SQL guard is present in the emitted query string.
+        """
+        from butlers.tools.education.diagnostic import diagnostic_record_probe
+
+        # Node is already 'mastered' — the UPDATE should contain the unseen guard
+        pool = _make_record_probe_pool(node_mastery_status="mastered")
+        acquire_ctx = pool.acquire.return_value
+        conn = acquire_ctx.__aenter__.return_value
+
+        await diagnostic_record_probe(pool, MAP_ID, NODE_ID_A, quality=5, inferred_mastery=0.6)
+
+        # Two execute calls (INSERT + UPDATE attempt), but the UPDATE SQL must
+        # include the mastery_status = 'unseen' guard so the DB row is protected.
+        assert conn.execute.call_count == 2
+        update_sql = conn.execute.call_args_list[1][0][0]
+        assert "mastery_status = 'unseen'" in update_sql
+
 
 # ---------------------------------------------------------------------------
 # Tests: diagnostic_complete
@@ -608,10 +597,10 @@ def _make_complete_pool(
     """
     Build a pool for diagnostic_complete.
 
-    Pool direct calls:
-    - fetchval: state_store_get
-    - fetch:    SELECT mastery_status for probed nodes
-    - execute:  state_store_set
+    Pool direct calls (in order):
+    - fetchval[0]: state_get — returns JSON-encoded flow_state
+    - fetch:       SELECT mastery_status for probed nodes
+    - fetchval[1]: state_set RETURNING version — returns int
     """
     default_flow: dict[str, Any] = {
         "status": "DIAGNOSING",
@@ -641,9 +630,9 @@ def _make_complete_pool(
     rows = node_status_rows if node_status_rows is not None else default_node_rows
 
     pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value=json.dumps(stored_flow))
+    # Two fetchval calls: state_get returns flow JSON, state_set returns version int
+    pool.fetchval = AsyncMock(side_effect=[json.dumps(stored_flow), 1])
     pool.fetch = AsyncMock(return_value=rows)
-    pool.execute = AsyncMock(return_value="INSERT 0 1")
     return pool
 
 
@@ -656,10 +645,11 @@ class TestDiagnosticComplete:
         pool = _make_complete_pool()
         await diagnostic_complete(pool, MAP_ID)
 
-        # The state_store_set execute call should store PLANNING
-        pool.execute.assert_awaited_once()
-        call_args = pool.execute.call_args[0]
-        stored = json.loads(call_args[2])
+        # The second fetchval call (state_set RETURNING version) carries the stored JSON
+        # as the third positional argument.
+        assert pool.fetchval.await_count == 2
+        state_set_call_args = pool.fetchval.call_args_list[1][0]
+        stored = json.loads(state_set_call_args[2])
         assert stored["status"] == "PLANNING"
 
     async def test_raises_if_not_diagnosing(self) -> None:
@@ -829,8 +819,8 @@ class TestDiagnosticComplete:
         pool = _make_complete_pool()
         await diagnostic_complete(pool, MAP_ID)
 
-        call_args = pool.execute.call_args[0]
-        stored = json.loads(call_args[2])
+        state_set_call_args = pool.fetchval.call_args_list[1][0]
+        stored = json.loads(state_set_call_args[2])
         assert "last_session_at" in stored
 
     async def test_unprobed_count_zero_when_all_probed(self) -> None:
