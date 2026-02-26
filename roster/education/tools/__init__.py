@@ -1,4 +1,4 @@
-"""Education butler tools — mind maps, nodes, edges, queries, mastery, spaced repetition, analytics, and diagnostic.
+"""Education butler tools — mind maps, nodes, edges, queries, mastery, spaced repetition, analytics.
 
 Re-exports all public symbols from the education tool sub-modules so that
 ``from butlers.tools.education import X`` works as a stable public API.
