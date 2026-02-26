@@ -462,22 +462,39 @@ async def _fetch_workspace_rows(
 
     # Deduplicate across butler databases: the same Google Calendar event
     # is synced into every butler's projection tables.  Keep only one
-    # instance per unique event.  We key on (origin_ref, starts_epoch,
-    # calendar_id) instead of origin_instance_ref because the latter
-    # embeds an isoformat timestamp whose timezone offset can differ
-    # across butler DBs (e.g. +08:00 vs +00:00 for the same instant).
-    seen: set[tuple[str, int, str]] = set()
-    deduped: list[dict[str, Any]] = []
+    # instance per unique event.
+    #
+    # Pass 1 — exact event identity: key on (origin_ref, starts_epoch).
+    # We deliberately exclude calendar_id because Google treats "primary"
+    # and the explicit email address as aliases for the same calendar, so
+    # the same event is returned under different calendar_id values.
+    # Epoch-ms avoids timezone-serialization differences across DBs.
+    #
+    # Pass 2 — cross-calendar copies: events duplicated to a group
+    # calendar get a new origin_ref from Google.  Collapse those via
+    # (title, starts_epoch) so each real-world event shows once.
+    seen_ref: set[tuple[str, int]] = set()
+    after_pass1: list[dict[str, Any]] = []
     for row in flattened:
         origin_ref = row.get("origin_ref") or ""
-        calendar_id = row.get("calendar_id") or ""
         starts_at = _coerce_datetime(row.get("instance_starts_at"))
-        # Convert to integer epoch (ms) so timezone representation is irrelevant
         starts_epoch = int(starts_at.timestamp() * 1000) if starts_at else 0
-        key = (origin_ref, starts_epoch, calendar_id)
-        if key in seen:
+        key = (origin_ref, starts_epoch)
+        if key in seen_ref:
             continue
-        seen.add(key)
+        seen_ref.add(key)
+        after_pass1.append(row)
+
+    seen_title: set[tuple[str, int]] = set()
+    deduped: list[dict[str, Any]] = []
+    for row in after_pass1:
+        title = (row.get("title") or "").strip().lower()
+        starts_at = _coerce_datetime(row.get("instance_starts_at"))
+        starts_epoch = int(starts_at.timestamp() * 1000) if starts_at else 0
+        title_key = (title, starts_epoch)
+        if title_key in seen_title:
+            continue
+        seen_title.add(title_key)
         deduped.append(row)
     return deduped
 
