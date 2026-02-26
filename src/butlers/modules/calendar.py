@@ -5123,7 +5123,44 @@ class CalendarModule(Module):
         updated_events: list[CalendarEvent],
         cancelled_ids: list[str],
     ) -> None:
+        # Purge any butler-generated events that were previously projected
+        # under this provider source (lane='user').  They belong in the
+        # butler lane via the internal scheduler/reminder projection.
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is not None and await self._projection_tables_available():
+            stale_rows = await pool.fetch(
+                """
+                SELECT e.id FROM calendar_events e
+                WHERE e.source_id = $1
+                  AND e.metadata->>'butler_generated' = 'true'
+                  AND e.status != 'cancelled'
+                """,
+                source_id,
+            )
+            if stale_rows:
+                stale_ids = [r["id"] for r in stale_rows]
+                await pool.execute(
+                    "UPDATE calendar_event_instances SET status = 'cancelled', updated_at = now() "
+                    "WHERE event_id = ANY($1::uuid[])",
+                    stale_ids,
+                )
+                await pool.execute(
+                    "UPDATE calendar_events SET status = 'cancelled', updated_at = now() "
+                    "WHERE id = ANY($1::uuid[])",
+                    stale_ids,
+                )
+                logger.info(
+                    "Purged %d butler-generated events from user-lane provider source",
+                    len(stale_ids),
+                )
+
         for event in updated_events:
+            # Skip butler-generated events pulled back from Google — they
+            # already have their own lane='butler' source via the internal
+            # scheduler/reminder projection and should not appear in the
+            # user view.
+            if event.butler_generated:
+                continue
             status_value = (
                 event.status.value if event.status is not None else EventStatus.confirmed.value
             )
