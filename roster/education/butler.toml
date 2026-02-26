@@ -24,8 +24,13 @@ route_contract_max = "route.v1"
 [[butler.schedule]]
 name = "nightly-analytics"
 cron = "0 3 * * *"
-dispatch_mode = "job"
-job_name = "compute_analytics_snapshots"
+dispatch_mode = "prompt"
+prompt = """
+Compute and persist nightly analytics snapshots for all active mind maps. For each active mind
+map: aggregate total_nodes, mastered_nodes, learning_nodes, struggling_nodes, mastery_rate,
+retention_rate_7d, velocity_nodes_per_week, and estimated_completion_days. Write each snapshot
+to analytics_snapshots with snapshot_date=today. Skip maps with no activity in the past 30 days.
+"""
 
 [[butler.schedule]]
 name = "weekly-progress-digest"
@@ -42,9 +47,15 @@ notify() using the owner contact's preferred channel.
 [[butler.schedule]]
 name = "weekly-stale-flow-check"
 cron = "0 4 * * 1"
-dispatch_mode = "job"
-job_name = "check_stale_teaching_flows"
+dispatch_mode = "prompt"
+prompt = """
+Check for stale teaching flows and clean up associated pending review schedules. A flow is stale
+if last_session_at is more than 30 days ago and status is not completed or abandoned. For each
+stale flow: transition status to abandoned, call spaced_repetition_schedule_cleanup() to remove
+pending review schedules, and store a memory fact recording the abandonment.
+"""
 
 [modules.memory]
 
 [modules.contacts]
+provider = "google"
