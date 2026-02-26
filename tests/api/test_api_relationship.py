@@ -155,6 +155,8 @@ def test_list_contacts_returns_contacts_with_labels():
     contact_row = {
         "id": cid,
         "full_name": "Alice Smith",
+        "first_name": "Alice",
+        "last_name": "Smith",
         "nickname": "Ali",
         "email": "alice@example.com",
         "phone": "555-1234",
@@ -315,6 +317,8 @@ def test_get_contact_detail():
         fetchrow_result={
             "id": cid,
             "full_name": "Bob Jones",
+            "first_name": "Bob",
+            "last_name": "Jones",
             "nickname": None,
             "notes": "Met at conference",
             "company": "Acme Inc",
@@ -336,6 +340,8 @@ def test_get_contact_detail():
             {
                 "id": cid,
                 "full_name": "Bob Jones",
+                "first_name": "Bob",
+                "last_name": "Jones",
                 "nickname": None,
                 "notes": "Met at conference",
                 "company": "Acme Inc",
@@ -380,6 +386,8 @@ def test_get_contact_detail_with_null_metadata_google_sync():
             {
                 "id": cid,
                 "full_name": "Google User",
+                "first_name": "Google",
+                "last_name": "User",
                 "nickname": None,
                 "notes": None,
                 "company": "Google LLC",
@@ -423,6 +431,8 @@ def test_get_contact_detail_reads_dedicated_columns_not_details_jsonb():
             {
                 "id": cid,
                 "full_name": "Jane Doe",
+                "first_name": "Jane",
+                "last_name": "Doe",
                 "nickname": "JD",  # from dedicated column c.nickname
                 "notes": None,
                 "company": "Acme Corp",  # from dedicated column c.company
@@ -474,6 +484,8 @@ def test_list_contacts_reads_nickname_from_dedicated_column():
     contact_row = {
         "id": cid,
         "full_name": "Alice Smith",
+        "first_name": "Alice",
+        "last_name": "Smith",
         "nickname": "Ali",
         "email": "alice@example.com",
         "phone": None,

@@ -42,6 +42,8 @@ class ContactSummary(BaseModel):
 
     id: UUID
     full_name: str
+    first_name: str | None = None
+    last_name: str | None = None
     nickname: str | None = None
     email: str | None = None
     phone: str | None = None
@@ -74,6 +76,8 @@ class ContactPatchRequest(BaseModel):
     """
 
     full_name: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
     nickname: str | None = None
     company: str | None = None
     job_title: str | None = None

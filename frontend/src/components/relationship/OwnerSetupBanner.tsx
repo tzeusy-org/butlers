@@ -39,7 +39,8 @@ export function OwnerSetupBanner() {
   const patchContact = usePatchContact();
 
   const [open, setOpen] = useState(false);
-  const [fullName, setFullName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [telegram, setTelegram] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
@@ -73,7 +74,8 @@ export function OwnerSetupBanner() {
   if (!status.has_telegram_chat_id) missing.push("Telegram chat ID");
 
   async function handleSave() {
-    const trimmedName = fullName.trim();
+    const trimmedFirst = firstName.trim();
+    const trimmedLast = lastName.trim();
     const trimmedEmail = email.trim();
     const trimmedTelegram = telegram.trim();
     const trimmedChatId = telegramChatId.trim();
@@ -82,7 +84,8 @@ export function OwnerSetupBanner() {
     const trimmedApiId = telegramApiId.trim();
 
     if (
-      !trimmedName &&
+      !trimmedFirst &&
+      !trimmedLast &&
       !trimmedEmail &&
       !trimmedTelegram &&
       !trimmedChatId &&
@@ -90,18 +93,21 @@ export function OwnerSetupBanner() {
       !trimmedApiHash &&
       !trimmedApiId
     ) {
-      toast.error("Please fill in at least your name.");
+      toast.error("Please fill in at least your first name.");
       return;
     }
 
     try {
       const promises: Promise<unknown>[] = [];
 
-      if (trimmedName) {
+      if (trimmedFirst || trimmedLast) {
         promises.push(
           patchContact.mutateAsync({
             contactId,
-            request: { full_name: trimmedName },
+            request: {
+              first_name: trimmedFirst || null,
+              last_name: trimmedLast || null,
+            },
           }),
         );
       }
@@ -182,7 +188,8 @@ export function OwnerSetupBanner() {
       await Promise.all(promises);
       toast.success("Owner identity updated.");
       setOpen(false);
-      setFullName("");
+      setFirstName("");
+      setLastName("");
       setEmail("");
       setTelegram("");
       setTelegramChatId("");
@@ -227,17 +234,30 @@ export function OwnerSetupBanner() {
             </DialogHeader>
             <div className="space-y-4 py-2">
               {!status.has_name && (
-                <div className="space-y-2">
-                  <Label htmlFor="owner-name">Full name</Label>
-                  <Input
-                    id="owner-name"
-                    type="text"
-                    placeholder="Jane Doe"
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    disabled={isSaving}
-                    autoFocus
-                  />
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="owner-first-name">First name</Label>
+                    <Input
+                      id="owner-first-name"
+                      type="text"
+                      placeholder="Jane"
+                      value={firstName}
+                      onChange={(e) => setFirstName(e.target.value)}
+                      disabled={isSaving}
+                      autoFocus
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="owner-last-name">Last name</Label>
+                    <Input
+                      id="owner-last-name"
+                      type="text"
+                      placeholder="Doe"
+                      value={lastName}
+                      onChange={(e) => setLastName(e.target.value)}
+                      disabled={isSaving}
+                    />
+                  </div>
                 </div>
               )}
               {!status.has_email && (

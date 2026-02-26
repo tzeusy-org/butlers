@@ -105,6 +105,8 @@ def _contact_row(
     cid=None,
     *,
     name="Alice Smith",
+    first_name="Alice",
+    last_name="Smith",
     roles=None,
     entity_id=None,
     metadata=None,
@@ -113,6 +115,8 @@ def _contact_row(
     return {
         "id": cid or uuid4(),
         "full_name": name,
+        "first_name": first_name,
+        "last_name": last_name,
         "nickname": None,
         "notes": None,
         "company": None,
@@ -435,6 +439,8 @@ def test_list_pending_contacts_returns_needs_disambiguation():
                 {
                     "id": cid,
                     "full_name": "Unknown (telegram 99999)",
+                    "first_name": None,
+                    "last_name": None,
                     "nickname": None,
                     "notes": None,
                     "company": None,

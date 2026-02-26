@@ -228,6 +228,8 @@ async def list_contacts(
         SELECT
             c.id,
             c.name AS full_name,
+            c.first_name,
+            c.last_name,
             c.nickname,
             (
                 SELECT ci.value FROM shared.contact_info ci
@@ -277,6 +279,8 @@ async def list_contacts(
         ContactSummary(
             id=row["id"],
             full_name=row["full_name"],
+            first_name=row["first_name"],
+            last_name=row["last_name"],
             nickname=row["nickname"],
             email=row["email"],
             phone=row["phone"],
@@ -400,6 +404,8 @@ async def list_pending_contacts(
         SELECT
             c.id,
             c.name AS full_name,
+            c.first_name,
+            c.last_name,
             c.nickname,
             c.details->>'notes' AS notes,
             c.company,
@@ -449,6 +455,8 @@ async def list_pending_contacts(
             ContactDetail(
                 id=cid,
                 full_name=row["full_name"],
+                first_name=row["first_name"],
+                last_name=row["last_name"],
                 nickname=row["nickname"],
                 email=next((ci.value for ci in contact_info_entries if ci.type == "email"), None),
                 phone=next((ci.value for ci in contact_info_entries if ci.type == "phone"), None),
@@ -493,6 +501,8 @@ async def get_contact(
         SELECT
             c.id,
             c.name AS full_name,
+            c.first_name,
+            c.last_name,
             c.nickname,
             c.details->>'notes' AS notes,
             c.company,
@@ -609,6 +619,8 @@ async def get_contact(
     return ContactDetail(
         id=row["id"],
         full_name=row["full_name"],
+        first_name=row["first_name"],
+        last_name=row["last_name"],
         nickname=row["nickname"],
         email=row["email"],
         phone=row["phone"],
@@ -706,9 +718,33 @@ async def patch_contact(
     args: list[Any] = []
     idx = 1
 
+    if request.first_name is not None:
+        updates.append(f"first_name = ${idx}")
+        args.append(request.first_name)
+        idx += 1
+
+    if request.last_name is not None:
+        updates.append(f"last_name = ${idx}")
+        args.append(request.last_name)
+        idx += 1
+
+    # Recompose the denormalized `name` column from first/last if either changed,
+    # or use full_name directly if provided (backward compat).
     if request.full_name is not None:
         updates.append(f"name = ${idx}")
         args.append(request.full_name)
+        idx += 1
+    elif request.first_name is not None or request.last_name is not None:
+        # Fetch current values to compose the full name
+        cur = await pool.fetchrow(
+            "SELECT first_name, last_name FROM contacts WHERE id = $1",
+            contact_id,
+        )
+        first = request.first_name if request.first_name is not None else (cur["first_name"] or "")
+        last = request.last_name if request.last_name is not None else (cur["last_name"] or "")
+        composed = " ".join(p for p in [first, last] if p).strip() or "Unknown"
+        updates.append(f"name = ${idx}")
+        args.append(composed)
         idx += 1
 
     if request.nickname is not None:

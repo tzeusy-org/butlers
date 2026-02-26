@@ -486,7 +486,8 @@ interface EditHeaderFormProps {
 
 function EditHeaderForm({ contact, onDone }: EditHeaderFormProps) {
   const patchContact = usePatchContact();
-  const [fullName, setFullName] = useState(contact.full_name);
+  const [firstName, setFirstName] = useState(contact.first_name ?? "");
+  const [lastName, setLastName] = useState(contact.last_name ?? "");
   const [nickname, setNickname] = useState(contact.nickname ?? "");
   const [company, setCompany] = useState(contact.company ?? "");
   const [jobTitle, setJobTitle] = useState(contact.job_title ?? "");
@@ -494,15 +495,17 @@ function EditHeaderForm({ contact, onDone }: EditHeaderFormProps) {
   const isSaving = patchContact.isPending;
 
   async function handleSave() {
-    const trimmedName = fullName.trim();
-    if (!trimmedName) {
+    const trimmedFirst = firstName.trim();
+    const trimmedLast = lastName.trim();
+    if (!trimmedFirst && !trimmedLast) {
       toast.error("Name cannot be empty.");
       return;
     }
 
     // Only send changed fields
     const request: Record<string, string | null> = {};
-    if (trimmedName !== contact.full_name) request.full_name = trimmedName;
+    if (trimmedFirst !== (contact.first_name ?? "")) request.first_name = trimmedFirst;
+    if (trimmedLast !== (contact.last_name ?? "")) request.last_name = trimmedLast;
     const nick = nickname.trim() || null;
     if (nick !== (contact.nickname ?? null)) request.nickname = nick ?? "";
     const comp = company.trim() || null;
@@ -530,17 +533,28 @@ function EditHeaderForm({ contact, onDone }: EditHeaderFormProps) {
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         <div className="space-y-1">
-          <Label htmlFor="edit-name" className="text-xs">
-            Full name
+          <Label htmlFor="edit-first-name" className="text-xs">
+            First name
           </Label>
           <Input
-            id="edit-name"
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
+            id="edit-first-name"
+            value={firstName}
+            onChange={(e) => setFirstName(e.target.value)}
             disabled={isSaving}
             autoFocus
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="edit-last-name" className="text-xs">
+            Last name
+          </Label>
+          <Input
+            id="edit-last-name"
+            value={lastName}
+            onChange={(e) => setLastName(e.target.value)}
+            disabled={isSaving}
           />
         </div>
         <div className="space-y-1">

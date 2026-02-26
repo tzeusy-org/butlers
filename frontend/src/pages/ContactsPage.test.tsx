@@ -48,6 +48,8 @@ function setContactsState(state?: Partial<UseContactsResult>) {
         {
           id: "contact-1",
           full_name: "Ada Lovelace",
+          first_name: "Ada",
+          last_name: "Lovelace",
           nickname: null,
           email: "ada@example.com",
           phone: null,

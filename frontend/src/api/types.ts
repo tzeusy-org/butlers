@@ -681,6 +681,8 @@ export interface Label {
 export interface ContactSummary {
   id: string;
   full_name: string;
+  first_name: string | null;
+  last_name: string | null;
   nickname: string | null;
   email: string | null;
   phone: string | null;
@@ -718,6 +720,8 @@ export interface ContactDetail extends ContactSummary {
 /** Request body for PATCH /contacts/{id}. */
 export interface ContactPatchRequest {
   full_name?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
   nickname?: string | null;
   company?: string | null;
   job_title?: string | null;
