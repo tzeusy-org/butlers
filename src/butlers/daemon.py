@@ -2273,6 +2273,7 @@ class ButlerDaemon:
                     target=target,
                     source_metadata=source_metadata,
                     trace_context=trace_context,
+                    parent_ctx=parent_ctx,
                     accept_span_ctx=accept_span_ctx,
                 )
 
@@ -2284,6 +2285,7 @@ class ButlerDaemon:
             target: dict[str, Any] | None = None,
             source_metadata: dict[str, Any] | None = None,
             trace_context: dict[str, str] | None = None,
+            parent_ctx: OtelContext | None = None,
             accept_span_ctx: trace.SpanContext | None = None,
         ) -> dict[str, Any]:
             started_at = time.monotonic()
@@ -2494,13 +2496,15 @@ class ButlerDaemon:
                     _context: str | None,
                     _request_id: str,
                     _accepted_at: datetime,
+                    _parent_ctx: OtelContext | None,
                     _accept_span_ctx: trace.SpanContext | None,
                 ) -> None:
                     """Background task: call spawner.trigger() and update route_inbox.
 
-                    This task runs as a sibling trace (fresh root span) — it does NOT
-                    inherit the switchboard's OTel context.  A SpanLink back to the
-                    accept-phase span enables cross-trace correlation via request_id.
+                    The processing phase must continue the upstream trace context when
+                    available so switchboard->target work appears in one end-to-end
+                    trace. A SpanLink back to the accept-phase span is retained for
+                    direct async-boundary correlation.
                     """
                     # Record how long the request waited in the route_inbox queue
                     process_latency_ms = (datetime.now(UTC) - _accepted_at).total_seconds() * 1000
@@ -2516,10 +2520,9 @@ class ButlerDaemon:
                                 attributes={"request_id": _request_id},
                             )
                         )
-                    # Start a fresh root span — do NOT inherit the switchboard's context.
                     with _tracer.start_as_current_span(
                         "route.process",
-                        context=OtelContext(),
+                        context=_parent_ctx,
                         links=_links,
                     ) as _process_span:
                         tag_butler_span(_process_span, butler_name)
@@ -2563,6 +2566,7 @@ class ButlerDaemon:
                         context_text,
                         route_request_id,
                         inbox_accepted_at,
+                        parent_ctx,
                         accept_span_ctx,
                     ),
                     name=f"route-inbox-{inbox_id}",

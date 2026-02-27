@@ -342,6 +342,10 @@ make test-qg
 - Daemon-side wrappers (`_SpanWrappingMCP` and `_ToolCallLoggingMCP`) must capture tool-call outcomes (`success`/`error`/`module_disabled`) plus result/error payloads in `tool_call_capture` so session `tool_calls` preserve execution outcomes, not just invocation names/inputs.
 - Spawner merge logic should preserve failed-then-retried attempts with identical inputs in chronological order; avoid signature-only dedupe that collapses retry history.
 
+### route.execute trace continuity contract
+- Non-messenger `route.execute` background processing (`route.process`) should continue the incoming distributed `trace_context` when present, so switchboard dispatch and target butler work appear under one trace in observability backends.
+- Keep `request_id` attributes on both accept (`butler.tool.route.execute`) and process (`route.process`) spans, and retain the process-span `SpanLink` to the accept span for explicit async-boundary correlation.
+
 ### notify + memory_store_fact tool metadata contract
 - `notify` tool metadata (description + parameter schema) should explicitly document required/optional fields, include a valid JSON example, constrain `channel`/`intent` enums, and describe `request_context` required keys (`request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`) plus `source_thread_identity` for telegram reply/react.
 - `memory_store_fact` tool metadata should explicitly document required/optional fields, include a valid JSON example, keep `permanence` as enum (`permanent|stable|standard|volatile|ephemeral`), and state that `tags` must be a JSON array of strings (not a comma-separated string).

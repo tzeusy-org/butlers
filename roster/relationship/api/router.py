@@ -1003,7 +1003,12 @@ async def get_owner_setup_status(
     )
     owner_id = owner_row["id"] if owner_row else None
     # The bootstrap name "Owner" is a placeholder — treat it as not yet set
-    owner_name = owner_row["name"] if owner_row else None
+    owner_name: str | None = None
+    if owner_row is not None:
+        try:
+            owner_name = owner_row["name"]
+        except KeyError:
+            owner_name = None
     has_name = bool(owner_name and owner_name.strip().lower() != "owner")
 
     rows = await pool.fetch(

@@ -1,12 +1,11 @@
-"""Tests for OTel trace decoupling on async route dispatch (butlers-963.10).
+"""Tests for async route dispatch tracing continuity.
 
 Verifies:
-1. The background processing task creates a fresh root span (sibling, not child of accept span)
-2. The process span carries request_id as an attribute
-3. The process span links back to the accept-phase span via SpanLink
-4. The accept-phase span carries request_id as an attribute
-5. The accept span ends before the process span (spans are truly decoupled)
-6. Recovery dispatch tasks also start fresh root spans
+1. The background processing task continues the incoming distributed trace.
+2. The process span carries request_id as an attribute.
+3. The process span links back to the accept-phase span via SpanLink.
+4. The accept-phase span carries request_id as an attribute.
+5. The accept span still ends before the process span completes.
 """
 
 from __future__ import annotations
@@ -227,13 +226,13 @@ def _mock_route_inbox(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class TestProcessSpanIsRootSpan:
-    """The background processing task must not inherit the switchboard's trace."""
+class TestProcessSpanTraceContinuity:
+    """The background processing task should continue switchboard trace context."""
 
-    async def test_process_span_has_no_parent(
+    async def test_process_span_shares_switchboard_trace(
         self, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
-        """route.process span is a root span with no parent."""
+        """route.process span should use the same trace as the switchboard span."""
         patches = _patch_infra("health")
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
         tracer = trace.get_tracer("butlers")
@@ -250,6 +249,7 @@ class TestProcessSpanIsRootSpan:
         parent_tracer = trace.get_tracer("test")
         with parent_tracer.start_as_current_span("switchboard.route") as parent_span:
             parent_trace_id = parent_span.get_span_context().trace_id
+            parent_span_id = parent_span.get_span_context().span_id
             trace_context = inject_trace_context()
 
         result = await route_execute_fn(
@@ -271,14 +271,12 @@ class TestProcessSpanIsRootSpan:
         )
         process_span = process_spans[0]
 
-        # Process span must be a root span — no parent
-        assert process_span.parent is None, (
-            f"route.process should be a root span (no parent), but parent={process_span.parent}"
+        assert process_span.context.trace_id == parent_trace_id, (
+            "route.process should share the switchboard trace_id"
         )
-
-        # Process span must NOT share the switchboard's trace_id
-        assert process_span.context.trace_id != parent_trace_id, (
-            "route.process should have a different trace_id from the switchboard's trace"
+        assert process_span.parent is not None
+        assert process_span.parent.span_id == parent_span_id, (
+            "route.process should be parented to the upstream switchboard span context"
         )
 
     async def test_accept_span_ends_before_process_span(
@@ -513,10 +511,10 @@ class TestSpanLink:
         )
         assert link.attributes["request_id"] == _REQUEST_ID
 
-    async def test_different_traces_linked_by_same_request_id(
+    async def test_accept_and_process_share_same_trace(
         self, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
-        """Accept and process spans share request_id but differ in trace_id (sibling traces)."""
+        """Accept and process spans should be in one trace and share request_id."""
         patches = _patch_infra("health")
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
         tracer = trace.get_tracer("butlers")
@@ -547,12 +545,11 @@ class TestSpanLink:
         accept_span = accept_spans[0]
         process_span = process_spans[0]
 
-        # Sibling traces: different trace_ids
-        assert accept_span.context.trace_id != process_span.context.trace_id, (
-            "Accept and process spans must belong to different traces (sibling, not parent-child)"
+        assert accept_span.context.trace_id == process_span.context.trace_id, (
+            "Accept and process spans must belong to the same distributed trace"
         )
 
-        # Both carry the same request_id for cross-trace correlation
+        # Both carry the same request_id for correlation and auditing.
         assert accept_span.attributes.get("request_id") == _REQUEST_ID
         assert process_span.attributes.get("request_id") == _REQUEST_ID
 
@@ -562,13 +559,13 @@ class TestSpanLink:
 # ---------------------------------------------------------------------------
 
 
-class TestSwitchboardTraceEndsAtAccept:
-    """The switchboard's trace must not extend into the processing phase."""
+class TestSwitchboardTraceIncludesProcess:
+    """The switchboard trace should include the async processing phase."""
 
-    async def test_switchboard_trace_does_not_include_process_span(
+    async def test_switchboard_trace_includes_process_span(
         self, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
-        """No span under the switchboard's trace_id is created in the process phase."""
+        """route.process should be emitted under the switchboard trace_id."""
         patches = _patch_infra("health")
         butler_dir = _make_butler_toml(tmp_path, butler_name="health")
         tracer = trace.get_tracer("butlers")
@@ -598,13 +595,10 @@ class TestSwitchboardTraceEndsAtAccept:
 
         spans = otel_provider.get_finished_spans()
 
-        # Only the accept span (butler.tool.route.execute) should be in the switchboard's trace
+        # Both accept and process spans should be in the switchboard trace.
         switchboard_spans = [s for s in spans if s.context.trace_id == switchboard_trace_id]
         switchboard_span_names = [s.name for s in switchboard_spans]
-        assert "route.process" not in switchboard_span_names, (
-            f"route.process must NOT appear in the switchboard's trace. "
-            f"Switchboard spans: {switchboard_span_names}"
-        )
+        assert "route.process" in switchboard_span_names
         assert "butler.tool.route.execute" in switchboard_span_names, (
             "butler.tool.route.execute (accept span) must be in the switchboard's trace"
         )
