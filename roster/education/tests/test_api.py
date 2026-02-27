@@ -1015,9 +1015,7 @@ class TestGetPendingReviews:
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.get(
-                    f"/api/education/mind-maps/{_MAP_ID}/pending-reviews"
-                )
+                resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/pending-reviews")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -1047,9 +1045,7 @@ class TestGetPendingReviews:
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.get(
-                    f"/api/education/mind-maps/{_MAP_ID}/pending-reviews"
-                )
+                resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/pending-reviews")
 
         assert resp.status_code == 200
         assert resp.json() == []
@@ -1064,9 +1060,7 @@ class TestGetPendingReviews:
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.get(
-                    f"/api/education/mind-maps/{uuid.uuid4()}/pending-reviews"
-                )
+                resp = await client.get(f"/api/education/mind-maps/{uuid.uuid4()}/pending-reviews")
 
         assert resp.status_code == 404
 
@@ -1105,9 +1099,7 @@ class TestGetMasterySummary:
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.get(
-                    f"/api/education/mind-maps/{_MAP_ID}/mastery-summary"
-                )
+                resp = await client.get(f"/api/education/mind-maps/{_MAP_ID}/mastery-summary")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -1126,9 +1118,7 @@ class TestGetMasterySummary:
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
-                resp = await client.get(
-                    f"/api/education/mind-maps/{uuid.uuid4()}/mastery-summary"
-                )
+                resp = await client.get(f"/api/education/mind-maps/{uuid.uuid4()}/mastery-summary")
 
         assert resp.status_code == 404
 
@@ -1149,9 +1139,7 @@ class TestUpdateMindMapStatus:
 
         with (
             patch.object(edu, "mind_map_update_status", new_callable=AsyncMock),
-            patch.object(
-                edu, "mind_map_get", new_callable=AsyncMock, return_value=updated_map
-            ),
+            patch.object(edu, "mind_map_get", new_callable=AsyncMock, return_value=updated_map),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1174,9 +1162,7 @@ class TestUpdateMindMapStatus:
 
         with (
             patch.object(edu, "mind_map_update_status", new_callable=AsyncMock),
-            patch.object(
-                edu, "mind_map_get", new_callable=AsyncMock, return_value=updated_map
-            ),
+            patch.object(edu, "mind_map_get", new_callable=AsyncMock, return_value=updated_map),
         ):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
