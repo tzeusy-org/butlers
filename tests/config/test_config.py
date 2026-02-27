@@ -470,6 +470,55 @@ model = "gpt-4o-2025-01-01"
 
         assert cfg.runtime.model == "gpt-4o-2025-01-01"
 
+    def test_runtime_args_parsed(self, tmp_path: Path):
+        """Runtime CLI args are parsed from [butler.runtime]."""
+        toml = """\
+[butler]
+name = "argsbot"
+port = 7017
+
+[butler.runtime]
+args = ["--config", "model_reasoning_effort=\\"high\\""]
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        cfg = load_config(config_dir)
+
+        assert cfg.runtime.args == ("--config", 'model_reasoning_effort="high"')
+
+    def test_runtime_args_must_be_array(self, tmp_path: Path):
+        """Runtime args must be configured as a TOML array of strings."""
+        toml = """\
+[butler]
+name = "badargs"
+port = 7018
+
+[butler.runtime]
+args = "--config model_reasoning_effort=\\"high\\""
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        with pytest.raises(
+            ConfigError,
+            match=r"Invalid butler.runtime.args: expected an array of strings",
+        ):
+            load_config(config_dir)
+
+    def test_runtime_args_entries_must_be_non_empty_strings(self, tmp_path: Path):
+        """Runtime args entries reject blank or non-string values."""
+        toml = """\
+[butler]
+name = "badargentry"
+port = 7019
+
+[butler.runtime]
+args = ["--config", "   ", 123]
+"""
+        config_dir = _write_toml(tmp_path, toml)
+        with pytest.raises(
+            ConfigError,
+            match=r"Invalid butler.runtime.args\[1\]: expected a non-empty string",
+        ):
+            load_config(config_dir)
+
     def test_runtime_config_dataclass_defaults(self):
         """RuntimeConfig defaults to Haiku model."""
         rc = RuntimeConfig()

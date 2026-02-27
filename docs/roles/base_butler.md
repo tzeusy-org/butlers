@@ -54,6 +54,7 @@ Strongly recommended fields:
 - `[butler].description`
 - `[butler.db].name` (defaults to `butler_<name>`)
 - `[butler.runtime].type` and `[butler.runtime].model`
+- `[butler.runtime].args` for runtime-specific CLI flags (for example Codex `--config` overrides)
 - `[butler.switchboard].url` for non-switchboard butlers
 - `[butler.env].required` and `[butler.env].optional`
 - `[butler.shutdown].timeout_s`

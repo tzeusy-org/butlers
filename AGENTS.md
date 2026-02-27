@@ -142,6 +142,10 @@ git push                # Push to remote
 
 ## Notes to self
 
+### Runtime args passthrough contract
+- `[butler.runtime].args` now accepts an ordered array of non-empty strings and is stored on `RuntimeConfig.args` as a tuple.
+- `Spawner` forwards non-empty runtime args into adapter invocation as `runtime_args`, and `CodexAdapter` appends them to `codex exec` before the `--` prompt delimiter (supports flags like `--config model_reasoning_effort="high"`).
+
 ### PR merge from worktree contract
 - In this repo's multi-worktree setup, `gh pr merge` from a non-main worktree can fail with `fatal: 'main' is already checked out at '/home/tze/GitHub/butlers'`; reviewer workers should merge via GitHub API (`PUT /repos/{owner}/{repo}/pulls/{number}/merge`) and delete the head ref separately when needed.
 

@@ -768,14 +768,20 @@ class Spawner:
 
             # Invoke via runtime adapter
             runtime_invoked = True
+            runtime_args = list(self._config.runtime.args)
+            invoke_kwargs: dict[str, Any] = {
+                "prompt": final_prompt,
+                "system_prompt": system_prompt,
+                "mcp_servers": mcp_servers,
+                "env": env,
+                "max_turns": max_turns,
+                "model": model,
+                "cwd": str(self._config_dir),
+            }
+            if runtime_args:
+                invoke_kwargs["runtime_args"] = runtime_args
             result_text, tool_calls, usage = await runtime.invoke(
-                prompt=final_prompt,
-                system_prompt=system_prompt,
-                mcp_servers=mcp_servers,
-                env=env,
-                max_turns=max_turns,
-                model=model,
-                cwd=str(self._config_dir),
+                **invoke_kwargs,
             )
             if runtime_session_id:
                 executed_tool_calls = consume_runtime_session_tool_calls(runtime_session_id)

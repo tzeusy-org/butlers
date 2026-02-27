@@ -522,6 +522,31 @@ async def test_invoke_passes_model_flag():
     assert cmd[model_idx + 1] == "gpt-5.3-codex-spark"
 
 
+async def test_invoke_passes_runtime_args_before_prompt_delimiter():
+    """invoke() forwards configured runtime args to Codex CLI."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="run",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            runtime_args=["--config", 'model_reasoning_effort="high"'],
+        )
+
+    cmd = mock_sub.call_args[0]
+    assert "--config" in cmd
+    cfg_idx = cmd.index("--config")
+    assert cmd[cfg_idx + 1] == 'model_reasoning_effort="high"'
+    assert "--" in cmd
+    assert cfg_idx < cmd.index("--")
+
+
 async def test_invoke_nonzero_exit():
     """invoke() raises on non-zero exit code."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")

@@ -491,6 +491,7 @@ class CodexAdapter(RuntimeAdapter):
         env: dict[str, str],
         max_turns: int = 20,
         model: str | None = None,
+        runtime_args: list[str] | None = None,
         cwd: Path | None = None,
         timeout: int | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
@@ -541,6 +542,9 @@ class CodexAdapter(RuntimeAdapter):
 
         if isinstance(model, str) and model.strip():
             cmd.extend(["--model", model.strip()])
+
+        if runtime_args:
+            cmd.extend(runtime_args)
 
         for server_name, server_cfg in mcp_servers.items():
             if not isinstance(server_name, str) or not _is_safe_mcp_server_name(server_name):

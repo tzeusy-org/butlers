@@ -4,7 +4,8 @@ port = 40107
 description = "Personalized tutor with spaced repetition, mind maps, and adaptive learning"
 
 [butler.runtime]
-model = "claude-opus-4-6"
+model = "gpt-5.2"
+args = ["--config", "model_reasoning_effort=\"high\""]
 max_concurrent_sessions = 3
 
 [runtime]

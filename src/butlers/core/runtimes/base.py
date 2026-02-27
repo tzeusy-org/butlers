@@ -38,6 +38,7 @@ class RuntimeAdapter(abc.ABC):
         env: dict[str, str],
         max_turns: int = 20,
         model: str | None = None,
+        runtime_args: list[str] | None = None,
         cwd: Path | None = None,
         timeout: int | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
@@ -53,6 +54,8 @@ class RuntimeAdapter(abc.ABC):
             MCP server configurations the runtime should connect to.
         env:
             Environment variables to pass to the runtime process.
+        runtime_args:
+            Optional additional CLI arguments configured for the runtime.
         cwd:
             Working directory for the runtime process.
         timeout:

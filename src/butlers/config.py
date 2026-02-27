@@ -75,12 +75,17 @@ class RuntimeConfig:
 
     max_queued_sessions controls spawner queue backpressure. Once the queue is
     full, new triggers are rejected immediately instead of waiting unboundedly.
+
+    args is an optional ordered list of additional CLI arguments passed to the
+    selected runtime adapter invocation. Arguments are passed as-is (no shell
+    parsing), so each CLI token should be a separate list entry.
     """
 
     type: str = "claude-code"
     model: str | None = DEFAULT_MODEL
     max_concurrent_sessions: int = 1
     max_queued_sessions: int = 100
+    args: tuple[str, ...] = ()
 
 
 @dataclass
@@ -291,6 +296,16 @@ def _parse_runtime(butler_section: dict) -> RuntimeConfig:
     model = runtime_section.get("model")
     max_concurrent_sessions = int(runtime_section.get("max_concurrent_sessions", 1))
     max_queued_sessions = int(runtime_section.get("max_queued_sessions", 100))
+    raw_runtime_args = runtime_section.get("args", [])
+
+    if not isinstance(raw_runtime_args, list):
+        raise ConfigError("Invalid butler.runtime.args: expected an array of strings")
+
+    runtime_args: list[str] = []
+    for i, arg in enumerate(raw_runtime_args):
+        if not isinstance(arg, str) or not arg.strip():
+            raise ConfigError(f"Invalid butler.runtime.args[{i}]: expected a non-empty string")
+        runtime_args.append(arg)
 
     if max_concurrent_sessions <= 0:
         raise ConfigError(
@@ -312,10 +327,12 @@ def _parse_runtime(butler_section: dict) -> RuntimeConfig:
             model=model,
             max_concurrent_sessions=max_concurrent_sessions,
             max_queued_sessions=max_queued_sessions,
+            args=tuple(runtime_args),
         )
     return RuntimeConfig(
         max_concurrent_sessions=max_concurrent_sessions,
         max_queued_sessions=max_queued_sessions,
+        args=tuple(runtime_args),
     )
 
 
@@ -739,6 +756,7 @@ def load_config(config_dir: Path) -> ButlerConfig:
         model=butler_runtime.model,
         max_concurrent_sessions=butler_runtime.max_concurrent_sessions,
         max_queued_sessions=butler_runtime.max_queued_sessions,
+        args=butler_runtime.args,
     )
 
     return ButlerConfig(
