@@ -269,6 +269,11 @@ async def curriculum_generate(
 ) -> dict[str, Any]:
     """Validate a concept graph, run topological sort, assign learning sequence.
 
+    Called during the PLANNING phase after all nodes and edges have been
+    persisted. Every concept in the curriculum plan MUST be a node in the DB
+    before calling this — use ``mind_map_node_create()`` and
+    ``mind_map_edge_create()`` first.
+
     The concept graph (nodes + edges) is assumed to already be persisted in the
     DB via prior calls to ``mind_map_node_create()`` and ``mind_map_edge_create()``.
     This function handles:
@@ -435,6 +440,11 @@ async def curriculum_replan(
     reason: str | None = None,
 ) -> dict[str, Any]:
     """Re-compute learning sequence based on current mastery state.
+
+    Use this to extend an existing curriculum: add new nodes and edges first
+    (via ``mind_map_node_create`` / ``mind_map_edge_create``), then call this
+    function to re-sequence the entire graph. Prefer this over creating a new
+    mind map when the user's request overlaps with an existing active curriculum.
 
     Re-runs the topological sort with fresh mastery data from the DB.
     Does NOT modify the existing DAG structure (nodes/edges).

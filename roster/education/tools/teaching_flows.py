@@ -207,6 +207,15 @@ async def teaching_flow_start(
 ) -> dict[str, Any]:
     """Start a new teaching flow for a topic.
 
+    This is the mandatory entry point for any new curriculum. Call this FIRST
+    whenever the user wants to learn a new topic. Never produce a curriculum
+    plan as conversational text without calling this function to persist it.
+
+    Before calling, check ``mind_map_list(status="active")`` for existing maps
+    on similar topics — prefer extending an existing map (via
+    ``mind_map_node_create`` / ``mind_map_edge_create`` + ``curriculum_replan``)
+    over creating a new one.
+
     Creates a mind map row, initializes KV state at PENDING, immediately
     transitions to DIAGNOSING, and returns the resulting flow state dict.
 

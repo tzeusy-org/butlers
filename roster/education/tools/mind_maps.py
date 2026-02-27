@@ -90,6 +90,11 @@ async def mind_map_list(
 ) -> list[dict[str, Any]]:
     """List mind maps, optionally filtered by status.
 
+    Call this before starting a new curriculum to check if a related mind map
+    already exists. If so, extend it (via ``mind_map_node_create`` /
+    ``mind_map_edge_create`` + ``curriculum_replan``) rather than creating a
+    duplicate.
+
     Parameters
     ----------
     pool:
