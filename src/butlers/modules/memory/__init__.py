@@ -210,14 +210,52 @@ class MemoryModule(Module):
 
         @mcp.tool()
         async def memory_search(
-            query: str,
-            types: list[str] | None = None,
-            scope: str | None = None,
-            mode: str = "hybrid",
+            query: Annotated[str, Field(description="Search query text.")],
+            types: Annotated[
+                list[Literal["episode", "fact", "rule"]] | None,
+                Field(
+                    description=(
+                        "Optional memory types as a JSON array/list. Allowed values: "
+                        "episode | fact | rule (singular). Do not pass a single "
+                        "string or plural values like \"facts\"."
+                    )
+                ),
+            ] = None,
+            scope: Annotated[
+                str | None,
+                Field(description="Optional scope namespace filter (for example `global`)."),
+            ] = None,
+            mode: Annotated[
+                Literal["hybrid", "semantic", "keyword"],
+                Field(description="Search mode. Allowed values: hybrid | semantic | keyword."),
+            ] = "hybrid",
             limit: int = 10,
             min_confidence: float = 0.2,
         ) -> list[dict[str, Any]]:
-            """Search across memory types using hybrid, semantic, or keyword mode."""
+            """Search memory with strict type/mode inputs and deterministic ranking.
+
+            Required fields:
+            - `query` (string)
+
+            Optional fields:
+            - `types` (array[string]): use singular values from `episode|fact|rule`
+            - `scope` (string)
+            - `mode` (string enum): `hybrid|semantic|keyword`
+            - `limit` (int)
+            - `min_confidence` (float)
+
+            Input shape reminders:
+            - `types` must be a JSON array/list, for example `["fact"]`
+            - `types="facts"` is invalid (string + plural)
+
+            Valid JSON example:
+            {
+              "query": "coffee preferences",
+              "types": ["fact"],
+              "mode": "hybrid",
+              "limit": 10
+            }
+            """
             return await _reading.memory_search(
                 module._get_pool(),
                 module._get_embedding_engine(),

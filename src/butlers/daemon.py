@@ -3728,7 +3728,9 @@ class ButlerDaemon:
                         "dict/object — do NOT pass as a JSON string. Required keys "
                         "for reply/react: request_id, source_channel, "
                         "source_endpoint_identity, source_sender_identity. For "
-                        "telegram reply/react include source_thread_identity."
+                        "telegram reply/react include source_thread_identity. "
+                        "Do not pass placeholder strings such as "
+                        "\"<the REQUEST CONTEXT object...>\"."
                     )
                 ),
             ] = None,
@@ -3761,6 +3763,7 @@ class ButlerDaemon:
             - `request_context` (dict, NOT a JSON string): required for `reply`/`react` and must
               include `request_id`, `source_channel`, `source_endpoint_identity`,
               `source_sender_identity` plus `source_thread_identity` for telegram `reply`/`react`.
+              Pass an object value, not a quoted placeholder string.
 
             Recipient resolution priority:
             1. `contact_id` provided → look up channel identifier from shared.contact_info

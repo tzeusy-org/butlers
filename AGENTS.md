@@ -825,3 +825,8 @@ make test-qg
 ### Switchboard route_to_butler lineage fallback contract
 - `route_to_butler` can run in a different MCP/ASGI task than `MessagePipeline.process()`, so `_routing_ctx_var` may be empty at tool-call time; switchboard now falls back to runtime-session-bound routing lineage.
 - `Spawner._run()` captures pipeline routing context and stores it keyed by `runtime_session_id` for the lifetime of the runtime session; `route_to_butler` reads it via `get_current_runtime_session_routing_context()` and restores `source_channel`, `source_sender_identity`, and `source_thread_identity` when task-local context is missing.
+
+### Tool input-shape metadata contract
+- `memory_store_fact.tags` and `memory_search.types` metadata must explicitly describe list-only JSON input shapes (not plain strings), with concrete valid/invalid examples (`tags=["x"]`, `types=["fact"]`, invalid `types="facts"`).
+- `memory_search.types` should be modeled as `list[Literal["episode","fact","rule"]] | None` and `memory_search.mode` as `Literal["hybrid","semantic","keyword"]` so MCP schemas expose enforceable enums.
+- `notify.request_context` metadata must explicitly say it requires an object/dict value (not JSON strings or quoted placeholders), because placeholder examples in skills/docs can cause repeated runtime validation failures.

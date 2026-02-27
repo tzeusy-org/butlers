@@ -2622,6 +2622,7 @@ class TestNotifyTool:
         assert '"intent": "reply"' in description
         assert '"request_context"' in description
         assert '"source_thread_identity"' in description
+        assert "NOT a JSON string" in description
 
         params = notify_tool["parameters"]
         channel_prop = params["properties"]["channel"]
@@ -2638,6 +2639,7 @@ class TestNotifyTool:
         assert "source_sender_identity" in request_context_json
         assert "source_thread_identity" in request_context_json
         assert "telegram reply" in request_context_json.lower()
+        assert "Do not pass placeholder strings" in request_context_json
 
     async def test_notify_unsupported_channel_returns_error(self, butler_dir: Path) -> None:
         """notify with an unsupported channel should return error result."""

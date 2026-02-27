@@ -222,6 +222,40 @@ class TestRegisterTools:
         assert "Do not pass a single string value" in tags_desc
         assert tags_prop["anyOf"][0]["type"] == "array"
 
+    async def test_memory_search_tool_description_and_schema_contract(self):
+        """memory_search metadata should document strict type list and mode enum."""
+        mod = MemoryModule()
+        runtime_mcp = RuntimeFastMCP("test-memory")
+        fake_db = MagicMock()
+        fake_db.pool = MagicMock()
+
+        await mod.register_tools(mcp=runtime_mcp, config=None, db=fake_db)
+
+        get_tools = getattr(runtime_mcp, "get_tools", None)
+        if callable(get_tools):
+            tools = await get_tools()
+            search_tool = tools["memory_search"].model_dump()
+        else:
+            search_tool = (await runtime_mcp.get_tool("memory_search")).model_dump()
+
+        description = search_tool["description"] or ""
+        assert "types" in description.lower()
+        assert 'types="facts"' in description
+        assert "invalid" in description.lower()
+        assert '"types": ["fact"]' in description
+
+        params = search_tool["parameters"]
+        mode_prop = params["properties"]["mode"]
+        assert set(mode_prop["enum"]) == {"hybrid", "semantic", "keyword"}
+
+        types_prop = params["properties"]["types"]
+        types_desc = types_prop["description"]
+        assert "Do not pass a single string" in types_desc
+        array_variant = next(
+            variant for variant in types_prop["anyOf"] if variant.get("type") == "array"
+        )
+        assert set(array_variant["items"]["enum"]) == {"episode", "fact", "rule"}
+
 
 # ---------------------------------------------------------------------------
 # Tool delegation — verify closures call underlying impls correctly

@@ -11,7 +11,7 @@ Call `notify()` to send responses back to the user via the channel they messaged
 **REQUIRED PARAMETERS — the tool call WILL FAIL without these:**
 - **`message`** (REQUIRED for reply/send intents): Your response text. This is the most important parameter — never omit it.
 - **`channel`** (REQUIRED): Extract from `request_context.source_channel` (e.g., "telegram")
-- **`request_context`** (REQUIRED): Pass through the exact REQUEST CONTEXT object from your context above. Do NOT rename this to `trace_context` or anything else.
+- **`request_context`** (REQUIRED): Pass through the exact REQUEST CONTEXT object from your context above. Do NOT rename this to `trace_context` or anything else. Must be a dict/object value, not a JSON string and not a quoted placeholder.
   - Reply/react `request_context` MUST include: `request_id`, `source_channel`, `source_endpoint_identity`, `source_sender_identity`.
   - For Telegram reply/react, `request_context.source_thread_identity` is also required.
 
@@ -25,12 +25,20 @@ Call `notify()` to send responses back to the user via the channel they messaged
 **Examples**:
 
 ```python
+ctx = {
+    "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+    "source_channel": "telegram",
+    "source_endpoint_identity": "switchboard",
+    "source_sender_identity": "general",
+    "source_thread_identity": "12345",
+}
+
 # React only
 notify(
     channel="telegram",
     intent="react",
     emoji="✅",
-    request_context=<the REQUEST CONTEXT object from your context above>
+    request_context=ctx
 )
 
 # Reply with message
@@ -38,7 +46,7 @@ notify(
     channel="telegram",
     message="Done! Here's what I found...",
     intent="reply",
-    request_context=<the REQUEST CONTEXT object from your context above>
+    request_context=ctx
 )
 
 # React + reply (call notify twice)
@@ -47,13 +55,13 @@ notify(
     channel="telegram",
     intent="react",
     emoji="✅",
-    request_context=<the REQUEST CONTEXT object from your context above>
+    request_context=ctx
 )
 # Then reply
 notify(
     channel="telegram",
     message="Saved. You now have 12 entries this month.",
     intent="reply",
-    request_context=<the REQUEST CONTEXT object from your context above>
+    request_context=ctx
 )
 ```

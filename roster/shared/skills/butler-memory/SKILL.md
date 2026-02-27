@@ -34,6 +34,12 @@ Determines how long facts persist — choose the level that matches how stable t
 Enable cross-cutting queries and discovery. Choose tags that support finding facts across different contexts.
 For `memory_store_fact`, `tags` must be a JSON array of strings (for example `["work", "project-x"]`), not a comma-separated string.
 
+### memory_search Input Shape
+
+When filtering by memory types, `types` must be a JSON array/list of singular values:
+- Valid: `types=["episode"]`, `types=["fact"]`, `types=["rule"]`, or combinations.
+- Invalid: `types="facts"` (string + plural), `types=["facts"]` (plural).
+
 ### Extraction Philosophy
 
 Capture facts proactively from conversational messages, even if tangential to the main request. Use appropriate permanence and importance levels to ensure useful recall later. Always anchor to `entity_id` — never to raw name strings.
