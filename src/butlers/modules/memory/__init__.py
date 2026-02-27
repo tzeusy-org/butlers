@@ -148,8 +148,8 @@ class MemoryModule(Module):
                 Field(
                     description=(
                         "Optional tags as a JSON array of strings (a list), "
-                        "for example [\"work\", \"project-x\"]. Do not pass a "
-                        "single string value (e.g. \"work,project-x\")."
+                        'for example ["work", "project-x"]. Do not pass a '
+                        'single string value (e.g. "work,project-x").'
                     )
                 ),
             ] = None,
@@ -217,7 +217,7 @@ class MemoryModule(Module):
                     description=(
                         "Optional memory types as a JSON array/list. Allowed values: "
                         "episode | fact | rule (singular). Do not pass a single "
-                        "string or plural values like \"facts\"."
+                        'string or plural values like "facts".'
                     )
                 ),
             ] = None,

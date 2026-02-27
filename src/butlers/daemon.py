@@ -3759,7 +3759,7 @@ class ButlerDaemon:
                         "source_endpoint_identity, source_sender_identity. For "
                         "telegram reply/react include source_thread_identity. "
                         "Do not pass placeholder strings such as "
-                        "\"<the REQUEST CONTEXT object...>\"."
+                        '"<the REQUEST CONTEXT object...>".'
                     )
                 ),
             ] = None,
@@ -3905,9 +3905,7 @@ class ButlerDaemon:
                         action_id = uuid.uuid4()
                         now = _dt.datetime.now(_dt.UTC)
                         expires_at = now + _dt.timedelta(hours=72)
-                        info_type = daemon._CHANNEL_TO_CONTACT_INFO_TYPE.get(
-                            channel, channel
-                        )
+                        info_type = daemon._CHANNEL_TO_CONTACT_INFO_TYPE.get(channel, channel)
                         agent_summary = (
                             f"notify() could not deliver a {channel!r} notification: "
                             f"contact {contact_id} has no {info_type!r} identifier in "
