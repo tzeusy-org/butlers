@@ -17,6 +17,7 @@ the DurableBuffer scanner to avoid racing the hot path.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -57,8 +58,6 @@ async def route_inbox_insert(
     uuid.UUID
         The newly created row id.
     """
-    import json
-
     row_id = uuid.uuid4()
     envelope_json = json.dumps(route_envelope)
     async with pool.acquire() as conn:
@@ -188,7 +187,9 @@ async def route_inbox_scan_unprocessed(
             {
                 "id": row["id"],
                 "received_at": row["received_at"],
-                "route_envelope": dict(row["route_envelope"]),
+                "route_envelope": json.loads(row["route_envelope"])
+                if isinstance(row["route_envelope"], str)
+                else dict(row["route_envelope"]),
             }
         )
     logger.debug("route_inbox scan: found %d unprocessed row(s)", len(result))
@@ -232,7 +233,10 @@ async def route_inbox_recovery_sweep(
     now = datetime.now(UTC)
     for row in rows:
         row_id = row["id"]
-        route_envelope = row["route_envelope"]
+        raw_envelope = row["route_envelope"]
+        route_envelope = (
+            json.loads(raw_envelope) if isinstance(raw_envelope, str) else dict(raw_envelope)
+        )
         age_s = (now - row["received_at"].replace(tzinfo=UTC)).total_seconds()
         logger.info(
             "route_inbox recovery: re-dispatching id=%s (age=%.0fs)",
