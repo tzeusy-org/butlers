@@ -51,6 +51,8 @@ stale flow: transition status to abandoned, call spaced_repetition_schedule_clea
 pending review schedules, and store a memory fact recording the abandonment.
 """
 
+[modules.education]
+
 [modules.memory]
 
 [modules.contacts]
