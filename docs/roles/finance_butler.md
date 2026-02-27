@@ -438,19 +438,19 @@ policy = "suggest"
 
 [[butler.schedule]]
 name = "upcoming-bills-check"
-cron = "0 8 * * *"
+cron = "0 9 1 * *"
 dispatch_mode = "job"
 job_name = "upcoming_bills_check"
 
 [[butler.schedule]]
 name = "subscription-renewal-alerts"
-cron = "30 8 * * *"
+cron = "15 9 1 * *"
 dispatch_mode = "job"
 job_name = "subscription_renewal_alerts"
 
 [[butler.schedule]]
 name = "monthly-spending-summary"
-cron = "0 9 1 * *"
+cron = "30 9 1 * *"
 dispatch_mode = "job"
 job_name = "monthly_spending_summary"
 ```

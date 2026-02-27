@@ -147,7 +147,9 @@ class MemoryModule(Module):
                 list[str] | None,
                 Field(
                     description=(
-                        "Optional tags as a JSON array of strings (not a comma-separated string)."
+                        "Optional tags as a JSON array of strings (a list), "
+                        "for example [\"work\", \"project-x\"]. Do not pass a "
+                        "single string value (e.g. \"work,project-x\")."
                     )
                 ),
             ] = None,
@@ -163,7 +165,8 @@ class MemoryModule(Module):
             - `importance` (float)
             - `permanence` (enum): `permanent|stable|standard|volatile|ephemeral`
             - `scope` (string)
-            - `tags` (array[string]) — must be a JSON array of strings
+            - `tags` (array[string]) — must be a JSON array of strings (a list).
+              A single string is invalid and will fail validation.
 
             Valid JSON example:
             {

@@ -219,6 +219,7 @@ class TestRegisterTools:
         tags_prop = params["properties"]["tags"]
         tags_desc = tags_prop["description"]
         assert "JSON array of strings" in tags_desc
+        assert "Do not pass a single string value" in tags_desc
         assert tags_prop["anyOf"][0]["type"] == "array"
 
 

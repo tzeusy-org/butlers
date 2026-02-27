@@ -20,6 +20,10 @@ output_price_per_token = 0.000075   # $75 / 1M tokens
 
 # OpenAI — unofficial estimates based on GPT-5.2-Codex ($1.75/M tokens).
 # Update when official pricing is published.
+[models."gpt-5.2"]
+input_price_per_token = 0.00000175  # $1.75 / 1M tokens
+output_price_per_token = 0.00000175 # $1.75 / 1M tokens
+
 [models."gpt-5.3-codex"]
 input_price_per_token = 0.00000175  # $1.75 / 1M tokens
 output_price_per_token = 0.00000175 # $1.75 / 1M tokens
