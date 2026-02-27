@@ -127,6 +127,9 @@ async def diagnostic_record_probe(
     node_id: str,
     quality: int,
     inferred_mastery: float,
+    question_text: str = "[diagnostic probe]",
+    user_answer: str | None = None,
+    evaluator_notes: str | None = None,
 ) -> dict[str, Any]:
     """Record a single diagnostic probe result and seed node mastery.
 
@@ -195,15 +198,15 @@ async def diagnostic_record_probe(
                 """
                 INSERT INTO education.quiz_responses
                     (node_id, mind_map_id, question_text, user_answer, quality,
-                     response_type, session_id)
-                VALUES ($1, $2, $3, $4, $5, 'diagnostic', NULL)
+                     response_type, session_id, evaluator_notes)
+                VALUES ($1, $2, $3, $4, $5, 'diagnostic', NULL, $6)
                 """,
                 node_id,
                 mind_map_id,
-                # question_text is not available in the tool interface; use a sentinel
-                "[diagnostic probe]",
-                None,
+                question_text,
+                user_answer,
                 quality,
+                evaluator_notes,
             )
 
             # Seed mastery only for quality >= 3 (correct answers)

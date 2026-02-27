@@ -125,6 +125,7 @@ async def mastery_record_response(
     quality: int,
     response_type: str = "review",
     session_id: str | None = None,
+    evaluator_notes: str | None = None,
 ) -> str:
     """Record a quiz response and atomically update node mastery score and status.
 
@@ -172,8 +173,8 @@ async def mastery_record_response(
                 """
                 INSERT INTO education.quiz_responses
                     (node_id, mind_map_id, question_text, user_answer, quality,
-                     response_type, session_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                     response_type, session_id, evaluator_notes)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING id
                 """,
                 node_id,
@@ -183,6 +184,7 @@ async def mastery_record_response(
                 quality,
                 response_type,
                 session_id,
+                evaluator_notes,
             )
 
             # 2. Fetch last 5 responses (ordered oldest→newest for weighting)

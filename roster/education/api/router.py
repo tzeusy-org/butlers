@@ -283,24 +283,29 @@ async def list_quiz_responses(
     idx = 1
 
     if mind_map_id is not None:
-        conditions.append(f"mind_map_id = ${idx}::uuid")
+        conditions.append(f"qr.mind_map_id = ${idx}::uuid")
         args.append(mind_map_id)
         idx += 1
 
     if node_id is not None:
-        conditions.append(f"node_id = ${idx}::uuid")
+        conditions.append(f"qr.node_id = ${idx}::uuid")
         args.append(node_id)
         idx += 1
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    total = await pool.fetchval(f"SELECT count(*) FROM education.quiz_responses{where}", *args) or 0
+    total = (
+        await pool.fetchval(f"SELECT count(*) FROM education.quiz_responses qr{where}", *args) or 0
+    )
 
     rows = await pool.fetch(
-        f"SELECT id, node_id, mind_map_id, question_text, user_answer, quality,"
-        f" response_type, session_id, responded_at"
-        f" FROM education.quiz_responses{where}"
-        f" ORDER BY responded_at DESC"
+        f"SELECT qr.id, qr.node_id, qr.mind_map_id, qr.question_text, qr.user_answer,"
+        f" qr.quality, qr.response_type, qr.session_id, qr.responded_at,"
+        f" qr.evaluator_notes, n.label AS node_label"
+        f" FROM education.quiz_responses qr"
+        f" LEFT JOIN education.mind_map_nodes n ON n.id = qr.node_id"
+        f"{where}"
+        f" ORDER BY qr.responded_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
         *args,
         offset,
@@ -318,6 +323,8 @@ async def list_quiz_responses(
             response_type=r["response_type"],
             session_id=str(r["session_id"]) if r["session_id"] else None,
             responded_at=str(r["responded_at"]),
+            evaluator_notes=r["evaluator_notes"],
+            node_label=r["node_label"],
         )
         for r in rows
     ]

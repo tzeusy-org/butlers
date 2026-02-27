@@ -65,6 +65,8 @@ class QuizResponseModel(BaseModel):
     response_type: str
     session_id: str | None = None
     responded_at: str
+    evaluator_notes: str | None = None
+    node_label: str | None = None
 
 
 class AnalyticsSnapshotResponse(BaseModel):

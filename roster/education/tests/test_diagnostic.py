@@ -512,6 +512,69 @@ class TestDiagnosticRecordProbe:
         insert_sql = conn.execute.call_args_list[0][0][0]
         assert "'diagnostic'" in insert_sql or "diagnostic" in insert_sql
 
+    async def test_default_question_text_is_sentinel(self) -> None:
+        """Without explicit question_text, the sentinel '[diagnostic probe]' is used."""
+        from butlers.tools.education.diagnostic import diagnostic_record_probe
+
+        pool = _make_record_probe_pool()
+        acquire_ctx = pool.acquire.return_value
+        conn = acquire_ctx.__aenter__.return_value
+
+        await diagnostic_record_probe(pool, MAP_ID, NODE_ID_A, quality=3, inferred_mastery=0.5)
+
+        insert_args = conn.execute.call_args_list[0][0]
+        # $3 = question_text (index 3 in positional args after SQL string)
+        assert insert_args[3] == "[diagnostic probe]"
+        # $4 = user_answer
+        assert insert_args[4] is None
+        # $6 = evaluator_notes
+        assert insert_args[6] is None
+
+    async def test_custom_question_text_and_answer(self) -> None:
+        """Explicit question_text and user_answer are forwarded to the INSERT."""
+        from butlers.tools.education.diagnostic import diagnostic_record_probe
+
+        pool = _make_record_probe_pool()
+        acquire_ctx = pool.acquire.return_value
+        conn = acquire_ctx.__aenter__.return_value
+
+        await diagnostic_record_probe(
+            pool,
+            MAP_ID,
+            NODE_ID_A,
+            quality=4,
+            inferred_mastery=0.6,
+            question_text="What is a variable?",
+            user_answer="A named storage location",
+            evaluator_notes="Clear and correct definition",
+        )
+
+        insert_args = conn.execute.call_args_list[0][0]
+        assert insert_args[3] == "What is a variable?"
+        assert insert_args[4] == "A named storage location"
+        assert insert_args[6] == "Clear and correct definition"
+
+    async def test_evaluator_notes_without_question_text(self) -> None:
+        """evaluator_notes can be set while using the default question_text."""
+        from butlers.tools.education.diagnostic import diagnostic_record_probe
+
+        pool = _make_record_probe_pool()
+        acquire_ctx = pool.acquire.return_value
+        conn = acquire_ctx.__aenter__.return_value
+
+        await diagnostic_record_probe(
+            pool,
+            MAP_ID,
+            NODE_ID_A,
+            quality=2,
+            inferred_mastery=0.3,
+            evaluator_notes="Student showed partial understanding",
+        )
+
+        insert_args = conn.execute.call_args_list[0][0]
+        assert insert_args[3] == "[diagnostic probe]"
+        assert insert_args[6] == "Student showed partial understanding"
+
     async def test_probes_issued_increments_on_each_call(self) -> None:
         """Each call to diagnostic_record_probe increments probes_issued by 1."""
         from butlers.tools.education.diagnostic import diagnostic_record_probe

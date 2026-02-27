@@ -284,6 +284,7 @@ class EducationModule(Module):
             quality: int,
             response_type: str = "review",
             session_id: str | None = None,
+            evaluator_notes: str | None = None,
         ) -> str:
             """Record a quiz response and update node mastery score and status."""
             return await _mastery.mastery_record_response(
@@ -295,6 +296,7 @@ class EducationModule(Module):
                 quality,
                 response_type=response_type,
                 session_id=session_id,
+                evaluator_notes=evaluator_notes,
             )
 
         @mcp.tool()
@@ -366,10 +368,20 @@ class EducationModule(Module):
             node_id: str,
             quality: int,
             inferred_mastery: float,
+            question_text: str = "[diagnostic probe]",
+            user_answer: str | None = None,
+            evaluator_notes: str | None = None,
         ) -> dict[str, Any]:
             """Record a diagnostic probe result and seed node mastery."""
             return await _diagnostic.diagnostic_record_probe(
-                module._get_pool(), mind_map_id, node_id, quality, inferred_mastery
+                module._get_pool(),
+                mind_map_id,
+                node_id,
+                quality,
+                inferred_mastery,
+                question_text=question_text,
+                user_answer=user_answer,
+                evaluator_notes=evaluator_notes,
             )
 
         @mcp.tool()

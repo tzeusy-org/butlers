@@ -1740,6 +1740,8 @@ export interface QuizResponse {
   response_type: string;
   session_id: string | null;
   responded_at: string;
+  evaluator_notes: string | null;
+  node_label: string | null;
 }
 
 /** An analytics snapshot for a mind map. */
