@@ -71,15 +71,17 @@ async def diagnostic_start(
     if map_row is None:
         raise ValueError(f"Mind map not found: {mind_map_id!r}")
 
-    # Check existing flow state
+    # Check existing flow state — allow restart from 'diagnosing' (stuck diagnostic
+    # where the LLM session ended before issuing any probes).
     flow_key = _flow_key(mind_map_id)
     existing = await _state_get(pool, flow_key)
     if existing is not None:
         status = existing.get("status", "")
-        if status not in ("", "pending"):
+        if status not in ("", "pending", "diagnosing"):
             raise ValueError(
                 f"Cannot start diagnostic: flow is already in state {status!r}. "
-                "Only flows with status 'pending' (or no flow state) can be diagnosed."
+                "Only flows with status 'pending', 'diagnosing', or no flow state "
+                "can be diagnosed."
             )
 
     # Fetch all nodes, use depth as proxy for difficulty_rank (0 = easiest)

@@ -263,14 +263,16 @@ class TestDiagnosticStart:
         inventory = await diagnostic_start(pool, MAP_ID)
         assert len(inventory) == 3
 
-    async def test_raises_if_already_diagnosing(self) -> None:
+    async def test_restarts_if_already_diagnosing(self) -> None:
         from butlers.tools.education.diagnostic import diagnostic_start
 
         pool, _nodes = await self._make_start_pool(
             existing_flow={"status": "diagnosing", "probes_issued": 1}
         )
-        with pytest.raises(ValueError, match="already in state"):
-            await diagnostic_start(pool, MAP_ID)
+        # Restarting from 'diagnosing' is allowed — handles stuck flows where the
+        # LLM session ended before completing the diagnostic.
+        inventory = await diagnostic_start(pool, MAP_ID)
+        assert len(inventory) == len(_nodes)
 
     async def test_raises_if_flow_in_planning(self) -> None:
         from butlers.tools.education.diagnostic import diagnostic_start
