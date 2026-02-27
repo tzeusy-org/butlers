@@ -157,10 +157,10 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
-_DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE = "telegram"
+_DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE = "telegram_chat_id"
 _NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
     "No bot <-> user telegram chat has been configured - please add a "
-    "telegram contact_info entry on the owner contact via the dashboard"
+    "telegram_chat_id contact_info entry on the owner contact via the dashboard"
 )
 
 
@@ -1792,7 +1792,7 @@ class ButlerDaemon:
         """Resolve notify recipient, including schedule-safe Telegram default chat mapping.
 
         For Telegram send without an explicit recipient, looks up the owner contact's
-        ``contact_info`` entry with ``type='telegram'`` in ``shared.contact_info``.
+        ``contact_info`` entry with ``type='telegram_chat_id'`` in ``shared.contact_info``.
         """
         resolved_recipient = recipient.strip() if isinstance(recipient, str) else None
         if resolved_recipient:
@@ -1811,19 +1811,28 @@ class ButlerDaemon:
 
         return None
 
+    # Maps notify channel names to the contact_info type used for delivery.
+    # ``telegram`` uses ``telegram_chat_id`` (numeric ID) rather than the
+    # human-readable ``telegram`` entry (which stores the @username handle).
+    _CHANNEL_TO_CONTACT_INFO_TYPE: dict[str, str] = {
+        "telegram": "telegram_chat_id",
+    }
+
     async def _resolve_contact_channel_identifier(
         self, *, contact_id: uuid.UUID, channel: str
     ) -> str | None:
         """Resolve the channel identifier for a specific contact_id and channel type.
 
         Queries ``shared.contact_info`` for rows matching the given ``contact_id``
-        and ``type=channel``, preferring the primary entry (``is_primary=true``).
+        and the delivery-appropriate type (e.g. ``telegram_chat_id`` for telegram),
+        preferring the primary entry (``is_primary=true``).
 
         Returns the identifier value on success, ``None`` if:
         - No DB pool is available.
         - No ``contact_info`` row exists for the given contact_id and channel.
         - The ``shared.contact_info`` table does not exist.
         """
+        info_type = self._CHANNEL_TO_CONTACT_INFO_TYPE.get(channel, channel)
         pool = self.db.pool if self.db is not None else None
         if pool is None:
             return None
@@ -1839,7 +1848,7 @@ class ButlerDaemon:
                     LIMIT 1
                     """,
                     contact_id,
-                    channel,
+                    info_type,
                 )
                 if row is None:
                     return None
@@ -2833,7 +2842,27 @@ class ButlerDaemon:
                     ),
                 )
             except Exception as exc:
-                error_message = f"Messenger delivery failed: {exc}"
+                # Surface provider-specific details (e.g. Telegram API error body)
+                # so callers see the root cause, not just a generic wrapper.
+                error_detail = str(exc)
+                if hasattr(exc, "response"):
+                    try:
+                        api_body = exc.response.json()  # type: ignore[union-attr]
+                        api_desc = api_body.get("description", "")
+                        if api_desc:
+                            error_detail = (
+                                f"{exc.response.status_code} {api_desc} "  # type: ignore[union-attr]
+                                f"(chat_id={notify_request.delivery.recipient!r})"
+                            )
+                    except Exception:
+                        pass
+                error_message = f"Messenger delivery failed: {error_detail}"
+                logger.warning(
+                    "Messenger delivery error: channel=%s recipient=%r error=%s",
+                    channel,
+                    notify_request.delivery.recipient,
+                    error_detail,
+                )
                 return _route_error_response(
                     context_payload=route_context,
                     error_class="internal_error",
@@ -3876,12 +3905,15 @@ class ButlerDaemon:
                         action_id = uuid.uuid4()
                         now = _dt.datetime.now(_dt.UTC)
                         expires_at = now + _dt.timedelta(hours=72)
+                        info_type = daemon._CHANNEL_TO_CONTACT_INFO_TYPE.get(
+                            channel, channel
+                        )
                         agent_summary = (
                             f"notify() could not deliver a {channel!r} notification: "
-                            f"contact {contact_id} has no {channel!r} identifier in "
+                            f"contact {contact_id} has no {info_type!r} identifier in "
                             f"shared.contact_info. The message was: {message!r}. "
-                            f"To resolve, add a {channel!r} contact_info entry for this contact "
-                            f"and re-trigger the notification."
+                            f"To resolve, add a {info_type!r} contact_info entry for this "
+                            f"contact and re-trigger the notification."
                         )
                         await pool.execute(
                             "INSERT INTO pending_actions "
@@ -3908,7 +3940,7 @@ class ButlerDaemon:
                             "notify() parked as pending_missing_identifier: "
                             "contact_id=%s has no %r contact_info entry (action=%s)",
                             contact_id,
-                            channel,
+                            info_type,
                             action_id,
                         )
                     # Notify the owner about the missing identifier.
@@ -3928,7 +3960,7 @@ class ButlerDaemon:
                                 "channel": channel,
                                 "message": (
                                     f"A notification could not be delivered to contact "
-                                    f"{contact_id} via {channel!r}: missing {channel!r} "
+                                    f"{contact_id} via {channel!r}: missing {info_type!r} "
                                     f"channel identifier. The pending action has been queued "
                                     f"for review."
                                 ),

@@ -336,7 +336,7 @@ class TestNotifyContactIdResolution:
         assert "ci.type" in query
         assert "is_primary" in query
         assert call_args.args[1] == contact_id
-        assert call_args.args[2] == "telegram"
+        assert call_args.args[2] == "telegram_chat_id"
 
     async def test_resolve_contact_channel_identifier_primary_preferred(
         self, butler_dir: Path

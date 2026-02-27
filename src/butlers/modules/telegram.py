@@ -277,7 +277,19 @@ class TelegramModule(Module):
             payload["reply_to_message_id"] = reply_to_message_id
         client = self._get_client()
         resp = await client.post(url, json=payload)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            body = resp.text
+            try:
+                detail = resp.json().get("description", body)
+            except Exception:
+                detail = body
+            logger.error(
+                "Telegram sendMessage failed: status=%d chat_id=%r detail=%s",
+                resp.status_code,
+                chat_id,
+                detail,
+            )
+            resp.raise_for_status()
         data: dict[str, Any] = resp.json()
         return data
 
