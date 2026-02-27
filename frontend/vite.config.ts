@@ -11,6 +11,9 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  optimizeDeps: {
+    include: ["@dagrejs/dagre"],
+  },
   server: {
     allowedHosts: ["tzeusy.parrot-hen.ts.net"],
     proxy: {
