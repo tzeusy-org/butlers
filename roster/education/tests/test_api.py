@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -963,3 +963,368 @@ class TestGetCrossTopicAnalytics:
             resp = await client.get("/api/education/analytics/cross-topic")
 
         assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Helper: get the dynamically-loaded education router module for patching
+# ---------------------------------------------------------------------------
+
+
+def _get_education_module(app):
+    """Return the dynamically-loaded education router module."""
+    for butler_name, router_module in app.state.butler_routers:
+        if butler_name == "education":
+            return router_module
+    raise RuntimeError("Education router not found in app.state.butler_routers")
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/mind-maps/{id}/pending-reviews
+# ---------------------------------------------------------------------------
+
+
+class TestGetPendingReviews:
+    async def test_returns_pending_review_nodes(self):
+        """When reviews are due, return the list of pending nodes."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        review_nodes = [
+            {
+                "node_id": _NODE_ID,
+                "label": "Variables",
+                "ease_factor": 2.5,
+                "repetitions": 2,
+                "next_review_at": _NOW,
+                "mastery_status": "reviewing",
+            },
+        ]
+
+        with (
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=_mind_map_record()
+            ),
+            patch.object(
+                edu,
+                "spaced_repetition_pending_reviews",
+                new_callable=AsyncMock,
+                return_value=review_nodes,
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    f"/api/education/mind-maps/{_MAP_ID}/pending-reviews"
+                )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert isinstance(body, list)
+        assert len(body) == 1
+        assert body[0]["node_id"] == _NODE_ID
+        assert body[0]["label"] == "Variables"
+        assert body[0]["mastery_status"] == "reviewing"
+
+    async def test_returns_empty_when_no_reviews_due(self):
+        """When no reviews are due, return an empty list."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with (
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=_mind_map_record()
+            ),
+            patch.object(
+                edu,
+                "spaced_repetition_pending_reviews",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    f"/api/education/mind-maps/{_MAP_ID}/pending-reviews"
+                )
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    async def test_returns_404_for_missing_map(self):
+        """Non-existent mind map should return 404."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with patch.object(edu, "mind_map_get", new_callable=AsyncMock, return_value=None):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    f"/api/education/mind-maps/{uuid.uuid4()}/pending-reviews"
+                )
+
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/mind-maps/{id}/mastery-summary
+# ---------------------------------------------------------------------------
+
+
+class TestGetMasterySummary:
+    async def test_returns_summary_data(self):
+        """When mind map exists, return aggregate mastery stats."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        summary = {
+            "total_nodes": 10,
+            "mastered_count": 3,
+            "learning_count": 2,
+            "reviewing_count": 1,
+            "unseen_count": 3,
+            "diagnosed_count": 1,
+            "avg_mastery_score": 0.35,
+            "struggling_node_ids": [_NODE_ID],
+        }
+
+        with (
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=_mind_map_record()
+            ),
+            patch.object(
+                edu, "mastery_get_map_summary", new_callable=AsyncMock, return_value=summary
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    f"/api/education/mind-maps/{_MAP_ID}/mastery-summary"
+                )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total_nodes"] == 10
+        assert body["mastered_count"] == 3
+        assert body["avg_mastery_score"] == 0.35
+        assert body["struggling_node_ids"] == [_NODE_ID]
+
+    async def test_returns_404_for_missing_map(self):
+        """Non-existent mind map should return 404."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with patch.object(edu, "mind_map_get", new_callable=AsyncMock, return_value=None):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.get(
+                    f"/api/education/mind-maps/{uuid.uuid4()}/mastery-summary"
+                )
+
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/education/mind-maps/{id}/status
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateMindMapStatus:
+    async def test_abandon_active_map(self):
+        """Setting status to 'abandoned' should return updated map."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        updated_map = _mind_map_record(status="abandoned")
+
+        with (
+            patch.object(edu, "mind_map_update_status", new_callable=AsyncMock),
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=updated_map
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.put(
+                    f"/api/education/mind-maps/{_MAP_ID}/status",
+                    json={"status": "abandoned"},
+                )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "abandoned"
+
+    async def test_reactivate_abandoned_map(self):
+        """Setting status to 'active' should return updated map."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        updated_map = _mind_map_record(status="active")
+
+        with (
+            patch.object(edu, "mind_map_update_status", new_callable=AsyncMock),
+            patch.object(
+                edu, "mind_map_get", new_callable=AsyncMock, return_value=updated_map
+            ),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.put(
+                    f"/api/education/mind-maps/{_MAP_ID}/status",
+                    json={"status": "active"},
+                )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "active"
+
+    async def test_invalid_status_returns_422(self):
+        """Invalid status value should return 422."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.put(
+                f"/api/education/mind-maps/{_MAP_ID}/status",
+                json={"status": "paused"},
+            )
+
+        assert resp.status_code == 422
+
+    async def test_missing_map_returns_404(self):
+        """Non-existent mind map should return 404."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with patch.object(
+            edu,
+            "mind_map_update_status",
+            new_callable=AsyncMock,
+            side_effect=ValueError("not found"),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.put(
+                    f"/api/education/mind-maps/{uuid.uuid4()}/status",
+                    json={"status": "abandoned"},
+                )
+
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /api/education/curriculum-requests
+# ---------------------------------------------------------------------------
+
+
+class TestSubmitCurriculumRequest:
+    async def test_submit_new_request(self):
+        """New curriculum request should return 202 with pending status."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with (
+            patch.object(edu, "state_get", new_callable=AsyncMock, return_value=None),
+            patch.object(edu, "state_set", new_callable=AsyncMock, return_value=1),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/api/education/curriculum-requests",
+                    json={"topic": "Python", "goal": "Learn web development"},
+                )
+
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["status"] == "pending"
+        assert body["topic"] == "Python"
+
+    async def test_submit_without_goal(self):
+        """Request without goal should still return 202."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with (
+            patch.object(edu, "state_get", new_callable=AsyncMock, return_value=None),
+            patch.object(edu, "state_set", new_callable=AsyncMock, return_value=1),
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/api/education/curriculum-requests",
+                    json={"topic": "Linear Algebra"},
+                )
+
+        assert resp.status_code == 202
+        assert resp.json()["topic"] == "Linear Algebra"
+
+    async def test_duplicate_request_returns_409(self):
+        """When a pending request exists, return 409 Conflict."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        existing = {"topic": "Rust", "goal": None, "requested_at": _NOW}
+        with patch.object(edu, "state_get", new_callable=AsyncMock, return_value=existing):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/api/education/curriculum-requests",
+                    json={"topic": "Python"},
+                )
+
+        assert resp.status_code == 409
+
+    async def test_empty_topic_returns_422(self):
+        """Empty topic should return 422."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with patch.object(edu, "state_get", new_callable=AsyncMock, return_value=None):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/api/education/curriculum-requests",
+                    json={"topic": ""},
+                )
+
+        assert resp.status_code == 422
+
+    async def test_topic_too_long_returns_422(self):
+        """Topic exceeding 200 chars should return 422."""
+        mock_pool = AsyncMock()
+        app = _app_with_mock_pool(mock_pool)
+        edu = _get_education_module(app)
+
+        with patch.object(edu, "state_get", new_callable=AsyncMock, return_value=None):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                resp = await client.post(
+                    "/api/education/curriculum-requests",
+                    json={"topic": "x" * 201},
+                )
+
+        assert resp.status_code == 422

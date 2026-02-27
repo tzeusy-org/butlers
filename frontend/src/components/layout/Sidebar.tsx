@@ -59,6 +59,7 @@ const navItems: NavItem[] = [
     ],
   },
   { path: '/calendar', label: 'Calendar' },
+  { path: '/education', label: 'Education', butler: 'education' },
   { path: '/ingestion', label: 'Ingestion' },
   { path: '/health/measurements', label: 'Health' },
   { path: '/memory', label: 'Memory' },

@@ -27,6 +27,7 @@ import ApprovalsPage from './pages/ApprovalsPage.tsx'
 import ApprovalRulesPage from './pages/ApprovalRulesPage.tsx'
 import SecretsPage from './pages/SecretsPage.tsx'
 import CalendarWorkspacePage from './pages/CalendarWorkspacePage.tsx'
+import EducationPage from './pages/EducationPage.tsx'
 import IngestionPage from './pages/IngestionPage.tsx'
 import ConnectorDetailPage from './pages/ConnectorDetailPage.tsx'
 
@@ -75,6 +76,7 @@ export const router = createBrowserRouter(
         { path: '/memory', element: <MemoryPage /> },
         { path: '/settings', element: <SettingsPage /> },
         { path: '/secrets', element: <SecretsPage /> },
+        { path: '/education', element: <EducationPage /> },
         // Ingestion routes (spec section 3.1, 3.2)
         { path: '/ingestion', element: <IngestionPage /> },
         {

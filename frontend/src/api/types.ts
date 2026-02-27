@@ -1686,3 +1686,155 @@ export interface ConnectorFanout {
   period: IngestionPeriod;
   matrix: ConnectorFanoutEntry[];
 }
+
+// ---------------------------------------------------------------------------
+// Education
+// ---------------------------------------------------------------------------
+
+/** A directed edge in the mind map DAG. */
+export interface MindMapEdge {
+  parent_node_id: string;
+  child_node_id: string;
+  edge_type: string;
+}
+
+/** A concept node in a mind map. */
+export interface MindMapNode {
+  id: string;
+  mind_map_id: string;
+  label: string;
+  description: string | null;
+  depth: number;
+  mastery_score: number;
+  mastery_status: string;
+  ease_factor: number;
+  repetitions: number;
+  next_review_at: string | null;
+  last_reviewed_at: string | null;
+  effort_minutes: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A mind map with optional nested nodes and edges. */
+export interface MindMap {
+  id: string;
+  title: string;
+  root_node_id: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  nodes: MindMapNode[];
+  edges: MindMapEdge[];
+}
+
+/** A recorded quiz response for a concept node. */
+export interface QuizResponse {
+  id: string;
+  node_id: string;
+  mind_map_id: string;
+  question_text: string;
+  user_answer: string | null;
+  quality: number;
+  response_type: string;
+  session_id: string | null;
+  responded_at: string;
+}
+
+/** An analytics snapshot for a mind map. */
+export interface AnalyticsSnapshot {
+  id: string | null;
+  mind_map_id: string;
+  snapshot_date: string;
+  metrics: Record<string, unknown>;
+  created_at: string | null;
+  trend: AnalyticsSnapshotTrendEntry[];
+}
+
+/** A single entry in the analytics trend series. */
+export interface AnalyticsSnapshotTrendEntry {
+  id: string;
+  mind_map_id: string;
+  snapshot_date: string;
+  metrics: Record<string, unknown>;
+  created_at: string;
+}
+
+/** A teaching flow entry with mastery summary. */
+export interface TeachingFlow {
+  mind_map_id: string;
+  title: string;
+  status: string;
+  session_count: number;
+  started_at: string | null;
+  last_session_at: string | null;
+  mastery_pct: number;
+}
+
+/** Per-topic entry in cross-topic analytics. */
+export interface CrossTopicEntry {
+  mind_map_id: string;
+  title: string;
+  mastery_pct: number;
+  retention_rate_7d: number | null;
+  velocity: number;
+}
+
+/** Cross-topic comparative analytics. */
+export interface CrossTopicAnalytics {
+  topics: CrossTopicEntry[];
+  strongest_topic: string | null;
+  weakest_topic: string | null;
+  portfolio_mastery: number;
+}
+
+/** Aggregate mastery statistics for a mind map. */
+export interface MasterySummary {
+  mind_map_id: string;
+  total_nodes: number;
+  mastered_count: number;
+  learning_count: number;
+  reviewing_count: number;
+  unseen_count: number;
+  diagnosed_count: number;
+  avg_mastery_score: number;
+  struggling_node_ids: string[];
+}
+
+/** A node due for spaced-repetition review. */
+export interface PendingReviewNode {
+  node_id: string;
+  label: string;
+  ease_factor: number;
+  repetitions: number;
+  next_review_at: string;
+  mastery_status: string;
+}
+
+/** Request body for submitting a new curriculum request. */
+export interface CurriculumRequestBody {
+  topic: string;
+  goal?: string | null;
+}
+
+/** Response body for a submitted curriculum request. */
+export interface CurriculumRequestResponse {
+  status: string;
+  topic: string;
+}
+
+/** Query params for mind map list. */
+export interface MindMapListParams {
+  status?: string;
+  offset?: number;
+  limit?: number;
+}
+
+/** Query params for quiz response list. */
+export interface QuizResponseParams {
+  mind_map_id?: string;
+  node_id?: string;
+  offset?: number;
+  limit?: number;
+}

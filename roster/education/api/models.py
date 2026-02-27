@@ -121,3 +121,34 @@ class CrossTopicAnalyticsResponse(BaseModel):
     strongest_topic: str | None = None
     weakest_topic: str | None = None
     portfolio_mastery: float = 0.0
+
+
+class PendingReviewNodeResponse(BaseModel):
+    """A node due for spaced-repetition review."""
+
+    node_id: str
+    label: str
+    ease_factor: float
+    repetitions: int
+    next_review_at: str
+    mastery_status: str
+
+
+class StatusUpdateRequest(BaseModel):
+    """Request body for updating a mind map's status."""
+
+    status: str
+
+
+class CurriculumRequestBody(BaseModel):
+    """Request body for submitting a new curriculum request."""
+
+    topic: str
+    goal: str | None = None
+
+
+class CurriculumRequestResponse(BaseModel):
+    """Response body for a submitted curriculum request."""
+
+    status: str
+    topic: str

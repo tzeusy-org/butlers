@@ -10,19 +10,23 @@ from __future__ import annotations
 import importlib.util
 import logging
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.core.state import state_get, state_set
 from butlers.tools.education.analytics import (
     analytics_get_cross_topic,
     analytics_get_snapshot,
     analytics_get_trend,
 )
+from butlers.tools.education.mastery import mastery_get_map_summary
 from butlers.tools.education.mind_map_queries import mind_map_frontier
-from butlers.tools.education.mind_maps import mind_map_get, mind_map_list
+from butlers.tools.education.mind_maps import mind_map_get, mind_map_list, mind_map_update_status
+from butlers.tools.education.spaced_repetition import spaced_repetition_pending_reviews
 from butlers.tools.education.teaching_flows import teaching_flow_list
 
 # Dynamically load models module from the same directory
@@ -36,11 +40,15 @@ if _spec is not None and _spec.loader is not None:
     AnalyticsSnapshotResponse = _models.AnalyticsSnapshotResponse
     CrossTopicAnalyticsResponse = _models.CrossTopicAnalyticsResponse
     CrossTopicTopicEntry = _models.CrossTopicTopicEntry
+    CurriculumRequestBody = _models.CurriculumRequestBody
+    CurriculumRequestResponse = _models.CurriculumRequestResponse
     MasterySummaryResponse = _models.MasterySummaryResponse
     MindMapEdgeResponse = _models.MindMapEdgeResponse
     MindMapNodeResponse = _models.MindMapNodeResponse
     MindMapResponse = _models.MindMapResponse
+    PendingReviewNodeResponse = _models.PendingReviewNodeResponse
     QuizResponseModel = _models.QuizResponseModel
+    StatusUpdateRequest = _models.StatusUpdateRequest
     TeachingFlowResponse = _models.TeachingFlowResponse
 
 logger = logging.getLogger(__name__)
@@ -388,3 +396,150 @@ async def get_cross_topic_analytics(
         weakest_topic=result.get("weakest_topic"),
         portfolio_mastery=float(result.get("portfolio_mastery", 0.0)),
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/mind-maps/{id}/pending-reviews — nodes due for review
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/mind-maps/{mind_map_id}/pending-reviews",
+    response_model=list[PendingReviewNodeResponse],
+)
+async def get_pending_reviews(
+    mind_map_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[PendingReviewNodeResponse]:
+    """Return nodes due for spaced-repetition review (next_review_at <= now)."""
+    pool = _pool(db)
+
+    m = await mind_map_get(pool, mind_map_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}")
+
+    nodes = await spaced_repetition_pending_reviews(pool, mind_map_id)
+    return [
+        PendingReviewNodeResponse(
+            node_id=n["node_id"],
+            label=n["label"],
+            ease_factor=float(n["ease_factor"]),
+            repetitions=int(n["repetitions"]),
+            next_review_at=str(n["next_review_at"]),
+            mastery_status=n["mastery_status"],
+        )
+        for n in nodes
+    ]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/education/mind-maps/{id}/mastery-summary — aggregate mastery stats
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/mind-maps/{mind_map_id}/mastery-summary",
+    response_model=MasterySummaryResponse,
+)
+async def get_mastery_summary(
+    mind_map_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> MasterySummaryResponse:
+    """Return aggregate mastery statistics for a mind map."""
+    pool = _pool(db)
+
+    m = await mind_map_get(pool, mind_map_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}")
+
+    summary = await mastery_get_map_summary(pool, mind_map_id)
+    return MasterySummaryResponse(
+        mind_map_id=mind_map_id,
+        total_nodes=int(summary["total_nodes"]),
+        mastered_count=int(summary["mastered_count"]),
+        learning_count=int(summary["learning_count"]),
+        reviewing_count=int(summary["reviewing_count"]),
+        unseen_count=int(summary["unseen_count"]),
+        diagnosed_count=int(summary["diagnosed_count"]),
+        avg_mastery_score=float(summary["avg_mastery_score"]),
+        struggling_node_ids=[str(nid) for nid in summary.get("struggling_node_ids", [])],
+    )
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/education/mind-maps/{id}/status — update mind map status
+# ---------------------------------------------------------------------------
+
+_VALID_STATUSES = {"active", "completed", "abandoned"}
+
+
+@router.put("/mind-maps/{mind_map_id}/status", response_model=MindMapResponse)
+async def update_mind_map_status(
+    mind_map_id: str,
+    body: StatusUpdateRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> MindMapResponse:
+    """Update a mind map's status (active, completed, abandoned)."""
+    pool = _pool(db)
+
+    if body.status not in _VALID_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid status: {body.status!r}. Must be one of: {sorted(_VALID_STATUSES)}",
+        )
+
+    try:
+        await mind_map_update_status(pool, mind_map_id, body.status)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}")
+
+    m = await mind_map_get(pool, mind_map_id)
+    return _map_dict_to_response(m, include_dag=False)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/education/curriculum-requests — request a new curriculum
+# ---------------------------------------------------------------------------
+
+_CURRICULUM_REQUEST_KEY = "pending_curriculum_request"
+
+
+@router.post(
+    "/curriculum-requests",
+    response_model=CurriculumRequestResponse,
+    status_code=202,
+)
+async def submit_curriculum_request(
+    body: CurriculumRequestBody = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CurriculumRequestResponse:
+    """Submit a request for the butler to create a new curriculum."""
+    pool = _pool(db)
+
+    topic = body.topic.strip()
+    if not topic:
+        raise HTTPException(status_code=422, detail="Topic must not be empty")
+    if len(topic) > 200:
+        raise HTTPException(status_code=422, detail="Topic must be 200 characters or fewer")
+    if body.goal is not None and len(body.goal) > 500:
+        raise HTTPException(status_code=422, detail="Goal must be 500 characters or fewer")
+
+    existing = await state_get(pool, _CURRICULUM_REQUEST_KEY)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A curriculum request is already pending"
+            " — please wait for the butler to process it",
+        )
+
+    await state_set(
+        pool,
+        _CURRICULUM_REQUEST_KEY,
+        {
+            "topic": topic,
+            "goal": body.goal,
+            "requested_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    return CurriculumRequestResponse(status="pending", topic=topic)

@@ -1493,6 +1493,139 @@ export function deleteThreadAffinityOverride(threadId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Education
+// ---------------------------------------------------------------------------
+
+import type {
+  AnalyticsSnapshot,
+  CrossTopicAnalytics,
+  CurriculumRequestBody,
+  CurriculumRequestResponse,
+  MasterySummary,
+  MindMap,
+  MindMapListParams,
+  MindMapNode,
+  PendingReviewNode,
+  QuizResponse,
+  QuizResponseParams,
+  TeachingFlow,
+} from "./types.ts";
+
+/** List mind maps with optional status filter and pagination. */
+export function getEducationMindMaps(
+  params?: MindMapListParams,
+): Promise<PaginatedResponse<MindMap>> {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set("status", params.status);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<MindMap>>(
+    qs ? `/education/mind-maps?${qs}` : "/education/mind-maps",
+  );
+}
+
+/** Get a single mind map with full node and edge DAG. */
+export function getEducationMindMap(mindMapId: string): Promise<MindMap> {
+  return apiFetch<MindMap>(
+    `/education/mind-maps/${encodeURIComponent(mindMapId)}`,
+  );
+}
+
+/** Get frontier nodes for a mind map. */
+export function getEducationMindMapFrontier(
+  mindMapId: string,
+): Promise<MindMapNode[]> {
+  return apiFetch<MindMapNode[]>(
+    `/education/mind-maps/${encodeURIComponent(mindMapId)}/frontier`,
+  );
+}
+
+/** Get analytics snapshot (with optional trend) for a mind map. */
+export function getEducationMindMapAnalytics(
+  mindMapId: string,
+  trendDays?: number,
+): Promise<AnalyticsSnapshot> {
+  const sp = new URLSearchParams();
+  if (trendDays != null) sp.set("trend_days", String(trendDays));
+  const qs = sp.toString();
+  return apiFetch<AnalyticsSnapshot>(
+    `/education/mind-maps/${encodeURIComponent(mindMapId)}/analytics${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Get nodes pending spaced-repetition review. */
+export function getEducationPendingReviews(
+  mindMapId: string,
+): Promise<PendingReviewNode[]> {
+  return apiFetch<PendingReviewNode[]>(
+    `/education/mind-maps/${encodeURIComponent(mindMapId)}/pending-reviews`,
+  );
+}
+
+/** Get aggregate mastery summary for a mind map. */
+export function getEducationMasterySummary(
+  mindMapId: string,
+): Promise<MasterySummary> {
+  return apiFetch<MasterySummary>(
+    `/education/mind-maps/${encodeURIComponent(mindMapId)}/mastery-summary`,
+  );
+}
+
+/** List quiz responses with optional filters. */
+export function getEducationQuizResponses(
+  params?: QuizResponseParams,
+): Promise<PaginatedResponse<QuizResponse>> {
+  const sp = new URLSearchParams();
+  if (params?.mind_map_id) sp.set("mind_map_id", params.mind_map_id);
+  if (params?.node_id) sp.set("node_id", params.node_id);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return apiFetch<PaginatedResponse<QuizResponse>>(
+    qs ? `/education/quiz-responses?${qs}` : "/education/quiz-responses",
+  );
+}
+
+/** List teaching flows with optional status filter. */
+export function getEducationFlows(
+  status?: string,
+): Promise<TeachingFlow[]> {
+  const sp = new URLSearchParams();
+  if (status) sp.set("status", status);
+  const qs = sp.toString();
+  return apiFetch<TeachingFlow[]>(
+    qs ? `/education/flows?${qs}` : "/education/flows",
+  );
+}
+
+/** Get cross-topic comparative analytics. */
+export function getEducationCrossTopicAnalytics(): Promise<CrossTopicAnalytics> {
+  return apiFetch<CrossTopicAnalytics>("/education/analytics/cross-topic");
+}
+
+/** Update a mind map's status. */
+export function updateEducationMindMapStatus(
+  mindMapId: string,
+  status: string,
+): Promise<MindMap> {
+  return apiFetch<MindMap>(
+    `/education/mind-maps/${encodeURIComponent(mindMapId)}/status`,
+    { method: "PUT", body: JSON.stringify({ status }) },
+  );
+}
+
+/** Submit a curriculum request for the butler to process. */
+export function requestEducationCurriculum(
+  body: CurriculumRequestBody,
+): Promise<CurriculumRequestResponse> {
+  return apiFetch<CurriculumRequestResponse>("/education/curriculum-requests", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Connector statistics API (docs/connectors/statistics.md §6)
 // ---------------------------------------------------------------------------
 

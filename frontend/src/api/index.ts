@@ -321,3 +321,35 @@ export type {
   IngestionOverviewStats,
   IngestionPeriod,
 } from "./types.ts";
+
+export {
+  getEducationCrossTopicAnalytics,
+  getEducationFlows,
+  getEducationMasterySummary,
+  getEducationMindMap,
+  getEducationMindMapAnalytics,
+  getEducationMindMapFrontier,
+  getEducationMindMaps,
+  getEducationPendingReviews,
+  getEducationQuizResponses,
+  requestEducationCurriculum,
+  updateEducationMindMapStatus,
+} from "./client.ts";
+
+export type {
+  AnalyticsSnapshot,
+  AnalyticsSnapshotTrendEntry,
+  CrossTopicAnalytics,
+  CrossTopicEntry,
+  CurriculumRequestBody,
+  CurriculumRequestResponse,
+  MasterySummary,
+  MindMap,
+  MindMapEdge,
+  MindMapListParams,
+  MindMapNode,
+  PendingReviewNode,
+  QuizResponse,
+  QuizResponseParams,
+  TeachingFlow,
+} from "./types.ts";
