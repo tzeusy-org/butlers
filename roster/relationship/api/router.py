@@ -811,7 +811,7 @@ async def delete_contact(
     )
     if has_source_links:
         await pool.execute(
-            "DELETE FROM contacts_source_links WHERE contact_id = $1",
+            "DELETE FROM contacts_source_links WHERE local_contact_id = $1",
             contact_id,
         )
 
