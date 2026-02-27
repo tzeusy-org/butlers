@@ -57,15 +57,17 @@ class TestMemoryChainRegistration:
         assert chain_dir.is_dir()
 
     def test_memory_chain_dir_contains_migrations(self) -> None:
-        """The resolved memory chain directory should contain migration files."""
+        """The resolved memory chain directory should contain all migration files."""
         chain_dir = _resolve_chain_dir("memory")
         assert chain_dir is not None
         migration_files = sorted(
             f.name for f in chain_dir.iterdir() if f.suffix == ".py" and f.name != "__init__.py"
         )
-        assert migration_files == ["001_memory_baseline.py"], (
-            f"Expected one baseline file, found {migration_files}"
-        )
+        assert migration_files == [
+            "001_memory_baseline.py",
+            "002_entities.py",
+            "003_memory_events.py",
+        ], f"Unexpected migration files: {migration_files}"
 
     def test_core_also_in_shared_chains(self) -> None:
         """'core' should also be in shared chains (sanity check)."""
@@ -96,6 +98,8 @@ class TestBaselineRevisionChain:
 
     EXPECTED_CHAIN = [
         ("001_memory_baseline.py", "mem_001", None),
+        ("002_entities.py", "mem_002", "mem_001"),
+        ("003_memory_events.py", "mem_003", "mem_002"),
     ]
 
     @staticmethod
@@ -159,11 +163,14 @@ class TestBaselineRevisionChain:
             mod = self._load_migration(filename)
             chain_map[mod.revision] = mod.down_revision
 
-        current = "mem_001"
+        # Walk from head to root
+        current = "mem_003"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
             path.append(current)
 
         path.reverse()
-        assert path == ["mem_001"], f"Expected linear chain [mem_001], got {path}"
+        assert path == ["mem_001", "mem_002", "mem_003"], (
+            f"Expected linear chain [mem_001 -> mem_002 -> mem_003], got {path}"
+        )

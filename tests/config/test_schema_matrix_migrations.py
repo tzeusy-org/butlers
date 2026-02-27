@@ -96,7 +96,14 @@ CHAIN_TABLES: dict[str, set[str]] = {
     "approvals": {"approval_events", "approval_rules", "pending_actions"},
     "contacts": {"contacts_source_accounts", "contacts_source_links", "contacts_sync_state"},
     "mailbox": {"mailbox"},
-    "memory": {"episodes", "facts", "rules", "memory_links"},
+    "education": {
+        "mind_maps",
+        "mind_map_nodes",
+        "mind_map_edges",
+        "quiz_responses",
+        "analytics_snapshots",
+    },
+    "memory": {"episodes", "facts", "rules", "memory_links", "entities", "memory_events"},
     "travel": {"trips", "legs", "accommodations", "reservations", "documents"},
 }
 
