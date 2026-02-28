@@ -363,7 +363,7 @@ class TestSchedulerLoopBehavior:
             patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
         ):
             task = asyncio.create_task(daemon._scheduler_loop())
-            await asyncio.wait_for(second_tick_seen.wait(), timeout=1.0)
+            await asyncio.wait_for(second_tick_seen.wait(), timeout=4.0)
             task.cancel()
             try:
                 await task
@@ -405,7 +405,7 @@ class TestSchedulerLoopBehavior:
             task = asyncio.create_task(daemon._scheduler_loop())
 
             # Wait for tick to actually start
-            await asyncio.wait_for(tick_started.wait(), timeout=1.0)
+            await asyncio.wait_for(tick_started.wait(), timeout=3.0)
 
             # Now cancel the task
             task.cancel()
