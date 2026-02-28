@@ -200,9 +200,7 @@ class HomeAssistantModule(Module):
         as always-require, cover.open_cover as medium).
         """
         return {
-            "ha_call_service": ToolMeta(
-                arg_sensitivities={"domain": True, "service": True}
-            ),
+            "ha_call_service": ToolMeta(arg_sensitivities={"domain": True, "service": True}),
         }
 
     # ------------------------------------------------------------------
@@ -416,9 +414,9 @@ class HomeAssistantModule(Module):
         assert self._config is not None
         url = self._config.url.rstrip("/")
         if url.startswith("https://"):
-            ws_url = "wss://" + url[len("https://"):]
+            ws_url = "wss://" + url[len("https://") :]
         elif url.startswith("http://"):
-            ws_url = "ws://" + url[len("http://"):]
+            ws_url = "ws://" + url[len("http://") :]
         else:
             ws_url = url  # already ws:// or wss://
         return ws_url + "/api/websocket"
@@ -499,9 +497,7 @@ class HomeAssistantModule(Module):
             )
 
         # Step 2: send auth
-        await self._ws_connection.send_json(
-            {"type": "auth", "access_token": self._token}
-        )
+        await self._ws_connection.send_json({"type": "auth", "access_token": self._token})
 
         # Step 3: expect auth_ok or auth_invalid
         msg = await self._ws_connection.receive_json(timeout=10.0)
@@ -512,9 +508,7 @@ class HomeAssistantModule(Module):
                 "Check the home_assistant_token in owner contact_info."
             )
         if msg_type != "auth_ok":
-            raise RuntimeError(
-                f"HomeAssistantModule: unexpected auth response type: {msg_type!r}"
-            )
+            raise RuntimeError(f"HomeAssistantModule: unexpected auth response type: {msg_type!r}")
 
         logger.debug(
             "HomeAssistantModule: WebSocket authenticated (ha_version=%s)",
@@ -653,9 +647,7 @@ class HomeAssistantModule(Module):
                 # Entity removed
                 self._entity_cache.pop(entity_id, None)
                 self._entity_area_map.pop(entity_id, None)
-                logger.debug(
-                    "HomeAssistantModule: entity removed from cache: %s", entity_id
-                )
+                logger.debug("HomeAssistantModule: entity removed from cache: %s", entity_id)
             else:
                 # Update or insert entity
                 area_id = self._entity_area_map.get(entity_id)
@@ -736,9 +728,7 @@ class HomeAssistantModule(Module):
             If the response does not arrive within ``timeout`` seconds.
         """
         if self._ws_connection is None or not self._ws_connected:
-            raise RuntimeError(
-                "HomeAssistantModule: WebSocket not connected — cannot send command"
-            )
+            raise RuntimeError("HomeAssistantModule: WebSocket not connected — cannot send command")
 
         self._ws_cmd_id += 1
         cmd_id = self._ws_cmd_id
@@ -790,9 +780,7 @@ class HomeAssistantModule(Module):
 
                 try:
                     self._ws_cmd_id += 1
-                    await self._ws_connection.send_json(
-                        {"type": "ping", "id": self._ws_cmd_id}
-                    )
+                    await self._ws_connection.send_json({"type": "ping", "id": self._ws_cmd_id})
                     logger.debug("HomeAssistantModule: ping sent (id=%d)", self._ws_cmd_id)
                 except Exception as exc:
                     logger.warning("HomeAssistantModule: failed to send ping: %s", exc)
@@ -939,9 +927,7 @@ class HomeAssistantModule(Module):
                     await self._seed_entity_cache_from_rest()
                     logger.debug("HomeAssistantModule: REST poll refreshed entity cache.")
                 except Exception as exc:
-                    logger.warning(
-                        "HomeAssistantModule: REST poll failed: %s", exc
-                    )
+                    logger.warning("HomeAssistantModule: REST poll failed: %s", exc)
         except asyncio.CancelledError:
             return
 
@@ -974,9 +960,7 @@ class HomeAssistantModule(Module):
             )
 
         self._entity_cache = new_cache
-        logger.debug(
-            "HomeAssistantModule: seeded entity cache with %d entities.", len(new_cache)
-        )
+        logger.debug("HomeAssistantModule: seeded entity cache with %d entities.", len(new_cache))
 
     async def _fetch_area_registry(self) -> None:
         """Fetch area registry via WebSocket and populate ``_area_cache``.
@@ -987,9 +971,7 @@ class HomeAssistantModule(Module):
         if not self._ws_connected:
             return
         try:
-            result = await self._ws_command(
-                {"type": "config/area_registry/list"}, timeout=10.0
-            )
+            result = await self._ws_command({"type": "config/area_registry/list"}, timeout=10.0)
             areas: list[dict[str, Any]] = result if isinstance(result, list) else []
             self._area_cache = {
                 a["area_id"]: CachedArea(area_id=a["area_id"], name=a.get("name", ""))
@@ -1012,9 +994,7 @@ class HomeAssistantModule(Module):
         if not self._ws_connected:
             return
         try:
-            result = await self._ws_command(
-                {"type": "config/entity_registry/list"}, timeout=10.0
-            )
+            result = await self._ws_command({"type": "config/entity_registry/list"}, timeout=10.0)
             entities: list[dict[str, Any]] = result if isinstance(result, list) else []
             new_map: dict[str, str] = {}
             for ent in entities:
@@ -1029,8 +1009,7 @@ class HomeAssistantModule(Module):
                 cached.area_id = new_map.get(eid)
 
             logger.debug(
-                "HomeAssistantModule: entity registry loaded; "
-                "%d area-mapped entities.",
+                "HomeAssistantModule: entity registry loaded; %d area-mapped entities.",
                 len(new_map),
             )
         except Exception as exc:
@@ -1054,9 +1033,7 @@ class HomeAssistantModule(Module):
                     },
                     timeout=5.0,
                 )
-                logger.debug(
-                    "HomeAssistantModule: subscribed to %s events.", event_type
-                )
+                logger.debug("HomeAssistantModule: subscribed to %s events.", event_type)
             except Exception as exc:
                 logger.warning(
                     "HomeAssistantModule: failed to subscribe to %s: %s",
@@ -1178,8 +1155,7 @@ class HomeAssistantModule(Module):
                         break
             if filter_area_id is None:
                 logger.warning(
-                    "HomeAssistantModule: area %r not found in registry; "
-                    "returning empty list.",
+                    "HomeAssistantModule: area %r not found in registry; returning empty list.",
                     area,
                 )
                 return []
