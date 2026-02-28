@@ -117,7 +117,7 @@ class TestModuleABCCompliance:
 
     def test_dependencies_empty(self, ha_module: HomeAssistantModule) -> None:
         """Home Assistant module declares no dependencies."""
-        assert ha_module.dependencies == []
+        assert ha_module.dependencies == ["contacts", "approvals"]
 
     def test_migration_revisions(self, ha_module: HomeAssistantModule) -> None:
         """migration_revisions() returns 'home_assistant'."""
@@ -495,13 +495,23 @@ class TestRegistryIntegration:
 
     def test_load_from_config(self) -> None:
         """HomeAssistantModule can be loaded from registry with config dict."""
+        from butlers.modules.approvals import ApprovalsModule
+        from butlers.modules.contacts import ContactsModule
         from butlers.modules.registry import ModuleRegistry
 
         reg = ModuleRegistry()
+        reg.register(ContactsModule)
+        reg.register(ApprovalsModule)
         reg.register(HomeAssistantModule)
-        modules = reg.load_from_config({"home_assistant": {"url": "http://ha.local"}})
-        assert len(modules) == 1
-        assert modules[0].name == "home_assistant"
+        modules = reg.load_from_config(
+            {
+                "contacts": {},
+                "approvals": {},
+                "home_assistant": {"url": "http://ha.local"},
+            }
+        )
+        assert len(modules) == 3
+        assert modules[2].name == "home_assistant"
 
     def test_default_registry_includes_home_assistant(self) -> None:
         """default_registry() auto-discovers and registers HomeAssistantModule."""

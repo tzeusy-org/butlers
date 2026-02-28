@@ -227,7 +227,7 @@ class HomeAssistantModule(Module):
 
     @property
     def dependencies(self) -> list[str]:
-        return []
+        return ["contacts", "approvals"]
 
     def migration_revisions(self) -> str | None:
         return "home_assistant"
