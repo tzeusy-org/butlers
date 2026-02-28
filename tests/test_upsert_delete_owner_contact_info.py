@@ -42,9 +42,7 @@ def _make_pool(
         # fetchrow returns the owner contact row (or None)
         if owner_id is not None:
             owner_row = MagicMock()
-            owner_row.__getitem__ = MagicMock(
-                side_effect=lambda k: owner_id if k == "id" else None
-            )
+            owner_row.__getitem__ = MagicMock(side_effect=lambda k: owner_id if k == "id" else None)
             conn.fetchrow = AsyncMock(return_value=owner_row)
         else:
             conn.fetchrow = AsyncMock(return_value=None)
@@ -117,9 +115,7 @@ class TestUpsertOwnerContactInfo:
     async def test_respects_secured_flag(self) -> None:
         """Upsert passes the secured flag to the INSERT."""
         pool, conn = _make_pool(owner_id="owner-uuid-1")
-        await upsert_owner_contact_info(
-            pool, "google_oauth_refresh", "token", secured=False
-        )
+        await upsert_owner_contact_info(pool, "google_oauth_refresh", "token", secured=False)
         insert_call = conn.execute.call_args_list[1]
         assert insert_call[0][4] is False  # secured=False
 
