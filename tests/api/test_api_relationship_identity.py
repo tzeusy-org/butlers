@@ -140,6 +140,7 @@ def _contact_info_row(
     value="123456",
     is_primary=True,
     secured=False,
+    parent_id=None,
 ):
     """Create a mock shared.contact_info row dict."""
     return {
@@ -148,6 +149,7 @@ def _contact_info_row(
         "value": value,
         "is_primary": is_primary,
         "secured": secured,
+        "parent_id": parent_id,
     }
 
 
@@ -722,6 +724,7 @@ def test_create_contact_info_success():
                 "value": "alice@example.com",
                 "is_primary": True,
                 "secured": False,
+                "parent_id": None,
             },
         ],
     )
@@ -739,6 +742,7 @@ def test_create_contact_info_success():
     assert data["value"] == "alice@example.com"
     assert data["is_primary"] is True
     assert data["secured"] is False
+    assert data["parent_id"] is None
 
 
 def test_create_contact_info_contact_not_found():
@@ -791,3 +795,215 @@ def test_merge_contact_deduplicates_contact_info():
     contact_delete_sql = calls[1].args[0]
     assert "DELETE FROM contacts" in contact_delete_sql
     assert calls[1].args[1] == source_id
+
+
+# ---------------------------------------------------------------------------
+# parent_id support
+# ---------------------------------------------------------------------------
+
+
+def test_create_contact_info_with_parent_id():
+    """POST /contacts/{id}/contact-info with parent_id stores the link."""
+    contact_id = uuid4()
+    parent_info_id = uuid4()
+    child_info_id = uuid4()
+
+    app, _, mock_pool = _app_with_mock_pool(
+        fetchrow_side_effect=[
+            {"id": contact_id},  # contact exists check
+            {  # INSERT RETURNING
+                "id": child_info_id,
+                "contact_id": contact_id,
+                "type": "email_password",
+                "value": "secret123",
+                "is_primary": False,
+                "secured": True,
+                "parent_id": parent_info_id,
+            },
+        ],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.post(
+            f"/api/relationship/contacts/{contact_id}/contact-info",
+            json={
+                "type": "email_password",
+                "value": "secret123",
+                "secured": True,
+                "parent_id": str(parent_info_id),
+            },
+        )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["parent_id"] == str(parent_info_id)
+    assert data["type"] == "email_password"
+
+    # Verify the INSERT SQL includes parent_id
+    insert_call = mock_pool.fetchrow.await_args_list[1]
+    insert_sql = insert_call.args[0]
+    assert "parent_id" in insert_sql
+
+
+def test_get_contact_includes_parent_id_in_contact_info():
+    """GET /contacts/{id} includes parent_id in contact_info entries."""
+    cid = uuid4()
+    email_id = uuid4()
+    password_id = uuid4()
+
+    app, _, mock_pool = _app_with_mock_pool(
+        fetchrow_side_effect=[
+            _contact_row(cid),
+            None,  # birthday
+            None,  # address
+        ],
+        fetch_side_effect=[
+            [],  # labels
+            [
+                _contact_info_row(
+                    info_id=email_id,
+                    ci_type="email",
+                    value="user@example.com",
+                    parent_id=None,
+                ),
+                _contact_info_row(
+                    info_id=password_id,
+                    ci_type="email_password",
+                    value="secret",
+                    secured=True,
+                    parent_id=email_id,
+                ),
+            ],
+        ],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.get(f"/api/relationship/contacts/{cid}")
+
+    assert resp.status_code == 200
+    ci = resp.json()["contact_info"]
+    assert len(ci) == 2
+
+    email_entry = next(e for e in ci if e["type"] == "email")
+    assert email_entry["parent_id"] is None
+
+    password_entry = next(e for e in ci if e["type"] == "email_password")
+    assert password_entry["parent_id"] == str(email_id)
+
+
+def test_patch_contact_info_is_primary_clears_siblings():
+    """PATCH is_primary=true clears is_primary on siblings of the same type."""
+    contact_id = uuid4()
+    info_id = uuid4()
+
+    app, _, mock_pool = _app_with_mock_pool(
+        fetchrow_side_effect=[
+            {"id": info_id},  # existence check
+            {"contact_id": contact_id, "type": "email"},  # fetch for sibling clear
+            {  # final SELECT
+                "id": info_id,
+                "type": "email",
+                "value": "b@example.com",
+                "is_primary": True,
+                "secured": False,
+                "parent_id": None,
+            },
+        ],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.patch(
+            f"/api/relationship/contacts/{contact_id}/contact-info/{info_id}",
+            json={"is_primary": True},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["is_primary"] is True
+    assert resp.json()["parent_id"] is None
+
+    # Verify sibling clear SQL was executed
+    execute_calls = mock_pool.execute.await_args_list
+    # First execute: the UPDATE to set is_primary on this entry
+    # Second execute: the UPDATE to clear siblings
+    assert len(execute_calls) == 2
+    sibling_clear_sql = execute_calls[1].args[0]
+    assert "is_primary = false" in sibling_clear_sql
+    assert "parent_id IS NULL" in sibling_clear_sql
+    assert execute_calls[1].args[1] == contact_id
+    assert execute_calls[1].args[2] == "email"
+    assert execute_calls[1].args[3] == info_id
+
+
+def test_patch_contact_info_returns_parent_id():
+    """PATCH /contacts/{id}/contact-info/{info_id} returns parent_id in response."""
+    contact_id = uuid4()
+    info_id = uuid4()
+    parent_id = uuid4()
+
+    app, _, mock_pool = _app_with_mock_pool(
+        fetchrow_side_effect=[
+            {"id": info_id},  # existence check
+            {  # final SELECT
+                "id": info_id,
+                "type": "email_password",
+                "value": "updated-secret",
+                "is_primary": False,
+                "secured": True,
+                "parent_id": parent_id,
+            },
+        ],
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.patch(
+            f"/api/relationship/contacts/{contact_id}/contact-info/{info_id}",
+            json={"value": "updated-secret"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["parent_id"] == str(parent_id)
+
+
+def test_pending_contacts_includes_parent_id():
+    """GET /contacts/pending includes parent_id in contact_info entries."""
+    cid = uuid4()
+    email_id = uuid4()
+
+    app, _, mock_pool = _app_with_mock_pool(
+        fetch_side_effect=[
+            [
+                {
+                    "id": cid,
+                    "full_name": "Unknown (telegram 99999)",
+                    "first_name": None,
+                    "last_name": None,
+                    "nickname": None,
+                    "notes": None,
+                    "company": None,
+                    "job_title": None,
+                    "metadata": {"needs_disambiguation": True},
+                    "created_at": _NOW,
+                    "updated_at": _NOW,
+                    "roles": [],
+                    "entity_id": None,
+                }
+            ],
+            [
+                _contact_info_row(
+                    info_id=email_id,
+                    ci_type="email",
+                    value="test@example.com",
+                    parent_id=None,
+                ),
+            ],
+        ]
+    )
+
+    with TestClient(app=app) as client:
+        resp = client.get("/api/relationship/contacts/pending")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    ci = data[0]["contact_info"]
+    assert ci[0]["parent_id"] is None

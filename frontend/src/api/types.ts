@@ -699,6 +699,7 @@ export interface ContactInfoEntry {
   value: string | null; // null when secured=true and not yet revealed
   is_primary: boolean;
   secured: boolean;
+  parent_id: string | null;
 }
 
 /** Full contact detail with all fields including identity fields. */
@@ -758,6 +759,7 @@ export interface CreateContactInfoRequest {
   value: string;
   is_primary?: boolean;
   secured?: boolean;
+  parent_id?: string | null;
 }
 
 /** Response for POST /contacts/{id}/contact-info. */
@@ -768,6 +770,7 @@ export interface CreateContactInfoResponse {
   value: string;
   is_primary: boolean;
   secured: boolean;
+  parent_id: string | null;
 }
 
 /** Request body for PATCH /contacts/{id}/contact-info/{info_id}. */

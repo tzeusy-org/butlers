@@ -35,6 +35,7 @@ class ContactInfoEntry(BaseModel):
     value: str | None  # None means masked (secured=True)
     is_primary: bool = False
     secured: bool = False
+    parent_id: UUID | None = None
 
 
 class ContactSummary(BaseModel):
@@ -122,6 +123,7 @@ class CreateContactInfoRequest(BaseModel):
     value: str
     is_primary: bool = False
     secured: bool = False
+    parent_id: UUID | None = None
 
 
 class PatchContactInfoRequest(BaseModel):
@@ -144,6 +146,7 @@ class CreateContactInfoResponse(BaseModel):
     value: str
     is_primary: bool
     secured: bool
+    parent_id: UUID | None = None
 
 
 class Group(BaseModel):

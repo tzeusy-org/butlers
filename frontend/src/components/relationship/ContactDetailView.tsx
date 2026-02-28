@@ -329,13 +329,32 @@ function ContactInfoSection({ contact }: { contact: ContactDetail }) {
 
   if (!hasContactInfo && !hasBasicInfo) return null;
 
+  const { groups, ungrouped } = hasContactInfo
+    ? groupContactInfoByAccount(contact.contact_info)
+    : { groups: [], ungrouped: [] };
+
   return (
     <div className="space-y-1.5">
-      {/* Structured contact_info entries */}
-      {hasContactInfo &&
-        contact.contact_info.map((entry) => (
-          <ContactInfoRow key={entry.id} entry={entry} contactId={contact.id} />
-        ))}
+      {/* Grouped contact_info entries */}
+      {hasContactInfo && (
+        <>
+          {groups.map(({ parent, children }) => (
+            <div key={parent.id}>
+              <ContactInfoRow entry={parent} contactId={contact.id} />
+              {children.length > 0 && (
+                <div className="ml-6 border-l pl-3 space-y-1 mt-1">
+                  {children.map((child) => (
+                    <ContactInfoRow key={child.id} entry={child} contactId={contact.id} />
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+          {ungrouped.map((entry) => (
+            <ContactInfoRow key={entry.id} entry={entry} contactId={contact.id} />
+          ))}
+        </>
+      )}
 
       {/* Legacy flat fields (shown if no contact_info entries cover them) */}
       {!hasContactInfo && (
@@ -395,6 +414,70 @@ const ALL_CONTACT_INFO_TYPES = [...CONTACT_INFO_TYPES, ...SECURED_CONTACT_INFO_T
 
 const SECURED_TYPES = new Set<string>(SECURED_CONTACT_INFO_TYPES);
 
+/** Maps credential types to their expected parent type. */
+const CHILD_TO_PARENT_TYPE: Record<string, string> = {
+  email_password: "email",
+  telegram: "telegram_chat_id",
+  telegram_api_id: "telegram_chat_id",
+  telegram_api_hash: "telegram_chat_id",
+};
+
+const CREDENTIAL_TYPES = new Set(Object.keys(CHILD_TO_PARENT_TYPE));
+
+interface AccountGroup {
+  parent: ContactInfoEntry;
+  children: ContactInfoEntry[];
+}
+
+interface GroupedContactInfo {
+  groups: AccountGroup[];
+  ungrouped: ContactInfoEntry[];
+}
+
+/** Group contact_info entries by parent_id into account groups. */
+function groupContactInfoByAccount(entries: ContactInfoEntry[]): GroupedContactInfo {
+  const parentMap = new Map<string, ContactInfoEntry>();
+  const childrenByParent = new Map<string, ContactInfoEntry[]>();
+  const ungrouped: ContactInfoEntry[] = [];
+
+  // First pass: index all entries by id
+  const byId = new Map(entries.map((e) => [e.id, e]));
+
+  // Second pass: classify
+  for (const entry of entries) {
+    if (entry.parent_id && byId.has(entry.parent_id)) {
+      // This is a child with a known parent in this set
+      const list = childrenByParent.get(entry.parent_id) ?? [];
+      list.push(entry);
+      childrenByParent.set(entry.parent_id, list);
+      // Ensure parent is registered
+      parentMap.set(entry.parent_id, byId.get(entry.parent_id)!);
+    } else if (!CREDENTIAL_TYPES.has(entry.type)) {
+      // Non-credential without parent_id — could be a standalone or a parent
+      // We'll check if anything references it after
+      parentMap.set(entry.id, entry);
+    } else {
+      // Credential type without parent_id — ungrouped
+      ungrouped.push(entry);
+    }
+  }
+
+  // Build groups: only include parents that have children OR are non-credential
+  const groups: AccountGroup[] = [];
+  const usedAsParent = new Set(childrenByParent.keys());
+
+  for (const [id, parent] of parentMap) {
+    if (usedAsParent.has(id)) {
+      groups.push({ parent, children: childrenByParent.get(id) ?? [] });
+    } else {
+      // Standalone entry (no children reference it)
+      groups.push({ parent, children: [] });
+    }
+  }
+
+  return { groups, ungrouped };
+}
+
 /** Human-friendly labels for contact info types. */
 function contactInfoTypeLabel(type: string): string {
   switch (type) {
@@ -425,17 +508,39 @@ function inputPlaceholder(type: string): string {
 
 function AddContactInfoForm({
   contactId,
+  existingEntries,
   onDone,
 }: {
   contactId: string;
+  existingEntries: ContactInfoEntry[];
   onDone: () => void;
 }) {
   const createInfo = useCreateContactInfo();
   const [type, setType] = useState<string>("email");
   const [value, setValue] = useState("");
   const [isPrimary, setIsPrimary] = useState(false);
+  const [parentId, setParentId] = useState<string | null>(null);
 
   const isSecured = SECURED_TYPES.has(type);
+  const parentType = CHILD_TO_PARENT_TYPE[type] ?? null;
+
+  // Find candidate parents for the selected credential type
+  const parentCandidates = parentType
+    ? existingEntries.filter((e) => e.type === parentType)
+    : [];
+
+  // Auto-resolve parent_id when exactly one candidate
+  function handleTypeChange(newType: string) {
+    setType(newType);
+    setValue("");
+    const pt = CHILD_TO_PARENT_TYPE[newType] ?? null;
+    if (pt) {
+      const candidates = existingEntries.filter((e) => e.type === pt);
+      setParentId(candidates.length === 1 ? candidates[0].id : null);
+    } else {
+      setParentId(null);
+    }
+  }
 
   async function handleSubmit() {
     const trimmed = value.trim();
@@ -451,6 +556,7 @@ function AddContactInfoForm({
           value: trimmed,
           is_primary: isPrimary,
           ...(isSecured ? { secured: true } : {}),
+          ...(parentId ? { parent_id: parentId } : {}),
         },
       });
       toast.success(`Added ${contactInfoTypeLabel(type)} entry.`);
@@ -462,10 +568,10 @@ function AddContactInfoForm({
   }
 
   return (
-    <div className="flex items-end gap-2 pt-2 border-t mt-2">
+    <div className="flex items-end gap-2 pt-2 border-t mt-2 flex-wrap">
       <div className="space-y-1">
         <Label className="text-xs">Type</Label>
-        <Select value={type} onValueChange={(v) => { setType(v); setValue(""); }}>
+        <Select value={type} onValueChange={handleTypeChange}>
           <SelectTrigger className="h-8 w-36 text-xs">
             <SelectValue />
           </SelectTrigger>
@@ -478,6 +584,26 @@ function AddContactInfoForm({
           </SelectContent>
         </Select>
       </div>
+      {parentType && parentCandidates.length > 1 && (
+        <div className="space-y-1">
+          <Label className="text-xs">Account</Label>
+          <Select
+            value={parentId ?? ""}
+            onValueChange={(v) => setParentId(v || null)}
+          >
+            <SelectTrigger className="h-8 w-44 text-xs">
+              <SelectValue placeholder="Select account..." />
+            </SelectTrigger>
+            <SelectContent>
+              {parentCandidates.map((c) => (
+                <SelectItem key={c.id} value={c.id} className="text-xs">
+                  {c.value ?? contactInfoTypeLabel(c.type)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
       <div className="flex-1 space-y-1">
         <Label className="text-xs">Value</Label>
         <Input
@@ -1021,6 +1147,7 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
           {addingInfo ? (
             <AddContactInfoForm
               contactId={contact.id}
+              existingEntries={contact.contact_info ?? []}
               onDone={() => setAddingInfo(false)}
             />
           ) : (
