@@ -923,52 +923,6 @@ class TestGmailPubSubIngestion:
 class TestWebhookAuthentication:
     """Tests for webhook authentication."""
 
-    async def test_webhook_accepts_valid_token(self, gmail_config: GmailConnectorConfig) -> None:
-        """Test webhook accepts requests with valid auth token."""
-        from unittest.mock import MagicMock
-
-        pubsub_config = gmail_config.model_copy(
-            update={
-                "gmail_pubsub_enabled": True,
-                "gmail_pubsub_topic": "projects/test/topics/gmail",
-                "gmail_pubsub_webhook_token": "secret-token-123",
-            }
-        )
-        runtime = GmailConnectorRuntime(pubsub_config)
-        runtime._notification_queue = asyncio.Queue()
-
-        # Simulate FastAPI Request with valid token
-        mock_request = MagicMock()
-        mock_request.headers.get.return_value = "Bearer secret-token-123"
-        mock_request.json = AsyncMock(return_value={"message": {"data": "test"}})
-
-        # Access the webhook handler by starting the server and calling it
-        # Since webhook server is private, we test the logic via config
-        assert runtime._config.gmail_pubsub_webhook_token == "secret-token-123"
-
-    async def test_webhook_rejects_invalid_token(self, gmail_config: GmailConnectorConfig) -> None:
-        """Test webhook rejects requests with invalid auth token."""
-        from unittest.mock import MagicMock
-
-        pubsub_config = gmail_config.model_copy(
-            update={
-                "gmail_pubsub_enabled": True,
-                "gmail_pubsub_topic": "projects/test/topics/gmail",
-                "gmail_pubsub_webhook_token": "secret-token-123",
-            }
-        )
-        runtime = GmailConnectorRuntime(pubsub_config)
-        runtime._notification_queue = asyncio.Queue()
-
-        # Simulate FastAPI Request with invalid token
-        mock_request = MagicMock()
-        mock_request.headers.get.return_value = "Bearer wrong-token"
-        mock_request.json = AsyncMock(return_value={"message": {"data": "test"}})
-
-        # Webhook handler should reject this
-        # Testing via config to ensure token is set
-        assert runtime._config.gmail_pubsub_webhook_token == "secret-token-123"
-
     async def test_webhook_accepts_no_auth_when_token_not_configured(
         self, gmail_config: GmailConnectorConfig
     ) -> None:

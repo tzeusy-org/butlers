@@ -4,6 +4,8 @@ import pytest
 
 from butlers.storage.blobs import BlobNotFoundError, BlobRef, LocalBlobStore
 
+pytestmark = pytest.mark.unit
+
 
 class TestBlobRef:
     """Test BlobRef parsing and serialization."""

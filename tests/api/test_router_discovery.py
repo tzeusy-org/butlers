@@ -11,6 +11,8 @@ from fastapi import APIRouter
 
 from butlers.api.router_discovery import _load_router_module, discover_butler_routers
 
+pytestmark = pytest.mark.unit
+
 
 class TestLoadRouterModule:
     """Test the _load_router_module helper."""

@@ -8,6 +8,8 @@ import pytest
 
 from butlers.connectors.mcp_client import CachedMCPClient
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def client() -> CachedMCPClient:

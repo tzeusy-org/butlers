@@ -12,6 +12,8 @@ from pydantic import ValidationError
 from butlers.daemon import ButlerDaemon
 from butlers.tools.switchboard.routing.contracts import parse_notify_request
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def butler_dir(tmp_path: Path) -> Path:

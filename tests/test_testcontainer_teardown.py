@@ -5,6 +5,8 @@ from docker.errors import APIError
 
 from conftest import _is_transient_docker_teardown_error, _remove_container_with_retry
 
+pytestmark = pytest.mark.unit
+
 
 class _FakeHTTPResponse:
     status_code = 500
