@@ -370,7 +370,7 @@ make test-qg
 #### notify() contact resolution
 - `notify()` supports three-tier recipient resolution: (1) `contact_id` UUID → `shared.contact_info WHERE contact_id=X AND type=channel` (primary preferred), (2) explicit `recipient` string (backwards-compatible), (3) owner contact's channel identifier (default/scheduled sends).
 - `_resolve_contact_channel_identifier(contact_id, channel)` in `src/butlers/daemon.py` handles path (1).
-- `resolve_owner_contact_info(pool, info_type)` in `src/butlers/credential_store.py` handles path (3); falls back to `TELEGRAM_CHAT_ID` in `butler_secrets` for backwards compatibility.
+- `resolve_owner_contact_info(pool, info_type)` in `src/butlers/credential_store.py` handles path (3); returns `None` if no matching `contact_info` entry exists (no `butler_secrets` fallback).
 - `notify()` returns `{status: pending_missing_identifier, ...}` when `contact_id` is provided but no matching `contact_info` entry exists for the requested channel; owner is notified.
 - Scheduled prompts that are not replying to ingress context should use `intent="send"` (not `intent="reply"`).
 

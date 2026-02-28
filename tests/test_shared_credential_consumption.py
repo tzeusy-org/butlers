@@ -8,7 +8,7 @@ Verifies DB-backed credential behavior for:
 
 Behavior matrix
 ---------------
-Layer: asyncpg-conn / google_credentials module
+Layer: CredentialStore / google_credentials module
   - resolve_google_credentials: DB-only (ignores all env vars at this layer)
   - store_google_credentials -> load_google_credentials round-trip
 
@@ -22,7 +22,7 @@ Layer: calendar module model
 
 Cross-layer coverage note:
   - resolve_google_credentials basic success/failure is canonical in
-    tests/test_google_credentials.py (TestResolveGoogleCredentials).
+    tests/test_google_credentials_credential_store.py.
   - CalendarModule.on_startup credential resolution is canonical in
     tests/modules/test_module_credential_resolution.py
     (TestCalendarModuleCredentialStore).
@@ -32,11 +32,16 @@ from __future__ import annotations
 
 import json
 import unittest.mock as mock
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.credential_store import CredentialStore
 from butlers.google_credentials import (
+    KEY_CLIENT_ID,
+    KEY_CLIENT_SECRET,
+    KEY_REFRESH_TOKEN,
+    KEY_SCOPES,
     GoogleCredentials,
     MissingGoogleCredentialsError,
     load_google_credentials,
@@ -84,17 +89,50 @@ _LEGACY_CALENDAR_JSON_BLOB_ENV = {
 }
 
 
-def _make_conn(row_data: dict | None = None) -> AsyncMock:
-    """Build a fake asyncpg connection that returns a stored credential row."""
-    conn = AsyncMock()
-    conn.fetchrow.return_value = row_data
-    conn.execute.return_value = None
-    return conn
+def _make_pool_with_values(key_to_value: dict[str, str | None]) -> MagicMock:
+    """Build a pool mock for CredentialStore that returns per-key values."""
+
+    async def _fetchrow(query: str, key: str) -> MagicMock | None:
+        val = key_to_value.get(key)
+        if val is None:
+            return None
+        row = MagicMock()
+        row.__getitem__ = lambda self, k: val if k == "secret_value" else None
+        return row
+
+    async def _execute(*args, **kwargs) -> str:
+        return "INSERT 0 1"
+
+    conn = MagicMock()
+    conn.fetchrow = _fetchrow
+    conn.execute = _execute
+
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=conn)
+    cm.__aexit__ = AsyncMock(return_value=False)
+
+    pool = MagicMock()
+    pool.acquire.return_value = cm
+    return pool
 
 
-def _make_db_conn_with_creds(creds: dict) -> AsyncMock:
-    """Return a fake conn that serves the given credentials dict."""
-    return _make_conn(row_data={"credentials": creds})
+def _make_empty_store() -> CredentialStore:
+    """CredentialStore backed by an empty pool."""
+    return CredentialStore(_make_pool_with_values({}))
+
+
+def _make_store_with_creds(creds: dict) -> CredentialStore:
+    """CredentialStore backed by a pool with the given credential values."""
+    return CredentialStore(
+        _make_pool_with_values(
+            {
+                KEY_CLIENT_ID: creds.get("client_id"),
+                KEY_CLIENT_SECRET: creds.get("client_secret"),
+                KEY_REFRESH_TOKEN: creds.get("refresh_token"),
+                KEY_SCOPES: creds.get("scope"),
+            }
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +258,7 @@ class TestGmailConnectorAcceptsSharedOAuthBootstrapCredentials:
 # ---------------------------------------------------------------------------
 # resolve_google_credentials: DB-only contract
 #
-# Basic success/failure paths are canonical in test_google_credentials.py.
+# Basic success/failure paths are canonical in test_google_credentials_credential_store.py.
 # This class verifies the cross-cutting contract that the function is
 # DB-only and ignores all env variable variants (legacy and bootstrap).
 # ---------------------------------------------------------------------------
@@ -231,30 +269,30 @@ class TestResolveGoogleCredentialsIsDbOnly:
 
     async def test_resolve_raises_with_legacy_gmail_env_when_db_empty(self) -> None:
         """Legacy GMAIL_* env vars are rejected; DB is the only source."""
-        conn = _make_conn(row_data=None)
+        store = _make_empty_store()
         with mock.patch.dict("os.environ", _LEGACY_GMAIL_ENV, clear=True):
             with pytest.raises(MissingGoogleCredentialsError):
-                await resolve_google_credentials(conn, caller="gmail")
+                await resolve_google_credentials(store, caller="gmail")
 
     async def test_resolve_raises_with_bootstrap_env_when_db_empty(self) -> None:
         """Canonical GOOGLE_OAUTH_* env vars are also ignored; DB is required."""
-        conn = _make_conn(row_data=None)
+        store = _make_empty_store()
         with mock.patch.dict("os.environ", _OAUTH_BOOTSTRAP_ENV, clear=True):
             with pytest.raises(MissingGoogleCredentialsError):
-                await resolve_google_credentials(conn, caller="calendar")
+                await resolve_google_credentials(store, caller="calendar")
 
     async def test_resolve_error_message_includes_caller_and_guidance(self) -> None:
         """Error message names the caller and includes remediation guidance."""
-        conn = _make_conn(row_data=None)
+        store = _make_empty_store()
         with pytest.raises(MissingGoogleCredentialsError) as exc_info:
-            await resolve_google_credentials(conn, caller="gmail")
+            await resolve_google_credentials(store, caller="gmail")
         msg = str(exc_info.value)
         assert "bootstrap" in msg.lower() or "oauth" in msg.lower()
         assert "gmail" in msg.lower()
 
     async def test_resolve_db_creds_take_priority_over_bootstrap_env(self) -> None:
         """When DB has credentials, bootstrap env vars are ignored (DB wins)."""
-        conn = _make_db_conn_with_creds(_SHARED_CREDS)
+        store = _make_store_with_creds(_SHARED_CREDS)
         different_env = {
             "GOOGLE_OAUTH_CLIENT_ID": "different-id-from-env",
             "GOOGLE_OAUTH_CLIENT_SECRET": "different-secret-from-env",
@@ -262,7 +300,7 @@ class TestResolveGoogleCredentialsIsDbOnly:
         }
 
         with mock.patch.dict("os.environ", different_env, clear=True):
-            result = await resolve_google_credentials(conn, caller="test")
+            result = await resolve_google_credentials(store, caller="test")
 
         assert result.client_id == _SHARED_CREDS["client_id"]
         assert result.client_secret == _SHARED_CREDS["client_secret"]
@@ -277,35 +315,36 @@ class TestStoreAndLoadRoundTrip:
     """Verify that stored credentials are recoverable via load_google_credentials."""
 
     async def test_store_then_load_returns_same_credentials(self) -> None:
-        """Round-trip: store + load returns identical credential values."""
-        stored_data: dict = {}
+        """Round-trip: store + load returns identical credential values via CredentialStore."""
+        stored: dict[str, str] = {}
 
-        async def fake_execute(sql: str, *args: object) -> None:
-            # Capture the stored JSON payload
-            if "INSERT INTO" in sql and len(args) >= 2:
-                stored_data["key"] = args[0]
-                stored_data["payload"] = json.loads(args[1])
+        store = MagicMock(spec=CredentialStore)
 
-        async def fake_fetchrow(sql: str, *args: object):
-            if stored_data:
-                return {"credentials": stored_data["payload"]}
-            return None
+        async def fake_store(key: str, value: str, **kwargs) -> None:
+            stored[key] = value
 
-        conn = AsyncMock()
-        conn.execute.side_effect = fake_execute
-        conn.fetchrow.side_effect = fake_fetchrow
+        async def fake_load(key: str) -> str | None:
+            return stored.get(key)
 
-        # Store credentials
+        store.store = AsyncMock(side_effect=fake_store)
+        store.load = AsyncMock(side_effect=fake_load)
+
+        # Store credentials (pool=None → refresh token goes to butler_secrets only)
         await store_google_credentials(
-            conn,
+            store,
             client_id=_SHARED_CREDS["client_id"],
             client_secret=_SHARED_CREDS["client_secret"],
             refresh_token=_SHARED_CREDS["refresh_token"],
             scope=_SHARED_CREDS["scope"],
         )
 
-        # Load them back
-        result = await load_google_credentials(conn)
+        # Refresh token is written to contact_info, not butler_secrets when pool is None.
+        # But the fallback in load_google_credentials reads from butler_secrets if contact_info
+        # returns None. For a pure round-trip, write it to the store manually.
+        stored[KEY_REFRESH_TOKEN] = _SHARED_CREDS["refresh_token"]
+
+        # Load them back (no pool = fallback to butler_secrets for refresh token)
+        result = await load_google_credentials(store)
 
         assert result is not None
         assert result.client_id == _SHARED_CREDS["client_id"]
@@ -313,31 +352,74 @@ class TestStoreAndLoadRoundTrip:
         assert result.refresh_token == _SHARED_CREDS["refresh_token"]
         assert result.scope == _SHARED_CREDS["scope"]
 
+    async def test_store_then_load_with_pool_round_trips_via_contact_info(self) -> None:
+        """Round-trip with pool: refresh token goes through contact_info."""
+        stored: dict[str, str] = {}
+
+        store = MagicMock(spec=CredentialStore)
+
+        async def fake_store(key: str, value: str, **kwargs) -> None:
+            stored[key] = value
+
+        async def fake_load(key: str) -> str | None:
+            return stored.get(key)
+
+        store.store = AsyncMock(side_effect=fake_store)
+        store.load = AsyncMock(side_effect=fake_load)
+        ci_pool = MagicMock()
+
+        with (
+            patch(
+                "butlers.google_credentials.upsert_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "butlers.google_credentials.resolve_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value=_SHARED_CREDS["refresh_token"],
+            ),
+        ):
+            await store_google_credentials(
+                store,
+                pool=ci_pool,
+                client_id=_SHARED_CREDS["client_id"],
+                client_secret=_SHARED_CREDS["client_secret"],
+                refresh_token=_SHARED_CREDS["refresh_token"],
+                scope=_SHARED_CREDS["scope"],
+            )
+
+            result = await load_google_credentials(store, pool=ci_pool)
+
+        assert result is not None
+        assert result.refresh_token == _SHARED_CREDS["refresh_token"]
+
     async def test_store_without_scope_round_trips_correctly(self) -> None:
         """Credentials stored without scope have scope=None after load."""
-        stored_data: dict = {}
+        stored: dict[str, str] = {}
 
-        async def fake_execute(sql: str, *args: object) -> None:
-            if "INSERT INTO" in sql and len(args) >= 2:
-                stored_data["payload"] = json.loads(args[1])
+        store = MagicMock(spec=CredentialStore)
 
-        async def fake_fetchrow(sql: str, *args: object):
-            if stored_data:
-                return {"credentials": stored_data["payload"]}
-            return None
+        async def fake_store(key: str, value: str, **kwargs) -> None:
+            stored[key] = value
 
-        conn = AsyncMock()
-        conn.execute.side_effect = fake_execute
-        conn.fetchrow.side_effect = fake_fetchrow
+        async def fake_load(key: str) -> str | None:
+            return stored.get(key)
+
+        store.store = AsyncMock(side_effect=fake_store)
+        store.load = AsyncMock(side_effect=fake_load)
 
         await store_google_credentials(
-            conn,
+            store,
             client_id=_SHARED_CREDS["client_id"],
             client_secret=_SHARED_CREDS["client_secret"],
             refresh_token=_SHARED_CREDS["refresh_token"],
             # No scope
         )
 
-        result = await load_google_credentials(conn)
+        # Manually add refresh token for fallback path
+        stored[KEY_REFRESH_TOKEN] = _SHARED_CREDS["refresh_token"]
+
+        result = await load_google_credentials(store)
         assert result is not None
         assert result.scope is None

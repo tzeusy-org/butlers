@@ -66,16 +66,21 @@ class TestTelegramUserClientConnectorConfig:
     """Tests for TelegramUserClientConnectorConfig."""
 
     def test_from_env_success(self, mock_env: dict[str, str]) -> None:
-        """Test loading config from environment variables."""
+        """Test loading non-credential config from environment variables.
+
+        Telegram credentials are resolved exclusively from owner contact_info,
+        so from_env() returns defaults (0, '', '') for them.
+        """
         config = TelegramUserClientConnectorConfig.from_env()
 
         assert config.switchboard_mcp_url == "http://localhost:40100/sse"
         assert config.provider == "telegram"
         assert config.channel == "telegram"
         assert config.endpoint_identity == "telegram:user:123456"
-        assert config.telegram_api_id == 12345
-        assert config.telegram_api_hash == "test-hash"
-        assert config.telegram_user_session == "test-session-string"
+        # Credentials are not read from env — they come from DB only
+        assert config.telegram_api_id == 0
+        assert config.telegram_api_hash == ""
+        assert config.telegram_user_session == ""
         assert config.max_inflight == 8
 
     def test_from_env_missing_required_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,13 +89,15 @@ class TestTelegramUserClientConnectorConfig:
         with pytest.raises(ValueError, match="SWITCHBOARD_MCP_URL"):
             TelegramUserClientConnectorConfig.from_env()
 
-    def test_from_env_invalid_api_id(
+    def test_from_env_ignores_telegram_credentials(
         self, mock_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Test that invalid TELEGRAM_API_ID raises ValueError."""
+        """from_env() does not read Telegram credentials from env vars."""
+        # Even with invalid env values, from_env() should succeed because
+        # it no longer reads TELEGRAM_API_ID/HASH/SESSION from env.
         monkeypatch.setenv("TELEGRAM_API_ID", "not-an-integer")
-        with pytest.raises(ValueError, match="TELEGRAM_API_ID must be an integer"):
-            TelegramUserClientConnectorConfig.from_env()
+        config = TelegramUserClientConnectorConfig.from_env()
+        assert config.telegram_api_id == 0
 
     def test_from_env_with_backfill_window(
         self, mock_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
@@ -504,7 +511,7 @@ class TestResolveTelegramUserCredentialsFromDb:
     async def test_returns_all_credentials_when_stored_in_db(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Returns all three credentials when found in butler_secrets table."""
+        """Returns all three credentials when found in owner contact_info."""
         from unittest.mock import AsyncMock, MagicMock
 
         import asyncpg

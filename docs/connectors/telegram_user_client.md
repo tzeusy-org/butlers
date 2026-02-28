@@ -59,10 +59,10 @@ State/checkpoint variables:
 - `CONNECTOR_CURSOR_PATH` (required for restart-safe checkpointing)
 - `CONNECTOR_BACKFILL_WINDOW_H` (optional, bounded startup replay window)
 
-Telegram user-client credentials (MTProto-style client auth):
-- `TELEGRAM_API_ID` (required)
-- `TELEGRAM_API_HASH` (required)
-- `TELEGRAM_USER_SESSION` (required; encrypted session string/file reference)
+Telegram user-client credentials (MTProto):
+- `telegram_api_id` — configured via owner contact_info (type `telegram_api_id`)
+- `telegram_api_hash` — configured via owner contact_info (type `telegram_api_hash`)
+- `telegram_user_session` — configured via owner contact_info (type `telegram_user_session`)
 
 Security requirements:
 - Never commit Telegram credentials or session artifacts.

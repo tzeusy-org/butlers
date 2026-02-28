@@ -9,13 +9,13 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from butlers.google_credentials import (
+    CONTACT_INFO_REFRESH_TOKEN as _GOOGLE_CONTACT_INFO_REFRESH_TYPE,
+)
+from butlers.google_credentials import (
     KEY_CLIENT_ID as _GOOGLE_OAUTH_CLIENT_ID_KEY,
 )
 from butlers.google_credentials import (
     KEY_CLIENT_SECRET as _GOOGLE_OAUTH_CLIENT_SECRET_KEY,
-)
-from butlers.google_credentials import (
-    KEY_REFRESH_TOKEN as _GOOGLE_REFRESH_TOKEN_KEY,
 )
 from butlers.modules.base import Module
 
@@ -494,17 +494,29 @@ class ContactsModule(Module):
             client_secret = await credential_store.resolve(
                 _GOOGLE_OAUTH_CLIENT_SECRET_KEY, env_fallback=False
             )
-            refresh_token = await credential_store.resolve(
-                _GOOGLE_REFRESH_TOKEN_KEY, env_fallback=False
-            )
+
+            # Refresh token: contact_info (primary), butler_secrets (fallback)
+            refresh_token: str | None = None
+            pool = getattr(self._db, "pool", None)
+            if pool is not None:
+                from butlers.credential_store import resolve_owner_contact_info
+
+                refresh_token = await resolve_owner_contact_info(
+                    pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE
+                )
+            if not refresh_token:
+                refresh_token = await credential_store.resolve(
+                    "GOOGLE_REFRESH_TOKEN", env_fallback=False
+                )
+
             if client_id and client_secret and refresh_token:
                 logger.debug("ContactsModule: resolved Google credentials from CredentialStore")
                 return client_id, client_secret, refresh_token
 
         raise RuntimeError(
-            "ContactsModule: Google OAuth credentials are not available in butler_secrets. "
+            "ContactsModule: Google OAuth credentials are not available in database. "
             f"Required keys: {_GOOGLE_OAUTH_CLIENT_ID_KEY}, {_GOOGLE_OAUTH_CLIENT_SECRET_KEY}, "
-            f"{_GOOGLE_REFRESH_TOKEN_KEY}. "
+            f"refresh token (contact_info). "
             "Store them via the dashboard OAuth flow (shared credential store)."
         )
 

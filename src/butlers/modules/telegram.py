@@ -11,7 +11,6 @@ Configured via [modules.telegram] with optional
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Any
 
@@ -27,12 +26,12 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Reaction lifecycle emoji keys (map to emoji via REACTION_TO_EMOJI).
 REACTION_IN_PROGRESS = ":eye"
-REACTION_SUCCESS = ":done"
+REACTION_SUCCESS = ":thumbsup"
 REACTION_FAILURE = ":space invader"
 
 REACTION_TO_EMOJI = {
     REACTION_IN_PROGRESS: "\U0001f440",
-    REACTION_SUCCESS: "\u2705",
+    REACTION_SUCCESS: "\U0001f44d",
     REACTION_FAILURE: "\U0001f47e",
 }
 
@@ -98,8 +97,8 @@ class TelegramModule(Module):
         self._config: TelegramConfig = TelegramConfig()
         self._client: httpx.AsyncClient | None = None
         self._db: Any = None
-        # Credentials cached at startup via CredentialStore (DB-first, then env).
-        # Keys are the env var names configured in TelegramConfig (e.g. "BUTLER_TELEGRAM_TOKEN").
+        # Credentials cached at startup: user-scope from owner contact_info,
+        # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
 
     @property
@@ -120,28 +119,26 @@ class TelegramModule(Module):
         envs: list[str] = []
         if self._config.bot.enabled:
             envs.append(self._config.bot.token_env)
-        if self._config.user.enabled:
-            envs.append(self._config.user.token_env)
+        # User-scope credentials come from owner contact_info, not butler_secrets.
         return envs
 
     def migration_revisions(self) -> str | None:
         return None  # No custom tables needed
 
     def _get_bot_token(self) -> str:
-        """Resolve Telegram bot token — startup-cached store first, then environment variable.
+        """Resolve Telegram bot token from startup-cached credentials.
 
-        The token is pre-resolved at startup via CredentialStore (DB-first, then env)
-        and cached in ``self._resolved_credentials``.  If not cached (e.g. tests
-        without CredentialStore), falls back to ``os.environ`` directly.
+        The token is pre-resolved at startup: user-scope from owner contact_info,
+        bot-scope from CredentialStore.
         """
         if not self._config.bot.enabled:
             raise RuntimeError("Telegram bot scope modules.telegram.bot is disabled")
         token_env = self._config.bot.token_env
-        # Use startup-resolved cache first; fall back to env vars for backwards compat.
-        token = self._resolved_credentials.get(token_env) or os.environ.get(token_env)
+        token = self._resolved_credentials.get(token_env)
         if not token:
             raise RuntimeError(
-                f"Missing Telegram bot token for modules.telegram.bot: set {token_env}"
+                f"Missing Telegram bot token for modules.telegram.bot: "
+                f"configure {token_env} via butler_secrets"
             )
         return token
 
@@ -190,19 +187,30 @@ class TelegramModule(Module):
             When provided, tokens are resolved DB-first with env fallback.
             When ``None`` (e.g. tests), resolution falls back to env vars only.
         """
+        from butlers.credential_store import resolve_owner_contact_info
+
         self._config = (
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))
         )
         self._client = httpx.AsyncClient()
         self._db = db
         self._resolved_credentials = {}
+
+        # --- User-scope: resolve exclusively from owner contact_info ----------
+        pool = getattr(db, "pool", None) if db is not None else None
+        if pool is not None and self._config.user.enabled:
+            user_token_env = self._config.user.token_env
+            value = await resolve_owner_contact_info(pool, "telegram_bot_token")
+            if value is not None:
+                self._resolved_credentials[user_token_env] = value
+
+        # --- Bot-scope only: CredentialStore ----------------------------------
         if credential_store is not None:
-            # Resolve all configured token keys at startup and cache them.
-            for scope_cfg in [self._config.bot, self._config.user]:
-                token_env = scope_cfg.token_env
-                value = await credential_store.resolve(token_env)
+            bot_token_env = self._config.bot.token_env
+            if bot_token_env not in self._resolved_credentials:
+                value = await credential_store.resolve(bot_token_env)
                 if value is not None:
-                    self._resolved_credentials[token_env] = value
+                    self._resolved_credentials[bot_token_env] = value
 
         if self._config.webhook_url:
             await self._set_webhook(self._config.webhook_url)

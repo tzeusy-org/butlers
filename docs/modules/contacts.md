@@ -167,7 +167,7 @@ LIMIT 1
 
 Used by `_resolve_default_notify_recipient` (daemon.py) to look up the owner's Telegram chat ID (`type='telegram'`) when no explicit `recipient` or `contact_id` is provided in `notify(channel="telegram", intent="send")`.
 
-Legacy fallback: if no `contact_info` row exists, the daemon falls back to `TELEGRAM_CHAT_ID` in `butler_secrets`.
+If no `contact_info` row exists, `notify()` returns `None` (no fallback to `butler_secrets`). Owner credentials are managed exclusively via the contact detail page.
 
 ---
 

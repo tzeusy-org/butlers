@@ -188,7 +188,7 @@ class TestSendMessage:
 
     async def test_calls_correct_endpoint(self, telegram_module: TelegramModule, monkeypatch):
         """_send_message POSTs to the sendMessage endpoint."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token-123")
+        telegram_module._resolved_credentials["BUTLER_TELEGRAM_TOKEN"] = "test-token-123"
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response({"ok": True, "result": {"message_id": 42}})
@@ -207,7 +207,7 @@ class TestSendMessage:
         self, telegram_module: TelegramModule, mock_mcp: MagicMock, monkeypatch
     ):
         """telegram_send_message delegates to _send_message."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        telegram_module._resolved_credentials["BUTLER_TELEGRAM_TOKEN"] = "test-token"
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response({"ok": True, "result": {}})
@@ -228,7 +228,7 @@ class TestReplyToMessage:
         self, telegram_module: TelegramModule, monkeypatch
     ):
         """_reply_to_message includes reply_to_message_id payload."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        telegram_module._resolved_credentials["BUTLER_TELEGRAM_TOKEN"] = "test-token"
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response({"ok": True, "result": {}})
@@ -246,7 +246,7 @@ class TestReplyToMessage:
         self, telegram_module: TelegramModule, mock_mcp: MagicMock, monkeypatch
     ):
         """telegram_reply_to_message delegates to reply helper."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token")
+        telegram_module._resolved_credentials["BUTLER_TELEGRAM_TOKEN"] = "test-token"
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response({"ok": True, "result": {}})
@@ -338,7 +338,7 @@ class TestWebhookHelpers:
 
     async def test_set_webhook(self, telegram_module: TelegramModule, monkeypatch):
         """_set_webhook POSTs to the setWebhook endpoint."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token-abc")
+        telegram_module._resolved_credentials["BUTLER_TELEGRAM_TOKEN"] = "test-token-abc"
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response({"ok": True, "result": True})
@@ -354,7 +354,7 @@ class TestWebhookHelpers:
 
     async def test_delete_webhook(self, telegram_module: TelegramModule, monkeypatch):
         """_delete_webhook POSTs to the deleteWebhook endpoint."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "test-token-abc")
+        telegram_module._resolved_credentials["BUTLER_TELEGRAM_TOKEN"] = "test-token-abc"
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post.return_value = _mock_response(

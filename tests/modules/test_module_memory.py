@@ -219,7 +219,7 @@ class TestRegisterTools:
         tags_prop = params["properties"]["tags"]
         tags_desc = tags_prop["description"]
         assert "JSON array of strings" in tags_desc
-        assert "Do not pass a single string value" in tags_desc
+        assert "do not pass a single string value" in tags_desc.lower()
         assert tags_prop["anyOf"][0]["type"] == "array"
 
     async def test_memory_search_tool_description_and_schema_contract(self):

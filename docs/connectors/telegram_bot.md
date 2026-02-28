@@ -44,12 +44,12 @@ Polling-specific vars:
 
 Telegram credential vars (resolved from module config):
 - Bot scope: `modules.telegram.bot.token_env` (default `BUTLER_TELEGRAM_TOKEN`)
-- User scope (optional): `modules.telegram.user.token_env` (default `USER_TELEGRAM_TOKEN`)
+- User scope: credentials come from owner contact_info (not env vars)
 
 Notes:
 - If `modules.telegram.bot.enabled=true`, the bot token env var is required.
-- If `modules.telegram.user.enabled=true`, the user token env var is required.
-- Secrets must come from env/secret manager, never committed in `butler.toml`.
+- User-scope tokens are resolved from owner contact_info at startup, not from env vars or butler_secrets.
+- Bot-scope secrets must come from env/secret manager, never committed in `butler.toml`.
 
 ## 4. Update Retrieval Mode (Dev vs Prod)
 ### Dev: Polling

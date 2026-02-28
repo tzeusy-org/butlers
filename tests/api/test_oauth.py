@@ -82,14 +82,21 @@ def _make_app(
 
     conn = AsyncMock()
 
-    async def _fetchrow(_query: str, key: str):
+    async def _fetchrow(_query: str, key: str | None = None):
+        if key is None:
+            # Query from upsert_owner_contact_info (owner lookup)
+            if "shared.contacts" in _query:
+                owner_row = MagicMock()
+                owner_row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
+                return owner_row
+            return None
         value = secrets.get(key)
         if not value:
             return None
         return {"secret_value": value}
 
     conn.fetchrow.side_effect = _fetchrow
-    conn.execute = AsyncMock(return_value=None)
+    conn.execute = AsyncMock(return_value="DELETE 0")
 
     @asynccontextmanager
     async def _acquire():

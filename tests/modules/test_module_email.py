@@ -243,11 +243,10 @@ class TestSendEmail:
     """Verify _send_email with mocked SMTP connections."""
 
     async def test_send_email_success(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "test@example.com")
-        monkeypatch.setenv("BUTLER_EMAIL_PASSWORD", "secret123")
-
         mod = EmailModule()
         await mod.on_startup(config=None, db=None)
+        mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] = "test@example.com"
+        mod._resolved_credentials["BUTLER_EMAIL_PASSWORD"] = "secret123"
 
         mock_smtp_instance = MagicMock()
         mock_smtp_cls = MagicMock(return_value=mock_smtp_instance)
@@ -270,11 +269,10 @@ class TestSendEmail:
         mock_smtp_instance.quit.assert_called_once()
 
     async def test_send_email_no_tls(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "test@example.com")
-        monkeypatch.setenv("BUTLER_EMAIL_PASSWORD", "secret123")
-
         mod = EmailModule()
         await mod.on_startup(config={"use_tls": False}, db=None)
+        mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] = "test@example.com"
+        mod._resolved_credentials["BUTLER_EMAIL_PASSWORD"] = "secret123"
 
         mock_smtp_instance = MagicMock()
         mock_smtp_cls = MagicMock(return_value=mock_smtp_instance)
@@ -304,11 +302,10 @@ class TestSendEmail:
             )
 
     async def test_send_email_smtp_error_still_quits(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "test@example.com")
-        monkeypatch.setenv("BUTLER_EMAIL_PASSWORD", "secret123")
-
         mod = EmailModule()
         await mod.on_startup(config=None, db=None)
+        mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] = "test@example.com"
+        mod._resolved_credentials["BUTLER_EMAIL_PASSWORD"] = "secret123"
 
         mock_smtp_instance = MagicMock()
         mock_smtp_instance.login.side_effect = smtplib.SMTPAuthenticationError(535, b"Auth failed")
@@ -387,11 +384,10 @@ class TestSearchInbox:
     """Verify _search_inbox with mocked IMAP connections."""
 
     async def test_search_inbox_success(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "test@example.com")
-        monkeypatch.setenv("BUTLER_EMAIL_PASSWORD", "secret123")
-
         mod = EmailModule()
         await mod.on_startup(config=None, db=None)
+        mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] = "test@example.com"
+        mod._resolved_credentials["BUTLER_EMAIL_PASSWORD"] = "secret123"
 
         # Build a minimal RFC822 header
         raw_header = (
@@ -420,11 +416,10 @@ class TestSearchInbox:
         mock_conn.logout.assert_called_once()
 
     async def test_search_inbox_empty(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "test@example.com")
-        monkeypatch.setenv("BUTLER_EMAIL_PASSWORD", "secret123")
-
         mod = EmailModule()
         await mod.on_startup(config=None, db=None)
+        mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] = "test@example.com"
+        mod._resolved_credentials["BUTLER_EMAIL_PASSWORD"] = "secret123"
 
         mock_conn = MagicMock()
         mock_conn.search.return_value = ("OK", [b""])
@@ -438,11 +433,10 @@ class TestSearchInbox:
         mock_conn.logout.assert_called_once()
 
     async def test_search_inbox_no_tls(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "test@example.com")
-        monkeypatch.setenv("BUTLER_EMAIL_PASSWORD", "secret123")
-
         mod = EmailModule()
         await mod.on_startup(config={"use_tls": False, "imap_port": 143}, db=None)
+        mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] = "test@example.com"
+        mod._resolved_credentials["BUTLER_EMAIL_PASSWORD"] = "secret123"
 
         mock_conn = MagicMock()
         mock_conn.search.return_value = ("OK", [b""])
@@ -464,11 +458,10 @@ class TestReadEmail:
     """Verify _read_email with mocked IMAP connections."""
 
     async def test_read_email_success(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "test@example.com")
-        monkeypatch.setenv("BUTLER_EMAIL_PASSWORD", "secret123")
-
         mod = EmailModule()
         await mod.on_startup(config=None, db=None)
+        mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] = "test@example.com"
+        mod._resolved_credentials["BUTLER_EMAIL_PASSWORD"] = "secret123"
 
         # Build a minimal RFC822 message
         raw_msg = (
@@ -500,11 +493,10 @@ class TestReadEmail:
         mock_conn.logout.assert_called_once()
 
     async def test_read_email_not_found(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "test@example.com")
-        monkeypatch.setenv("BUTLER_EMAIL_PASSWORD", "secret123")
-
         mod = EmailModule()
         await mod.on_startup(config=None, db=None)
+        mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] = "test@example.com"
+        mod._resolved_credentials["BUTLER_EMAIL_PASSWORD"] = "secret123"
 
         mock_conn = MagicMock()
         mock_conn.fetch.return_value = ("OK", [None])
@@ -536,11 +528,11 @@ class TestReadEmail:
 class TestGetCredentials:
     """Verify _get_credentials helper."""
 
-    def test_returns_tuple(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "me@test.com")
-        monkeypatch.setenv("BUTLER_EMAIL_PASSWORD", "pass123")
-
+    def test_returns_tuple(self):
         mod = EmailModule()
+        mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] = "me@test.com"
+        mod._resolved_credentials["BUTLER_EMAIL_PASSWORD"] = "pass123"
+
         addr, pwd = mod._get_credentials()
         assert addr == "me@test.com"
         assert pwd == "pass123"

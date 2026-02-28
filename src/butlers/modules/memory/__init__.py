@@ -148,7 +148,7 @@ class MemoryModule(Module):
                 Field(
                     description=(
                         "Optional tags as a JSON array of strings (a list), "
-                        'for example ["work", "project-x"]. Do not pass a '
+                        'for example ["work", "project-x"]. DO NOT pass a '
                         'single string value (e.g. "work,project-x").'
                     )
                 ),

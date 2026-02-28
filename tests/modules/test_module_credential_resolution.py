@@ -62,8 +62,12 @@ class TestEmailModuleCredentialStore:
         assert mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] == "bot@example.com"
         assert mod._resolved_credentials["BUTLER_EMAIL_PASSWORD"] == "bot-secret"
 
-    async def test_on_startup_caches_user_credentials_when_enabled(self) -> None:
-        """User credentials resolved from store are cached when user scope is enabled."""
+    async def test_on_startup_does_not_resolve_user_credentials_from_store(self) -> None:
+        """User-scope credentials are NOT resolved from CredentialStore.
+
+        User-scope credentials come exclusively from owner contact_info.
+        CredentialStore is only used for bot-scope.
+        """
         store = _make_credential_store(
             BUTLER_EMAIL_ADDRESS="bot@example.com",
             BUTLER_EMAIL_PASSWORD="bot-secret",
@@ -74,8 +78,11 @@ class TestEmailModuleCredentialStore:
         config = {"user": {"enabled": True}}
         await mod.on_startup(config=config, db=None, credential_store=store)
 
-        assert mod._resolved_credentials["USER_EMAIL_ADDRESS"] == "user@example.com"
-        assert mod._resolved_credentials["USER_EMAIL_PASSWORD"] == "user-secret"
+        # User-scope keys should NOT be in cache (only contact_info provides them)
+        assert "USER_EMAIL_ADDRESS" not in mod._resolved_credentials
+        assert "USER_EMAIL_PASSWORD" not in mod._resolved_credentials
+        # Bot-scope should be resolved from store
+        assert mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] == "bot@example.com"
 
     async def test_get_credentials_uses_cached_store_value(self) -> None:
         """_get_credentials() returns cached value even when env var differs."""
@@ -97,19 +104,16 @@ class TestEmailModuleCredentialStore:
         assert address == "db@example.com"
         assert password == "db-secret"
 
-    async def test_get_credentials_falls_back_to_env_when_no_store(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without a store, _get_credentials() reads from env vars (backwards compat)."""
-        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "env@example.com")
-        monkeypatch.setenv("BUTLER_EMAIL_PASSWORD", "env-secret")
+    async def test_get_credentials_raises_without_store_or_contact_info(self) -> None:
+        """Without a store or contact_info, _get_credentials() raises RuntimeError.
 
+        There is no os.environ fallback — credentials must come from
+        CredentialStore (bot-scope) or owner contact_info (user-scope).
+        """
         mod = EmailModule()
         await mod.on_startup(config=None, db=None, credential_store=None)
-        address, password = mod._get_credentials()
-
-        assert address == "env@example.com"
-        assert password == "env-secret"
+        with pytest.raises(RuntimeError, match="Missing email credentials"):
+            mod._get_credentials()
 
     async def test_get_credentials_raises_when_not_in_store_or_env(self) -> None:
         """_get_credentials() raises RuntimeError if credentials are unavailable."""
@@ -142,14 +146,20 @@ class TestEmailModuleCredentialStore:
         assert "BUTLER_EMAIL_ADDRESS" in resolved_keys
         assert "BUTLER_EMAIL_PASSWORD" in resolved_keys
 
-    async def test_user_scope_credentials_resolved_when_user_enabled(self) -> None:
-        """When user scope is enabled, user credential keys are also resolved."""
+    async def test_user_scope_not_resolved_from_store_when_user_enabled(self) -> None:
+        """When user scope is enabled, user keys are NOT resolved from CredentialStore.
+
+        User-scope credentials come exclusively from owner contact_info.
+        """
         store = _make_credential_store()
         mod = EmailModule()
         await mod.on_startup(config={"user": {"enabled": True}}, db=None, credential_store=store)
         resolved_keys = [call.args[0] for call in store.resolve.call_args_list]
-        assert "USER_EMAIL_ADDRESS" in resolved_keys
-        assert "USER_EMAIL_PASSWORD" in resolved_keys
+        # Only bot-scope keys should be resolved from store
+        assert "USER_EMAIL_ADDRESS" not in resolved_keys
+        assert "USER_EMAIL_PASSWORD" not in resolved_keys
+        assert "BUTLER_EMAIL_ADDRESS" in resolved_keys
+        assert "BUTLER_EMAIL_PASSWORD" in resolved_keys
 
     async def test_db_value_wins_over_env_in_get_credentials(
         self, monkeypatch: pytest.MonkeyPatch
@@ -187,8 +197,12 @@ class TestTelegramModuleCredentialStore:
 
         assert mod._resolved_credentials["BUTLER_TELEGRAM_TOKEN"] == "1234:ABCD"
 
-    async def test_on_startup_caches_user_token_when_enabled(self) -> None:
-        """User token resolved from store is cached when user scope is enabled."""
+    async def test_on_startup_does_not_resolve_user_token_from_store(self) -> None:
+        """User-scope token is NOT resolved from CredentialStore.
+
+        User-scope credentials come exclusively from owner contact_info.
+        CredentialStore is only used for bot-scope.
+        """
         store = _make_credential_store(
             BUTLER_TELEGRAM_TOKEN="bot-token",
             USER_TELEGRAM_TOKEN="user-token",
@@ -198,7 +212,10 @@ class TestTelegramModuleCredentialStore:
         await mod.on_startup(config=config, db=None, credential_store=store)
         await mod.on_shutdown()
 
-        assert mod._resolved_credentials["USER_TELEGRAM_TOKEN"] == "user-token"
+        # User-scope key should NOT be in cache (only contact_info provides it)
+        assert "USER_TELEGRAM_TOKEN" not in mod._resolved_credentials
+        # Bot-scope should be resolved from store
+        assert mod._resolved_credentials["BUTLER_TELEGRAM_TOKEN"] == "bot-token"
 
     async def test_get_bot_token_uses_cached_store_value(self) -> None:
         """_get_bot_token() returns cached value even when env var differs."""
@@ -211,17 +228,16 @@ class TestTelegramModuleCredentialStore:
 
         assert token == "db-token"
 
-    async def test_get_bot_token_falls_back_to_env_when_no_store(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without a store, _get_bot_token() reads from env vars (backwards compat)."""
-        monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "env-token")
+    async def test_get_bot_token_raises_without_store(self) -> None:
+        """Without a store, _get_bot_token() raises RuntimeError.
+
+        There is no os.environ fallback — bot token must come from CredentialStore.
+        """
         mod = TelegramModule()
         await mod.on_startup(config=None, db=None, credential_store=None)
-        token = mod._get_bot_token()
+        with pytest.raises(RuntimeError, match="Missing Telegram bot token"):
+            mod._get_bot_token()
         await mod.on_shutdown()
-
-        assert token == "env-token"
 
     async def test_get_bot_token_raises_when_not_in_store_or_env(self) -> None:
         """_get_bot_token() raises RuntimeError if token is unavailable."""

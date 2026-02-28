@@ -2409,7 +2409,7 @@ async def _resolve_gmail_credentials_from_db() -> dict[str, str] | None:
 
     try:
         store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
-        creds = await load_google_credentials(store)
+        creds = await load_google_credentials(store, pool=primary_pool)
         if creds is None:
             logger.debug(
                 "Gmail connector: no credentials in DB (primary=%s db=%s schema=%s, fallbacks=%d), "

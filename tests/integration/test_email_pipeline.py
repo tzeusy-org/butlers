@@ -173,9 +173,8 @@ class TestProcessIncoming:
         result = await mod.process_incoming({"subject": "", "body": ""})
         assert result is None
 
-    async def test_includes_email_metadata_in_tool_args(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_includes_email_metadata_in_tool_args(self):
         """process_incoming includes source and ingress dedupe metadata in route args."""
-        monkeypatch.setenv("BUTLER_EMAIL_ADDRESS", "bot-inbox@example.com")
         pipeline = MagicMock()
         pipeline.process = AsyncMock(
             return_value=RoutingResult(
@@ -185,6 +184,7 @@ class TestProcessIncoming:
         )
 
         mod = EmailModule()
+        mod._resolved_credentials["BUTLER_EMAIL_ADDRESS"] = "bot-inbox@example.com"
         mod.set_pipeline(pipeline)
 
         email_data = {

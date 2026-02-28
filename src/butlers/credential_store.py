@@ -493,6 +493,119 @@ async def resolve_owner_contact_info(pool: asyncpg.Pool, info_type: str) -> str 
         raise
 
 
+async def upsert_owner_contact_info(
+    pool: asyncpg.Pool,
+    info_type: str,
+    value: str,
+    *,
+    secured: bool = True,
+) -> bool:
+    """Upsert a ``shared.contact_info`` row on the owner contact.
+
+    Finds the owner contact (``'owner' = ANY(roles)``), then in a single
+    transaction deletes any existing row for ``(contact_id, type)`` and inserts
+    a new one.
+
+    Parameters
+    ----------
+    pool:
+        An asyncpg pool connected to the shared database.
+    info_type:
+        The ``type`` value (e.g. ``'google_oauth_refresh'``).
+    value:
+        The credential value to store.
+    secured:
+        Whether to mark the row as ``secured`` (default ``True``).
+
+    Returns
+    -------
+    bool
+        ``True`` if the row was upserted, ``False`` if the owner contact
+        or required tables do not exist.
+    """
+    try:
+        async with _acquire_conn(pool) as conn:
+            owner = await conn.fetchrow(
+                "SELECT id FROM shared.contacts WHERE 'owner' = ANY(roles) LIMIT 1"
+            )
+            if owner is None:
+                logger.debug("upsert_owner_contact_info: no owner contact found")
+                return False
+            contact_id = owner["id"]
+            await conn.execute(
+                "DELETE FROM shared.contact_info WHERE contact_id = $1 AND type = $2",
+                contact_id,
+                info_type,
+            )
+            await conn.execute(
+                """
+                INSERT INTO shared.contact_info (contact_id, type, value, secured, is_primary)
+                VALUES ($1, $2, $3, $4, true)
+                """,
+                contact_id,
+                info_type,
+                value,
+                secured,
+            )
+            logger.info("Upserted owner contact_info type=%r (secured=%s)", info_type, secured)
+            return True
+    except Exception as exc:  # noqa: BLE001
+        if _is_missing_table_error(exc) or _is_missing_column_or_schema_error(exc):
+            logger.debug(
+                "upsert_owner_contact_info skipped for type=%r; table/column not available: %s",
+                info_type,
+                exc,
+            )
+            return False
+        raise
+
+
+async def delete_owner_contact_info(
+    pool: asyncpg.Pool,
+    info_type: str,
+) -> bool:
+    """Delete a ``shared.contact_info`` row from the owner contact.
+
+    Parameters
+    ----------
+    pool:
+        An asyncpg pool connected to the shared database.
+    info_type:
+        The ``type`` value to delete (e.g. ``'google_oauth_refresh'``).
+
+    Returns
+    -------
+    bool
+        ``True`` if a row was deleted, ``False`` otherwise.
+    """
+    try:
+        async with _acquire_conn(pool) as conn:
+            owner = await conn.fetchrow(
+                "SELECT id FROM shared.contacts WHERE 'owner' = ANY(roles) LIMIT 1"
+            )
+            if owner is None:
+                logger.debug("delete_owner_contact_info: no owner contact found")
+                return False
+            result = await conn.execute(
+                "DELETE FROM shared.contact_info WHERE contact_id = $1 AND type = $2",
+                owner["id"],
+                info_type,
+            )
+            deleted = result.split()[-1] != "0" if result else False
+            if deleted:
+                logger.info("Deleted owner contact_info type=%r", info_type)
+            return deleted
+    except Exception as exc:  # noqa: BLE001
+        if _is_missing_table_error(exc) or _is_missing_column_or_schema_error(exc):
+            logger.debug(
+                "delete_owner_contact_info skipped for type=%r; table/column not available: %s",
+                info_type,
+                exc,
+            )
+            return False
+        raise
+
+
 def _is_missing_column_or_schema_error(exc: Exception) -> bool:
     """Return True when an exception indicates a missing column or schema.
 

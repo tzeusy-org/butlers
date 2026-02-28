@@ -130,19 +130,53 @@ The dashboard API SHALL expose `GET /api/contacts/{id}/secrets/{info_id}` which 
 
 ---
 
+### Requirement: Owner identity and credential management via contact detail page
+
+The contact detail page (`/butlers/relationship/contacts/:id`) SHALL be the primary mechanism for configuring owner identity fields and credentials. The "Add contact info" form on the contact detail page MUST support all identity and credential types, including secured types (`email_password`, `telegram_api_id`, `telegram_api_hash`).
+
+When a secured type is selected, the form MUST:
+- Use a password input field to mask the value during entry
+- Automatically set `secured = true` on the created `contact_info` entry
+- Hide the "Primary" checkbox (not applicable to credential entries)
+
+The form MUST display human-friendly labels for all types (e.g., "Email password", "Telegram API ID", "Telegram API hash", "Telegram chat ID").
+
+#### Scenario: Add a secured credential from the contact detail page
+
+- **WHEN** a user opens the owner contact's detail page and clicks "Add contact info"
+- **AND** selects "Email password" from the type dropdown and enters a value
+- **THEN** the input field MUST be a password field (masked)
+- **AND** the created `contact_info` entry MUST have `secured = true`
+- **AND** the entry MUST appear in the contact info list with a masked value and a "Reveal" button
+
+#### Scenario: Add a non-secured identity field from the contact detail page
+
+- **WHEN** a user adds a `telegram` or `email` entry via the contact detail page form
+- **THEN** the input field MUST be a text field (not masked)
+- **AND** the created `contact_info` entry MUST have `secured = false`
+
+---
+
 ### Requirement: Owner identity setup banner
 
-The dashboard SHALL display a persistent banner on the overview page (`/butlers/`) when the owner contact has no channel identifiers configured. The banner MUST link to the owner's contact detail page.
+The dashboard SHALL display a persistent banner on the contacts page (`/butlers/relationship/contacts`) when the owner contact is missing key identity fields (name, email, telegram handle, or telegram chat ID). The banner provides a one-time onboarding dialog as a convenience; the contact detail page is the canonical location for ongoing identity and credential management.
 
-#### Scenario: Banner shown when owner has no identifiers
+#### Scenario: Banner shown when owner has missing identity fields
 
-- **WHEN** a user navigates to `/butlers/` and the owner contact has zero `contact_info` entries
-- **THEN** a banner MUST be displayed: "Set up your identity at /contacts" with a link to `/butlers/contacts/{owner_id}`
+- **WHEN** a user navigates to the contacts page and the owner contact is missing any of: name, email, telegram handle, or telegram chat ID
+- **THEN** a banner MUST be displayed indicating which fields are missing
+- **AND** a "Set Up Identity" button MUST open a dialog for filling in missing fields
 
-#### Scenario: Banner hidden when owner has identifiers
+#### Scenario: Banner hidden when all identity fields are configured
 
-- **WHEN** the owner contact has at least one `contact_info` entry of type `telegram` or `email`
+- **WHEN** the owner contact has name, email, telegram handle, and telegram chat ID configured
 - **THEN** the setup banner MUST NOT be displayed
+
+#### Scenario: Banner dialog includes credentials section
+
+- **WHEN** the owner setup dialog is opened
+- **THEN** a collapsible "Credentials" section MUST be available for optionally setting email password, Telegram API ID, and Telegram API hash
+- **AND** these credential fields MUST create secured `contact_info` entries
 
 ---
 

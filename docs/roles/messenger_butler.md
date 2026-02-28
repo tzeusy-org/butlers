@@ -328,10 +328,10 @@ Typical production defaults:
 - `BUTLER_EMAIL_ADDRESS`
 - `BUTLER_EMAIL_PASSWORD`
 
-Optional credential overrides:
-- `USER_TELEGRAM_TOKEN`
-- `USER_EMAIL_ADDRESS`
-- `USER_EMAIL_PASSWORD`
+User-scope credentials (managed via owner contact_info, not env vars):
+- `USER_TELEGRAM_TOKEN` → owner contact_info type `telegram_token`
+- `USER_EMAIL_ADDRESS` → owner contact_info type `email`
+- `USER_EMAIL_PASSWORD` → owner contact_info type `email_password`
 
 Startup requirements:
 - The authoritative required env-var names come from configured `*_env` fields.

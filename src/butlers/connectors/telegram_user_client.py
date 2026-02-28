@@ -26,9 +26,9 @@ Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - CONNECTOR_BACKFILL_WINDOW_H (optional, bounded startup replay in hours)
 - CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
 - BUTLER_SHARED_DB_NAME (optional; shared credential DB, defaults to 'butlers')
-- TELEGRAM_API_ID (required; resolved from DB first, then env; from my.telegram.org)
-- TELEGRAM_API_HASH (required; resolved from DB first, then env; from my.telegram.org)
-- TELEGRAM_USER_SESSION (required; resolved from DB first, then env; session string or
+- TELEGRAM_API_ID (required; resolved from owner contact_info only; from my.telegram.org)
+- TELEGRAM_API_HASH (required; resolved from owner contact_info only; from my.telegram.org)
+- TELEGRAM_USER_SESSION (required; resolved from owner contact_info only; session string or
   encrypted file path)
 
 Security requirements:
@@ -54,7 +54,6 @@ from typing import Any
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
-    CredentialStore,
     resolve_owner_contact_info,
     shared_db_name_from_env,
 )
@@ -103,7 +102,13 @@ class TelegramUserClientConnectorConfig:
 
     @classmethod
     def from_env(cls) -> TelegramUserClientConnectorConfig:
-        """Load configuration from environment variables."""
+        """Load non-credential configuration from environment variables.
+
+        Telegram user credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH,
+        TELEGRAM_USER_SESSION) are resolved exclusively from owner contact_info
+        via ``_resolve_telegram_user_credentials_from_db()``.  They are not
+        read from environment variables.
+        """
         if not TELETHON_AVAILABLE:
             raise RuntimeError("Telethon is not installed. Install with: uv pip install telethon")
 
@@ -118,22 +123,6 @@ class TelegramUserClientConnectorConfig:
         if not endpoint_identity:
             raise ValueError("CONNECTOR_ENDPOINT_IDENTITY environment variable is required")
 
-        api_id_str = os.environ.get("TELEGRAM_API_ID")
-        if not api_id_str:
-            raise ValueError("TELEGRAM_API_ID environment variable is required")
-        try:
-            api_id = int(api_id_str)
-        except ValueError as exc:
-            raise ValueError(f"TELEGRAM_API_ID must be an integer, got: {api_id_str}") from exc
-
-        api_hash = os.environ.get("TELEGRAM_API_HASH")
-        if not api_hash:
-            raise ValueError("TELEGRAM_API_HASH environment variable is required")
-
-        user_session = os.environ.get("TELEGRAM_USER_SESSION")
-        if not user_session:
-            raise ValueError("TELEGRAM_USER_SESSION environment variable is required")
-
         cursor_path_str = os.environ.get("CONNECTOR_CURSOR_PATH")
         if not cursor_path_str:
             raise ValueError("CONNECTOR_CURSOR_PATH environment variable is required")
@@ -144,14 +133,15 @@ class TelegramUserClientConnectorConfig:
 
         max_inflight = int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8"))
 
+        # Credential fields default to empty — must be populated from DB.
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
             channel=channel,
             endpoint_identity=endpoint_identity,
-            telegram_api_id=api_id,
-            telegram_api_hash=api_hash,
-            telegram_user_session=user_session,
+            telegram_api_id=0,
+            telegram_api_hash="",
+            telegram_user_session="",
             cursor_path=cursor_path,
             backfill_window_h=backfill_window_h,
             max_inflight=max_inflight,
@@ -553,19 +543,16 @@ class TelegramUserClientConnector:
 
 
 async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
-    """Attempt DB-first credential resolution for the Telegram user-client connector.
+    """Resolve Telegram user-client credentials from owner contact_info.
 
-    Resolution order per credential:
-    1. Owner contact_info (``shared.contact_info`` with ``telegram_api_id``,
-       ``telegram_api_hash``, ``telegram_user_session`` types).
-    2. ``butler_secrets`` table via :class:`~butlers.credential_store.CredentialStore`.
+    Credentials are resolved exclusively from ``shared.contact_info`` entries
+    on the owner contact (types ``telegram_api_id``, ``telegram_api_hash``,
+    ``telegram_user_session``).
 
     Returns a dict with keys ``TELEGRAM_API_ID``, ``TELEGRAM_API_HASH``,
-    ``TELEGRAM_USER_SESSION`` if all three are found in the DB, or ``None`` if:
+    ``TELEGRAM_USER_SESSION`` if all three are found, or ``None`` if:
     - No DB connection parameters are configured.
-    - The DB is reachable but one or more secrets have not been stored yet.
-
-    In both cases the caller should fall back to env-var resolution.
+    - The DB is reachable but one or more entries are missing from contact_info.
     """
     import asyncpg
 
@@ -604,8 +591,6 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
         return None
 
     primary_db_name, primary_pool = connected_pools[0]
-    fallback_pools = [pool for _, pool in connected_pools[1:]]
-    store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
 
     # contact_info type → result dict key
     _CI_MAP: list[tuple[str, str]] = [
@@ -617,32 +602,24 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
     try:
         result: dict[str, str] = {}
 
-        # Phase 1: resolve from owner contact_info
         for ci_type, result_key in _CI_MAP:
             value = await resolve_owner_contact_info(primary_pool, ci_type)
             if value:
                 result[result_key] = value
 
-        # Phase 2: fill gaps from butler_secrets
-        for _ci_type, result_key in _CI_MAP:
-            if result_key not in result:
-                value = await store.resolve(result_key, env_fallback=False)
-                if value:
-                    result[result_key] = value
-
         expected_keys = {k for _, k in _CI_MAP}
         if expected_keys <= result.keys():
             logger.info(
-                "Telegram user-client connector: resolved credentials from DB "
-                "(primary_db=%s, fallbacks=%d)",
+                "Telegram user-client connector: resolved credentials from owner contact_info "
+                "(primary_db=%s)",
                 primary_db_name,
-                len(fallback_pools),
             )
             return result
 
         missing = sorted(expected_keys - result.keys())
         logger.debug(
-            "Telegram user-client connector: secrets not found in DB (primary_db=%s): %s",
+            "Telegram user-client connector: credentials not found in owner contact_info "
+            "(primary_db=%s): %s",
             primary_db_name,
             missing,
         )
@@ -660,84 +637,42 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
 async def run_telegram_user_client_connector() -> None:
     """CLI entry point for running Telegram user-client connector.
 
-    Credential resolution order:
-    1. Database (if DATABASE_URL or POSTGRES_* env vars are configured).
-    2. Environment variables TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_USER_SESSION
-       (backward-compatible fallback).
+    Telegram user credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH,
+    TELEGRAM_USER_SESSION) are resolved exclusively from owner contact_info
+    in the database.  Non-credential configuration (SWITCHBOARD_MCP_URL,
+    CONNECTOR_* env vars) is read from environment variables.
     """
     configure_logging(level="INFO", butler_name="telegram-user-client")
 
-    # Step 1: Try DB-first credential resolution.
+    # Step 1: Load non-credential config from env vars.
+    config = TelegramUserClientConnectorConfig.from_env()
+
+    # Step 2: Resolve credentials from owner contact_info (DB-only).
     db_creds: dict[str, str] | None = None
     if os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_HOST"):
         db_creds = await _resolve_telegram_user_credentials_from_db()
 
-    # Step 2: Load config from env vars.
-    # If env credentials are missing but DB credentials exist, build config directly.
-    env_config_ok = True
-    config: TelegramUserClientConnectorConfig | None = None
+    if db_creds is None:
+        raise RuntimeError(
+            "Telegram user-client connector: could not resolve credentials from "
+            "owner contact_info. Configure telegram_api_id, telegram_api_hash, "
+            "and telegram_user_session on the owner contact via the dashboard."
+        )
+
     try:
-        config = TelegramUserClientConnectorConfig.from_env()
-    except Exception as exc:
-        if db_creds is None:
-            logger.error("Failed to load Telegram user-client connector config: %s", exc)
-            raise
-        env_config_ok = False
-        logger.info(
-            "Telegram user-client connector: env-var config load failed (%s); "
-            "will build from DB-resolved credentials.",
-            exc,
-        )
+        api_id = int(db_creds["TELEGRAM_API_ID"])
+    except ValueError as exc:
+        raise ValueError(
+            f"Telegram user-client connector: invalid TELEGRAM_API_ID from contact_info: {exc}"
+        ) from exc
 
-    if not env_config_ok:
-        assert db_creds is not None
-        if not TELETHON_AVAILABLE:
-            raise RuntimeError("Telethon is not installed. Install with: uv pip install telethon")
-        endpoint_identity = os.environ.get("CONNECTOR_ENDPOINT_IDENTITY")
-        if not endpoint_identity:
-            raise ValueError("CONNECTOR_ENDPOINT_IDENTITY environment variable is required")
-        switchboard_mcp_url = os.environ.get("SWITCHBOARD_MCP_URL")
-        if not switchboard_mcp_url:
-            raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
-        cursor_path_str = os.environ.get("CONNECTOR_CURSOR_PATH")
-        if not cursor_path_str:
-            raise ValueError("CONNECTOR_CURSOR_PATH environment variable is required")
-        try:
-            api_id = int(db_creds["TELEGRAM_API_ID"])
-        except ValueError as exc:
-            raise ValueError(
-                f"Telegram user-client connector: invalid TELEGRAM_API_ID from DB: {exc}"
-            ) from exc
-        backfill_window_str = os.environ.get("CONNECTOR_BACKFILL_WINDOW_H")
-        config = TelegramUserClientConnectorConfig(
-            switchboard_mcp_url=switchboard_mcp_url,
-            provider=os.environ.get("CONNECTOR_PROVIDER", "telegram"),
-            channel=os.environ.get("CONNECTOR_CHANNEL", "telegram"),
-            endpoint_identity=endpoint_identity,
-            telegram_api_id=api_id,
-            telegram_api_hash=db_creds["TELEGRAM_API_HASH"],
-            telegram_user_session=db_creds["TELEGRAM_USER_SESSION"],
-            cursor_path=Path(cursor_path_str),
-            backfill_window_h=int(backfill_window_str) if backfill_window_str else None,
-            max_inflight=int(os.environ.get("CONNECTOR_MAX_INFLIGHT", "8")),
-        )
-    elif db_creds is not None and config is not None:
-        # Step 3: Override with DB-resolved credentials if available.
-        try:
-            api_id = int(db_creds["TELEGRAM_API_ID"])
-        except ValueError as exc:
-            logger.error("Telegram user-client connector: invalid TELEGRAM_API_ID from DB: %s", exc)
-            api_id = config.telegram_api_id
+    config = replace(
+        config,
+        telegram_api_id=api_id,
+        telegram_api_hash=db_creds["TELEGRAM_API_HASH"],
+        telegram_user_session=db_creds["TELEGRAM_USER_SESSION"],
+    )
 
-        config = replace(
-            config,
-            telegram_api_id=api_id,
-            telegram_api_hash=db_creds["TELEGRAM_API_HASH"],
-            telegram_user_session=db_creds["TELEGRAM_USER_SESSION"],
-        )
-        logger.debug("Telegram user-client connector: config updated with DB-resolved credentials")
-
-    assert config is not None
     connector = TelegramUserClientConnector(config)
 
     try:

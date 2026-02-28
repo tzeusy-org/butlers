@@ -648,7 +648,7 @@ def _extract_identity_scope_credentials(
         return {}
 
     scoped_credentials: dict[str, list[str]] = {}
-    for scope_name in ("user", "bot"):
+    for scope_name in ("bot",):  # user-scope excluded: resolved from owner contact_info
         scope_cfg = config_dict.get(scope_name)
         if not isinstance(scope_cfg, dict):
             continue

@@ -119,6 +119,19 @@ def _make_credential_store(db_manager: Any) -> CredentialStore | None:
     return CredentialStore(pool)
 
 
+def _get_shared_pool(db_manager: Any) -> Any:
+    """Extract the shared credential pool from a DatabaseManager.
+
+    Returns None when db_manager is None or no pool can be resolved.
+    """
+    if db_manager is None:
+        return None
+    try:
+        return db_manager.credential_shared_pool()
+    except Exception:
+        return None
+
+
 router = APIRouter(prefix="/api/oauth", tags=["oauth"])
 
 # ---------------------------------------------------------------------------
@@ -422,13 +435,14 @@ async def oauth_google_callback(
 
     await store_google_credentials(
         cred_store,
+        pool=_get_shared_pool(db_manager),
         client_id=client_id,
         client_secret=client_secret,
         refresh_token=refresh_token,
         scope=scope,
     )
     logger.info(
-        "Google OAuth credentials persisted to butler_secrets (client_id=%s)",
+        "Google OAuth credentials persisted to database (client_id=%s)",
         client_id,
     )
 
@@ -547,7 +561,7 @@ async def delete_google_credentials_endpoint(
             detail="Shared credential database is unavailable. Cannot delete credentials.",
         )
 
-    deleted = await delete_google_credentials(cred_store)
+    deleted = await delete_google_credentials(cred_store, pool=_get_shared_pool(db_manager))
 
     return DeleteCredentialsResponse(
         success=True,
@@ -592,7 +606,8 @@ async def get_google_credential_status(
             detail="Shared credential database is unavailable.",
         )
 
-    app_creds = await load_app_credentials(cred_store)
+    shared_pool = _get_shared_pool(db_manager)
+    app_creds = await load_app_credentials(cred_store, pool=shared_pool)
 
     client_id_configured = app_creds is not None and bool(app_creds.client_id)
     client_secret_configured = app_creds is not None and bool(app_creds.client_secret)
@@ -679,7 +694,7 @@ async def _check_google_credential_status(db_manager: Any = None) -> OAuthCreden
             detail="Shared credential store unavailable.",
         )
 
-    app_creds = await load_app_credentials(cred_store)
+    app_creds = await load_app_credentials(cred_store, pool=_get_shared_pool(db_manager))
     client_id = app_creds.client_id if app_creds is not None else ""
     client_secret = app_creds.client_secret if app_creds is not None else ""
     refresh_token = app_creds.refresh_token if app_creds is not None else None

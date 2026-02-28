@@ -1,17 +1,15 @@
 """Shared Google credential storage for butler modules.
 
-Provides a single source of truth for Google OAuth credentials (client_id,
-client_secret, refresh_token, scope) that can be consumed by both the Gmail
-connector and the Calendar module.
+Provides a single source of truth for Google OAuth credentials that can be
+consumed by both the Gmail connector and the Calendar module.
 
-Credentials are stored as individual rows in the ``butler_secrets`` table via
-:class:`~butlers.credential_store.CredentialStore`, using the following key
-names:
+**Storage split:**
 
-- ``GOOGLE_OAUTH_CLIENT_ID``
-- ``GOOGLE_OAUTH_CLIENT_SECRET``
-- ``GOOGLE_REFRESH_TOKEN``
-- ``GOOGLE_OAUTH_SCOPES`` (optional)
+- ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``,
+  ``GOOGLE_OAUTH_SCOPES`` → ``butler_secrets`` table via
+  :class:`~butlers.credential_store.CredentialStore` (app config).
+- ``GOOGLE_REFRESH_TOKEN`` → ``shared.contact_info`` on the owner contact
+  (type ``google_oauth_refresh``, ``secured=true``).
 
 Secret material (client_secret, refresh_token) is never logged in plaintext.
 
@@ -19,7 +17,7 @@ Usage — persisting after OAuth bootstrap::
 
     store = CredentialStore(pool)
     await store_google_credentials(
-        store,
+        store, pool=shared_pool,
         client_id="...",
         client_secret="...",
         refresh_token="...",
@@ -29,7 +27,7 @@ Usage — persisting after OAuth bootstrap::
 Usage — loading at module startup::
 
     store = CredentialStore(pool)
-    creds = await load_google_credentials(store)
+    creds = await load_google_credentials(store, pool=shared_pool)
     if creds is None:
         raise MissingGoogleCredentialsError("...")
 
@@ -41,24 +39,38 @@ Usage — loading at module startup::
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from butlers.credential_store import CredentialStore
+from butlers.credential_store import (
+    CredentialStore,
+    delete_owner_contact_info,
+    resolve_owner_contact_info,
+    upsert_owner_contact_info,
+)
+
+if TYPE_CHECKING:
+    import asyncpg
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# butler_secrets key names for Google OAuth
+# butler_secrets key names for Google OAuth (app config only)
 # ---------------------------------------------------------------------------
 
 KEY_CLIENT_ID = "GOOGLE_OAUTH_CLIENT_ID"
 KEY_CLIENT_SECRET = "GOOGLE_OAUTH_CLIENT_SECRET"
-KEY_REFRESH_TOKEN = "GOOGLE_REFRESH_TOKEN"
+KEY_REFRESH_TOKEN = "GOOGLE_REFRESH_TOKEN"  # kept for backward compat references
 KEY_SCOPES = "GOOGLE_OAUTH_SCOPES"
 
 _GOOGLE_CATEGORY = "google"
+
+# ---------------------------------------------------------------------------
+# contact_info type for the refresh token
+# ---------------------------------------------------------------------------
+
+CONTACT_INFO_REFRESH_TOKEN = "google_oauth_refresh"
 
 # ---------------------------------------------------------------------------
 # Credential model
@@ -130,13 +142,14 @@ class InvalidGoogleCredentialsError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# CredentialStore-based persistence helpers
+# Persistence helpers — dual-source (butler_secrets + contact_info)
 # ---------------------------------------------------------------------------
 
 
 async def store_google_credentials(
-    store_or_conn: Any,
+    store: CredentialStore,
     *,
+    pool: asyncpg.Pool | None = None,
     client_id: str,
     client_secret: str,
     refresh_token: str,
@@ -144,18 +157,19 @@ async def store_google_credentials(
 ) -> None:
     """Persist Google OAuth credentials.
 
-    When *store_or_conn* is a :class:`~butlers.credential_store.CredentialStore`
-    instance the four fields are stored as individual rows in ``butler_secrets``.
-    When it is a legacy asyncpg connection/pool the old ``google_oauth_credentials``
-    JSONB-blob path is used for backward compatibility.
+    App credentials (client_id, client_secret, scopes) are stored in
+    ``butler_secrets`` via *store*.  The refresh token is stored in
+    ``shared.contact_info`` on the owner contact via *pool*.
 
     Secret material (client_secret, refresh_token) is never logged.
 
     Parameters
     ----------
-    store_or_conn:
-        Either a :class:`~butlers.credential_store.CredentialStore` or an
-        asyncpg connection/pool (legacy support).
+    store:
+        A :class:`~butlers.credential_store.CredentialStore`.
+    pool:
+        An asyncpg pool for the shared database (for contact_info writes).
+        When ``None``, the refresh token is not persisted.
     client_id:
         OAuth client ID (non-secret).
     client_secret:
@@ -173,58 +187,50 @@ async def store_google_credentials(
         scope=scope or None,
     )
 
-    if isinstance(store_or_conn, CredentialStore):
-        await store_or_conn.store(
-            KEY_CLIENT_ID,
-            validated.client_id,
+    # App credentials → butler_secrets
+    await store.store(
+        KEY_CLIENT_ID,
+        validated.client_id,
+        category=_GOOGLE_CATEGORY,
+        description="Google OAuth client ID",
+        is_sensitive=False,
+    )
+    await store.store(
+        KEY_CLIENT_SECRET,
+        validated.client_secret,
+        category=_GOOGLE_CATEGORY,
+        description="Google OAuth client secret",
+        is_sensitive=True,
+    )
+    if validated.scope:
+        await store.store(
+            KEY_SCOPES,
+            validated.scope,
             category=_GOOGLE_CATEGORY,
-            description="Google OAuth client ID",
+            description="Google OAuth granted scopes",
             is_sensitive=False,
         )
-        await store_or_conn.store(
-            KEY_CLIENT_SECRET,
-            validated.client_secret,
-            category=_GOOGLE_CATEGORY,
-            description="Google OAuth client secret",
-            is_sensitive=True,
-        )
-        await store_or_conn.store(
-            KEY_REFRESH_TOKEN,
-            validated.refresh_token,
-            category=_GOOGLE_CATEGORY,
-            description="Google OAuth refresh token",
-            is_sensitive=True,
-        )
-        if validated.scope:
-            await store_or_conn.store(
-                KEY_SCOPES,
-                validated.scope,
-                category=_GOOGLE_CATEGORY,
-                description="Google OAuth granted scopes",
-                is_sensitive=False,
-            )
-        logger.info(
-            "Google OAuth credentials stored in butler_secrets (client_id=%s, scope=%s)",
-            client_id,
-            scope,
-        )
-    else:
-        # Legacy path: asyncpg connection/pool → google_oauth_credentials JSONB blob
-        await _legacy_store_google_credentials(
-            store_or_conn,
-            client_id=validated.client_id,
-            client_secret=validated.client_secret,
-            refresh_token=validated.refresh_token,
-            scope=validated.scope,
-        )
+
+    # Refresh token → shared.contact_info
+    if pool is not None:
+        await upsert_owner_contact_info(pool, CONTACT_INFO_REFRESH_TOKEN, validated.refresh_token)
+
+    logger.info(
+        "Google OAuth credentials stored in database (client_id=%s, scope=%s)",
+        client_id,
+        scope,
+    )
 
 
-async def load_google_credentials(store_or_conn: Any) -> GoogleCredentials | None:
+async def load_google_credentials(
+    store: CredentialStore,
+    *,
+    pool: asyncpg.Pool | None = None,
+) -> GoogleCredentials | None:
     """Load Google OAuth credentials.
 
-    When *store_or_conn* is a :class:`~butlers.credential_store.CredentialStore`
-    the four keys are read from ``butler_secrets``.  When it is a legacy asyncpg
-    connection/pool the old ``google_oauth_credentials`` table is consulted.
+    App credentials are read from ``butler_secrets`` via *store*.  The refresh
+    token is read from ``shared.contact_info`` via *pool*.
 
     Returns ``None`` if the required credentials (client_id, client_secret,
     refresh_token) are not fully present.
@@ -234,46 +240,48 @@ async def load_google_credentials(store_or_conn: Any) -> GoogleCredentials | Non
     InvalidGoogleCredentialsError
         If the stored data is present but malformed/incomplete.
     """
-    if isinstance(store_or_conn, CredentialStore):
-        client_id = await store_or_conn.load(KEY_CLIENT_ID)
-        client_secret = await store_or_conn.load(KEY_CLIENT_SECRET)
-        refresh_token = await store_or_conn.load(KEY_REFRESH_TOKEN)
-        scope = await store_or_conn.load(KEY_SCOPES)
+    client_id = await store.load(KEY_CLIENT_ID)
+    client_secret = await store.load(KEY_CLIENT_SECRET)
+    scope = await store.load(KEY_SCOPES)
 
-        missing = [
-            field
-            for field, val in [
-                ("client_id", client_id),
-                ("client_secret", client_secret),
-                ("refresh_token", refresh_token),
-            ]
-            if not val
+    # Refresh token from contact_info (primary) or butler_secrets (fallback)
+    refresh_token: str | None = None
+    if pool is not None:
+        refresh_token = await resolve_owner_contact_info(pool, CONTACT_INFO_REFRESH_TOKEN)
+    if not refresh_token:
+        refresh_token = await store.load(KEY_REFRESH_TOKEN)
+
+    missing = [
+        field
+        for field, val in [
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("refresh_token", refresh_token),
         ]
-        # All three required fields absent → credentials not stored yet
-        if len(missing) == 3:
-            return None
+        if not val
+    ]
+    # All three required fields absent → credentials not stored yet
+    if len(missing) == 3:
+        return None
 
-        # Some fields missing → stored data is incomplete
-        if missing:
-            raise InvalidGoogleCredentialsError(
-                f"Stored Google credentials are missing required field(s): "
-                f"{', '.join(missing)}. "
-                f"Re-run the OAuth bootstrap to replace the stored credentials."
-            )
-
-        return GoogleCredentials(
-            client_id=client_id,  # type: ignore[arg-type]
-            client_secret=client_secret,  # type: ignore[arg-type]
-            refresh_token=refresh_token,  # type: ignore[arg-type]
-            scope=scope,
+    # Some fields missing → stored data is incomplete
+    if missing:
+        raise InvalidGoogleCredentialsError(
+            f"Stored Google credentials are missing required field(s): "
+            f"{', '.join(missing)}. "
+            f"Re-run the OAuth bootstrap to replace the stored credentials."
         )
-    else:
-        # Legacy path
-        return await _legacy_load_google_credentials(store_or_conn)
+
+    return GoogleCredentials(
+        client_id=client_id,  # type: ignore[arg-type]
+        client_secret=client_secret,  # type: ignore[arg-type]
+        refresh_token=refresh_token,  # type: ignore[arg-type]
+        scope=scope,
+    )
 
 
 async def store_app_credentials(
-    store_or_conn: Any,
+    store: CredentialStore,
     *,
     client_id: str,
     client_secret: str,
@@ -281,15 +289,14 @@ async def store_app_credentials(
     """Persist Google OAuth app credentials (client_id + client_secret).
 
     This is a partial upsert that stores only the app credentials.  If a
-    refresh token already exists in the store it is preserved.
+    refresh token already exists it is preserved (it lives in contact_info).
 
     Secret material (client_secret) is never logged.
 
     Parameters
     ----------
-    store_or_conn:
-        Either a :class:`~butlers.credential_store.CredentialStore` or an
-        asyncpg connection/pool (legacy support).
+    store:
+        A :class:`~butlers.credential_store.CredentialStore`.
     client_id:
         OAuth client ID (non-secret).
     client_secret:
@@ -302,100 +309,108 @@ async def store_app_credentials(
     if not client_secret:
         raise ValueError("client_secret must be a non-empty string")
 
-    if isinstance(store_or_conn, CredentialStore):
-        await store_or_conn.store(
-            KEY_CLIENT_ID,
-            client_id,
-            category=_GOOGLE_CATEGORY,
-            description="Google OAuth client ID",
-            is_sensitive=False,
-        )
-        await store_or_conn.store(
-            KEY_CLIENT_SECRET,
-            client_secret,
-            category=_GOOGLE_CATEGORY,
-            description="Google OAuth client secret",
-            is_sensitive=True,
-        )
-        logger.info(
-            "Google app credentials (client_id + client_secret) stored in butler_secrets"
-            " (client_id=%s)",
-            client_id,
-        )
-    else:
-        # Legacy path
-        await _legacy_store_app_credentials(
-            store_or_conn, client_id=client_id, client_secret=client_secret
-        )
+    await store.store(
+        KEY_CLIENT_ID,
+        client_id,
+        category=_GOOGLE_CATEGORY,
+        description="Google OAuth client ID",
+        is_sensitive=False,
+    )
+    await store.store(
+        KEY_CLIENT_SECRET,
+        client_secret,
+        category=_GOOGLE_CATEGORY,
+        description="Google OAuth client secret",
+        is_sensitive=True,
+    )
+    logger.info(
+        "Google app credentials (client_id + client_secret) stored in butler_secrets"
+        " (client_id=%s)",
+        client_id,
+    )
 
 
-async def load_app_credentials(store_or_conn: Any) -> GoogleAppCredentials | None:
-    """Load Google app credentials (client_id + client_secret).
+async def load_app_credentials(
+    store: CredentialStore,
+    *,
+    pool: asyncpg.Pool | None = None,
+) -> GoogleAppCredentials | None:
+    """Load Google app credentials (client_id + client_secret + optional refresh_token).
 
-    Returns ``None`` if no credentials have been stored yet.  Unlike
+    Returns ``None`` if no app credentials have been stored yet.  Unlike
     ``load_google_credentials``, this does NOT require a refresh_token.
 
     Parameters
     ----------
-    store_or_conn:
-        Either a :class:`~butlers.credential_store.CredentialStore` or an
-        asyncpg connection/pool (legacy support).
+    store:
+        A :class:`~butlers.credential_store.CredentialStore`.
+    pool:
+        An asyncpg pool for the shared database (for contact_info reads).
+        When ``None``, refresh_token is read from butler_secrets only.
     """
-    if isinstance(store_or_conn, CredentialStore):
-        client_id = await store_or_conn.load(KEY_CLIENT_ID)
-        client_secret = await store_or_conn.load(KEY_CLIENT_SECRET)
+    client_id = await store.load(KEY_CLIENT_ID)
+    client_secret = await store.load(KEY_CLIENT_SECRET)
 
-        if not client_id or not client_secret:
-            return None
+    if not client_id or not client_secret:
+        return None
 
-        refresh_token = await store_or_conn.load(KEY_REFRESH_TOKEN)
-        scope = await store_or_conn.load(KEY_SCOPES)
+    # Refresh token from contact_info (primary) or butler_secrets (fallback)
+    refresh_token: str | None = None
+    if pool is not None:
+        refresh_token = await resolve_owner_contact_info(pool, CONTACT_INFO_REFRESH_TOKEN)
+    if not refresh_token:
+        refresh_token = await store.load(KEY_REFRESH_TOKEN)
 
-        return GoogleAppCredentials(
-            client_id=client_id,
-            client_secret=client_secret,
-            refresh_token=refresh_token or None,
-            scope=scope or None,
-        )
-    else:
-        # Legacy path
-        return await _legacy_load_app_credentials(store_or_conn)
+    scope = await store.load(KEY_SCOPES)
+
+    return GoogleAppCredentials(
+        client_id=client_id,
+        client_secret=client_secret,
+        refresh_token=refresh_token or None,
+        scope=scope or None,
+    )
 
 
-async def delete_google_credentials(store_or_conn: Any) -> bool:
+async def delete_google_credentials(
+    store: CredentialStore,
+    *,
+    pool: asyncpg.Pool | None = None,
+) -> bool:
     """Delete stored Google OAuth credentials.
 
-    Removes all four Google credential keys from ``butler_secrets``
-    (or the old ``google_oauth_credentials`` row when a legacy connection is
-    provided).
+    Removes app credential keys from ``butler_secrets`` and the refresh token
+    from ``shared.contact_info``.
 
     Parameters
     ----------
-    store_or_conn:
-        Either a :class:`~butlers.credential_store.CredentialStore` or an
-        asyncpg connection/pool (legacy support).
+    store:
+        A :class:`~butlers.credential_store.CredentialStore`.
+    pool:
+        An asyncpg pool for the shared database (for contact_info deletes).
 
     Returns
     -------
     bool
         ``True`` if at least one credential was deleted.
     """
-    if isinstance(store_or_conn, CredentialStore):
-        results = [
-            await store_or_conn.delete(KEY_CLIENT_ID),
-            await store_or_conn.delete(KEY_CLIENT_SECRET),
-            await store_or_conn.delete(KEY_REFRESH_TOKEN),
-            await store_or_conn.delete(KEY_SCOPES),
-        ]
-        deleted = any(results)
-        if deleted:
-            logger.info("Google OAuth credentials deleted from butler_secrets")
-        else:
-            logger.info("No Google OAuth credentials to delete")
-        return deleted
+    results = [
+        await store.delete(KEY_CLIENT_ID),
+        await store.delete(KEY_CLIENT_SECRET),
+        await store.delete(KEY_REFRESH_TOKEN),
+        await store.delete(KEY_SCOPES),
+    ]
+
+    # Also delete from contact_info
+    if pool is not None:
+        ci_deleted = await delete_owner_contact_info(pool, CONTACT_INFO_REFRESH_TOKEN)
+        results.append(ci_deleted)
+
+    deleted = any(results)
+    if deleted:
+        logger.info("Google OAuth credentials deleted from database")
     else:
-        # Legacy path
-        return await _legacy_delete_google_credentials(store_or_conn)
+        logger.info("No Google OAuth credentials to delete")
+    return deleted
 
 
 # ---------------------------------------------------------------------------
@@ -404,20 +419,23 @@ async def delete_google_credentials(store_or_conn: Any) -> bool:
 
 
 async def resolve_google_credentials(
-    store_or_conn: Any,
+    store: CredentialStore,
     *,
+    pool: asyncpg.Pool | None = None,
     caller: str = "unknown",
 ) -> GoogleCredentials:
     """Resolve Google OAuth credentials from DB-backed secret storage.
 
     Resolution:
-    1. Database (``butler_secrets`` via ``load_google_credentials``).
+    1. App credentials from ``butler_secrets``.
+    2. Refresh token from ``shared.contact_info``.
 
     Parameters
     ----------
-    store_or_conn:
-        Either a :class:`~butlers.credential_store.CredentialStore` or an
-        asyncpg connection/pool (legacy support).
+    store:
+        A :class:`~butlers.credential_store.CredentialStore`.
+    pool:
+        An asyncpg pool for the shared database.
     caller:
         Name of the calling component (used in log messages for traceability).
 
@@ -431,9 +449,8 @@ async def resolve_google_credentials(
     MissingGoogleCredentialsError
         If credentials cannot be found in DB.
     """
-    # 1. Try DB
     try:
-        creds = await load_google_credentials(store_or_conn)
+        creds = await load_google_credentials(store, pool=pool)
     except InvalidGoogleCredentialsError as exc:
         raise MissingGoogleCredentialsError(
             f"[{caller}] Stored Google credentials are invalid. "
@@ -488,205 +505,3 @@ class GoogleAppCredentials(BaseModel):
         )
 
     __str__ = __repr__
-
-
-# ---------------------------------------------------------------------------
-# Legacy asyncpg helpers (kept for backward compatibility)
-# These are used when callers pass a raw asyncpg connection/pool instead
-# of a CredentialStore instance.  They will remain until all callers are
-# migrated to CredentialStore.
-# ---------------------------------------------------------------------------
-
-_LEGACY_TABLE = "google_oauth_credentials"
-_SINGLETON_KEY = "google"
-
-
-async def _legacy_store_google_credentials(
-    conn: Any,
-    *,
-    client_id: str,
-    client_secret: str,
-    refresh_token: str,
-    scope: str | None = None,
-) -> None:
-    """Persist credentials to the legacy google_oauth_credentials table."""
-    import json
-    from datetime import UTC, datetime
-
-    payload = {
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "refresh_token": refresh_token,
-        "scope": scope,
-        "stored_at": datetime.now(UTC).isoformat(),
-    }
-
-    await conn.execute(
-        f"""
-        INSERT INTO {_LEGACY_TABLE} (credential_key, credentials)
-        VALUES ($1, $2::jsonb)
-        ON CONFLICT (credential_key)
-        DO UPDATE SET
-            credentials = EXCLUDED.credentials,
-            updated_at = now()
-        """,
-        _SINGLETON_KEY,
-        json.dumps(payload),
-    )
-    logger.info(
-        "Google OAuth credentials stored in DB (client_id=%s, scope=%s)",
-        client_id,
-        scope,
-    )
-
-
-async def _legacy_load_google_credentials(conn: Any) -> GoogleCredentials | None:
-    """Load credentials from the legacy google_oauth_credentials table."""
-    import json
-
-    row = await conn.fetchrow(
-        f"SELECT credentials FROM {_LEGACY_TABLE} WHERE credential_key = $1",
-        _SINGLETON_KEY,
-    )
-    if row is None:
-        return None
-
-    raw = row["credentials"]
-    if isinstance(raw, str):
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise InvalidGoogleCredentialsError(
-                f"Stored Google credentials JSON is malformed: {exc}"
-            ) from exc
-    elif isinstance(raw, dict):
-        data = raw
-    else:
-        raise InvalidGoogleCredentialsError(
-            f"Stored Google credentials has unexpected type: {type(raw).__name__}"
-        )
-
-    missing = [
-        field for field in ("client_id", "client_secret", "refresh_token") if not data.get(field)
-    ]
-    if missing:
-        raise InvalidGoogleCredentialsError(
-            f"Stored Google credentials are missing required field(s): "
-            f"{', '.join(missing)}. "
-            f"Re-run the OAuth bootstrap to replace the stored credentials."
-        )
-
-    return GoogleCredentials(
-        client_id=data["client_id"],
-        client_secret=data["client_secret"],
-        refresh_token=data["refresh_token"],
-        scope=data.get("scope"),
-    )
-
-
-async def _legacy_store_app_credentials(
-    conn: Any,
-    *,
-    client_id: str,
-    client_secret: str,
-) -> None:
-    """Persist app credentials to the legacy google_oauth_credentials table."""
-    import json
-    from datetime import UTC, datetime
-
-    # Load existing credentials to preserve refresh_token if present
-    existing: dict = {}
-    row = await conn.fetchrow(
-        f"SELECT credentials FROM {_LEGACY_TABLE} WHERE credential_key = $1",
-        _SINGLETON_KEY,
-    )
-    if row is not None:
-        raw = row["credentials"]
-        if isinstance(raw, str):
-            try:
-                existing = json.loads(raw)
-            except json.JSONDecodeError:
-                existing = {}
-        elif isinstance(raw, dict):
-            existing = raw
-
-    # Build the new payload — preserve any existing refresh_token/scope
-    payload: dict = {
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "stored_at": datetime.now(UTC).isoformat(),
-    }
-    if existing.get("refresh_token"):
-        payload["refresh_token"] = existing["refresh_token"]
-    if existing.get("scope"):
-        payload["scope"] = existing["scope"]
-
-    await conn.execute(
-        f"""
-        INSERT INTO {_LEGACY_TABLE} (credential_key, credentials)
-        VALUES ($1, $2::jsonb)
-        ON CONFLICT (credential_key)
-        DO UPDATE SET
-            credentials = EXCLUDED.credentials,
-            updated_at = now()
-        """,
-        _SINGLETON_KEY,
-        json.dumps(payload),
-    )
-    logger.info(
-        "Google app credentials (client_id + client_secret) stored in DB (client_id=%s)",
-        client_id,
-    )
-
-
-async def _legacy_load_app_credentials(conn: Any) -> GoogleAppCredentials | None:
-    """Load app credentials from the legacy google_oauth_credentials table."""
-    import json
-
-    row = await conn.fetchrow(
-        f"SELECT credentials FROM {_LEGACY_TABLE} WHERE credential_key = $1",
-        _SINGLETON_KEY,
-    )
-    if row is None:
-        return None
-
-    raw = row["credentials"]
-    if isinstance(raw, str):
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise InvalidGoogleCredentialsError(
-                f"Stored Google credentials JSON is malformed: {exc}"
-            ) from exc
-    elif isinstance(raw, dict):
-        data = raw
-    else:
-        raise InvalidGoogleCredentialsError(
-            f"Stored Google credentials has unexpected type: {type(raw).__name__}"
-        )
-
-    client_id = data.get("client_id", "").strip()
-    client_secret = data.get("client_secret", "").strip()
-    if not client_id or not client_secret:
-        return None
-
-    return GoogleAppCredentials(
-        client_id=client_id,
-        client_secret=client_secret,
-        refresh_token=data.get("refresh_token") or None,
-        scope=data.get("scope") or None,
-    )
-
-
-async def _legacy_delete_google_credentials(conn: Any) -> bool:
-    """Delete credentials from the legacy google_oauth_credentials table."""
-    result = await conn.execute(
-        f"DELETE FROM {_LEGACY_TABLE} WHERE credential_key = $1",
-        _SINGLETON_KEY,
-    )
-    deleted = result.split()[-1] != "0" if result else False
-    if deleted:
-        logger.info("Google OAuth credentials deleted from DB")
-    else:
-        logger.info("No Google OAuth credentials to delete")
-    return deleted

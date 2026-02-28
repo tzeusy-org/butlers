@@ -14,7 +14,6 @@ import asyncio
 import email as email_lib
 import imaplib
 import logging
-import os
 import re
 import smtplib
 import warnings
@@ -113,8 +112,8 @@ class EmailModule(Module):
         self._config: EmailConfig = EmailConfig()
         self._pipeline: MessagePipeline | None = None
         self._routed_messages: list[RoutingResult] = []
-        # Credentials cached at startup via CredentialStore (DB-first, then env).
-        # Keys are the env var names configured in EmailConfig (e.g. "BUTLER_EMAIL_ADDRESS").
+        # Credentials cached at startup: user-scope from owner contact_info,
+        # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
 
     @property
@@ -135,8 +134,7 @@ class EmailModule(Module):
         envs: list[str] = []
         if self._config.bot.enabled:
             envs.extend([self._config.bot.address_env, self._config.bot.password_env])
-        if self._config.user.enabled:
-            envs.extend([self._config.user.address_env, self._config.user.password_env])
+        # User-scope credentials come from owner contact_info, not butler_secrets.
         return envs
 
     def migration_revisions(self) -> str | None:
@@ -189,9 +187,9 @@ class EmailModule(Module):
         """Initialize email config and resolve credentials.
 
         User-scope credentials (USER_EMAIL_ADDRESS, USER_EMAIL_PASSWORD) are
-        resolved from the owner contact's ``shared.contact_info`` entries
-        (types ``email`` and ``email_password``).  Bot-scope credentials are
-        resolved via :class:`~butlers.credential_store.CredentialStore`.
+        resolved exclusively from the owner contact's ``shared.contact_info``
+        entries (types ``email`` and ``email_password``).  Bot-scope credentials
+        are resolved via :class:`~butlers.credential_store.CredentialStore`.
 
         All resolved values are cached in ``self._resolved_credentials`` so
         that sync IO helpers can use them without needing to be async.
@@ -201,7 +199,7 @@ class EmailModule(Module):
         self._config = config if isinstance(config, EmailConfig) else EmailConfig(**(config or {}))
         self._resolved_credentials = {}
 
-        # --- User-scope: resolve from owner contact_info first ---------------
+        # --- User-scope: resolve exclusively from owner contact_info ----------
         pool = getattr(db, "pool", None) if db is not None else None
         if pool is not None:
             user_cfg = self._config.user
@@ -215,14 +213,14 @@ class EmailModule(Module):
                 if value is not None:
                     self._resolved_credentials[env_key] = value
 
-        # --- Bot-scope + any remaining: CredentialStore ----------------------
+        # --- Bot-scope only: CredentialStore ----------------------------------
         if credential_store is not None:
-            for scope_cfg in [self._config.bot, self._config.user]:
-                for env_key in (scope_cfg.address_env, scope_cfg.password_env):
-                    if env_key not in self._resolved_credentials:
-                        value = await credential_store.resolve(env_key)
-                        if value is not None:
-                            self._resolved_credentials[env_key] = value
+            bot_cfg = self._config.bot
+            for env_key in (bot_cfg.address_env, bot_cfg.password_env):
+                if env_key not in self._resolved_credentials:
+                    value = await credential_store.resolve(env_key)
+                    if value is not None:
+                        self._resolved_credentials[env_key] = value
 
     async def on_shutdown(self) -> None:
         """No persistent connections to clean up."""
@@ -381,28 +379,18 @@ class EmailModule(Module):
     def _ingress_mailbox_identity(self, *, scope: str = "bot") -> str:
         """Return a stable receiving-mailbox identity for ingress dedupe keys."""
         scope_cfg = self._config.bot if scope == "bot" else self._config.user
-        # Use startup-resolved cache first; fall back to env vars for backwards compat.
-        address = (
-            (
-                self._resolved_credentials.get(scope_cfg.address_env)
-                or os.environ.get(scope_cfg.address_env, "")
-            )
-            .strip()
-            .lower()
-        )
+        address = self._resolved_credentials.get(scope_cfg.address_env, "").strip().lower()
         if address:
             return f"{scope}:{address}"
         return f"{scope}:unknown-mailbox"
 
     def _get_credentials(self, *, scope: str = "bot") -> tuple[str, str]:
-        """Resolve email credentials — cached store first, then environment variables.
+        """Resolve email credentials from startup-cached store.
 
-        Credentials are pre-resolved at startup via CredentialStore (DB-first,
-        then env) and stored in ``self._resolved_credentials``.  If a value was
-        not available at startup (e.g. CredentialStore was not provided), this
-        method falls back to ``os.environ`` directly.
+        Credentials are pre-resolved at startup: user-scope from owner
+        contact_info, bot-scope from CredentialStore.
 
-        Raises ``RuntimeError`` if credentials are unavailable from any source.
+        Raises ``RuntimeError`` if credentials are unavailable.
         """
         scope_cfg = self._config.bot if scope == "bot" else self._config.user
         if not scope_cfg.enabled:
@@ -410,13 +398,13 @@ class EmailModule(Module):
 
         address_env = scope_cfg.address_env
         password_env = scope_cfg.password_env
-        # Use startup-resolved cache first; fall back to env vars for backwards compat.
-        address = self._resolved_credentials.get(address_env) or os.environ.get(address_env)
-        password = self._resolved_credentials.get(password_env) or os.environ.get(password_env)
+        address = self._resolved_credentials.get(address_env)
+        password = self._resolved_credentials.get(password_env)
         if not address or not password:
             raise RuntimeError(
-                f"Missing email credentials for modules.email.{scope}: set "
-                f"{address_env} and {password_env}"
+                f"Missing email credentials for modules.email.{scope}: "
+                f"configure via owner contact_info (user-scope) "
+                f"or butler_secrets (bot-scope)"
             )
         return address, password
 

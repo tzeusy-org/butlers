@@ -19,6 +19,7 @@ const RESPONSE_TYPE_LABELS: Record<string, { label: string; className: string }>
   teach: { label: "Teach", className: "bg-sky-100 text-sky-800" },
   review: { label: "Review", className: "bg-slate-100 text-slate-800" },
 };
+const DIAGNOSTIC_PROBE_SENTINEL = "[diagnostic probe]";
 
 interface QuizHistoryListProps {
   mindMapId: string;
@@ -64,12 +65,32 @@ export default function QuizHistoryList({
     });
   }
 
+  function displayQuestionText(item: {
+    question_text: string;
+    response_type: string;
+    node_label: string | null;
+  }): string {
+    const raw = item.question_text.trim();
+    const isDiagnosticProbe = raw.toLowerCase() === DIAGNOSTIC_PROBE_SENTINEL;
+    if (!isDiagnosticProbe && raw.length > 0) {
+      return raw;
+    }
+
+    const typeLabel = RESPONSE_TYPE_LABELS[item.response_type]?.label ?? "Quiz";
+    const nodeLabel = item.node_label?.trim();
+    if (nodeLabel) {
+      return `${typeLabel}: ${nodeLabel}`;
+    }
+    return typeLabel === "Diagnostic" ? "Diagnostic check" : `${typeLabel} prompt`;
+  }
+
   const list = (
     <div className="space-y-2">
       {items.map((r) => {
         const q = QUALITY_LABELS[r.quality] ?? QUALITY_LABELS[3];
         const isExpanded = !compact && expanded.has(r.id);
         const rt = RESPONSE_TYPE_LABELS[r.response_type];
+        const title = displayQuestionText(r);
 
         return (
           <div key={r.id} className="rounded-md border">
@@ -89,7 +110,7 @@ export default function QuizHistoryList({
                     )}
                   </span>
                 )}
-                <p className="min-w-0 truncate text-sm">{r.question_text}</p>
+                <p className="min-w-0 truncate text-sm">{title}</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <Badge className={q.className}>{q.label}</Badge>

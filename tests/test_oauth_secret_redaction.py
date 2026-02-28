@@ -82,14 +82,21 @@ def _make_app(
 
     conn = AsyncMock()
 
-    async def _fetchrow(_query: str, key: str):
+    async def _fetchrow(_query: str, key: str | None = None):
+        if key is None:
+            # Query from upsert_owner_contact_info (owner lookup)
+            if "shared.contacts" in _query:
+                owner_row = MagicMock()
+                owner_row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
+                return owner_row
+            return None
         value = secrets.get(key)
         if not value:
             return None
         return {"secret_value": value}
 
     conn.fetchrow.side_effect = _fetchrow
-    conn.execute = AsyncMock(return_value=None)
+    conn.execute = AsyncMock(return_value="DELETE 0")
 
     @asynccontextmanager
     async def _acquire():
@@ -146,12 +153,12 @@ class TestGoogleCredentialsRedaction:
 class TestStoreCredentialsLogRedaction:
     async def test_store_does_not_log_client_secret(self, caplog: pytest.LogCaptureFixture) -> None:
         """store_google_credentials must not log client_secret at any level."""
-        conn = AsyncMock()
-        conn.execute.return_value = None
+        store = MagicMock()
+        store.store = AsyncMock()
 
         with caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"):
             await store_google_credentials(
-                conn,
+                store,
                 client_id="public-id",
                 client_secret=_CLIENT_SECRET,
                 refresh_token=_SECRET_VALUE,
@@ -163,12 +170,12 @@ class TestStoreCredentialsLogRedaction:
 
     async def test_store_logs_safe_client_id(self, caplog: pytest.LogCaptureFixture) -> None:
         """store_google_credentials logs client_id (public) at DEBUG."""
-        conn = AsyncMock()
-        conn.execute.return_value = None
+        store = MagicMock()
+        store.store = AsyncMock()
 
         with caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"):
             await store_google_credentials(
-                conn,
+                store,
                 client_id="public-id-is-ok",
                 client_secret=_CLIENT_SECRET,
                 refresh_token=_SECRET_VALUE,
@@ -185,36 +192,40 @@ class TestStoreCredentialsLogRedaction:
 class TestLoadCredentialsLogRedaction:
     async def test_load_does_not_log_secrets(self, caplog: pytest.LogCaptureFixture) -> None:
         """load_google_credentials must not log secrets at any log level."""
-        payload = {
-            "client_id": "pub-id",
-            "client_secret": _CLIENT_SECRET,
-            "refresh_token": _SECRET_VALUE,
-        }
-        record = MagicMock()
-        record.__getitem__ = lambda self, key: {"credentials": payload}[key]
-        conn = AsyncMock()
-        conn.fetchrow.return_value = record
+        store = MagicMock()
+
+        async def fake_load(key: str) -> str | None:
+            return {
+                "GOOGLE_OAUTH_CLIENT_ID": "pub-id",
+                "GOOGLE_OAUTH_CLIENT_SECRET": _CLIENT_SECRET,
+                "GOOGLE_REFRESH_TOKEN": _SECRET_VALUE,
+                "GOOGLE_OAUTH_SCOPES": None,
+            }.get(key)
+
+        store.load = AsyncMock(side_effect=fake_load)
 
         with caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"):
-            await load_google_credentials(conn)
+            await load_google_credentials(store)
 
         assert _CLIENT_SECRET not in caplog.text
         assert _SECRET_VALUE not in caplog.text
 
     async def test_resolve_does_not_log_secrets(self, caplog: pytest.LogCaptureFixture) -> None:
         """resolve_google_credentials must not log secret material."""
-        payload = {
-            "client_id": "pub-id",
-            "client_secret": _CLIENT_SECRET,
-            "refresh_token": _SECRET_VALUE,
-        }
-        record = MagicMock()
-        record.__getitem__ = lambda self, key: {"credentials": payload}[key]
-        conn = AsyncMock()
-        conn.fetchrow.return_value = record
+        store = MagicMock()
+
+        async def fake_load(key: str) -> str | None:
+            return {
+                "GOOGLE_OAUTH_CLIENT_ID": "pub-id",
+                "GOOGLE_OAUTH_CLIENT_SECRET": _CLIENT_SECRET,
+                "GOOGLE_REFRESH_TOKEN": _SECRET_VALUE,
+                "GOOGLE_OAUTH_SCOPES": None,
+            }.get(key)
+
+        store.load = AsyncMock(side_effect=fake_load)
 
         with caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"):
-            await resolve_google_credentials(conn, caller="test")
+            await resolve_google_credentials(store, caller="test")
 
         assert _CLIENT_SECRET not in caplog.text
         assert _SECRET_VALUE not in caplog.text

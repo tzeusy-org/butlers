@@ -4083,15 +4083,25 @@ class CalendarModule(Module):
         RuntimeError
             If credentials cannot be resolved from DB-backed credential storage.
         """
-        # Step 1: Try CredentialStore (butler_secrets) for individual keys.
+        # Step 1: Try CredentialStore (butler_secrets) for client_id + client_secret.
         if credential_store is not None:
             client_id = await credential_store.resolve("GOOGLE_OAUTH_CLIENT_ID", env_fallback=False)
             client_secret = await credential_store.resolve(
                 "GOOGLE_OAUTH_CLIENT_SECRET", env_fallback=False
             )
-            refresh_token = await credential_store.resolve(
-                "GOOGLE_REFRESH_TOKEN", env_fallback=False
-            )
+
+            # Step 2: Refresh token from shared.contact_info (primary), butler_secrets (fallback).
+            refresh_token: str | None = None
+            pool = getattr(db, "pool", None)
+            if pool is not None:
+                from butlers.credential_store import resolve_owner_contact_info
+
+                refresh_token = await resolve_owner_contact_info(pool, "google_oauth_refresh")
+            if not refresh_token:
+                refresh_token = await credential_store.resolve(
+                    "GOOGLE_REFRESH_TOKEN", env_fallback=False
+                )
+
             if client_id and client_secret and refresh_token:
                 logger.debug("CalendarModule: resolved Google credentials from CredentialStore")
                 return _GoogleOAuthCredentials(
@@ -4101,7 +4111,7 @@ class CalendarModule(Module):
                 )
 
         raise RuntimeError(
-            "CalendarModule: Google OAuth credentials are not available in butler_secrets. "
+            "CalendarModule: Google OAuth credentials are not available in database. "
             "Store them via the dashboard OAuth flow (shared credential store)."
         )
 

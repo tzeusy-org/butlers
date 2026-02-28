@@ -51,6 +51,26 @@ default_conflict_policy = "suggest"
 Calendar setup requires Google OAuth credentials stored via the dashboard
 OAuth bootstrap flow (DB-first). A dedicated 'butler' subcalendar is also required.
 
+### Owner Identity Setup
+
+When butlers start for the first time, a seed "Owner" contact is created with no channel identifiers. You need to configure your identity so butlers can recognise you across channels (Telegram, email) and contact syncs don't create duplicates.
+
+**To set up your identity**, navigate to your owner contact's detail page in the dashboard (linked from the setup banner on the contacts page). Use the "Add contact info" button to add:
+
+- **Email** — your primary email address
+- **Telegram handle** — your `@username`
+- **Telegram chat ID** — numeric ID (send `/start` to `@userinfobot` to find yours)
+
+For butlers that need to act on your behalf (e.g., sending emails, connecting to Telegram as your user account), also add these secured credentials from the same form:
+
+- **Email password** — app password for SMTP/IMAP access
+- **Telegram API ID** — from [my.telegram.org](https://my.telegram.org), for user-client (MTProto) connections
+- **Telegram API hash** — from [my.telegram.org](https://my.telegram.org)
+
+Secured entries are stored encrypted and masked in the dashboard. Use the "Reveal" button to view them.
+
+A one-time setup banner appears on the contacts page when identity fields are missing, but the contact detail page is the primary place for managing all identity fields and credentials going forward.
+
 ## Architecture
 
 ### System Overview
@@ -353,11 +373,11 @@ Telegram and Email credentials are identity-scoped via `[modules.<channel>.user]
 | Scope              | Config keys                      | Typical env var names                                  | Description                                    |
 | ------------------ | -------------------------------- | ------------------------------------------------------ | ---------------------------------------------- |
 | `modules.telegram.bot`  | `token_env`                      | `BUTLER_TELEGRAM_TOKEN`                                | Butler-owned Telegram bot token                |
-| `modules.telegram.user` | `token_env`                      | `USER_TELEGRAM_TOKEN`                                  | Optional user Telegram credential              |
+| `modules.telegram.user` | —                                | Owner contact_info                                     | User Telegram credential (via dashboard)       |
 | `modules.email.bot`     | `address_env`, `password_env`    | `BUTLER_EMAIL_ADDRESS`, `BUTLER_EMAIL_PASSWORD`        | Butler-owned mailbox credentials               |
-| `modules.email.user`    | `address_env`, `password_env`    | `USER_EMAIL_ADDRESS`, `USER_EMAIL_PASSWORD`            | Optional user mailbox credentials              |
+| `modules.email.user`    | —                                | Owner contact_info                                     | User mailbox credentials (via dashboard)       |
 
-Enabled scopes with missing env vars are startup-blocking. Disabled scopes are not required. Declared credentials are forwarded to ephemeral LLM CLI instances.
+Enabled bot scopes with missing env vars are startup-blocking. User-scope credentials are resolved from owner contact_info (not env vars). Disabled scopes are not required. Bot-scope credentials are forwarded to ephemeral LLM CLI instances.
 
 ## Development
 
