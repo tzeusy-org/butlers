@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,6 +30,10 @@ from pydantic import BaseModel, ConfigDict
 from butlers.modules.base import Module, ToolMeta
 
 logger = logging.getLogger(__name__)
+
+# Matches valid HA entity IDs: "domain.object_id" where each segment contains
+# only alphanumeric characters, underscores, or hyphens (no slashes or dots).
+_ENTITY_ID_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -488,7 +493,6 @@ class HomeAssistantModule(Module):
 
         self._ws_connection = await self._ws_session.ws_connect(
             ws_url,
-            ssl=self._config.verify_ssl if self._config.verify_ssl else False,
             heartbeat=None,  # we implement our own keepalive
         )
 
@@ -1066,7 +1070,19 @@ class HomeAssistantModule(Module):
 
         Falls back to ``GET /api/states/<entity_id>`` when the entity is not
         in the cache.  Returns ``None`` for 404.
+
+        Raises
+        ------
+        ValueError
+            If ``entity_id`` does not match the expected ``domain.object_id``
+            format, to prevent path traversal into unintended HA API endpoints.
         """
+        if not _ENTITY_ID_RE.match(entity_id):
+            raise ValueError(
+                f"Invalid entity_id {entity_id!r}: must be 'domain.object_id' "
+                f"containing only lowercase alphanumeric characters and underscores."
+            )
+
         # Serve from cache when available
         cached = self._entity_cache.get(entity_id)
         if cached is not None:
