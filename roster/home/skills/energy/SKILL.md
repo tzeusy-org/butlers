@@ -193,6 +193,34 @@ Remember comfort preferences when suggesting optimizations:
 - Don't suggest "lower heating to 62°F" if user prefers 70°F
 - Suggest alternatives: "Running AC at night uses 30% less energy due to cooler outside temps. Want to try sleeping cooler?"
 
+## Multi-Turn Example: Energy Optimization (HA Tools)
+
+This example uses the native Home Assistant tools. It illustrates a realistic 3-turn conversation
+where a user investigates high HVAC usage and adjusts settings.
+
+**Turn 1 — User**: "Show me my top energy consumers"
+
+**Actions**:
+1. `ha_list_entities(domain="sensor")` — find energy monitoring sensors (look for `energy`, `kwh`, `power` in entity IDs)
+2. `ha_get_statistics(statistic_ids=["sensor.hvac_energy", "sensor.water_heater_energy", "sensor.kitchen_energy"], start="<month start ISO>", end="<now ISO>", period="month")`
+3. `notify(channel="telegram", message="This month's top consumers:\n1. HVAC — 145 kWh (42%)\n2. Water Heater — 86 kWh (25%)\n3. Kitchen appliances — 52 kWh (15%)\n4. Lighting — 28 kWh (8%)\n5. Other — 34 kWh (10%)\nTotal: 345 kWh", intent="reply", request_context=...)`
+
+**Turn 2 — User**: "The HVAC seems high. Can you suggest ways to reduce it?"
+
+**Actions**:
+1. `ha_get_history(entity_ids=["climate.main_hvac"], start="<7 days ago ISO>")` — review recent HVAC state changes (setpoints, mode changes)
+2. `ha_get_statistics(statistic_ids=["sensor.hvac_energy"], start="<30 days ago ISO>", end="<now ISO>", period="day")` — day-by-day usage trend
+3. `memory_recall(subject="hvac", predicate="energy_baseline")` — check stored baseline
+4. `notify(channel="telegram", message="HVAC analysis:\n• Running 14h/day on average (high for this time of year)\n• Peak usage: 7-9am and 6-9pm\n• 18% above your usual baseline\n\nSuggestions:\n1. Lower nighttime setpoint by 2°F (saves ~10% on heating)\n2. Pre-cool/pre-heat 30min before peak demand, then let it coast\n3. Check/replace air filter — dirty filters increase runtime\n\nWant me to adjust the night setpoint?", intent="reply", request_context=...)`
+
+**Turn 3 — User**: "Set bedroom temperature 2 degrees lower at night"
+
+**Actions**:
+1. `ha_get_entity_state(entity_id="climate.bedroom")` — get current setpoint (e.g., 70°F)
+2. `ha_call_service(domain="climate", service="set_temperature", target={"entity_id": "climate.bedroom"}, data={"temperature": 68})`
+3. `memory_store_fact(subject="bedroom", predicate="comfort_preference", content="user prefers bedroom 2°F cooler at night; setpoint reduced to 68°F to save HVAC energy", permanence="stable", importance=7.0, tags=["temperature", "comfort", "bedroom", "night", "energy"])`
+4. `notify(channel="telegram", message="Bedroom night temperature set to 68°F (was 70°F). This should trim HVAC runtime and reduce your monthly usage.", intent="reply", request_context=...)`
+
 ## Exit Criteria
 
 - `energy_get_consumption()` was called to retrieve usage data
