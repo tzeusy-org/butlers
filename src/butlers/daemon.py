@@ -3727,13 +3727,13 @@ class ButlerDaemon:
             try:
                 if dispatch_mode == "job":
                     result = await daemon._dispatch_scheduled_task(
-                        trigger_source=f"manual:{name}",
+                        trigger_source=f"schedule:{name}",
                         job_name=job_name,
                         job_args=job_args,
                     )
                 else:
                     result = await daemon._dispatch_scheduled_task(
-                        trigger_source=f"manual:{name}",
+                        trigger_source=f"schedule:{name}",
                         prompt=prompt,
                     )
 
