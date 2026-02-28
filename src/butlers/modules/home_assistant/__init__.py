@@ -199,8 +199,10 @@ class HomeAssistantModule(Module):
                 If provided, only entities whose ID starts with ``<domain>.``
                 are included (e.g. ``"light"``).
             area:
-                If provided, only entities belonging to this area name are
-                included.
+                Area filtering is not yet implemented in this scaffold. Passing
+                a value will log a warning and the filter will be ignored.
+                Full area-based filtering requires the HA entity/area registry
+                API and will be added in a follow-up.
             """
             return await module._list_entities(domain=domain, area=area)
 
@@ -256,8 +258,22 @@ class HomeAssistantModule(Module):
         domain: str | None = None,
         area: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Call HA REST API to list entity states with optional filters."""
+        """Call HA REST API to list entity states with optional filters.
+
+        Note: ``area`` filtering is not yet implemented. HA area membership
+        requires the entity/area registry (``/api/config/entity_registry/list``),
+        which is not fetched in this scaffold. Passing a non-None ``area``
+        will log a warning and return all entities (possibly filtered by domain).
+        """
         client = self._get_client()
+
+        if area is not None:
+            logger.warning(
+                "HomeAssistantModule: area filtering is not yet implemented; "
+                "ignoring area=%r and returning all entities (filtered by domain only).",
+                area,
+            )
+
         resp = await client.get("/api/states")
         resp.raise_for_status()
         states: list[dict[str, Any]] = resp.json()
@@ -291,10 +307,12 @@ class HomeAssistantModule(Module):
         """Call a HA service via REST API."""
         client = self._get_client()
         payload: dict[str, Any] = {}
-        if target is not None:
-            payload["target"] = target
+        # Merge data first so that the explicit target argument always wins if
+        # data happens to also carry a "target" key.
         if data is not None:
             payload.update(data)
+        if target is not None:
+            payload["target"] = target
         resp = await client.post(f"/api/services/{domain}/{service}", json=payload)
         resp.raise_for_status()
         result: dict[str, Any] = resp.json() if resp.content else {}
