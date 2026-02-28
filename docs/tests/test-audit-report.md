@@ -179,9 +179,14 @@ covering the same `butlers.api.pricing` module where ~20 would suffice.
 
 **Recommendation:** Consolidate into a single `tests/api/test_pricing.py` and delete
 `test_cost_estimation.py` and `test_cost_comprehensive.py`. The existing `test_pricing.py`
-already covers all structural error cases with proper names. `TestCostModels` from
-`test_cost_comprehensive.py` (testing `CostSummary`, `DailyCost`, `TopSession`) is
-distinct and should be extracted to `tests/api/test_cost_models.py`.
+already covers all structural error cases with proper names.
+
+For test reorganization:
+- `TestCostModels` and `TestModelPricingDataclass` from `test_cost_comprehensive.py`
+  (testing `CostSummary`, `DailyCost`, `TopSession`, and `ModelPricingDataclass`)
+  are distinct and should be extracted to `tests/api/test_cost_models.py`.
+- `TestPricingDependency` from `test_cost_estimation.py` tests dependency wiring and
+  should move to a new `tests/api/test_cost_deps.py` file.
 
 ### 3b. `test_secrets_credentials.py` vs `test_google_credentials_credential_store.py` — Functional overlap
 
