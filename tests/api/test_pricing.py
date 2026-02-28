@@ -6,7 +6,9 @@ import pytest
 
 from butlers.api.pricing import (
     ModelPricing,
+    PricingConfig,
     PricingError,
+    estimate_session_cost,
     load_pricing,
 )
 
@@ -94,6 +96,20 @@ class TestLoadPricing:
         with pytest.raises(PricingError, match="Expected table"):
             load_pricing(p)
 
+    def test_valid_custom_pricing(self, tmp_path):
+        toml_file = tmp_path / "pricing.toml"
+        toml_file.write_text(
+            "[models]\n"
+            '[models."my-model"]\n'
+            "input_price_per_token = 0.001\n"
+            "output_price_per_token = 0.002\n"
+        )
+        config = load_pricing(toml_file)
+        assert "my-model" in config.model_ids
+        pricing = config.get_model_pricing("my-model")
+        assert pricing.input_price_per_token == 0.001
+        assert pricing.output_price_per_token == 0.002
+
 
 # ---------------------------------------------------------------------------
 # get_model_pricing
@@ -114,6 +130,11 @@ class TestGetModelPricing:
     def test_model_ids_sorted(self, config):
         ids = config.model_ids
         assert ids == sorted(ids)
+
+    def test_get_model_pricing_returns_correct_object(self):
+        mp = ModelPricing(0.000003, 0.000015)
+        cfg = PricingConfig({"claude-sonnet": mp})
+        assert cfg.get_model_pricing("claude-sonnet") is mp
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +182,46 @@ class TestEstimateCost:
 
 
 # ---------------------------------------------------------------------------
+# estimate_session_cost helper
+# ---------------------------------------------------------------------------
+
+
+class TestEstimateSessionCost:
+    def test_known_model_returns_correct_cost(self, config):
+        # 1000 input * $3/1M + 500 output * $15/1M = 0.003 + 0.0075 = 0.0105
+        cost = estimate_session_cost(
+            config,
+            model_id="claude-sonnet-4-5-20250929",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+        assert cost == pytest.approx(0.0105)
+
+    def test_unknown_model_returns_zero(self, config):
+        cost = estimate_session_cost(
+            config,
+            model_id="nonexistent-model",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+        assert cost == 0.0
+
+    def test_zero_tokens(self, config):
+        cost = estimate_session_cost(
+            config,
+            model_id="claude-sonnet-4-5-20250929",
+            input_tokens=0,
+            output_tokens=0,
+        )
+        assert cost == pytest.approx(0.0)
+
+    def test_matches_direct_estimate(self, config):
+        direct = config.estimate_cost("claude-sonnet-4-5-20250929", 1000, 500)
+        helper = estimate_session_cost(config, "claude-sonnet-4-5-20250929", 1000, 500)
+        assert direct == helper
+
+
+# ---------------------------------------------------------------------------
 # Default path (integration-level)
 # ---------------------------------------------------------------------------
 
@@ -170,3 +231,59 @@ class TestDefaultPath:
         """Verify the actual pricing.toml at the repo root loads correctly."""
         cfg = load_pricing()  # uses default path
         assert len(cfg.model_ids) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Dependency injection: init_pricing / get_pricing
+# ---------------------------------------------------------------------------
+
+
+class TestPricingDependency:
+    def test_get_pricing_raises_before_init(self):
+        """get_pricing raises RuntimeError when called before init_pricing."""
+        import butlers.api.deps as deps_mod
+
+        # Ensure clean state
+        original = deps_mod._pricing_config
+        deps_mod._pricing_config = None
+        try:
+            with pytest.raises(RuntimeError, match="PricingConfig not initialized"):
+                deps_mod.get_pricing()
+        finally:
+            deps_mod._pricing_config = original
+
+    def test_init_pricing_loads_config(self, pricing_file):
+        """init_pricing loads the given pricing.toml and returns a PricingConfig."""
+        import butlers.api.deps as deps_mod
+
+        original = deps_mod._pricing_config
+        try:
+            result = deps_mod.init_pricing(pricing_file)
+            assert isinstance(result, PricingConfig)
+            assert len(result.model_ids) == 2
+        finally:
+            deps_mod._pricing_config = original
+
+    def test_get_pricing_returns_config_after_init(self, pricing_file):
+        """After init_pricing, get_pricing returns the same PricingConfig."""
+        import butlers.api.deps as deps_mod
+
+        original = deps_mod._pricing_config
+        try:
+            expected = deps_mod.init_pricing(pricing_file)
+            actual = deps_mod.get_pricing()
+            assert actual is expected
+        finally:
+            deps_mod._pricing_config = original
+
+    def test_init_pricing_loads_default_repo_toml(self):
+        """init_pricing with no path loads the repo-root pricing.toml."""
+        import butlers.api.deps as deps_mod
+
+        original = deps_mod._pricing_config
+        try:
+            result = deps_mod.init_pricing()
+            assert isinstance(result, PricingConfig)
+            assert len(result.model_ids) >= 1
+        finally:
+            deps_mod._pricing_config = original
