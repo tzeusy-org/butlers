@@ -1201,7 +1201,7 @@ class TestGetEntityState:
 class TestReconnectScheduling:
     """Verify auto-reconnect scheduling and polling fallback."""
 
-    def test_schedule_reconnect_creates_task(self, ha_module: HomeAssistantModule) -> None:
+    async def test_schedule_reconnect_creates_task(self, ha_module: HomeAssistantModule) -> None:
         """_schedule_reconnect creates a background asyncio task."""
         ha_module._ws_reconnect_task = None
         ha_module._shutdown = False
@@ -1213,7 +1213,9 @@ class TestReconnectScheduling:
         # Cleanup
         ha_module._ws_reconnect_task.cancel()
 
-    def test_schedule_reconnect_noop_when_shutdown(self, ha_module: HomeAssistantModule) -> None:
+    async def test_schedule_reconnect_noop_when_shutdown(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
         """_schedule_reconnect is a no-op when _shutdown is True."""
         ha_module._shutdown = True
 
@@ -1221,7 +1223,7 @@ class TestReconnectScheduling:
 
         assert ha_module._ws_reconnect_task is None
 
-    def test_schedule_reconnect_noop_when_task_running(
+    async def test_schedule_reconnect_noop_when_task_running(
         self, ha_module: HomeAssistantModule
     ) -> None:
         """_schedule_reconnect does not create a second task if one is already running."""
@@ -1239,7 +1241,7 @@ class TestReconnectScheduling:
         assert ha_module._ws_reconnect_task is task
         task.cancel()
 
-    def test_start_poll_fallback_creates_task(self, ha_module: HomeAssistantModule) -> None:
+    async def test_start_poll_fallback_creates_task(self, ha_module: HomeAssistantModule) -> None:
         """_start_poll_fallback creates a background polling task."""
         ha_module._poll_task = None
         ha_module._config = HomeAssistantConfig(url="http://ha.local")
@@ -1251,7 +1253,7 @@ class TestReconnectScheduling:
         assert not ha_module._poll_task.done()
         ha_module._poll_task.cancel()
 
-    def test_stop_poll_fallback_cancels_task(self, ha_module: HomeAssistantModule) -> None:
+    async def test_stop_poll_fallback_cancels_task(self, ha_module: HomeAssistantModule) -> None:
         """_stop_poll_fallback cancels and clears the polling task."""
 
         async def _long() -> None:
