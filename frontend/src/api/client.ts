@@ -1716,6 +1716,8 @@ interface _BackendConnectorEntry {
   counter_source_api_calls: number;
   counter_checkpoint_saves: number;
   counter_dedupe_accepted: number;
+  today_messages_ingested: number;
+  today_messages_failed: number;
   checkpoint_cursor: string | null;
   checkpoint_updated_at: string | null;
 }
@@ -1787,8 +1789,8 @@ function _toConnectorSummary(entry: _BackendConnectorEntry): ConnectorSummary {
     last_heartbeat_at: entry.last_heartbeat_at,
     first_seen_at: entry.first_seen_at,
     today: {
-      messages_ingested: entry.counter_messages_ingested,
-      messages_failed: entry.counter_messages_failed,
+      messages_ingested: entry.today_messages_ingested,
+      messages_failed: entry.today_messages_failed,
       uptime_pct: null,
     },
   };

@@ -81,6 +81,8 @@ _SAMPLE_CONNECTOR_ROW = {
     "counter_source_api_calls": 150,
     "counter_checkpoint_saves": 10,
     "counter_dedupe_accepted": 0,
+    "today_messages_ingested": 7,
+    "today_messages_failed": 0,
     "checkpoint_cursor": "update-12345",
     "checkpoint_updated_at": "2026-02-23T09:55:00+00:00",
 }
@@ -196,6 +198,19 @@ class TestListConnectors:
         assert entry["endpoint_identity"] == "bot-123"
         assert entry["state"] == "healthy"
         assert entry["counter_messages_ingested"] == 42
+
+    async def test_today_stats_fields_returned(self, app):
+        """Today stats from hourly rollup are included in connector entries."""
+        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_CONNECTOR_ROW])
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/switchboard/connectors")
+
+        assert resp.status_code == 200
+        entry = resp.json()["data"][0]
+        assert entry["today_messages_ingested"] == 7
+        assert entry["today_messages_failed"] == 0
 
     async def test_degraded_db_falls_back_to_empty_list(self, app):
         """When connector_registry table is missing, returns empty list (not 500)."""
@@ -352,6 +367,8 @@ class TestConnectorDetail:
         assert body["data"]["connector_type"] == "telegram_bot"
         assert body["data"]["endpoint_identity"] == "bot-123"
         assert body["data"]["state"] == "healthy"
+        assert body["data"]["today_messages_ingested"] == 7
+        assert body["data"]["today_messages_failed"] == 0
 
     async def test_returns_404_when_not_found(self, app):
         """When connector is not in registry, 404 is returned."""

@@ -659,6 +659,8 @@ def _row_to_connector_entry(r: dict) -> Any:
         counter_source_api_calls=int(r.get("counter_source_api_calls") or 0),
         counter_checkpoint_saves=int(r.get("counter_checkpoint_saves") or 0),
         counter_dedupe_accepted=int(r.get("counter_dedupe_accepted") or 0),
+        today_messages_ingested=int(r.get("today_messages_ingested") or 0),
+        today_messages_failed=int(r.get("today_messages_failed") or 0),
         checkpoint_cursor=r.get("checkpoint_cursor"),
         checkpoint_updated_at=str(r["checkpoint_updated_at"])
         if r.get("checkpoint_updated_at")
@@ -688,13 +690,26 @@ async def list_connectors(
 
     try:
         rows = await pool.fetch(
-            "SELECT connector_type, endpoint_identity, instance_id, version, state,"
-            " error_message, uptime_s, last_heartbeat_at, first_seen_at, registered_via,"
-            " counter_messages_ingested, counter_messages_failed, counter_source_api_calls,"
-            " counter_checkpoint_saves, counter_dedupe_accepted,"
-            " checkpoint_cursor, checkpoint_updated_at"
-            " FROM connector_registry"
-            " ORDER BY connector_type, endpoint_identity",
+            "SELECT cr.connector_type, cr.endpoint_identity, cr.instance_id,"
+            " cr.version, cr.state, cr.error_message, cr.uptime_s,"
+            " cr.last_heartbeat_at, cr.first_seen_at, cr.registered_via,"
+            " cr.counter_messages_ingested, cr.counter_messages_failed,"
+            " cr.counter_source_api_calls, cr.counter_checkpoint_saves,"
+            " cr.counter_dedupe_accepted,"
+            " cr.checkpoint_cursor, cr.checkpoint_updated_at,"
+            " COALESCE(ts.today_ingested, 0) AS today_messages_ingested,"
+            " COALESCE(ts.today_failed, 0) AS today_messages_failed"
+            " FROM connector_registry cr"
+            " LEFT JOIN ("
+            "   SELECT connector_type, endpoint_identity,"
+            "     SUM(messages_ingested) AS today_ingested,"
+            "     SUM(messages_failed) AS today_failed"
+            "   FROM connector_stats_hourly"
+            "   WHERE DATE(hour) = CURRENT_DATE"
+            "   GROUP BY connector_type, endpoint_identity"
+            " ) ts ON cr.connector_type = ts.connector_type"
+            "   AND cr.endpoint_identity = ts.endpoint_identity"
+            " ORDER BY cr.connector_type, cr.endpoint_identity",
         )
     except Exception:
         logger.warning(
@@ -788,13 +803,26 @@ async def get_connector_detail(
 
     try:
         row = await pool.fetchrow(
-            "SELECT connector_type, endpoint_identity, instance_id, version, state,"
-            " error_message, uptime_s, last_heartbeat_at, first_seen_at, registered_via,"
-            " counter_messages_ingested, counter_messages_failed, counter_source_api_calls,"
-            " counter_checkpoint_saves, counter_dedupe_accepted,"
-            " checkpoint_cursor, checkpoint_updated_at"
-            " FROM connector_registry"
-            " WHERE connector_type = $1 AND endpoint_identity = $2",
+            "SELECT cr.connector_type, cr.endpoint_identity, cr.instance_id,"
+            " cr.version, cr.state, cr.error_message, cr.uptime_s,"
+            " cr.last_heartbeat_at, cr.first_seen_at, cr.registered_via,"
+            " cr.counter_messages_ingested, cr.counter_messages_failed,"
+            " cr.counter_source_api_calls, cr.counter_checkpoint_saves,"
+            " cr.counter_dedupe_accepted,"
+            " cr.checkpoint_cursor, cr.checkpoint_updated_at,"
+            " COALESCE(ts.today_ingested, 0) AS today_messages_ingested,"
+            " COALESCE(ts.today_failed, 0) AS today_messages_failed"
+            " FROM connector_registry cr"
+            " LEFT JOIN ("
+            "   SELECT connector_type, endpoint_identity,"
+            "     SUM(messages_ingested) AS today_ingested,"
+            "     SUM(messages_failed) AS today_failed"
+            "   FROM connector_stats_hourly"
+            "   WHERE DATE(hour) = CURRENT_DATE"
+            "   GROUP BY connector_type, endpoint_identity"
+            " ) ts ON cr.connector_type = ts.connector_type"
+            "   AND cr.endpoint_identity = ts.endpoint_identity"
+            " WHERE cr.connector_type = $1 AND cr.endpoint_identity = $2",
             connector_type,
             endpoint_identity,
         )
