@@ -205,11 +205,11 @@ function ContactInfoRow({
   const patchInfo = usePatchContactInfo();
 
   function handleDelete() {
-    if (!window.confirm(`Delete this ${entry.type} entry?`)) return;
+    if (!window.confirm(`Delete this ${contactInfoTypeLabel(entry.type)} entry?`)) return;
     deleteInfo.mutate(
       { contactId, infoId: entry.id },
       {
-        onSuccess: () => toast.success(`Removed ${entry.type} entry.`),
+        onSuccess: () => toast.success(`Removed ${contactInfoTypeLabel(entry.type)} entry.`),
         onError: (err) =>
           toast.error(`Failed to delete: ${err instanceof Error ? err.message : "Unknown error"}`),
       },
@@ -230,7 +230,7 @@ function ContactInfoRow({
       { contactId, infoId: entry.id, request: { value: trimmed } },
       {
         onSuccess: () => {
-          toast.success(`Updated ${entry.type} entry.`);
+          toast.success(`Updated ${contactInfoTypeLabel(entry.type)} entry.`);
           setEditing(false);
         },
         onError: (err) =>
@@ -241,8 +241,8 @@ function ContactInfoRow({
 
   return (
     <div className="flex gap-2 items-center group">
-      <span className="text-muted-foreground text-sm w-28 shrink-0 capitalize">
-        {entry.type}
+      <span className="text-muted-foreground text-sm w-36 shrink-0 capitalize">
+        {contactInfoTypeLabel(entry.type)}
         {entry.is_primary && (
           <span className="ml-1 text-xs text-blue-500">(primary)</span>
         )}
@@ -385,6 +385,44 @@ const CONTACT_INFO_TYPES = [
   "other",
 ] as const;
 
+const SECURED_CONTACT_INFO_TYPES = [
+  "email_password",
+  "telegram_api_id",
+  "telegram_api_hash",
+] as const;
+
+const ALL_CONTACT_INFO_TYPES = [...CONTACT_INFO_TYPES, ...SECURED_CONTACT_INFO_TYPES] as const;
+
+const SECURED_TYPES = new Set<string>(SECURED_CONTACT_INFO_TYPES);
+
+/** Human-friendly labels for contact info types. */
+function contactInfoTypeLabel(type: string): string {
+  switch (type) {
+    case "email": return "Email";
+    case "phone": return "Phone";
+    case "telegram": return "Telegram";
+    case "telegram_chat_id": return "Telegram Chat ID";
+    case "website": return "Website";
+    case "other": return "Other";
+    case "email_password": return "Email Password";
+    case "telegram_api_id": return "Telegram API ID";
+    case "telegram_api_hash": return "Telegram API Hash";
+    default: return type;
+  }
+}
+
+function inputPlaceholder(type: string): string {
+  switch (type) {
+    case "email": return "you@example.com";
+    case "telegram": return "@handle";
+    case "telegram_chat_id": return "123456789";
+    case "email_password": return "••••••••";
+    case "telegram_api_id": return "12345678";
+    case "telegram_api_hash": return "••••••••";
+    default: return "";
+  }
+}
+
 function AddContactInfoForm({
   contactId,
   onDone,
@@ -397,6 +435,8 @@ function AddContactInfoForm({
   const [value, setValue] = useState("");
   const [isPrimary, setIsPrimary] = useState(false);
 
+  const isSecured = SECURED_TYPES.has(type);
+
   async function handleSubmit() {
     const trimmed = value.trim();
     if (!trimmed) {
@@ -406,9 +446,14 @@ function AddContactInfoForm({
     try {
       await createInfo.mutateAsync({
         contactId,
-        request: { type, value: trimmed, is_primary: isPrimary },
+        request: {
+          type,
+          value: trimmed,
+          is_primary: isPrimary,
+          ...(isSecured ? { secured: true } : {}),
+        },
       });
-      toast.success(`Added ${type} entry.`);
+      toast.success(`Added ${contactInfoTypeLabel(type)} entry.`);
       onDone();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
@@ -420,14 +465,14 @@ function AddContactInfoForm({
     <div className="flex items-end gap-2 pt-2 border-t mt-2">
       <div className="space-y-1">
         <Label className="text-xs">Type</Label>
-        <Select value={type} onValueChange={setType}>
-          <SelectTrigger className="h-8 w-28 text-xs">
+        <Select value={type} onValueChange={(v) => { setType(v); setValue(""); }}>
+          <SelectTrigger className="h-8 w-36 text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {CONTACT_INFO_TYPES.map((t) => (
-              <SelectItem key={t} value={t} className="text-xs capitalize">
-                {t}
+            {ALL_CONTACT_INFO_TYPES.map((t) => (
+              <SelectItem key={t} value={t} className="text-xs">
+                {contactInfoTypeLabel(t)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -437,22 +482,25 @@ function AddContactInfoForm({
         <Label className="text-xs">Value</Label>
         <Input
           className="h-8 text-sm"
-          placeholder={type === "email" ? "you@example.com" : type === "telegram" ? "@handle" : ""}
+          type={isSecured ? "password" : "text"}
+          placeholder={inputPlaceholder(type)}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           disabled={createInfo.isPending}
           autoFocus
         />
       </div>
-      <label className="flex items-center gap-1 text-xs text-muted-foreground pb-0.5">
-        <input
-          type="checkbox"
-          checked={isPrimary}
-          onChange={(e) => setIsPrimary(e.target.checked)}
-          className="accent-primary"
-        />
-        Primary
-      </label>
+      {!isSecured && (
+        <label className="flex items-center gap-1 text-xs text-muted-foreground pb-0.5">
+          <input
+            type="checkbox"
+            checked={isPrimary}
+            onChange={(e) => setIsPrimary(e.target.checked)}
+            className="accent-primary"
+          />
+          Primary
+        </label>
+      )}
       <Button
         size="sm"
         variant="ghost"
@@ -471,6 +519,65 @@ function AddContactInfoForm({
       >
         <X className="h-4 w-4" />
       </Button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Preferred channel selector
+// ---------------------------------------------------------------------------
+
+function PreferredChannelRow({ contact }: { contact: ContactDetail }) {
+  const patchContact = usePatchContact();
+
+  const hasTelegram = contact.contact_info?.some(
+    (ci) => ci.type === "telegram_chat_id",
+  );
+  const hasEmail = contact.contact_info?.some((ci) => ci.type === "email");
+
+  function handleChange(value: string) {
+    const preferred_channel = value === "none" ? "" : value;
+    patchContact.mutate(
+      { contactId: contact.id, request: { preferred_channel: preferred_channel || null } },
+      {
+        onSuccess: () => toast.success("Preferred channel updated."),
+        onError: (err) =>
+          toast.error(
+            `Failed to update: ${err instanceof Error ? err.message : "Unknown error"}`,
+          ),
+      },
+    );
+  }
+
+  return (
+    <div className="flex gap-2 items-center mt-2">
+      <span className="text-muted-foreground text-sm w-36 shrink-0">
+        Preferred channel
+      </span>
+      <Select
+        value={contact.preferred_channel ?? "none"}
+        onValueChange={handleChange}
+        disabled={patchContact.isPending}
+      >
+        <SelectTrigger className="h-7 w-36 text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none" className="text-xs">
+            None
+          </SelectItem>
+          <SelectItem
+            value="telegram"
+            className="text-xs"
+            disabled={!hasTelegram}
+          >
+            Telegram
+          </SelectItem>
+          <SelectItem value="email" className="text-xs" disabled={!hasEmail}>
+            Email
+          </SelectItem>
+        </SelectContent>
+      </Select>
     </div>
   );
 }
@@ -685,10 +792,9 @@ function GiftsTab({ contactId }: { contactId: string }) {
       <TableHeader>
         <TableRow>
           <TableHead>Description</TableHead>
-          <TableHead>Direction</TableHead>
+          <TableHead>Status</TableHead>
           <TableHead>Occasion</TableHead>
           <TableHead>Date</TableHead>
-          <TableHead className="text-right">Value</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -696,21 +802,15 @@ function GiftsTab({ contactId }: { contactId: string }) {
           <TableRow key={gift.id}>
             <TableCell className="font-medium">{gift.description}</TableCell>
             <TableCell>
-              <Badge
-                variant={gift.direction === "given" ? "default" : "outline"}
-                className="text-xs"
-              >
-                {gift.direction}
+              <Badge variant="outline" className="text-xs capitalize">
+                {gift.status}
               </Badge>
             </TableCell>
             <TableCell className="text-muted-foreground text-sm">
               {gift.occasion ?? "\u2014"}
             </TableCell>
             <TableCell className="text-muted-foreground text-sm">
-              {formatDate(gift.date)}
-            </TableCell>
-            <TableCell className="text-right tabular-nums text-sm">
-              {gift.value != null ? `$${gift.value.toFixed(2)}` : "\u2014"}
+              {formatDate(gift.created_at)}
             </TableCell>
           </TableRow>
         ))}
@@ -722,21 +822,6 @@ function GiftsTab({ contactId }: { contactId: string }) {
 // ---------------------------------------------------------------------------
 // Loans tab
 // ---------------------------------------------------------------------------
-
-function statusVariant(
-  status: string,
-): "default" | "destructive" | "outline" | "secondary" {
-  switch (status.toLowerCase()) {
-    case "active":
-      return "default";
-    case "repaid":
-      return "secondary";
-    case "forgiven":
-      return "outline";
-    default:
-      return "outline";
-  }
-}
 
 function LoansTab({ contactId }: { contactId: string }) {
   const { data: loans, isLoading } = useContactLoans(contactId);
@@ -753,13 +838,13 @@ function LoansTab({ contactId }: { contactId: string }) {
           <TableHead>Amount</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Date</TableHead>
-          <TableHead>Due Date</TableHead>
+          <TableHead>Settled</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {loans.map((loan: Loan) => (
           <TableRow key={loan.id}>
-            <TableCell className="font-medium">{loan.description}</TableCell>
+            <TableCell className="font-medium">{loan.description ?? "\u2014"}</TableCell>
             <TableCell>
               <Badge
                 variant={loan.direction === "lent" ? "default" : "outline"}
@@ -769,18 +854,21 @@ function LoansTab({ contactId }: { contactId: string }) {
               </Badge>
             </TableCell>
             <TableCell className="tabular-nums text-sm">
-              {loan.amount.toFixed(2)} {loan.currency}
+              {loan.amount.toFixed(2)}
             </TableCell>
             <TableCell>
-              <Badge variant={statusVariant(loan.status)} className="text-xs">
-                {loan.status}
+              <Badge
+                variant={loan.settled ? "secondary" : "default"}
+                className="text-xs"
+              >
+                {loan.settled ? "settled" : "active"}
               </Badge>
             </TableCell>
             <TableCell className="text-muted-foreground text-sm">
-              {formatDate(loan.date)}
+              {formatDate(loan.created_at)}
             </TableCell>
             <TableCell className="text-muted-foreground text-sm">
-              {loan.due_date ? formatDate(loan.due_date) : "\u2014"}
+              {loan.settled_at ? formatDate(loan.settled_at) : "\u2014"}
             </TableCell>
           </TableRow>
         ))}
@@ -929,6 +1017,7 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
         </CardHeader>
         <CardContent>
           <ContactInfoSection contact={contact} />
+          <PreferredChannelRow contact={contact} />
           {addingInfo ? (
             <AddContactInfoForm
               contactId={contact.id}

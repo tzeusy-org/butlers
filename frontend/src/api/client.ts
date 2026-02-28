@@ -86,6 +86,7 @@ import type {
   RegistryEntry,
   RoutingEntry,
   SetEligibilityResponse,
+  EligibilityHistoryResponse,
   RoutingLogParams,
   UpcomingDate,
   Episode,
@@ -170,16 +171,23 @@ export async function apiFetch<T>(
     let message = response.statusText || "Request failed";
 
     try {
-      const body = (await response.json()) as ErrorResponse;
+      const body = await response.json();
       if (body.error) {
-        code = body.error.code;
-        message = body.error.message;
+        code = (body as ErrorResponse).error.code;
+        message = (body as ErrorResponse).error.message;
+      } else if (typeof body.detail === "string") {
+        // FastAPI HTTPException format: { "detail": "..." }
+        message = body.detail;
       }
     } catch {
       // Response body is not valid JSON — fall through to defaults.
     }
 
     throw new ApiError(code, message, response.status);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
   }
 
   return (await response.json()) as T;
@@ -966,6 +974,16 @@ export function setButlerEligibility(
   );
 }
 
+
+/** Fetch eligibility history for a butler over a given window. */
+export function getEligibilityHistory(
+  name: string,
+  hours = 24,
+): Promise<ApiResponse<EligibilityHistoryResponse>> {
+  return apiFetch<ApiResponse<EligibilityHistoryResponse>>(
+    `/switchboard/registry/${encodeURIComponent(name)}/eligibility-history?hours=${hours}`,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Memory
