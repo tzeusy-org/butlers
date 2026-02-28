@@ -73,7 +73,11 @@ asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests", "roster"]
 # importlib mode avoids module-name collisions when multiple butler test
 # directories contain identically-named files (e.g. test_tools.py).
-addopts = "--import-mode=importlib -m 'not nightly'"
+# -n auto: xdist parallel execution using all available CPUs (~72% faster).
+# --dist loadfile: keeps tests from the same file on the same worker so that
+#   module-scoped fixtures (e.g. shared FastAPI app, module-scoped DB pools)
+#   are not torn down and recreated across workers mid-module.
+addopts = "--import-mode=importlib -m 'not nightly' -n auto --dist loadfile"
 markers = [
     "unit: Pure unit tests — no Docker, no external services",
     "integration: Integration tests — require Docker (testcontainers)",
