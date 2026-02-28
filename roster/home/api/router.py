@@ -109,9 +109,7 @@ async def list_entities(
         EntitySummaryResponse(
             entity_id=r["entity_id"],
             state=r["state"],
-            friendly_name=(
-                dict(r["attributes"] or {}).get("friendly_name") if r["attributes"] else None
-            ),
+            friendly_name=(r["attributes"] or {}).get("friendly_name"),
             domain=r["entity_id"].split(".")[0] if "." in r["entity_id"] else r["entity_id"],
             last_updated=str(r["last_updated"]) if r["last_updated"] else None,
             captured_at=str(r["captured_at"]),
