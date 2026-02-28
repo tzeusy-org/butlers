@@ -43,6 +43,11 @@ pytestmark = pytest.mark.unit
 EXPECTED_HA_TOOLS = {
     "ha_get_entity_state",
     "ha_list_entities",
+    "ha_list_areas",
+    "ha_list_services",
+    "ha_get_history",
+    "ha_get_statistics",
+    "ha_render_template",
     "ha_call_service",
 }
 
@@ -438,7 +443,7 @@ class TestToolRegistration:
     async def test_registers_expected_tools(
         self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
     ) -> None:
-        """register_tools creates ha_get_entity_state, ha_list_entities, ha_call_service."""
+        """register_tools creates all 8 expected HA query and control tools."""
         await ha_module.register_tools(
             mcp=mock_mcp,
             config={"url": "http://ha.local"},
@@ -1724,3 +1729,503 @@ class TestPollLoopBehavior:
             await ha_module._poll_loop()
 
         assert call_count == 2, "Poll loop should have retried after error"
+
+
+# ---------------------------------------------------------------------------
+# _list_areas — area registry query tool
+# ---------------------------------------------------------------------------
+
+
+class TestListAreas:
+    """Verify _list_areas returns sorted area list from the cache."""
+
+    async def test_list_areas_sorted_by_name(self, ha_module: HomeAssistantModule) -> None:
+        """_list_areas returns areas sorted alphabetically by name."""
+        ha_module._area_cache = {
+            "kitchen": CachedArea(area_id="kitchen", name="Kitchen"),
+            "attic": CachedArea(area_id="attic", name="Attic"),
+            "bedroom": CachedArea(area_id="bedroom", name="Bedroom"),
+        }
+
+        result = await ha_module._list_areas()
+
+        names = [a["name"] for a in result]
+        assert names == sorted(names)
+        assert names == ["Attic", "Bedroom", "Kitchen"]
+
+    async def test_list_areas_empty_cache_returns_empty(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_list_areas returns an empty list when the area cache is empty."""
+        ha_module._area_cache = {}
+
+        result = await ha_module._list_areas()
+
+        assert result == []
+
+    async def test_list_areas_includes_area_id_and_name(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Each area in the result has area_id and name keys."""
+        ha_module._area_cache = {
+            "living_room": CachedArea(area_id="living_room", name="Living Room"),
+        }
+
+        result = await ha_module._list_areas()
+
+        assert len(result) == 1
+        assert result[0]["area_id"] == "living_room"
+        assert result[0]["name"] == "Living Room"
+
+
+# ---------------------------------------------------------------------------
+# _list_services — service catalog tool
+# ---------------------------------------------------------------------------
+
+
+class TestListServices:
+    """Verify _list_services queries REST and applies optional domain filter."""
+
+    async def test_list_services_uses_rest_client(self, ha_module: HomeAssistantModule) -> None:
+        """_list_services calls GET /api/services via the REST client."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [
+            {"domain": "light", "services": {"turn_on": {}, "turn_off": {}}},
+            {"domain": "switch", "services": {"turn_on": {}, "turn_off": {}}},
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._list_services()
+
+        mock_client.get.assert_awaited_once_with("/api/services")
+        assert len(result) == 2
+
+    async def test_list_services_domain_filter(self, ha_module: HomeAssistantModule) -> None:
+        """_list_services filters by domain when domain param is provided."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [
+            {"domain": "light", "services": {"turn_on": {}}},
+            {"domain": "switch", "services": {"turn_on": {}}},
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._list_services(domain="light")
+
+        assert len(result) == 1
+        assert result[0]["domain"] == "light"
+
+    async def test_list_services_falls_back_to_ws(self, ha_module: HomeAssistantModule) -> None:
+        """_list_services uses WebSocket get_services when REST client is unavailable."""
+        ha_module._client = None
+        ha_module._ws_connected = True
+
+        ws_result = {
+            "light": {"turn_on": {}, "turn_off": {}},
+            "switch": {"turn_on": {}},
+        }
+        with patch.object(
+            ha_module, "_ws_command", new=AsyncMock(return_value=ws_result)
+        ) as mock_cmd:
+            result = await ha_module._list_services()
+
+        mock_cmd.assert_awaited_once()
+        sent_cmd = mock_cmd.call_args.args[0]
+        assert sent_cmd["type"] == "get_services"
+        assert len(result) == 2
+        domains = {entry["domain"] for entry in result}
+        assert domains == {"light", "switch"}
+
+    async def test_list_services_raises_when_no_client_and_no_ws(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_list_services raises RuntimeError when neither REST nor WebSocket is available."""
+        ha_module._client = None
+        ha_module._ws_connected = False
+
+        with pytest.raises(RuntimeError, match="cannot list services"):
+            await ha_module._list_services()
+
+    async def test_list_services_domain_filter_with_ws_fallback(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Domain filter still applies when using the WebSocket fallback path."""
+        ha_module._client = None
+        ha_module._ws_connected = True
+
+        ws_result = {
+            "light": {"turn_on": {}},
+            "switch": {"turn_on": {}},
+        }
+        with patch.object(ha_module, "_ws_command", new=AsyncMock(return_value=ws_result)):
+            result = await ha_module._list_services(domain="switch")
+
+        assert len(result) == 1
+        assert result[0]["domain"] == "switch"
+
+
+# ---------------------------------------------------------------------------
+# _get_history — history API tool
+# ---------------------------------------------------------------------------
+
+
+class TestGetHistory:
+    """Verify _get_history constructs the correct REST request."""
+
+    async def test_get_history_calls_rest(self, ha_module: HomeAssistantModule) -> None:
+        """_get_history calls GET /api/history/period/<start> with correct params."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [[{"state": "on", "last_changed": "2026-02-01T00:00:00Z"}]]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._get_history(
+            entity_ids=["light.kitchen"],
+            start="2026-02-01T00:00:00Z",
+        )
+
+        mock_client.get.assert_awaited_once()
+        call_args = mock_client.get.call_args
+        assert "/api/history/period/2026-02-01T00:00:00Z" in call_args.args[0]
+        params = call_args.kwargs.get("params", {})
+        assert "light.kitchen" in params["filter_entity_id"]
+        assert "minimal_response" in params
+        assert "significant_changes_only" in params
+        assert result == [[{"state": "on", "last_changed": "2026-02-01T00:00:00Z"}]]
+
+    async def test_get_history_with_end_time(self, ha_module: HomeAssistantModule) -> None:
+        """_get_history includes end_time parameter when end is provided."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = []
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._get_history(
+            entity_ids=["sensor.temp"],
+            start="2026-02-01T00:00:00Z",
+            end="2026-02-02T00:00:00Z",
+        )
+
+        call_args = mock_client.get.call_args
+        params = call_args.kwargs.get("params", {})
+        assert params.get("end_time") == "2026-02-02T00:00:00Z"
+
+    async def test_get_history_raises_for_empty_entity_ids(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_history raises ValueError when entity_ids is empty."""
+        ha_module._client = AsyncMock()
+
+        with pytest.raises(ValueError, match="at least one entity_id"):
+            await ha_module._get_history(entity_ids=[], start="2026-02-01T00:00:00Z")
+
+    async def test_get_history_multiple_entity_ids(self, ha_module: HomeAssistantModule) -> None:
+        """_get_history includes all entity IDs comma-separated in filter_entity_id."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [[], []]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._get_history(
+            entity_ids=["sensor.a", "sensor.b"],
+            start="2026-02-01T00:00:00Z",
+        )
+
+        params = mock_client.get.call_args.kwargs.get("params", {})
+        assert params["filter_entity_id"] == "sensor.a,sensor.b"
+
+    async def test_get_history_rejects_path_traversal_start(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_history raises ValueError for start values containing path traversal."""
+        ha_module._client = AsyncMock()
+
+        with pytest.raises(ValueError, match="ISO 8601"):
+            await ha_module._get_history(
+                entity_ids=["sensor.temp"],
+                start="../../../api/config",
+            )
+
+    async def test_get_history_rejects_invalid_iso8601_start(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_history raises ValueError for start values that are not ISO 8601."""
+        ha_module._client = AsyncMock()
+
+        with pytest.raises(ValueError, match="ISO 8601"):
+            await ha_module._get_history(
+                entity_ids=["sensor.temp"],
+                start="not-a-timestamp",
+            )
+
+    async def test_get_history_url_encodes_plus_timezone(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_history percent-encodes + in timezone offsets so the URL path is valid."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = []
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._get_history(
+            entity_ids=["sensor.temp"],
+            start="2026-02-01T00:00:00+01:00",
+        )
+
+        call_args = mock_client.get.call_args
+        url_path = call_args.args[0]
+        # + must be percent-encoded as %2B in the URL path segment
+        assert "%2B" in url_path, f"Expected %2B in URL path, got: {url_path}"
+        assert "+" not in url_path, f"Unencoded + found in URL path: {url_path}"
+
+
+# ---------------------------------------------------------------------------
+# _get_statistics — recorder statistics tool
+# ---------------------------------------------------------------------------
+
+
+_VALID_PERIODS = ["5minute", "hour", "day", "week", "month"]
+
+
+class TestGetStatistics:
+    """Verify _get_statistics sends the correct WebSocket command."""
+
+    async def test_get_statistics_sends_ws_command(self, ha_module: HomeAssistantModule) -> None:
+        """_get_statistics sends recorder/get_statistics_during_period WS command."""
+        expected_result = {"sensor.energy": [{"mean": 1.5, "sum": 36.0}]}
+        ha_module._ws_connected = True
+
+        with patch.object(
+            ha_module, "_ws_command", new=AsyncMock(return_value=expected_result)
+        ) as mock_cmd:
+            result = await ha_module._get_statistics(
+                statistic_ids=["sensor.energy"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-28T00:00:00Z",
+                period="day",
+            )
+
+        mock_cmd.assert_awaited_once()
+        sent = mock_cmd.call_args.args[0]
+        assert sent["type"] == "recorder/get_statistics_during_period"
+        assert sent["statistic_ids"] == ["sensor.energy"]
+        assert sent["start_time"] == "2026-02-01T00:00:00Z"
+        assert sent["end_time"] == "2026-02-28T00:00:00Z"
+        assert sent["period"] == "day"
+        assert result == expected_result
+
+    async def test_get_statistics_default_period_is_hour(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Default period is 'hour' when not specified."""
+        ha_module._ws_connected = True
+
+        with patch.object(ha_module, "_ws_command", new=AsyncMock(return_value={})) as mock_cmd:
+            await ha_module._get_statistics(
+                statistic_ids=["sensor.temp"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-02T00:00:00Z",
+            )
+
+        sent = mock_cmd.call_args.args[0]
+        assert sent["period"] == "hour"
+
+    @pytest.mark.parametrize("period", _VALID_PERIODS)
+    async def test_get_statistics_valid_periods(
+        self, ha_module: HomeAssistantModule, period: str
+    ) -> None:
+        """_get_statistics accepts all valid period values without raising."""
+        ha_module._ws_connected = True
+
+        with patch.object(ha_module, "_ws_command", new=AsyncMock(return_value={})):
+            # Must not raise
+            await ha_module._get_statistics(
+                statistic_ids=["sensor.temp"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-02T00:00:00Z",
+                period=period,
+            )
+
+    async def test_get_statistics_invalid_period_raises(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_statistics raises ValueError for invalid period values."""
+        with pytest.raises(ValueError, match="Invalid period"):
+            await ha_module._get_statistics(
+                statistic_ids=["sensor.temp"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-02T00:00:00Z",
+                period="yearly",
+            )
+
+    async def test_get_statistics_includes_types(self, ha_module: HomeAssistantModule) -> None:
+        """_get_statistics command includes the expected types list."""
+        ha_module._ws_connected = True
+
+        with patch.object(ha_module, "_ws_command", new=AsyncMock(return_value={})) as mock_cmd:
+            await ha_module._get_statistics(
+                statistic_ids=["sensor.energy"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-02T00:00:00Z",
+                period="hour",
+            )
+
+        sent = mock_cmd.call_args.args[0]
+        assert set(sent["types"]) == {"mean", "min", "max", "sum", "state"}
+
+
+# ---------------------------------------------------------------------------
+# _render_template — template rendering tool
+# ---------------------------------------------------------------------------
+
+
+class TestRenderTemplate:
+    """Verify _render_template calls POST /api/template and returns rendered text."""
+
+    async def test_render_template_calls_rest(self, ha_module: HomeAssistantModule) -> None:
+        """_render_template calls POST /api/template with the template body."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = "23.5 °C"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._render_template(template="{{ states('sensor.temperature') }} °C")
+
+        mock_client.post.assert_awaited_once()
+        call_args = mock_client.post.call_args
+        assert call_args.args[0] == "/api/template"
+        body = call_args.kwargs.get("json", {})
+        assert body["template"] == "{{ states('sensor.temperature') }} °C"
+        assert result == "23.5 °C"
+
+    async def test_render_template_returns_string(self, ha_module: HomeAssistantModule) -> None:
+        """_render_template returns the response text as a plain string."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = "Hello World"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._render_template(template="Hello World")
+
+        assert isinstance(result, str)
+        assert result == "Hello World"
+
+    async def test_render_template_raises_without_client(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_render_template raises RuntimeError when the HTTP client is not initialized."""
+        ha_module._client = None
+
+        with pytest.raises(RuntimeError, match="not initialised"):
+            await ha_module._render_template(template="{{ now() }}")
+
+
+# ---------------------------------------------------------------------------
+# Query tools registered via MCP — integration smoke tests
+# ---------------------------------------------------------------------------
+
+
+class TestQueryToolsMcpRegistration:
+    """Verify query tools are callable through the MCP registration layer."""
+
+    async def test_ha_list_areas_callable_via_mcp(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """ha_list_areas registered tool delegates to _list_areas."""
+        await ha_module.register_tools(mcp=mock_mcp, config={"url": "http://ha.local"}, db=None)
+        ha_module._area_cache = {
+            "kitchen": CachedArea(area_id="kitchen", name="Kitchen"),
+        }
+
+        tool_fn = mock_mcp._registered_tools["ha_list_areas"]
+        result = await tool_fn()
+
+        assert len(result) == 1
+        assert result[0]["area_id"] == "kitchen"
+
+    async def test_ha_list_services_callable_via_mcp(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """ha_list_services registered tool delegates to _list_services."""
+        await ha_module.register_tools(mcp=mock_mcp, config={"url": "http://ha.local"}, db=None)
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [{"domain": "light", "services": {}}]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        tool_fn = mock_mcp._registered_tools["ha_list_services"]
+        result = await tool_fn()
+
+        assert len(result) == 1
+        assert result[0]["domain"] == "light"
+
+    async def test_ha_get_history_callable_via_mcp(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """ha_get_history registered tool delegates to _get_history."""
+        await ha_module.register_tools(mcp=mock_mcp, config={"url": "http://ha.local"}, db=None)
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [[{"state": "on"}]]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        tool_fn = mock_mcp._registered_tools["ha_get_history"]
+        result = await tool_fn(entity_ids=["light.kitchen"], start="2026-02-01T00:00:00Z")
+
+        assert result == [[{"state": "on"}]]
+
+    async def test_ha_get_statistics_callable_via_mcp(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """ha_get_statistics registered tool delegates to _get_statistics."""
+        await ha_module.register_tools(mcp=mock_mcp, config={"url": "http://ha.local"}, db=None)
+        ha_module._ws_connected = True
+        expected = {"sensor.energy": []}
+
+        with patch.object(ha_module, "_ws_command", new=AsyncMock(return_value=expected)):
+            tool_fn = mock_mcp._registered_tools["ha_get_statistics"]
+            result = await tool_fn(
+                statistic_ids=["sensor.energy"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-28T00:00:00Z",
+            )
+
+        assert result == expected
+
+    async def test_ha_render_template_callable_via_mcp(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """ha_render_template registered tool delegates to _render_template."""
+        await ha_module.register_tools(mcp=mock_mcp, config={"url": "http://ha.local"}, db=None)
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = "rendered"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        tool_fn = mock_mcp._registered_tools["ha_render_template"]
+        result = await tool_fn(template="{{ now() }}")
+
+        assert result == "rendered"

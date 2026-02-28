@@ -24,6 +24,7 @@ import random
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
 
@@ -434,8 +435,106 @@ class HomeAssistantModule(Module):
                 domain=domain, service=service, target=target, data=data
             )
 
+        async def ha_list_areas() -> list[dict[str, Any]]:
+            """Return all Home Assistant areas/rooms sorted by name.
+
+            Returns a list of area objects with ``area_id`` and ``name`` fields,
+            taken from the cached area registry populated at startup.
+            """
+            return await module._list_areas()
+
+        async def ha_list_services(domain: str | None = None) -> list[dict[str, Any]]:
+            """Return available Home Assistant services, optionally filtered by domain.
+
+            Queries ``GET /api/services`` when the REST client is available, or
+            falls back to ``get_services`` via WebSocket.
+
+            Parameters
+            ----------
+            domain:
+                If provided, only services for this domain are returned
+                (e.g. ``"light"``).
+            """
+            return await module._list_services(domain=domain)
+
+        async def ha_get_history(
+            entity_ids: list[str],
+            start: str,
+            end: str | None = None,
+        ) -> list[list[dict[str, Any]]]:
+            """Return state history for one or more entities over a time window.
+
+            Calls ``GET /api/history/period/<start>`` with
+            ``filter_entity_id``, ``end_time``, ``minimal_response``, and
+            ``significant_changes_only`` query parameters.
+
+            Parameters
+            ----------
+            entity_ids:
+                Non-empty list of HA entity IDs to fetch history for.
+            start:
+                ISO 8601 start timestamp (e.g. ``"2026-02-01T00:00:00Z"``).
+            end:
+                Optional ISO 8601 end timestamp.  Defaults to now when omitted.
+
+            Raises
+            ------
+            ValueError
+                If ``entity_ids`` is empty (unbounded queries are too expensive).
+            """
+            return await module._get_history(entity_ids=entity_ids, start=start, end=end)
+
+        async def ha_get_statistics(
+            statistic_ids: list[str],
+            start: str,
+            end: str,
+            period: str = "hour",
+        ) -> dict[str, Any]:
+            """Return aggregated statistics for sensor entities from HA's recorder.
+
+            Sends a ``recorder/get_statistics_during_period`` WebSocket command.
+
+            Parameters
+            ----------
+            statistic_ids:
+                List of statistic IDs (usually entity IDs for sensor entities).
+            start:
+                ISO 8601 start timestamp.
+            end:
+                ISO 8601 end timestamp.
+            period:
+                Aggregation period: one of ``5minute``, ``hour``, ``day``,
+                ``week``, ``month``.  Defaults to ``"hour"``.
+
+            Raises
+            ------
+            ValueError
+                If ``period`` is not one of the allowed values.
+            """
+            return await module._get_statistics(
+                statistic_ids=statistic_ids, start=start, end=end, period=period
+            )
+
+        async def ha_render_template(template: str) -> str:
+            """Render a Jinja2 template server-side on the Home Assistant instance.
+
+            Calls ``POST /api/template`` with the template string and returns
+            the rendered plaintext result.
+
+            Parameters
+            ----------
+            template:
+                Jinja2 template string (e.g. ``"{{ states('sensor.temperature') }} °C"``).
+            """
+            return await module._render_template(template=template)
+
         mcp.tool()(ha_get_entity_state)
         mcp.tool()(ha_list_entities)
+        mcp.tool()(ha_list_areas)
+        mcp.tool()(ha_list_services)
+        mcp.tool()(ha_get_history)
+        mcp.tool()(ha_get_statistics)
+        mcp.tool()(ha_render_template)
         mcp.tool()(ha_call_service)
 
     # ------------------------------------------------------------------
@@ -1274,3 +1373,175 @@ class HomeAssistantModule(Module):
         resp.raise_for_status()
         result: dict[str, Any] = resp.json() if resp.content else {}
         return result
+
+    async def _list_areas(self) -> list[dict[str, Any]]:
+        """Return all cached areas sorted by name.
+
+        Returns a list of ``{"area_id": ..., "name": ...}`` dicts derived from
+        the in-memory area registry.  The list is sorted alphabetically by
+        ``name``.
+        """
+        areas = [{"area_id": a.area_id, "name": a.name} for a in self._area_cache.values()]
+        areas.sort(key=lambda x: x["name"])
+        return areas
+
+    async def _list_services(self, domain: str | None = None) -> list[dict[str, Any]]:
+        """Return available HA services, optionally filtered by domain.
+
+        Prefers ``GET /api/services`` (REST) when the HTTP client is available.
+        Falls back to the ``get_services`` WebSocket command when the REST
+        client is not yet initialised.
+
+        Parameters
+        ----------
+        domain:
+            Optional domain filter (e.g. ``"light"``).
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            Each element has ``"domain"`` (str) and ``"services"``
+            (dict[str, dict]) keys, matching the HA API response shape.
+        """
+        raw: list[dict[str, Any]]
+
+        if self._client is not None:
+            resp = await self._client.get("/api/services")
+            resp.raise_for_status()
+            raw = resp.json()
+        elif self._ws_connected:
+            result = await self._ws_command({"type": "get_services"}, timeout=10.0)
+            # WS get_services returns dict[domain, dict[service_name, service_obj]]
+            # Convert to the same shape as the REST response.
+            raw = [{"domain": d, "services": svcs} for d, svcs in result.items()]
+        else:
+            raise RuntimeError(
+                "HomeAssistantModule: cannot list services — neither REST client "
+                "nor WebSocket is available."
+            )
+
+        if domain is not None:
+            raw = [entry for entry in raw if entry.get("domain") == domain]
+
+        return raw
+
+    async def _get_history(
+        self,
+        entity_ids: list[str],
+        start: str,
+        end: str | None = None,
+    ) -> list[list[dict[str, Any]]]:
+        """Fetch entity state history from ``GET /api/history/period/<start>``.
+
+        Parameters
+        ----------
+        entity_ids:
+            Non-empty list of entity IDs to query.
+        start:
+            ISO 8601 start timestamp.
+        end:
+            Optional ISO 8601 end timestamp.
+
+        Raises
+        ------
+        ValueError
+            If ``entity_ids`` is empty, or if ``start`` is not a valid ISO 8601
+            timestamp (prevents path traversal via the URL-path segment).
+        """
+        if not entity_ids:
+            raise ValueError(
+                "ha_get_history requires at least one entity_id. "
+                "Unbounded history queries are not supported."
+            )
+
+        if not self._ISO8601_RE.match(start):
+            raise ValueError(
+                f"Invalid start timestamp {start!r}: must be ISO 8601 format "
+                "(e.g. '2026-02-01T00:00:00Z' or '2026-02-01T00:00:00+01:00')."
+            )
+
+        client = self._get_client()
+        params: dict[str, str] = {
+            "filter_entity_id": ",".join(entity_ids),
+            "minimal_response": "1",
+            "significant_changes_only": "1",
+        }
+        if end is not None:
+            params["end_time"] = end
+
+        resp = await client.get(f"/api/history/period/{quote(start, safe=':')}", params=params)
+        resp.raise_for_status()
+        result: list[list[dict[str, Any]]] = resp.json()
+        return result
+
+    # Matches ISO 8601 timestamps with optional fractional seconds and timezone.
+    # Allows: 2026-02-01T12:00:00Z, 2026-02-01T12:00:00+01:00, 2026-02-01T12:00:00.123Z
+    _ISO8601_RE = re.compile(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+    )
+
+    _VALID_STATISTICS_PERIODS = frozenset({"5minute", "hour", "day", "week", "month"})
+
+    async def _get_statistics(
+        self,
+        statistic_ids: list[str],
+        start: str,
+        end: str,
+        period: str = "hour",
+    ) -> dict[str, Any]:
+        """Fetch aggregated statistics via the ``recorder/get_statistics_during_period`` WS command.
+
+        Parameters
+        ----------
+        statistic_ids:
+            List of statistic IDs (usually entity IDs for sensor entities).
+        start:
+            ISO 8601 start timestamp.
+        end:
+            ISO 8601 end timestamp.
+        period:
+            One of ``5minute``, ``hour``, ``day``, ``week``, ``month``.
+
+        Raises
+        ------
+        ValueError
+            If ``period`` is not one of the valid values.
+        RuntimeError
+            If the WebSocket is not connected.
+        """
+        if period not in self._VALID_STATISTICS_PERIODS:
+            raise ValueError(
+                f"Invalid period {period!r}. "
+                f"Must be one of: {', '.join(sorted(self._VALID_STATISTICS_PERIODS))}."
+            )
+
+        result = await self._ws_command(
+            {
+                "type": "recorder/get_statistics_during_period",
+                "statistic_ids": statistic_ids,
+                "start_time": start,
+                "end_time": end,
+                "period": period,
+                "types": ["mean", "min", "max", "sum", "state"],
+            },
+            timeout=30.0,
+        )
+        return result
+
+    async def _render_template(self, template: str) -> str:
+        """Render a Jinja2 template via ``POST /api/template``.
+
+        Parameters
+        ----------
+        template:
+            Jinja2 template string to evaluate server-side.
+
+        Returns
+        -------
+        str
+            The rendered plaintext result from HA.
+        """
+        client = self._get_client()
+        resp = await client.post("/api/template", json={"template": template})
+        resp.raise_for_status()
+        return resp.text
