@@ -293,17 +293,26 @@ class TestResolveGoogleCredentialsIsDbOnly:
     async def test_resolve_db_creds_take_priority_over_bootstrap_env(self) -> None:
         """When DB has credentials, bootstrap env vars are ignored (DB wins)."""
         store = _make_store_with_creds(_SHARED_CREDS)
+        ci_pool = MagicMock()
         different_env = {
             "GOOGLE_OAUTH_CLIENT_ID": "different-id-from-env",
             "GOOGLE_OAUTH_CLIENT_SECRET": "different-secret-from-env",
             "GOOGLE_REFRESH_TOKEN": "different-token-from-env",
         }
 
-        with mock.patch.dict("os.environ", different_env, clear=True):
-            result = await resolve_google_credentials(store, caller="test")
+        with (
+            mock.patch.dict("os.environ", different_env, clear=True),
+            mock.patch(
+                "butlers.google_credentials.resolve_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value=_SHARED_CREDS["refresh_token"],
+            ),
+        ):
+            result = await resolve_google_credentials(store, pool=ci_pool, caller="test")
 
         assert result.client_id == _SHARED_CREDS["client_id"]
         assert result.client_secret == _SHARED_CREDS["client_secret"]
+        assert result.refresh_token == _SHARED_CREDS["refresh_token"]
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +324,10 @@ class TestStoreAndLoadRoundTrip:
     """Verify that stored credentials are recoverable via load_google_credentials."""
 
     async def test_store_then_load_returns_same_credentials(self) -> None:
-        """Round-trip: store + load returns identical credential values via CredentialStore."""
+        """Round-trip: store + load returns identical credential values.
+
+        Refresh token is stored in and read from contact_info (not butler_secrets).
+        """
         stored: dict[str, str] = {}
 
         store = MagicMock(spec=CredentialStore)
@@ -328,23 +340,30 @@ class TestStoreAndLoadRoundTrip:
 
         store.store = AsyncMock(side_effect=fake_store)
         store.load = AsyncMock(side_effect=fake_load)
+        ci_pool = MagicMock()
 
-        # Store credentials (pool=None → refresh token goes to butler_secrets only)
-        await store_google_credentials(
-            store,
-            client_id=_SHARED_CREDS["client_id"],
-            client_secret=_SHARED_CREDS["client_secret"],
-            refresh_token=_SHARED_CREDS["refresh_token"],
-            scope=_SHARED_CREDS["scope"],
-        )
+        with (
+            patch(
+                "butlers.google_credentials.upsert_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "butlers.google_credentials.resolve_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value=_SHARED_CREDS["refresh_token"],
+            ),
+        ):
+            await store_google_credentials(
+                store,
+                pool=ci_pool,
+                client_id=_SHARED_CREDS["client_id"],
+                client_secret=_SHARED_CREDS["client_secret"],
+                refresh_token=_SHARED_CREDS["refresh_token"],
+                scope=_SHARED_CREDS["scope"],
+            )
 
-        # Refresh token is written to contact_info, not butler_secrets when pool is None.
-        # But the fallback in load_google_credentials reads from butler_secrets if contact_info
-        # returns None. For a pure round-trip, write it to the store manually.
-        stored[KEY_REFRESH_TOKEN] = _SHARED_CREDS["refresh_token"]
-
-        # Load them back (no pool = fallback to butler_secrets for refresh token)
-        result = await load_google_credentials(store)
+            result = await load_google_credentials(store, pool=ci_pool)
 
         assert result is not None
         assert result.client_id == _SHARED_CREDS["client_id"]
@@ -408,18 +427,29 @@ class TestStoreAndLoadRoundTrip:
 
         store.store = AsyncMock(side_effect=fake_store)
         store.load = AsyncMock(side_effect=fake_load)
+        ci_pool = MagicMock()
 
-        await store_google_credentials(
-            store,
-            client_id=_SHARED_CREDS["client_id"],
-            client_secret=_SHARED_CREDS["client_secret"],
-            refresh_token=_SHARED_CREDS["refresh_token"],
-            # No scope
-        )
+        with (
+            patch(
+                "butlers.google_credentials.upsert_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "butlers.google_credentials.resolve_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value=_SHARED_CREDS["refresh_token"],
+            ),
+        ):
+            await store_google_credentials(
+                store,
+                pool=ci_pool,
+                client_id=_SHARED_CREDS["client_id"],
+                client_secret=_SHARED_CREDS["client_secret"],
+                refresh_token=_SHARED_CREDS["refresh_token"],
+                # No scope
+            )
 
-        # Manually add refresh token for fallback path
-        stored[KEY_REFRESH_TOKEN] = _SHARED_CREDS["refresh_token"]
-
-        result = await load_google_credentials(store)
+            result = await load_google_credentials(store, pool=ci_pool)
         assert result is not None
         assert result.scope is None

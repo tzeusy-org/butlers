@@ -298,13 +298,12 @@ class TestLoadGoogleCredentialsWithCredentialStore:
         assert creds.refresh_token == "rtoken-from-ci"
         assert creds.scope == "gmail calendar"
 
-    async def test_falls_back_to_butler_secrets_refresh_token(self) -> None:
-        """When contact_info has no refresh token, fall back to butler_secrets."""
+    async def test_raises_when_contact_info_has_no_refresh_token(self) -> None:
+        """When contact_info has no refresh token, raise (no butler_secrets fallback)."""
         pool = _make_pool_with_values(
             {
                 KEY_CLIENT_ID: "cid",
                 KEY_CLIENT_SECRET: "csecret",
-                KEY_REFRESH_TOKEN: "rtoken-from-bs",
             }
         )
         store = CredentialStore(pool)
@@ -315,21 +314,25 @@ class TestLoadGoogleCredentialsWithCredentialStore:
             new_callable=AsyncMock,
             return_value=None,
         ):
-            creds = await load_google_credentials(store, pool=ci_pool)
-
-        assert creds is not None
-        assert creds.refresh_token == "rtoken-from-bs"
+            with pytest.raises(InvalidGoogleCredentialsError, match="refresh_token"):
+                await load_google_credentials(store, pool=ci_pool)
 
     async def test_scope_is_none_when_key_absent(self) -> None:
         pool = _make_pool_with_values(
             {
                 KEY_CLIENT_ID: "cid",
                 KEY_CLIENT_SECRET: "csecret",
-                KEY_REFRESH_TOKEN: "rtoken",
             }
         )
         store = CredentialStore(pool)
-        creds = await load_google_credentials(store)
+        ci_pool = MagicMock()
+
+        with patch(
+            "butlers.google_credentials.resolve_owner_contact_info",
+            new_callable=AsyncMock,
+            return_value="rtoken",
+        ):
+            creds = await load_google_credentials(store, pool=ci_pool)
         assert creds is not None
         assert creds.scope is None
 
@@ -351,11 +354,17 @@ class TestLoadGoogleCredentialsWithCredentialStore:
             {
                 KEY_CLIENT_ID: "cid",
                 KEY_CLIENT_SECRET: "NEVER-REVEAL",
-                KEY_REFRESH_TOKEN: "ALSO-NEVER-REVEAL",
             }
         )
         store = CredentialStore(pool)
-        creds = await load_google_credentials(store)
+        ci_pool = MagicMock()
+
+        with patch(
+            "butlers.google_credentials.resolve_owner_contact_info",
+            new_callable=AsyncMock,
+            return_value="ALSO-NEVER-REVEAL",
+        ):
+            creds = await load_google_credentials(store, pool=ci_pool)
         assert creds is not None
         r = repr(creds)
         assert "NEVER-REVEAL" not in r
@@ -451,12 +460,12 @@ class TestLoadAppCredentialsWithCredentialStore:
         assert creds.refresh_token == "rtoken-ci"
         assert creds.scope == "gmail"
 
-    async def test_falls_back_to_butler_secrets_refresh_token(self) -> None:
+    async def test_refresh_token_none_when_contact_info_empty(self) -> None:
+        """When contact_info has no refresh token, refresh_token is None (no fallback)."""
         pool = _make_pool_with_values(
             {
                 KEY_CLIENT_ID: "cid",
                 KEY_CLIENT_SECRET: "csecret",
-                KEY_REFRESH_TOKEN: "rtoken-bs",
             }
         )
         store = CredentialStore(pool)
@@ -470,7 +479,7 @@ class TestLoadAppCredentialsWithCredentialStore:
             creds = await load_app_credentials(store, pool=ci_pool)
 
         assert creds is not None
-        assert creds.refresh_token == "rtoken-bs"
+        assert creds.refresh_token is None
 
 
 # ---------------------------------------------------------------------------
@@ -485,9 +494,7 @@ class TestDeleteGoogleCredentialsWithCredentialStore:
         ci_pool = MagicMock()
 
         with (
-            patch.object(
-                store, "delete", new_callable=AsyncMock, return_value=True
-            ) as mock_del,
+            patch.object(store, "delete", new_callable=AsyncMock, return_value=True) as mock_del,
             patch(
                 "butlers.google_credentials.delete_owner_contact_info",
                 new_callable=AsyncMock,
@@ -552,12 +559,19 @@ class TestResolveGoogleCredentialsWithCredentialStore:
             {
                 KEY_CLIENT_ID: "db-cid",
                 KEY_CLIENT_SECRET: "db-csecret",
-                KEY_REFRESH_TOKEN: "db-rtoken",
             }
         )
         store = CredentialStore(pool)
-        creds = await resolve_google_credentials(store, caller="test")
+        ci_pool = MagicMock()
+
+        with patch(
+            "butlers.google_credentials.resolve_owner_contact_info",
+            new_callable=AsyncMock,
+            return_value="db-rtoken",
+        ):
+            creds = await resolve_google_credentials(store, pool=ci_pool, caller="test")
         assert creds.client_id == "db-cid"
+        assert creds.refresh_token == "db-rtoken"
 
     async def test_raises_when_no_db_data(self) -> None:
         pool = _make_empty_pool()

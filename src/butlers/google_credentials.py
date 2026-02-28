@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 
 KEY_CLIENT_ID = "GOOGLE_OAUTH_CLIENT_ID"
 KEY_CLIENT_SECRET = "GOOGLE_OAUTH_CLIENT_SECRET"
-KEY_REFRESH_TOKEN = "GOOGLE_REFRESH_TOKEN"  # kept for backward compat references
+KEY_REFRESH_TOKEN = "GOOGLE_REFRESH_TOKEN"  # legacy key; delete() still cleans it up
 KEY_SCOPES = "GOOGLE_OAUTH_SCOPES"
 
 _GOOGLE_CATEGORY = "google"
@@ -244,12 +244,10 @@ async def load_google_credentials(
     client_secret = await store.load(KEY_CLIENT_SECRET)
     scope = await store.load(KEY_SCOPES)
 
-    # Refresh token from contact_info (primary) or butler_secrets (fallback)
+    # Refresh token from owner contact_info (exclusively)
     refresh_token: str | None = None
     if pool is not None:
         refresh_token = await resolve_owner_contact_info(pool, CONTACT_INFO_REFRESH_TOKEN)
-    if not refresh_token:
-        refresh_token = await store.load(KEY_REFRESH_TOKEN)
 
     missing = [
         field
@@ -346,7 +344,7 @@ async def load_app_credentials(
         A :class:`~butlers.credential_store.CredentialStore`.
     pool:
         An asyncpg pool for the shared database (for contact_info reads).
-        When ``None``, refresh_token is read from butler_secrets only.
+        When ``None``, refresh_token will be ``None``.
     """
     client_id = await store.load(KEY_CLIENT_ID)
     client_secret = await store.load(KEY_CLIENT_SECRET)
@@ -354,12 +352,10 @@ async def load_app_credentials(
     if not client_id or not client_secret:
         return None
 
-    # Refresh token from contact_info (primary) or butler_secrets (fallback)
+    # Refresh token from owner contact_info (exclusively)
     refresh_token: str | None = None
     if pool is not None:
         refresh_token = await resolve_owner_contact_info(pool, CONTACT_INFO_REFRESH_TOKEN)
-    if not refresh_token:
-        refresh_token = await store.load(KEY_REFRESH_TOKEN)
 
     scope = await store.load(KEY_SCOPES)
 
@@ -396,11 +392,11 @@ async def delete_google_credentials(
     results = [
         await store.delete(KEY_CLIENT_ID),
         await store.delete(KEY_CLIENT_SECRET),
-        await store.delete(KEY_REFRESH_TOKEN),
+        await store.delete(KEY_REFRESH_TOKEN),  # legacy cleanup
         await store.delete(KEY_SCOPES),
     ]
 
-    # Also delete from contact_info
+    # Refresh token lives in contact_info
     if pool is not None:
         ci_deleted = await delete_owner_contact_info(pool, CONTACT_INFO_REFRESH_TOKEN)
         results.append(ci_deleted)

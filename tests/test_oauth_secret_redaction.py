@@ -198,14 +198,21 @@ class TestLoadCredentialsLogRedaction:
             return {
                 "GOOGLE_OAUTH_CLIENT_ID": "pub-id",
                 "GOOGLE_OAUTH_CLIENT_SECRET": _CLIENT_SECRET,
-                "GOOGLE_REFRESH_TOKEN": _SECRET_VALUE,
                 "GOOGLE_OAUTH_SCOPES": None,
             }.get(key)
 
         store.load = AsyncMock(side_effect=fake_load)
+        ci_pool = MagicMock()
 
-        with caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"):
-            await load_google_credentials(store)
+        with (
+            caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"),
+            patch(
+                "butlers.google_credentials.resolve_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value=_SECRET_VALUE,
+            ),
+        ):
+            await load_google_credentials(store, pool=ci_pool)
 
         assert _CLIENT_SECRET not in caplog.text
         assert _SECRET_VALUE not in caplog.text
@@ -218,14 +225,21 @@ class TestLoadCredentialsLogRedaction:
             return {
                 "GOOGLE_OAUTH_CLIENT_ID": "pub-id",
                 "GOOGLE_OAUTH_CLIENT_SECRET": _CLIENT_SECRET,
-                "GOOGLE_REFRESH_TOKEN": _SECRET_VALUE,
                 "GOOGLE_OAUTH_SCOPES": None,
             }.get(key)
 
         store.load = AsyncMock(side_effect=fake_load)
+        ci_pool = MagicMock()
 
-        with caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"):
-            await resolve_google_credentials(store, caller="test")
+        with (
+            caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"),
+            patch(
+                "butlers.google_credentials.resolve_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value=_SECRET_VALUE,
+            ),
+        ):
+            await resolve_google_credentials(store, pool=ci_pool, caller="test")
 
         assert _CLIENT_SECRET not in caplog.text
         assert _SECRET_VALUE not in caplog.text
