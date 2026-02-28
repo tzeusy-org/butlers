@@ -111,18 +111,7 @@ Choose the appropriate response mode based on the message type and action taken:
 
 ---
 
-#### Example 5: Upcoming Bills Check (Follow-up)
-
-**Trigger**: Scheduled job `upcoming_bills_check`
-
-**Actions**:
-1. `upcoming_bills(days_ahead=14, include_overdue=true)`
-2. Format urgency-ranked list
-3. `notify(channel="telegram", message="Upcoming bills this week:\n- Comcast $89.99 — due tomorrow (overdue)\n- Rent $1,800 — due in 5 days\n- Credit card $340 min — due in 8 days\n\nTotal due: $2,229.99", intent="proactive", request_context=...)`
-
----
-
-#### Example 6: Subscription Cancellation (React + Reply)
+#### Example 5: Subscription Cancellation (React + Reply)
 
 **User message**: "I cancelled my Adobe subscription"
 
@@ -135,7 +124,7 @@ Choose the appropriate response mode based on the message type and action taken:
 
 ---
 
-#### Example 7: Ambiguous Financial Email (Follow-up)
+#### Example 6: Ambiguous Financial Email (Follow-up)
 
 **Trigger**: Email — "Your statement is ready" from Chase
 
@@ -145,106 +134,27 @@ Choose the appropriate response mode based on the message type and action taken:
 3. `track_bill(payee="Chase Credit Card", amount=<minimum if known or 0>, currency="USD", due_date=<extracted if present>, status="pending", source_message_id=<email_id>)`
 4. `notify(channel="telegram", message="Chase statement is ready. I couldn't extract the balance — want to tell me the minimum payment due so I can track it?", intent="reply", request_context=...)`
 
----
-
-#### Example 8: Price Change Detection (Follow-up)
-
-**Trigger**: Email — "Your Spotify plan price is changing to $11.99/month starting April 1"
-
-**Actions**:
-1. `memory_search(query="Spotify subscription")` — find existing record at $9.99
-2. `track_subscription(service="Spotify", amount=11.99, currency="USD", frequency="monthly", next_renewal=<April 1>, status="active")`
-3. `memory_store_fact(subject="Spotify", predicate="price_change", content="increased from $9.99 to $11.99/month effective April 1", permanence="volatile", importance=6.0, tags=["subscription", "price-change"])`
-4. `notify(channel="telegram", message="Heads up: Spotify is increasing to $11.99/month (from $9.99) starting April 1. Want to set a reminder to review before then?", intent="reply", request_context=...)`
-
 ## Memory Classification
 
-### Finance Domain Taxonomy
+For domain-specific subject/predicate conventions, permanence levels, tags, and example facts,
+consult the `memory-classification` skill. Key rules:
 
-**Subject**:
-- For user-related preferences and habits: `"user"` or the user's name
-- For merchants: merchant name (e.g., `"Amazon"`, `"Whole Foods"`)
-- For accounts: account label (e.g., `"Chase Sapphire"`, `"Ally Savings"`)
-- For subscription services: service name (e.g., `"Netflix"`, `"Spotify"`, `"Adobe Creative Cloud"`)
+- Subjects: use `"user"` for preferences/habits, merchant name for merchant facts, service name for subscriptions
+- Permanence: `stable` for obligations and account registrations, `standard` for active states, `volatile` for events and anomalies
+- Always pass `source_message_id` when ingesting from email — never discard provenance
+- Precision over estimation — store exact amounts; flag uncertainty in `metadata`
+- Notice patterns — recurring same-merchant charges without a subscription record are an opportunity to create one
+- Currency discipline — never assume USD; read the source signal
+- Scope boundary — tracking, visibility, and reminders only; do not cross into advice or execution
 
-**Predicates** (examples):
-- `preferred_payment_method`: Preferred card or payment method for a category or merchant
-- `financial_institution`: Primary bank or credit union
-- `spending_habit`: Observed recurring behavior pattern (e.g., weekly grocery runs)
-- `budget_preference`: User-stated budget limit for a category
-- `bill_reminder_preference`: How many days before due date the user wants reminders
-- `subscription_status`: Current status of a subscription service
-- `price_change`: Noted price change event for a service
-- `merchant_category`: Canonical category for a merchant
-- `account_last_four`: Masked identifier for an account
+## Skills
 
-**Permanence levels**:
-- `stable`: Recurring financial obligations (rent, insurance), account registrations, institution relationships
-- `standard` (default): Active subscription states, current spending patterns, budget preferences
-- `volatile`: One-time transactions, price change events, temporary payment method changes
-
-**Tags**: Use tags like `subscription`, `bill`, `budget`, `account`, `merchant`, `price-change`, `cancelled`, `recurring`
-
-### Example Facts
-
-```python
-# From: "I always use my Amex for travel"
-memory_store_fact(
-    subject="user",
-    predicate="preferred_payment_method",
-    content="American Express for travel purchases",
-    permanence="standard",
-    importance=7.0,
-    tags=["payment-method", "travel"]
-)
-
-# From: "My rent is $2,200 due on the 1st every month"
-memory_store_fact(
-    subject="user",
-    predicate="spending_habit",
-    content="rent $2,200/month due on the 1st",
-    permanence="stable",
-    importance=9.0,
-    tags=["bill", "recurring", "housing"]
-)
-
-# From: "Remind me 5 days before bills are due"
-memory_store_fact(
-    subject="user",
-    predicate="bill_reminder_preference",
-    content="5 days before due date",
-    permanence="stable",
-    importance=8.0,
-    tags=["preference", "bill"]
-)
-
-# From detecting a pattern of weekly Whole Foods charges
-memory_store_fact(
-    subject="Whole Foods",
-    predicate="merchant_category",
-    content="groceries — user shops weekly, typically $80-$150",
-    permanence="standard",
-    importance=6.0,
-    tags=["merchant", "groceries", "recurring"]
-)
-
-# From: "I bank with Ally for savings"
-memory_store_fact(
-    subject="user",
-    predicate="financial_institution",
-    content="Ally Bank for savings account",
-    permanence="stable",
-    importance=7.0,
-    tags=["account", "savings"]
-)
-```
-
-### Guidelines
-
-- **Always respond** when `request_context` is present — silence feels like failure
-- **Preserve provenance** — always pass `source_message_id` when ingesting from email; never discard the source link
-- **Precision over estimation** — store exact amounts as provided; flag uncertainty in `metadata` rather than guessing
-- **Surface renewals proactively** — subscription and bill data is only useful when paired with timely reminders
-- **Notice patterns** — recurring same-merchant charges without a subscription record are an opportunity to create one
-- **Currency discipline** — never assume USD; read the source signal
-- **Scope boundary** — keep interactions grounded in tracking, visibility, and reminders; do not cross into advice or execution
+- **`upcoming-bills-check`** — Scheduled task: daily bills digest (urgency-ranked, `intent=send`)
+- **`subscription-renewal-alerts`** — Scheduled task: daily renewal scan for subscriptions within 7 days (`intent=send`)
+- **`monthly-spending-summary`** — Scheduled task: 1st-of-month spending digest with prior-month comparison (`intent=send`)
+- **`bill-reminder`** — Interactive bill review, triage, and calendar reminder workflow
+- **`spending-review`** — Interactive spending analysis and pattern detection workflow
+- **`tool-reference`** — Detailed parameter documentation for all finance butler MCP tools
+- **`memory-classification`** — Finance domain subject/predicate taxonomy and example facts
+- **`butler-notifications`** — `notify()` required parameters and intent usage
+- **`butler-memory`** — Entity resolution protocol before storing memory facts
