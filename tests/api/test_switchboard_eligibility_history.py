@@ -132,9 +132,7 @@ class TestEligibilityHistory:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(
-                "/api/switchboard/registry/health/eligibility-history?hours=48"
-            )
+            resp = await client.get("/api/switchboard/registry/health/eligibility-history?hours=48")
 
         assert resp.status_code == 200
         # Verify the fetch call used the correct window

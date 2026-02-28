@@ -635,9 +635,7 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
         )
         return None
     except Exception as exc:
-        logger.warning(
-            "Telegram user-client connector: DB credential lookup failed: %s", exc
-        )
+        logger.warning("Telegram user-client connector: DB credential lookup failed: %s", exc)
         return None
     finally:
         for _, pool in connected_pools:
