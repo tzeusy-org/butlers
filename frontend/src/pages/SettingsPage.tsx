@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type FormEvent, useState } from "react";
 
 import type { OAuthCredentialState } from "@/api/index.ts";
 import { getOAuthStartUrl } from "@/api/index.ts";
@@ -21,6 +21,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -33,6 +35,7 @@ import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 import {
   useDeleteGoogleCredentials,
   useGoogleCredentialStatus,
+  useUpsertGoogleCredentials,
 } from "@/hooks/use-secrets";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { RECENT_SEARCHES_KEY } from "@/lib/local-settings";
@@ -115,6 +118,74 @@ function PresenceRow({
         </Badge>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// App credentials input form (client_id + client_secret)
+// ---------------------------------------------------------------------------
+
+function AppCredentialsForm() {
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const upsertMutation = useUpsertGoogleCredentials();
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSaved(false);
+    try {
+      await upsertMutation.mutateAsync({ client_id: clientId.trim(), client_secret: clientSecret.trim() });
+      setClientId("");
+      setClientSecret("");
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save credentials.");
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="space-y-1">
+        <Label htmlFor="google-client-id">Client ID</Label>
+        <Input
+          id="google-client-id"
+          type="text"
+          placeholder="Enter Google OAuth client ID"
+          value={clientId}
+          onChange={(e) => { setClientId(e.target.value); setSaved(false); }}
+          autoComplete="off"
+          required
+        />
+      </div>
+      <div className="space-y-1">
+        <Label htmlFor="google-client-secret">Client Secret</Label>
+        <Input
+          id="google-client-secret"
+          type="password"
+          placeholder="Enter Google OAuth client secret"
+          value={clientSecret}
+          onChange={(e) => { setClientSecret(e.target.value); setSaved(false); }}
+          autoComplete="new-password"
+          required
+        />
+      </div>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      {saved && (
+        <p className="text-sm text-green-600 dark:text-green-400">
+          App credentials saved successfully.
+        </p>
+      )}
+      <Button
+        type="submit"
+        size="sm"
+        disabled={upsertMutation.isPending || !clientId.trim() || !clientSecret.trim()}
+      >
+        {upsertMutation.isPending ? "Saving..." : "Save app credentials"}
+      </Button>
+    </form>
   );
 }
 
@@ -254,6 +325,28 @@ function GoogleOAuthCard() {
 
         <div className="border-t border-border" />
 
+        {/* App credentials input form */}
+        <div className="space-y-2">
+          <p className="text-sm font-medium">
+            {canStartOAuth ? "Update app credentials" : "Configure app credentials"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Enter your Google OAuth app credentials from the{" "}
+            <a
+              href="https://console.cloud.google.com/apis/credentials"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2"
+            >
+              Google Cloud Console
+            </a>
+            . These are required before starting the OAuth authorization flow.
+          </p>
+          <AppCredentialsForm />
+        </div>
+
+        <div className="border-t border-border" />
+
         {/* Connect / Re-connect */}
         <div className="flex items-center gap-4">
           <a
@@ -277,8 +370,7 @@ function GoogleOAuthCard() {
           </a>
           {!canStartOAuth && !isLoading && (
             <p className="text-sm text-muted-foreground">
-              Configure GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in
-              Secrets before connecting.
+              Save your app credentials above before connecting.
             </p>
           )}
           {credStatus?.oauth_health === "connected" && (
