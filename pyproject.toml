@@ -73,11 +73,12 @@ asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests", "roster"]
 # importlib mode avoids module-name collisions when multiple butler test
 # directories contain identically-named files (e.g. test_tools.py).
-addopts = "--import-mode=importlib"
+addopts = "--import-mode=importlib -m 'not nightly'"
 markers = [
     "unit: Pure unit tests — no Docker, no external services",
     "integration: Integration tests — require Docker (testcontainers)",
     "e2e: End-to-end tests — require ANTHROPIC_API_KEY, claude binary, and Docker",
+    "nightly: Long-running tests excluded from default CI (run with -m nightly)",
 ]
 filterwarnings = [
     # Third-party websockets/uvicorn deprecation: tracked upstream, not actionable here

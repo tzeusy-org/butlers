@@ -841,25 +841,25 @@ class TestGmailPubSubIngestion:
         }
         mock_history_response.raise_for_status = MagicMock()
 
+        # Stop the loop after the first _ingest_messages call to avoid blocking
+        # on the next queue.get() wait, eliminating real wall-clock delay.
+        async def ingest_and_stop(message_ids: list[str]) -> None:
+            runtime._running = False
+
         with (
             patch.object(runtime, "_http_client", new=AsyncMock()) as mock_client,
             patch.object(runtime, "_get_access_token", new=AsyncMock(return_value="token")),
-            patch.object(runtime, "_ingest_messages", new=AsyncMock()) as mock_ingest,
+            patch.object(
+                runtime, "_ingest_messages", new=AsyncMock(side_effect=ingest_and_stop)
+            ) as mock_ingest,
         ):
             mock_client.get = AsyncMock(return_value=mock_history_response)
 
             # Queue a notification
             await runtime._notification_queue.put({"message": {"data": "test"}})
 
-            # Run one iteration of the loop
-            async def run_one_iteration() -> None:
-                # Simulate one loop iteration with timeout
-                try:
-                    await asyncio.wait_for(runtime._run_pubsub_ingestion_loop(), timeout=2.0)
-                except TimeoutError:
-                    runtime._running = False
-
-            await run_one_iteration()
+            # Run the loop — it stops itself after processing the first notification.
+            await runtime._run_pubsub_ingestion_loop()
 
             # Should have fetched history and ingested messages
             mock_client.get.assert_called()
@@ -896,6 +896,17 @@ class TestGmailPubSubIngestion:
         mock_history_response.json.return_value = {"history": []}
         mock_history_response.raise_for_status = MagicMock()
 
+        # Patch asyncio.wait_for in the gmail module so the queue.get() timeout
+        # fires immediately (no real wall-clock wait) and triggers fallback logic.
+        async def instant_timeout(coro: object, **kwargs: object) -> object:
+            coro.close()  # type: ignore[union-attr]
+            raise TimeoutError
+
+        # Stop the loop after the first HTTP history fetch to avoid looping forever.
+        async def get_and_stop(*args: object, **kwargs: object) -> MagicMock:
+            runtime._running = False
+            return mock_history_response
+
         with (
             patch.object(runtime, "_http_client", new=AsyncMock()) as mock_client,
             patch.object(runtime, "_get_access_token", new=AsyncMock(return_value="token")),
@@ -903,18 +914,13 @@ class TestGmailPubSubIngestion:
                 "time.time",
                 side_effect=[0, 301] + [302 + i for i in range(100)],
             ),  # last_poll_time=0, current_time=301 (triggers fallback), then continuous time
+            patch("butlers.connectors.gmail.asyncio.wait_for", side_effect=instant_timeout),
         ):
-            mock_client.get = AsyncMock(return_value=mock_history_response)
+            mock_client.get = AsyncMock(side_effect=get_and_stop)
 
-            # Run one iteration that should timeout and trigger fallback poll
-            async def run_one_iteration() -> None:
-                # Process just enough to trigger fallback
-                try:
-                    await asyncio.wait_for(runtime._run_pubsub_ingestion_loop(), timeout=3.0)
-                except TimeoutError:
-                    runtime._running = False
-
-            await run_one_iteration()
+            # Run the loop — instant_timeout short-circuits queue.get(), triggering fallback.
+            # get_and_stop sets _running=False after the first history fetch.
+            await runtime._run_pubsub_ingestion_loop()
 
             # Should have done at least one history fetch (fallback poll)
             assert mock_client.get.called

@@ -43,7 +43,13 @@ pytestmark = pytest.mark.unit
 EXPECTED_HA_TOOLS = {
     "ha_get_entity_state",
     "ha_list_entities",
+    "ha_list_areas",
+    "ha_list_services",
+    "ha_get_history",
+    "ha_get_statistics",
+    "ha_render_template",
     "ha_call_service",
+    "ha_activate_scene",
 }
 
 
@@ -438,7 +444,7 @@ class TestToolRegistration:
     async def test_registers_expected_tools(
         self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
     ) -> None:
-        """register_tools creates ha_get_entity_state, ha_list_entities, ha_call_service."""
+        """register_tools creates all 8 expected HA query and control tools."""
         await ha_module.register_tools(
             mcp=mock_mcp,
             config={"url": "http://ha.local"},
@@ -2038,25 +2044,55 @@ class TestGetEntityStateValidation:
         """Valid entity_id with underscores passes validation."""
         mock_resp = MagicMock()
         mock_resp.status_code = 404
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_resp)
-        ha_module._client = mock_client
+# _list_areas — area registry query tool
+# ---------------------------------------------------------------------------
 
-        # Should not raise — entity_id is valid format even if not found
-        result = await ha_module._get_entity_state("sensor.living_room_temperature")
-        assert result is None
 
-    async def test_entity_id_no_dot_raises_value_error(
+class TestListAreas:
+    """Verify _list_areas returns sorted area list from the cache."""
+
+    async def test_list_areas_sorted_by_name(self, ha_module: HomeAssistantModule) -> None:
+        """_list_areas returns areas sorted alphabetically by name."""
+        ha_module._area_cache = {
+            "kitchen": CachedArea(area_id="kitchen", name="Kitchen"),
+            "attic": CachedArea(area_id="attic", name="Attic"),
+            "bedroom": CachedArea(area_id="bedroom", name="Bedroom"),
+        }
+
+        result = await ha_module._list_areas()
+
+        names = [a["name"] for a in result]
+        assert names == sorted(names)
+        assert names == ["Attic", "Bedroom", "Kitchen"]
+
+    async def test_list_areas_empty_cache_returns_empty(
         self, ha_module: HomeAssistantModule
     ) -> None:
-        """entity_id without a dot (no domain separator) raises ValueError."""
-        with pytest.raises(ValueError, match="Invalid entity_id"):
-            await ha_module._get_entity_state("nodomain")
+        """_list_areas returns an empty list when the area cache is empty."""
+        ha_module._area_cache = {}
 
-    async def test_empty_entity_id_raises_value_error(self, ha_module: HomeAssistantModule) -> None:
-        """Empty entity_id raises ValueError."""
-        with pytest.raises(ValueError, match="Invalid entity_id"):
-            await ha_module._get_entity_state("")
+        result = await ha_module._list_areas()
+
+        assert result == []
+
+    async def test_list_areas_includes_area_id_and_name(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Each area in the result has area_id and name keys."""
+        ha_module._area_cache = {
+            "living_room": CachedArea(area_id="living_room", name="Living Room"),
+        }
+
+        result = await ha_module._list_areas()
+
+        assert len(result) == 1
+        assert result[0]["area_id"] == "living_room"
+        assert result[0]["name"] == "Living Room"
+
+
+# ---------------------------------------------------------------------------
+# _list_services — service catalog tool
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -2194,3 +2230,992 @@ class TestToolMetadataCompleteness:
         """ha_get_entity_state has no explicit sensitivity — not in tool_metadata."""
         meta = ha_module.tool_metadata()
         assert "ha_get_entity_state" not in meta
+
+
+# ---------------------------------------------------------------------------
+# _list_services — service catalog query tool
+# ---------------------------------------------------------------------------
+
+
+class TestListServices:
+    """Verify _list_services queries HA for available services."""
+
+    async def test_list_services_no_filter(self, ha_module: HomeAssistantModule) -> None:
+        """_list_services returns all services when no domain filter is applied."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [
+            {"domain": "light", "services": {"turn_on": {}, "turn_off": {}}},
+            {"domain": "switch", "services": {"turn_on": {}, "turn_off": {}}},
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._list_services()
+
+        mock_client.get.assert_awaited_once_with("/api/services")
+        assert len(result) == 2
+
+    async def test_list_services_domain_filter(self, ha_module: HomeAssistantModule) -> None:
+        """_list_services filters by domain when domain param is provided."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [
+            {"domain": "light", "services": {"turn_on": {}}},
+            {"domain": "switch", "services": {"turn_on": {}}},
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._list_services(domain="light")
+
+        assert len(result) == 1
+        assert result[0]["domain"] == "light"
+
+    async def test_list_services_falls_back_to_ws(self, ha_module: HomeAssistantModule) -> None:
+        """_list_services uses WebSocket get_services when REST client is unavailable."""
+        ha_module._client = None
+        ha_module._ws_connected = True
+
+        ws_result = {
+            "light": {"turn_on": {}, "turn_off": {}},
+            "switch": {"turn_on": {}},
+        }
+        with patch.object(
+            ha_module, "_ws_command", new=AsyncMock(return_value=ws_result)
+        ) as mock_cmd:
+            result = await ha_module._list_services()
+
+        mock_cmd.assert_awaited_once()
+        sent_cmd = mock_cmd.call_args.args[0]
+        assert sent_cmd["type"] == "get_services"
+        assert len(result) == 2
+        domains = {entry["domain"] for entry in result}
+        assert domains == {"light", "switch"}
+
+    async def test_list_services_raises_when_no_client_and_no_ws(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_list_services raises RuntimeError when neither REST nor WebSocket is available."""
+        ha_module._client = None
+        ha_module._ws_connected = False
+
+        with pytest.raises(RuntimeError, match="cannot list services"):
+            await ha_module._list_services()
+
+    async def test_list_services_domain_filter_with_ws_fallback(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Domain filter still applies when using the WebSocket fallback path."""
+        ha_module._client = None
+        ha_module._ws_connected = True
+
+        ws_result = {
+            "light": {"turn_on": {}},
+            "switch": {"turn_on": {}},
+        }
+        with patch.object(ha_module, "_ws_command", new=AsyncMock(return_value=ws_result)):
+            result = await ha_module._list_services(domain="switch")
+
+        assert len(result) == 1
+        assert result[0]["domain"] == "switch"
+
+
+# ---------------------------------------------------------------------------
+# _get_history — history API tool
+# ---------------------------------------------------------------------------
+
+
+class TestGetHistory:
+    """Verify _get_history constructs the correct REST request."""
+
+    async def test_get_history_calls_rest(self, ha_module: HomeAssistantModule) -> None:
+        """_get_history calls GET /api/history/period/<start> with correct params."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [[{"state": "on", "last_changed": "2026-02-01T00:00:00Z"}]]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._get_history(
+            entity_ids=["light.kitchen"],
+            start="2026-02-01T00:00:00Z",
+        )
+
+        mock_client.get.assert_awaited_once()
+        call_args = mock_client.get.call_args
+        assert "/api/history/period/2026-02-01T00:00:00Z" in call_args.args[0]
+        params = call_args.kwargs.get("params", {})
+        assert "light.kitchen" in params["filter_entity_id"]
+        assert "minimal_response" in params
+        assert "significant_changes_only" in params
+        assert result == [[{"state": "on", "last_changed": "2026-02-01T00:00:00Z"}]]
+
+    async def test_get_history_with_end_time(self, ha_module: HomeAssistantModule) -> None:
+        """_get_history includes end_time parameter when end is provided."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = []
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._get_history(
+            entity_ids=["sensor.temp"],
+            start="2026-02-01T00:00:00Z",
+            end="2026-02-02T00:00:00Z",
+        )
+
+        call_args = mock_client.get.call_args
+        params = call_args.kwargs.get("params", {})
+        assert params.get("end_time") == "2026-02-02T00:00:00Z"
+
+    async def test_get_history_raises_for_empty_entity_ids(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_history raises ValueError when entity_ids is empty."""
+        ha_module._client = AsyncMock()
+
+        with pytest.raises(ValueError, match="at least one entity_id"):
+            await ha_module._get_history(entity_ids=[], start="2026-02-01T00:00:00Z")
+
+    async def test_get_history_multiple_entity_ids(self, ha_module: HomeAssistantModule) -> None:
+        """_get_history includes all entity IDs comma-separated in filter_entity_id."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [[], []]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._get_history(
+            entity_ids=["sensor.a", "sensor.b"],
+            start="2026-02-01T00:00:00Z",
+        )
+
+        params = mock_client.get.call_args.kwargs.get("params", {})
+        assert params["filter_entity_id"] == "sensor.a,sensor.b"
+
+    async def test_get_history_rejects_path_traversal_start(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_history raises ValueError for start values containing path traversal."""
+        ha_module._client = AsyncMock()
+
+        with pytest.raises(ValueError, match="ISO 8601"):
+            await ha_module._get_history(
+                entity_ids=["sensor.temp"],
+                start="../../../api/config",
+            )
+
+    async def test_get_history_rejects_invalid_iso8601_start(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_history raises ValueError for start values that are not ISO 8601."""
+        ha_module._client = AsyncMock()
+
+        with pytest.raises(ValueError, match="ISO 8601"):
+            await ha_module._get_history(
+                entity_ids=["sensor.temp"],
+                start="not-a-timestamp",
+            )
+
+    async def test_get_history_url_encodes_plus_timezone(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_history percent-encodes + in timezone offsets so the URL path is valid."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = []
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._get_history(
+            entity_ids=["sensor.temp"],
+            start="2026-02-01T00:00:00+01:00",
+        )
+
+        call_args = mock_client.get.call_args
+        url_path = call_args.args[0]
+        # + must be percent-encoded as %2B in the URL path segment
+        assert "%2B" in url_path, f"Expected %2B in URL path, got: {url_path}"
+        assert "+" not in url_path, f"Unencoded + found in URL path: {url_path}"
+
+
+# ---------------------------------------------------------------------------
+# _get_statistics — recorder statistics tool
+# ---------------------------------------------------------------------------
+
+
+_VALID_PERIODS = ["5minute", "hour", "day", "week", "month"]
+
+
+class TestGetStatistics:
+    """Verify _get_statistics sends the correct WebSocket command."""
+
+    async def test_get_statistics_sends_ws_command(self, ha_module: HomeAssistantModule) -> None:
+        """_get_statistics sends recorder/get_statistics_during_period WS command."""
+        expected_result = {"sensor.energy": [{"mean": 1.5, "sum": 36.0}]}
+        ha_module._ws_connected = True
+
+        with patch.object(
+            ha_module, "_ws_command", new=AsyncMock(return_value=expected_result)
+        ) as mock_cmd:
+            result = await ha_module._get_statistics(
+                statistic_ids=["sensor.energy"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-28T00:00:00Z",
+                period="day",
+            )
+
+        mock_cmd.assert_awaited_once()
+        sent = mock_cmd.call_args.args[0]
+        assert sent["type"] == "recorder/get_statistics_during_period"
+        assert sent["statistic_ids"] == ["sensor.energy"]
+        assert sent["start_time"] == "2026-02-01T00:00:00Z"
+        assert sent["end_time"] == "2026-02-28T00:00:00Z"
+        assert sent["period"] == "day"
+        assert result == expected_result
+
+    async def test_get_statistics_default_period_is_hour(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Default period is 'hour' when not specified."""
+        ha_module._ws_connected = True
+
+        with patch.object(ha_module, "_ws_command", new=AsyncMock(return_value={})) as mock_cmd:
+            await ha_module._get_statistics(
+                statistic_ids=["sensor.temp"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-02T00:00:00Z",
+            )
+
+        sent = mock_cmd.call_args.args[0]
+        assert sent["period"] == "hour"
+
+    @pytest.mark.parametrize("period", _VALID_PERIODS)
+    async def test_get_statistics_valid_periods(
+        self, ha_module: HomeAssistantModule, period: str
+    ) -> None:
+        """_get_statistics accepts all valid period values without raising."""
+        ha_module._ws_connected = True
+
+        with patch.object(ha_module, "_ws_command", new=AsyncMock(return_value={})):
+            # Must not raise
+            await ha_module._get_statistics(
+                statistic_ids=["sensor.temp"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-02T00:00:00Z",
+                period=period,
+            )
+
+    async def test_get_statistics_invalid_period_raises(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_statistics raises ValueError for invalid period values."""
+        with pytest.raises(ValueError, match="Invalid period"):
+            await ha_module._get_statistics(
+                statistic_ids=["sensor.temp"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-02T00:00:00Z",
+                period="yearly",
+            )
+
+    async def test_get_statistics_includes_types(self, ha_module: HomeAssistantModule) -> None:
+        """_get_statistics command includes the expected types list."""
+        ha_module._ws_connected = True
+
+        with patch.object(ha_module, "_ws_command", new=AsyncMock(return_value={})) as mock_cmd:
+            await ha_module._get_statistics(
+                statistic_ids=["sensor.energy"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-02T00:00:00Z",
+                period="hour",
+            )
+
+        sent = mock_cmd.call_args.args[0]
+        assert set(sent["types"]) == {"mean", "min", "max", "sum", "state"}
+
+
+# ---------------------------------------------------------------------------
+# _render_template — template rendering tool
+# ---------------------------------------------------------------------------
+
+
+class TestRenderTemplate:
+    """Verify _render_template calls POST /api/template and returns rendered text."""
+
+    async def test_render_template_calls_rest(self, ha_module: HomeAssistantModule) -> None:
+        """_render_template calls POST /api/template with the template body."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = "23.5 °C"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._render_template(template="{{ states('sensor.temperature') }} °C")
+
+        mock_client.post.assert_awaited_once()
+        call_args = mock_client.post.call_args
+        assert call_args.args[0] == "/api/template"
+        body = call_args.kwargs.get("json", {})
+        assert body["template"] == "{{ states('sensor.temperature') }} °C"
+        assert result == "23.5 °C"
+
+    async def test_render_template_returns_string(self, ha_module: HomeAssistantModule) -> None:
+        """_render_template returns the response text as a plain string."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = "Hello World"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._render_template(template="Hello World")
+
+        assert isinstance(result, str)
+        assert result == "Hello World"
+
+    async def test_render_template_raises_without_client(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_render_template raises RuntimeError when the HTTP client is not initialized."""
+        ha_module._client = None
+
+        with pytest.raises(RuntimeError, match="not initialised"):
+            await ha_module._render_template(template="{{ now() }}")
+
+
+# ---------------------------------------------------------------------------
+# Query tools registered via MCP — integration smoke tests
+# ---------------------------------------------------------------------------
+
+
+class TestQueryToolsMcpRegistration:
+    """Verify query tools are callable through the MCP registration layer."""
+
+    async def test_ha_list_areas_callable_via_mcp(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """ha_list_areas registered tool delegates to _list_areas."""
+        await ha_module.register_tools(mcp=mock_mcp, config={"url": "http://ha.local"}, db=None)
+        ha_module._area_cache = {
+            "kitchen": CachedArea(area_id="kitchen", name="Kitchen"),
+        }
+
+        tool_fn = mock_mcp._registered_tools["ha_list_areas"]
+        result = await tool_fn()
+
+        assert len(result) == 1
+        assert result[0]["area_id"] == "kitchen"
+
+    async def test_ha_list_services_callable_via_mcp(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """ha_list_services registered tool delegates to _list_services."""
+        await ha_module.register_tools(mcp=mock_mcp, config={"url": "http://ha.local"}, db=None)
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [{"domain": "light", "services": {}}]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        tool_fn = mock_mcp._registered_tools["ha_list_services"]
+        result = await tool_fn()
+
+        assert len(result) == 1
+        assert result[0]["domain"] == "light"
+
+    async def test_ha_get_history_callable_via_mcp(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """ha_get_history registered tool delegates to _get_history."""
+        await ha_module.register_tools(mcp=mock_mcp, config={"url": "http://ha.local"}, db=None)
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [[{"state": "on"}]]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        tool_fn = mock_mcp._registered_tools["ha_get_history"]
+        result = await tool_fn(entity_ids=["light.kitchen"], start="2026-02-01T00:00:00Z")
+
+        assert result == [[{"state": "on"}]]
+
+    async def test_ha_get_statistics_callable_via_mcp(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """ha_get_statistics registered tool delegates to _get_statistics."""
+        await ha_module.register_tools(mcp=mock_mcp, config={"url": "http://ha.local"}, db=None)
+        ha_module._ws_connected = True
+        expected = {"sensor.energy": []}
+
+        with patch.object(ha_module, "_ws_command", new=AsyncMock(return_value=expected)):
+            tool_fn = mock_mcp._registered_tools["ha_get_statistics"]
+            result = await tool_fn(
+                statistic_ids=["sensor.energy"],
+                start="2026-02-01T00:00:00Z",
+                end="2026-02-28T00:00:00Z",
+            )
+
+        assert result == expected
+
+    async def test_ha_render_template_callable_via_mcp(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """ha_render_template registered tool delegates to _render_template."""
+        await ha_module.register_tools(mcp=mock_mcp, config={"url": "http://ha.local"}, db=None)
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.text = "rendered"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        tool_fn = mock_mcp._registered_tools["ha_render_template"]
+        result = await tool_fn(template="{{ now() }}")
+
+        assert result == "rendered"
+
+
+# ---------------------------------------------------------------------------
+# _call_service — command logging
+# ---------------------------------------------------------------------------
+
+
+class TestCallServiceCommandLogging:
+    """Verify _call_service logs to ha_command_log on success and failure."""
+
+    def _make_mock_db(self) -> MagicMock:
+        """Build a mock DB with an asyncpg pool."""
+        pool = AsyncMock()
+        pool.execute = AsyncMock()
+        db = MagicMock()
+        db.pool = pool
+        return db
+
+    def _make_http_response(
+        self,
+        status_code: int = 200,
+        body: Any = None,
+        content: bytes | None = None,
+    ) -> MagicMock:
+        """Build a mock httpx response."""
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.content = content if content is not None else (b"[]" if body is not None else b"")
+        resp.json = MagicMock(return_value=body if body is not None else [])
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    async def test_successful_call_logs_to_command_log(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_call_service inserts a row into ha_command_log on success."""
+        mock_db = self._make_mock_db()
+        ha_module._db = mock_db
+
+        mock_resp = self._make_http_response(
+            status_code=200,
+            body=[{"entity_id": "light.kitchen", "context": {"id": "ctx-abc"}}],
+            content=b"[...]",
+        )
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._call_service(
+            domain="light",
+            service="turn_on",
+            target={"entity_id": "light.kitchen"},
+            data={"brightness_pct": 80},
+        )
+
+        mock_db.pool.execute.assert_awaited_once()
+        call_args = mock_db.pool.execute.call_args
+        sql = call_args.args[0]
+        assert "ha_command_log" in sql
+        # domain and service are positional args $1 and $2
+        assert call_args.args[1] == "light"
+        assert call_args.args[2] == "turn_on"
+
+    async def test_failed_call_logs_error_and_reraises(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_call_service logs on failure and re-raises the exception."""
+        import httpx
+
+        mock_db = self._make_mock_db()
+        ha_module._db = mock_db
+
+        error_resp = MagicMock()
+        error_resp.status_code = 400
+        error_resp.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError(
+                "bad request",
+                request=MagicMock(),
+                response=error_resp,
+            )
+        )
+        error_resp.content = b""
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=error_resp)
+        ha_module._client = mock_client
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await ha_module._call_service(domain="lock", service="unlock")
+
+        # Log must still have been called even though the call failed
+        mock_db.pool.execute.assert_awaited_once()
+        call_args = mock_db.pool.execute.call_args
+        assert call_args.args[1] == "lock"
+        assert call_args.args[2] == "unlock"
+
+    async def test_call_service_no_pool_skips_logging(self, ha_module: HomeAssistantModule) -> None:
+        """_call_service skips logging when no DB pool is available."""
+        ha_module._db = None
+
+        mock_resp = self._make_http_response(status_code=200, body={}, content=b"")
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        # Should not raise
+        result = await ha_module._call_service(domain="light", service="turn_off")
+        assert result == {}
+
+    async def test_call_service_log_failure_does_not_suppress_result(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """A logging failure must not suppress a successful service call result."""
+        mock_db = self._make_mock_db()
+        mock_db.pool.execute = AsyncMock(side_effect=RuntimeError("DB offline"))
+        ha_module._db = mock_db
+
+        mock_resp = self._make_http_response(status_code=200, body={"ok": True}, content=b"{}")
+        mock_resp.json = MagicMock(return_value={"ok": True})
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        # DB failure should not propagate
+        result = await ha_module._call_service(domain="switch", service="toggle")
+        assert result == {"ok": True}
+
+    async def test_log_command_inserts_correct_fields(self, ha_module: HomeAssistantModule) -> None:
+        """_log_command inserts domain, service, target, data, result, context_id."""
+        mock_db = self._make_mock_db()
+        ha_module._db = mock_db
+
+        await ha_module._log_command(
+            domain="cover",
+            service="open_cover",
+            target={"entity_id": "cover.garage"},
+            data=None,
+            result=[{"entity_id": "cover.garage"}],
+            context_id="ctx-xyz",
+        )
+
+        mock_db.pool.execute.assert_awaited_once()
+        call_args = mock_db.pool.execute.call_args
+        args = call_args.args
+        assert args[1] == "cover"
+        assert args[2] == "open_cover"
+        # target should be JSON-encoded
+        assert args[3] is not None and "garage" in args[3]
+        # data is None → None
+        assert args[4] is None
+        # context_id
+        assert args[6] == "ctx-xyz"
+
+    async def test_log_command_no_pool_skips(self, ha_module: HomeAssistantModule) -> None:
+        """_log_command is a no-op when no DB pool is available."""
+        ha_module._db = None
+        # Should not raise
+        await ha_module._log_command(
+            domain="light",
+            service="turn_on",
+            target=None,
+            data=None,
+            result={},
+        )
+
+    async def test_call_service_invalid_domain_raises(self, ha_module: HomeAssistantModule) -> None:
+        """_call_service raises ValueError for domain with path traversal characters."""
+        ha_module._client = AsyncMock()
+        with pytest.raises(ValueError, match="Invalid service domain"):
+            await ha_module._call_service(domain="../config", service="info")
+
+    async def test_call_service_invalid_service_raises(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_call_service raises ValueError for service with path traversal characters."""
+        ha_module._client = AsyncMock()
+        with pytest.raises(ValueError, match="Invalid service name"):
+            await ha_module._call_service(domain="light", service="turn_on/../../config")
+
+    async def test_call_service_context_id_from_list_with_non_dict_entry(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_call_service handles HA response list containing non-dict entries without raising."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.content = b"[null]"
+        mock_resp.json = MagicMock(return_value=[None])  # non-dict list entry
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+        ha_module._db = None
+
+        # Should not raise; context_id remains None
+        result = await ha_module._call_service(domain="light", service="turn_on")
+        assert result == [None]
+
+
+# ---------------------------------------------------------------------------
+# ha_activate_scene — validation and delegation
+# ---------------------------------------------------------------------------
+
+
+class TestActivateScene:
+    """Verify _activate_scene validates entity_id prefix and delegates to _call_service."""
+
+    async def test_valid_scene_entity_id_calls_service(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_activate_scene calls scene.turn_on with the scene entity_id."""
+        with patch.object(ha_module, "_call_service", new=AsyncMock(return_value={})) as mock_call:
+            await ha_module._activate_scene(entity_id="scene.movie_night")
+
+        mock_call.assert_awaited_once_with(
+            domain="scene",
+            service="turn_on",
+            target={"entity_id": "scene.movie_night"},
+            data=None,
+        )
+
+    async def test_scene_with_transition_passes_data(self, ha_module: HomeAssistantModule) -> None:
+        """_activate_scene forwards transition as service data."""
+        with patch.object(ha_module, "_call_service", new=AsyncMock(return_value={})) as mock_call:
+            await ha_module._activate_scene(entity_id="scene.morning", transition=2.5)
+
+        mock_call.assert_awaited_once_with(
+            domain="scene",
+            service="turn_on",
+            target={"entity_id": "scene.morning"},
+            data={"transition": 2.5},
+        )
+
+    async def test_non_scene_entity_id_raises_value_error(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_activate_scene raises ValueError when entity_id does not start with 'scene.'."""
+        with pytest.raises(ValueError, match="scene\\."):
+            await ha_module._activate_scene(entity_id="light.kitchen")
+
+    async def test_invalid_entity_id_format_raises_value_error(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_activate_scene raises ValueError for malformed entity IDs."""
+        with pytest.raises(ValueError):
+            await ha_module._activate_scene(entity_id="scene.bad/id")
+
+    async def test_activate_scene_zero_transition_passes_data(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_activate_scene forwards transition=0 (falsy but valid)."""
+        with patch.object(ha_module, "_call_service", new=AsyncMock(return_value={})) as mock_call:
+            await ha_module._activate_scene(entity_id="scene.instant", transition=0)
+
+        # transition=0 is a valid float — must be passed
+        call_data = mock_call.call_args.kwargs.get("data") or mock_call.call_args.args[3]
+        # transition=0 is falsy but should still be included
+        assert call_data == {"transition": 0}
+
+    async def test_ha_activate_scene_registered_as_tool(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """ha_activate_scene is registered as a tool by register_tools."""
+        await ha_module.register_tools(
+            mcp=mock_mcp,
+            config={"url": "http://ha.local"},
+            db=None,
+        )
+        assert "ha_activate_scene" in mock_mcp._registered_tools
+
+    async def test_ha_activate_scene_tool_delegates_to_activate_scene(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """The registered ha_activate_scene tool calls _activate_scene internally."""
+        await ha_module.register_tools(
+            mcp=mock_mcp,
+            config={"url": "http://ha.local"},
+            db=None,
+        )
+        tool_fn = mock_mcp._registered_tools["ha_activate_scene"]
+
+        with patch.object(ha_module, "_activate_scene", new=AsyncMock(return_value={})) as mock:
+            await tool_fn(entity_id="scene.dinner")
+            mock.assert_awaited_once_with(entity_id="scene.dinner", transition=None)
+
+
+# ---------------------------------------------------------------------------
+# Snapshot persistence
+# ---------------------------------------------------------------------------
+
+
+class TestSnapshotPersistence:
+    """Verify _persist_entity_snapshot UPSERTs entities into ha_entity_snapshot."""
+
+    def _make_mock_db(self) -> MagicMock:
+        pool = AsyncMock()
+        pool.executemany = AsyncMock()
+        db = MagicMock()
+        db.pool = pool
+        return db
+
+    async def test_persist_snapshot_upserts_entities(self, ha_module: HomeAssistantModule) -> None:
+        """_persist_entity_snapshot calls executemany with all cached entities."""
+        mock_db = self._make_mock_db()
+        ha_module._db = mock_db
+        ha_module._entity_cache = {
+            "light.kitchen": CachedEntity(
+                entity_id="light.kitchen",
+                state="on",
+                attributes={"brightness": 255},
+                last_updated="2024-01-01T10:00:00+00:00",
+            ),
+            "sensor.temp": CachedEntity(
+                entity_id="sensor.temp",
+                state="21.5",
+                attributes={},
+                last_updated="2024-01-01T09:00:00+00:00",
+            ),
+        }
+
+        await ha_module._persist_entity_snapshot()
+
+        mock_db.pool.executemany.assert_awaited_once()
+        call_args = mock_db.pool.executemany.call_args
+        sql = call_args.args[0]
+        rows = call_args.args[1]
+        assert "ha_entity_snapshot" in sql
+        assert "ON CONFLICT" in sql
+        assert len(rows) == 2
+        entity_ids = {row[0] for row in rows}
+        assert "light.kitchen" in entity_ids
+        assert "sensor.temp" in entity_ids
+
+    async def test_persist_snapshot_empty_cache_skips(self, ha_module: HomeAssistantModule) -> None:
+        """_persist_entity_snapshot is a no-op when the entity cache is empty."""
+        mock_db = self._make_mock_db()
+        ha_module._db = mock_db
+        ha_module._entity_cache = {}
+
+        await ha_module._persist_entity_snapshot()
+
+        mock_db.pool.executemany.assert_not_awaited()
+
+    async def test_persist_snapshot_no_pool_skips(self, ha_module: HomeAssistantModule) -> None:
+        """_persist_entity_snapshot is a no-op when no DB pool is available."""
+        ha_module._db = None
+        ha_module._entity_cache = {"light.hall": CachedEntity(entity_id="light.hall", state="off")}
+
+        # Should not raise
+        await ha_module._persist_entity_snapshot()
+
+    async def test_persist_snapshot_row_structure(self, ha_module: HomeAssistantModule) -> None:
+        """Each snapshot row contains (entity_id, state, attributes_json, last_updated)."""
+        import json
+
+        mock_db = self._make_mock_db()
+        ha_module._db = mock_db
+        ha_module._entity_cache = {
+            "switch.fan": CachedEntity(
+                entity_id="switch.fan",
+                state="on",
+                attributes={"friendly_name": "Ceiling Fan"},
+                last_updated="2024-06-01T12:00:00+00:00",
+            )
+        }
+
+        await ha_module._persist_entity_snapshot()
+
+        rows = mock_db.pool.executemany.call_args.args[1]
+        assert len(rows) == 1
+        entity_id, state, attrs_json, last_updated = rows[0]
+        assert entity_id == "switch.fan"
+        assert state == "on"
+        assert json.loads(attrs_json) == {"friendly_name": "Ceiling Fan"}
+        assert "2024-06-01" in last_updated
+
+    async def test_persist_snapshot_empty_last_updated_stored_as_none(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Entities with empty last_updated have None stored (not empty string)."""
+        mock_db = self._make_mock_db()
+        ha_module._db = mock_db
+        ha_module._entity_cache = {
+            "sensor.mystery": CachedEntity(
+                entity_id="sensor.mystery",
+                state="unknown",
+                last_updated="",
+            )
+        }
+
+        await ha_module._persist_entity_snapshot()
+
+        rows = mock_db.pool.executemany.call_args.args[1]
+        _, _, _, last_updated = rows[0]
+        assert last_updated is None
+
+
+# ---------------------------------------------------------------------------
+# Snapshot loop task
+# ---------------------------------------------------------------------------
+
+
+class TestSnapshotLoop:
+    """Verify the snapshot background task behaviour."""
+
+    async def test_snapshot_loop_calls_persist_at_interval(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_snapshot_loop calls _persist_entity_snapshot after each interval."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local", snapshot_interval_seconds=0)
+        ha_module._shutdown = False
+        call_count = 0
+
+        async def mock_persist() -> None:
+            nonlocal call_count
+            call_count += 1
+            ha_module._shutdown = True  # exit loop after first call
+
+        with patch.object(ha_module, "_persist_entity_snapshot", side_effect=mock_persist):
+            await ha_module._snapshot_loop()
+
+        assert call_count == 1
+
+    async def test_snapshot_loop_stops_on_shutdown(self, ha_module: HomeAssistantModule) -> None:
+        """_snapshot_loop exits immediately when _shutdown is set before sleep."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local", snapshot_interval_seconds=0)
+        ha_module._shutdown = True
+
+        persist_calls = []
+
+        async def mock_persist() -> None:
+            persist_calls.append(True)
+
+        with patch.object(ha_module, "_persist_entity_snapshot", side_effect=mock_persist):
+            await ha_module._snapshot_loop()
+
+        assert len(persist_calls) == 0
+
+    async def test_snapshot_loop_continues_on_error(self, ha_module: HomeAssistantModule) -> None:
+        """_snapshot_loop logs errors and continues without aborting."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local", snapshot_interval_seconds=0)
+        ha_module._shutdown = False
+        call_count = 0
+
+        async def mock_persist_with_error() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("DB error")
+            ha_module._shutdown = True  # exit after second call
+
+        with patch.object(
+            ha_module, "_persist_entity_snapshot", side_effect=mock_persist_with_error
+        ):
+            await ha_module._snapshot_loop()
+
+        assert call_count == 2
+
+    def test_start_snapshot_task_creates_task(self, ha_module: HomeAssistantModule) -> None:
+        """_start_snapshot_task creates a background asyncio task."""
+        ha_module._config = HomeAssistantConfig(
+            url="http://ha.local", snapshot_interval_seconds=300
+        )
+        ha_module._snapshot_task = None
+        ha_module._shutdown = False
+
+        ha_module._start_snapshot_task()
+
+        assert ha_module._snapshot_task is not None
+        assert not ha_module._snapshot_task.done()
+        ha_module._snapshot_task.cancel()
+
+    def test_start_snapshot_task_noop_when_running(self, ha_module: HomeAssistantModule) -> None:
+        """_start_snapshot_task does not create a second task if one is already running."""
+
+        async def _long() -> None:
+            await asyncio.sleep(9999)
+
+        ha_module._shutdown = False
+        task = asyncio.ensure_future(_long())
+        ha_module._snapshot_task = task
+
+        ha_module._start_snapshot_task()
+
+        assert ha_module._snapshot_task is task
+        task.cancel()
+
+
+# ---------------------------------------------------------------------------
+# Shutdown — final snapshot
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownFinalSnapshot:
+    """Verify on_shutdown writes a final entity snapshot."""
+
+    async def test_shutdown_writes_final_snapshot(self, ha_module: HomeAssistantModule) -> None:
+        """on_shutdown calls _persist_entity_snapshot before tearing down."""
+        ha_module._client = AsyncMock()
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+
+        with patch.object(ha_module, "_persist_entity_snapshot", new=AsyncMock()) as mock_persist:
+            await ha_module.on_shutdown()
+
+        mock_persist.assert_awaited_once()
+
+    async def test_shutdown_snapshot_failure_does_not_abort_shutdown(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """on_shutdown continues teardown even if the final snapshot fails."""
+        mock_client = AsyncMock()
+        ha_module._client = mock_client
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+
+        with patch.object(
+            ha_module,
+            "_persist_entity_snapshot",
+            new=AsyncMock(side_effect=RuntimeError("DB offline")),
+        ):
+            # Should not raise
+            await ha_module.on_shutdown()
+
+        mock_client.aclose.assert_awaited_once()
+
+    async def test_shutdown_cancels_snapshot_task(self, ha_module: HomeAssistantModule) -> None:
+        """on_shutdown cancels the snapshot background task."""
+
+        async def _forever() -> None:
+            await asyncio.sleep(9999)
+
+        ha_module._snapshot_task = asyncio.ensure_future(_forever())
+        ha_module._client = AsyncMock()
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+
+        with patch.object(ha_module, "_persist_entity_snapshot", new=AsyncMock()):
+            await ha_module.on_shutdown()
+
+        assert ha_module._snapshot_task is None

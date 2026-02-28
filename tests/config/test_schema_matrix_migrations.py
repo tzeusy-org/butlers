@@ -17,6 +17,7 @@ from butlers.migrations import ROSTER_DIR, has_butler_chain, run_migrations
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.nightly,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 

@@ -24,6 +24,7 @@ import random
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
 
@@ -34,6 +35,11 @@ logger = logging.getLogger(__name__)
 # Matches valid HA entity IDs: "domain.object_id" where each segment contains
 # only alphanumeric characters, underscores, or hyphens (no slashes or dots).
 _ENTITY_ID_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+
+# Matches valid HA service domain or service name (e.g. "light", "turn_on").
+# Only lowercase alphanumeric characters and underscores are permitted to
+# prevent path traversal attacks when constructing /api/services/<domain>/<svc>.
+_HA_IDENT_RE = re.compile(r"^[a-z0-9_]+$")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -191,6 +197,7 @@ class HomeAssistantModule(Module):
         self._ws_ping_task: asyncio.Task[None] | None = None
         self._ws_reconnect_task: asyncio.Task[None] | None = None
         self._poll_task: asyncio.Task[None] | None = None
+        self._snapshot_task: asyncio.Task[None] | None = None
         # Shutdown flag
         self._shutdown: bool = False
         # Last pong receipt time (monotonic)
@@ -306,9 +313,22 @@ class HomeAssistantModule(Module):
         # --- Connect WebSocket and seed entity cache ---
         await self._ws_connect_and_seed()
 
+        # --- Start periodic snapshot task ---
+        self._start_snapshot_task()
+
     async def on_shutdown(self) -> None:
-        """Clean up: close WebSocket, stop background tasks, close HTTP client."""
+        """Clean up: close WebSocket, stop background tasks, close HTTP client.
+
+        Writes a final entity snapshot to ``ha_entity_snapshot`` before teardown
+        so that the last-known state survives across restarts.
+        """
         self._shutdown = True
+
+        # Write final snapshot before tearing down the DB connection
+        try:
+            await self._persist_entity_snapshot()
+        except Exception as exc:
+            logger.warning("HomeAssistantModule: final snapshot failed: %s", exc)
 
         # Cancel background tasks and await them with a short timeout to avoid
         # hanging shutdown if a task ignores CancelledError.
@@ -319,6 +339,7 @@ class HomeAssistantModule(Module):
                 self._ws_ping_task,
                 self._ws_reconnect_task,
                 self._poll_task,
+                self._snapshot_task,
             )
             if t is not None and not t.done()
         ]
@@ -331,6 +352,7 @@ class HomeAssistantModule(Module):
         self._ws_ping_task = None
         self._ws_reconnect_task = None
         self._poll_task = None
+        self._snapshot_task = None
 
         # Fail all pending WebSocket commands
         for fut in self._ws_pending.values():
@@ -434,9 +456,129 @@ class HomeAssistantModule(Module):
                 domain=domain, service=service, target=target, data=data
             )
 
+        async def ha_list_areas() -> list[dict[str, Any]]:
+            """Return all Home Assistant areas/rooms sorted by name.
+
+            Returns a list of area objects with ``area_id`` and ``name`` fields,
+            taken from the cached area registry populated at startup.
+            """
+            return await module._list_areas()
+
+        async def ha_list_services(domain: str | None = None) -> list[dict[str, Any]]:
+            """Return available Home Assistant services, optionally filtered by domain.
+
+            Queries ``GET /api/services`` when the REST client is available, or
+            falls back to ``get_services`` via WebSocket.
+
+            Parameters
+            ----------
+            domain:
+                If provided, only services for this domain are returned
+                (e.g. ``"light"``).
+            """
+            return await module._list_services(domain=domain)
+
+        async def ha_get_history(
+            entity_ids: list[str],
+            start: str,
+            end: str | None = None,
+        ) -> list[list[dict[str, Any]]]:
+            """Return state history for one or more entities over a time window.
+
+            Calls ``GET /api/history/period/<start>`` with
+            ``filter_entity_id``, ``end_time``, ``minimal_response``, and
+            ``significant_changes_only`` query parameters.
+
+            Parameters
+            ----------
+            entity_ids:
+                Non-empty list of HA entity IDs to fetch history for.
+            start:
+                ISO 8601 start timestamp (e.g. ``"2026-02-01T00:00:00Z"``).
+            end:
+                Optional ISO 8601 end timestamp.  Defaults to now when omitted.
+
+            Raises
+            ------
+            ValueError
+                If ``entity_ids`` is empty (unbounded queries are too expensive).
+            """
+            return await module._get_history(entity_ids=entity_ids, start=start, end=end)
+
+        async def ha_get_statistics(
+            statistic_ids: list[str],
+            start: str,
+            end: str,
+            period: str = "hour",
+        ) -> dict[str, Any]:
+            """Return aggregated statistics for sensor entities from HA's recorder.
+
+            Sends a ``recorder/get_statistics_during_period`` WebSocket command.
+
+            Parameters
+            ----------
+            statistic_ids:
+                List of statistic IDs (usually entity IDs for sensor entities).
+            start:
+                ISO 8601 start timestamp.
+            end:
+                ISO 8601 end timestamp.
+            period:
+                Aggregation period: one of ``5minute``, ``hour``, ``day``,
+                ``week``, ``month``.  Defaults to ``"hour"``.
+
+            Raises
+            ------
+            ValueError
+                If ``period`` is not one of the allowed values.
+            """
+            return await module._get_statistics(
+                statistic_ids=statistic_ids, start=start, end=end, period=period
+            )
+
+        async def ha_render_template(template: str) -> str:
+            """Render a Jinja2 template server-side on the Home Assistant instance.
+
+            Calls ``POST /api/template`` with the template string and returns
+            the rendered plaintext result.
+
+            Parameters
+            ----------
+            template:
+                Jinja2 template string (e.g. ``"{{ states('sensor.temperature') }} °C"``).
+            """
+            return await module._render_template(template=template)
+
+        async def ha_activate_scene(
+            entity_id: str,
+            transition: float | None = None,
+        ) -> dict[str, Any]:
+            """Activate a Home Assistant scene.
+
+            Convenience wrapper around ``ha_call_service`` for scene activation.
+            The ``entity_id`` must start with ``"scene."``; passing any other
+            domain raises ``ValueError`` to prevent accidental mis-use.
+
+            Parameters
+            ----------
+            entity_id:
+                Scene entity ID (e.g. ``"scene.movie_night"``).
+            transition:
+                Optional transition duration in seconds (not supported by all
+                scenes; silently ignored by HA if the scene driver doesn't
+                support it).
+            """
+            return await module._activate_scene(entity_id=entity_id, transition=transition)
+
         mcp.tool()(ha_get_entity_state)
         mcp.tool()(ha_list_entities)
+        mcp.tool()(ha_list_areas)
+        mcp.tool()(ha_list_services)
+        mcp.tool()(ha_get_history)
+        mcp.tool()(ha_get_statistics)
+        mcp.tool()(ha_render_template)
         mcp.tool()(ha_call_service)
+        mcp.tool()(ha_activate_scene)
 
     # ------------------------------------------------------------------
     # WebSocket transport — connection and authentication
@@ -1261,7 +1403,47 @@ class HomeAssistantModule(Module):
         target: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Call a HA service via REST API."""
+        """Call a HA service via REST API and log the call to ``ha_command_log``.
+
+        Both successful and failed service calls are logged.  On failure the
+        exception is re-raised after logging so callers still see the error.
+
+        Parameters
+        ----------
+        domain:
+            Service domain (e.g. ``"light"``).
+        service:
+            Service name within the domain (e.g. ``"turn_on"``).
+        target:
+            Optional target specification dict.
+        data:
+            Optional service-specific payload dict.
+
+        Returns
+        -------
+        dict[str, Any]
+            Parsed JSON response from Home Assistant (may be ``{}`` for
+            services that return no body).
+
+        Raises
+        ------
+        httpx.HTTPStatusError
+            If HA returns a non-2xx response.
+        RuntimeError
+            If the HTTP client has not been initialised (module not started).
+        """
+        # Validate domain and service to prevent path traversal via the URL.
+        if not _HA_IDENT_RE.match(domain):
+            raise ValueError(
+                f"Invalid service domain {domain!r}: must contain only lowercase "
+                "alphanumeric characters and underscores."
+            )
+        if not _HA_IDENT_RE.match(service):
+            raise ValueError(
+                f"Invalid service name {service!r}: must contain only lowercase "
+                "alphanumeric characters and underscores."
+            )
+
         client = self._get_client()
         payload: dict[str, Any] = {}
         # Merge data first so that the explicit target argument always wins if
@@ -1270,7 +1452,406 @@ class HomeAssistantModule(Module):
             payload.update(data)
         if target is not None:
             payload["target"] = target
-        resp = await client.post(f"/api/services/{domain}/{service}", json=payload)
-        resp.raise_for_status()
-        result: dict[str, Any] = resp.json() if resp.content else {}
+
+        result: dict[str, Any] = {}
+        context_id: str | None = None
+        exc_to_raise: Exception | None = None
+
+        try:
+            resp = await client.post(f"/api/services/{domain}/{service}", json=payload)
+            resp.raise_for_status()
+            result = resp.json() if resp.content else {}
+            # HA embeds the event context ID in the first state-change result entry.
+            if isinstance(result, list) and result and isinstance(result[0], dict):
+                context_id = result[0].get("context", {}).get("id")
+            elif isinstance(result, dict):
+                context_id = result.get("context", {}).get("id")
+        except Exception as exc:
+            exc_to_raise = exc
+            result = {"error": str(exc)}
+
+        # Log the command (fire-and-forget with error swallowing so a DB issue
+        # never prevents the caller from seeing a service error).
+        try:
+            await self._log_command(
+                domain=domain,
+                service=service,
+                target=target,
+                data=data,
+                result=result if not exc_to_raise else None,
+                error_result=result if exc_to_raise else None,
+                context_id=context_id,
+            )
+        except Exception as log_exc:
+            logger.warning(
+                "HomeAssistantModule: failed to log command %s.%s: %s",
+                domain,
+                service,
+                log_exc,
+            )
+
+        if exc_to_raise is not None:
+            raise exc_to_raise
+
         return result
+
+    async def _list_areas(self) -> list[dict[str, Any]]:
+        """Return all cached areas sorted by name.
+
+        Returns a list of ``{"area_id": ..., "name": ...}`` dicts derived from
+        the in-memory area registry.  The list is sorted alphabetically by
+        ``name``.
+        """
+        areas = [{"area_id": a.area_id, "name": a.name} for a in self._area_cache.values()]
+        areas.sort(key=lambda x: x["name"])
+        return areas
+
+    async def _list_services(self, domain: str | None = None) -> list[dict[str, Any]]:
+        """Return available HA services, optionally filtered by domain.
+
+        Prefers ``GET /api/services`` (REST) when the HTTP client is available.
+        Falls back to the ``get_services`` WebSocket command when the REST
+        client is not yet initialised.
+
+        Parameters
+        ----------
+        domain:
+            Optional domain filter (e.g. ``"light"``).
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            Each element has ``"domain"`` (str) and ``"services"``
+            (dict[str, dict]) keys, matching the HA API response shape.
+        """
+        raw: list[dict[str, Any]]
+
+        if self._client is not None:
+            resp = await self._client.get("/api/services")
+            resp.raise_for_status()
+            raw = resp.json()
+        elif self._ws_connected:
+            result = await self._ws_command({"type": "get_services"}, timeout=10.0)
+            # WS get_services returns dict[domain, dict[service_name, service_obj]]
+            # Convert to the same shape as the REST response.
+            raw = [{"domain": d, "services": svcs} for d, svcs in result.items()]
+        else:
+            raise RuntimeError(
+                "HomeAssistantModule: cannot list services — neither REST client "
+                "nor WebSocket is available."
+            )
+
+        if domain is not None:
+            raw = [entry for entry in raw if entry.get("domain") == domain]
+
+        return raw
+
+    async def _get_history(
+        self,
+        entity_ids: list[str],
+        start: str,
+        end: str | None = None,
+    ) -> list[list[dict[str, Any]]]:
+        """Fetch entity state history from ``GET /api/history/period/<start>``.
+
+        Parameters
+        ----------
+        entity_ids:
+            Non-empty list of entity IDs to query.
+        start:
+            ISO 8601 start timestamp.
+        end:
+            Optional ISO 8601 end timestamp.
+
+        Raises
+        ------
+        ValueError
+            If ``entity_ids`` is empty, or if ``start`` is not a valid ISO 8601
+            timestamp (prevents path traversal via the URL-path segment).
+        """
+        if not entity_ids:
+            raise ValueError(
+                "ha_get_history requires at least one entity_id. "
+                "Unbounded history queries are not supported."
+            )
+
+        if not self._ISO8601_RE.match(start):
+            raise ValueError(
+                f"Invalid start timestamp {start!r}: must be ISO 8601 format "
+                "(e.g. '2026-02-01T00:00:00Z' or '2026-02-01T00:00:00+01:00')."
+            )
+
+        client = self._get_client()
+        params: dict[str, str] = {
+            "filter_entity_id": ",".join(entity_ids),
+            "minimal_response": "1",
+            "significant_changes_only": "1",
+        }
+        if end is not None:
+            params["end_time"] = end
+
+        resp = await client.get(f"/api/history/period/{quote(start, safe=':')}", params=params)
+        resp.raise_for_status()
+        result: list[list[dict[str, Any]]] = resp.json()
+        return result
+
+    # Matches ISO 8601 timestamps with optional fractional seconds and timezone.
+    # Allows: 2026-02-01T12:00:00Z, 2026-02-01T12:00:00+01:00, 2026-02-01T12:00:00.123Z
+    _ISO8601_RE = re.compile(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+    )
+
+    _VALID_STATISTICS_PERIODS = frozenset({"5minute", "hour", "day", "week", "month"})
+
+    async def _get_statistics(
+        self,
+        statistic_ids: list[str],
+        start: str,
+        end: str,
+        period: str = "hour",
+    ) -> dict[str, Any]:
+        """Fetch aggregated statistics via the ``recorder/get_statistics_during_period`` WS command.
+
+        Parameters
+        ----------
+        statistic_ids:
+            List of statistic IDs (usually entity IDs for sensor entities).
+        start:
+            ISO 8601 start timestamp.
+        end:
+            ISO 8601 end timestamp.
+        period:
+            One of ``5minute``, ``hour``, ``day``, ``week``, ``month``.
+
+        Raises
+        ------
+        ValueError
+            If ``period`` is not one of the valid values.
+        RuntimeError
+            If the WebSocket is not connected.
+        """
+        if period not in self._VALID_STATISTICS_PERIODS:
+            raise ValueError(
+                f"Invalid period {period!r}. "
+                f"Must be one of: {', '.join(sorted(self._VALID_STATISTICS_PERIODS))}."
+            )
+
+        result = await self._ws_command(
+            {
+                "type": "recorder/get_statistics_during_period",
+                "statistic_ids": statistic_ids,
+                "start_time": start,
+                "end_time": end,
+                "period": period,
+                "types": ["mean", "min", "max", "sum", "state"],
+            },
+            timeout=30.0,
+        )
+        return result
+
+    async def _render_template(self, template: str) -> str:
+        """Render a Jinja2 template via ``POST /api/template``.
+
+        Parameters
+        ----------
+        template:
+            Jinja2 template string to evaluate server-side.
+
+        Returns
+        -------
+        str
+            The rendered plaintext result from HA.
+        """
+        client = self._get_client()
+        resp = await client.post("/api/template", json={"template": template})
+        resp.raise_for_status()
+        return resp.text
+
+    async def _log_command(
+        self,
+        domain: str,
+        service: str,
+        target: dict[str, Any] | None,
+        data: dict[str, Any] | None,
+        result: dict[str, Any] | None,
+        error_result: dict[str, Any] | None = None,
+        context_id: str | None = None,
+    ) -> None:
+        """Insert a row into ``ha_command_log`` for every service call.
+
+        Uses the DB pool directly (``asyncpg``).  Silently skips when no
+        pool is available (e.g. tests that bypass ``on_startup``).
+
+        Parameters
+        ----------
+        domain:
+            HA service domain.
+        service:
+            HA service name.
+        target:
+            Service call target dict (may be ``None``).
+        data:
+            Service call data payload (may be ``None``).
+        result:
+            Parsed HA response on success (may be ``None`` when an error
+            occurred before a response was received).
+        error_result:
+            Error payload when the call failed (mutually exclusive with
+            ``result``).
+        context_id:
+            HA event context ID extracted from the response (may be ``None``).
+        """
+        import json as _json
+
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+
+        log_result = result if result is not None else error_result
+
+        await pool.execute(
+            """
+            INSERT INTO ha_command_log
+                (domain, service, target, data, result, context_id)
+            VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6)
+            """,
+            domain,
+            service,
+            _json.dumps(target) if target is not None else None,
+            _json.dumps(data) if data is not None else None,
+            _json.dumps(log_result) if log_result is not None else None,
+            context_id,
+        )
+        logger.debug(
+            "HomeAssistantModule: logged command %s.%s (context=%s)",
+            domain,
+            service,
+            context_id,
+        )
+
+    async def _activate_scene(
+        self,
+        entity_id: str,
+        transition: float | None = None,
+    ) -> dict[str, Any]:
+        """Activate a HA scene, delegating to ``_call_service``.
+
+        Parameters
+        ----------
+        entity_id:
+            Scene entity ID; must begin with ``"scene."`` to prevent
+            accidental misuse (e.g. calling a cover or lock service).
+        transition:
+            Optional transition duration in seconds.
+
+        Returns
+        -------
+        dict[str, Any]
+            Response from the underlying ``ha_call_service`` call.
+
+        Raises
+        ------
+        ValueError
+            If ``entity_id`` does not start with ``"scene."`` or is not a
+            valid HA entity ID format.
+        """
+        if not entity_id.startswith("scene."):
+            raise ValueError(
+                f"ha_activate_scene requires a scene entity_id (must start with 'scene.'), "
+                f"got: {entity_id!r}"
+            )
+        if not _ENTITY_ID_RE.match(entity_id):
+            raise ValueError(
+                f"Invalid entity_id {entity_id!r}: must be 'domain.object_id' "
+                f"containing only lowercase alphanumeric characters and underscores."
+            )
+
+        call_data: dict[str, Any] = {}
+        if transition is not None:
+            call_data["transition"] = transition
+
+        return await self._call_service(
+            domain="scene",
+            service="turn_on",
+            target={"entity_id": entity_id},
+            data=call_data if call_data else None,
+        )
+
+    # ------------------------------------------------------------------
+    # Snapshot persistence
+    # ------------------------------------------------------------------
+
+    def _start_snapshot_task(self) -> None:
+        """Start the periodic entity snapshot persistence task."""
+        if self._snapshot_task is not None and not self._snapshot_task.done():
+            return
+        self._snapshot_task = asyncio.ensure_future(self._snapshot_loop())
+
+    async def _snapshot_loop(self) -> None:
+        """Persist entity cache to ``ha_entity_snapshot`` at configured intervals.
+
+        Runs until ``_shutdown`` is set.  On each cycle, waits
+        ``snapshot_interval_seconds``, then calls ``_persist_entity_snapshot``.
+        Errors are logged and do not abort the loop.
+        """
+        assert self._config is not None
+
+        try:
+            while not self._shutdown:
+                await asyncio.sleep(self._config.snapshot_interval_seconds)
+                if self._shutdown:
+                    break
+                try:
+                    await self._persist_entity_snapshot()
+                except Exception as exc:
+                    logger.warning("HomeAssistantModule: snapshot persistence failed: %s", exc)
+        except asyncio.CancelledError:
+            return
+
+    async def _persist_entity_snapshot(self) -> None:
+        """UPSERT the current entity cache into ``ha_entity_snapshot``.
+
+        Each entity is written as a single row keyed by ``entity_id``.
+        Uses ``ON CONFLICT (entity_id) DO UPDATE`` so that existing rows
+        are refreshed rather than duplicated.
+
+        Silently skips when no DB pool is available.
+        """
+        import json as _json
+
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+
+        entities = list(self._entity_cache.values())
+        if not entities:
+            logger.debug("HomeAssistantModule: entity cache empty; skipping snapshot.")
+            return
+
+        # Bulk UPSERT via executemany for efficiency
+        rows = [
+            (
+                e.entity_id,
+                e.state,
+                _json.dumps(e.attributes),
+                e.last_updated if e.last_updated else None,
+            )
+            for e in entities
+        ]
+
+        await pool.executemany(
+            """
+            INSERT INTO ha_entity_snapshot (entity_id, state, attributes, last_updated)
+            VALUES ($1, $2, $3::jsonb, $4::timestamptz)
+            ON CONFLICT (entity_id) DO UPDATE SET
+                state        = EXCLUDED.state,
+                attributes   = EXCLUDED.attributes,
+                last_updated = EXCLUDED.last_updated,
+                captured_at  = now()
+            """,
+            rows,
+        )
+        logger.debug(
+            "HomeAssistantModule: persisted snapshot of %d entities.",
+            len(entities),
+        )
