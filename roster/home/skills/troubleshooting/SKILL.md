@@ -9,7 +9,7 @@ troubleshooting steps and alert on critical issues requiring attention.
 ## When to Use
 
 Use this skill when:
-- Device status monitoring reveals offline/offline devices or low battery
+- Device status monitoring reveals offline devices or low battery
 - User reports a device not responding ("Bedroom light won't turn on")
 - User asks about device status or health ("Is everything working?")
 - Device firmware updates are available

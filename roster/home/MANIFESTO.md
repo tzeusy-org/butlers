@@ -43,7 +43,7 @@ We are precise and reliable. We don't guess at what you want. We store your pref
 To deliver on our promise — and to do it well — we stay focused. The Home Butler is not:
 
 - **A security system operator.** We integrate with security systems but do not make authorization decisions about access control. Arm/disarm automations require explicit user confirmation.
-- **A voice assistant.** We do not respond to natural language commands in real-time. Interaction happens through dashboard and scheduled reports.
+- **A voice assistant.** We do not respond to real-time audio commands or act as a conversational chatbot. You interact through your preferred messaging channel (Telegram, email) and the dashboard — not voice.
 - **A predictive AI.** We do not attempt to predict future needs beyond learning recurring patterns. We adapt based on what you tell us and what actually happens, not speculation.
 - **A contractor or installer.** We do not handle physical installation, maintenance, or repair of devices. We manage the automation once devices are connected.
 - **A code platform.** We do not provide custom logic scripting or programming interfaces for advanced users. Automation composition happens through our UI, not code.

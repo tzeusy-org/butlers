@@ -97,7 +97,7 @@ engage interactive response mode.
 
 **Actions**:
 1. `scene_execute(scene_name="movie-night")`
-2. `memory_store_fact(subject="movie-night-scene", predicate="usage_pattern", content="user triggered movie night scene", permanence="volatile", importance=4.0, tags=["scene", "movie-night"])`
+2. `memory_store_fact(subject="movie-night-scene", predicate="usage_pattern", content="user triggered movie night scene", permanence="standard", importance=4.0, tags=["scene", "movie-night"])`
 3. `notify(channel="telegram", message="Scene 'Movie Night' activated — lights dimmed to 20%, blinds closed, sound system on.", intent="reply", request_context=...)`
 
 #### Example 2: Comfort Query (Answer)
@@ -116,7 +116,7 @@ engage interactive response mode.
 
 **Actions**:
 1. `environment_set_comfort_preference(room="bedroom", time_period="night", preference={"temperature_min": 67, "temperature_max": 69})`
-2. `memory_store_fact(subject="comfort_preference", predicate="temperature_preference", content="user prefers 68°F in bedroom at night", permanence="stable", importance=7.0, tags=["bedroom", "comfort", "night"])`
+2. `memory_store_fact(subject="bedroom", predicate="comfort_preference", content="user prefers 68°F in bedroom at night", permanence="stable", importance=7.0, tags=["bedroom", "temperature", "comfort", "night"])`
 3. `notify(channel="telegram", message="Set bedroom night temperature to 68°F (67-69°F range). I'll adjust the thermostat tonight.", intent="reply", request_context=...)`
 
 #### Example 4: Device Status with Alert (Answer)
@@ -146,7 +146,7 @@ engage interactive response mode.
 1. Execute health check internally (scheduled job)
 2. `device_firmware_check(all=true)`
 3. Identify: HVAC needs firmware update, basement sensor battery at 15%
-4. `memory_store_fact(subject="device-health", predicate="maintenance_alert", content="HVAC firmware update available, basement sensor battery critical", permanence="volatile", importance=8.0, tags=["maintenance", "urgent"])`
+4. `memory_store_fact(subject="basement-sensor", predicate="device_issue", content="battery at 15% — critical; HVAC firmware update available", permanence="volatile", importance=8.0, tags=["maintenance", "urgent"])`
 5. `notify(channel="telegram", message="Health check complete. One device needs attention: basement sensor battery is at 15%. HVAC has a firmware update available.", intent="reply", request_context=...)`
 
 #### Example 7: Scene Creation (Affirm + Follow-up)
@@ -154,8 +154,8 @@ engage interactive response mode.
 **User message**: "Create a bedtime scene that cools the bedroom to 68 and dims all lights"
 
 **Actions**:
-1. `scene_create(name="bedtime", description="Prepare home for sleep", devices=[{"device_id": "thermostat", "command": "set_temperature", "params": {"room": "bedroom", "temperature": 68}}, {"device_id": "living-room-light", "command": "dim", "params": {"brightness": 10}}])`
-2. `memory_store_fact(subject="bedtime-scene", predicate="scene_created", content="user created bedtime scene with temperature 68 and dim lighting", permanence="standard", importance=6.0, tags=["scene", "bedtime", "automation"])`
+1. `scene_create(name="bedtime", description="Prepare home for sleep", devices=[{"device_id": "thermostat", "command": "set_temperature", "params": {"room": "bedroom", "temperature": 68}}, {"device_id": "living-room-light", "command": "dim", "params": {"brightness": 10}}, {"device_id": "bedroom-light", "command": "dim", "params": {"brightness": 0}}, {"device_id": "kitchen-light", "command": "dim", "params": {"brightness": 0}}])`
+2. `memory_store_fact(subject="bedtime-scene", predicate="scene_preference", content="user created bedtime scene with temperature 68 and dim lighting", permanence="standard", importance=6.0, tags=["scene", "bedtime", "automation"])`
 3. `notify(channel="telegram", message="Bedtime scene created — will cool bedroom to 68°F and dim lights to 10%. Want me to schedule it for 10pm every night?", intent="reply", request_context=...)`
 
 #### Example 8: Destructive Action Confirmation (Follow-up)
@@ -179,10 +179,14 @@ engage interactive response mode.
 
 **Predicates**:
 - `comfort_preference`: User's temperature, humidity, lighting, or air quality preferences
-- `scene_preference`: User's preferences for scene timing, trigger conditions, or modifications
+- `comfort_deviation`: Detected deviation from user's comfort preferences (temporary alert)
+- `scene_preference`: User's preferences for scene timing, trigger conditions, or modifications; also used when a scene is created or modified
+- `automation_schedule`: A scheduled automation linked to a scene or recurring action
 - `schedule_pattern`: Observed patterns in room usage or device activation (e.g., "living room always used 7-10pm")
-- `device_issue`: Known device problems, quirks, or maintenance needs
+- `device_issue`: Known device problems, quirks, maintenance needs, or firmware history (use tags to distinguish: `battery`, `offline`, `firmware`, `quirk`, `maintenance`)
 - `energy_baseline`: Typical energy consumption by device or time period (used for anomaly detection)
+- `energy_spike`: Anomalous energy consumption detected above baseline (volatile)
+- `energy_pattern`: Observed patterns in energy consumption over time (standard)
 - `usage_pattern`: Observed patterns in how user interacts with devices or scenes
 
 **Permanence levels**:
