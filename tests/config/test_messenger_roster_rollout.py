@@ -43,8 +43,8 @@ def test_messenger_butler_toml_has_delivery_module_wiring() -> None:
 
 
 def test_messenger_claude_guidance_mentions_notify_route_contract() -> None:
-    """Messenger CLAUDE guidance should describe notify/route execution boundaries."""
-    guidance = (MESSENGER_DIR / "CLAUDE.md").read_text().lower()
+    """Messenger AGENTS guidance should describe notify/route execution boundaries."""
+    guidance = (MESSENGER_DIR / "AGENTS.md").read_text().lower()
     required_fragments = (
         "route.execute",
         "notify.v1",
