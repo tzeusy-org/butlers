@@ -57,6 +57,18 @@ Skills live in `<config_dir>/skills/<name>/` directories. Each skill directory m
 - **WHEN** a directory named `MySkill` exists under `skills/`
 - **THEN** `is_valid_skill_name("MySkill")` returns `False` and the directory is logged as a warning and skipped
 
+#### Scenario: Skill content guidelines
+- **WHEN** a SKILL.md file is authored
+- **THEN** it contains workflow-specific documentation including any combination of: multi-step procedures with explicit MCP tool call sequences, decision frameworks and classification rules, worked examples with tool calls and expected outputs, output templates and formatting guides, memory classification taxonomies, and error handling procedures
+- **AND** the frontmatter `description` field summarizes when the skill should be loaded
+
+#### Scenario: Scheduled task companion skill format
+- **WHEN** a SKILL.md serves as the companion skill for a prompt-dispatched scheduled task
+- **THEN** it documents the complete tool sequence the runtime should follow when that scheduled task fires
+- **AND** it specifies trigger context assumptions (e.g., "Triggered by the daily `upcoming-travel-check` schedule at 08:00 UTC")
+- **AND** it covers both the action path and the no-op path
+- **AND** outbound notifications use `notify(intent="send")` — not `intent="reply"` — because scheduled tasks have no incoming message to reply to
+
 ### Requirement: Skill Directory Discovery
 `list_valid_skills(skills_dir)` returns all valid skill subdirectories sorted by name, skipping files and invalid directory names.
 
@@ -82,3 +94,13 @@ Skills live in `<config_dir>/skills/<name>/` directories. Each skill directory m
 #### Scenario: Append to AGENTS.md
 - **WHEN** `append_agents_md(config_dir, content)` is called
 - **THEN** the content is appended to the existing AGENTS.md content
+
+#### Scenario: AGENTS.md content boundary
+- **WHEN** a runtime instance or developer writes to AGENTS.md
+- **THEN** the written content follows the AGENTS.md Content Principles: general-purpose butler information only (identity, tool summaries, behavioral guidelines, skill references, and runtime notes)
+- **AND** multi-step workflows, extensive examples, and classification taxonomies are directed to skills instead
+
+#### Scenario: AGENTS.md references skills for workflows
+- **WHEN** AGENTS.md mentions a capability that has a dedicated skill
+- **THEN** it provides a brief description (one sentence) and directs to the skill (e.g., "For the complete bill review workflow, consult the `bill-reminder` skill.")
+- **AND** it does NOT duplicate the skill's content inline

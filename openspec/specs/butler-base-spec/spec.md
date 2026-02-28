@@ -125,13 +125,23 @@ Skills are structured behavioral guides (per agentskills.io spec) that are loade
 - **AND** it is symlinked into each consuming butler's `skills/` directory
 - **AND** current shared skills include:
   - `butler-memory`: Entity resolution before storage, permanence levels (`permanent`, `stable`, `standard`, `volatile`), fact anchoring to `entity_id`, JSON array tags for cross-cutting queries
-  - `butler-notifications`: Notification delivery via `notify()` with required parameters (`channel`, `message`/`emoji`, `intent`), intent selection (`send`, `reply`, `react`, `proactive`), `request_context` propagation
+  - `butler-notifications`: Notification delivery via `notify()` with required parameters (`channel`, `message`/`emoji`, `intent`), intent selection (`send`, `reply`, `react`), `request_context` propagation
 
 #### Scenario: Butler-specific skills
 - **WHEN** a butler has domain-specific workflows
 - **THEN** it places skills in `roster/{butler-name}/skills/{skill-name}/SKILL.md`
 - **AND** these skills are only available to that butler's runtime sessions
 - **AND** skills may have optional companion scripts alongside the SKILL.md
+
+#### Scenario: Skills contain workflow-specific content
+- **WHEN** a skill is authored
+- **THEN** it contains content that would be too verbose for AGENTS.md: multi-step procedures with explicit MCP tool call sequences, decision frameworks with branching logic, classification rules and routing tables, complete worked examples with tool calls and expected outputs, output templates and formatting guides, memory classification taxonomies, and error handling procedures
+- **AND** this content is loaded into the runtime only when the skill is relevant to the current trigger
+
+#### Scenario: Scheduled task skills
+- **WHEN** a butler has prompt-dispatched scheduled tasks in `butler.toml`
+- **THEN** each scheduled task has a corresponding skill documenting its full execution workflow
+- **AND** the skill documents both the action path (when there is work to report) and the no-op path (when there is nothing to report)
 
 ### Requirement: Database Isolation Model
 All butlers share a single PostgreSQL database (`butlers`) with per-butler schema isolation. The `shared` schema provides cross-butler data access. Inter-butler communication is MCP-only through the Switchboard.
@@ -218,7 +228,7 @@ Every butler lives in `roster/{butler-name}/` and follows a fixed directory layo
 
 #### Scenario: Required config files
 - **WHEN** a new butler directory is created under `roster/`
-- **THEN** it contains at minimum: `butler.toml` (identity, runtime, database, modules, schedules), `MANIFESTO.md` (public-facing purpose and value proposition), `CLAUDE.md` (system prompt loaded for every runtime instance), and `AGENTS.md` (runtime agent notes, initially an empty `# Notes to self` header)
+- **THEN** it contains at minimum: `butler.toml` (identity, runtime, database, modules, schedules), `MANIFESTO.md` (public-facing purpose and value proposition), `CLAUDE.md` (system prompt entry point — contains `@AGENTS.md`), and `AGENTS.md` (butler identity, tool summary, behavioral guidelines, skill references, and runtime agent notes — see AGENTS.md Content Principles)
 
 #### Scenario: Optional subdirectories
 - **WHEN** a butler has domain-specific features
@@ -263,6 +273,19 @@ The `butler.toml` file declares butler identity, runtime, database, modules, sch
 - **WHEN** `[buffer]` section is present on the switchboard butler
 - **THEN** it configures the durable ingestion buffer: `queue_capacity` (bounded in-memory queue size), `worker_count` (concurrent dispatch workers), `scanner_interval_s` (cold-path DB recovery scan interval), `scanner_grace_s` (minimum age before scanner reclaims), `scanner_batch_size` (max items per scan)
 
+### Requirement: Scheduled Task Companion Skills
+Scheduled tasks declared in `butler.toml` with `dispatch_mode = "prompt"` should have corresponding skills that document the complete tool sequence and decision logic the runtime should follow.
+
+#### Scenario: Prompt-dispatched scheduled task has a companion skill
+- **WHEN** a `[[butler.schedule]]` entry uses `dispatch_mode = "prompt"`
+- **THEN** a companion skill exists in `roster/{butler-name}/skills/` documenting the full workflow for that scheduled task
+- **AND** the schedule entry's `prompt` field references the skill and provides the trigger context (e.g., "Run the upcoming-bills-check workflow. Horizon: 14 days, include overdue.")
+- **AND** the companion skill contains: the complete tool call sequence, output formatting, notification delivery via `notify(intent="send")`, and the no-op path (when there is nothing to report)
+
+#### Scenario: Job-dispatched scheduled tasks are exempt
+- **WHEN** a `[[butler.schedule]]` entry uses `dispatch_mode = "job"`
+- **THEN** no companion skill is required because the job executes native Python code without spawning a runtime session
+
 ### Requirement: MANIFESTO.md as Public Identity
 Each butler has a `MANIFESTO.md` that defines its value proposition, target user persona, and feature scope. The manifesto is the governing document for scope decisions.
 
@@ -271,8 +294,8 @@ Each butler has a `MANIFESTO.md` that defines its value proposition, target user
 - **THEN** it must be evaluated against the butler's MANIFESTO.md for alignment with the stated purpose and scope boundaries
 - **AND** features that fall outside the manifesto's scope should be directed to a different butler or require a manifesto amendment
 
-### Requirement: CLAUDE.md as System Prompt
-Each butler's `CLAUDE.md` is loaded as the system prompt for every runtime instance spawned by that butler. It defines the butler's personality, available tools, behavioral guidelines, memory classification taxonomy, and interactive response modes.
+### Requirement: CLAUDE.md as System Prompt Entry Point
+Each butler's `CLAUDE.md` is loaded as the system prompt for every runtime instance spawned by that butler. In practice, `CLAUDE.md` delegates to `AGENTS.md` via an `@AGENTS.md` file reference, and `AGENTS.md` in turn pulls shared instructions via `@../shared/AGENTS.md`. This indirection chain allows butler-specific and shared content to be maintained independently while composing into a single system prompt at runtime.
 
 #### Scenario: System prompt composition
 - **WHEN** the spawner invokes a runtime instance
@@ -284,6 +307,42 @@ Each butler's `CLAUDE.md` is loaded as the system prompt for every runtime insta
 - **WHEN** a runtime instance receives a REQUEST CONTEXT JSON block with a `source_channel` field (e.g., `telegram`, `email`)
 - **THEN** it engages interactive response mode as defined in the butler's CLAUDE.md
 - **AND** selects from response styles: React (emoji only), Affirm (acknowledgment), Follow-up (clarifying question), Answer (substantive response), or React+Reply (emoji + response)
+
+#### Scenario: CLAUDE.md delegates to AGENTS.md via file reference
+- **WHEN** a butler's `CLAUDE.md` is authored
+- **THEN** it contains `@AGENTS.md` as its sole content — a runtime file reference that the LLM CLI resolves to the contents of the butler's `AGENTS.md`
+- **AND** this `@file` reference is resolved by the runtime (Claude Code, Codex, Gemini), not by the butler's include resolution logic
+- **AND** the separate `<!-- @include path -->` directive handled by `read_system_prompt()` remains available for HTML-comment-style includes resolved at the butler layer
+
+#### Scenario: AGENTS.md composes shared instructions
+- **WHEN** a butler's `AGENTS.md` is authored
+- **THEN** its first line is `@../shared/AGENTS.md` — pulling shared butler instructions (tool execution contract, calendar usage, notification references)
+- **AND** the remainder of the file contains butler-specific content following the AGENTS.md Content Principles
+
+### Requirement: AGENTS.md Content Principles
+AGENTS.md is loaded into every runtime session via the CLAUDE.md indirection chain. Because it contributes to every session's context window, it must contain only general-purpose butler information. Detailed workflows, multi-step procedures, and extensive examples belong in skills, which are loaded on demand.
+
+#### Scenario: AGENTS.md contains only general-purpose information
+- **WHEN** a butler's AGENTS.md is authored or updated
+- **THEN** it contains: butler identity (name, role, one-paragraph purpose), tool surface summary (tool names with one-line descriptions), behavioral guidelines (concise rules, not multi-step procedures), calendar usage (domain-specific lines only — shared rules come from `@../shared/AGENTS.md`), skill references (one-liner pointers to skills for specific workflows), and a `# Notes to self` section for runtime agent notes
+- **AND** it does NOT inline: multi-step workflow procedures with tool call sequences, extensive examples (more than one brief example per section), decision frameworks with branching logic, classification rule tables, memory classification taxonomies with example code, or scheduled task execution logic
+
+#### Scenario: Workflow content lives in skills
+- **WHEN** a butler has a multi-step workflow (e.g., fact extraction pipeline, message classification rules, health check-in flow, bill review triage)
+- **THEN** that workflow is documented as a skill in `roster/{butler-name}/skills/{skill-name}/SKILL.md`
+- **AND** the AGENTS.md references the skill with a one-liner (e.g., "For the conversational fact extraction workflow, consult the `fact-extraction` skill.")
+- **AND** the skill contains the complete procedure: tool call sequences, decision frameworks, classification rules, complete worked examples, and output templates
+
+#### Scenario: Memory classification taxonomy lives in skills
+- **WHEN** a butler defines a domain-specific memory classification taxonomy (subjects, predicates, permanence levels, tags, example facts)
+- **THEN** the taxonomy is documented in a dedicated skill or incorporated into the shared `butler-memory` skill
+- **AND** the AGENTS.md contains at most a brief summary (e.g., "Uses subject/predicate memory model — see `memory-taxonomy` skill for domain taxonomy and examples")
+
+#### Scenario: Token efficiency motivation
+- **WHEN** a runtime session is spawned for a specific trigger (scheduled task, routed message, user question)
+- **THEN** only the AGENTS.md general-purpose content is loaded automatically into the context window
+- **AND** the runtime loads relevant skills on demand based on the trigger context
+- **AND** this minimizes context window usage for sessions that only need a subset of the butler's capabilities
 
 ### Requirement: Credential Resolution
 Butler credentials follow a layered resolution strategy: database-first from the `shared.secrets` table, with environment variable fallback.
