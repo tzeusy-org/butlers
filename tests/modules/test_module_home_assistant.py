@@ -33,6 +33,7 @@ from butlers.modules.base import Module, ToolMeta
 from butlers.modules.home_assistant import (
     CachedArea,
     CachedEntity,
+    CachedEntityRegistryEntry,
     HomeAssistantConfig,
     HomeAssistantModule,
 )
@@ -1261,3 +1262,447 @@ class TestReconnectScheduling:
         ha_module._stop_poll_fallback()
 
         assert ha_module._poll_task is None
+
+
+# ---------------------------------------------------------------------------
+# CachedEntityRegistryEntry dataclass
+# ---------------------------------------------------------------------------
+
+
+class TestCachedEntityRegistryEntry:
+    """Verify the CachedEntityRegistryEntry dataclass structure."""
+
+    def test_entity_registry_entry_fields(self) -> None:
+        """CachedEntityRegistryEntry has entity_id, area_id, device_id, platform."""
+        entry = CachedEntityRegistryEntry(
+            entity_id="light.kitchen_ceiling",
+            area_id="kitchen",
+            device_id="abc123",
+            platform="zha",
+        )
+        assert entry.entity_id == "light.kitchen_ceiling"
+        assert entry.area_id == "kitchen"
+        assert entry.device_id == "abc123"
+        assert entry.platform == "zha"
+
+    def test_entity_registry_entry_optional_fields_default_to_none(self) -> None:
+        """area_id, device_id, platform default to None."""
+        entry = CachedEntityRegistryEntry(entity_id="sensor.temp")
+        assert entry.area_id is None
+        assert entry.device_id is None
+        assert entry.platform is None
+
+    def test_entity_registry_entry_partial_fields(self) -> None:
+        """CachedEntityRegistryEntry can be created with only some optional fields."""
+        entry = CachedEntityRegistryEntry(
+            entity_id="light.hall",
+            platform="hue",
+        )
+        assert entry.entity_id == "light.hall"
+        assert entry.area_id is None
+        assert entry.device_id is None
+        assert entry.platform == "hue"
+
+
+# ---------------------------------------------------------------------------
+# Entity registry cache — device_id and platform
+# ---------------------------------------------------------------------------
+
+
+class TestEntityRegistryCacheExtended:
+    """Verify _fetch_entity_registry populates _entity_registry with device_id and platform."""
+
+    async def test_fetch_entity_registry_populates_registry_with_all_fields(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_fetch_entity_registry stores entity_id, area_id, device_id, platform."""
+        ha_module._ws_connected = True
+        with patch.object(
+            ha_module,
+            "_ws_command",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "entity_id": "light.kitchen_ceiling",
+                        "area_id": "kitchen",
+                        "device_id": "device_abc",
+                        "platform": "zha",
+                    },
+                    {
+                        "entity_id": "sensor.bedroom_temp",
+                        "area_id": "bedroom",
+                        "device_id": "device_def",
+                        "platform": "mqtt",
+                    },
+                ]
+            ),
+        ):
+            await ha_module._fetch_entity_registry()
+
+        assert "light.kitchen_ceiling" in ha_module._entity_registry
+        entry = ha_module._entity_registry["light.kitchen_ceiling"]
+        assert entry.entity_id == "light.kitchen_ceiling"
+        assert entry.area_id == "kitchen"
+        assert entry.device_id == "device_abc"
+        assert entry.platform == "zha"
+
+        assert "sensor.bedroom_temp" in ha_module._entity_registry
+        entry2 = ha_module._entity_registry["sensor.bedroom_temp"]
+        assert entry2.device_id == "device_def"
+        assert entry2.platform == "mqtt"
+
+    async def test_fetch_entity_registry_handles_missing_optional_fields(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Entities without device_id or platform get None values in registry."""
+        ha_module._ws_connected = True
+        with patch.object(
+            ha_module,
+            "_ws_command",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "entity_id": "virtual.helper",
+                        "area_id": "office",
+                        # no device_id, no platform
+                    }
+                ]
+            ),
+        ):
+            await ha_module._fetch_entity_registry()
+
+        entry = ha_module._entity_registry["virtual.helper"]
+        assert entry.device_id is None
+        assert entry.platform is None
+        assert entry.area_id == "office"
+
+    async def test_fetch_entity_registry_empty_string_area_id_stored_as_none(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Empty string area_id (unassigned in HA) is stored as None."""
+        ha_module._ws_connected = True
+        with patch.object(
+            ha_module,
+            "_ws_command",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "entity_id": "switch.unassigned",
+                        "area_id": "",  # HA returns empty string for no area
+                        "device_id": "dev1",
+                        "platform": "hue",
+                    }
+                ]
+            ),
+        ):
+            await ha_module._fetch_entity_registry()
+
+        entry = ha_module._entity_registry["switch.unassigned"]
+        assert entry.area_id is None
+        # Entity without area should NOT appear in _entity_area_map
+        assert "switch.unassigned" not in ha_module._entity_area_map
+
+    async def test_fetch_entity_registry_skips_entries_without_entity_id(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Registry entries without entity_id are silently skipped."""
+        ha_module._ws_connected = True
+        with patch.object(
+            ha_module,
+            "_ws_command",
+            new=AsyncMock(
+                return_value=[
+                    {"area_id": "kitchen", "platform": "zha"},  # missing entity_id
+                    {"entity_id": "light.valid", "area_id": "kitchen", "platform": "zha"},
+                ]
+            ),
+        ):
+            await ha_module._fetch_entity_registry()
+
+        assert len(ha_module._entity_registry) == 1
+        assert "light.valid" in ha_module._entity_registry
+
+    async def test_fetch_entity_registry_populates_area_map_from_registry(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_entity_area_map is derived from _entity_registry entries with area_id."""
+        ha_module._ws_connected = True
+        with patch.object(
+            ha_module,
+            "_ws_command",
+            new=AsyncMock(
+                return_value=[
+                    {"entity_id": "light.a", "area_id": "kitchen", "platform": "zha"},
+                    {"entity_id": "light.b", "platform": "zha"},  # no area
+                ]
+            ),
+        ):
+            await ha_module._fetch_entity_registry()
+
+        assert ha_module._entity_area_map == {"light.a": "kitchen"}
+        assert "light.b" not in ha_module._entity_area_map
+
+    async def test_fetch_entity_registry_noop_when_disconnected(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_fetch_entity_registry is a no-op when WebSocket is disconnected."""
+        ha_module._ws_connected = False
+        with patch.object(ha_module, "_ws_command", new=AsyncMock()) as mock_cmd:
+            await ha_module._fetch_entity_registry()
+            mock_cmd.assert_not_awaited()
+        assert ha_module._entity_registry == {}
+
+    async def test_fetch_entity_registry_error_is_logged_not_raised(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_fetch_entity_registry swallows exceptions and logs a warning."""
+        ha_module._ws_connected = True
+        with patch.object(
+            ha_module,
+            "_ws_command",
+            new=AsyncMock(side_effect=RuntimeError("WS timeout")),
+        ):
+            # Must not raise
+            await ha_module._fetch_entity_registry()
+        # Registry remains unchanged
+        assert ha_module._entity_registry == {}
+
+
+# ---------------------------------------------------------------------------
+# WebSocket event subscriptions
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketSubscriptions:
+    """Verify _ws_subscribe_events sends the correct subscription commands."""
+
+    async def test_subscribe_events_sends_three_subscriptions(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_ws_subscribe_events sends subscribe_events for the three required event types."""
+        ha_module._ws_connected = True
+        sent_commands: list[dict[str, Any]] = []
+
+        async def capture_command(cmd: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            sent_commands.append(cmd)
+            return {}
+
+        with patch.object(ha_module, "_ws_command", side_effect=capture_command):
+            await ha_module._ws_subscribe_events()
+
+        event_types_subscribed = {
+            cmd["event_type"] for cmd in sent_commands if cmd.get("type") == "subscribe_events"
+        }
+        assert "state_changed" in event_types_subscribed
+        assert "area_registry_updated" in event_types_subscribed
+        assert "entity_registry_updated" in event_types_subscribed
+        assert len(sent_commands) == 3
+
+    async def test_subscribe_events_noop_when_disconnected(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_ws_subscribe_events is a no-op when WebSocket is not connected."""
+        ha_module._ws_connected = False
+        with patch.object(ha_module, "_ws_command", new=AsyncMock()) as mock_cmd:
+            await ha_module._ws_subscribe_events()
+            mock_cmd.assert_not_awaited()
+
+    async def test_subscribe_events_continues_on_partial_failure(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_ws_subscribe_events subscribes remaining events even if one fails."""
+        ha_module._ws_connected = True
+        call_count = 0
+
+        async def failing_then_ok(cmd: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("subscription error")
+            return {}
+
+        with patch.object(ha_module, "_ws_command", side_effect=failing_then_ok):
+            # Must not raise despite first subscription failing
+            await ha_module._ws_subscribe_events()
+
+        # All 3 were attempted despite the first failure
+        assert call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# _ws_connect_and_seed — integration
+# ---------------------------------------------------------------------------
+
+
+class TestWsConnectAndSeed:
+    """Verify _ws_connect_and_seed orchestrates connect, seed, and subscribe correctly."""
+
+    async def test_connect_and_seed_success_flow(self, ha_module: HomeAssistantModule) -> None:
+        """On successful WS connect, seed entity cache, fetch registries, subscribe."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._token = "tok"
+
+        connect_called = []
+        seed_called = []
+        area_called = []
+        entity_called = []
+        subscribe_called = []
+        message_loop_called = []
+        ping_called = []
+
+        async def mock_connect() -> None:
+            connect_called.append(True)
+            ha_module._ws_connected = True
+
+        async def mock_seed() -> None:
+            seed_called.append(True)
+
+        async def mock_area() -> None:
+            area_called.append(True)
+
+        async def mock_entity() -> None:
+            entity_called.append(True)
+
+        async def mock_subscribe() -> None:
+            subscribe_called.append(True)
+
+        def mock_message_loop() -> None:
+            message_loop_called.append(True)
+
+        def mock_ping() -> None:
+            ping_called.append(True)
+
+        with (
+            patch.object(ha_module, "_ws_connect", side_effect=mock_connect),
+            patch.object(ha_module, "_seed_entity_cache_from_rest", side_effect=mock_seed),
+            patch.object(ha_module, "_fetch_area_registry", side_effect=mock_area),
+            patch.object(ha_module, "_fetch_entity_registry", side_effect=mock_entity),
+            patch.object(ha_module, "_ws_subscribe_events", side_effect=mock_subscribe),
+            patch.object(ha_module, "_start_ws_message_loop", side_effect=mock_message_loop),
+            patch.object(ha_module, "_start_ws_ping_task", side_effect=mock_ping),
+        ):
+            await ha_module._ws_connect_and_seed()
+
+        assert connect_called, "_ws_connect was not called"
+        assert seed_called, "_seed_entity_cache_from_rest was not called"
+        assert area_called, "_fetch_area_registry was not called"
+        assert entity_called, "_fetch_entity_registry was not called"
+        assert subscribe_called, "_ws_subscribe_events was not called"
+        assert message_loop_called, "_start_ws_message_loop was not called"
+        assert ping_called, "_start_ws_ping_task was not called"
+
+    async def test_connect_and_seed_falls_back_on_ws_failure(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """When WS connect fails, poll fallback and reconnect are scheduled."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._token = "tok"
+        ha_module._shutdown = False
+
+        poll_started = []
+        reconnect_scheduled = []
+
+        def mock_poll() -> None:
+            poll_started.append(True)
+
+        def mock_reconnect(delay: float) -> None:
+            reconnect_scheduled.append(delay)
+
+        with (
+            patch.object(ha_module, "_ws_connect", side_effect=ConnectionError("refused")),
+            patch.object(ha_module, "_start_poll_fallback", side_effect=mock_poll),
+            patch.object(ha_module, "_schedule_reconnect", side_effect=mock_reconnect),
+        ):
+            await ha_module._ws_connect_and_seed()
+
+        assert ha_module._ws_connected is False
+        assert poll_started, "_start_poll_fallback was not called on WS failure"
+        assert reconnect_scheduled, "_schedule_reconnect was not called on WS failure"
+
+
+# ---------------------------------------------------------------------------
+# REST polling fallback — _poll_loop behavior
+# ---------------------------------------------------------------------------
+
+
+class TestPollLoopBehavior:
+    """Verify _poll_loop replaces entity cache and stops when WS reconnects."""
+
+    async def test_poll_loop_replaces_cache_on_each_cycle(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_poll_loop calls _seed_entity_cache_from_rest once per cycle."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local", poll_interval_seconds=0)
+        ha_module._ws_connected = False
+        ha_module._shutdown = False
+
+        seed_calls = []
+
+        async def mock_seed() -> None:
+            seed_calls.append(True)
+            # Stop the loop after first cycle by marking WS as connected
+            ha_module._ws_connected = True
+
+        with patch.object(ha_module, "_seed_entity_cache_from_rest", side_effect=mock_seed):
+            await ha_module._poll_loop()
+
+        assert len(seed_calls) == 1, "Expected exactly one poll cycle before WS reconnected"
+
+    async def test_poll_loop_stops_when_ws_reconnects(self, ha_module: HomeAssistantModule) -> None:
+        """_poll_loop exits when _ws_connected becomes True."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local", poll_interval_seconds=0)
+        ha_module._ws_connected = False
+        ha_module._shutdown = False
+        call_count = 0
+
+        async def mock_seed() -> None:
+            nonlocal call_count
+            call_count += 1
+            ha_module._ws_connected = True  # simulates WS reconnect
+
+        with patch.object(ha_module, "_seed_entity_cache_from_rest", side_effect=mock_seed):
+            await ha_module._poll_loop()
+
+        # Loop should have exited after WS reconnected — not called more than once
+        assert call_count <= 1
+
+    async def test_poll_loop_stops_on_shutdown(self, ha_module: HomeAssistantModule) -> None:
+        """_poll_loop exits immediately when _shutdown is True."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local", poll_interval_seconds=0)
+        ha_module._ws_connected = False
+        ha_module._shutdown = True
+
+        seed_calls = []
+
+        async def mock_seed() -> None:
+            seed_calls.append(True)
+
+        with patch.object(ha_module, "_seed_entity_cache_from_rest", side_effect=mock_seed):
+            await ha_module._poll_loop()
+
+        # Shutdown flag set before sleep — loop should not call seed at all
+        assert len(seed_calls) == 0
+
+    async def test_poll_loop_continues_after_seed_error(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_poll_loop catches seed errors and continues polling."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local", poll_interval_seconds=0)
+        ha_module._ws_connected = False
+        ha_module._shutdown = False
+        call_count = 0
+
+        async def mock_seed_with_error() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("HA REST unavailable")
+            # Second call: stop the loop
+            ha_module._ws_connected = True
+
+        with patch.object(
+            ha_module, "_seed_entity_cache_from_rest", side_effect=mock_seed_with_error
+        ):
+            await ha_module._poll_loop()
+
+        assert call_count == 2, "Poll loop should have retried after error"
