@@ -110,6 +110,15 @@ The overview tab surfaces butler identity, module health, cost telemetry, eligib
 - **AND** clicking a `Quarantined` or `Stale` badge triggers a `setEligibility(name, "active")` mutation to restore the butler
 - **AND** when a quarantine reason exists, it is shown as muted text next to the badge
 
+#### Scenario: 24h eligibility timeline bar
+- **WHEN** the butler has a registry entry
+- **THEN** a "24h History" row renders below the eligibility badge in the identity card
+- **AND** the row contains a horizontal bar (`EligibilityTimeline` component) showing segments colored by state: `active` (emerald-600), `stale` (amber-500), `quarantined` (red-600)
+- **AND** segments are built from `GET /switchboard/registry/{name}/eligibility-history?hours=24` which queries `butler_registry_eligibility_log`
+- **AND** each segment shows state and time range on hover via native `title` tooltip
+- **AND** time labels below the bar show window start (left) and now (right)
+- **AND** data auto-refreshes every 60 seconds
+
 #### Scenario: Module health badges
 - **WHEN** the butler reports active modules
 - **THEN** a "Module Health" card renders one badge per module, colored by status: `connected`/`ok` (emerald), `degraded` (amber), `error` (destructive), other (secondary)

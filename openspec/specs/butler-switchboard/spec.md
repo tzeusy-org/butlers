@@ -213,6 +213,19 @@ Registry membership includes liveness lifecycle behavior, not only static regist
 - **THEN** its eligibility is determined by TTL-based liveness checks
 - **AND** stale targets are set to a non-routable state (`stale` or `quarantined`)
 
+#### Scenario: Quarantine auto-recovery via heartbeat
+- **WHEN** a quarantined butler sends a heartbeat
+- **THEN** its eligibility transitions from `quarantined` to `active`
+- **AND** `quarantined_at` and `quarantine_reason` are cleared
+- **AND** the transition is audited with reason `heartbeat_recovery`
+- **AND** a CAS guard (`WHERE eligibility_state = 'quarantined'`) prevents TOCTOU races with concurrent operator actions
+
+#### Scenario: Quarantine cleared on re-registration
+- **WHEN** a quarantined butler re-registers via `register_butler()`
+- **THEN** its eligibility is unconditionally set to `active`
+- **AND** `quarantined_at` and `quarantine_reason` are cleared
+- **AND** the transition is audited with reason `re_registered`
+
 #### Scenario: Stale target routing exclusion
 - **WHEN** a target butler is in `stale` or `quarantined` state
 - **THEN** it is not selected for new routes unless explicitly allowed by policy
