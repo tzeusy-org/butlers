@@ -241,7 +241,7 @@ Ordered by estimated impact:
 |---|---|---|---|
 | 1 | Mock `asyncio.sleep` in heartbeat/scheduler tests | 34s+ | Medium |
 | 2 | Session-scoped `app` fixture for API tests | 50–100s | Medium |
-| 3 | Parallelize with `pytest-xdist -n auto` | 50–70% of total | Low (config) |
+| 3 | Parallelize with `pytest-xdist -n auto` | 50–70% of total | Medium |
 | 4 | Reduce collection time (lazy imports in tools modules) | 5–10s | Medium |
 | 5 | Investigate calendar sync 7s test (long-running mock loop) | 7s | Low |
 
