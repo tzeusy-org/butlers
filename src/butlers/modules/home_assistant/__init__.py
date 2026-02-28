@@ -277,19 +277,22 @@ class HomeAssistantModule(Module):
         """Clean up: close WebSocket, stop background tasks, close HTTP client."""
         self._shutdown = True
 
-        # Cancel background tasks
-        for task in (
-            self._ws_loop_task,
-            self._ws_ping_task,
-            self._ws_reconnect_task,
-            self._poll_task,
-        ):
-            if task is not None and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
+        # Cancel background tasks and await them with a short timeout to avoid
+        # hanging shutdown if a task ignores CancelledError.
+        _tasks = [
+            t
+            for t in (
+                self._ws_loop_task,
+                self._ws_ping_task,
+                self._ws_reconnect_task,
+                self._poll_task,
+            )
+            if t is not None and not t.done()
+        ]
+        for task in _tasks:
+            task.cancel()
+        if _tasks:
+            await asyncio.gather(*_tasks, return_exceptions=True)
 
         self._ws_loop_task = None
         self._ws_ping_task = None
@@ -489,26 +492,33 @@ class HomeAssistantModule(Module):
             heartbeat=None,  # we implement our own keepalive
         )
 
-        # Step 1: expect auth_required
-        msg = await self._ws_connection.receive_json(timeout=10.0)
-        if msg.get("type") != "auth_required":
-            raise RuntimeError(
-                f"HomeAssistantModule: expected auth_required, got: {msg.get('type')!r}"
-            )
+        try:
+            # Step 1: expect auth_required
+            msg = await self._ws_connection.receive_json(timeout=10.0)
+            if msg.get("type") != "auth_required":
+                raise RuntimeError(
+                    f"HomeAssistantModule: expected auth_required, got: {msg.get('type')!r}"
+                )
 
-        # Step 2: send auth
-        await self._ws_connection.send_json({"type": "auth", "access_token": self._token})
+            # Step 2: send auth
+            await self._ws_connection.send_json({"type": "auth", "access_token": self._token})
 
-        # Step 3: expect auth_ok or auth_invalid
-        msg = await self._ws_connection.receive_json(timeout=10.0)
-        msg_type = msg.get("type")
-        if msg_type == "auth_invalid":
-            raise RuntimeError(
-                "HomeAssistantModule: WebSocket authentication failed (auth_invalid). "
-                "Check the home_assistant_token in owner contact_info."
-            )
-        if msg_type != "auth_ok":
-            raise RuntimeError(f"HomeAssistantModule: unexpected auth response type: {msg_type!r}")
+            # Step 3: expect auth_ok or auth_invalid
+            msg = await self._ws_connection.receive_json(timeout=10.0)
+            msg_type = msg.get("type")
+            if msg_type == "auth_invalid":
+                raise RuntimeError(
+                    "HomeAssistantModule: WebSocket authentication failed (auth_invalid). "
+                    "Check the home_assistant_token in owner contact_info."
+                )
+            if msg_type != "auth_ok":
+                raise RuntimeError(
+                    f"HomeAssistantModule: unexpected auth response type: {msg_type!r}"
+                )
+        except Exception:
+            # Close the dangling connection before propagating to callers.
+            await self._ws_close()
+            raise
 
         logger.debug(
             "HomeAssistantModule: WebSocket authenticated (ha_version=%s)",
@@ -526,7 +536,7 @@ class HomeAssistantModule(Module):
         )
 
         self._ws_connected = True
-        self._last_pong_time = asyncio.get_event_loop().time()
+        self._last_pong_time = asyncio.get_running_loop().time()
         logger.info("HomeAssistantModule: WebSocket connected and authenticated.")
 
     async def _ws_close(self) -> None:
@@ -621,7 +631,7 @@ class HomeAssistantModule(Module):
             self._handle_ws_result(msg)
 
         elif msg_type == "pong":
-            self._last_pong_time = asyncio.get_event_loop().time()
+            self._last_pong_time = asyncio.get_running_loop().time()
             logger.debug("HomeAssistantModule: received pong")
 
         else:
@@ -735,7 +745,7 @@ class HomeAssistantModule(Module):
         command = dict(command)
         command["id"] = cmd_id
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._ws_pending[cmd_id] = fut
 
@@ -776,7 +786,7 @@ class HomeAssistantModule(Module):
                     break
 
                 # Record time before sending ping
-                ping_sent_at = asyncio.get_event_loop().time()
+                ping_sent_at = asyncio.get_running_loop().time()
 
                 try:
                     self._ws_cmd_id += 1
