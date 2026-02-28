@@ -496,3 +496,164 @@ class TestHomeRouterDiscovery:
         home_module = next((m for n, m in routers if n == "home"), None)
         assert home_module is not None
         assert hasattr(home_module, "_get_db_manager")
+
+
+# ---------------------------------------------------------------------------
+# Combined filter edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestEntityListCombinedFilters:
+    async def test_domain_and_area_filters_combined(self):
+        """Both ?domain= and ?area= can be provided simultaneously."""
+        app = _app_with_mock_db()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/home/entities", params={"domain": "light", "area": "living_room"}
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "data" in body
+        assert "meta" in body
+
+    async def test_large_limit_clamped(self):
+        """?limit= values above 500 should return 422 (validation error)."""
+        app = _app_with_mock_db()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/home/entities", params={"limit": 9999})
+
+        assert resp.status_code == 422
+
+    async def test_negative_offset_returns_422(self):
+        """?offset= values below 0 should return 422."""
+        app = _app_with_mock_db()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/home/entities", params={"offset": -1})
+
+        assert resp.status_code == 422
+
+    async def test_meta_reflects_pagination_params(self):
+        """Response meta should echo back the requested offset and limit."""
+        app = _app_with_mock_db(fetchval_result=100)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/home/entities", params={"offset": 20, "limit": 10})
+
+        assert resp.status_code == 200
+        meta = resp.json()["meta"]
+        assert meta["offset"] == 20
+        assert meta["limit"] == 10
+        assert meta["total"] == 100
+
+
+# ---------------------------------------------------------------------------
+# Command log combined filters
+# ---------------------------------------------------------------------------
+
+
+class TestCommandLogCombinedFilters:
+    async def test_all_filters_combined(self):
+        """start, end, domain, offset, and limit can all be provided together."""
+        app = _app_with_mock_db()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/home/command-log",
+                params={
+                    "start": "2026-01-01T00:00:00Z",
+                    "end": "2026-01-31T23:59:59Z",
+                    "domain": "lock",
+                    "offset": 0,
+                    "limit": 10,
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "data" in body
+        assert "meta" in body
+
+    async def test_command_log_large_limit_rejected(self):
+        """?limit= values above 500 should be rejected with 422."""
+        app = _app_with_mock_db()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/home/command-log", params={"limit": 9999})
+
+        assert resp.status_code == 422
+
+    async def test_command_log_row_has_optional_null_fields(self):
+        """CommandLogEntry serializes correctly when target, data, result, context_id are None."""
+        row = MagicMock()
+        row.__getitem__ = lambda self, key: {
+            "id": 5,
+            "domain": "script",
+            "service": "run_script",
+            "target": None,
+            "data": None,
+            "result": None,
+            "context_id": None,
+            "issued_at": "2026-02-28T12:00:00+00:00",
+        }[key]
+        app = _app_with_mock_db(fetch_rows=[row], fetchval_result=1)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/home/command-log")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        entry = body["data"][0]
+        assert entry["id"] == 5
+        assert entry["target"] is None
+        assert entry["data"] is None
+        assert entry["result"] is None
+        assert entry["context_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Snapshot status edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestSnapshotStatusEdgeCases:
+    async def test_snapshot_bounds_row_is_none(self):
+        """When fetchrow returns None for bounds, timestamps should be null."""
+        mock_pool = AsyncMock()
+        mock_pool.fetchval = AsyncMock(return_value=0)
+        mock_pool.fetch = AsyncMock(return_value=[])
+        mock_pool.fetchrow = AsyncMock(return_value=None)
+
+        mock_db = MagicMock()
+        from butlers.api.db import DatabaseManager
+
+        mock_db = MagicMock(spec=DatabaseManager)
+        mock_db.pool.return_value = mock_pool
+
+        from butlers.api.app import create_app
+
+        app = create_app()
+        for butler_name, router_module in app.state.butler_routers:
+            if butler_name == "home" and hasattr(router_module, "_get_db_manager"):
+                app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+                break
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/home/snapshot-status")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["oldest_captured_at"] is None
+        assert body["newest_captured_at"] is None
