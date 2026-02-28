@@ -408,6 +408,7 @@ const SECURED_CONTACT_INFO_TYPES = [
   "email_password",
   "telegram_api_id",
   "telegram_api_hash",
+  "telegram_user_session",
 ] as const;
 
 const ALL_CONTACT_INFO_TYPES = [...CONTACT_INFO_TYPES, ...SECURED_CONTACT_INFO_TYPES] as const;
@@ -420,6 +421,7 @@ const CHILD_TO_PARENT_TYPE: Record<string, string> = {
   telegram: "telegram_chat_id",
   telegram_api_id: "telegram_chat_id",
   telegram_api_hash: "telegram_chat_id",
+  telegram_user_session: "telegram_chat_id",
 };
 
 const CREDENTIAL_TYPES = new Set(Object.keys(CHILD_TO_PARENT_TYPE));
@@ -490,6 +492,7 @@ function contactInfoTypeLabel(type: string): string {
     case "email_password": return "Email Password";
     case "telegram_api_id": return "Telegram API ID";
     case "telegram_api_hash": return "Telegram API Hash";
+    case "telegram_user_session": return "Telegram User Session";
     default: return type;
   }
 }
@@ -502,6 +505,7 @@ function inputPlaceholder(type: string): string {
     case "email_password": return "••••••••";
     case "telegram_api_id": return "12345678";
     case "telegram_api_hash": return "••••••••";
+    case "telegram_user_session": return "••••••••";
     default: return "";
   }
 }

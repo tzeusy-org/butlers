@@ -565,6 +565,7 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
             candidate_db_names.append(name)
 
     connected_pools: list[tuple[str, asyncpg.Pool]] = []
+    connection_errors: list[str] = []
     for db_name in candidate_db_names:
         try:
             pool = await asyncpg.create_pool(
@@ -580,14 +581,23 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
             )
             connected_pools.append((db_name, pool))
         except Exception as exc:
-            logger.debug(
+            connection_errors.append(f"db={db_name}: {exc}")
+            logger.warning(
                 "DB connection failed during Telegram user-client credential resolution "
-                "(db=%s, non-fatal): %s",
+                "(db=%s): %s",
                 db_name,
                 exc,
             )
 
     if not connected_pools:
+        logger.warning(
+            "Telegram user-client connector: no DB connections succeeded "
+            "(host=%s, port=%s, candidates=%s). Errors: %s",
+            db_params.get("host"),
+            db_params.get("port"),
+            candidate_db_names,
+            "; ".join(connection_errors) if connection_errors else "no candidates",
+        )
         return None
 
     primary_db_name, primary_pool = connected_pools[0]
@@ -617,16 +627,16 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
             return result
 
         missing = sorted(expected_keys - result.keys())
-        logger.debug(
-            "Telegram user-client connector: credentials not found in owner contact_info "
+        logger.warning(
+            "Telegram user-client connector: missing credential types in owner contact_info "
             "(primary_db=%s): %s",
             primary_db_name,
             missing,
         )
         return None
     except Exception as exc:
-        logger.debug(
-            "Telegram user-client connector: DB credential lookup failed (non-fatal): %s", exc
+        logger.warning(
+            "Telegram user-client connector: DB credential lookup failed: %s", exc
         )
         return None
     finally:
@@ -648,9 +658,8 @@ async def run_telegram_user_client_connector() -> None:
     config = TelegramUserClientConnectorConfig.from_env()
 
     # Step 2: Resolve credentials from owner contact_info (DB-only).
-    db_creds: dict[str, str] | None = None
-    if os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_HOST"):
-        db_creds = await _resolve_telegram_user_credentials_from_db()
+    # Always attempt — db_params_from_env() has sensible defaults (localhost).
+    db_creds = await _resolve_telegram_user_credentials_from_db()
 
     if db_creds is None:
         raise RuntimeError(
