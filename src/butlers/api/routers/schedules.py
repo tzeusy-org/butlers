@@ -312,6 +312,29 @@ async def delete_schedule(
 # ---------------------------------------------------------------------------
 
 
+@router.post(
+    "/{name}/schedules/{schedule_id}/trigger",
+    response_model=ApiResponse[dict],
+)
+async def trigger_schedule(
+    name: str,
+    schedule_id: UUID,
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict]:
+    """Trigger a scheduled task immediately (one-off dispatch) via MCP."""
+    summary = {"schedule_id": str(schedule_id)}
+    try:
+        result = await _call_mcp_tool(mgr, name, "schedule_trigger", {"id": str(schedule_id)})
+        await log_audit_entry(db, name, "schedule.trigger", summary)
+        return ApiResponse[dict](data=result)
+    except HTTPException:
+        await log_audit_entry(
+            db, name, "schedule.trigger", summary, result="error", error="MCP call failed"
+        )
+        raise
+
+
 @router.patch(
     "/{name}/schedules/{schedule_id}/toggle",
     response_model=ApiResponse[dict],

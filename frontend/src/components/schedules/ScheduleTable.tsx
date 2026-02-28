@@ -21,8 +21,10 @@ export interface ScheduleTableProps {
   schedules: Schedule[];
   isLoading: boolean;
   onToggle: (schedule: Schedule) => void;
+  onTrigger: (schedule: Schedule) => void;
   onEdit: (schedule: Schedule) => void;
   onDelete: (schedule: Schedule) => void;
+  triggeringId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,8 +107,10 @@ export function ScheduleTable({
   schedules,
   isLoading,
   onToggle,
+  onTrigger,
   onEdit,
   onDelete,
+  triggeringId,
 }: ScheduleTableProps) {
   if (!isLoading && schedules.length === 0) {
     return <EmptyState />;
@@ -206,6 +210,14 @@ export function ScheduleTable({
                 </TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onTrigger(schedule)}
+                      disabled={triggeringId === schedule.id}
+                    >
+                      {triggeringId === schedule.id ? "Running..." : "Run"}
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"

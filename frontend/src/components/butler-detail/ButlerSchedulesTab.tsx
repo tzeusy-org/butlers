@@ -26,6 +26,7 @@ import {
   useDeleteSchedule,
   useSchedules,
   useToggleSchedule,
+  useTriggerSchedule,
   useUpdateSchedule,
 } from "@/hooks/use-schedules";
 
@@ -58,6 +59,10 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
   const updateMutation = useUpdateSchedule(butlerName);
   const deleteMutation = useDeleteSchedule(butlerName);
   const toggleMutation = useToggleSchedule(butlerName);
+  const triggerMutation = useTriggerSchedule(butlerName);
+
+  // Track which schedule is currently being triggered
+  const [triggeringId, setTriggeringId] = useState<string | null>(null);
 
   // ---------------------------------------------------------------------------
   // Handlers
@@ -80,6 +85,20 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
       },
       onError: (err) => {
         toast.error(`Failed to toggle schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
+      },
+    });
+  }
+
+  function handleTrigger(schedule: Schedule) {
+    setTriggeringId(schedule.id);
+    triggerMutation.mutate(schedule.id, {
+      onSuccess: () => {
+        toast.success(`Schedule "${schedule.name}" triggered`);
+        setTriggeringId(null);
+      },
+      onError: (err) => {
+        toast.error(`Failed to trigger schedule: ${err instanceof Error ? err.message : "Unknown error"}`);
+        setTriggeringId(null);
       },
     });
   }
@@ -169,8 +188,10 @@ export default function ButlerSchedulesTab({ butlerName }: ButlerSchedulesTabPro
             schedules={schedules}
             isLoading={isLoading}
             onToggle={handleToggle}
+            onTrigger={handleTrigger}
             onEdit={handleEdit}
             onDelete={handleDeleteClick}
+            triggeringId={triggeringId}
           />
         </CardContent>
       </Card>

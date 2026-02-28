@@ -143,6 +143,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
         "schedule_create",
         "schedule_update",
         "schedule_delete",
+        "schedule_trigger",
         "sessions_list",
         "sessions_get",
         "sessions_summary",
@@ -2849,6 +2850,13 @@ class ButlerDaemon:
                 # Surface provider-specific details (e.g. Telegram API error body)
                 # so callers see the root cause, not just a generic wrapper.
                 error_detail = str(exc)
+                # Resolve the actual target used for this delivery (react uses
+                # thread_identity, not delivery.recipient).
+                if intent == "react" and notify_context:
+                    _tid = notify_context.source_thread_identity or ""
+                    _effective_target = _tid.partition(":")[0] or None
+                else:
+                    _effective_target = notify_request.delivery.recipient
                 if hasattr(exc, "response"):
                     try:
                         api_body = exc.response.json()  # type: ignore[union-attr]
@@ -2856,15 +2864,16 @@ class ButlerDaemon:
                         if api_desc:
                             error_detail = (
                                 f"{exc.response.status_code} {api_desc} "  # type: ignore[union-attr]
-                                f"(chat_id={notify_request.delivery.recipient!r})"
+                                f"(chat_id={_effective_target!r})"
                             )
                     except Exception:
                         pass
                 error_message = f"Messenger delivery failed: {error_detail}"
                 logger.warning(
-                    "Messenger delivery error: channel=%s recipient=%r error=%s",
+                    "Messenger delivery error: channel=%s target=%r intent=%s error=%s",
                     channel,
-                    notify_request.delivery.recipient,
+                    _effective_target,
+                    intent,
                     error_detail,
                 )
                 return _route_error_response(
@@ -3687,6 +3696,77 @@ class ButlerDaemon:
             resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_delete")
             await _schedule_delete(pool, uuid.UUID(resolved_id))
             return {"id": resolved_id, "status": "deleted"}
+
+        @mcp.tool()
+        async def schedule_trigger(task_id: str | None = None, id: str | None = None) -> dict:
+            """Trigger a scheduled task immediately (one-off dispatch).
+
+            Dispatches the task via the same mechanism as the scheduler tick
+            but does NOT advance next_run_at — this is a manual one-off run.
+            Updates last_run_at and last_result.
+            """
+            resolved_id = _resolve_schedule_tool_id(task_id, id, "schedule_trigger")
+            task_uuid = uuid.UUID(resolved_id)
+
+            row = await pool.fetchrow(
+                "SELECT id, name, dispatch_mode, prompt, job_name, job_args "
+                "FROM scheduled_tasks WHERE id = $1",
+                task_uuid,
+            )
+            if row is None:
+                return {"id": resolved_id, "status": "error", "error": "Schedule not found"}
+
+            name = row["name"]
+            dispatch_mode = row["dispatch_mode"] or "prompt"
+            prompt = row["prompt"]
+            job_name = row["job_name"]
+            raw_job_args = row["job_args"]
+            job_args = json.loads(raw_job_args) if isinstance(raw_job_args, str) else raw_job_args
+
+            now = datetime.now(UTC)
+            try:
+                if dispatch_mode == "job":
+                    result = await daemon._dispatch_scheduled_task(
+                        trigger_source=f"manual:{name}",
+                        job_name=job_name,
+                        job_args=job_args,
+                    )
+                else:
+                    result = await daemon._dispatch_scheduled_task(
+                        trigger_source=f"manual:{name}",
+                        prompt=prompt,
+                    )
+
+                # Serialize dispatch result for JSONB storage
+                if result is None:
+                    result_json = None
+                elif hasattr(result, "__dict__") and not isinstance(result, type):
+                    result_json = json.dumps(result.__dict__, default=str)
+                elif isinstance(result, dict):
+                    result_json = json.dumps(result, default=str)
+                else:
+                    result_json = json.dumps({"result": str(result)}, default=str)
+                await pool.execute(
+                    "UPDATE scheduled_tasks "
+                    "SET last_run_at = $2, last_result = $3::jsonb, updated_at = now() "
+                    "WHERE id = $1",
+                    task_uuid,
+                    now,
+                    result_json,
+                )
+                return {"id": resolved_id, "status": "triggered", "name": name}
+            except Exception as exc:
+                logger.exception("Manual trigger failed for schedule %s", name)
+                error_json = json.dumps({"error": str(exc)})
+                await pool.execute(
+                    "UPDATE scheduled_tasks "
+                    "SET last_run_at = $2, last_result = $3::jsonb, updated_at = now() "
+                    "WHERE id = $1",
+                    task_uuid,
+                    now,
+                    error_json,
+                )
+                return {"id": resolved_id, "status": "error", "error": str(exc)}
 
         # Session tools
         @mcp.tool()

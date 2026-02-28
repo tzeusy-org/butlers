@@ -83,6 +83,7 @@ export {
   setButlerState,
   toggleButlerSchedule,
   triggerButler,
+  triggerButlerSchedule,
   callButlerMcpTool,
   updateButlerSchedule,
   approveAction,

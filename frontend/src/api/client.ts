@@ -394,6 +394,19 @@ export function deleteButlerSchedule(
   );
 }
 
+/** Trigger a schedule immediately (one-off dispatch). */
+export function triggerButlerSchedule(
+  name: string,
+  scheduleId: string,
+): Promise<ApiResponse<Record<string, unknown>>> {
+  return apiFetch<ApiResponse<Record<string, unknown>>>(
+    `/butlers/${encodeURIComponent(name)}/schedules/${encodeURIComponent(scheduleId)}/trigger`,
+    {
+      method: "POST",
+    },
+  );
+}
+
 /** Toggle the enabled/disabled state of a schedule. */
 export function toggleButlerSchedule(
   name: string,

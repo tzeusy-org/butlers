@@ -9,6 +9,7 @@ import {
   deleteButlerSchedule,
   getButlerSchedules,
   toggleButlerSchedule,
+  triggerButlerSchedule,
   updateButlerSchedule,
 } from "@/api/index.ts";
 import type { ScheduleCreate, ScheduleUpdate } from "@/api/types.ts";
@@ -54,6 +55,18 @@ export function useDeleteSchedule(butlerName: string) {
 
   return useMutation({
     mutationFn: (scheduleId: string) => deleteButlerSchedule(butlerName, scheduleId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["butlers", butlerName, "schedules"] });
+    },
+  });
+}
+
+/** Mutation to trigger a schedule immediately (one-off dispatch). */
+export function useTriggerSchedule(butlerName: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (scheduleId: string) => triggerButlerSchedule(butlerName, scheduleId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["butlers", butlerName, "schedules"] });
     },
