@@ -72,10 +72,13 @@ class TestRevisionMetadata:
 
 class TestUpgradeSQL:
     def test_deletes_google_refresh_token_key(self) -> None:
-        """Upgrade SQL targets the GOOGLE_REFRESH_TOKEN key in butler_secrets."""
+        """Upgrade targets GOOGLE_REFRESH_TOKEN via the module-level _REMOVED_KEYS constant."""
         mod = _load_migration()
+        assert hasattr(mod, "_REMOVED_KEYS")
+        assert "GOOGLE_REFRESH_TOKEN" in mod._REMOVED_KEYS
+        # The upgrade function must reference the constant (not hardcode the key inline).
         source = inspect.getsource(mod.upgrade)
-        assert "GOOGLE_REFRESH_TOKEN" in source
+        assert "_REMOVED_KEYS" in source
 
     def test_deletes_from_butler_secrets(self) -> None:
         """Upgrade SQL issues a DELETE against butler_secrets."""

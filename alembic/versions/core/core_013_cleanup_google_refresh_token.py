@@ -39,12 +39,13 @@ _REMOVED_KEYS = ["GOOGLE_REFRESH_TOKEN"]
 
 
 def upgrade() -> None:
-    op.execute("""
+    keys_sql = ", ".join(f"'{key}'" for key in _REMOVED_KEYS)
+    op.execute(f"""
         DO $$
         BEGIN
             IF to_regclass('butler_secrets') IS NOT NULL THEN
                 DELETE FROM butler_secrets
-                WHERE secret_key IN ('GOOGLE_REFRESH_TOKEN');
+                WHERE secret_key IN ({keys_sql});
             END IF;
         END
         $$;
