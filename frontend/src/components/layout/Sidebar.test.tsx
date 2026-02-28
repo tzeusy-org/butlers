@@ -7,9 +7,14 @@ import { MemoryRouter } from "react-router";
 
 import Sidebar from "@/components/layout/Sidebar";
 import { useButlers } from "@/hooks/use-butlers";
+import { useCostSummary } from "@/hooks/use-costs";
 
 vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-costs", () => ({
+  useCostSummary: vi.fn(),
 }));
 
 type UseButlersResult = ReturnType<typeof useButlers>;
@@ -33,6 +38,11 @@ describe("Sidebar", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // Default cost mock — must be re-set after resetAllMocks
+    vi.mocked(useCostSummary).mockReturnValue({
+      data: { data: { total_cost_usd: 26.27 } },
+      isLoading: false,
+    } as ReturnType<typeof useCostSummary>);
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -54,6 +64,64 @@ describe("Sidebar", () => {
       );
     });
   }
+
+  // -------------------------------------------------------------------------
+  // Section headers (navigation category grouping)
+  // -------------------------------------------------------------------------
+
+  describe("section headers", () => {
+    beforeEach(() => {
+      setButlersState({
+        data: {
+          data: [{ name: "relationship", status: "ok", port: 40102 }],
+          meta: {},
+        },
+      });
+    });
+
+    it("renders Main, Dedicated Butlers, and Telemetry section headers", () => {
+      render();
+
+      expect(container.textContent).toContain("Main");
+      expect(container.textContent).toContain("Dedicated Butlers");
+      expect(container.textContent).toContain("Telemetry");
+    });
+
+    it("hides Dedicated Butlers section when no butler items are visible", () => {
+      setButlersState({
+        data: { data: [], meta: {} },
+      });
+      render();
+
+      // Health and Calendar don't have butler filters, so section still shows
+      expect(container.textContent).toContain("Dedicated Butlers");
+    });
+
+    it("places Overview in Main and Traces in Telemetry", () => {
+      render();
+
+      const headings = container.querySelectorAll("h3");
+      const mainHeading = Array.from(headings).find((h) => h.textContent === "Main");
+      const telemetryHeading = Array.from(headings).find((h) => h.textContent === "Telemetry");
+      expect(mainHeading).toBeTruthy();
+      expect(telemetryHeading).toBeTruthy();
+
+      // Section container is the button's parent div
+      const mainSection = mainHeading!.closest("button")!.parentElement;
+      expect(mainSection?.querySelector('a[href="/"]')).toBeTruthy();
+      expect(mainSection?.querySelector('a[href="/traces"]')).toBeNull();
+
+      // Telemetry starts collapsed — expand it first
+      const telemetryButton = telemetryHeading!.closest("button")!;
+      act(() => {
+        telemetryButton.click();
+      });
+
+      const telemetrySection = telemetryButton.parentElement;
+      expect(telemetrySection?.querySelector('a[href="/traces"]')).toBeTruthy();
+      expect(telemetrySection?.querySelector('a[href="/"]')).toBeNull();
+    });
+  });
 
   // -------------------------------------------------------------------------
   // Existing flat nav items still work (no regression)

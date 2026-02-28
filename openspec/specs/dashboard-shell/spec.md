@@ -108,11 +108,19 @@ The sidebar provides the primary navigation for the entire dashboard. It consist
 - **WHEN** the sidebar is collapsed
 - **THEN** the brand text fades out (`opacity-0 w-0 overflow-hidden`) and the single letter "B" renders instead
 
-#### Scenario: Navigation items configuration
+#### Scenario: Navigation sections and items configuration
 
 - **WHEN** the sidebar renders
-- **THEN** the following flat navigation entries appear in order: Overview (`/`, exact match), Butlers (`/butlers`), Sessions (`/sessions`), Traces (`/traces`), Timeline (`/timeline`), Notifications (`/notifications`), Issues (`/issues`), Audit Log (`/audit-log`), Approvals (`/approvals`), Calendar (`/calendar`), Ingestion (`/ingestion`), Health (`/health/measurements`), Memory (`/memory`), Secrets (`/secrets`), Settings (`/settings`)
-- **AND** the Relationships group item contains Contacts (`/contacts`) and Groups (`/groups`) as children
+- **THEN** navigation items are organized into three labelled sections displayed in order:
+  1. **Main** — Overview (`/`, exact match), Butlers (`/butlers`), Sessions (`/sessions`), Ingestion (`/ingestion`), Approvals (`/approvals`), Memory (`/memory`), Secrets (`/secrets`), Settings (`/settings`)
+  2. **Dedicated Butlers** — Relationships group (Contacts `/contacts`, Groups `/groups`; butler-aware on `relationship`), Education (`/education`; butler-aware on `education`), Health (`/health/measurements`), Calendar (`/calendar`)
+  3. **Telemetry** — Traces (`/traces`), Timeline (`/timeline`), Notifications (`/notifications`), Issues (`/issues`), Audit Log (`/audit-log`)
+- **AND** each section header is a clickable button containing an uppercase `text-[11px]` semibold label with `tracking-wider` and `text-muted-foreground/60` styling, plus a small chevron icon that rotates 90 degrees when expanded
+- **AND** clicking a section header toggles its expanded/collapsed state with `max-h` and `opacity` transitions over 200ms
+- **AND** Main and Dedicated Butlers sections default to expanded; Telemetry defaults to collapsed (`defaultExpanded: false`)
+- **AND** a section auto-expands when any of its items (including group children) matches the current active route
+- **AND** when the sidebar is collapsed (icon-only mode), section headers are hidden and sections are visually separated by a thin horizontal `border-border` divider
+- **AND** sections with no visible items (all butler-filtered) are excluded from rendering
 - **AND** each item renders a first-letter icon placeholder (the first character of the label in a 24x24 rounded `bg-muted` container) and the label text
 
 #### Scenario: Active state highlighting
@@ -151,7 +159,10 @@ The sidebar provides the primary navigation for the entire dashboard. It consist
 #### Scenario: Sidebar footer
 
 - **WHEN** the sidebar is expanded
-- **THEN** a footer section renders below the navigation with "Today's spend" label and a placeholder value ("--")
+- **THEN** a footer section renders below the navigation with a "Today's spend" label
+- **AND** it fetches live cost data via the `useCostSummary("today")` hook (same data source as the dashboard overview's "Est. Cost Today" card)
+- **AND** while loading or when data is unavailable, the value displays "--"
+- **AND** when data is available, the value displays the formatted cost (e.g., "$26.27")
 - **WHEN** the sidebar is collapsed
 - **THEN** the footer content is hidden
 

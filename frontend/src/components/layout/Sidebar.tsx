@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router'
 import { useButlers } from '@/hooks/use-butlers'
+import { useCostSummary } from '@/hooks/use-costs'
 
 // ---------------------------------------------------------------------------
 // Nav item types (discriminated union)
@@ -27,6 +28,14 @@ export interface NavGroupItem {
 
 export type NavItem = NavFlatItem | NavGroupItem
 
+/** A labelled section grouping multiple nav items under a heading. */
+export interface NavSection {
+  title: string
+  items: NavItem[]
+  /** Whether this section starts expanded (default: true). */
+  defaultExpanded?: boolean
+}
+
 // ---------------------------------------------------------------------------
 // Type guard
 // ---------------------------------------------------------------------------
@@ -36,35 +45,51 @@ function isGroup(item: NavItem): item is NavGroupItem {
 }
 
 // ---------------------------------------------------------------------------
-// Nav items configuration
+// Nav sections configuration
 // ---------------------------------------------------------------------------
 
-const navItems: NavItem[] = [
-  { path: '/', label: 'Overview', end: true },
-  { path: '/butlers', label: 'Butlers' },
-  { path: '/sessions', label: 'Sessions' },
-  { path: '/traces', label: 'Traces' },
-  { path: '/timeline', label: 'Timeline' },
-  { path: '/notifications', label: 'Notifications' },
-  { path: '/issues', label: 'Issues' },
-  { path: '/audit-log', label: 'Audit Log' },
-  { path: '/approvals', label: 'Approvals' },
+const navSections: NavSection[] = [
   {
-    kind: 'group',
-    label: 'Relationships',
-    butler: 'relationship',
-    children: [
-      { path: '/contacts', label: 'Contacts' },
-      { path: '/groups', label: 'Groups' },
+    title: 'Main',
+    items: [
+      { path: '/', label: 'Overview', end: true },
+      { path: '/butlers', label: 'Butlers' },
+      { path: '/sessions', label: 'Sessions' },
+      { path: '/ingestion', label: 'Ingestion' },
+      { path: '/approvals', label: 'Approvals' },
+      { path: '/memory', label: 'Memory' },
+      { path: '/secrets', label: 'Secrets' },
+      { path: '/settings', label: 'Settings' },
     ],
   },
-  { path: '/calendar', label: 'Calendar' },
-  { path: '/education', label: 'Education', butler: 'education' },
-  { path: '/ingestion', label: 'Ingestion' },
-  { path: '/health/measurements', label: 'Health' },
-  { path: '/memory', label: 'Memory' },
-  { path: '/secrets', label: 'Secrets' },
-  { path: '/settings', label: 'Settings' },
+  {
+    title: 'Dedicated Butlers',
+    items: [
+      {
+        kind: 'group',
+        label: 'Relationships',
+        butler: 'relationship',
+        children: [
+          { path: '/contacts', label: 'Contacts' },
+          { path: '/groups', label: 'Groups' },
+        ],
+      },
+      { path: '/education', label: 'Education', butler: 'education' },
+      { path: '/health/measurements', label: 'Health' },
+      { path: '/calendar', label: 'Calendar' },
+    ],
+  },
+  {
+    title: 'Telemetry',
+    defaultExpanded: false,
+    items: [
+      { path: '/traces', label: 'Traces' },
+      { path: '/timeline', label: 'Timeline' },
+      { path: '/notifications', label: 'Notifications' },
+      { path: '/issues', label: 'Issues' },
+      { path: '/audit-log', label: 'Audit Log' },
+    ],
+  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -82,21 +107,26 @@ function isPathActive(pathname: string, itemPath: string, end?: boolean): boolea
 // Butler-aware filtering
 // ---------------------------------------------------------------------------
 
-function useFilteredNavItems(items: NavItem[]): NavItem[] {
+function useFilteredNavSections(sections: NavSection[]): NavSection[] {
   const { data: response, isLoading, isError } = useButlers()
 
   // While loading or on error, show all items (graceful degradation)
   if (isLoading || isError || !response) {
-    return items
+    return sections
   }
 
   const butlerNames = new Set(response.data.map((b) => b.name))
 
-  return items.filter((item) => {
-    const butlerField = item.butler
-    if (!butlerField) return true
-    return butlerNames.has(butlerField)
-  })
+  return sections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => {
+        const butlerField = item.butler
+        if (!butlerField) return true
+        return butlerNames.has(butlerField)
+      }),
+    }))
+    .filter((section) => section.items.length > 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +275,131 @@ function NavGroup({
 }
 
 // ---------------------------------------------------------------------------
+// Collapsible section wrapper
+// ---------------------------------------------------------------------------
+
+/** Collect all paths from a list of nav items (including group children). */
+function allPaths(items: NavItem[]): { path: string; end?: boolean }[] {
+  const result: { path: string; end?: boolean }[] = []
+  for (const item of items) {
+    if (isGroup(item)) {
+      for (const child of item.children) {
+        result.push({ path: child.path, end: child.end })
+      }
+    } else {
+      result.push({ path: item.path, end: item.end })
+    }
+  }
+  return result
+}
+
+function NavSectionGroup({
+  section,
+  collapsed,
+  isFirst,
+  onNavClick,
+}: {
+  section: NavSection
+  collapsed: boolean
+  isFirst: boolean
+  onNavClick?: () => void
+}) {
+  const location = useLocation()
+
+  // Auto-expand when any item in the section is active
+  const hasActiveItem = allPaths(section.items).some((p) =>
+    isPathActive(location.pathname, p.path, p.end),
+  )
+
+  const [userExpanded, setUserExpanded] = useState(section.defaultExpanded !== false)
+  const expanded = hasActiveItem || userExpanded
+
+  return (
+    <div className={!isFirst ? 'mt-2' : ''}>
+      {/* Section header — clickable toggle when expanded sidebar */}
+      {!collapsed ? (
+        <button
+          onClick={() => setUserExpanded((prev) => !prev)}
+          className="flex w-full items-center gap-1 px-3 py-1"
+          aria-expanded={expanded}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`shrink-0 text-muted-foreground/40 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
+          >
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+            {section.title}
+          </h3>
+        </button>
+      ) : (
+        !isFirst && <div className="mx-2 mb-2 border-t border-border" />
+      )}
+      {/* Items */}
+      <div
+        aria-hidden={!collapsed && !expanded}
+        className={
+          collapsed
+            ? 'space-y-1'
+            : `overflow-hidden transition-all duration-200 space-y-1 ${
+                expanded ? 'max-h-[500px] opacity-100' : 'max-h-0 opacity-0'
+              }`
+        }
+      >
+        {section.items.map((item) =>
+          isGroup(item) ? (
+            <NavGroup
+              key={item.label}
+              item={item}
+              collapsed={collapsed}
+              onNavClick={onNavClick}
+            />
+          ) : (
+            <FlatNavLink
+              key={item.path}
+              item={item}
+              collapsed={collapsed}
+              onNavClick={onNavClick}
+            />
+          ),
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar footer with live cost data
+// ---------------------------------------------------------------------------
+
+function SidebarFooter({ collapsed }: { collapsed: boolean }) {
+  const { data: costResponse, isLoading } = useCostSummary('today')
+  const cost = costResponse?.data.total_cost_usd
+
+  return (
+    <div className="border-t border-border p-4">
+      {!collapsed && (
+        <>
+          <p className="text-xs text-muted-foreground">Today&apos;s spend</p>
+          <p className="text-sm font-medium">
+            {isLoading || cost == null ? '--' : `$${cost.toFixed(2)}`}
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main Sidebar component
 // ---------------------------------------------------------------------------
 
@@ -255,7 +410,7 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ collapsed = false, onToggleCollapse, onNavClick }: SidebarProps) {
-  const filteredItems = useFilteredNavItems(navItems)
+  const filteredSections = useFilteredNavSections(navSections)
 
   return (
     <div className="flex h-full flex-col">
@@ -274,35 +429,20 @@ export default function Sidebar({ collapsed = false, onToggleCollapse, onNavClic
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 space-y-1 p-3">
-        {filteredItems.map((item) =>
-          isGroup(item) ? (
-            <NavGroup
-              key={item.label}
-              item={item}
-              collapsed={collapsed}
-              onNavClick={onNavClick}
-            />
-          ) : (
-            <FlatNavLink
-              key={item.path}
-              item={item}
-              collapsed={collapsed}
-              onNavClick={onNavClick}
-            />
-          ),
-        )}
+      <nav className="flex-1 overflow-y-auto p-3">
+        {filteredSections.map((section, idx) => (
+          <NavSectionGroup
+            key={section.title}
+            section={section}
+            collapsed={collapsed}
+            isFirst={idx === 0}
+            onNavClick={onNavClick}
+          />
+        ))}
       </nav>
 
       {/* Footer */}
-      <div className="border-t border-border p-4">
-        {!collapsed && (
-          <>
-            <p className="text-xs text-muted-foreground">Today&apos;s spend</p>
-            <p className="text-sm font-medium">--</p>
-          </>
-        )}
-      </div>
+      <SidebarFooter collapsed={collapsed} />
 
       {/* Collapse toggle (desktop only, rendered via parent visibility) */}
       {onToggleCollapse && (
