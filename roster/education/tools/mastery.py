@@ -13,7 +13,7 @@ from butlers.tools.education._helpers import _row_to_dict
 # Constants
 # ---------------------------------------------------------------------------
 
-_VALID_RESPONSE_TYPES = {"diagnostic", "teach", "review"}
+_VALID_RESPONSE_TYPES = {"diagnostic", "teach", "quiz", "review"}
 
 # Exponential recency weights for up to 5 responses (oldest → newest).
 # Weight for position i (0=oldest, 4=newest) = 2^i, normalized so sum=1.
