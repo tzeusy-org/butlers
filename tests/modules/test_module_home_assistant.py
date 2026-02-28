@@ -1733,6 +1733,317 @@ class TestPollLoopBehavior:
 
 
 # ---------------------------------------------------------------------------
+# _call_service — REST service invocation
+# ---------------------------------------------------------------------------
+
+
+class TestCallService:
+    """Verify _call_service calls the HA REST API correctly."""
+
+    async def test_call_service_success_returns_result(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_call_service returns the parsed JSON body on success."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.content = b'[{"entity_id": "light.kitchen", "state": "on"}]'
+        mock_resp.json.return_value = [{"entity_id": "light.kitchen", "state": "on"}]
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._call_service(domain="light", service="turn_on")
+
+        mock_client.post.assert_awaited_once_with("/api/services/light/turn_on", json={})
+        assert result == [{"entity_id": "light.kitchen", "state": "on"}]
+
+    async def test_call_service_with_target(self, ha_module: HomeAssistantModule) -> None:
+        """_call_service includes target in the payload."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.content = b"{}"
+        mock_resp.json.return_value = {}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._call_service(
+            domain="light",
+            service="turn_on",
+            target={"entity_id": "light.kitchen_ceiling"},
+        )
+
+        call_kwargs = mock_client.post.call_args.kwargs
+        assert call_kwargs["json"]["target"] == {"entity_id": "light.kitchen_ceiling"}
+
+    async def test_call_service_with_data(self, ha_module: HomeAssistantModule) -> None:
+        """_call_service merges service data into the payload."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.content = b"{}"
+        mock_resp.json.return_value = {}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._call_service(
+            domain="light",
+            service="turn_on",
+            data={"brightness": 200, "color_temp": 4000},
+        )
+
+        call_kwargs = mock_client.post.call_args.kwargs
+        assert call_kwargs["json"]["brightness"] == 200
+        assert call_kwargs["json"]["color_temp"] == 4000
+
+    async def test_call_service_with_target_and_data(self, ha_module: HomeAssistantModule) -> None:
+        """_call_service places target separately from data in payload."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.content = b"{}"
+        mock_resp.json.return_value = {}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._call_service(
+            domain="switch",
+            service="turn_off",
+            target={"entity_id": "switch.garage_door"},
+            data={"transition": 2},
+        )
+
+        call_kwargs = mock_client.post.call_args.kwargs
+        payload = call_kwargs["json"]
+        assert payload["target"] == {"entity_id": "switch.garage_door"}
+        assert payload["transition"] == 2
+
+    async def test_call_service_empty_response_returns_empty_dict(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_call_service returns empty dict when response body is empty (204-like)."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.content = b""  # empty body
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._call_service(domain="script", service="my_script")
+
+        assert result == {}
+        # json() must not be called when content is empty
+        mock_resp.json.assert_not_called()
+
+    async def test_call_service_raises_when_not_initialized(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_call_service raises RuntimeError when the HTTP client is not set."""
+        ha_module._client = None
+
+        with pytest.raises(RuntimeError, match="not initialised"):
+            await ha_module._call_service(domain="light", service="turn_on")
+
+    async def test_call_service_http_error_propagates(self, ha_module: HomeAssistantModule) -> None:
+        """_call_service propagates HTTP errors from raise_for_status."""
+        import httpx
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock(
+            side_effect=httpx.HTTPStatusError(
+                "403 Forbidden",
+                request=MagicMock(),
+                response=MagicMock(),
+            )
+        )
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        with pytest.raises(Exception):
+            await ha_module._call_service(domain="lock", service="unlock")
+
+
+# ---------------------------------------------------------------------------
+# _list_entities — REST fallback when cache is empty
+# ---------------------------------------------------------------------------
+
+
+class TestListEntitiesRestFallback:
+    """Verify _list_entities falls back to REST when entity cache is empty."""
+
+    async def test_list_entities_rest_fallback_no_filter(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """When cache is empty, _list_entities calls GET /api/states."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [
+            {
+                "entity_id": "light.kitchen",
+                "state": "on",
+                "attributes": {"friendly_name": "Kitchen Light"},
+                "last_updated": "2024-01-01T10:00:00+00:00",
+            },
+            {
+                "entity_id": "sensor.temp",
+                "state": "21.5",
+                "attributes": {},
+                "last_updated": "2024-01-01T09:00:00+00:00",
+            },
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+        ha_module._entity_cache = {}  # empty cache triggers REST fallback
+
+        results = await ha_module._list_entities()
+
+        mock_client.get.assert_awaited_once_with("/api/states")
+        assert len(results) == 2
+        entity_ids = [r["entity_id"] for r in results]
+        assert entity_ids == sorted(entity_ids)
+
+    async def test_list_entities_rest_fallback_domain_filter(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """REST fallback respects domain filter."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [
+            {
+                "entity_id": "light.kitchen",
+                "state": "on",
+                "attributes": {},
+                "last_updated": "",
+            },
+            {
+                "entity_id": "sensor.temp",
+                "state": "21.5",
+                "attributes": {},
+                "last_updated": "",
+            },
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+        ha_module._entity_cache = {}
+
+        results = await ha_module._list_entities(domain="light")
+
+        assert len(results) == 1
+        assert results[0]["entity_id"] == "light.kitchen"
+        assert results[0]["domain"] == "light"
+
+    async def test_list_entities_rest_fallback_area_filter_ignored_with_warning(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """REST fallback ignores area filter (no registry) and returns domain-filtered results."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [
+            {
+                "entity_id": "light.kitchen",
+                "state": "on",
+                "attributes": {},
+                "last_updated": "",
+            },
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+        ha_module._entity_cache = {}
+
+        # Area filter with empty cache — should warn but not raise, return all matching entities
+        results = await ha_module._list_entities(area="Kitchen")
+
+        assert isinstance(results, list)
+        # REST returns all entities when area filter is ignored
+        assert len(results) == 1
+
+    async def test_list_entities_rest_fallback_result_structure(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """REST fallback results have expected fields."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [
+            {
+                "entity_id": "light.bed",
+                "state": "off",
+                "attributes": {"friendly_name": "Bedroom Light"},
+                "last_updated": "2024-01-01T08:00:00+00:00",
+            }
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+        ha_module._entity_cache = {}
+
+        results = await ha_module._list_entities()
+
+        assert len(results) == 1
+        r = results[0]
+        assert r["entity_id"] == "light.bed"
+        assert r["state"] == "off"
+        assert r["friendly_name"] == "Bedroom Light"
+        assert r["domain"] == "light"
+        assert r["area_name"] is None  # no registry available in REST fallback
+        assert "last_updated" in r
+
+    async def test_list_entities_uses_cache_when_populated(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_list_entities uses cache path when cache is not empty."""
+        ha_module._entity_cache = {
+            "light.hall": CachedEntity(entity_id="light.hall", state="on"),
+        }
+        mock_client = AsyncMock()
+        ha_module._client = mock_client
+
+        results = await ha_module._list_entities()
+
+        # REST should not be called when cache is populated
+        mock_client.get.assert_not_awaited()
+        assert len(results) == 1
+        assert results[0]["entity_id"] == "light.hall"
+
+
+# ---------------------------------------------------------------------------
+# _get_entity_state — entity_id validation
+# ---------------------------------------------------------------------------
+
+
+class TestGetEntityStateValidation:
+    """Verify _get_entity_state validates entity_id format."""
+
+    async def test_invalid_entity_id_raises_value_error(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_entity_state raises ValueError for malformed entity IDs."""
+        with pytest.raises(ValueError, match="Invalid entity_id"):
+            await ha_module._get_entity_state("not-valid")
+
+    async def test_entity_id_with_slash_raises_value_error(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """entity_id with path traversal slash raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid entity_id"):
+            await ha_module._get_entity_state("light/../../etc/passwd")
+
+    async def test_entity_id_with_uppercase_raises_value_error(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """entity_id with uppercase characters raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid entity_id"):
+            await ha_module._get_entity_state("Light.Kitchen")
+
+    async def test_valid_entity_id_with_underscores_accepted(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Valid entity_id with underscores passes validation."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
 # _list_areas — area registry query tool
 # ---------------------------------------------------------------------------
 
@@ -1784,11 +2095,153 @@ class TestListAreas:
 # ---------------------------------------------------------------------------
 
 
-class TestListServices:
-    """Verify _list_services queries REST and applies optional domain filter."""
+# ---------------------------------------------------------------------------
+# _get_client — initialization guard
+# ---------------------------------------------------------------------------
 
-    async def test_list_services_uses_rest_client(self, ha_module: HomeAssistantModule) -> None:
-        """_list_services calls GET /api/services via the REST client."""
+
+class TestGetClientGuard:
+    """Verify _get_client() raises when the module is not initialized."""
+
+    def test_get_client_raises_when_none(self, ha_module: HomeAssistantModule) -> None:
+        """_get_client() raises RuntimeError when _client is None."""
+        ha_module._client = None
+
+        with pytest.raises(RuntimeError, match="not initialised"):
+            ha_module._get_client()
+
+    def test_get_client_returns_client_when_set(self, ha_module: HomeAssistantModule) -> None:
+        """_get_client() returns the client when it has been set."""
+        mock_client = MagicMock()
+        ha_module._client = mock_client
+
+        result = ha_module._get_client()
+        assert result is mock_client
+
+
+# ---------------------------------------------------------------------------
+# ha_call_service tool — invocation via registered tool
+# ---------------------------------------------------------------------------
+
+
+class TestHaCallServiceToolInvocation:
+    """Verify ha_call_service tool behavior when called via registered closure."""
+
+    async def test_ha_call_service_delegates_to_call_service(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """The ha_call_service registered tool delegates to _call_service."""
+        await ha_module.register_tools(
+            mcp=mock_mcp,
+            config={"url": "http://ha.local"},
+            db=None,
+        )
+        tool_fn = mock_mcp._registered_tools["ha_call_service"]
+
+        with patch.object(
+            ha_module, "_call_service", new=AsyncMock(return_value={"ok": True})
+        ) as mock_svc:
+            result = await tool_fn(
+                domain="light",
+                service="turn_on",
+                target={"entity_id": "light.kitchen"},
+                data={"brightness": 255},
+            )
+
+        mock_svc.assert_awaited_once_with(
+            domain="light",
+            service="turn_on",
+            target={"entity_id": "light.kitchen"},
+            data={"brightness": 255},
+        )
+        assert result == {"ok": True}
+
+    async def test_ha_get_entity_state_tool_delegates(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """The ha_get_entity_state registered tool delegates to _get_entity_state."""
+        await ha_module.register_tools(
+            mcp=mock_mcp,
+            config={"url": "http://ha.local"},
+            db=None,
+        )
+        tool_fn = mock_mcp._registered_tools["ha_get_entity_state"]
+
+        with patch.object(
+            ha_module,
+            "_get_entity_state",
+            new=AsyncMock(return_value={"entity_id": "sensor.temp", "state": "22"}),
+        ) as mock_state:
+            result = await tool_fn(entity_id="sensor.temp")
+
+        mock_state.assert_awaited_once_with("sensor.temp")
+        assert result["entity_id"] == "sensor.temp"
+
+    async def test_ha_list_entities_tool_delegates(
+        self, ha_module: HomeAssistantModule, mock_mcp: MagicMock
+    ) -> None:
+        """The ha_list_entities registered tool delegates to _list_entities."""
+        await ha_module.register_tools(
+            mcp=mock_mcp,
+            config={"url": "http://ha.local"},
+            db=None,
+        )
+        tool_fn = mock_mcp._registered_tools["ha_list_entities"]
+
+        with patch.object(
+            ha_module,
+            "_list_entities",
+            new=AsyncMock(return_value=[{"entity_id": "light.x"}]),
+        ) as mock_list:
+            result = await tool_fn(domain="light", area="Kitchen")
+
+        mock_list.assert_awaited_once_with(domain="light", area="Kitchen")
+        assert result == [{"entity_id": "light.x"}]
+
+
+# ---------------------------------------------------------------------------
+# tool_metadata — completeness
+# ---------------------------------------------------------------------------
+
+
+class TestToolMetadataCompleteness:
+    """Verify tool_metadata contains exactly the expected entries."""
+
+    def test_tool_metadata_only_contains_call_service(self, ha_module: HomeAssistantModule) -> None:
+        """tool_metadata has exactly one entry — ha_call_service."""
+        meta = ha_module.tool_metadata()
+        assert len(meta) == 1
+        assert list(meta.keys()) == ["ha_call_service"]
+
+    def test_call_service_arg_sensitivities_has_domain_and_service(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """ha_call_service arg_sensitivities marks domain and service as sensitive."""
+        meta = ha_module.tool_metadata()
+        sensitivities = meta["ha_call_service"].arg_sensitivities
+        assert sensitivities == {"domain": True, "service": True}
+
+    def test_list_entities_not_in_metadata(self, ha_module: HomeAssistantModule) -> None:
+        """ha_list_entities has no explicit sensitivity — not in tool_metadata."""
+        meta = ha_module.tool_metadata()
+        assert "ha_list_entities" not in meta
+
+    def test_get_entity_state_not_in_metadata(self, ha_module: HomeAssistantModule) -> None:
+        """ha_get_entity_state has no explicit sensitivity — not in tool_metadata."""
+        meta = ha_module.tool_metadata()
+        assert "ha_get_entity_state" not in meta
+
+
+# ---------------------------------------------------------------------------
+# _list_services — service catalog query tool
+# ---------------------------------------------------------------------------
+
+
+class TestListServices:
+    """Verify _list_services queries HA for available services."""
+
+    async def test_list_services_no_filter(self, ha_module: HomeAssistantModule) -> None:
+        """_list_services returns all services when no domain filter is applied."""
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json.return_value = [
