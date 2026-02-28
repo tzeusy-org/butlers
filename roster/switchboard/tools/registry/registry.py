@@ -341,22 +341,10 @@ async def register_butler(
             description = EXCLUDED.description,
             modules = EXCLUDED.modules,
             last_seen_at = EXCLUDED.last_seen_at,
-            eligibility_state = CASE
-                WHEN butler_registry.eligibility_state = 'quarantined'
-                    THEN butler_registry.eligibility_state
-                ELSE EXCLUDED.eligibility_state
-            END,
+            eligibility_state = EXCLUDED.eligibility_state,
             liveness_ttl_seconds = EXCLUDED.liveness_ttl_seconds,
-            quarantined_at = CASE
-                WHEN butler_registry.eligibility_state = 'quarantined'
-                    THEN butler_registry.quarantined_at
-                ELSE EXCLUDED.quarantined_at
-            END,
-            quarantine_reason = CASE
-                WHEN butler_registry.eligibility_state = 'quarantined'
-                    THEN butler_registry.quarantine_reason
-                ELSE EXCLUDED.quarantine_reason
-            END,
+            quarantined_at = NULL,
+            quarantine_reason = NULL,
             route_contract_min = EXCLUDED.route_contract_min,
             route_contract_max = EXCLUDED.route_contract_max,
             capabilities = EXCLUDED.capabilities,
@@ -375,11 +363,7 @@ async def register_butler(
         now,
     )
 
-    if (
-        previous_state is not None
-        and previous_state != ELIGIBILITY_ACTIVE
-        and previous_state != ELIGIBILITY_QUARANTINED
-    ):
+    if previous_state is not None and previous_state != ELIGIBILITY_ACTIVE:
         await _audit_eligibility_transition(
             pool,
             name=name,

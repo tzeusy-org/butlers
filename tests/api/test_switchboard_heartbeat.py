@@ -1,7 +1,7 @@
 """Tests for POST /api/switchboard/heartbeat endpoint.
 
 Verifies heartbeat handling: last_seen_at updates, eligibility transitions,
-stale→active logging, quarantined preservation, and error cases.
+stale→active logging, quarantined→active auto-recovery, and error cases.
 
 Issue: butlers-976.2
 """
@@ -182,10 +182,12 @@ class TestReceiveHeartbeat:
         assert "eligibility_state = 'active'" in update_sql
         assert "eligibility_updated_at" in update_sql
 
-    async def test_quarantined_butler_stays_quarantined(self):
-        """Quarantined butler receiving heartbeat keeps quarantined state."""
+    async def test_quarantined_butler_recovers_to_active(self):
+        """Quarantined butler receiving heartbeat transitions to active state."""
         fetchrow_result = {"eligibility_state": "quarantined", "last_seen_at": None}
-        app, _ = _app_with_heartbeat_mock(fetchrow_result=fetchrow_result)
+        app, _ = _app_with_heartbeat_mock(
+            fetchrow_result=fetchrow_result, execute_return="UPDATE 1"
+        )
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -195,23 +197,59 @@ class TestReceiveHeartbeat:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "ok"
-        assert body["eligibility_state"] == "quarantined"
+        assert body["eligibility_state"] == "active"
 
-    async def test_quarantined_butler_updates_last_seen_at_only(self):
-        """Quarantined butler: only UPDATE last_seen_at, no eligibility log insert."""
+    async def test_quarantined_butler_recovery_logs_transition(self):
+        """Quarantined→active recovery inserts eligibility_log row."""
         fetchrow_result = {"eligibility_state": "quarantined", "last_seen_at": None}
-        app, mock_pool = _app_with_heartbeat_mock(fetchrow_result=fetchrow_result)
+        app, mock_pool = _app_with_heartbeat_mock(
+            fetchrow_result=fetchrow_result, execute_return="UPDATE 1"
+        )
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             await client.post("/api/switchboard/heartbeat", json={"butler_name": "health"})
 
-        # Only one execute call for quarantined (no log insert)
-        assert mock_pool.execute.call_count == 1
-        sql_call = mock_pool.execute.call_args_list[0][0][0]
-        assert "UPDATE butler_registry" in sql_call
-        assert "butler_registry_eligibility_log" not in sql_call
+        # Should have two execute calls: UPDATE + INSERT into eligibility_log
+        assert mock_pool.execute.call_count == 2
+        # Find the INSERT call
+        insert_call = None
+        for c in mock_pool.execute.call_args_list:
+            if "INSERT INTO butler_registry_eligibility_log" in c[0][0]:
+                insert_call = c
+                break
+        assert insert_call is not None, "Expected INSERT into butler_registry_eligibility_log"
+        args = insert_call[0][1:]
+        assert args[0] == "health"  # butler_name
+        assert args[1] == "quarantined"  # previous_state
+        assert args[2] == "active"  # new_state
+        assert args[3] == "heartbeat_recovery"  # reason
+
+    async def test_quarantined_recovery_concurrent_modification_fallback(self):
+        """If quarantined CAS UPDATE affects 0 rows (concurrent modification),
+        fall back to re-reading state and only updating last_seen_at."""
+        fetchrow_result = {"eligibility_state": "quarantined", "last_seen_at": None}
+        app, mock_pool = _app_with_heartbeat_mock(
+            fetchrow_result=fetchrow_result, execute_return=None
+        )
+        mock_pool.fetchrow.side_effect = [
+            fetchrow_result,  # initial SELECT
+            {"eligibility_state": "active"},  # re-read after CAS miss
+        ]
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post("/api/switchboard/heartbeat", json={"butler_name": "health"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        # Should reflect the re-read state
+        assert body["eligibility_state"] == "active"
+        # No eligibility log INSERT should have occurred
+        sql_calls = [c[0][0] for c in mock_pool.execute.call_args_list]
+        assert not any("butler_registry_eligibility_log" in s for s in sql_calls)
 
     async def test_unknown_butler_returns_404(self):
         """Heartbeat for an unknown butler name returns 404."""

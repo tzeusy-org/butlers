@@ -715,6 +715,7 @@ export interface ContactDetail extends ContactSummary {
   roles: string[];
   entity_id: string | null;
   contact_info: ContactInfoEntry[];
+  preferred_channel: string | null;
 }
 
 /** Request body for PATCH /contacts/{id}. */
@@ -726,6 +727,7 @@ export interface ContactPatchRequest {
   company?: string | null;
   job_title?: string | null;
   roles?: string[] | null;
+  preferred_channel?: string | null;
 }
 
 /** Request body for POST /contacts/{id}/merge. */
@@ -810,25 +812,22 @@ export interface Gift {
   id: string;
   contact_id: string;
   description: string;
-  direction: string;
   occasion: string | null;
-  date: string;
-  value: number | null;
+  status: string; // idea, purchased, wrapped, given, thanked
   created_at: string;
+  updated_at: string;
 }
 
 /** A loan between the user and a contact. */
 export interface Loan {
   id: string;
   contact_id: string;
-  description: string;
-  direction: string;
   amount: number;
-  currency: string;
-  status: string;
-  date: string;
-  due_date: string | null;
+  direction: string; // lent or borrowed
+  description: string | null;
+  settled: boolean;
   created_at: string;
+  settled_at: string | null;
 }
 
 /** An upcoming date (birthday, anniversary, etc.). */
@@ -1044,6 +1043,21 @@ export interface SetEligibilityResponse {
   name: string;
   previous_state: string;
   new_state: string;
+}
+
+/** A single segment in the eligibility timeline. */
+export interface EligibilitySegment {
+  state: string;
+  start_at: string;
+  end_at: string;
+}
+
+/** 24h eligibility timeline for a butler. */
+export interface EligibilityHistoryResponse {
+  butler_name: string;
+  segments: EligibilitySegment[];
+  window_start: string;
+  window_end: string;
 }
 
 /** Query parameters for routing log. */

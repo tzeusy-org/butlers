@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  getEligibilityHistory,
   getRegistry,
   getRoutingLog,
   setButlerEligibility,
@@ -26,6 +27,16 @@ export function useRegistry() {
     queryKey: ["switchboard-registry"],
     queryFn: () => getRegistry(),
     refetchInterval: 30_000,
+  });
+}
+
+/** Fetch eligibility history for a butler. */
+export function useEligibilityHistory(name: string, hours = 24) {
+  return useQuery({
+    queryKey: ["eligibility-history", name, hours],
+    queryFn: () => getEligibilityHistory(name, hours),
+    refetchInterval: 60_000,
+    enabled: !!name,
   });
 }
 

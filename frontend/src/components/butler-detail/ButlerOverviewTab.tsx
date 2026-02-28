@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import EligibilityTimeline from "@/components/butler-detail/EligibilityTimeline";
 import { useButler } from "@/hooks/use-butlers";
 import { useCostSummary } from "@/hooks/use-costs";
 import { useRegistry, useSetEligibility } from "@/hooks/use-general";
@@ -264,6 +265,10 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
                       {registryEntry.quarantine_reason}
                     </span>
                   )}
+                </dd>
+                <dt className="text-muted-foreground font-medium">24h History</dt>
+                <dd className="pt-1">
+                  <EligibilityTimeline butlerName={butlerName} />
                 </dd>
               </>
             )}

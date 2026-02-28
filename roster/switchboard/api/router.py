@@ -60,6 +60,8 @@ if _spec is not None and _spec.loader is not None:
     ThreadAffinitySettingsUpdate = _models.ThreadAffinitySettingsUpdate
     ThreadOverrideUpsert = _models.ThreadOverrideUpsert
     ThreadOverrideEntry = _models.ThreadOverrideEntry
+    EligibilitySegment = _models.EligibilitySegment
+    EligibilityHistoryResponse = _models.EligibilityHistoryResponse
     RoutingInstruction = _models.RoutingInstruction
     RoutingInstructionCreate = _models.RoutingInstructionCreate
     RoutingInstructionUpdate = _models.RoutingInstructionUpdate
@@ -321,9 +323,10 @@ async def receive_heartbeat(
     """Receive a liveness heartbeat from a butler.
 
     Updates ``last_seen_at`` and manages eligibility state transitions:
-    - ``stale`` → ``active``: transition is logged to the eligibility audit log
-    - ``quarantined``: ``last_seen_at`` is updated, state remains unchanged
-    - ``active``: ``last_seen_at`` is updated, state unchanged
+    - ``stale`` → ``active``: transition logged with reason ``health_restored``
+    - ``quarantined`` → ``active``: auto-recovery logged with reason ``heartbeat_recovery``,
+      clears ``quarantined_at`` and ``quarantine_reason``
+    - ``active``: ``last_seen_at`` updated, state unchanged
     """
     pool = _pool(db)
 
@@ -391,8 +394,49 @@ async def receive_heartbeat(
                 body.butler_name,
             )
             new_state = current_state
+    elif current_state == "quarantined":
+        # Transition quarantined → active: CAS guard on eligibility_state to avoid
+        # TOCTOU race with a concurrent operator re-quarantine.
+        result = await pool.execute(
+            "UPDATE butler_registry"
+            " SET last_seen_at = $1, eligibility_state = 'active',"
+            "     eligibility_updated_at = $1,"
+            "     quarantined_at = NULL, quarantine_reason = NULL"
+            " WHERE name = $2 AND eligibility_state = 'quarantined'",
+            now,
+            body.butler_name,
+        )
+        rows_affected = int(result.split(" ")[-1]) if result else 0
+        if rows_affected > 0:
+            await pool.execute(
+                "INSERT INTO butler_registry_eligibility_log"
+                " (butler_name, previous_state, new_state, reason,"
+                "  previous_last_seen_at, new_last_seen_at, observed_at)"
+                " VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                body.butler_name,
+                "quarantined",
+                "active",
+                "heartbeat_recovery",
+                previous_last_seen_at,
+                now,
+                now,
+            )
+            new_state = "active"
+        else:
+            # Row was concurrently modified; re-read and fall through to last_seen_at
+            re_read = await pool.fetchrow(
+                "SELECT eligibility_state FROM butler_registry WHERE name = $1",
+                body.butler_name,
+            )
+            current_state = re_read["eligibility_state"] if re_read else current_state
+            await pool.execute(
+                "UPDATE butler_registry SET last_seen_at = $1 WHERE name = $2",
+                now,
+                body.butler_name,
+            )
+            new_state = current_state
     else:
-        # For active or quarantined: only update last_seen_at, do not change state
+        # Active: only update last_seen_at, do not change state
         await pool.execute(
             "UPDATE butler_registry SET last_seen_at = $1 WHERE name = $2",
             now,
@@ -505,6 +549,94 @@ async def set_butler_eligibility(
             name=name,
             previous_state=previous_state,
             new_state=body.eligibility_state,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /registry/{name}/eligibility-history — 24h eligibility timeline
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/registry/{name}/eligibility-history",
+    response_model=ApiResponse[EligibilityHistoryResponse],
+)
+async def get_eligibility_history(
+    name: str,
+    hours: int = Query(default=24, ge=1, le=168),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[EligibilityHistoryResponse]:
+    """Return an eligibility timeline for a butler over the requested window.
+
+    Builds Datadog-style segments from the eligibility audit log.  Each segment
+    represents a contiguous period in one eligibility state.
+    """
+    pool = _pool(db)
+    now = datetime.datetime.now(datetime.UTC)
+    window_start = now - datetime.timedelta(hours=hours)
+
+    # Verify butler exists
+    current = await pool.fetchrow(
+        "SELECT eligibility_state FROM butler_registry WHERE name = $1",
+        name,
+    )
+    if current is None:
+        raise HTTPException(status_code=404, detail=f"Butler '{name}' not found in registry")
+
+    current_state: str = current["eligibility_state"]
+
+    rows = await pool.fetch(
+        "SELECT previous_state, new_state, observed_at"
+        " FROM butler_registry_eligibility_log"
+        " WHERE butler_name = $1 AND observed_at >= $2"
+        " ORDER BY observed_at ASC",
+        name,
+        window_start,
+    )
+
+    def _ts(dt: datetime.datetime) -> str:
+        return dt.isoformat()
+
+    segments: list[EligibilitySegment] = []
+
+    if not rows:
+        # No transitions — single segment covering the full window
+        segments.append(
+            EligibilitySegment(
+                state=current_state,
+                start_at=_ts(window_start),
+                end_at=_ts(now),
+            )
+        )
+    else:
+        # First segment: window_start → first transition
+        first_row = rows[0]
+        segments.append(
+            EligibilitySegment(
+                state=first_row["previous_state"],
+                start_at=_ts(window_start),
+                end_at=_ts(first_row["observed_at"]),
+            )
+        )
+        # Middle segments: each transition's new_state until the next transition
+        for i, row in enumerate(rows):
+            seg_start = row["observed_at"]
+            seg_end = rows[i + 1]["observed_at"] if i + 1 < len(rows) else now
+            segments.append(
+                EligibilitySegment(
+                    state=row["new_state"],
+                    start_at=_ts(seg_start),
+                    end_at=_ts(seg_end),
+                )
+            )
+
+    return ApiResponse[EligibilityHistoryResponse](
+        data=EligibilityHistoryResponse(
+            butler_name=name,
+            segments=segments,
+            window_start=_ts(window_start),
+            window_end=_ts(now),
         )
     )
 

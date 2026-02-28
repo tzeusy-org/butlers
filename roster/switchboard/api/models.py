@@ -574,6 +574,23 @@ class ThreadOverrideEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class EligibilitySegment(BaseModel):
+    """A single segment in the eligibility timeline."""
+
+    state: str
+    start_at: str
+    end_at: str
+
+
+class EligibilityHistoryResponse(BaseModel):
+    """24h eligibility timeline for a butler."""
+
+    butler_name: str
+    segments: list[EligibilitySegment]
+    window_start: str
+    window_end: str
+
+
 class RoutingInstruction(BaseModel):
     """A persisted routing instruction returned from the API."""
 
