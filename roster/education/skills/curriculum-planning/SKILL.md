@@ -14,6 +14,28 @@ Use this skill when:
 - The curriculum needs re-planning after analytics feedback (struggling subtree, low retention)
 - The user explicitly requests a different learning path
 
+## Curriculum Persistence Rules
+
+### New Topics: Always Persist, Never Prose-Only
+
+Whenever a user discusses a new learning topic, call `teaching_flow_start(topic, goal)` before
+doing anything else. Never produce a curriculum plan as text without persisting it.
+
+Every concept mentioned in a curriculum plan must become a `mind_map_node_create()` call. Every
+prerequisite relationship must become a `mind_map_edge_create()` call. Text-only plans are
+useless — the dashboard, spaced repetition, and analytics all depend on persisted data.
+
+### Existing Topic Overlap: Extend Before Creating
+
+Before creating a new flow, call `mind_map_list(status="active")` to check for overlap. If a
+related mind map exists, extend it:
+
+1. Add new concepts with `mind_map_node_create()`.
+2. Add new prerequisite relationships with `mind_map_edge_create()`.
+3. Call `curriculum_replan()` to re-sequence with updated mastery data.
+
+Only create a new flow if the topic is genuinely distinct from all active maps.
+
 ## Phase 1: LLM Concept Decomposition
 
 ### Step 1: Read Flow Context

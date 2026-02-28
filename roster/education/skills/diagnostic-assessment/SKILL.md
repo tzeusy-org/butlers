@@ -54,7 +54,9 @@ Do not show this inventory to the user. It is internal scaffolding for the probe
 
 ### Question Format Constraints
 
-- **One question per message. Never bundle multiple questions.**
+- **One question per message. Never bundle multiple questions.** Wait for the user's response
+  before delivering the next probe. The probe sequence only works if you observe each answer
+  before picking the next concept.
 - Use multiple choice (A/B/C/D) for factual recall — definitions, syntax identification,
   discrimination between similar but distinct concepts.
 - Use short-answer for conceptual understanding — "Explain...", "What happens when...",
