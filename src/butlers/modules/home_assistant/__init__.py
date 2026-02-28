@@ -24,6 +24,7 @@ import random
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict
 
@@ -1444,12 +1445,19 @@ class HomeAssistantModule(Module):
         Raises
         ------
         ValueError
-            If ``entity_ids`` is empty.
+            If ``entity_ids`` is empty, or if ``start`` is not a valid ISO 8601
+            timestamp (prevents path traversal via the URL-path segment).
         """
         if not entity_ids:
             raise ValueError(
                 "ha_get_history requires at least one entity_id. "
                 "Unbounded history queries are not supported."
+            )
+
+        if not self._ISO8601_RE.match(start):
+            raise ValueError(
+                f"Invalid start timestamp {start!r}: must be ISO 8601 format "
+                "(e.g. '2026-02-01T00:00:00Z' or '2026-02-01T00:00:00+01:00')."
             )
 
         client = self._get_client()
@@ -1461,10 +1469,16 @@ class HomeAssistantModule(Module):
         if end is not None:
             params["end_time"] = end
 
-        resp = await client.get(f"/api/history/period/{start}", params=params)
+        resp = await client.get(f"/api/history/period/{quote(start, safe=':')}", params=params)
         resp.raise_for_status()
         result: list[list[dict[str, Any]]] = resp.json()
         return result
+
+    # Matches ISO 8601 timestamps with optional fractional seconds and timezone.
+    # Allows: 2026-02-01T12:00:00Z, 2026-02-01T12:00:00+01:00, 2026-02-01T12:00:00.123Z
+    _ISO8601_RE = re.compile(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+    )
 
     _VALID_STATISTICS_PERIODS = frozenset({"5minute", "hour", "day", "week", "month"})
 
@@ -1512,7 +1526,7 @@ class HomeAssistantModule(Module):
             },
             timeout=30.0,
         )
-        return result  # type: ignore[return-value]
+        return result
 
     async def _render_template(self, template: str) -> str:
         """Render a Jinja2 template via ``POST /api/template``.

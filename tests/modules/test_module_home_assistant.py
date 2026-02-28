@@ -1927,6 +1927,52 @@ class TestGetHistory:
         params = mock_client.get.call_args.kwargs.get("params", {})
         assert params["filter_entity_id"] == "sensor.a,sensor.b"
 
+    async def test_get_history_rejects_path_traversal_start(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_history raises ValueError for start values containing path traversal."""
+        ha_module._client = AsyncMock()
+
+        with pytest.raises(ValueError, match="ISO 8601"):
+            await ha_module._get_history(
+                entity_ids=["sensor.temp"],
+                start="../../../api/config",
+            )
+
+    async def test_get_history_rejects_invalid_iso8601_start(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_history raises ValueError for start values that are not ISO 8601."""
+        ha_module._client = AsyncMock()
+
+        with pytest.raises(ValueError, match="ISO 8601"):
+            await ha_module._get_history(
+                entity_ids=["sensor.temp"],
+                start="not-a-timestamp",
+            )
+
+    async def test_get_history_url_encodes_plus_timezone(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_get_history percent-encodes + in timezone offsets so the URL path is valid."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = []
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._get_history(
+            entity_ids=["sensor.temp"],
+            start="2026-02-01T00:00:00+01:00",
+        )
+
+        call_args = mock_client.get.call_args
+        url_path = call_args.args[0]
+        # + must be percent-encoded as %2B in the URL path segment
+        assert "%2B" in url_path, f"Expected %2B in URL path, got: {url_path}"
+        assert "+" not in url_path, f"Unencoded + found in URL path: {url_path}"
+
 
 # ---------------------------------------------------------------------------
 # _get_statistics — recorder statistics tool
