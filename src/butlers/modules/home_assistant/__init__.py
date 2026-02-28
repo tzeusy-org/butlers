@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 # only alphanumeric characters, underscores, or hyphens (no slashes or dots).
 _ENTITY_ID_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 
+# Matches valid HA service domain or service name (e.g. "light", "turn_on").
+# Only lowercase alphanumeric characters and underscores are permitted to
+# prevent path traversal attacks when constructing /api/services/<domain>/<svc>.
+_HA_IDENT_RE = re.compile(r"^[a-z0-9_]+$")
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -192,6 +197,7 @@ class HomeAssistantModule(Module):
         self._ws_ping_task: asyncio.Task[None] | None = None
         self._ws_reconnect_task: asyncio.Task[None] | None = None
         self._poll_task: asyncio.Task[None] | None = None
+        self._snapshot_task: asyncio.Task[None] | None = None
         # Shutdown flag
         self._shutdown: bool = False
         # Last pong receipt time (monotonic)
@@ -307,9 +313,22 @@ class HomeAssistantModule(Module):
         # --- Connect WebSocket and seed entity cache ---
         await self._ws_connect_and_seed()
 
+        # --- Start periodic snapshot task ---
+        self._start_snapshot_task()
+
     async def on_shutdown(self) -> None:
-        """Clean up: close WebSocket, stop background tasks, close HTTP client."""
+        """Clean up: close WebSocket, stop background tasks, close HTTP client.
+
+        Writes a final entity snapshot to ``ha_entity_snapshot`` before teardown
+        so that the last-known state survives across restarts.
+        """
         self._shutdown = True
+
+        # Write final snapshot before tearing down the DB connection
+        try:
+            await self._persist_entity_snapshot()
+        except Exception as exc:
+            logger.warning("HomeAssistantModule: final snapshot failed: %s", exc)
 
         # Cancel background tasks and await them with a short timeout to avoid
         # hanging shutdown if a task ignores CancelledError.
@@ -320,6 +339,7 @@ class HomeAssistantModule(Module):
                 self._ws_ping_task,
                 self._ws_reconnect_task,
                 self._poll_task,
+                self._snapshot_task,
             )
             if t is not None and not t.done()
         ]
@@ -332,6 +352,7 @@ class HomeAssistantModule(Module):
         self._ws_ping_task = None
         self._ws_reconnect_task = None
         self._poll_task = None
+        self._snapshot_task = None
 
         # Fail all pending WebSocket commands
         for fut in self._ws_pending.values():
@@ -528,6 +549,27 @@ class HomeAssistantModule(Module):
             """
             return await module._render_template(template=template)
 
+        async def ha_activate_scene(
+            entity_id: str,
+            transition: float | None = None,
+        ) -> dict[str, Any]:
+            """Activate a Home Assistant scene.
+
+            Convenience wrapper around ``ha_call_service`` for scene activation.
+            The ``entity_id`` must start with ``"scene."``; passing any other
+            domain raises ``ValueError`` to prevent accidental mis-use.
+
+            Parameters
+            ----------
+            entity_id:
+                Scene entity ID (e.g. ``"scene.movie_night"``).
+            transition:
+                Optional transition duration in seconds (not supported by all
+                scenes; silently ignored by HA if the scene driver doesn't
+                support it).
+            """
+            return await module._activate_scene(entity_id=entity_id, transition=transition)
+
         mcp.tool()(ha_get_entity_state)
         mcp.tool()(ha_list_entities)
         mcp.tool()(ha_list_areas)
@@ -536,6 +578,7 @@ class HomeAssistantModule(Module):
         mcp.tool()(ha_get_statistics)
         mcp.tool()(ha_render_template)
         mcp.tool()(ha_call_service)
+        mcp.tool()(ha_activate_scene)
 
     # ------------------------------------------------------------------
     # WebSocket transport — connection and authentication
@@ -1360,7 +1403,47 @@ class HomeAssistantModule(Module):
         target: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Call a HA service via REST API."""
+        """Call a HA service via REST API and log the call to ``ha_command_log``.
+
+        Both successful and failed service calls are logged.  On failure the
+        exception is re-raised after logging so callers still see the error.
+
+        Parameters
+        ----------
+        domain:
+            Service domain (e.g. ``"light"``).
+        service:
+            Service name within the domain (e.g. ``"turn_on"``).
+        target:
+            Optional target specification dict.
+        data:
+            Optional service-specific payload dict.
+
+        Returns
+        -------
+        dict[str, Any]
+            Parsed JSON response from Home Assistant (may be ``{}`` for
+            services that return no body).
+
+        Raises
+        ------
+        httpx.HTTPStatusError
+            If HA returns a non-2xx response.
+        RuntimeError
+            If the HTTP client has not been initialised (module not started).
+        """
+        # Validate domain and service to prevent path traversal via the URL.
+        if not _HA_IDENT_RE.match(domain):
+            raise ValueError(
+                f"Invalid service domain {domain!r}: must contain only lowercase "
+                "alphanumeric characters and underscores."
+            )
+        if not _HA_IDENT_RE.match(service):
+            raise ValueError(
+                f"Invalid service name {service!r}: must contain only lowercase "
+                "alphanumeric characters and underscores."
+            )
+
         client = self._get_client()
         payload: dict[str, Any] = {}
         # Merge data first so that the explicit target argument always wins if
@@ -1369,9 +1452,47 @@ class HomeAssistantModule(Module):
             payload.update(data)
         if target is not None:
             payload["target"] = target
-        resp = await client.post(f"/api/services/{domain}/{service}", json=payload)
-        resp.raise_for_status()
-        result: dict[str, Any] = resp.json() if resp.content else {}
+
+        result: dict[str, Any] = {}
+        context_id: str | None = None
+        exc_to_raise: Exception | None = None
+
+        try:
+            resp = await client.post(f"/api/services/{domain}/{service}", json=payload)
+            resp.raise_for_status()
+            result = resp.json() if resp.content else {}
+            # HA embeds the event context ID in the first state-change result entry.
+            if isinstance(result, list) and result and isinstance(result[0], dict):
+                context_id = result[0].get("context", {}).get("id")
+            elif isinstance(result, dict):
+                context_id = result.get("context", {}).get("id")
+        except Exception as exc:
+            exc_to_raise = exc
+            result = {"error": str(exc)}
+
+        # Log the command (fire-and-forget with error swallowing so a DB issue
+        # never prevents the caller from seeing a service error).
+        try:
+            await self._log_command(
+                domain=domain,
+                service=service,
+                target=target,
+                data=data,
+                result=result if not exc_to_raise else None,
+                error_result=result if exc_to_raise else None,
+                context_id=context_id,
+            )
+        except Exception as log_exc:
+            logger.warning(
+                "HomeAssistantModule: failed to log command %s.%s: %s",
+                domain,
+                service,
+                log_exc,
+            )
+
+        if exc_to_raise is not None:
+            raise exc_to_raise
+
         return result
 
     async def _list_areas(self) -> list[dict[str, Any]]:
@@ -1545,3 +1666,192 @@ class HomeAssistantModule(Module):
         resp = await client.post("/api/template", json={"template": template})
         resp.raise_for_status()
         return resp.text
+
+    async def _log_command(
+        self,
+        domain: str,
+        service: str,
+        target: dict[str, Any] | None,
+        data: dict[str, Any] | None,
+        result: dict[str, Any] | None,
+        error_result: dict[str, Any] | None = None,
+        context_id: str | None = None,
+    ) -> None:
+        """Insert a row into ``ha_command_log`` for every service call.
+
+        Uses the DB pool directly (``asyncpg``).  Silently skips when no
+        pool is available (e.g. tests that bypass ``on_startup``).
+
+        Parameters
+        ----------
+        domain:
+            HA service domain.
+        service:
+            HA service name.
+        target:
+            Service call target dict (may be ``None``).
+        data:
+            Service call data payload (may be ``None``).
+        result:
+            Parsed HA response on success (may be ``None`` when an error
+            occurred before a response was received).
+        error_result:
+            Error payload when the call failed (mutually exclusive with
+            ``result``).
+        context_id:
+            HA event context ID extracted from the response (may be ``None``).
+        """
+        import json as _json
+
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+
+        log_result = result if result is not None else error_result
+
+        await pool.execute(
+            """
+            INSERT INTO ha_command_log
+                (domain, service, target, data, result, context_id)
+            VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6)
+            """,
+            domain,
+            service,
+            _json.dumps(target) if target is not None else None,
+            _json.dumps(data) if data is not None else None,
+            _json.dumps(log_result) if log_result is not None else None,
+            context_id,
+        )
+        logger.debug(
+            "HomeAssistantModule: logged command %s.%s (context=%s)",
+            domain,
+            service,
+            context_id,
+        )
+
+    async def _activate_scene(
+        self,
+        entity_id: str,
+        transition: float | None = None,
+    ) -> dict[str, Any]:
+        """Activate a HA scene, delegating to ``_call_service``.
+
+        Parameters
+        ----------
+        entity_id:
+            Scene entity ID; must begin with ``"scene."`` to prevent
+            accidental misuse (e.g. calling a cover or lock service).
+        transition:
+            Optional transition duration in seconds.
+
+        Returns
+        -------
+        dict[str, Any]
+            Response from the underlying ``ha_call_service`` call.
+
+        Raises
+        ------
+        ValueError
+            If ``entity_id`` does not start with ``"scene."`` or is not a
+            valid HA entity ID format.
+        """
+        if not entity_id.startswith("scene."):
+            raise ValueError(
+                f"ha_activate_scene requires a scene entity_id (must start with 'scene.'), "
+                f"got: {entity_id!r}"
+            )
+        if not _ENTITY_ID_RE.match(entity_id):
+            raise ValueError(
+                f"Invalid entity_id {entity_id!r}: must be 'domain.object_id' "
+                f"containing only lowercase alphanumeric characters and underscores."
+            )
+
+        call_data: dict[str, Any] = {}
+        if transition is not None:
+            call_data["transition"] = transition
+
+        return await self._call_service(
+            domain="scene",
+            service="turn_on",
+            target={"entity_id": entity_id},
+            data=call_data if call_data else None,
+        )
+
+    # ------------------------------------------------------------------
+    # Snapshot persistence
+    # ------------------------------------------------------------------
+
+    def _start_snapshot_task(self) -> None:
+        """Start the periodic entity snapshot persistence task."""
+        if self._snapshot_task is not None and not self._snapshot_task.done():
+            return
+        self._snapshot_task = asyncio.ensure_future(self._snapshot_loop())
+
+    async def _snapshot_loop(self) -> None:
+        """Persist entity cache to ``ha_entity_snapshot`` at configured intervals.
+
+        Runs until ``_shutdown`` is set.  On each cycle, waits
+        ``snapshot_interval_seconds``, then calls ``_persist_entity_snapshot``.
+        Errors are logged and do not abort the loop.
+        """
+        assert self._config is not None
+
+        try:
+            while not self._shutdown:
+                await asyncio.sleep(self._config.snapshot_interval_seconds)
+                if self._shutdown:
+                    break
+                try:
+                    await self._persist_entity_snapshot()
+                except Exception as exc:
+                    logger.warning("HomeAssistantModule: snapshot persistence failed: %s", exc)
+        except asyncio.CancelledError:
+            return
+
+    async def _persist_entity_snapshot(self) -> None:
+        """UPSERT the current entity cache into ``ha_entity_snapshot``.
+
+        Each entity is written as a single row keyed by ``entity_id``.
+        Uses ``ON CONFLICT (entity_id) DO UPDATE`` so that existing rows
+        are refreshed rather than duplicated.
+
+        Silently skips when no DB pool is available.
+        """
+        import json as _json
+
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return
+
+        entities = list(self._entity_cache.values())
+        if not entities:
+            logger.debug("HomeAssistantModule: entity cache empty; skipping snapshot.")
+            return
+
+        # Bulk UPSERT via executemany for efficiency
+        rows = [
+            (
+                e.entity_id,
+                e.state,
+                _json.dumps(e.attributes),
+                e.last_updated if e.last_updated else None,
+            )
+            for e in entities
+        ]
+
+        await pool.executemany(
+            """
+            INSERT INTO ha_entity_snapshot (entity_id, state, attributes, last_updated)
+            VALUES ($1, $2, $3::jsonb, $4::timestamptz)
+            ON CONFLICT (entity_id) DO UPDATE SET
+                state        = EXCLUDED.state,
+                attributes   = EXCLUDED.attributes,
+                last_updated = EXCLUDED.last_updated,
+                captured_at  = now()
+            """,
+            rows,
+        )
+        logger.debug(
+            "HomeAssistantModule: persisted snapshot of %d entities.",
+            len(entities),
+        )
