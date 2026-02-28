@@ -230,7 +230,7 @@ class HomeAssistantModule(Module):
         return ["contacts", "approvals"]
 
     def migration_revisions(self) -> str | None:
-        return "home_assistant"
+        return "home"
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Return approval sensitivity metadata for HA tools.

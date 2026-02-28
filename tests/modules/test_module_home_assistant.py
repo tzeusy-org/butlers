@@ -29,14 +29,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from butlers.modules.base import Module, ToolMeta
-from butlers.modules.home_assistant import (
+from butlers.modules._roster_home import (
     CachedArea,
     CachedEntity,
     CachedEntityRegistryEntry,
     HomeAssistantConfig,
     HomeAssistantModule,
 )
+from butlers.modules.base import Module, ToolMeta
 
 pytestmark = pytest.mark.unit
 
@@ -120,8 +120,8 @@ class TestModuleABCCompliance:
         assert ha_module.dependencies == ["contacts", "approvals"]
 
     def test_migration_revisions(self, ha_module: HomeAssistantModule) -> None:
-        """migration_revisions() returns 'home_assistant'."""
-        assert ha_module.migration_revisions() == "home_assistant"
+        """migration_revisions() returns 'home'."""
+        assert ha_module.migration_revisions() == "home"
 
     def test_tool_metadata_ha_call_service_sensitive(self, ha_module: HomeAssistantModule) -> None:
         """tool_metadata() returns sensitivity metadata for ha_call_service."""
@@ -2054,6 +2054,8 @@ class TestGetEntityStateValidation:
         """Valid entity_id with underscores passes validation."""
         mock_resp = MagicMock()
         mock_resp.status_code = 404
+
+
 # _list_areas — area registry query tool
 # ---------------------------------------------------------------------------
 

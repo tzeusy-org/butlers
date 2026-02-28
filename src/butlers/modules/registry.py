@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import inspect
 import logging
 import pkgutil
+import sys
 from collections import deque
+from pathlib import Path
 
 import butlers.modules
 from butlers.modules.base import Module
@@ -14,11 +17,72 @@ from butlers.modules.base import Module
 logger = logging.getLogger(__name__)
 
 
+def _register_roster_modules(registry: ModuleRegistry) -> None:
+    """Scan ``roster/*/module.py`` (or ``module/__init__.py``) for Module subclasses.
+
+    Roster modules are loaded under synthetic names like
+    ``butlers.modules._roster_{butler}`` so they are accessible via
+    ``sys.modules`` for test imports and framework introspection.
+    """
+    repo_root = Path(__file__).resolve().parent.parent.parent.parent
+    roster_root = repo_root / "roster"
+    if not roster_root.is_dir():
+        return
+
+    for entry in sorted(roster_root.iterdir()):
+        if not entry.is_dir():
+            continue
+
+        module_file = entry / "module.py"
+        module_pkg_init = entry / "module" / "__init__.py"
+
+        if module_file.is_file():
+            target, is_package = module_file, False
+        elif module_pkg_init.is_file():
+            target, is_package = module_pkg_init, True
+        else:
+            continue
+
+        butler_name = entry.name
+        synthetic_name = f"butlers.modules._roster_{butler_name}"
+
+        # Skip if already loaded (e.g. from a previous default_registry() call).
+        if synthetic_name in sys.modules:
+            mod = sys.modules[synthetic_name]
+        else:
+            try:
+                if is_package:
+                    spec = importlib.util.spec_from_file_location(
+                        synthetic_name,
+                        target,
+                        submodule_search_locations=[str(target.parent)],
+                    )
+                else:
+                    spec = importlib.util.spec_from_file_location(synthetic_name, target)
+
+                if spec is None or spec.loader is None:
+                    continue
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules[synthetic_name] = mod
+                spec.loader.exec_module(mod)
+            except Exception:
+                logger.warning("Failed to load roster module: %s", butler_name, exc_info=True)
+                continue
+
+        for _name, obj in inspect.getmembers(mod, inspect.isclass):
+            if issubclass(obj, Module) and obj is not Module and not inspect.isabstract(obj):
+                try:
+                    registry.register(obj)
+                except ValueError:
+                    pass  # already registered
+
+
 def default_registry() -> ModuleRegistry:
     """Create a ModuleRegistry pre-populated with all built-in modules.
 
     Discovers all concrete ``Module`` subclasses in the ``butlers.modules``
-    package by walking its sub-packages and inspecting their members.
+    package by walking its sub-packages and inspecting their members,
+    then scans ``roster/*/module.py`` for butler-specific modules.
     """
     registry = ModuleRegistry()
     package = butlers.modules
@@ -36,6 +100,7 @@ def default_registry() -> ModuleRegistry:
                     registry.register(obj)
                 except ValueError:
                     pass  # Already registered (e.g. re-exported from __init__)
+    _register_roster_modules(registry)
     return registry
 
 

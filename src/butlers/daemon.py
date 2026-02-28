@@ -995,7 +995,13 @@ class ButlerDaemon:
                 )
                 continue
 
-            selected.append(mod)
+            # Module not in config → always skip (explicit config required)
+            logger.info(
+                "Skipping module '%s': no [modules.%s] config provided",
+                mod.name,
+                mod.name,
+            )
+            continue
 
         return selected
 

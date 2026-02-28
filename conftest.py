@@ -19,6 +19,12 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+# Trigger roster module discovery so dynamically-loaded modules
+# are available in sys.modules before test collection.
+from butlers.modules.registry import default_registry as _default_registry
+
+_default_registry()
+
 if TYPE_CHECKING:
     from asyncpg.pool import Pool
     from testcontainers.postgres import PostgresContainer

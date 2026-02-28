@@ -50,7 +50,7 @@ class TestHomeAssistantModuleAutoDiscovery:
 
     def test_home_assistant_module_name_property(self) -> None:
         """HomeAssistantModule.name returns 'home_assistant'."""
-        from butlers.modules.home_assistant import HomeAssistantModule
+        from butlers.modules._roster_home import HomeAssistantModule
 
         module = HomeAssistantModule()
         assert module.name == "home_assistant"
@@ -249,7 +249,7 @@ class TestHomeAssistantE2ESmoke:
 
     async def test_websocket_connection_to_ha(self, ha_url: str, ha_token: str) -> None:
         """Start home butler, verify WebSocket connects to HA and auth succeeds."""
-        from butlers.modules.home_assistant import HomeAssistantConfig, HomeAssistantModule
+        from butlers.modules._roster_home import HomeAssistantConfig, HomeAssistantModule
 
         module = HomeAssistantModule()
         module._config = HomeAssistantConfig(url=ha_url)
@@ -296,7 +296,7 @@ class TestHomeAssistantE2ESmoke:
         """
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from butlers.modules.home_assistant import HomeAssistantConfig, HomeAssistantModule
+        from butlers.modules._roster_home import HomeAssistantConfig, HomeAssistantModule
 
         module = HomeAssistantModule()
         module._config = HomeAssistantConfig(url=ha_url)

@@ -19,7 +19,7 @@ from alembic import op
 # revision identifiers, used by Alembic.
 revision = "home_assistant_001"
 down_revision = None
-branch_labels = ("home_assistant",)
+branch_labels = ("home",)
 depends_on = None
 
 
