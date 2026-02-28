@@ -77,8 +77,11 @@ def _make_app(
         "GOOGLE_OAUTH_CLIENT_ID": db_client_id,
         "GOOGLE_OAUTH_CLIENT_SECRET": db_client_secret,
     }
+
+    # Refresh token lives in shared.contact_info, not butler_secrets
+    contact_info: dict[str, str] = {}
     if db_refresh_token is not None:
-        secrets["GOOGLE_REFRESH_TOKEN"] = db_refresh_token
+        contact_info["google_oauth_refresh"] = db_refresh_token
 
     conn = AsyncMock()
 
@@ -90,6 +93,14 @@ def _make_app(
                 owner_row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
                 return owner_row
             return None
+        # resolve_owner_contact_info queries shared.contact_info
+        if "shared.contact_info" in _query or "contact_info" in _query:
+            value = contact_info.get(key)
+            if not value:
+                return None
+            row = MagicMock()
+            row.__getitem__ = lambda self, k: value if k == "value" else None
+            return row
         value = secrets.get(key)
         if not value:
             return None

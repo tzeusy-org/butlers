@@ -204,11 +204,13 @@ All 122 beads closed. 449 tests passing on main. Full implementation complete.
 - For pane logs, prefer wrapping the launched command with stdout/stderr tee capture (`_wrap_cmd_for_log`) instead of raw `tmux pipe-pane`, so log files contain process output rather than interactive shell prompt/control-sequence noise.
 
 ### dev.sh OAuth shared-store contract
-- `dev.sh` OAuth preflight (`_has_google_creds`) and Layer 2 gate (`_poll_db_for_refresh_token`) must use the same canonical lookup path: `butler_secrets` in one-db mode (`db=butlers`, schema `shared` by default, overridable via `BUTLER_SHARED_DB_NAME`/`BUTLER_SHARED_DB_SCHEMA`).
+- `dev.sh` OAuth preflight (`_has_google_creds`) and Layer 2 gate (`_poll_db_for_refresh_token`) query `shared.contact_info` for the owner contact's `google_oauth_refresh` row (one-db mode, schema `shared` by default, overridable via `BUTLER_SHARED_DB_NAME`/`BUTLER_SHARED_DB_SCHEMA`).
 
-### Google OAuth DB-only contract
-- Runtime Google credential resolution is DB-only via `CredentialStore`/`butler_secrets`; env fallback for `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_REFRESH_TOKEN` has been removed from `google_credentials`, Calendar module startup, OAuth router status/callback resolution, and startup guard messaging.
-- `dev.sh` OAuth preflight and Layer 2 gate now both check only DB-backed `GOOGLE_REFRESH_TOKEN` presence (shared one-db store) so shell gating and runtime behavior cannot drift.
+### Google OAuth credential storage split
+- App credentials (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_SCOPES`) live in `butler_secrets` via `CredentialStore`.
+- Refresh token lives exclusively in `shared.contact_info` on the owner contact (type `google_oauth_refresh`, `secured=true`). No butler_secrets fallback exists.
+- No runtime env-var fallback; all credential resolution is DB-only.
+- `dev.sh` gate and runtime code both read from `shared.contact_info` so shell gating and runtime behavior cannot drift.
 
 ### Code Layout
 - `src/butlers/core/` — state.py, scheduler.py, sessions.py, spawner.py, telemetry.py, telemetry_spans.py

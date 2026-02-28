@@ -24,7 +24,7 @@
 #   (every 5s) until OAuth completes via the dashboard — no manual restart needed.
 #   All other services (backend, Telegram, dashboard) start normally while waiting.
 #
-#   The gate polls for a non-null GOOGLE_REFRESH_TOKEN in butler_secrets.
+#   The gate polls for a non-null google_oauth_refresh in shared.contact_info.
 #   Once found, Layer 3 proceeds automatically.
 #
 #   To suppress the check and start anyway:  ./dev.sh --skip-oauth-check

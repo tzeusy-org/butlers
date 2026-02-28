@@ -60,7 +60,7 @@ def test_contacts_rollout_docs_state_provider_and_required_secrets() -> None:
         "roster/messenger/butler.toml",
         "google_oauth_client_id",
         "google_oauth_client_secret",
-        "google_refresh_token",
+        "google_oauth_refresh",
     )
     for fragment in required_fragments:
         assert fragment in guidance, f"contacts rollout docs missing fragment: {fragment}"

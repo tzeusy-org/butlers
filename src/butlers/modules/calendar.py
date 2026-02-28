@@ -4090,17 +4090,13 @@ class CalendarModule(Module):
                 "GOOGLE_OAUTH_CLIENT_SECRET", env_fallback=False
             )
 
-            # Step 2: Refresh token from shared.contact_info (primary), butler_secrets (fallback).
+            # Step 2: Refresh token from shared.contact_info (exclusively).
             refresh_token: str | None = None
             pool = getattr(db, "pool", None)
             if pool is not None:
                 from butlers.credential_store import resolve_owner_contact_info
 
                 refresh_token = await resolve_owner_contact_info(pool, "google_oauth_refresh")
-            if not refresh_token:
-                refresh_token = await credential_store.resolve(
-                    "GOOGLE_REFRESH_TOKEN", env_fallback=False
-                )
 
             if client_id and client_secret and refresh_token:
                 logger.debug("CalendarModule: resolved Google credentials from CredentialStore")

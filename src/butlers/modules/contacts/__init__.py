@@ -495,7 +495,7 @@ class ContactsModule(Module):
                 _GOOGLE_OAUTH_CLIENT_SECRET_KEY, env_fallback=False
             )
 
-            # Refresh token: contact_info (primary), butler_secrets (fallback)
+            # Refresh token from shared.contact_info (exclusively)
             refresh_token: str | None = None
             pool = getattr(self._db, "pool", None)
             if pool is not None:
@@ -503,10 +503,6 @@ class ContactsModule(Module):
 
                 refresh_token = await resolve_owner_contact_info(
                     pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE
-                )
-            if not refresh_token:
-                refresh_token = await credential_store.resolve(
-                    "GOOGLE_REFRESH_TOKEN", env_fallback=False
                 )
 
             if client_id and client_secret and refresh_token:

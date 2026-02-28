@@ -1481,7 +1481,7 @@ class TestResolveGmailCredentialsFromDb:
     ) -> None:
         """Returns (client_id, client_secret, refresh_token) when DB has credentials."""
         from contextlib import asynccontextmanager
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         import asyncpg
 
@@ -1492,7 +1492,6 @@ class TestResolveGmailCredentialsFromDb:
         secrets = {
             "GOOGLE_OAUTH_CLIENT_ID": "db-client-id",
             "GOOGLE_OAUTH_CLIENT_SECRET": "db-client-secret",
-            "GOOGLE_REFRESH_TOKEN": "db-refresh-token",
         }
 
         async def _fetchrow(query, key):
@@ -1516,7 +1515,12 @@ class TestResolveGmailCredentialsFromDb:
             return mock_pool
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
-        result = await _resolve_gmail_credentials_from_db()
+        with patch(
+            "butlers.google_credentials.resolve_owner_contact_info",
+            new_callable=AsyncMock,
+            return_value="db-refresh-token",
+        ):
+            result = await _resolve_gmail_credentials_from_db()
         assert result is not None
         assert result["client_id"] == "db-client-id"
         assert result["client_secret"] == "db-client-secret"
@@ -1527,7 +1531,7 @@ class TestResolveGmailCredentialsFromDb:
     ) -> None:
         """Returns pubsub_webhook_token in result dict when stored in butler_secrets."""
         from contextlib import asynccontextmanager
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         import asyncpg
 
@@ -1538,7 +1542,6 @@ class TestResolveGmailCredentialsFromDb:
         secrets = {
             "GOOGLE_OAUTH_CLIENT_ID": "db-client-id",
             "GOOGLE_OAUTH_CLIENT_SECRET": "db-client-secret",
-            "GOOGLE_REFRESH_TOKEN": "db-refresh-token",
             "GMAIL_PUBSUB_WEBHOOK_TOKEN": "db-pubsub-token",
         }
 
@@ -1562,7 +1565,12 @@ class TestResolveGmailCredentialsFromDb:
             return mock_pool
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
-        result = await _resolve_gmail_credentials_from_db()
+        with patch(
+            "butlers.google_credentials.resolve_owner_contact_info",
+            new_callable=AsyncMock,
+            return_value="db-refresh-token",
+        ):
+            result = await _resolve_gmail_credentials_from_db()
         assert result is not None
         assert result["client_id"] == "db-client-id"
         assert result["pubsub_webhook_token"] == "db-pubsub-token"
@@ -1572,7 +1580,7 @@ class TestResolveGmailCredentialsFromDb:
     ) -> None:
         """pubsub_webhook_token key absent from result when not stored in DB."""
         from contextlib import asynccontextmanager
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         import asyncpg
 
@@ -1583,7 +1591,6 @@ class TestResolveGmailCredentialsFromDb:
         secrets = {
             "GOOGLE_OAUTH_CLIENT_ID": "db-client-id",
             "GOOGLE_OAUTH_CLIENT_SECRET": "db-client-secret",
-            "GOOGLE_REFRESH_TOKEN": "db-refresh-token",
         }
 
         async def _fetchrow(query, key):
@@ -1606,7 +1613,12 @@ class TestResolveGmailCredentialsFromDb:
             return mock_pool
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
-        result = await _resolve_gmail_credentials_from_db()
+        with patch(
+            "butlers.google_credentials.resolve_owner_contact_info",
+            new_callable=AsyncMock,
+            return_value="db-refresh-token",
+        ):
+            result = await _resolve_gmail_credentials_from_db()
         assert result is not None
         assert "pubsub_webhook_token" not in result
 
@@ -1615,6 +1627,7 @@ class TestResolveGmailCredentialsFromDb:
     ) -> None:
         """Falls back to shared schema lookup and configures asyncpg search_path per pool."""
         from contextlib import asynccontextmanager
+        from unittest.mock import patch
 
         import asyncpg
 
@@ -1631,7 +1644,6 @@ class TestResolveGmailCredentialsFromDb:
         secrets = {
             "GOOGLE_OAUTH_CLIENT_ID": "db-client-id",
             "GOOGLE_OAUTH_CLIENT_SECRET": "db-client-secret",
-            "GOOGLE_REFRESH_TOKEN": "db-refresh-token",
         }
 
         async def _shared_fetchrow(query, key):
@@ -1671,7 +1683,12 @@ class TestResolveGmailCredentialsFromDb:
             raise AssertionError(f"Unexpected search_path: {search_path!r}")
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
-        result = await _resolve_gmail_credentials_from_db()
+        with patch(
+            "butlers.google_credentials.resolve_owner_contact_info",
+            new_callable=AsyncMock,
+            return_value="db-refresh-token",
+        ):
+            result = await _resolve_gmail_credentials_from_db()
         assert result is not None
         assert result["client_id"] == "db-client-id"
         assert search_paths == ["general,shared,public", "shared,public"]

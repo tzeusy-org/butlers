@@ -94,7 +94,6 @@ def _make_credential_store(
     *,
     client_id: str = "cid",
     client_secret: str = "csecret",
-    refresh_token: str = "rtoken",
 ) -> Any:
     """Build an AsyncMock credential store that returns the given values."""
     store = MagicMock()
@@ -103,12 +102,18 @@ def _make_credential_store(
         mapping = {
             "GOOGLE_OAUTH_CLIENT_ID": client_id,
             "GOOGLE_OAUTH_CLIENT_SECRET": client_secret,
-            "GOOGLE_REFRESH_TOKEN": refresh_token,
         }
         return mapping.get(key)
 
     store.resolve = AsyncMock(side_effect=_resolve)
     return store
+
+
+def _make_db_with_pool() -> MagicMock:
+    """Build a db mock with a pool attribute for contact_info resolution."""
+    db = MagicMock()
+    db.pool = MagicMock()
+    return db
 
 
 class TestModuleStartup:
@@ -136,11 +141,19 @@ class TestModuleStartup:
         """on_startup() creates and starts ContactsSyncRuntime when sync.enabled=True."""
         mod = ContactsModule()
         credential_store = _make_credential_store()
+        db = _make_db_with_pool()
 
-        with patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock) as mock_start:
+        with (
+            patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock) as mock_start,
+            patch(
+                "butlers.credential_store.resolve_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value="rtoken",
+            ),
+        ):
             await mod.on_startup(
                 {"provider": "google"},
-                db=None,
+                db=db,
                 credential_store=credential_store,
             )
             mock_start.assert_awaited_once()
@@ -202,11 +215,19 @@ class TestModuleShutdown:
         """on_shutdown() calls runtime.stop()."""
         mod = ContactsModule()
         credential_store = _make_credential_store()
+        db = _make_db_with_pool()
 
-        with patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock):
+        with (
+            patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
+            patch(
+                "butlers.credential_store.resolve_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value="rtoken",
+            ),
+        ):
             await mod.on_startup(
                 {"provider": "google"},
-                db=None,
+                db=db,
                 credential_store=credential_store,
             )
 
@@ -223,11 +244,19 @@ class TestModuleShutdown:
         """on_shutdown() calls provider.shutdown()."""
         mod = ContactsModule()
         credential_store = _make_credential_store()
+        db = _make_db_with_pool()
 
-        with patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock):
+        with (
+            patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
+            patch(
+                "butlers.credential_store.resolve_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value="rtoken",
+            ),
+        ):
             await mod.on_startup(
                 {"provider": "google"},
-                db=None,
+                db=db,
                 credential_store=credential_store,
             )
 
@@ -274,11 +303,19 @@ class TestRuntimeAccessibility:
         """After on_startup(), _runtime is a ContactsSyncRuntime instance."""
         mod = ContactsModule()
         credential_store = _make_credential_store()
+        db = _make_db_with_pool()
 
-        with patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock):
+        with (
+            patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
+            patch(
+                "butlers.credential_store.resolve_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value="rtoken",
+            ),
+        ):
             await mod.on_startup(
                 {"provider": "google"},
-                db=None,
+                db=db,
                 credential_store=credential_store,
             )
 
@@ -289,11 +326,19 @@ class TestRuntimeAccessibility:
         """After on_shutdown(), _runtime is None."""
         mod = ContactsModule()
         credential_store = _make_credential_store()
+        db = _make_db_with_pool()
 
-        with patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock):
+        with (
+            patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
+            patch(
+                "butlers.credential_store.resolve_owner_contact_info",
+                new_callable=AsyncMock,
+                return_value="rtoken",
+            ),
+        ):
             await mod.on_startup(
                 {"provider": "google"},
-                db=None,
+                db=db,
                 credential_store=credential_store,
             )
 

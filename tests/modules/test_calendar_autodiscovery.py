@@ -34,7 +34,6 @@ def _make_credential_store(
                 {
                     "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
                     "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
-                    "GOOGLE_REFRESH_TOKEN": "test-refresh-token",
                 }
             )
         if calendar_id is not None:
@@ -243,9 +242,18 @@ class TestOnStartupResolvesCalendarId:
     """Verify on_startup wires calendar ID resolution end-to-end."""
 
     async def test_startup_resolves_calendar_id_from_store(self):
+        from unittest.mock import MagicMock, patch
+
         store = _make_credential_store(calendar_id=STORED_CALENDAR_ID)
+        db = MagicMock()
+        db.pool = MagicMock()
         mod = CalendarModule()
 
-        await mod.on_startup({"provider": "google"}, db=None, credential_store=store)
+        with patch(
+            "butlers.credential_store.resolve_owner_contact_info",
+            new_callable=AsyncMock,
+            return_value="test-refresh-token",
+        ):
+            await mod.on_startup({"provider": "google"}, db=db, credential_store=store)
 
         assert mod._resolved_calendar_id == STORED_CALENDAR_ID

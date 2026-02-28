@@ -298,15 +298,21 @@ class TestCalendarModuleCredentialStore:
         store = _make_credential_store(
             GOOGLE_OAUTH_CLIENT_ID="cs-client-id",
             GOOGLE_OAUTH_CLIENT_SECRET="cs-client-secret",
-            GOOGLE_REFRESH_TOKEN="cs-refresh-token",
             GOOGLE_CALENDAR_ID="primary",
         )
+        db = MagicMock()
+        db.pool = MagicMock()
         mod = CalendarModule()
-        await mod.on_startup(
-            {"provider": "google"},
-            db=None,
-            credential_store=store,
-        )
+        with patch(
+            "butlers.credential_store.resolve_owner_contact_info",
+            new_callable=AsyncMock,
+            return_value="cs-refresh-token",
+        ):
+            await mod.on_startup(
+                {"provider": "google"},
+                db=db,
+                credential_store=store,
+            )
 
         # Verify provider initialised — this would fail if credentials were wrong
         assert mod._provider is not None
@@ -331,15 +337,21 @@ class TestCalendarModuleCredentialStore:
         store = _make_credential_store(
             GOOGLE_OAUTH_CLIENT_ID="db-client-id",
             GOOGLE_OAUTH_CLIENT_SECRET="db-client-secret",
-            GOOGLE_REFRESH_TOKEN="db-refresh-token",
             GOOGLE_CALENDAR_ID="primary",
         )
+        db = MagicMock()
+        db.pool = MagicMock()
         mod = CalendarModule()
-        await mod.on_startup(
-            {"provider": "google"},
-            db=None,
-            credential_store=store,
-        )
+        with patch(
+            "butlers.credential_store.resolve_owner_contact_info",
+            new_callable=AsyncMock,
+            return_value="db-refresh-token",
+        ):
+            await mod.on_startup(
+                {"provider": "google"},
+                db=db,
+                credential_store=store,
+            )
 
         # Provider should use DB credentials; verify the provider resolved
         assert mod._provider is not None

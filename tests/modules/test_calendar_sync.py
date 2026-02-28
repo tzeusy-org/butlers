@@ -53,6 +53,18 @@ from butlers.modules.calendar import (
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def _mock_resolve_owner_contact_info():
+    """Patch resolve_owner_contact_info so CalendarModule gets a refresh token."""
+    with patch(
+        "butlers.credential_store.resolve_owner_contact_info",
+        new_callable=AsyncMock,
+        return_value="test-refresh-token",
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers and fixtures
 # ---------------------------------------------------------------------------
@@ -131,7 +143,6 @@ def _make_credential_store() -> AsyncMock:
         values = {
             "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
             "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
-            "GOOGLE_REFRESH_TOKEN": "test-refresh-token",
             "GOOGLE_CALENDAR_ID": "primary",
         }
         return values.get(key)
@@ -775,7 +786,9 @@ class TestCalendarModuleStartupPoller:
                 pass
 
         with patch.object(mod, "_run_sync_poller", side_effect=fake_poller):
-            await mod.on_startup(config, db=None, credential_store=credential_store)
+            await mod.on_startup(
+                config, db=MagicMock(pool=MagicMock()), credential_store=credential_store
+            )
 
         try:
             assert mod._sync_task is not None
@@ -789,7 +802,9 @@ class TestCalendarModuleStartupPoller:
         mod = CalendarModule()
         credential_store = _make_credential_store()
         config = {"provider": "google", "calendar_id": "primary"}
-        await mod.on_startup(config, db=None, credential_store=credential_store)
+        await mod.on_startup(
+            config, db=MagicMock(pool=MagicMock()), credential_store=credential_store
+        )
         try:
             assert mod._sync_task is None
         finally:
@@ -808,7 +823,9 @@ class TestCalendarModuleStartupPoller:
                 pass
 
         with patch.object(mod, "_run_sync_poller", side_effect=fake_poller):
-            await mod.on_startup(config, db=None, credential_store=credential_store)
+            await mod.on_startup(
+                config, db=MagicMock(pool=MagicMock()), credential_store=credential_store
+            )
 
         task = mod._sync_task
         assert task is not None
@@ -821,7 +838,9 @@ class TestCalendarModuleStartupPoller:
         mod = CalendarModule()
         credential_store = _make_credential_store()
         config = {"provider": "google", "calendar_id": "primary"}
-        await mod.on_startup(config, db=None, credential_store=credential_store)
+        await mod.on_startup(
+            config, db=MagicMock(pool=MagicMock()), credential_store=credential_store
+        )
         # Should not raise.
         await mod.on_shutdown()
 
@@ -847,7 +866,9 @@ class TestCalendarModuleInternalProjectionPoller:
                 pass
 
         with patch.object(mod, "_run_internal_projection_poller", side_effect=fake_poller):
-            await mod.on_startup(config, db=None, credential_store=credential_store)
+            await mod.on_startup(
+                config, db=MagicMock(pool=MagicMock()), credential_store=credential_store
+            )
 
         try:
             assert mod._internal_projection_task is not None
@@ -868,7 +889,9 @@ class TestCalendarModuleInternalProjectionPoller:
                 pass
 
         with patch.object(mod, "_run_internal_projection_poller", side_effect=fake_poller):
-            await mod.on_startup(config, db=None, credential_store=credential_store)
+            await mod.on_startup(
+                config, db=MagicMock(pool=MagicMock()), credential_store=credential_store
+            )
 
         try:
             assert mod._sync_task is None, "Sync poller should not start when sync disabled"
@@ -889,7 +912,9 @@ class TestCalendarModuleInternalProjectionPoller:
                 pass
 
         with patch.object(mod, "_run_internal_projection_poller", side_effect=fake_poller):
-            await mod.on_startup(config, db=None, credential_store=credential_store)
+            await mod.on_startup(
+                config, db=MagicMock(pool=MagicMock()), credential_store=credential_store
+            )
 
         task = mod._internal_projection_task
         assert task is not None

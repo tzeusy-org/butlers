@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -180,18 +180,24 @@ class TestModuleStartup:
             values = {
                 "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
                 "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
-                "GOOGLE_REFRESH_TOKEN": "test-refresh-token",
                 "GOOGLE_CALENDAR_ID": "test-calendar-id",
             }
             return values.get(key)
 
         store.resolve.side_effect = _resolve
+        db = MagicMock()
+        db.pool = MagicMock()
         mod = CalendarModule()
-        await mod.on_startup(
-            {"provider": "google"},
-            db=None,
-            credential_store=store,
-        )
+        with patch(
+            "butlers.credential_store.resolve_owner_contact_info",
+            new_callable=AsyncMock,
+            return_value="test-refresh-token",
+        ):
+            await mod.on_startup(
+                {"provider": "google"},
+                db=db,
+                credential_store=store,
+            )
 
         # Verify provider was selected and is usable by later tools.
         provider = getattr(mod, "_provider")

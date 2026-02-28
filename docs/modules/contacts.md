@@ -281,11 +281,11 @@ Operational note:
 
 Provider assumption for rollout: `provider = "google"` only.
 
-Required secrets for Google sync (DB-backed `butler_secrets`, not plain env fallback):
+Required credentials for Google sync (DB-only, no env fallback):
 
-- `GOOGLE_OAUTH_CLIENT_ID`
-- `GOOGLE_OAUTH_CLIENT_SECRET`
-- `GOOGLE_REFRESH_TOKEN`
+- `GOOGLE_OAUTH_CLIENT_ID` — from `butler_secrets` via `CredentialStore`
+- `GOOGLE_OAUTH_CLIENT_SECRET` — from `butler_secrets` via `CredentialStore`
+- Refresh token — from `shared.contact_info` on owner contact (type `google_oauth_refresh`)
 
 ### 5.9 Tooling Surface (Module)
 
@@ -329,7 +329,7 @@ Activity feed events: `contact_synced`, `contact_sync_updated`, `contact_sync_co
 
 ## 6. Security and Privacy
 
-- OAuth credentials stored via existing `google_oauth_credentials` store.
+- OAuth app credentials stored in `butler_secrets`; refresh token stored in `shared.contact_info` (secured).
 - Secured `contact_info` entries (`secured=true`) are filtered from default read paths.
 - Never log credential values or raw secret payloads.
 - All synced contact data remains in user-owned butler DB; no cross-butler sharing except explicit routing paths.
