@@ -13,6 +13,8 @@ from butlers.connectors.telegram_bot import (
     TelegramBotConnectorConfig,
 )
 
+pytestmark = pytest.mark.unit
+
 
 class TestTelegramBotConnectorHealth:
     """Tests for Telegram bot connector health endpoint."""

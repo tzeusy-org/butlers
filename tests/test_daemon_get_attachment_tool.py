@@ -1,6 +1,10 @@
 """Integration test for get_attachment tool registration in daemon."""
 
+import pytest
+
 from butlers.daemon import CORE_TOOL_NAMES
+
+pytestmark = pytest.mark.unit
 
 
 def test_get_attachment_in_core_tools():

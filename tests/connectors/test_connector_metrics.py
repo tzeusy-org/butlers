@@ -17,6 +17,8 @@ from butlers.connectors.metrics import (
     source_api_calls_total,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def metrics() -> ConnectorMetrics:

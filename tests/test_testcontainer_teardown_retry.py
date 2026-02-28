@@ -8,6 +8,8 @@ from requests.exceptions import ReadTimeout
 
 import conftest
 
+pytestmark = pytest.mark.unit
+
 
 @dataclass
 class _Response:

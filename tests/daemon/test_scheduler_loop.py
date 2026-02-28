@@ -22,6 +22,14 @@ from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
 
+# Real sleep used by fast_sleep to yield control without blocking
+_real_sleep = asyncio.sleep
+
+
+async def _fast_sleep(delay: float) -> None:
+    """Mock sleep that yields control to the event loop without real delay."""
+    await _real_sleep(0)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -267,17 +275,22 @@ class TestSchedulerLoopBehavior:
         mock_spawner.trigger = AsyncMock()
         daemon.spawner = mock_spawner
 
-        with patch("butlers.daemon._tick", side_effect=mock_tick):
+        with (
+            patch("butlers.daemon._tick", side_effect=mock_tick),
+            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             task = asyncio.create_task(daemon._scheduler_loop())
-            # Allow two tick intervals to pass
-            await asyncio.sleep(2.5)
+            # Yield control so fast_sleep can fire multiple tick cycles
+            await _real_sleep(0)
+            await _real_sleep(0)
+            await _real_sleep(0)
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
 
-        # Should have been called at least once (probably twice in 2.5s with 1s interval)
+        # Should have been called at least once
         assert len(tick_calls) >= 1
 
     async def test_tick_uses_butler_name_stagger_key(self, tmp_path: Path) -> None:
@@ -302,9 +315,13 @@ class TestSchedulerLoopBehavior:
         mock_spawner.trigger = AsyncMock()
         daemon.spawner = mock_spawner
 
-        with patch("butlers.daemon._tick", side_effect=mock_tick):
+        with (
+            patch("butlers.daemon._tick", side_effect=mock_tick),
+            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             task = asyncio.create_task(daemon._scheduler_loop())
-            await asyncio.sleep(1.5)
+            await _real_sleep(0)
+            await _real_sleep(0)
             task.cancel()
             try:
                 await task
@@ -341,9 +358,12 @@ class TestSchedulerLoopBehavior:
         mock_spawner.trigger = AsyncMock()
         daemon.spawner = mock_spawner
 
-        with patch("butlers.daemon._tick", side_effect=failing_then_ok_tick):
+        with (
+            patch("butlers.daemon._tick", side_effect=failing_then_ok_tick),
+            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             task = asyncio.create_task(daemon._scheduler_loop())
-            await asyncio.wait_for(second_tick_seen.wait(), timeout=4.0)
+            await asyncio.wait_for(second_tick_seen.wait(), timeout=1.0)
             task.cancel()
             try:
                 await task
@@ -378,11 +398,14 @@ class TestSchedulerLoopBehavior:
         mock_spawner.trigger = AsyncMock()
         daemon.spawner = mock_spawner
 
-        with patch("butlers.daemon._tick", side_effect=blocking_tick):
+        with (
+            patch("butlers.daemon._tick", side_effect=blocking_tick),
+            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             task = asyncio.create_task(daemon._scheduler_loop())
 
             # Wait for tick to actually start
-            await asyncio.wait_for(tick_started.wait(), timeout=3.0)
+            await asyncio.wait_for(tick_started.wait(), timeout=1.0)
 
             # Now cancel the task
             task.cancel()
@@ -417,18 +440,21 @@ class TestSchedulerLoopBehavior:
 
     async def test_custom_interval_used_in_loop(self, tmp_path: Path) -> None:
         """Loop should use the configured tick_interval_seconds."""
-        tick_times: list[float] = []
-
-        import time
+        tick_calls: list[int] = []
+        sleep_calls: list[float] = []
 
         async def recording_tick(pool, dispatch_fn, *, stagger_key=None):
-            tick_times.append(time.monotonic())
+            tick_calls.append(1)
             return 0
+
+        async def recording_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+            await _real_sleep(0)
 
         butler_dir = _make_butler_toml(tmp_path)
         daemon = ButlerDaemon(butler_dir)
         daemon.config = ButlerConfig(name="test", port=9100)
-        daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=1)
+        daemon.config.scheduler = SchedulerConfig(tick_interval_seconds=42)
 
         mock_pool = AsyncMock()
         mock_db = MagicMock()
@@ -439,11 +465,13 @@ class TestSchedulerLoopBehavior:
         mock_spawner.trigger = AsyncMock()
         daemon.spawner = mock_spawner
 
-        start_time = time.monotonic()
-        with patch("butlers.daemon._tick", side_effect=recording_tick):
+        with (
+            patch("butlers.daemon._tick", side_effect=recording_tick),
+            patch("butlers.daemon.asyncio.sleep", side_effect=recording_sleep),
+        ):
             task = asyncio.create_task(daemon._scheduler_loop())
-            # Wait just over 1 interval
-            await asyncio.sleep(1.5)
+            await _real_sleep(0)
+            await _real_sleep(0)
             task.cancel()
             try:
                 await task
@@ -451,9 +479,9 @@ class TestSchedulerLoopBehavior:
                 pass
 
         # At least one tick should have fired
-        assert len(tick_times) >= 1
-        # First tick should have fired after approximately 1 second
-        assert tick_times[0] - start_time >= 0.9  # allow small tolerance
+        assert len(tick_calls) >= 1
+        # Verify the loop used the configured interval (42s) for all sleeps
+        assert all(s == 42 for s in sleep_calls)
 
     async def test_shutdown_waits_for_tick_completion(self, tmp_path: Path) -> None:
         """Shutdown should allow an in-progress tick() to finish before cancelling."""
@@ -485,6 +513,7 @@ class TestSchedulerLoopBehavior:
             patches["connect_switchboard"],
             patches["recover_route_inbox"],
             patch("butlers.daemon._tick", side_effect=slow_tick),
+            patch("butlers.daemon.asyncio.sleep", side_effect=_fast_sleep),
         ):
             # Use very short interval so tick starts immediately
             daemon = ButlerDaemon(butler_dir)

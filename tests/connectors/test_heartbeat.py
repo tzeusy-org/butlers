@@ -16,6 +16,16 @@ from butlers.connectors.heartbeat import (
     HeartbeatConfig,
 )
 
+pytestmark = pytest.mark.unit
+
+# Real sleep used by fast_sleep to yield control without blocking
+_real_sleep = asyncio.sleep
+
+
+async def _fast_sleep(delay: float) -> None:
+    """Mock sleep that yields control to the event loop without real delay."""
+    await _real_sleep(0)
+
 
 class TestHeartbeatConfig:
     """Test HeartbeatConfig.from_env()."""
@@ -211,7 +221,10 @@ class TestConnectorHeartbeat:
         self, config, mock_mcp_client, mock_metrics, get_health_state, get_checkpoint
     ):
         """Test that heartbeat task sends heartbeats periodically."""
-        with patch("prometheus_client.REGISTRY") as mock_registry:
+        with (
+            patch("prometheus_client.REGISTRY") as mock_registry,
+            patch("butlers.connectors.heartbeat.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             # Mock metrics collection
             mock_registry.collect.return_value = []
 
@@ -225,8 +238,10 @@ class TestConnectorHeartbeat:
 
             heartbeat.start()
 
-            # Wait for at least 2 heartbeats (2 seconds + margin)
-            await asyncio.sleep(2.5)
+            # Yield control so fast_sleep can fire multiple heartbeat cycles
+            await _real_sleep(0)
+            await _real_sleep(0)
+            await _real_sleep(0)
 
             await heartbeat.stop()
 
@@ -248,7 +263,10 @@ class TestConnectorHeartbeat:
         self, config, mock_mcp_client, mock_metrics, get_health_state, get_checkpoint
     ):
         """Test that heartbeat envelope has correct structure."""
-        with patch("prometheus_client.REGISTRY") as mock_registry:
+        with (
+            patch("prometheus_client.REGISTRY") as mock_registry,
+            patch("butlers.connectors.heartbeat.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             # Mock metrics collection
             mock_registry.collect.return_value = []
 
@@ -261,7 +279,8 @@ class TestConnectorHeartbeat:
             )
 
             heartbeat.start()
-            await asyncio.sleep(1.5)
+            await _real_sleep(0)
+            await _real_sleep(0)
             await heartbeat.stop()
 
             # Get the envelope from the first call
@@ -297,7 +316,10 @@ class TestConnectorHeartbeat:
         """Test that heartbeat includes health state from get_health_state callback."""
         health_state = MagicMock(return_value=("error", "Source API unreachable"))
 
-        with patch("prometheus_client.REGISTRY") as mock_registry:
+        with (
+            patch("prometheus_client.REGISTRY") as mock_registry,
+            patch("butlers.connectors.heartbeat.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             mock_registry.collect.return_value = []
 
             heartbeat = ConnectorHeartbeat(
@@ -309,7 +331,8 @@ class TestConnectorHeartbeat:
             )
 
             heartbeat.start()
-            await asyncio.sleep(1.5)
+            await _real_sleep(0)
+            await _real_sleep(0)
             await heartbeat.stop()
 
             envelope = mock_mcp_client.call_tool.call_args_list[0].args[1]
@@ -322,7 +345,10 @@ class TestConnectorHeartbeat:
         self, config, mock_mcp_client, mock_metrics, get_health_state
     ):
         """Test that heartbeat task stops gracefully."""
-        with patch("prometheus_client.REGISTRY") as mock_registry:
+        with (
+            patch("prometheus_client.REGISTRY") as mock_registry,
+            patch("butlers.connectors.heartbeat.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             mock_registry.collect.return_value = []
 
             heartbeat = ConnectorHeartbeat(
@@ -348,7 +374,10 @@ class TestConnectorHeartbeat:
         # Make the MCP client raise an exception
         mock_mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("MCP error"))
 
-        with patch("prometheus_client.REGISTRY") as mock_registry:
+        with (
+            patch("prometheus_client.REGISTRY") as mock_registry,
+            patch("butlers.connectors.heartbeat.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             mock_registry.collect.return_value = []
 
             heartbeat = ConnectorHeartbeat(
@@ -360,8 +389,10 @@ class TestConnectorHeartbeat:
 
             heartbeat.start()
 
-            # Wait for multiple intervals
-            await asyncio.sleep(2.5)
+            # Yield control for multiple heartbeat cycles
+            await _real_sleep(0)
+            await _real_sleep(0)
+            await _real_sleep(0)
 
             # Task should still be running despite failures
             assert heartbeat._task is not None
@@ -374,7 +405,10 @@ class TestConnectorHeartbeat:
         self, config, mock_mcp_client, mock_metrics, get_health_state
     ):
         """Test heartbeat when get_checkpoint is not provided."""
-        with patch("prometheus_client.REGISTRY") as mock_registry:
+        with (
+            patch("prometheus_client.REGISTRY") as mock_registry,
+            patch("butlers.connectors.heartbeat.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             mock_registry.collect.return_value = []
 
             heartbeat = ConnectorHeartbeat(
@@ -386,7 +420,8 @@ class TestConnectorHeartbeat:
             )
 
             heartbeat.start()
-            await asyncio.sleep(1.5)
+            await _real_sleep(0)
+            await _real_sleep(0)
             await heartbeat.stop()
 
             envelope = mock_mcp_client.call_tool.call_args_list[0].args[1]
@@ -399,7 +434,10 @@ class TestConnectorHeartbeat:
         self, config, mock_mcp_client, mock_metrics, get_health_state
     ):
         """Test that counters are collected from Prometheus registry."""
-        with patch("prometheus_client.REGISTRY") as mock_registry:
+        with (
+            patch("prometheus_client.REGISTRY") as mock_registry,
+            patch("butlers.connectors.heartbeat.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             # Mock Prometheus metrics
             mock_metric_ingest = MagicMock()
             mock_metric_ingest.name = "connector_ingest_submissions_total"
@@ -471,7 +509,8 @@ class TestConnectorHeartbeat:
             )
 
             heartbeat.start()
-            await asyncio.sleep(1.5)
+            await _real_sleep(0)
+            await _real_sleep(0)
             await heartbeat.stop()
 
             envelope = mock_mcp_client.call_tool.call_args_list[0].args[1]
@@ -490,7 +529,10 @@ class TestConnectorHeartbeat:
         """Test that heartbeat envelope includes capabilities when get_capabilities is provided."""
         get_capabilities = MagicMock(return_value={"backfill": True})
 
-        with patch("prometheus_client.REGISTRY") as mock_registry:
+        with (
+            patch("prometheus_client.REGISTRY") as mock_registry,
+            patch("butlers.connectors.heartbeat.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             mock_registry.collect.return_value = []
 
             heartbeat = ConnectorHeartbeat(
@@ -502,7 +544,8 @@ class TestConnectorHeartbeat:
             )
 
             heartbeat.start()
-            await asyncio.sleep(1.5)
+            await _real_sleep(0)
+            await _real_sleep(0)
             await heartbeat.stop()
 
             envelope = mock_mcp_client.call_tool.call_args_list[0].args[1]
@@ -514,7 +557,10 @@ class TestConnectorHeartbeat:
         self, config, mock_mcp_client, mock_metrics, get_health_state
     ):
         """Test that capabilities key is absent when get_capabilities is not provided."""
-        with patch("prometheus_client.REGISTRY") as mock_registry:
+        with (
+            patch("prometheus_client.REGISTRY") as mock_registry,
+            patch("butlers.connectors.heartbeat.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             mock_registry.collect.return_value = []
 
             heartbeat = ConnectorHeartbeat(
@@ -526,7 +572,8 @@ class TestConnectorHeartbeat:
             )
 
             heartbeat.start()
-            await asyncio.sleep(1.5)
+            await _real_sleep(0)
+            await _real_sleep(0)
             await heartbeat.stop()
 
             envelope = mock_mcp_client.call_tool.call_args_list[0].args[1]
@@ -539,7 +586,10 @@ class TestConnectorHeartbeat:
         """Test that capabilities key is absent when get_capabilities returns empty dict."""
         get_capabilities = MagicMock(return_value={})
 
-        with patch("prometheus_client.REGISTRY") as mock_registry:
+        with (
+            patch("prometheus_client.REGISTRY") as mock_registry,
+            patch("butlers.connectors.heartbeat.asyncio.sleep", side_effect=_fast_sleep),
+        ):
             mock_registry.collect.return_value = []
 
             heartbeat = ConnectorHeartbeat(
@@ -551,7 +601,8 @@ class TestConnectorHeartbeat:
             )
 
             heartbeat.start()
-            await asyncio.sleep(1.5)
+            await _real_sleep(0)
+            await _real_sleep(0)
             await heartbeat.stop()
 
             envelope = mock_mcp_client.call_tool.call_args_list[0].args[1]

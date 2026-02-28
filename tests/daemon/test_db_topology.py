@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from butlers.daemon import ButlerDaemon
 from butlers.db import Database
+
+pytestmark = pytest.mark.unit
 
 
 def test_build_db_url_includes_search_path_options_for_schema(tmp_path):

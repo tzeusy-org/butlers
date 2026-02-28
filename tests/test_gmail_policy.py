@@ -40,6 +40,8 @@ from butlers.connectors.gmail_policy import (
     parse_label_list,
 )
 
+pytestmark = pytest.mark.unit
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

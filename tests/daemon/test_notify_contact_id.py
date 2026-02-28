@@ -19,6 +19,8 @@ import pytest
 
 from butlers.daemon import ButlerDaemon
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def butler_dir(tmp_path: Path) -> Path:

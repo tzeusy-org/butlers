@@ -18,6 +18,8 @@ from butlers.connectors.telegram_bot import (
     run_telegram_bot_connector,
 )
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def mock_config(tmp_path: Path) -> TelegramBotConnectorConfig:

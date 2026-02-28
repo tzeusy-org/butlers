@@ -4,6 +4,8 @@ import pytest
 
 from conftest import _initialize_docker_client_with_retry
 
+pytestmark = pytest.mark.unit
+
 
 def test_initialize_docker_client_retries_transient_timeouts(
     monkeypatch: pytest.MonkeyPatch,
