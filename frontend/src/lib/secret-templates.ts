@@ -4,6 +4,7 @@ export type SecretCategory =
   | "email"
   | "google"
   | "gemini"
+  | "home_assistant"
   | "general";
 
 export interface SecretTemplate {
@@ -33,6 +34,12 @@ export const SECRET_TEMPLATES: SecretTemplate[] = [
  * managed as secured contact_info entries on the owner contact. Configure them
  * at /contacts/{owner_id} via "Add contact info".
  *
+ * Home Assistant token setup:
+ *   Add a secured contact_info entry with:
+ *   - type: "home_assistant_token"
+ *   - value: HA long-lived access token from Home Assistant profile page
+ *   - secured: true
+ *
  * Migrated keys (no longer shown here):
  *   TELEGRAM_CHAT_ID, USER_TELEGRAM_TOKEN, TELEGRAM_API_ID, TELEGRAM_API_HASH,
  *   TELEGRAM_USER_SESSION, USER_EMAIL_ADDRESS, USER_EMAIL_PASSWORD
@@ -44,6 +51,7 @@ export const SECRET_CATEGORIES: SecretCategory[] = [
   "email",
   "google",
   "gemini",
+  "home_assistant",
   "general",
 ];
 
@@ -53,6 +61,7 @@ export function categoryFromKey(key: string): SecretCategory {
   if (upper.includes("EMAIL") || upper.includes("SMTP") || upper.includes("IMAP")) return "email";
   if (upper.includes("GOOGLE") || upper.includes("GOOGLE_CLIENT")) return "google";
   if (upper.includes("GEMINI")) return "gemini";
+  if (upper.includes("HOME_ASSISTANT")) return "home_assistant";
   if (
     upper.includes("ANTHROPIC")
     || upper.includes("OPENAI")

@@ -35,7 +35,7 @@ import { useDeleteSecret } from "@/hooks/use-secrets";
 // Category ordering and display names
 // ---------------------------------------------------------------------------
 
-const CATEGORY_ORDER = ["core", "telegram", "email", "google", "gemini", "general"];
+const CATEGORY_ORDER = ["core", "telegram", "email", "google", "gemini", "home_assistant", "general"];
 interface SecretPrefill {
   key: string;
   category: string;
@@ -49,6 +49,7 @@ function getCategoryLabel(category: string): string {
     email: "Email",
     google: "Google",
     gemini: "Gemini",
+    home_assistant: "Home Assistant",
     general: "General",
   };
   return labels[category] ?? category.charAt(0).toUpperCase() + category.slice(1);
