@@ -23,6 +23,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "httpx",
+    "aiohttp>=3.9",
     "sentence-transformers",
     "pgvector",
     "structlog",

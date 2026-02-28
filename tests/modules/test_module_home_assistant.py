@@ -1,4 +1,4 @@
-"""Tests for the Home Assistant module scaffold.
+"""Tests for the Home Assistant module.
 
 Covers:
 - HomeAssistantModule ABC compliance (no TypeError on instantiation)
@@ -6,19 +6,36 @@ Covers:
 - on_startup credential resolution (token from owner contact_info)
 - migration_revisions() returns 'home_assistant'
 - Tool registration (register_tools creates expected MCP tools)
-- Lifecycle: on_shutdown cleans up client
+- tool_metadata() returns sensitivity for ha_call_service
+- Lifecycle: on_shutdown cleans up client and WebSocket
+- WebSocket URL derivation (http → ws, https → wss)
+- WebSocket authentication flow (auth_required → auth → auth_ok)
+- WebSocket message dispatch (event, result, pong)
+- Entity cache population from REST and state_changed events
+- Entity cache removal on null new_state
+- Area and entity registry caches
+- _list_entities_from_cache with domain and area filtering
+- WebSocket command helper (auto-incrementing ID, response correlation)
+- Auto-reconnect scheduling and backoff
+- REST polling fallback start/stop
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from butlers.modules.base import Module
-from butlers.modules.home_assistant import HomeAssistantConfig, HomeAssistantModule
+from butlers.modules.base import Module, ToolMeta
+from butlers.modules.home_assistant import (
+    CachedArea,
+    CachedEntity,
+    HomeAssistantConfig,
+    HomeAssistantModule,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -99,9 +116,19 @@ class TestModuleABCCompliance:
         """migration_revisions() returns 'home_assistant'."""
         assert ha_module.migration_revisions() == "home_assistant"
 
-    def test_tool_metadata_default_empty(self, ha_module: HomeAssistantModule) -> None:
-        """Default tool_metadata() returns empty dict (no explicit declarations)."""
-        assert ha_module.tool_metadata() == {}
+    def test_tool_metadata_ha_call_service_sensitive(self, ha_module: HomeAssistantModule) -> None:
+        """tool_metadata() returns sensitivity metadata for ha_call_service."""
+        meta = ha_module.tool_metadata()
+        assert "ha_call_service" in meta
+        assert isinstance(meta["ha_call_service"], ToolMeta)
+        assert meta["ha_call_service"].arg_sensitivities.get("domain") is True
+        assert meta["ha_call_service"].arg_sensitivities.get("service") is True
+
+    def test_tool_metadata_query_tools_not_listed(self, ha_module: HomeAssistantModule) -> None:
+        """Query tools do not appear in tool_metadata (no explicit sensitivity)."""
+        meta = ha_module.tool_metadata()
+        assert "ha_get_entity_state" not in meta
+        assert "ha_list_entities" not in meta
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +195,44 @@ class TestHomeAssistantConfig:
 # ---------------------------------------------------------------------------
 
 
+def _patch_startup(token: str = "test-ha-token-12345") -> Any:
+    """Context manager stack that patches on_startup's external dependencies.
+
+    Patches:
+    - ``resolve_owner_contact_info`` to return ``token``
+    - ``httpx.AsyncClient`` to a MagicMock
+    - ``HomeAssistantModule._ws_connect_and_seed`` to a no-op async
+    """
+    from contextlib import AsyncExitStack, nullcontext
+
+    class _Stack:
+        """Helper that sequences three patches without nested with-blocks."""
+
+        def __init__(self) -> None:
+            self.mock_resolve: AsyncMock | None = None
+            self.mock_client_cls: MagicMock | None = None
+
+        async def __aenter__(self) -> _Stack:
+            self._p1 = patch(
+                "butlers.credential_store.resolve_owner_contact_info",
+                new=AsyncMock(return_value=token),
+            )
+            self._p2 = patch("httpx.AsyncClient", return_value=MagicMock())
+            self._p3 = patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock())
+            self.mock_resolve = self._p1.start()
+            self.mock_client_cls = self._p2.start()
+            self._p3.start()
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            self._p1.stop()
+            self._p2.stop()
+            self._p3.stop()
+
+    _ = nullcontext, AsyncExitStack  # suppress unused import warnings
+    return _Stack()
+
+
 class TestOnStartupCredentialResolution:
     """Verify on_startup resolves token from owner contact_info."""
 
@@ -183,11 +248,12 @@ class TestOnStartupCredentialResolution:
             "butlers.credential_store.resolve_owner_contact_info",
             new=AsyncMock(return_value="test-ha-token-12345"),
         ) as mock_resolve:
-            with patch("httpx.AsyncClient", return_value=MagicMock()) as _:
-                await ha_module.on_startup(
-                    config={"url": "http://ha.local"},
-                    db=mock_db,
-                )
+            with patch("httpx.AsyncClient", return_value=MagicMock()):
+                with patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock()):
+                    await ha_module.on_startup(
+                        config={"url": "http://ha.local"},
+                        db=mock_db,
+                    )
 
             mock_resolve.assert_awaited_once_with(mock_pool, "home_assistant_token")
 
@@ -230,10 +296,11 @@ class TestOnStartupCredentialResolution:
             new=AsyncMock(return_value="my-secret-token"),
         ):
             with patch("httpx.AsyncClient", return_value=MagicMock()) as mock_client_cls:
-                await ha_module.on_startup(
-                    config={"url": "http://ha.local"},
-                    db=mock_db,
-                )
+                with patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock()):
+                    await ha_module.on_startup(
+                        config={"url": "http://ha.local"},
+                        db=mock_db,
+                    )
                 mock_client_cls.assert_called_once()
                 call_kwargs = mock_client_cls.call_args.kwargs
                 assert call_kwargs["base_url"] == "http://ha.local"
@@ -253,12 +320,34 @@ class TestOnStartupCredentialResolution:
             new=AsyncMock(return_value="tok"),
         ):
             with patch("httpx.AsyncClient", return_value=MagicMock()) as mock_client_cls:
-                await ha_module.on_startup(
-                    config={"url": "https://ha.local", "verify_ssl": True},
-                    db=mock_db,
-                )
+                with patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock()):
+                    await ha_module.on_startup(
+                        config={"url": "https://ha.local", "verify_ssl": True},
+                        db=mock_db,
+                    )
                 call_kwargs = mock_client_cls.call_args.kwargs
                 assert call_kwargs["verify"] is True
+
+    async def test_startup_calls_ws_connect_and_seed(self, ha_module: HomeAssistantModule) -> None:
+        """on_startup invokes _ws_connect_and_seed to establish WebSocket connection."""
+        mock_db = MagicMock()
+        mock_db.pool = MagicMock()
+
+        with patch(
+            "butlers.credential_store.resolve_owner_contact_info",
+            new=AsyncMock(return_value="tok"),
+        ):
+            with patch("httpx.AsyncClient", return_value=MagicMock()):
+                with patch.object(
+                    HomeAssistantModule,
+                    "_ws_connect_and_seed",
+                    new=AsyncMock(),
+                ) as mock_seed:
+                    await ha_module.on_startup(
+                        config={"url": "http://ha.local"},
+                        db=mock_db,
+                    )
+                    mock_seed.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +379,51 @@ class TestShutdown:
         # Should not raise
         await ha_module.on_shutdown()
         await ha_module.on_shutdown()
+
+    async def test_shutdown_closes_ws_session(self, ha_module: HomeAssistantModule) -> None:
+        """on_shutdown closes the aiohttp WebSocket session."""
+        mock_ws_session = AsyncMock()
+        mock_ws_session.closed = False
+        ha_module._ws_session = mock_ws_session
+        ha_module._client = AsyncMock()
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+
+        await ha_module.on_shutdown()
+
+        mock_ws_session.close.assert_awaited_once()
+        assert ha_module._ws_session is None
+
+    async def test_shutdown_cancels_background_tasks(self, ha_module: HomeAssistantModule) -> None:
+        """on_shutdown cancels all running background asyncio tasks."""
+
+        # Create real tasks that just sleep forever
+        async def _forever() -> None:
+            await asyncio.sleep(9999)
+
+        ha_module._ws_loop_task = asyncio.ensure_future(_forever())
+        ha_module._ws_ping_task = asyncio.ensure_future(_forever())
+        ha_module._client = AsyncMock()
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+
+        await ha_module.on_shutdown()
+
+        assert ha_module._ws_loop_task is None
+        assert ha_module._ws_ping_task is None
+
+    async def test_shutdown_cancels_pending_ws_futures(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """on_shutdown cancels any pending WebSocket command futures."""
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future[dict] = loop.create_future()
+        ha_module._ws_pending[42] = fut
+        ha_module._client = AsyncMock()
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+
+        await ha_module.on_shutdown()
+
+        assert fut.cancelled()
+        assert len(ha_module._ws_pending) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -368,3 +502,762 @@ class TestRegistryIntegration:
 
         reg = default_registry()
         assert "home_assistant" in reg.available_modules
+
+
+# ---------------------------------------------------------------------------
+# WebSocket URL derivation
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketUrlDerivation:
+    """Verify _ws_url() derives the correct WebSocket URL from the HA base URL."""
+
+    def test_http_becomes_ws(self, ha_module: HomeAssistantModule) -> None:
+        """http:// base URL produces ws:// WebSocket URL."""
+        ha_module._config = HomeAssistantConfig(url="http://homeassistant.local:8123")
+        assert ha_module._ws_url() == "ws://homeassistant.local:8123/api/websocket"
+
+    def test_https_becomes_wss(self, ha_module: HomeAssistantModule) -> None:
+        """https:// base URL produces wss:// WebSocket URL."""
+        ha_module._config = HomeAssistantConfig(url="https://ha.example.com:8123")
+        assert ha_module._ws_url() == "wss://ha.example.com:8123/api/websocket"
+
+    def test_trailing_slash_stripped(self, ha_module: HomeAssistantModule) -> None:
+        """Trailing slash in URL is stripped before appending /api/websocket."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local/")
+        assert ha_module._ws_url() == "ws://ha.local/api/websocket"
+
+    def test_tailscale_url(self, ha_module: HomeAssistantModule) -> None:
+        """Tailscale URLs work correctly."""
+        ha_module._config = HomeAssistantConfig(url="http://homeassistant.tail1234.ts.net:8123")
+        url = ha_module._ws_url()
+        assert url.startswith("ws://")
+        assert url.endswith("/api/websocket")
+
+
+# ---------------------------------------------------------------------------
+# WebSocket authentication flow
+# ---------------------------------------------------------------------------
+
+
+def _make_ws_mock(*messages: dict[str, Any]) -> MagicMock:
+    """Build a mock aiohttp WebSocket connection that returns ``messages`` in sequence."""
+    ws = AsyncMock()
+    ws.closed = False
+    ws.receive_json = AsyncMock(side_effect=list(messages))
+    ws.send_json = AsyncMock()
+    ws.close = AsyncMock()
+    return ws
+
+
+def _make_aiohttp_session_mock(ws_mock: MagicMock) -> MagicMock:
+    """Build a mock aiohttp.ClientSession that returns ``ws_mock`` from ws_connect."""
+    session = AsyncMock()
+    session.closed = False
+    session.ws_connect = AsyncMock(return_value=ws_mock)
+    session.close = AsyncMock()
+    return session
+
+
+class TestWebSocketAuthentication:
+    """Verify the WebSocket auth flow: auth_required → auth → auth_ok."""
+
+    def _inject_session(self, ha_module: HomeAssistantModule, ws: MagicMock) -> MagicMock:
+        """Inject a pre-built mock session so _ws_connect skips aiohttp creation."""
+        session = _make_aiohttp_session_mock(ws)
+        # Pre-set the session so the 'if self._ws_session is None' branch is skipped
+        ha_module._ws_session = session
+        return session
+
+    async def test_auth_ok_sets_connected(self, ha_module: HomeAssistantModule) -> None:
+        """Successful auth sets _ws_connected = True."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._token = "secret-token"
+
+        ws = _make_ws_mock(
+            {"type": "auth_required", "ha_version": "2024.1.0"},
+            {"type": "auth_ok", "ha_version": "2024.1.0"},
+        )
+        self._inject_session(ha_module, ws)
+
+        await ha_module._ws_connect()
+
+        assert ha_module._ws_connected is True
+
+    async def test_auth_sends_access_token(self, ha_module: HomeAssistantModule) -> None:
+        """Auth message sent to HA contains the resolved access token."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._token = "my-llat-token"
+
+        ws = _make_ws_mock(
+            {"type": "auth_required"},
+            {"type": "auth_ok"},
+        )
+        self._inject_session(ha_module, ws)
+
+        await ha_module._ws_connect()
+
+        # First send_json call is the auth message
+        auth_call = ws.send_json.call_args_list[0]
+        sent = auth_call.args[0]
+        assert sent["type"] == "auth"
+        assert sent["access_token"] == "my-llat-token"
+
+    async def test_auth_sends_supported_features(self, ha_module: HomeAssistantModule) -> None:
+        """After auth_ok, supported_features with coalesce_messages: 1 is sent."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._token = "tok"
+
+        ws = _make_ws_mock(
+            {"type": "auth_required"},
+            {"type": "auth_ok"},
+        )
+        self._inject_session(ha_module, ws)
+
+        await ha_module._ws_connect()
+
+        # Second send_json call should be supported_features
+        assert ws.send_json.call_count == 2
+        features_call = ws.send_json.call_args_list[1]
+        sent = features_call.args[0]
+        assert sent["type"] == "supported_features"
+        assert sent["features"]["coalesce_messages"] == 1
+
+    async def test_auth_invalid_raises(self, ha_module: HomeAssistantModule) -> None:
+        """auth_invalid response raises RuntimeError."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._token = "bad-token"
+
+        ws = _make_ws_mock(
+            {"type": "auth_required"},
+            {"type": "auth_invalid", "message": "Invalid access token"},
+        )
+        self._inject_session(ha_module, ws)
+
+        with pytest.raises(RuntimeError, match="auth_invalid"):
+            await ha_module._ws_connect()
+
+        assert ha_module._ws_connected is False
+
+    async def test_unexpected_first_message_raises(self, ha_module: HomeAssistantModule) -> None:
+        """If the first WS message is not auth_required, RuntimeError is raised."""
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._token = "tok"
+
+        ws = _make_ws_mock({"type": "event", "data": {}})
+        self._inject_session(ha_module, ws)
+
+        with pytest.raises(RuntimeError, match="auth_required"):
+            await ha_module._ws_connect()
+
+
+# ---------------------------------------------------------------------------
+# WebSocket message dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketMessageDispatch:
+    """Verify _dispatch_ws_message routes by type correctly."""
+
+    async def test_pong_updates_last_pong_time(self, ha_module: HomeAssistantModule) -> None:
+        """Receiving a pong updates _last_pong_time."""
+        ha_module._last_pong_time = 0.0
+        before = asyncio.get_event_loop().time()
+
+        await ha_module._dispatch_ws_message({"type": "pong"})
+
+        assert ha_module._last_pong_time >= before
+
+    async def test_result_resolves_pending_future(self, ha_module: HomeAssistantModule) -> None:
+        """A result message resolves the matching pending WS command future."""
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future[dict] = loop.create_future()
+        ha_module._ws_pending[7] = fut
+
+        await ha_module._dispatch_ws_message(
+            {"type": "result", "id": 7, "success": True, "result": {"answer": 42}}
+        )
+
+        assert fut.done()
+        assert fut.result() == {"answer": 42}
+
+    async def test_result_error_sets_exception(self, ha_module: HomeAssistantModule) -> None:
+        """A failed result message sets an exception on the matching future."""
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future[dict] = loop.create_future()
+        ha_module._ws_pending[3] = fut
+
+        await ha_module._dispatch_ws_message(
+            {
+                "type": "result",
+                "id": 3,
+                "success": False,
+                "error": {"code": "unknown_command", "message": "oops"},
+            }
+        )
+
+        assert fut.done()
+        with pytest.raises(RuntimeError, match="unknown_command"):
+            fut.result()
+
+    async def test_result_unknown_id_is_ignored(self, ha_module: HomeAssistantModule) -> None:
+        """A result with an unknown ID is silently ignored (no KeyError)."""
+        await ha_module._dispatch_ws_message(
+            {"type": "result", "id": 99999, "success": True, "result": {}}
+        )
+
+    async def test_state_changed_event_updates_cache(self, ha_module: HomeAssistantModule) -> None:
+        """state_changed event updates the entity cache."""
+        ha_module._entity_cache["light.kitchen"] = CachedEntity(
+            entity_id="light.kitchen", state="off"
+        )
+
+        await ha_module._dispatch_ws_message(
+            {
+                "type": "event",
+                "event": {
+                    "event_type": "state_changed",
+                    "data": {
+                        "entity_id": "light.kitchen",
+                        "new_state": {
+                            "entity_id": "light.kitchen",
+                            "state": "on",
+                            "attributes": {"brightness": 200},
+                            "last_changed": "2024-01-01T10:00:00+00:00",
+                            "last_updated": "2024-01-01T10:00:00+00:00",
+                        },
+                    },
+                },
+            }
+        )
+
+        assert ha_module._entity_cache["light.kitchen"].state == "on"
+        assert ha_module._entity_cache["light.kitchen"].attributes["brightness"] == 200
+
+    async def test_state_changed_null_new_state_removes_entity(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """state_changed with null new_state removes the entity from the cache."""
+        ha_module._entity_cache["sensor.gone"] = CachedEntity(entity_id="sensor.gone", state="42")
+
+        await ha_module._dispatch_ws_message(
+            {
+                "type": "event",
+                "event": {
+                    "event_type": "state_changed",
+                    "data": {
+                        "entity_id": "sensor.gone",
+                        "new_state": None,
+                    },
+                },
+            }
+        )
+
+        assert "sensor.gone" not in ha_module._entity_cache
+
+    async def test_area_registry_updated_triggers_refresh(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """area_registry_updated event triggers _fetch_area_registry."""
+        ha_module._ws_connected = True
+        ha_module._ws_connection = AsyncMock()
+
+        with patch.object(ha_module, "_fetch_area_registry", new=AsyncMock()) as mock_fetch:
+            await ha_module._dispatch_ws_message(
+                {
+                    "type": "event",
+                    "event": {"event_type": "area_registry_updated", "data": {}},
+                }
+            )
+            mock_fetch.assert_awaited_once()
+
+    async def test_entity_registry_updated_triggers_refresh(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """entity_registry_updated event triggers _fetch_entity_registry."""
+        ha_module._ws_connected = True
+        ha_module._ws_connection = AsyncMock()
+
+        with patch.object(ha_module, "_fetch_entity_registry", new=AsyncMock()) as mock_fetch:
+            await ha_module._dispatch_ws_message(
+                {
+                    "type": "event",
+                    "event": {"event_type": "entity_registry_updated", "data": {}},
+                }
+            )
+            mock_fetch.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Entity cache — seeding from REST
+# ---------------------------------------------------------------------------
+
+
+class TestEntityCacheSeeding:
+    """Verify _seed_entity_cache_from_rest populates the entity cache."""
+
+    async def test_seed_populates_cache(self, ha_module: HomeAssistantModule) -> None:
+        """_seed_entity_cache_from_rest fills the cache from the REST states response."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [
+            {
+                "entity_id": "light.living_room",
+                "state": "on",
+                "attributes": {"friendly_name": "Living Room Light", "brightness": 255},
+                "last_changed": "2024-01-01T08:00:00+00:00",
+                "last_updated": "2024-01-01T08:00:00+00:00",
+            },
+            {
+                "entity_id": "sensor.temp",
+                "state": "21.5",
+                "attributes": {},
+                "last_changed": "2024-01-01T07:00:00+00:00",
+                "last_updated": "2024-01-01T07:00:00+00:00",
+            },
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._seed_entity_cache_from_rest()
+
+        assert "light.living_room" in ha_module._entity_cache
+        assert ha_module._entity_cache["light.living_room"].state == "on"
+        assert "sensor.temp" in ha_module._entity_cache
+
+    async def test_seed_replaces_existing_cache(self, ha_module: HomeAssistantModule) -> None:
+        """_seed_entity_cache_from_rest replaces the full cache (not merge)."""
+        # Pre-populate with a stale entity
+        ha_module._entity_cache["stale.entity"] = CachedEntity(
+            entity_id="stale.entity", state="old"
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [
+            {
+                "entity_id": "sensor.new",
+                "state": "fresh",
+                "attributes": {},
+                "last_changed": "",
+                "last_updated": "",
+            }
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._seed_entity_cache_from_rest()
+
+        assert "stale.entity" not in ha_module._entity_cache
+        assert "sensor.new" in ha_module._entity_cache
+
+    async def test_seed_no_op_without_client(self, ha_module: HomeAssistantModule) -> None:
+        """_seed_entity_cache_from_rest is a no-op when client is None."""
+        ha_module._client = None
+        # Should not raise
+        await ha_module._seed_entity_cache_from_rest()
+        assert ha_module._entity_cache == {}
+
+    async def test_seed_populates_area_id_from_entity_area_map(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Seeded entities inherit area_id from the entity_area_map."""
+        ha_module._entity_area_map["light.bed"] = "bedroom_area"
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = [
+            {
+                "entity_id": "light.bed",
+                "state": "off",
+                "attributes": {},
+                "last_changed": "",
+                "last_updated": "",
+            }
+        ]
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        await ha_module._seed_entity_cache_from_rest()
+
+        assert ha_module._entity_cache["light.bed"].area_id == "bedroom_area"
+
+
+# ---------------------------------------------------------------------------
+# Registry caches — area and entity registries
+# ---------------------------------------------------------------------------
+
+
+class TestRegistryCaches:
+    """Verify area and entity registry fetching via WebSocket commands."""
+
+    async def test_fetch_area_registry_populates_cache(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_fetch_area_registry populates _area_cache from WS response."""
+        ha_module._ws_connected = True
+        with patch.object(
+            ha_module,
+            "_ws_command",
+            new=AsyncMock(
+                return_value=[
+                    {"area_id": "living_room", "name": "Living Room"},
+                    {"area_id": "bedroom", "name": "Bedroom"},
+                ]
+            ),
+        ):
+            await ha_module._fetch_area_registry()
+
+        assert "living_room" in ha_module._area_cache
+        assert ha_module._area_cache["living_room"].name == "Living Room"
+        assert "bedroom" in ha_module._area_cache
+
+    async def test_fetch_area_registry_noop_when_disconnected(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_fetch_area_registry is a no-op when WebSocket is not connected."""
+        ha_module._ws_connected = False
+        with patch.object(ha_module, "_ws_command", new=AsyncMock()) as mock_cmd:
+            await ha_module._fetch_area_registry()
+            mock_cmd.assert_not_awaited()
+
+    async def test_fetch_entity_registry_populates_area_map(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_fetch_entity_registry builds _entity_area_map from WS response."""
+        ha_module._ws_connected = True
+        with patch.object(
+            ha_module,
+            "_ws_command",
+            new=AsyncMock(
+                return_value=[
+                    {"entity_id": "light.kitchen", "area_id": "kitchen"},
+                    {"entity_id": "sensor.bedroom_temp", "area_id": "bedroom"},
+                    {"entity_id": "switch.no_area"},  # no area_id key
+                ]
+            ),
+        ):
+            await ha_module._fetch_entity_registry()
+
+        assert ha_module._entity_area_map["light.kitchen"] == "kitchen"
+        assert ha_module._entity_area_map["sensor.bedroom_temp"] == "bedroom"
+        assert "switch.no_area" not in ha_module._entity_area_map
+
+    async def test_fetch_entity_registry_backfills_cached_entities(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_fetch_entity_registry updates area_id on already-cached entities."""
+        ha_module._entity_cache["light.hall"] = CachedEntity(
+            entity_id="light.hall", state="off", area_id=None
+        )
+        ha_module._ws_connected = True
+
+        with patch.object(
+            ha_module,
+            "_ws_command",
+            new=AsyncMock(
+                return_value=[
+                    {"entity_id": "light.hall", "area_id": "hallway"},
+                ]
+            ),
+        ):
+            await ha_module._fetch_entity_registry()
+
+        assert ha_module._entity_cache["light.hall"].area_id == "hallway"
+
+
+# ---------------------------------------------------------------------------
+# WebSocket command helper
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketCommandHelper:
+    """Verify _ws_command sends with auto-incrementing ID and awaits response."""
+
+    async def test_command_increments_id(self, ha_module: HomeAssistantModule) -> None:
+        """Each _ws_command call uses the next auto-incrementing ID."""
+        ha_module._ws_connected = True
+        ws = AsyncMock()
+        ha_module._ws_connection = ws
+
+        # Simulate the message loop resolving the future after send_json
+        async def side_effect(msg: dict[str, Any]) -> None:
+            cmd_id = msg.get("id")
+            if cmd_id in ha_module._ws_pending:
+                ha_module._ws_pending[cmd_id].set_result({"ok": True})
+
+        ws.send_json = AsyncMock(side_effect=side_effect)
+
+        initial_id = ha_module._ws_cmd_id
+        await ha_module._ws_command({"type": "get_states"})
+        assert ha_module._ws_cmd_id == initial_id + 1
+
+        await ha_module._ws_command({"type": "get_services"})
+        assert ha_module._ws_cmd_id == initial_id + 2
+
+    async def test_command_raises_when_not_connected(self, ha_module: HomeAssistantModule) -> None:
+        """_ws_command raises RuntimeError when WebSocket is not connected."""
+        ha_module._ws_connected = False
+        ha_module._ws_connection = None
+
+        with pytest.raises(RuntimeError, match="not connected"):
+            await ha_module._ws_command({"type": "ping"})
+
+    async def test_command_returns_result(self, ha_module: HomeAssistantModule) -> None:
+        """_ws_command returns the result payload from the correlated response."""
+        ha_module._ws_connected = True
+        ws = AsyncMock()
+        ha_module._ws_connection = ws
+
+        expected_result = [{"area_id": "kitchen", "name": "Kitchen"}]
+
+        async def side_effect(msg: dict[str, Any]) -> None:
+            cmd_id = msg.get("id")
+            if cmd_id in ha_module._ws_pending:
+                ha_module._ws_pending[cmd_id].set_result(expected_result)
+
+        ws.send_json = AsyncMock(side_effect=side_effect)
+
+        result = await ha_module._ws_command({"type": "config/area_registry/list"})
+        assert result == expected_result
+
+    async def test_command_timeout_raises(self, ha_module: HomeAssistantModule) -> None:
+        """_ws_command raises asyncio.TimeoutError when no response arrives."""
+        ha_module._ws_connected = True
+        ws = AsyncMock()
+        ws.send_json = AsyncMock()  # does NOT resolve the future
+        ha_module._ws_connection = ws
+
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await ha_module._ws_command({"type": "ping"}, timeout=0.05)
+
+
+# ---------------------------------------------------------------------------
+# _list_entities_from_cache — domain and area filtering
+# ---------------------------------------------------------------------------
+
+
+class TestListEntitiesFromCache:
+    """Verify _list_entities_from_cache with various filter combinations."""
+
+    @pytest.fixture
+    def populated_module(self, ha_module: HomeAssistantModule) -> HomeAssistantModule:
+        """Module with entity and area caches pre-populated."""
+        ha_module._area_cache = {
+            "kitchen": CachedArea(area_id="kitchen", name="Kitchen"),
+            "bedroom": CachedArea(area_id="bedroom", name="Bedroom"),
+        }
+        ha_module._entity_area_map = {
+            "light.kitchen_ceiling": "kitchen",
+            "sensor.bedroom_temp": "bedroom",
+        }
+        ha_module._entity_cache = {
+            "light.kitchen_ceiling": CachedEntity(
+                entity_id="light.kitchen_ceiling",
+                state="on",
+                attributes={"friendly_name": "Kitchen Ceiling"},
+                area_id="kitchen",
+            ),
+            "sensor.bedroom_temp": CachedEntity(
+                entity_id="sensor.bedroom_temp",
+                state="21.5",
+                attributes={"friendly_name": "Bedroom Temperature"},
+                area_id="bedroom",
+            ),
+            "switch.garage_door": CachedEntity(
+                entity_id="switch.garage_door",
+                state="off",
+                attributes={},
+                area_id=None,
+            ),
+        }
+        return ha_module
+
+    def test_no_filters_returns_all(self, populated_module: HomeAssistantModule) -> None:
+        """No filters returns all entities sorted by entity_id."""
+        results = populated_module._list_entities_from_cache()
+        ids = [r["entity_id"] for r in results]
+        assert ids == sorted(ids)
+        assert len(results) == 3
+
+    def test_domain_filter(self, populated_module: HomeAssistantModule) -> None:
+        """Domain filter returns only entities with matching prefix."""
+        results = populated_module._list_entities_from_cache(domain="light")
+        assert len(results) == 1
+        assert results[0]["entity_id"] == "light.kitchen_ceiling"
+
+    def test_area_filter_by_name(self, populated_module: HomeAssistantModule) -> None:
+        """Area filter by name returns entities in that area."""
+        results = populated_module._list_entities_from_cache(area="Kitchen")
+        assert len(results) == 1
+        assert results[0]["entity_id"] == "light.kitchen_ceiling"
+
+    def test_area_filter_by_id(self, populated_module: HomeAssistantModule) -> None:
+        """Area filter by area_id returns entities in that area."""
+        results = populated_module._list_entities_from_cache(area="bedroom")
+        assert len(results) == 1
+        assert results[0]["entity_id"] == "sensor.bedroom_temp"
+
+    def test_area_filter_case_insensitive(self, populated_module: HomeAssistantModule) -> None:
+        """Area filter by name is case-insensitive."""
+        results = populated_module._list_entities_from_cache(area="KITCHEN")
+        assert len(results) == 1
+        assert results[0]["entity_id"] == "light.kitchen_ceiling"
+
+    def test_area_filter_unknown_returns_empty(self, populated_module: HomeAssistantModule) -> None:
+        """Unknown area name returns empty list."""
+        results = populated_module._list_entities_from_cache(area="Attic")
+        assert results == []
+
+    def test_combined_domain_and_area_filter(self, populated_module: HomeAssistantModule) -> None:
+        """Combined domain + area filter applies both."""
+        results = populated_module._list_entities_from_cache(domain="light", area="kitchen")
+        assert len(results) == 1
+        results_mismatch = populated_module._list_entities_from_cache(
+            domain="sensor", area="kitchen"
+        )
+        assert results_mismatch == []
+
+    def test_summary_includes_area_name(self, populated_module: HomeAssistantModule) -> None:
+        """Entity summaries include area_name from the area registry."""
+        results = populated_module._list_entities_from_cache(domain="light")
+        assert results[0]["area_name"] == "Kitchen"
+
+    def test_summary_includes_domain(self, populated_module: HomeAssistantModule) -> None:
+        """Entity summaries include the domain extracted from entity_id."""
+        results = populated_module._list_entities_from_cache(domain="switch")
+        assert results[0]["domain"] == "switch"
+
+
+# ---------------------------------------------------------------------------
+# _get_entity_state — cache-first, REST fallback
+# ---------------------------------------------------------------------------
+
+
+class TestGetEntityState:
+    """Verify _get_entity_state serves from cache and falls back to REST."""
+
+    async def test_serves_from_cache_when_populated(self, ha_module: HomeAssistantModule) -> None:
+        """_get_entity_state returns cached data when entity is in cache."""
+        ha_module._entity_cache["light.hall"] = CachedEntity(
+            entity_id="light.hall",
+            state="on",
+            attributes={"brightness": 150},
+            last_changed="2024-01-01T10:00:00+00:00",
+            last_updated="2024-01-01T10:00:01+00:00",
+        )
+        ha_module._area_cache["hall_area"] = CachedArea(area_id="hall_area", name="Hall")
+        ha_module._entity_cache["light.hall"].area_id = "hall_area"
+
+        result = await ha_module._get_entity_state("light.hall")
+
+        assert result is not None
+        assert result["entity_id"] == "light.hall"
+        assert result["state"] == "on"
+        assert result["attributes"]["brightness"] == 150
+        assert result["area_name"] == "Hall"
+
+    async def test_falls_back_to_rest_on_cache_miss(self, ha_module: HomeAssistantModule) -> None:
+        """_get_entity_state falls back to REST when entity not in cache."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "entity_id": "sensor.outside_temp",
+            "state": "15.0",
+        }
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._get_entity_state("sensor.outside_temp")
+
+        assert result is not None
+        assert result["state"] == "15.0"
+        mock_client.get.assert_awaited_once()
+
+    async def test_returns_none_for_404(self, ha_module: HomeAssistantModule) -> None:
+        """_get_entity_state returns None for REST 404 response."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+
+        result = await ha_module._get_entity_state("sensor.nonexistent")
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Reconnect scheduling
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectScheduling:
+    """Verify auto-reconnect scheduling and polling fallback."""
+
+    def test_schedule_reconnect_creates_task(self, ha_module: HomeAssistantModule) -> None:
+        """_schedule_reconnect creates a background asyncio task."""
+        ha_module._ws_reconnect_task = None
+        ha_module._shutdown = False
+
+        ha_module._schedule_reconnect(delay=1.0)
+
+        assert ha_module._ws_reconnect_task is not None
+        assert not ha_module._ws_reconnect_task.done()
+        # Cleanup
+        ha_module._ws_reconnect_task.cancel()
+
+    def test_schedule_reconnect_noop_when_shutdown(self, ha_module: HomeAssistantModule) -> None:
+        """_schedule_reconnect is a no-op when _shutdown is True."""
+        ha_module._shutdown = True
+
+        ha_module._schedule_reconnect(delay=1.0)
+
+        assert ha_module._ws_reconnect_task is None
+
+    def test_schedule_reconnect_noop_when_task_running(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_schedule_reconnect does not create a second task if one is already running."""
+
+        async def _long() -> None:
+            await asyncio.sleep(9999)
+
+        ha_module._shutdown = False
+        task = asyncio.ensure_future(_long())
+        ha_module._ws_reconnect_task = task
+
+        ha_module._schedule_reconnect(delay=0.1)
+
+        # Same task object — no new task created
+        assert ha_module._ws_reconnect_task is task
+        task.cancel()
+
+    def test_start_poll_fallback_creates_task(self, ha_module: HomeAssistantModule) -> None:
+        """_start_poll_fallback creates a background polling task."""
+        ha_module._poll_task = None
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._shutdown = False
+
+        ha_module._start_poll_fallback()
+
+        assert ha_module._poll_task is not None
+        assert not ha_module._poll_task.done()
+        ha_module._poll_task.cancel()
+
+    def test_stop_poll_fallback_cancels_task(self, ha_module: HomeAssistantModule) -> None:
+        """_stop_poll_fallback cancels and clears the polling task."""
+
+        async def _long() -> None:
+            await asyncio.sleep(9999)
+
+        ha_module._poll_task = asyncio.ensure_future(_long())
+
+        ha_module._stop_poll_fallback()
+
+        assert ha_module._poll_task is None
