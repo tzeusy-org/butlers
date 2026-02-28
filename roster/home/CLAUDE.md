@@ -245,56 +245,21 @@ memory_store_fact(
 - **Use volatile for alerts** — device issues, firmware updates, critical battery levels are volatile
 - **Discover before acting** — use `ha_list_entities` and `ha_list_services` to confirm entity IDs before calling services; HA entity IDs are case-sensitive and vary by installation
 
-## Conversation Examples with Multiple Turns
+## Scheduled Task Skills
 
-### Multi-Turn Example: Building a Scene Over Time
+The following scheduled tasks each have a dedicated skill defining their step-by-step workflow:
 
-**Turn 1 - User**: "I want to create a relaxation scene"
+- **`weekly-energy-digest`** (Sun 9am) — see `skills/weekly-energy-digest/SKILL.md`
+- **`daily-environment-report`** (Daily 8am) — see `skills/daily-environment-report/SKILL.md`
+- **`device-health-check`** (Nightly 4am) — see `skills/device-health-check/SKILL.md`
 
-**Actions**:
-1. Ask for clarification: "What devices should relaxation activate? Lighting, temperature, music, other?" via `notify()`
+## Multi-Turn Conversation Skills
 
-**Turn 2 - User**: "Dim the lights to 30%, play soft music, and set temperature to 72"
+For detailed multi-turn examples showing how to compose scenes iteratively or walk a user through
+energy optimization, see the relevant skill files:
 
-**Actions**:
-1. `ha_list_entities(domain="light")` — discover all light entity IDs
-2. `ha_call_service(domain="light", service="turn_on", target={"area_id": "all"}, data={"brightness_pct": 30})`
-3. `ha_call_service(domain="media_player", service="play_media", target={"entity_id": "media_player.living_room"}, data={"media_content_id": "soft_music", "media_content_type": "music"})`
-4. `ha_call_service(domain="climate", service="set_temperature", data={"temperature": 72})`
-5. Affirm via `notify()`: "Relaxation scene created with dimmed lights, soft music, and 72°F temperature."
-
-**Turn 3 - User**: "Actually, also close the blinds"
-
-**Actions**:
-1. `ha_list_entities(domain="cover")` — find blind/cover entity IDs
-2. `ha_call_service(domain="cover", service="close_cover", target={"area_id": "all"})`
-3. `ha_call_service(domain="scene", service="create", data={"scene_id": "relaxation", "entities": {"light.living_room": {"state": "on", "brightness": 77}, "light.bedroom": {"state": "on", "brightness": 77}, "media_player.living_room": {"state": "playing"}, "climate.main": {"temperature": 72}, "cover.living_room": {"state": "closed"}, "cover.bedroom": {"state": "closed"}}})`
-4. `memory_store_fact(subject="relaxation-scene", predicate="scene_preference", content="user created relaxation scene with dimmed lighting (30%), soft music, 72°F temperature, and closed blinds", permanence="standard", importance=6.0, tags=["scene", "relaxation", "automation"])`
-5. Affirm: "Relaxation scene saved — blinds are now closed, lights dimmed to 30%, soft music playing, temperature at 72°F. Ready to activate anytime!"
-
-### Multi-Turn Example: Energy Optimization
-
-**Turn 1 - User**: "Show me my top energy consumers"
-
-**Actions**:
-1. `ha_list_entities(domain="sensor")` — find energy monitoring sensors
-2. `ha_get_statistics(statistic_ids=["sensor.hvac_energy", "sensor.water_heater_energy", "sensor.kitchen_energy"], start="<month start ISO>", end="<now ISO>", period="month")`
-3. Provide ranked list via `notify()`
-
-**Turn 2 - User**: "The HVAC seems high. Can you suggest ways to reduce it?"
-
-**Actions**:
-1. `ha_get_history(entity_ids=["climate.main_hvac"], start="<7 days ago ISO>")` — review recent HVAC state changes
-2. `ha_get_statistics(statistic_ids=["sensor.hvac_energy"], start="<30 days ago ISO>", end="<now ISO>", period="day")` — day-by-day usage
-3. Provide suggestions (adjust setpoints, optimize schedules, check filters) via `notify()`
-
-**Turn 3 - User**: "Set bedroom temperature 2 degrees lower at night"
-
-**Actions**:
-1. `ha_get_entity_state(entity_id="climate.bedroom")` — get current setpoint
-2. `ha_call_service(domain="climate", service="set_temperature", target={"entity_id": "climate.bedroom"}, data={"temperature": 66})`
-3. `memory_store_fact(subject="bedroom", predicate="comfort_preference", content="user prefers bedroom 2°F cooler at night; setpoint reduced to 66°F", permanence="stable", importance=7.0, tags=["temperature", "comfort", "bedroom", "night"])`
-4. Affirm: "Bedroom night temperature adjusted to 66°F. This should reduce HVAC usage."
+- **Scene building across turns** — see `skills/scenes/SKILL.md` (Multi-Turn Scene Composition section)
+- **Energy investigation and optimization** — see `skills/energy/SKILL.md` (Multi-Turn Example section)
 
 ## Safety and Confirmation
 

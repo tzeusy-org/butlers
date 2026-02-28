@@ -220,6 +220,36 @@ Store usage patterns in memory. If user triggers Movie Night every Friday at 7pm
 3. `scene_delete(scene_name="workout")`
 4. `notify(channel="telegram", message="Workout scene deleted.", intent="reply", request_context=...)`
 
+### Multi-Turn Scene Composition (HA Tools)
+
+This example uses the native Home Assistant tools available to the home butler. It illustrates
+how to handle an iterative, multi-turn scene-building conversation using `ha_*` tools directly.
+
+**Turn 1 — User**: "I want to create a relaxation scene"
+
+**Actions**:
+1. Ask for clarification via `notify(channel="telegram", message="What devices should the relaxation
+   scene include? For example: lighting, temperature, blinds, music?", intent="reply", request_context=...)`
+
+**Turn 2 — User**: "Dim the lights to 30%, play soft music, and set temperature to 72"
+
+**Actions**:
+1. `ha_list_entities(domain="light")` — discover all light entity IDs
+2. `ha_call_service(domain="light", service="turn_on", target={"area_id": "all"}, data={"brightness_pct": 30})`
+3. `ha_call_service(domain="media_player", service="play_media", target={"entity_id": "media_player.living_room"}, data={"media_content_id": "soft_music", "media_content_type": "music"})`
+4. `ha_call_service(domain="climate", service="set_temperature", data={"temperature": 72})`
+5. `notify(channel="telegram", message="Relaxation mode active — lights at 30%, soft music on, temperature set to 72°F. Anything else to add?", intent="reply", request_context=...)`
+
+**Turn 3 — User**: "Actually, also close the blinds"
+
+**Actions**:
+1. `ha_list_entities(domain="cover")` — find blind/cover entity IDs
+2. `ha_call_service(domain="cover", service="close_cover", target={"area_id": "all"})`
+3. `ha_activate_scene(entity_id="scene.relaxation")` if scene already exists, or:
+   `ha_call_service(domain="scene", service="create", data={"scene_id": "relaxation", "entities": {"light.living_room": {"state": "on", "brightness": 77}, "media_player.living_room": {"state": "playing"}, "climate.main": {"temperature": 72}, "cover.living_room": {"state": "closed"}}})`
+4. `memory_store_fact(subject="relaxation-scene", predicate="scene_preference", content="relaxation scene includes: lights at 30%, soft music, 72°F temperature, closed blinds", permanence="standard", importance=6.0, tags=["scene", "relaxation", "automation"])`
+5. `notify(channel="telegram", message="Relaxation scene saved — lights at 30%, soft music playing, 72°F, blinds closed. Activate it anytime by saying 'activate relaxation'.", intent="reply", request_context=...)`
+
 ## Exit Criteria
 
 - For scene creation: `scene_create()` was called; user confirmed via `notify()`
