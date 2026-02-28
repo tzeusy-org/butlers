@@ -125,7 +125,7 @@ function PresenceRow({
 // App credentials input form (client_id + client_secret)
 // ---------------------------------------------------------------------------
 
-function AppCredentialsForm({ onSuccess }: { onSuccess?: () => void }) {
+function AppCredentialsForm() {
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -141,7 +141,6 @@ function AppCredentialsForm({ onSuccess }: { onSuccess?: () => void }) {
       setClientId("");
       setClientSecret("");
       setSaved(true);
-      onSuccess?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save credentials.");
     }
@@ -343,7 +342,7 @@ function GoogleOAuthCard() {
             </a>
             . These are required before starting the OAuth authorization flow.
           </p>
-          <AppCredentialsForm onSuccess={() => credStatusQuery.refetch()} />
+          <AppCredentialsForm />
         </div>
 
         <div className="border-t border-border" />
