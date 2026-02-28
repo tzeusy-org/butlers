@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -64,6 +63,7 @@ def _mock_mcp_manager(
 
 
 def _create_test_app(
+    app,
     configs: list[ButlerConnectionInfo],
     mcp_manager: MCPClientManager,
 ):
@@ -74,7 +74,6 @@ def _create_test_app(
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_audit_pool
 
-    app = create_app()
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -87,11 +86,11 @@ def _create_test_app(
 
 
 class TestForceTick:
-    async def test_returns_404_for_unknown_butler(self):
+    async def test_returns_404_for_unknown_butler(self, app):
         """Unknown butler name returns 404."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(unreachable=True)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -101,12 +100,12 @@ class TestForceTick:
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
-    async def test_successful_tick(self):
+    async def test_successful_tick(self, app):
         """Successful tick returns 200 with success=True and message."""
         configs = [ButlerConnectionInfo("general", 40101)]
         tick_result = _mock_tick_result("Tick completed successfully")
         mgr = _mock_mcp_manager(tick_result=tick_result)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -120,12 +119,12 @@ class TestForceTick:
         assert body["data"]["success"] is True
         assert body["data"]["message"] == "Tick completed successfully"
 
-    async def test_successful_tick_response_model(self):
+    async def test_successful_tick_response_model(self, app):
         """Response data can be parsed as TickResponse."""
         configs = [ButlerConnectionInfo("general", 40101)]
         tick_result = _mock_tick_result("OK")
         mgr = _mock_mcp_manager(tick_result=tick_result)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -137,11 +136,11 @@ class TestForceTick:
         assert tick_resp.success is True
         assert tick_resp.message == "OK"
 
-    async def test_returns_503_when_butler_unreachable(self):
+    async def test_returns_503_when_butler_unreachable(self, app):
         """Returns 503 with error payload when butler is unreachable."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(unreachable=True)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -154,11 +153,11 @@ class TestForceTick:
         assert body["error"]["code"] == "butler_unreachable"
         assert body["error"]["butler"] == "general"
 
-    async def test_returns_503_on_timeout(self):
+    async def test_returns_503_on_timeout(self, app):
         """Returns 503 with error payload when tick request times out."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(timeout=True)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -171,14 +170,14 @@ class TestForceTick:
         assert body["error"]["code"] == "butler_timeout"
         assert body["error"]["butler"] == "general"
 
-    async def test_tick_with_empty_content(self):
+    async def test_tick_with_empty_content(self, app):
         """Tick with empty content returns success=True and message=None."""
         configs = [ButlerConnectionInfo("general", 40101)]
         result = MagicMock()
         result.content = []
         result.is_error = False
         mgr = _mock_mcp_manager(tick_result=result)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

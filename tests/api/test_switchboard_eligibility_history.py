@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 
 _MODULE_NAME = "switchboard_api_router"
@@ -42,6 +41,7 @@ def _get_current_db_manager_dep() -> object:
 
 
 def _app_with_mocks(
+    app,
     *,
     fetchrow_result: dict | None = None,
     fetch_result: list | None = None,
@@ -54,7 +54,6 @@ def _app_with_mocks(
     mock_db.pool.return_value = mock_pool
 
     get_db_manager = _get_current_db_manager_dep()
-    app = create_app(cors_origins=["*"])
     app.dependency_overrides[get_db_manager] = lambda: mock_db
 
     return app, mock_pool
@@ -66,9 +65,10 @@ def _app_with_mocks(
 
 
 class TestEligibilityHistory:
-    async def test_no_transitions_returns_single_segment(self):
+    async def test_no_transitions_returns_single_segment(self, app):
         """Full window in current state when no log rows exist."""
         app, _ = _app_with_mocks(
+            app,
             fetchrow_result={"eligibility_state": "active"},
             fetch_result=[],
         )
@@ -85,13 +85,14 @@ class TestEligibilityHistory:
         assert len(data["segments"]) == 1
         assert data["segments"][0]["state"] == "active"
 
-    async def test_transitions_produce_correct_segments(self):
+    async def test_transitions_produce_correct_segments(self, app):
         """Two log rows produce three segments."""
         now = datetime.datetime.now(datetime.UTC)
         t1 = now - datetime.timedelta(hours=12)
         t2 = now - datetime.timedelta(hours=6)
 
         app, _ = _app_with_mocks(
+            app,
             fetchrow_result={"eligibility_state": "active"},
             fetch_result=[
                 {"previous_state": "active", "new_state": "stale", "observed_at": t1},
@@ -111,9 +112,9 @@ class TestEligibilityHistory:
         assert segments[1]["state"] == "stale"  # t1 → t2
         assert segments[2]["state"] == "active"  # t2 → now
 
-    async def test_unknown_butler_returns_404(self):
+    async def test_unknown_butler_returns_404(self, app):
         """Requesting history for an unknown butler returns 404."""
-        app, _ = _app_with_mocks(fetchrow_result=None)
+        app, _ = _app_with_mocks(app, fetchrow_result=None)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -122,9 +123,10 @@ class TestEligibilityHistory:
 
         assert resp.status_code == 404
 
-    async def test_custom_hours_parameter(self):
+    async def test_custom_hours_parameter(self, app):
         """Custom hours parameter is accepted and used."""
         app, mock_pool = _app_with_mocks(
+            app,
             fetchrow_result={"eligibility_state": "active"},
             fetch_result=[],
         )
@@ -145,9 +147,10 @@ class TestEligibilityHistory:
         expected = now - datetime.timedelta(hours=48)
         assert abs((window_start - expected).total_seconds()) < 5
 
-    async def test_segments_cover_full_window(self):
+    async def test_segments_cover_full_window(self, app):
         """First segment starts at window_start, last segment ends at window_end."""
         app, _ = _app_with_mocks(
+            app,
             fetchrow_result={"eligibility_state": "stale"},
             fetch_result=[],
         )

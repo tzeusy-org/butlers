@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.deps import ButlerConnectionInfo, ButlerUnreachableError, MCPClientManager
 from butlers.api.models.modules import ModuleRuntimeStateResponse
 from butlers.api.routers.modules import _get_module_states_via_mcp, _has_module_config
@@ -116,6 +115,7 @@ def _mock_mcp_manager(
 
 
 def _create_test_app(
+    app,
     tmp_path: Path,
     configs: list[ButlerConnectionInfo],
     mcp_manager: MCPClientManager,
@@ -124,7 +124,6 @@ def _create_test_app(
     from butlers.api.deps import get_butler_configs, get_mcp_manager
     from butlers.api.routers.modules import _get_roster_dir
 
-    app = create_app()
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
     app.dependency_overrides[_get_roster_dir] = lambda: tmp_path
@@ -167,7 +166,7 @@ class TestHasModuleConfig:
 
 
 class TestGetModuleStatesViaMCP:
-    async def test_returns_parsed_states(self, tmp_path: Path):
+    async def test_returns_parsed_states(self, app, tmp_path: Path):
         """Parses module.states MCP tool response correctly."""
         butler_dir = _make_butler_dir(tmp_path, modules={"telegram": "", "email": ""})
         raw_states = {
@@ -197,7 +196,7 @@ class TestGetModuleStatesViaMCP:
         assert by_name["email"].enabled is False
         assert by_name["email"].has_config is True
 
-    async def test_has_config_false_for_unconfigured_module(self, tmp_path: Path):
+    async def test_has_config_false_for_unconfigured_module(self, app, tmp_path: Path):
         """Modules not in butler.toml have has_config=False."""
         # Only telegram is configured; runtime shows both
         butler_dir = _make_butler_dir(tmp_path, modules={"telegram": ""})
@@ -224,7 +223,7 @@ class TestGetModuleStatesViaMCP:
         assert by_name["telegram"].has_config is True
         assert by_name["calendar"].has_config is False
 
-    async def test_returns_failed_module_state(self, tmp_path: Path):
+    async def test_returns_failed_module_state(self, app, tmp_path: Path):
         """Failed modules are returned with health=failed and failure details."""
         butler_dir = _make_butler_dir(tmp_path, modules={"email": ""})
         raw_states = {
@@ -246,7 +245,7 @@ class TestGetModuleStatesViaMCP:
         assert states[0].failure_phase == "on_startup"
         assert states[0].failure_error == "SMTP connection refused"
 
-    async def test_raises_503_when_unreachable(self, tmp_path: Path):
+    async def test_raises_503_when_unreachable(self, app, tmp_path: Path):
         """Raises HTTPException(503) when butler is unreachable."""
         from fastapi import HTTPException
 
@@ -258,7 +257,7 @@ class TestGetModuleStatesViaMCP:
 
         assert exc_info.value.status_code == 503
 
-    async def test_returns_empty_for_empty_states(self, tmp_path: Path):
+    async def test_returns_empty_for_empty_states(self, app, tmp_path: Path):
         """Returns empty list when daemon returns no module states."""
         butler_dir = _make_butler_dir(tmp_path, modules={})
         states_result = _make_module_states_result({})
@@ -274,11 +273,11 @@ class TestGetModuleStatesViaMCP:
 
 
 class TestGetModuleStatesEndpoint:
-    async def test_returns_404_for_unknown_butler(self, tmp_path: Path):
+    async def test_returns_404_for_unknown_butler(self, app, tmp_path: Path):
         """Unknown butler returns 404."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(unreachable=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -287,12 +286,12 @@ class TestGetModuleStatesEndpoint:
 
         assert response.status_code == 404
 
-    async def test_returns_503_when_butler_unreachable(self, tmp_path: Path):
+    async def test_returns_503_when_butler_unreachable(self, app, tmp_path: Path):
         """Returns 503 when butler daemon is unreachable."""
         _make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(unreachable=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -301,7 +300,7 @@ class TestGetModuleStatesEndpoint:
 
         assert response.status_code == 503
 
-    async def test_returns_module_states_with_correct_schema(self, tmp_path: Path):
+    async def test_returns_module_states_with_correct_schema(self, app, tmp_path: Path):
         """GET returns all modules with correct fields and values."""
         _make_butler_dir(tmp_path, "general", 40101, modules={"telegram": "", "email": ""})
         configs = [ButlerConnectionInfo("general", 40101)]
@@ -321,7 +320,7 @@ class TestGetModuleStatesEndpoint:
         }
         states_result = _make_module_states_result(raw_states)
         mgr = _mock_mcp_manager(states_result=states_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -346,7 +345,7 @@ class TestGetModuleStatesEndpoint:
         assert by_name["email"]["enabled"] is False
         assert by_name["email"]["has_config"] is True
 
-    async def test_response_validates_as_pydantic_model(self, tmp_path: Path):
+    async def test_response_validates_as_pydantic_model(self, app, tmp_path: Path):
         """Response items can be parsed as ModuleRuntimeStateResponse."""
         _make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
@@ -360,7 +359,7 @@ class TestGetModuleStatesEndpoint:
         }
         states_result = _make_module_states_result(raw_states)
         mgr = _mock_mcp_manager(states_result=states_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -372,7 +371,7 @@ class TestGetModuleStatesEndpoint:
             parsed = ModuleRuntimeStateResponse.model_validate(item)
             assert parsed.health in {"active", "failed", "cascade_failed"}
 
-    async def test_returns_failed_module_info(self, tmp_path: Path):
+    async def test_returns_failed_module_info(self, app, tmp_path: Path):
         """Failed modules are returned with health=failed and failure details."""
         _make_butler_dir(tmp_path, "general", 40101, modules={"email": ""})
         configs = [ButlerConnectionInfo("general", 40101)]
@@ -386,7 +385,7 @@ class TestGetModuleStatesEndpoint:
         }
         states_result = _make_module_states_result(raw_states)
         mgr = _mock_mcp_manager(states_result=states_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -409,11 +408,11 @@ class TestGetModuleStatesEndpoint:
 
 
 class TestSetModuleEnabledEndpoint:
-    async def test_returns_404_for_unknown_butler(self, tmp_path: Path):
+    async def test_returns_404_for_unknown_butler(self, app, tmp_path: Path):
         """Unknown butler returns 404."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager()
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -425,12 +424,12 @@ class TestSetModuleEnabledEndpoint:
 
         assert response.status_code == 404
 
-    async def test_returns_503_when_butler_unreachable(self, tmp_path: Path):
+    async def test_returns_503_when_butler_unreachable(self, app, tmp_path: Path):
         """Returns 503 when butler daemon is unreachable."""
         _make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(unreachable=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -442,13 +441,13 @@ class TestSetModuleEnabledEndpoint:
 
         assert response.status_code == 503
 
-    async def test_returns_404_for_unknown_module(self, tmp_path: Path):
+    async def test_returns_404_for_unknown_module(self, app, tmp_path: Path):
         """Returns 404 when daemon reports module is unknown."""
         _make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         set_result = _make_set_enabled_result("error", error="Unknown module: 'nonexistent'")
         mgr = _mock_mcp_manager(set_enabled_result=set_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -460,7 +459,7 @@ class TestSetModuleEnabledEndpoint:
 
         assert response.status_code == 404
 
-    async def test_returns_409_for_unavailable_module(self, tmp_path: Path):
+    async def test_returns_409_for_unavailable_module(self, app, tmp_path: Path):
         """Returns 409 when daemon reports module is unavailable (failed health)."""
         _make_butler_dir(tmp_path, "general", 40101, modules={"email": ""})
         configs = [ButlerConnectionInfo("general", 40101)]
@@ -469,7 +468,7 @@ class TestSetModuleEnabledEndpoint:
             error="Module 'email' is unavailable (health='failed') and cannot be toggled",
         )
         mgr = _mock_mcp_manager(set_enabled_result=set_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -481,13 +480,13 @@ class TestSetModuleEnabledEndpoint:
 
         assert response.status_code == 409
 
-    async def test_enable_module_returns_updated_state(self, tmp_path: Path):
+    async def test_enable_module_returns_updated_state(self, app, tmp_path: Path):
         """Successful enable returns the updated module state with enabled=True."""
         _make_butler_dir(tmp_path, "general", 40101, modules={"telegram": ""})
         configs = [ButlerConnectionInfo("general", 40101)]
         set_result = _make_set_enabled_result("ok")
         mgr = _mock_mcp_manager(set_enabled_result=set_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -506,13 +505,13 @@ class TestSetModuleEnabledEndpoint:
         assert data["health"] == "active"
         assert data["has_config"] is True
 
-    async def test_disable_module_returns_updated_state(self, tmp_path: Path):
+    async def test_disable_module_returns_updated_state(self, app, tmp_path: Path):
         """Successful disable returns the updated module state with enabled=False."""
         _make_butler_dir(tmp_path, "general", 40101, modules={"telegram": ""})
         configs = [ButlerConnectionInfo("general", 40101)]
         set_result = _make_set_enabled_result("ok")
         mgr = _mock_mcp_manager(set_enabled_result=set_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -527,13 +526,13 @@ class TestSetModuleEnabledEndpoint:
         assert data["enabled"] is False
         assert data["name"] == "telegram"
 
-    async def test_response_validates_as_pydantic_model(self, tmp_path: Path):
+    async def test_response_validates_as_pydantic_model(self, app, tmp_path: Path):
         """Response data can be parsed as ModuleRuntimeStateResponse."""
         _make_butler_dir(tmp_path, "general", 40101, modules={"telegram": ""})
         configs = [ButlerConnectionInfo("general", 40101)]
         set_result = _make_set_enabled_result("ok")
         mgr = _mock_mcp_manager(set_enabled_result=set_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -548,14 +547,14 @@ class TestSetModuleEnabledEndpoint:
         assert parsed.name == "telegram"
         assert parsed.enabled is True
 
-    async def test_has_config_false_for_unconfigured_module(self, tmp_path: Path):
+    async def test_has_config_false_for_unconfigured_module(self, app, tmp_path: Path):
         """has_config is False when module is not in butler.toml."""
         _make_butler_dir(tmp_path, "general", 40101, modules={"telegram": ""})
         configs = [ButlerConnectionInfo("general", 40101)]
         # Runtime allows 'calendar' even though it's not in config
         set_result = _make_set_enabled_result("ok")
         mgr = _mock_mcp_manager(set_enabled_result=set_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

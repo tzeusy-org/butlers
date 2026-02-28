@@ -29,7 +29,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.models.oauth import (
     OAuthCredentialState,
     OAuthCredentialStatus,
@@ -65,13 +64,13 @@ _HTTPX_CLIENT_PATCH = "butlers.api.routers.oauth.httpx.AsyncClient"
 
 
 def _make_app(
+    app,
     *,
     db_client_id: str = "test-client-id.apps.googleusercontent.com",
     db_client_secret: str = "test-client-secret",
     db_refresh_token: str | None = "1//fake-refresh-token",
     with_db_manager: bool = True,
 ):
-    app = create_app()
     if not with_db_manager:
         return app
 
@@ -175,9 +174,9 @@ def _mock_response(*, status_code: int = 200, body: dict) -> httpx.Response:
 
 
 class TestOAuthStatusNotConfigured:
-    async def test_no_client_id_returns_not_configured(self):
+    async def test_no_client_id_returns_not_configured(self, app):
         """Missing DB client_id → not_configured."""
-        app = _make_app(db_client_id="")
+        app = _make_app(app, db_client_id="")
         env = _BASE_ENV
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
@@ -191,9 +190,9 @@ class TestOAuthStatusNotConfigured:
         assert body["google"]["connected"] is False
         assert body["google"]["remediation"] is not None
 
-    async def test_no_client_secret_returns_not_configured(self):
+    async def test_no_client_secret_returns_not_configured(self, app):
         """Missing DB client_secret → not_configured."""
-        app = _make_app(db_client_secret="")
+        app = _make_app(app, db_client_secret="")
         env = _BASE_ENV
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
@@ -206,9 +205,9 @@ class TestOAuthStatusNotConfigured:
         assert body["google"]["state"] == OAuthCredentialState.not_configured
         assert body["google"]["connected"] is False
 
-    async def test_no_refresh_token_returns_not_configured(self):
+    async def test_no_refresh_token_returns_not_configured(self, app):
         """No DB refresh token → not_configured with connect guidance."""
-        app = _make_app(db_refresh_token=None)
+        app = _make_app(app, db_refresh_token=None)
         env = _BASE_ENV
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
@@ -223,9 +222,9 @@ class TestOAuthStatusNotConfigured:
         remediation = body["google"]["remediation"].lower()
         assert "connect" in remediation or "authorize" in remediation or "oauth" in remediation
 
-    async def test_google_refresh_token_env_var_not_used(self):
+    async def test_google_refresh_token_env_var_not_used(self, app):
         """Env refresh token does not bypass missing DB refresh token."""
-        app = _make_app(db_refresh_token=None)
+        app = _make_app(app, db_refresh_token=None)
         env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": "1//fallback"}
 
         mock_probe = AsyncMock(return_value=_connected_status())
@@ -247,9 +246,9 @@ class TestOAuthStatusNotConfigured:
 
 
 class TestOAuthStatusConnected:
-    async def test_valid_token_returns_connected(self):
+    async def test_valid_token_returns_connected(self, app):
         """Valid refresh token with required scopes → connected."""
-        app = _make_app()
+        app = _make_app(app)
 
         mock_probe = AsyncMock(return_value=_connected_status())
         with patch.dict("os.environ", _BASE_ENV, clear=False), patch(_PROBE_PATCH, mock_probe):
@@ -264,9 +263,9 @@ class TestOAuthStatusConnected:
         assert body["google"]["connected"] is True
         assert body["google"]["remediation"] is None
 
-    async def test_connected_includes_scopes_granted(self):
+    async def test_connected_includes_scopes_granted(self, app):
         """Connected state includes scopes_granted list."""
-        app = _make_app()
+        app = _make_app(app)
 
         mock_probe = AsyncMock(return_value=_connected_status())
         with patch.dict("os.environ", _BASE_ENV, clear=False), patch(_PROBE_PATCH, mock_probe):
@@ -281,9 +280,9 @@ class TestOAuthStatusConnected:
         assert any("gmail" in s for s in scopes)
         assert any("calendar" in s for s in scopes)
 
-    async def test_provider_field_is_google(self):
+    async def test_provider_field_is_google(self, app):
         """Status response includes provider=google."""
-        app = _make_app()
+        app = _make_app(app)
 
         mock_probe = AsyncMock(return_value=_connected_status())
         with patch.dict("os.environ", _BASE_ENV, clear=False), patch(_PROBE_PATCH, mock_probe):
@@ -302,9 +301,9 @@ class TestOAuthStatusConnected:
 
 
 class TestOAuthStatusMissingScope:
-    async def test_missing_scope_state(self):
+    async def test_missing_scope_state(self, app):
         """Token lacking required scopes → missing_scope with remediation."""
-        app = _make_app()
+        app = _make_app(app)
         limited = ["https://www.googleapis.com/auth/gmail.readonly"]
         probe_result = _status(
             OAuthCredentialState.missing_scope,
@@ -327,9 +326,9 @@ class TestOAuthStatusMissingScope:
         remediation = body["google"]["remediation"].lower()
         assert "permission" in remediation or "scope" in remediation or "grant" in remediation
 
-    async def test_missing_scope_includes_partial_scopes_granted(self):
+    async def test_missing_scope_includes_partial_scopes_granted(self, app):
         """missing_scope state populates scopes_granted with what was received."""
-        app = _make_app()
+        app = _make_app(app)
         limited = ["https://www.googleapis.com/auth/gmail.readonly"]
         probe_result = _status(
             OAuthCredentialState.missing_scope,
@@ -355,9 +354,9 @@ class TestOAuthStatusMissingScope:
 
 
 class TestOAuthStatusExpired:
-    async def test_expired_state(self):
+    async def test_expired_state(self, app):
         """Expired/revoked token → expired state with re-auth guidance."""
-        app = _make_app()
+        app = _make_app(app)
         probe_result = _status(
             OAuthCredentialState.expired,
             remediation=(
@@ -387,9 +386,9 @@ class TestOAuthStatusExpired:
 
 
 class TestOAuthStatusRedirectUriMismatch:
-    async def test_redirect_uri_mismatch_state(self):
+    async def test_redirect_uri_mismatch_state(self, app):
         """Client credential mismatch → redirect_uri_mismatch state."""
-        app = _make_app()
+        app = _make_app(app)
         probe_result = _status(
             OAuthCredentialState.redirect_uri_mismatch,
             remediation=(
@@ -419,9 +418,9 @@ class TestOAuthStatusRedirectUriMismatch:
 
 
 class TestOAuthStatusUnapprovedTester:
-    async def test_unapproved_tester_state(self):
+    async def test_unapproved_tester_state(self, app):
         """Access denied → unapproved_tester state with tester guidance."""
-        app = _make_app()
+        app = _make_app(app)
         probe_result = _status(
             OAuthCredentialState.unapproved_tester,
             remediation=(
@@ -453,9 +452,9 @@ class TestOAuthStatusUnapprovedTester:
 
 
 class TestOAuthStatusUnknownError:
-    async def test_unknown_error_state(self):
+    async def test_unknown_error_state(self, app):
         """Unrecognized error → unknown_error state."""
-        app = _make_app()
+        app = _make_app(app)
         probe_result = _status(
             OAuthCredentialState.unknown_error,
             remediation=(
@@ -476,9 +475,9 @@ class TestOAuthStatusUnknownError:
         assert body["google"]["connected"] is False
         assert body["google"]["remediation"] is not None
 
-    async def test_network_error_state(self):
+    async def test_network_error_state(self, app):
         """Network failure → unknown_error with network guidance."""
-        app = _make_app()
+        app = _make_app(app)
         probe_result = _status(
             OAuthCredentialState.unknown_error,
             remediation=(
@@ -512,7 +511,7 @@ class TestOAuthStatusUnknownError:
 class TestProbeGoogleToken:
     """Unit tests for _probe_google_token: covers HTTP response classification."""
 
-    async def test_probe_connected_with_full_scopes(self):
+    async def test_probe_connected_with_full_scopes(self, app):
         """Successful token refresh with required scopes → connected status."""
         full_scope = (
             "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar"
@@ -531,7 +530,7 @@ class TestProbeGoogleToken:
         assert result.connected is True
         assert result.scopes_granted is not None
 
-    async def test_probe_expired_on_invalid_grant(self):
+    async def test_probe_expired_on_invalid_grant(self, app):
         """invalid_grant HTTP response → expired status."""
         mock_class = _make_mock_http_client(
             _mock_response(
@@ -549,7 +548,7 @@ class TestProbeGoogleToken:
         assert result.state == OAuthCredentialState.expired
         assert result.connected is False
 
-    async def test_probe_redirect_uri_mismatch_on_invalid_client(self):
+    async def test_probe_redirect_uri_mismatch_on_invalid_client(self, app):
         """invalid_client HTTP response → redirect_uri_mismatch status."""
         mock_class = _make_mock_http_client(
             _mock_response(
@@ -567,7 +566,7 @@ class TestProbeGoogleToken:
         assert result.state == OAuthCredentialState.redirect_uri_mismatch
         assert result.connected is False
 
-    async def test_probe_unapproved_tester_on_access_denied(self):
+    async def test_probe_unapproved_tester_on_access_denied(self, app):
         """access_denied HTTP response → unapproved_tester status."""
         mock_class = _make_mock_http_client(
             _mock_response(
@@ -585,7 +584,7 @@ class TestProbeGoogleToken:
         assert result.state == OAuthCredentialState.unapproved_tester
         assert result.connected is False
 
-    async def test_probe_unknown_on_unrecognized_error(self):
+    async def test_probe_unknown_on_unrecognized_error(self, app):
         """Unrecognized error code → unknown_error status."""
         mock_class = _make_mock_http_client(
             _mock_response(
@@ -603,7 +602,7 @@ class TestProbeGoogleToken:
         assert result.state == OAuthCredentialState.unknown_error
         assert result.connected is False
 
-    async def test_probe_network_error_returns_unknown_error(self):
+    async def test_probe_network_error_returns_unknown_error(self, app):
         """Network failure → unknown_error status."""
         mock_class = _make_mock_http_client_raises(httpx.TransportError("conn refused"))
         with patch(_HTTPX_CLIENT_PATCH, mock_class):
@@ -617,7 +616,7 @@ class TestProbeGoogleToken:
         assert result.connected is False
         assert "network" in result.remediation.lower() or "reach" in result.remediation.lower()
 
-    async def test_probe_missing_scope(self):
+    async def test_probe_missing_scope(self, app):
         """Successful refresh with insufficient scopes → missing_scope status."""
         partial_scope = "https://www.googleapis.com/auth/gmail.readonly"
         mock_class = _make_mock_http_client(
@@ -634,7 +633,7 @@ class TestProbeGoogleToken:
         assert result.connected is False
         assert result.scopes_granted is not None
 
-    async def test_probe_connected_when_scope_absent(self):
+    async def test_probe_connected_when_scope_absent(self, app):
         """Scope field absent from refresh response → connected (not missing_scope).
 
         Google may omit `scope` in refresh responses when scopes are unchanged.
@@ -662,9 +661,9 @@ class TestProbeGoogleToken:
 
 
 class TestOAuthStatusResponseShape:
-    async def test_response_has_google_key(self):
+    async def test_response_has_google_key(self, app):
         """Top-level response always has a 'google' key."""
-        app = _make_app()
+        app = _make_app(app)
         env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": ""}
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
@@ -676,9 +675,9 @@ class TestOAuthStatusResponseShape:
         body = resp.json()
         assert "google" in body
 
-    async def test_credential_status_has_required_fields(self):
+    async def test_credential_status_has_required_fields(self, app):
         """OAuthCredentialStatus payload has required fields: state, connected, provider."""
-        app = _make_app()
+        app = _make_app(app)
         env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": ""}
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
@@ -691,9 +690,9 @@ class TestOAuthStatusResponseShape:
         assert "connected" in google
         assert "provider" in google
 
-    async def test_connected_false_always_has_remediation(self):
+    async def test_connected_false_always_has_remediation(self, app):
         """When connected=False, remediation must be a non-empty string."""
-        app = _make_app()
+        app = _make_app(app)
         env = {**_BASE_ENV, "GOOGLE_REFRESH_TOKEN": ""}
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
@@ -706,9 +705,9 @@ class TestOAuthStatusResponseShape:
         assert isinstance(google["remediation"], str)
         assert len(google["remediation"]) > 0
 
-    async def test_endpoint_returns_200_always(self):
+    async def test_endpoint_returns_200_always(self, app):
         """Status endpoint always returns HTTP 200 — errors are in the payload."""
-        app = _make_app()
+        app = _make_app(app)
         # No env vars at all — extreme not_configured case
         env = {
             "GOOGLE_OAUTH_CLIENT_ID": "",

@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.deps import ButlerConnectionInfo, ButlerUnreachableError, MCPClientManager
 from butlers.api.models import ModuleStatus
 from butlers.api.routers.butlers import _get_module_health_via_mcp
@@ -126,6 +125,7 @@ def _mock_mcp_manager_with_status(
 
 
 def _create_test_app(
+    app,
     tmp_path: Path,
     configs: list[ButlerConnectionInfo],
     mcp_manager: MCPClientManager,
@@ -134,7 +134,6 @@ def _create_test_app(
     from butlers.api.deps import get_butler_configs, get_mcp_manager
     from butlers.api.routers.butlers import _get_roster_dir
 
-    app = create_app()
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
     app.dependency_overrides[_get_roster_dir] = lambda: tmp_path
@@ -227,11 +226,11 @@ class TestGetModuleHealthViaMCP:
 
 
 class TestGetButlerModulesEndpoint:
-    async def test_returns_404_for_unknown_butler(self, tmp_path: Path):
+    async def test_returns_404_for_unknown_butler(self, app, tmp_path: Path):
         """Unknown butler name returns 404."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager_with_status(unreachable=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -240,11 +239,11 @@ class TestGetButlerModulesEndpoint:
 
         assert response.status_code == 404
 
-    async def test_returns_404_when_config_not_found(self, tmp_path: Path):
+    async def test_returns_404_when_config_not_found(self, app, tmp_path: Path):
         """Returns 404 when butler is in configs but has no butler.toml."""
         configs = [ButlerConnectionInfo("phantom", 8999)]
         mgr = _mock_mcp_manager_with_status(unreachable=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -253,13 +252,13 @@ class TestGetButlerModulesEndpoint:
 
         assert response.status_code == 404
 
-    async def test_returns_module_list_from_config(self, tmp_path: Path):
+    async def test_returns_module_list_from_config(self, app, tmp_path: Path):
         """Returns modules defined in butler.toml with live health status."""
         _make_roster_with_modules(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         status_result = _mock_status_result(["telegram", "email"], health="ok")
         mgr = _mock_mcp_manager_with_status(status_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -280,12 +279,12 @@ class TestGetButlerModulesEndpoint:
             assert m["enabled"] is True
             assert m["status"] == "connected"
 
-    async def test_handles_unreachable_butler(self, tmp_path: Path):
+    async def test_handles_unreachable_butler(self, app, tmp_path: Path):
         """Returns modules with status='unknown' when butler is unreachable."""
         _make_roster_with_modules(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager_with_status(unreachable=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -299,7 +298,7 @@ class TestGetButlerModulesEndpoint:
             assert m["status"] == "unknown"
             assert m["enabled"] is True
 
-    async def test_returns_live_module_health(self, tmp_path: Path):
+    async def test_returns_live_module_health(self, app, tmp_path: Path):
         """Returns live module health when butler is reachable."""
         _make_roster_with_modules(
             tmp_path, "general", 40101, modules={"telegram": "", "email": "", "calendar": ""}
@@ -308,7 +307,7 @@ class TestGetButlerModulesEndpoint:
         # Only telegram and email are loaded — calendar is missing
         status_result = _mock_status_result(["telegram", "email"], health="ok")
         mgr = _mock_mcp_manager_with_status(status_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -324,12 +323,12 @@ class TestGetButlerModulesEndpoint:
         assert by_name["calendar"]["status"] == "error"
         assert by_name["calendar"]["error"] is not None
 
-    async def test_empty_modules_list(self, tmp_path: Path):
+    async def test_empty_modules_list(self, app, tmp_path: Path):
         """Returns empty list when butler has no modules configured."""
         _make_roster_no_modules(tmp_path, "bare", 40102)
         configs = [ButlerConnectionInfo("bare", 40102)]
         mgr = _mock_mcp_manager_with_status(unreachable=True)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -340,13 +339,13 @@ class TestGetButlerModulesEndpoint:
         body = response.json()
         assert body["data"] == []
 
-    async def test_response_shape_matches_model(self, tmp_path: Path):
+    async def test_response_shape_matches_model(self, app, tmp_path: Path):
         """Verify response data can be parsed as ModuleStatus."""
         _make_roster_with_modules(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         status_result = _mock_status_result(["telegram", "email"], health="ok")
         mgr = _mock_mcp_manager_with_status(status_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -361,13 +360,13 @@ class TestGetButlerModulesEndpoint:
             assert mod.enabled is True
             assert mod.status in {"connected", "degraded", "error", "unknown"}
 
-    async def test_degraded_butler_shows_degraded_modules(self, tmp_path: Path):
+    async def test_degraded_butler_shows_degraded_modules(self, app, tmp_path: Path):
         """Modules show 'degraded' when butler health is 'degraded'."""
         _make_roster_with_modules(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
         status_result = _mock_status_result(["telegram", "email"], health="degraded")
         mgr = _mock_mcp_manager_with_status(status_result)
-        app = _create_test_app(tmp_path, configs, mgr)
+        app = _create_test_app(app, tmp_path, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

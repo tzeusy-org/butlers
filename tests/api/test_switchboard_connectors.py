@@ -25,7 +25,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 
 # Dynamically load the switchboard router to get _get_db_manager.
@@ -124,6 +123,7 @@ _SAMPLE_FANOUT_ROW = {
 
 
 def _app_with_mock_db(
+    app,
     *,
     fetch_rows: list | None = None,
     fetchval_result: int | None = 0,
@@ -157,7 +157,6 @@ def _app_with_mock_db(
     else:
         mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
 
-    app = create_app(cors_origins=["*"])
     app.dependency_overrides[_current_get_db_manager()] = lambda: mock_db
 
     return app
@@ -169,9 +168,9 @@ def _app_with_mock_db(
 
 
 class TestListConnectors:
-    async def test_empty_state_returns_empty_list(self):
+    async def test_empty_state_returns_empty_list(self, app):
         """Empty connector registry returns an empty data list."""
-        app = _app_with_mock_db(fetch_rows=[])
+        app = _app_with_mock_db(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -181,9 +180,9 @@ class TestListConnectors:
         body = resp.json()
         assert body["data"] == []
 
-    async def test_populated_state_returns_connector_entries(self):
+    async def test_populated_state_returns_connector_entries(self, app):
         """With a connector in registry, response includes its fields."""
-        app = _app_with_mock_db(fetch_rows=[_SAMPLE_CONNECTOR_ROW])
+        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_CONNECTOR_ROW])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -198,9 +197,9 @@ class TestListConnectors:
         assert entry["state"] == "healthy"
         assert entry["counter_messages_ingested"] == 42
 
-    async def test_degraded_db_falls_back_to_empty_list(self):
+    async def test_degraded_db_falls_back_to_empty_list(self, app):
         """When connector_registry table is missing, returns empty list (not 500)."""
-        app = _app_with_mock_db(fetch_side_effect=Exception("relation does not exist"))
+        app = _app_with_mock_db(app, fetch_side_effect=Exception("relation does not exist"))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -210,9 +209,9 @@ class TestListConnectors:
         body = resp.json()
         assert body["data"] == []
 
-    async def test_db_unavailable_returns_503(self):
+    async def test_db_unavailable_returns_503(self, app):
         """When the DB pool itself is not available, returns 503."""
-        app = _app_with_mock_db(pool_available=False)
+        app = _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -220,14 +219,14 @@ class TestListConnectors:
 
         assert resp.status_code == 503
 
-    async def test_multiple_connectors_returned(self):
+    async def test_multiple_connectors_returned(self, app):
         """Multiple connectors in registry are all returned."""
         row2 = {
             **_SAMPLE_CONNECTOR_ROW,
             "connector_type": "gmail",
             "endpoint_identity": "user@x.com",
         }
-        app = _app_with_mock_db(fetch_rows=[_SAMPLE_CONNECTOR_ROW, row2])
+        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_CONNECTOR_ROW, row2])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -244,9 +243,10 @@ class TestListConnectors:
 
 
 class TestConnectorsSummary:
-    async def test_empty_state_returns_zero_summary(self):
+    async def test_empty_state_returns_zero_summary(self, app):
         """Empty registry returns zero-value summary without errors."""
         app = _app_with_mock_db(
+            app,
             fetchrow_result={
                 "total_connectors": 0,
                 "online_count": 0,
@@ -255,7 +255,7 @@ class TestConnectorsSummary:
                 "unknown_count": 0,
                 "total_messages_ingested": 0,
                 "total_messages_failed": 0,
-            }
+            },
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -268,9 +268,10 @@ class TestConnectorsSummary:
         assert data["total_connectors"] == 0
         assert data["error_rate_pct"] == 0.0
 
-    async def test_populated_summary_fields(self):
+    async def test_populated_summary_fields(self, app):
         """Summary includes all required fields for the Connectors tab header."""
         app = _app_with_mock_db(
+            app,
             fetchrow_result={
                 "total_connectors": 3,
                 "online_count": 2,
@@ -279,7 +280,7 @@ class TestConnectorsSummary:
                 "unknown_count": 0,
                 "total_messages_ingested": 200,
                 "total_messages_failed": 10,
-            }
+            },
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -296,9 +297,10 @@ class TestConnectorsSummary:
         assert data["total_messages_failed"] == 10
         assert data["error_rate_pct"] > 0
 
-    async def test_error_rate_computed_correctly(self):
+    async def test_error_rate_computed_correctly(self, app):
         """Error rate is (failed / (ingested + failed)) * 100."""
         app = _app_with_mock_db(
+            app,
             fetchrow_result={
                 "total_connectors": 1,
                 "online_count": 1,
@@ -307,7 +309,7 @@ class TestConnectorsSummary:
                 "unknown_count": 0,
                 "total_messages_ingested": 90,
                 "total_messages_failed": 10,
-            }
+            },
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -318,9 +320,9 @@ class TestConnectorsSummary:
         # 10 / (90 + 10) * 100 = 10.0
         assert body["data"]["error_rate_pct"] == 10.0
 
-    async def test_degraded_db_returns_zero_summary(self):
+    async def test_degraded_db_returns_zero_summary(self, app):
         """When DB fails, summary falls back to all-zeros (not 500)."""
-        app = _app_with_mock_db(fetchrow_side_effect=Exception("relation does not exist"))
+        app = _app_with_mock_db(app, fetchrow_side_effect=Exception("relation does not exist"))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -337,9 +339,9 @@ class TestConnectorsSummary:
 
 
 class TestConnectorDetail:
-    async def test_returns_connector_detail_when_found(self):
+    async def test_returns_connector_detail_when_found(self, app):
         """When connector exists, detail endpoint returns its data."""
-        app = _app_with_mock_db(fetchrow_result=_SAMPLE_CONNECTOR_ROW)
+        app = _app_with_mock_db(app, fetchrow_result=_SAMPLE_CONNECTOR_ROW)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -351,9 +353,9 @@ class TestConnectorDetail:
         assert body["data"]["endpoint_identity"] == "bot-123"
         assert body["data"]["state"] == "healthy"
 
-    async def test_returns_404_when_not_found(self):
+    async def test_returns_404_when_not_found(self, app):
         """When connector is not in registry, 404 is returned."""
-        app = _app_with_mock_db(fetchrow_result=None)
+        app = _app_with_mock_db(app, fetchrow_result=None)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -361,9 +363,9 @@ class TestConnectorDetail:
 
         assert resp.status_code == 404
 
-    async def test_degraded_db_returns_503(self):
+    async def test_degraded_db_returns_503(self, app):
         """When DB errors on detail lookup, 503 is returned."""
-        app = _app_with_mock_db(fetchrow_side_effect=Exception("relation does not exist"))
+        app = _app_with_mock_db(app, fetchrow_side_effect=Exception("relation does not exist"))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -371,14 +373,14 @@ class TestConnectorDetail:
 
         assert resp.status_code == 503
 
-    async def test_connector_with_error_state(self):
+    async def test_connector_with_error_state(self, app):
         """Connector in error state is returned correctly."""
         error_row = {
             **_SAMPLE_CONNECTOR_ROW,
             "state": "error",
             "error_message": "Connection refused",
         }
-        app = _app_with_mock_db(fetchrow_result=error_row)
+        app = _app_with_mock_db(app, fetchrow_result=error_row)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -396,9 +398,9 @@ class TestConnectorDetail:
 
 
 class TestConnectorStats:
-    async def test_24h_returns_hourly_stats(self):
+    async def test_24h_returns_hourly_stats(self, app):
         """period=24h returns hourly stats data."""
-        app = _app_with_mock_db(fetch_rows=[_SAMPLE_HOURLY_ROW])
+        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_HOURLY_ROW])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -414,9 +416,9 @@ class TestConnectorStats:
         assert "hour" in entry
         assert entry["messages_ingested"] == 10
 
-    async def test_7d_returns_daily_stats(self):
+    async def test_7d_returns_daily_stats(self, app):
         """period=7d returns daily stats data."""
-        app = _app_with_mock_db(fetch_rows=[_SAMPLE_DAILY_ROW])
+        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_DAILY_ROW])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -432,9 +434,9 @@ class TestConnectorStats:
         assert "day" in entry
         assert entry["uptime_pct"] == 95.83
 
-    async def test_30d_returns_daily_stats(self):
+    async def test_30d_returns_daily_stats(self, app):
         """period=30d returns daily stats data."""
-        app = _app_with_mock_db(fetch_rows=[_SAMPLE_DAILY_ROW])
+        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_DAILY_ROW])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -447,9 +449,9 @@ class TestConnectorStats:
         body = resp.json()
         assert len(body["data"]) == 1
 
-    async def test_empty_state_returns_empty_list(self):
+    async def test_empty_state_returns_empty_list(self, app):
         """No stats data returns empty list."""
-        app = _app_with_mock_db(fetch_rows=[])
+        app = _app_with_mock_db(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -461,9 +463,9 @@ class TestConnectorStats:
         assert resp.status_code == 200
         assert resp.json()["data"] == []
 
-    async def test_degraded_db_falls_back_to_empty_list(self):
+    async def test_degraded_db_falls_back_to_empty_list(self, app):
         """When rollup tables are missing, returns empty list (not 500)."""
-        app = _app_with_mock_db(fetch_side_effect=Exception("relation does not exist"))
+        app = _app_with_mock_db(app, fetch_side_effect=Exception("relation does not exist"))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -475,9 +477,9 @@ class TestConnectorStats:
         assert resp.status_code == 200
         assert resp.json()["data"] == []
 
-    async def test_default_period_is_24h(self):
+    async def test_default_period_is_24h(self, app):
         """When no period param is provided, defaults to 24h (hourly data)."""
-        app = _app_with_mock_db(fetch_rows=[_SAMPLE_HOURLY_ROW])
+        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_HOURLY_ROW])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -497,9 +499,9 @@ class TestConnectorStats:
 
 
 class TestConnectorFanout:
-    async def test_empty_state_returns_empty_list(self):
+    async def test_empty_state_returns_empty_list(self, app):
         """No fanout data returns empty list."""
-        app = _app_with_mock_db(fetch_rows=[])
+        app = _app_with_mock_db(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -510,9 +512,9 @@ class TestConnectorFanout:
         assert resp.status_code == 200
         assert resp.json()["data"] == []
 
-    async def test_returns_fanout_rows(self):
+    async def test_returns_fanout_rows(self, app):
         """Fanout rows include connector and butler info."""
-        app = _app_with_mock_db(fetch_rows=[_SAMPLE_FANOUT_ROW])
+        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_FANOUT_ROW])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -528,9 +530,9 @@ class TestConnectorFanout:
         assert row["target_butler"] == "health"
         assert row["message_count"] == 25
 
-    async def test_period_param_accepted(self):
+    async def test_period_param_accepted(self, app):
         """period=7d and period=30d are accepted without errors."""
-        app = _app_with_mock_db(fetch_rows=[])
+        app = _app_with_mock_db(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -541,9 +543,9 @@ class TestConnectorFanout:
                 )
                 assert resp.status_code == 200
 
-    async def test_degraded_db_falls_back_to_empty_list(self):
+    async def test_degraded_db_falls_back_to_empty_list(self, app):
         """Missing rollup tables return empty list (not 500)."""
-        app = _app_with_mock_db(fetch_side_effect=Exception("relation does not exist"))
+        app = _app_with_mock_db(app, fetch_side_effect=Exception("relation does not exist"))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -563,6 +565,7 @@ class TestConnectorFanout:
 class TestIngestionOverview:
     async def _make_overview_app(
         self,
+        app,
         *,
         active_connectors: int = 2,
         tier_row: dict | None = None,
@@ -593,13 +596,12 @@ class TestIngestionOverview:
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
 
-        app = create_app(cors_origins=["*"])
         app.dependency_overrides[_current_get_db_manager()] = lambda: mock_db
         return app
 
-    async def test_returns_overview_struct(self):
+    async def test_returns_overview_struct(self, app):
         """Overview response includes all required stat fields."""
-        app = await self._make_overview_app()
+        app = await self._make_overview_app(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -618,14 +620,14 @@ class TestIngestionOverview:
         assert "tier2_metadata_count" in data
         assert "tier3_skip_count" in data
 
-    async def test_total_ingested_is_sum_of_tiers_from_message_inbox(self):
+    async def test_total_ingested_is_sum_of_tiers_from_message_inbox(self, app):
         """total_ingested equals tier1+tier2+tier3 from message_inbox (not rollup tables).
 
         This verifies the fix for the bug where internal-module messages were
         not counted because connector_stats_hourly only covers external connectors.
         """
         app = await self._make_overview_app(
-            tier_row={"tier1_full": 70, "tier2_metadata": 20, "tier3_skip": 10}
+            app, tier_row={"tier1_full": 70, "tier2_metadata": 20, "tier3_skip": 10}
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -640,9 +642,9 @@ class TestIngestionOverview:
         assert data["tier2_metadata_count"] == 20
         assert data["tier3_skip_count"] == 10
 
-    async def test_active_connectors_counted(self):
+    async def test_active_connectors_counted(self, app):
         """active_connectors field reflects healthy connector count."""
-        app = await self._make_overview_app(active_connectors=3)
+        app = await self._make_overview_app(app, active_connectors=3)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -651,10 +653,10 @@ class TestIngestionOverview:
         body = resp.json()
         assert body["data"]["active_connectors"] == 3
 
-    async def test_llm_calls_saved_is_tier2_plus_tier3(self):
+    async def test_llm_calls_saved_is_tier2_plus_tier3(self, app):
         """LLM calls saved = tier2 + tier3 message counts."""
         app = await self._make_overview_app(
-            tier_row={"tier1_full": 70, "tier2_metadata": 20, "tier3_skip": 10}
+            app, tier_row={"tier1_full": 70, "tier2_metadata": 20, "tier3_skip": 10}
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -667,10 +669,10 @@ class TestIngestionOverview:
         assert body["data"]["total_skipped"] == 10
         assert body["data"]["total_metadata_only"] == 20
 
-    async def test_period_param_accepted(self):
+    async def test_period_param_accepted(self, app):
         """24h, 7d, and 30d periods are all accepted."""
         for period in ("24h", "7d", "30d"):
-            app = await self._make_overview_app()
+            app = await self._make_overview_app(app)
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -681,9 +683,10 @@ class TestIngestionOverview:
             assert resp.status_code == 200
             assert resp.json()["data"]["period"] == period
 
-    async def test_degraded_db_returns_zero_overview(self):
+    async def test_degraded_db_returns_zero_overview(self, app):
         """When DB errors, overview falls back to zeros (not 500)."""
         app = await self._make_overview_app(
+            app,
             fetchval_side_effect=Exception("relation does not exist"),
             fetchrow_side_effect=Exception("relation does not exist"),
         )
@@ -699,9 +702,10 @@ class TestIngestionOverview:
         assert data["total_ingested"] == 0
         assert data["llm_calls_saved"] == 0
 
-    async def test_empty_state_all_zeros(self):
+    async def test_empty_state_all_zeros(self, app):
         """When no data exists, all numeric fields are zero."""
         app = await self._make_overview_app(
+            app,
             active_connectors=0,
             tier_row={"tier1_full": 0, "tier2_metadata": 0, "tier3_skip": 0},
         )
@@ -724,9 +728,9 @@ class TestIngestionOverview:
 
 
 class TestIngestionFanout:
-    async def test_empty_state_returns_empty_list(self):
+    async def test_empty_state_returns_empty_list(self, app):
         """Empty fanout data returns an empty list."""
-        app = _app_with_mock_db(fetch_rows=[])
+        app = _app_with_mock_db(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -735,9 +739,9 @@ class TestIngestionFanout:
         assert resp.status_code == 200
         assert resp.json()["data"] == []
 
-    async def test_returns_fanout_matrix_rows(self):
+    async def test_returns_fanout_matrix_rows(self, app):
         """Fanout matrix rows include all required fields."""
-        app = _app_with_mock_db(fetch_rows=[_SAMPLE_FANOUT_ROW])
+        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_FANOUT_ROW])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -752,9 +756,9 @@ class TestIngestionFanout:
         assert row["target_butler"] == "health"
         assert row["message_count"] == 25
 
-    async def test_period_param_accepted(self):
+    async def test_period_param_accepted(self, app):
         """All period values are accepted by fanout endpoint."""
-        app = _app_with_mock_db(fetch_rows=[])
+        app = _app_with_mock_db(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -765,9 +769,9 @@ class TestIngestionFanout:
                 )
                 assert resp.status_code == 200
 
-    async def test_degraded_db_falls_back_to_empty_list(self):
+    async def test_degraded_db_falls_back_to_empty_list(self, app):
         """Missing rollup tables return empty list (not 500)."""
-        app = _app_with_mock_db(fetch_side_effect=Exception("relation does not exist"))
+        app = _app_with_mock_db(app, fetch_side_effect=Exception("relation does not exist"))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

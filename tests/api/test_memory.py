@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.memory import _get_db_manager
 
@@ -163,6 +163,7 @@ def _make_pool(
 
 
 def _app_with_mock_db(
+    app: FastAPI,
     *,
     fetch_rows: list | None = None,
     fetchval_result: int = 0,
@@ -171,8 +172,12 @@ def _app_with_mock_db(
     fetchval_side_effect: list | None = None,
     fetch_side_effect: list | None = None,
     pools_by_name: dict[str, AsyncMock] | None = None,
-):
-    """Create a FastAPI app with a mocked DatabaseManager."""
+) -> FastAPI:
+    """Wire a FastAPI app with a mocked DatabaseManager.
+
+    Accepts the shared module-scoped ``app`` fixture so that create_app()
+    is not called per test.
+    """
     mock_pool = _make_pool(
         fetch_rows=fetch_rows,
         fetchval_result=fetchval_result,
@@ -194,7 +199,6 @@ def _app_with_mock_db(
 
     mock_db.pool.side_effect = _pool_lookup
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     return app
@@ -206,9 +210,10 @@ def _app_with_mock_db(
 
 
 class TestMemoryStats:
-    async def test_returns_stats_response_structure(self):
+    async def test_returns_stats_response_structure(self, app):
         """Response must wrap MemoryStats in ApiResponse."""
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fetchval_side_effect=[10, 3, 20, 15, 2, 5, 2, 2, 1, 0],
         )
         async with httpx.AsyncClient(
@@ -231,9 +236,10 @@ class TestMemoryStats:
         assert "proven_rules" in data
         assert "anti_pattern_rules" in data
 
-    async def test_stats_values_from_db(self):
+    async def test_stats_values_from_db(self, app):
         """Stats should reflect the values from the database."""
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fetchval_side_effect=[100, 25, 50, 40, 5, 10, 4, 3, 2, 1],
         )
         async with httpx.AsyncClient(
@@ -253,9 +259,9 @@ class TestMemoryStats:
         assert data["proven_rules"] == 2
         assert data["anti_pattern_rules"] == 1
 
-    async def test_pool_unavailable_returns_zero_stats(self):
+    async def test_pool_unavailable_returns_zero_stats(self, app):
         """When no memory pools are available, return zeroed stats."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -275,12 +281,12 @@ class TestMemoryStats:
             "anti_pattern_rules": 0,
         }
 
-    async def test_aggregates_across_non_dedicated_memory_pools(self):
+    async def test_aggregates_across_non_dedicated_memory_pools(self, app):
         """Stats fan out across any butler pool exposing memory tables."""
         general_pool = _make_pool(fetchval_side_effect=[10, 2, 5, 4, 1, 3, 2, 1, 0, 0])
         relationship_pool = _make_pool(fetchval_side_effect=[7, 1, 6, 5, 0, 4, 1, 2, 1, 0])
-        app = _app_with_mock_db(
-            pools_by_name={"general": general_pool, "relationship": relationship_pool}
+        _app_with_mock_db(
+            app, pools_by_name={"general": general_pool, "relationship": relationship_pool}
         )
 
         async with httpx.AsyncClient(
@@ -302,9 +308,9 @@ class TestMemoryStats:
 
 
 class TestListEpisodes:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -319,10 +325,10 @@ class TestListEpisodes:
         assert "offset" in body["meta"]
         assert "limit" in body["meta"]
 
-    async def test_returns_episode_data(self):
+    async def test_returns_episode_data(self, app):
         """Episodes should be returned with all expected fields."""
         row = _make_episode_row()
-        app = _app_with_mock_db(fetch_rows=[row], fetchval_result=1)
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -335,9 +341,9 @@ class TestListEpisodes:
         assert data[0]["butler"] == "atlas"
         assert data[0]["content"] == "User asked about project status"
 
-    async def test_filter_params_accepted(self):
+    async def test_filter_params_accepted(self, app):
         """All query filter parameters should be accepted without error."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -355,9 +361,9 @@ class TestListEpisodes:
 
         assert resp.status_code == 200
 
-    async def test_empty_results(self):
+    async def test_empty_results(self, app):
         """When no episodes exist, data should be an empty list."""
-        app = _app_with_mock_db(fetchval_result=0)
+        _app_with_mock_db(app, fetchval_result=0)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -367,9 +373,9 @@ class TestListEpisodes:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_pool_unavailable_returns_empty_page(self):
+    async def test_pool_unavailable_returns_empty_page(self, app):
         """When no memory pools are available, return an empty page."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -380,7 +386,7 @@ class TestListEpisodes:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_aggregates_across_multiple_butlers(self):
+    async def test_aggregates_across_multiple_butlers(self, app):
         """Episodes should merge/sort records from multiple butler pools."""
         general_pool = _make_pool(
             fetch_rows=[_make_episode_row(id="ep-old", created_at="2025-06-01T10:00:00")],
@@ -390,8 +396,8 @@ class TestListEpisodes:
             fetch_rows=[_make_episode_row(id="ep-new", created_at="2025-06-01T11:00:00")],
             fetchval_result=1,
         )
-        app = _app_with_mock_db(
-            pools_by_name={"general": general_pool, "relationship": relationship_pool}
+        _app_with_mock_db(
+            app, pools_by_name={"general": general_pool, "relationship": relationship_pool}
         )
 
         async with httpx.AsyncClient(
@@ -410,9 +416,9 @@ class TestListEpisodes:
 
 
 class TestListFacts:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -424,10 +430,10 @@ class TestListFacts:
         assert "meta" in body
         assert isinstance(body["data"], list)
 
-    async def test_returns_fact_data(self):
+    async def test_returns_fact_data(self, app):
         """Facts should be returned with all expected fields."""
         row = _make_fact_row()
-        app = _app_with_mock_db(fetch_rows=[row], fetchval_result=1)
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -441,9 +447,9 @@ class TestListFacts:
         assert data[0]["validity"] == "active"
         assert data[0]["confidence"] == 0.9
 
-    async def test_search_filter_accepted(self):
+    async def test_search_filter_accepted(self, app):
         """Text search via ?q= should be accepted."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -451,9 +457,9 @@ class TestListFacts:
 
         assert resp.status_code == 200
 
-    async def test_all_filters_accepted(self):
+    async def test_all_filters_accepted(self, app):
         """All query filter parameters should be accepted without error."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -472,9 +478,9 @@ class TestListFacts:
 
         assert resp.status_code == 200
 
-    async def test_pool_unavailable_returns_empty_page(self):
+    async def test_pool_unavailable_returns_empty_page(self, app):
         """When no memory pools are available, return an empty page."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -492,10 +498,10 @@ class TestListFacts:
 
 
 class TestGetFact:
-    async def test_returns_fact_detail(self):
+    async def test_returns_fact_detail(self, app):
         """Response should wrap a Fact in ApiResponse envelope."""
         row = _make_fact_row()
-        app = _app_with_mock_db(fetchrow_result=row)
+        _app_with_mock_db(app, fetchrow_result=row)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -507,10 +513,11 @@ class TestGetFact:
         assert body["data"]["id"] == "fact-001"
         assert body["data"]["subject"] == "user"
 
-    async def test_returns_fact_detail_from_non_dedicated_pool(self):
+    async def test_returns_fact_detail_from_non_dedicated_pool(self, app):
         """Fact lookup should fan out across non-memory butler pools."""
         row = _make_fact_row(id="fact-general")
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             pools_by_name={"general": _make_pool(fetchrow_result=row)},
         )
         async with httpx.AsyncClient(
@@ -521,9 +528,9 @@ class TestGetFact:
         assert resp.status_code == 200
         assert resp.json()["data"]["id"] == "fact-general"
 
-    async def test_missing_fact_returns_404(self):
+    async def test_missing_fact_returns_404(self, app):
         """A non-existent fact should return 404."""
-        app = _app_with_mock_db(fetchrow_result=None)
+        _app_with_mock_db(app, fetchrow_result=None)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -531,9 +538,9 @@ class TestGetFact:
 
         assert resp.status_code == 404
 
-    async def test_pool_unavailable_returns_404(self):
+    async def test_pool_unavailable_returns_404(self, app):
         """When no memory pools are available, fact lookup returns 404."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -548,9 +555,9 @@ class TestGetFact:
 
 
 class TestListRules:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -562,10 +569,10 @@ class TestListRules:
         assert "meta" in body
         assert isinstance(body["data"], list)
 
-    async def test_returns_rule_data(self):
+    async def test_returns_rule_data(self, app):
         """Rules should be returned with all expected fields."""
         row = _make_rule_row()
-        app = _app_with_mock_db(fetch_rows=[row], fetchval_result=1)
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -577,9 +584,9 @@ class TestListRules:
         assert data[0]["content"] == "Always greet user by name"
         assert data[0]["maturity"] == "candidate"
 
-    async def test_search_filter_accepted(self):
+    async def test_search_filter_accepted(self, app):
         """Text search via ?q= should be accepted."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -587,9 +594,9 @@ class TestListRules:
 
         assert resp.status_code == 200
 
-    async def test_all_filters_accepted(self):
+    async def test_all_filters_accepted(self, app):
         """All filter parameters accepted."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -600,9 +607,9 @@ class TestListRules:
 
         assert resp.status_code == 200
 
-    async def test_pool_unavailable_returns_empty_page(self):
+    async def test_pool_unavailable_returns_empty_page(self, app):
         """When no memory pools are available, return an empty page."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -620,10 +627,10 @@ class TestListRules:
 
 
 class TestGetRule:
-    async def test_returns_rule_detail(self):
+    async def test_returns_rule_detail(self, app):
         """Response should wrap a Rule in ApiResponse envelope."""
         row = _make_rule_row()
-        app = _app_with_mock_db(fetchrow_result=row)
+        _app_with_mock_db(app, fetchrow_result=row)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -635,9 +642,9 @@ class TestGetRule:
         assert body["data"]["id"] == "rule-001"
         assert body["data"]["maturity"] == "candidate"
 
-    async def test_missing_rule_returns_404(self):
+    async def test_missing_rule_returns_404(self, app):
         """A non-existent rule should return 404."""
-        app = _app_with_mock_db(fetchrow_result=None)
+        _app_with_mock_db(app, fetchrow_result=None)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -645,9 +652,9 @@ class TestGetRule:
 
         assert resp.status_code == 404
 
-    async def test_pool_unavailable_returns_404(self):
+    async def test_pool_unavailable_returns_404(self, app):
         """When no memory pools are available, rule lookup returns 404."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -662,7 +669,7 @@ class TestGetRule:
 
 
 class TestMemoryActivity:
-    async def test_returns_activity_list(self):
+    async def test_returns_activity_list(self, app):
         """Response should wrap a list of MemoryActivity in ApiResponse."""
         ep_row = {
             "id": "ep-1",
@@ -684,7 +691,8 @@ class TestMemoryActivity:
             "created_at": "2025-06-02T10:00:00",
         }
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fetch_side_effect=[[ep_row], [fact_row], [rule_row]],
         )
         async with httpx.AsyncClient(
@@ -702,7 +710,7 @@ class TestMemoryActivity:
         assert data[1]["type"] == "fact"
         assert data[2]["type"] == "rule"
 
-    async def test_aggregates_activity_across_multiple_pools(self):
+    async def test_aggregates_activity_across_multiple_pools(self, app):
         """Activity should fan out across non-dedicated memory pools."""
         general_pool = _make_pool(
             fetch_side_effect=[
@@ -732,8 +740,8 @@ class TestMemoryActivity:
                 [],
             ]
         )
-        app = _app_with_mock_db(
-            pools_by_name={"general": general_pool, "relationship": relationship_pool}
+        _app_with_mock_db(
+            app, pools_by_name={"general": general_pool, "relationship": relationship_pool}
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -744,7 +752,7 @@ class TestMemoryActivity:
         data = resp.json()["data"]
         assert [item["id"] for item in data] == ["ep-b", "ep-a"]
 
-    async def test_activity_item_fields(self):
+    async def test_activity_item_fields(self, app):
         """Each activity item should have id, type, summary, butler, created_at."""
         ep_row = {
             "id": "ep-1",
@@ -752,7 +760,8 @@ class TestMemoryActivity:
             "content": "Hello world",
             "created_at": "2025-06-01T12:00:00",
         }
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fetch_side_effect=[[ep_row], [], []],
         )
         async with httpx.AsyncClient(
@@ -769,9 +778,10 @@ class TestMemoryActivity:
         assert "butler" in item
         assert "created_at" in item
 
-    async def test_limit_param_accepted(self):
+    async def test_limit_param_accepted(self, app):
         """The ?limit= query parameter should be accepted."""
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fetch_side_effect=[[], [], []],
         )
         async with httpx.AsyncClient(
@@ -781,9 +791,10 @@ class TestMemoryActivity:
 
         assert resp.status_code == 200
 
-    async def test_empty_results(self):
+    async def test_empty_results(self, app):
         """When no activity exists, data should be an empty list."""
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fetch_side_effect=[[], [], []],
         )
         async with httpx.AsyncClient(
@@ -794,9 +805,9 @@ class TestMemoryActivity:
         body = resp.json()
         assert body["data"] == []
 
-    async def test_pool_unavailable_returns_empty_activity(self):
+    async def test_pool_unavailable_returns_empty_activity(self, app):
         """When no memory pools are available, return empty activity."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

@@ -15,8 +15,8 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.models.audit import AuditEntry
 from butlers.api.routers.audit import _get_db_manager, log_audit_entry
@@ -56,11 +56,16 @@ def _make_audit_record(
 
 
 def _app_with_mock_db(
+    app: FastAPI,
     *,
     fetch_rows: list | None = None,
     fetchval_result: int = 0,
-):
-    """Create a FastAPI app with a mocked DatabaseManager."""
+) -> tuple:
+    """Wire a FastAPI app with a mocked DatabaseManager.
+
+    Accepts the shared module-scoped ``app`` fixture so that create_app()
+    is not called per test.
+    """
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_pool.fetchval = AsyncMock(return_value=fetchval_result)
@@ -69,7 +74,6 @@ def _app_with_mock_db(
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     # Also override _get_db_manager in other routers that share the same pattern
@@ -92,13 +96,13 @@ def _app_with_mock_db(
 class TestAuditLogListEndpoint:
     """Tests for GET /api/audit-log."""
 
-    async def test_returns_paginated_response(self):
+    async def test_returns_paginated_response(self, app):
         """Endpoint returns PaginatedResponse with correct shape."""
         records = [
             _make_audit_record(butler="atlas", operation="trigger"),
             _make_audit_record(butler="switchboard", operation="tick"),
         ]
-        app, mock_db, mock_pool = _app_with_mock_db(fetch_rows=records, fetchval_result=2)
+        _, mock_db, mock_pool = _app_with_mock_db(app, fetch_rows=records, fetchval_result=2)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -117,9 +121,9 @@ class TestAuditLogListEndpoint:
         assert body["data"][0]["butler"] == "atlas"
         assert body["data"][0]["operation"] == "trigger"
 
-    async def test_empty_audit_log(self):
+    async def test_empty_audit_log(self, app):
         """Endpoint returns empty list when no audit entries exist."""
-        app, mock_db, mock_pool = _app_with_mock_db(fetch_rows=[], fetchval_result=0)
+        _, mock_db, mock_pool = _app_with_mock_db(app, fetch_rows=[], fetchval_result=0)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -132,9 +136,9 @@ class TestAuditLogListEndpoint:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_filter_by_butler(self):
+    async def test_filter_by_butler(self, app):
         """Endpoint passes butler filter to SQL query."""
-        app, mock_db, mock_pool = _app_with_mock_db(fetch_rows=[], fetchval_result=0)
+        _, mock_db, mock_pool = _app_with_mock_db(app, fetch_rows=[], fetchval_result=0)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -151,9 +155,9 @@ class TestAuditLogListEndpoint:
         # First arg should be "atlas"
         assert fetch_call[0][1] == "atlas"
 
-    async def test_filter_by_operation(self):
+    async def test_filter_by_operation(self, app):
         """Endpoint passes operation filter to SQL query."""
-        app, mock_db, mock_pool = _app_with_mock_db(fetch_rows=[], fetchval_result=0)
+        _, mock_db, mock_pool = _app_with_mock_db(app, fetch_rows=[], fetchval_result=0)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -168,9 +172,9 @@ class TestAuditLogListEndpoint:
         assert "operation = $1" in sql
         assert fetch_call[0][1] == "trigger"
 
-    async def test_filter_by_time_range(self):
+    async def test_filter_by_time_range(self, app):
         """Endpoint passes since/until time filters to SQL query."""
-        app, mock_db, mock_pool = _app_with_mock_db(fetch_rows=[], fetchval_result=0)
+        _, mock_db, mock_pool = _app_with_mock_db(app, fetch_rows=[], fetchval_result=0)
 
         since = "2026-02-01T00:00:00Z"
         until = "2026-02-10T23:59:59Z"
@@ -188,9 +192,9 @@ class TestAuditLogListEndpoint:
         assert "created_at >= $1" in sql
         assert "created_at <= $2" in sql
 
-    async def test_pagination_offset_limit(self):
+    async def test_pagination_offset_limit(self, app):
         """Endpoint respects offset and limit parameters."""
-        app, mock_db, mock_pool = _app_with_mock_db(fetch_rows=[], fetchval_result=100)
+        _, mock_db, mock_pool = _app_with_mock_db(app, fetch_rows=[], fetchval_result=100)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),

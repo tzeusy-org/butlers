@@ -10,7 +10,6 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_mcp_manager
 from butlers.api.routers.calendar_workspace import _get_db_manager
@@ -110,6 +109,7 @@ def _workspace_source_row(
 
 
 def _build_app(
+    app,
     *,
     workspace_rows: dict[str, list[dict]] | None = None,
     source_rows: dict[str, list[dict]] | None = None,
@@ -165,15 +165,14 @@ def _build_app(
 
     mock_mgr.get_client = AsyncMock(side_effect=_get_client)
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_db, mock_mgr
 
 
 class TestWorkspaceRead:
-    async def test_workspace_requires_view_start_and_end(self):
-        app, _, _ = _build_app()
+    async def test_workspace_requires_view_start_and_end(self, app):
+        app, _, _ = _build_app(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -181,7 +180,7 @@ class TestWorkspaceRead:
 
         assert resp.status_code == 422
 
-    async def test_workspace_returns_entries_freshness_and_lanes(self):
+    async def test_workspace_returns_entries_freshness_and_lanes(self, app):
         source_key = "provider:google:primary"
         user_row = _workspace_event_row(
             lane="user",
@@ -191,7 +190,7 @@ class TestWorkspaceRead:
             calendar_id="primary",
             metadata={"source_type": "provider_event", "provider_event_id": "evt-1"},
         )
-        app, _, _ = _build_app(workspace_rows={"general": [user_row]})
+        app, _, _ = _build_app(app, workspace_rows={"general": [user_row]})
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -218,7 +217,7 @@ class TestWorkspaceRead:
         assert body["source_freshness"][0]["sync_state"] == "fresh"
         assert body["lanes"] == []
 
-    async def test_workspace_filters_by_butler_and_source(self):
+    async def test_workspace_filters_by_butler_and_source(self, app):
         general_row = _workspace_event_row(
             lane="butler",
             source_key="internal_scheduler:general",
@@ -234,7 +233,7 @@ class TestWorkspaceRead:
             metadata={"source_type": "internal_scheduler", "cron": "0 10 * * *"},
         )
         app, _, _ = _build_app(
-            workspace_rows={"general": [general_row], "relationship": [relationship_row]}
+            app, workspace_rows={"general": [general_row], "relationship": [relationship_row]}
         )
 
         async with httpx.AsyncClient(
@@ -259,7 +258,7 @@ class TestWorkspaceRead:
 
 
 class TestWorkspaceMeta:
-    async def test_workspace_meta_returns_sources_capabilities_and_lanes(self):
+    async def test_workspace_meta_returns_sources_capabilities_and_lanes(self, app):
         rows = {
             "general": [
                 _workspace_source_row(
@@ -281,7 +280,7 @@ class TestWorkspaceMeta:
                 ),
             ]
         }
-        app, _, _ = _build_app(source_rows=rows)
+        app, _, _ = _build_app(app, source_rows=rows)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -301,7 +300,7 @@ class TestWorkspaceMeta:
 
 
 class TestWorkspaceSync:
-    async def test_sync_all_triggers_each_target_butler(self):
+    async def test_sync_all_triggers_each_target_butler(self, app):
         source_rows = {
             "general": [
                 _workspace_source_row(
@@ -335,6 +334,7 @@ class TestWorkspaceSync:
             return_value=_mock_mcp_result({"status": "sync_triggered"})
         )
         app, _, _ = _build_app(
+            app,
             source_rows=source_rows,
             mcp_clients={"general": general_client, "relationship": relationship_client},
         )
@@ -355,7 +355,7 @@ class TestWorkspaceSync:
             "calendar_force_sync", {"calendar_id": "butlers-cal"}
         )
 
-    async def test_sync_all_preserves_detail_for_string_payloads(self):
+    async def test_sync_all_preserves_detail_for_string_payloads(self, app):
         source_rows = {
             "general": [
                 _workspace_source_row(
@@ -385,6 +385,7 @@ class TestWorkspaceSync:
         general_client.call_tool = AsyncMock(return_value=_mock_mcp_result("triggered"))
         relationship_client.call_tool = AsyncMock(return_value=_mock_mcp_result("triggered"))
         app, _, _ = _build_app(
+            app,
             source_rows=source_rows,
             mcp_clients={"general": general_client, "relationship": relationship_client},
         )
@@ -399,7 +400,7 @@ class TestWorkspaceSync:
         assert len(targets) == 2
         assert {target["detail"] for target in targets} == {"triggered"}
 
-    async def test_sync_source_key_targets_specific_source(self):
+    async def test_sync_source_key_targets_specific_source(self, app):
         source_rows = {
             "general": [
                 _workspace_source_row(
@@ -423,6 +424,7 @@ class TestWorkspaceSync:
             return_value=_mock_mcp_result({"status": "sync_triggered"})
         )
         app, _, _ = _build_app(
+            app,
             source_rows=source_rows,
             mcp_clients={"general": general_client, "relationship": relationship_client},
         )
@@ -445,7 +447,7 @@ class TestWorkspaceSync:
         )
         relationship_client.call_tool.assert_not_awaited()
 
-    async def test_sync_source_preserves_detail_for_non_dict_payloads(self):
+    async def test_sync_source_preserves_detail_for_non_dict_payloads(self, app):
         source_rows = {
             "general": [
                 _workspace_source_row(
@@ -466,6 +468,7 @@ class TestWorkspaceSync:
             return_value=_mock_mcp_result({"status": "sync_triggered"})
         )
         app, _, _ = _build_app(
+            app,
             source_rows=source_rows,
             mcp_clients={"general": general_client, "relationship": relationship_client},
         )
@@ -489,7 +492,7 @@ def _mcp_result(payload: dict | str) -> list:
     return [block]
 
 
-def _app_with_mcp(call_side_effect):
+def _app_with_mcp(app, call_side_effect):
     mock_client = AsyncMock()
     mock_client.call_tool = AsyncMock(side_effect=call_side_effect)
 
@@ -501,14 +504,13 @@ def _app_with_mcp(call_side_effect):
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["general", "relationship"]
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_client
 
 
 class TestCalendarWorkspaceUserEvents:
-    async def test_user_event_create_routes_to_calendar_create_event(self):
+    async def test_user_event_create_routes_to_calendar_create_event(self, app):
         async def _call(tool_name: str, arguments: dict):
             if tool_name == "calendar_create_event":
                 return _mcp_result({"status": "created", "event": {"event_id": "evt-1"}})
@@ -525,7 +527,7 @@ class TestCalendarWorkspaceUserEvents:
                 )
             raise AssertionError(f"Unexpected tool call: {tool_name}")
 
-        app, mock_client = _app_with_mcp(_call)
+        app, mock_client = _app_with_mcp(app, _call)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -555,7 +557,7 @@ class TestCalendarWorkspaceUserEvents:
         assert first_call.args[0] == "calendar_create_event"
         assert first_call.args[1]["request_id"] == "req-123"
 
-    async def test_user_event_update_forwards_recurrence_scope_payload(self):
+    async def test_user_event_update_forwards_recurrence_scope_payload(self, app):
         async def _call(tool_name: str, arguments: dict):
             if tool_name == "calendar_update_event":
                 return _mcp_result(
@@ -570,7 +572,7 @@ class TestCalendarWorkspaceUserEvents:
                 )
             raise AssertionError(f"Unexpected tool call: {tool_name}")
 
-        app, mock_client = _app_with_mcp(_call)
+        app, mock_client = _app_with_mcp(app, _call)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -602,7 +604,7 @@ class TestCalendarWorkspaceUserEvents:
 
 
 class TestCalendarWorkspaceButlerEvents:
-    async def test_butler_event_create_sets_butler_name_and_request_id(self):
+    async def test_butler_event_create_sets_butler_name_and_request_id(self, app):
         async def _call(tool_name: str, arguments: dict):
             assert tool_name == "calendar_create_butler_event"
             return _mcp_result(
@@ -617,7 +619,7 @@ class TestCalendarWorkspaceButlerEvents:
                 }
             )
 
-        app, mock_client = _app_with_mcp(_call)
+        app, mock_client = _app_with_mcp(app, _call)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -646,7 +648,7 @@ class TestCalendarWorkspaceButlerEvents:
         assert first_call.args[1]["butler_name"] == "general"
         assert first_call.args[1]["request_id"] == "req-butler-1"
 
-    async def test_butler_event_update_forwards_event_target_payload(self):
+    async def test_butler_event_update_forwards_event_target_payload(self, app):
         async def _call(tool_name: str, arguments: dict):
             assert tool_name == "calendar_update_butler_event"
             return _mcp_result(
@@ -660,7 +662,7 @@ class TestCalendarWorkspaceButlerEvents:
                 }
             )
 
-        app, mock_client = _app_with_mcp(_call)
+        app, mock_client = _app_with_mcp(app, _call)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -689,7 +691,7 @@ class TestCalendarWorkspaceButlerEvents:
         assert call.args[1]["event_id"] == "5f3790f0-87b0-4a19-9df9-33f2eb660250"
         assert call.args[1]["source_hint"] == "scheduled_task"
 
-    async def test_butler_event_toggle_fetches_sync_status_when_projection_missing(self):
+    async def test_butler_event_toggle_fetches_sync_status_when_projection_missing(self, app):
         async def _call(tool_name: str, arguments: dict):
             if tool_name == "calendar_toggle_butler_event":
                 return _mcp_result({"status": "updated", "enabled": False})
@@ -706,7 +708,7 @@ class TestCalendarWorkspaceButlerEvents:
                 )
             raise AssertionError(f"Unexpected tool call: {tool_name}")
 
-        app, mock_client = _app_with_mcp(_call)
+        app, mock_client = _app_with_mcp(app, _call)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -735,7 +737,7 @@ class TestCalendarWorkspaceButlerEvents:
 class TestCalendarFanOutModuleFiltering:
     """fan_out is restricted to butlers with the calendar module enabled."""
 
-    async def test_workspace_read_skips_non_calendar_butlers(self):
+    async def test_workspace_read_skips_non_calendar_butlers(self, app):
         """When module metadata is available, fan_out excludes non-calendar butlers."""
         calendar_row = _workspace_event_row(
             lane="user",
@@ -747,6 +749,7 @@ class TestCalendarFanOutModuleFiltering:
         )
         # general has calendar, education does NOT
         app, mock_db, _ = _build_app(
+            app,
             workspace_rows={"general": [calendar_row], "education": []},
             calendar_butlers=["general"],
         )
@@ -776,7 +779,7 @@ class TestCalendarFanOutModuleFiltering:
                     f"education was unexpectedly included in fan_out targets: {butler_names_arg}"
                 )
 
-    async def test_workspace_meta_skips_non_calendar_butlers(self):
+    async def test_workspace_meta_skips_non_calendar_butlers(self, app):
         """Meta endpoint fan_out excludes non-calendar butlers via module filter."""
         source_row = _workspace_source_row(
             source_key="provider:google:primary",
@@ -788,6 +791,7 @@ class TestCalendarFanOutModuleFiltering:
             writable=True,
         )
         app, mock_db, _ = _build_app(
+            app,
             source_rows={"general": [source_row], "education": []},
             calendar_butlers=["general"],
         )
@@ -807,7 +811,7 @@ class TestCalendarFanOutModuleFiltering:
             if butler_names_arg is not None:
                 assert "education" not in butler_names_arg
 
-    async def test_workspace_read_falls_back_to_all_butlers_when_no_module_metadata(self):
+    async def test_workspace_read_falls_back_to_all_butlers_when_no_module_metadata(self, app):
         """When butlers_with_module returns None (no metadata), fan_out queries all butlers."""
         calendar_row = _workspace_event_row(
             lane="user",
@@ -819,6 +823,7 @@ class TestCalendarFanOutModuleFiltering:
         )
         # calendar_butlers=None simulates no module metadata available
         app, mock_db, _ = _build_app(
+            app,
             workspace_rows={"general": [calendar_row]},
             calendar_butlers=None,
         )
@@ -852,7 +857,7 @@ class TestCalendarFanOutModuleFiltering:
                 f"Expected butler_names=None (all butlers) but got {butler_names_arg}"
             )
 
-    async def test_workspace_explicit_butler_filter_overrides_module_filter(self):
+    async def test_workspace_explicit_butler_filter_overrides_module_filter(self, app):
         """An explicit ?butlers= query param takes precedence over module filtering."""
         general_row = _workspace_event_row(
             lane="butler",
@@ -870,6 +875,7 @@ class TestCalendarFanOutModuleFiltering:
         )
         # calendar_butlers reports general+health, but user only requests general
         app, _, _ = _build_app(
+            app,
             workspace_rows={"general": [general_row], "health": [health_row]},
             calendar_butlers=["general", "health"],
         )

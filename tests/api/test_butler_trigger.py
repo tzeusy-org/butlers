@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -73,6 +72,7 @@ def _mock_mcp_manager(
 
 
 def _create_test_app(
+    app,
     configs: list[ButlerConnectionInfo],
     mcp_manager: MCPClientManager,
 ):
@@ -83,7 +83,6 @@ def _create_test_app(
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_audit_pool
 
-    app = create_app()
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -96,11 +95,11 @@ def _create_test_app(
 
 
 class TestTriggerButlerEndpoint:
-    async def test_returns_404_for_unknown_butler(self):
+    async def test_returns_404_for_unknown_butler(self, app):
         """Unknown butler name returns 404."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(unreachable=True)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -113,7 +112,7 @@ class TestTriggerButlerEndpoint:
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
-    async def test_successful_trigger(self):
+    async def test_successful_trigger(self, app):
         """Successful trigger returns session result."""
         configs = [ButlerConnectionInfo("general", 40101)]
         trigger_result = _mock_trigger_result(
@@ -122,7 +121,7 @@ class TestTriggerButlerEndpoint:
             output="Completed successfully.",
         )
         mgr = _mock_mcp_manager(trigger_result)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -146,11 +145,11 @@ class TestTriggerButlerEndpoint:
         mock_client = await mgr.get_client("general")
         mock_client.call_tool.assert_called_once_with("trigger", {"prompt": "do something"})
 
-    async def test_returns_503_when_butler_unreachable(self):
+    async def test_returns_503_when_butler_unreachable(self, app):
         """Returns 503 when butler MCP server is unreachable."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(unreachable=True)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -163,11 +162,11 @@ class TestTriggerButlerEndpoint:
         assert response.status_code == 503
         assert "unreachable" in response.json()["detail"].lower()
 
-    async def test_returns_503_on_timeout(self):
+    async def test_returns_503_on_timeout(self, app):
         """Returns 503 when trigger request times out."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(timeout=True)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -180,12 +179,12 @@ class TestTriggerButlerEndpoint:
         assert response.status_code == 503
         assert "timed out" in response.json()["detail"].lower()
 
-    async def test_response_shape_matches_model(self):
+    async def test_response_shape_matches_model(self, app):
         """Verify response data can be parsed as TriggerResponse."""
         configs = [ButlerConnectionInfo("general", 40101)]
         trigger_result = _mock_trigger_result()
         mgr = _mock_mcp_manager(trigger_result)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -201,7 +200,7 @@ class TestTriggerButlerEndpoint:
         assert trigger.success is True
         assert trigger.session_id is not None
 
-    async def test_trigger_with_failed_session(self):
+    async def test_trigger_with_failed_session(self, app):
         """Trigger that returns success=False is reflected in response."""
         configs = [ButlerConnectionInfo("general", 40101)]
         trigger_result = _mock_trigger_result(
@@ -210,7 +209,7 @@ class TestTriggerButlerEndpoint:
             output="Error: something went wrong",
         )
         mgr = _mock_mcp_manager(trigger_result)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -225,12 +224,12 @@ class TestTriggerButlerEndpoint:
         assert data["success"] is False
         assert data["output"] == "Error: something went wrong"
 
-    async def test_trigger_requires_prompt_field(self):
+    async def test_trigger_requires_prompt_field(self, app):
         """Request without prompt field returns 422 validation error."""
         configs = [ButlerConnectionInfo("general", 40101)]
         trigger_result = _mock_trigger_result()
         mgr = _mock_mcp_manager(trigger_result)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -242,7 +241,7 @@ class TestTriggerButlerEndpoint:
 
         assert response.status_code == 422
 
-    async def test_trigger_with_is_error_flag(self):
+    async def test_trigger_with_is_error_flag(self, app):
         """When MCP result has is_error=True, success should be False."""
         configs = [ButlerConnectionInfo("general", 40101)]
         trigger_result = _mock_trigger_result(
@@ -252,7 +251,7 @@ class TestTriggerButlerEndpoint:
         )
         trigger_result.is_error = True
         mgr = _mock_mcp_manager(trigger_result)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

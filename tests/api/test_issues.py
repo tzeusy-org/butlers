@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
@@ -155,7 +154,7 @@ class TestCheckButlerReachability:
 class TestListIssuesEndpoint:
     """Test the GET /api/issues endpoint via httpx ASGI transport."""
 
-    async def test_no_issues_when_all_reachable(self):
+    async def test_no_issues_when_all_reachable(self, app):
         """Happy path: all butlers reachable yields empty issues list."""
         configs = _make_configs()
         mock_client = _make_mock_client()
@@ -163,7 +162,6 @@ class TestListIssuesEndpoint:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = create_app()
         _override_deps(app, mgr, configs)
 
         async with httpx.AsyncClient(
@@ -176,7 +174,7 @@ class TestListIssuesEndpoint:
         assert "data" in body
         assert body["data"] == []
 
-    async def test_unreachable_butler_generates_critical_issue(self):
+    async def test_unreachable_butler_generates_critical_issue(self, app):
         """Unreachable butler appears as a critical issue."""
         configs = _make_configs()
 
@@ -185,7 +183,6 @@ class TestListIssuesEndpoint:
             side_effect=ButlerUnreachableError("x", cause=ConnectionRefusedError())
         )
 
-        app = create_app()
         _override_deps(app, mgr, configs)
 
         async with httpx.AsyncClient(
@@ -202,7 +199,7 @@ class TestListIssuesEndpoint:
             assert issue["severity"] == "critical"
             assert issue["type"] == "unreachable"
 
-    async def test_timeout_generates_critical_issue(self):
+    async def test_timeout_generates_critical_issue(self, app):
         """Timed-out butler generates a critical issue in the endpoint."""
         configs = [ButlerConnectionInfo(name="slow", port=40200)]
 
@@ -215,7 +212,6 @@ class TestListIssuesEndpoint:
 
         mgr.get_client = _slow_connect
 
-        app = create_app()
         _override_deps(app, mgr, configs)
 
         with patch("butlers.api.routers.issues._STATUS_TIMEOUT_S", 0.01):
@@ -232,7 +228,7 @@ class TestListIssuesEndpoint:
         assert issues[0]["type"] == "unreachable"
         assert issues[0]["butler"] == "slow"
 
-    async def test_mixed_reachability(self):
+    async def test_mixed_reachability(self, app):
         """Mix of reachable and unreachable butlers."""
         configs = _make_configs()
         mock_client = _make_mock_client()
@@ -246,7 +242,6 @@ class TestListIssuesEndpoint:
 
         mgr.get_client = _get_client_side_effect
 
-        app = create_app()
         _override_deps(app, mgr, configs)
 
         async with httpx.AsyncClient(
@@ -261,7 +256,7 @@ class TestListIssuesEndpoint:
         assert issues[0]["butler"] == "general"
         assert issues[0]["severity"] == "critical"
 
-    async def test_sorting_critical_before_warning(self):
+    async def test_sorting_critical_before_warning(self, app):
         """Issues are sorted: critical first, then by butler name."""
         # We test sorting by injecting issues with different severities.
         # Since only reachability checks exist (all critical), we verify
@@ -277,7 +272,6 @@ class TestListIssuesEndpoint:
             side_effect=ButlerUnreachableError("x", cause=ConnectionRefusedError())
         )
 
-        app = create_app()
         _override_deps(app, mgr, configs)
 
         async with httpx.AsyncClient(
@@ -293,11 +287,10 @@ class TestListIssuesEndpoint:
         butler_names = [i["butler"] for i in issues]
         assert butler_names == ["alpha", "mid", "zeta"]
 
-    async def test_empty_roster_returns_empty_list(self):
+    async def test_empty_roster_returns_empty_list(self, app):
         """No butlers discovered yields an empty issues list."""
         mgr = MagicMock(spec=MCPClientManager)
 
-        app = create_app()
         _override_deps(app, mgr, [])
 
         async with httpx.AsyncClient(
@@ -309,7 +302,7 @@ class TestListIssuesEndpoint:
         body = response.json()
         assert body["data"] == []
 
-    async def test_response_shape_matches_model(self):
+    async def test_response_shape_matches_model(self, app):
         """Verify response data can be parsed as Issue model."""
         configs = [ButlerConnectionInfo(name="mybutler", port=8500)]
 
@@ -318,7 +311,6 @@ class TestListIssuesEndpoint:
             side_effect=ButlerUnreachableError("mybutler", cause=ConnectionRefusedError())
         )
 
-        app = create_app()
         _override_deps(app, mgr, configs)
 
         async with httpx.AsyncClient(
@@ -336,7 +328,7 @@ class TestListIssuesEndpoint:
             assert issue.butler == "mybutler"
             assert issue.link == "/butlers/mybutler"
 
-    async def test_audit_schedule_error_surfaces_as_issue(self):
+    async def test_audit_schedule_error_surfaces_as_issue(self, app):
         """Latest schedule-triggered audit error should appear as a critical issue."""
         configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
         mock_client = _make_mock_client()
@@ -361,7 +353,6 @@ class TestListIssuesEndpoint:
         mock_db = MagicMock()
         mock_db.pool = MagicMock(return_value=mock_pool)
 
-        app = create_app()
         _override_deps(app, mgr, configs, db=mock_db)
 
         async with httpx.AsyncClient(
@@ -380,7 +371,7 @@ class TestListIssuesEndpoint:
         assert issues[0]["last_seen_at"] == "2026-02-20T00:00:00Z"
         assert "eligibility-sweep" in issues[0]["description"]
 
-    async def test_audit_non_schedule_error_surfaces_as_warning(self):
+    async def test_audit_non_schedule_error_surfaces_as_warning(self, app):
         """Non-schedule audit failures should surface as warning issues."""
         configs: list[ButlerConnectionInfo] = []
         mgr = MagicMock(spec=MCPClientManager)
@@ -402,7 +393,6 @@ class TestListIssuesEndpoint:
         mock_db = MagicMock()
         mock_db.pool = MagicMock(return_value=mock_pool)
 
-        app = create_app()
         _override_deps(app, mgr, configs, db=mock_db)
 
         async with httpx.AsyncClient(
@@ -419,7 +409,7 @@ class TestListIssuesEndpoint:
         assert issues[0]["occurrences"] == 2
         assert "invalid payload" in issues[0]["description"]
 
-    async def test_grouped_errors_sorted_by_most_recent_last_seen(self):
+    async def test_grouped_errors_sorted_by_most_recent_last_seen(self, app):
         """Grouped issues should be ordered by last_seen_at descending."""
         configs: list[ButlerConnectionInfo] = []
         mgr = MagicMock(spec=MCPClientManager)
@@ -450,7 +440,6 @@ class TestListIssuesEndpoint:
         mock_db = MagicMock()
         mock_db.pool = MagicMock(return_value=mock_pool)
 
-        app = create_app()
         _override_deps(app, mgr, configs, db=mock_db)
 
         async with httpx.AsyncClient(

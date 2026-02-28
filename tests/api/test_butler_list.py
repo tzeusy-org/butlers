@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
@@ -61,7 +60,7 @@ def _make_manager(configs: list[ButlerConnectionInfo]) -> MCPClientManager:
 
 
 class TestProbeButler:
-    async def test_probe_ok(self):
+    async def test_probe_ok(self, app):
         """Reachable butler returns status='ok'."""
         info = ButlerConnectionInfo(name="test", port=8000, description="Test butler")
         mock_client = _make_mock_client()
@@ -78,7 +77,7 @@ class TestProbeButler:
         mgr.get_client.assert_called_once_with("test")
         mock_client.ping.assert_called_once()
 
-    async def test_probe_unreachable(self):
+    async def test_probe_unreachable(self, app):
         """Unreachable butler returns status='down'."""
         info = ButlerConnectionInfo(name="ghost", port=9999)
 
@@ -93,7 +92,7 @@ class TestProbeButler:
         assert result.status == "down"
         assert result.port == 9999
 
-    async def test_probe_timeout(self):
+    async def test_probe_timeout(self, app):
         """Timed-out butler returns status='down'."""
         info = ButlerConnectionInfo(name="slow", port=40200)
 
@@ -113,7 +112,7 @@ class TestProbeButler:
         assert result.name == "slow"
         assert result.status == "down"
 
-    async def test_probe_unexpected_error(self):
+    async def test_probe_unexpected_error(self, app):
         """Unexpected exceptions still yield status='down'."""
         info = ButlerConnectionInfo(name="broken", port=8300)
 
@@ -125,7 +124,7 @@ class TestProbeButler:
         assert result.name == "broken"
         assert result.status == "down"
 
-    async def test_probe_ping_failure(self):
+    async def test_probe_ping_failure(self, app):
         """Butler connects but ping() fails -> status='down'."""
         info = ButlerConnectionInfo(name="flaky", port=8400)
         mock_client = _make_mock_client()
@@ -148,7 +147,7 @@ class TestProbeButler:
 class TestListButlersEndpoint:
     """Test the GET /api/butlers endpoint via httpx ASGI transport."""
 
-    async def test_returns_butler_list(self):
+    async def test_returns_butler_list(self, app):
         """Happy path: all butlers reachable."""
         configs = _make_configs()
         mock_client = _make_mock_client()
@@ -156,7 +155,6 @@ class TestListButlersEndpoint:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = create_app()
         app.dependency_overrides.update(
             {
                 __import__(
@@ -186,7 +184,7 @@ class TestListButlersEndpoint:
             assert "port" in b
             assert "description" in b
 
-    async def test_unreachable_butler_returns_down(self):
+    async def test_unreachable_butler_returns_down(self, app):
         """Unreachable butlers show status='down' instead of failing."""
         configs = _make_configs()
 
@@ -201,7 +199,6 @@ class TestListButlersEndpoint:
 
         mgr.get_client = _get_client_side_effect
 
-        app = create_app()
         app.dependency_overrides.update(
             {
                 __import__(
@@ -226,11 +223,10 @@ class TestListButlersEndpoint:
         assert by_name["switchboard"]["status"] == "ok"
         assert by_name["general"]["status"] == "down"
 
-    async def test_empty_roster(self):
+    async def test_empty_roster(self, app):
         """No butlers discovered yields an empty list."""
         mgr = MagicMock(spec=MCPClientManager)
 
-        app = create_app()
         app.dependency_overrides.update(
             {
                 __import__(
@@ -251,7 +247,7 @@ class TestListButlersEndpoint:
         body = response.json()
         assert body["data"] == []
 
-    async def test_response_shape_matches_model(self):
+    async def test_response_shape_matches_model(self, app):
         """Verify response data can be parsed as ButlerSummary."""
         configs = [
             ButlerConnectionInfo(name="mybutler", port=8500, description="My test butler"),
@@ -261,7 +257,6 @@ class TestListButlersEndpoint:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = create_app()
         app.dependency_overrides.update(
             {
                 __import__(
@@ -290,7 +285,7 @@ class TestListButlersEndpoint:
             assert summary.description == "My test butler"
             assert isinstance(summary.modules, list)
 
-    async def test_all_butlers_down(self):
+    async def test_all_butlers_down(self, app):
         """When all butlers are unreachable, all show status='down'."""
         configs = _make_configs()
 
@@ -299,7 +294,6 @@ class TestListButlersEndpoint:
             side_effect=ButlerUnreachableError("x", cause=ConnectionRefusedError())
         )
 
-        app = create_app()
         app.dependency_overrides.update(
             {
                 __import__(

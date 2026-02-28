@@ -16,8 +16,8 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.timeline import _get_db_manager
 
@@ -75,15 +75,21 @@ def _make_notification_row(
 
 
 def _app_with_mock_db(
+    app: FastAPI,
     *,
     fan_out_results: list[dict[str, list]] | None = None,
     switchboard_fetch: list | None = None,
     switchboard_available: bool = True,
-):
-    """Create a FastAPI app with a mocked DatabaseManager.
+) -> FastAPI:
+    """Wire a FastAPI app with a mocked DatabaseManager.
+
+    Accepts the shared module-scoped ``app`` fixture so that create_app()
+    is not called per test.
 
     Parameters
     ----------
+    app:
+        The shared FastAPI app instance to wire.
     fan_out_results:
         Side effect list for db.fan_out() calls.
     switchboard_fetch:
@@ -107,7 +113,6 @@ def _app_with_mock_db(
     else:
         mock_db.pool = MagicMock(side_effect=KeyError("No pool for butler: switchboard"))
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     return app
@@ -119,9 +124,9 @@ def _app_with_mock_db(
 
 
 class TestTimelineResponseStructure:
-    async def test_returns_data_and_cursor(self):
+    async def test_returns_data_and_cursor(self, app):
         """Response must have 'data' array and 'next_cursor' field."""
-        app = _app_with_mock_db(fan_out_results=[{}])
+        _app_with_mock_db(app, fan_out_results=[{}])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -133,9 +138,9 @@ class TestTimelineResponseStructure:
         assert isinstance(body["data"], list)
         assert "next_cursor" in body
 
-    async def test_empty_timeline(self):
+    async def test_empty_timeline(self, app):
         """When no events exist, return empty data with null cursor."""
-        app = _app_with_mock_db(fan_out_results=[{}])
+        _app_with_mock_db(app, fan_out_results=[{}])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -153,11 +158,11 @@ class TestTimelineResponseStructure:
 
 
 class TestEventMerging:
-    async def test_sessions_become_events(self):
+    async def test_sessions_become_events(self, app):
         """Sessions should appear as 'session' type events."""
         sid = uuid4()
         row = _make_session_row(session_id=sid, prompt="hello world")
-        app = _app_with_mock_db(fan_out_results=[{"atlas": [row]}])
+        _app_with_mock_db(app, fan_out_results=[{"atlas": [row]}])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -175,10 +180,10 @@ class TestEventMerging:
         assert "timestamp" in event
         assert "data" in event
 
-    async def test_failed_sessions_become_error_events(self):
+    async def test_failed_sessions_become_error_events(self, app):
         """Sessions with success=False should have type 'error'."""
         row = _make_session_row(success=False, prompt="failing task")
-        app = _app_with_mock_db(fan_out_results=[{"atlas": [row]}])
+        _app_with_mock_db(app, fan_out_results=[{"atlas": [row]}])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -190,11 +195,12 @@ class TestEventMerging:
         assert len(events) == 1
         assert events[0]["type"] == "error"
 
-    async def test_notifications_become_events(self):
+    async def test_notifications_become_events(self, app):
         """Notifications should appear as 'notification' type events."""
         nid = uuid4()
         notif_row = _make_notification_row(notif_id=nid, message="Email sent")
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[{}],  # No sessions
             switchboard_fetch=[notif_row],
         )
@@ -212,7 +218,7 @@ class TestEventMerging:
         assert event["type"] == "notification"
         assert event["summary"] == "Email sent"
 
-    async def test_merged_events_sorted_by_timestamp_desc(self):
+    async def test_merged_events_sorted_by_timestamp_desc(self, app):
         """Events from different sources should be sorted by timestamp descending."""
         old_session = _make_session_row(
             session_id=uuid4(),
@@ -230,7 +236,8 @@ class TestEventMerging:
             created_at=_NOW - timedelta(minutes=5),
         )
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[{"atlas": [old_session, recent_session]}],
             switchboard_fetch=[mid_notif],
         )
@@ -247,12 +254,13 @@ class TestEventMerging:
         assert events[1]["summary"] == "mid notification"
         assert events[2]["summary"] == "old session"
 
-    async def test_cross_butler_sessions_merged(self):
+    async def test_cross_butler_sessions_merged(self, app):
         """Sessions from multiple butlers should all appear."""
         atlas_row = _make_session_row(prompt="atlas task", started_at=_NOW - timedelta(minutes=1))
         sw_row = _make_session_row(prompt="switchboard task", started_at=_NOW)
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[{"atlas": [atlas_row], "switchboard": [sw_row]}],
         )
 
@@ -274,7 +282,7 @@ class TestEventMerging:
 
 
 class TestTimelinePagination:
-    async def test_pagination_with_limit(self):
+    async def test_pagination_with_limit(self, app):
         """When more events exist than limit, next_cursor should be set."""
         rows = [
             _make_session_row(
@@ -285,7 +293,7 @@ class TestTimelinePagination:
             for i in range(5)
         ]
 
-        app = _app_with_mock_db(fan_out_results=[{"atlas": rows}])
+        _app_with_mock_db(app, fan_out_results=[{"atlas": rows}])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -297,11 +305,11 @@ class TestTimelinePagination:
         assert len(body["data"]) == 3
         assert body["next_cursor"] is not None
 
-    async def test_no_cursor_when_all_returned(self):
+    async def test_no_cursor_when_all_returned(self, app):
         """When all events fit in the limit, next_cursor should be null."""
         rows = [_make_session_row(session_id=uuid4(), prompt=f"task {i}") for i in range(2)]
 
-        app = _app_with_mock_db(fan_out_results=[{"atlas": rows}])
+        _app_with_mock_db(app, fan_out_results=[{"atlas": rows}])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -313,7 +321,7 @@ class TestTimelinePagination:
         assert len(body["data"]) == 2
         assert body["next_cursor"] is None
 
-    async def test_before_cursor_is_passed_to_query(self):
+    async def test_before_cursor_is_passed_to_query(self, app):
         """The 'before' parameter should filter events by timestamp."""
         # Only the session before the cursor should appear
         old_row = _make_session_row(
@@ -322,7 +330,7 @@ class TestTimelinePagination:
             started_at=_NOW - timedelta(hours=2),
         )
 
-        app = _app_with_mock_db(fan_out_results=[{"atlas": [old_row]}])
+        _app_with_mock_db(app, fan_out_results=[{"atlas": [old_row]}])
 
         before_ts = (_NOW - timedelta(hours=1)).isoformat()
         async with httpx.AsyncClient(
@@ -342,11 +350,12 @@ class TestTimelinePagination:
 
 
 class TestTimelineFiltering:
-    async def test_filter_by_butler(self):
+    async def test_filter_by_butler(self, app):
         """Only events from the specified butler(s) should be returned."""
         atlas_row = _make_session_row(prompt="atlas task")
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[{"atlas": [atlas_row]}],
         )
 
@@ -359,11 +368,12 @@ class TestTimelineFiltering:
         events = resp.json()["data"]
         assert all(e["butler"] == "atlas" for e in events)
 
-    async def test_filter_by_event_type_session(self):
+    async def test_filter_by_event_type_session(self, app):
         """When filtering by type='session', only sessions should appear."""
         session_row = _make_session_row(prompt="a session", success=True)
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[{"atlas": [session_row]}],
         )
 
@@ -377,11 +387,12 @@ class TestTimelineFiltering:
         assert len(events) == 1
         assert events[0]["type"] == "session"
 
-    async def test_filter_by_event_type_notification(self):
+    async def test_filter_by_event_type_notification(self, app):
         """When filtering by type='notification', only notifications appear."""
         notif_row = _make_notification_row(message="a notification")
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[],  # fan_out not called for sessions when filtered out
             switchboard_fetch=[notif_row],
         )
@@ -396,12 +407,13 @@ class TestTimelineFiltering:
         assert len(events) == 1
         assert events[0]["type"] == "notification"
 
-    async def test_filter_by_event_type_error(self):
+    async def test_filter_by_event_type_error(self, app):
         """When filtering by type='error', only failed sessions appear."""
         ok_row = _make_session_row(prompt="ok task", success=True)
         fail_row = _make_session_row(prompt="fail task", success=False)
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[{"atlas": [ok_row, fail_row]}],
         )
 
@@ -416,11 +428,12 @@ class TestTimelineFiltering:
         assert events[0]["type"] == "error"
         assert events[0]["summary"] == "fail task"
 
-    async def test_switchboard_unavailable_gracefully_handled(self):
+    async def test_switchboard_unavailable_gracefully_handled(self, app):
         """If switchboard DB is unavailable, notifications are skipped."""
         session_row = _make_session_row(prompt="task without notifs")
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[{"atlas": [session_row]}],
             switchboard_available=False,
         )
@@ -442,10 +455,10 @@ class TestTimelineFiltering:
 
 
 class TestEventEnvelope:
-    async def test_event_has_required_fields(self):
+    async def test_event_has_required_fields(self, app):
         """Each event must have id, type, butler, timestamp, summary, data."""
         row = _make_session_row(prompt="structured event")
-        app = _app_with_mock_db(fan_out_results=[{"atlas": [row]}])
+        _app_with_mock_db(app, fan_out_results=[{"atlas": [row]}])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -462,10 +475,10 @@ class TestEventEnvelope:
         assert "data" in event
         assert isinstance(event["data"], dict)
 
-    async def test_session_event_data_fields(self):
+    async def test_session_event_data_fields(self, app):
         """Session events should include trigger_source, success, duration_ms in data."""
         row = _make_session_row(trigger_source="schedule", success=True, duration_ms=1234)
-        app = _app_with_mock_db(fan_out_results=[{"atlas": [row]}])
+        _app_with_mock_db(app, fan_out_results=[{"atlas": [row]}])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -477,12 +490,13 @@ class TestEventEnvelope:
         assert data["success"] is True
         assert data["duration_ms"] == 1234
 
-    async def test_notification_event_data_fields(self):
+    async def test_notification_event_data_fields(self, app):
         """Notification events should include channel, recipient, status in data."""
         notif = _make_notification_row(
             channel="telegram", recipient="@user", status="sent", source_butler="atlas"
         )
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[{}],
             switchboard_fetch=[notif],
         )

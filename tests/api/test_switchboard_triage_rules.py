@@ -22,7 +22,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 
 _MODULE_NAME = "switchboard_api_router"
@@ -90,6 +89,7 @@ def _make_row(data: dict):
 
 
 def _app_with_mock(
+    app,
     *,
     fetch_rows: list | None = None,
     fetchrow_result: dict | None = None,
@@ -114,7 +114,6 @@ def _app_with_mock(
         mock_db.pool.side_effect = KeyError("No pool")
 
     get_dep = _get_current_db_dep()
-    app = create_app(cors_origins=["*"])
     app.dependency_overrides[get_dep] = lambda: mock_db
     return app, mock_pool
 
@@ -125,9 +124,9 @@ def _app_with_mock(
 
 
 class TestListTriageRules:
-    async def test_returns_api_response_structure(self):
+    async def test_returns_api_response_structure(self, app):
         """Response must have 'data' list and 'meta' with total."""
-        app, _ = _app_with_mock(fetch_rows=[])
+        app, _ = _app_with_mock(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -140,9 +139,9 @@ class TestListTriageRules:
         assert isinstance(body["data"], list)
         assert "total" in body["meta"]
 
-    async def test_empty_results(self):
+    async def test_empty_results(self, app):
         """When no rules exist, data is empty list with total=0."""
-        app, _ = _app_with_mock(fetch_rows=[])
+        app, _ = _app_with_mock(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -152,9 +151,9 @@ class TestListTriageRules:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_returns_rule_fields(self):
+    async def test_returns_rule_fields(self, app):
         """Each rule must have all required fields."""
-        app, _ = _app_with_mock(fetch_rows=[_RULE_ROW])
+        app, _ = _app_with_mock(app, fetch_rows=[_RULE_ROW])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -173,9 +172,9 @@ class TestListTriageRules:
         assert "created_at" in rule
         assert "updated_at" in rule
 
-    async def test_rule_type_filter_accepted(self):
+    async def test_rule_type_filter_accepted(self, app):
         """?rule_type= query parameter must be accepted."""
-        app, mock_pool = _app_with_mock(fetch_rows=[])
+        app, mock_pool = _app_with_mock(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -190,9 +189,9 @@ class TestListTriageRules:
         query = call_args[0][0]
         assert "rule_type" in query
 
-    async def test_enabled_filter_accepted(self):
+    async def test_enabled_filter_accepted(self, app):
         """?enabled= query parameter must be accepted."""
-        app, _ = _app_with_mock(fetch_rows=[])
+        app, _ = _app_with_mock(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -200,9 +199,9 @@ class TestListTriageRules:
 
         assert resp.status_code == 200
 
-    async def test_meta_total_matches_row_count(self):
+    async def test_meta_total_matches_row_count(self, app):
         """meta.total must equal the number of returned rows."""
-        app, _ = _app_with_mock(fetch_rows=[_RULE_ROW, _HEADER_RULE_ROW])
+        app, _ = _app_with_mock(app, fetch_rows=[_RULE_ROW, _HEADER_RULE_ROW])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -212,9 +211,9 @@ class TestListTriageRules:
         assert body["meta"]["total"] == 2
         assert len(body["data"]) == 2
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When DB pool is unavailable, must return 503."""
-        app, _ = _app_with_mock(pool_available=False)
+        app, _ = _app_with_mock(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -222,12 +221,12 @@ class TestListTriageRules:
 
         assert resp.status_code == 503
 
-    async def test_condition_jsonb_decoded(self):
+    async def test_condition_jsonb_decoded(self, app):
         """condition field must be a dict (not raw JSON string)."""
         # Simulate asyncpg returning condition as a JSON string (edge case)
         row_with_str_condition = dict(_RULE_ROW)
         row_with_str_condition["condition"] = json.dumps({"domain": "chase.com", "match": "exact"})
-        app, _ = _app_with_mock(fetch_rows=[row_with_str_condition])
+        app, _ = _app_with_mock(app, fetch_rows=[row_with_str_condition])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -243,16 +242,17 @@ class TestListTriageRules:
 
 
 class TestCreateTriageRule:
-    async def test_create_returns_201_with_rule(self):
+    async def test_create_returns_201_with_rule(self, app):
         """Successful create returns 201 with the created rule."""
         app, _ = _app_with_mock(
+            app,
             fetchrow_result={  # registry lookup for route_to target
                 "name": "finance",
             },
         )
         # fetchrow is called twice: registry check + INSERT RETURNING
         # We need to handle this differently — let's set up two sequential fetchrow calls
-        app, mock_pool = _app_with_mock()
+        app, mock_pool = _app_with_mock(app)
         registry_row = _make_row({"name": "finance"})
         created_row = _make_row(
             {
@@ -281,9 +281,9 @@ class TestCreateTriageRule:
         assert "data" in body
         assert body["data"]["rule_type"] == "sender_domain"
 
-    async def test_create_simple_action_no_registry_check(self):
+    async def test_create_simple_action_no_registry_check(self, app):
         """For non-route_to actions, no registry check is performed."""
-        app, mock_pool = _app_with_mock()
+        app, mock_pool = _app_with_mock(app)
         created_row = _make_row(
             {
                 **_RULE_ROW,
@@ -315,9 +315,9 @@ class TestCreateTriageRule:
         insert_call = mock_pool.fetchrow.call_args_list[0]
         assert "INSERT" in insert_call[0][0]
 
-    async def test_create_invalid_rule_type_returns_422(self):
+    async def test_create_invalid_rule_type_returns_422(self, app):
         """Invalid rule_type must be rejected with 422."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -333,9 +333,9 @@ class TestCreateTriageRule:
 
         assert resp.status_code == 422
 
-    async def test_create_invalid_action_returns_422(self):
+    async def test_create_invalid_action_returns_422(self, app):
         """Invalid action must be rejected with 422."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -351,9 +351,9 @@ class TestCreateTriageRule:
 
         assert resp.status_code == 422
 
-    async def test_create_negative_priority_returns_422(self):
+    async def test_create_negative_priority_returns_422(self, app):
         """Negative priority must be rejected with 422."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -369,9 +369,9 @@ class TestCreateTriageRule:
 
         assert resp.status_code == 422
 
-    async def test_create_condition_schema_mismatch_returns_422(self):
+    async def test_create_condition_schema_mismatch_returns_422(self, app):
         """Condition schema mismatch for rule_type must be rejected with 422."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -388,9 +388,9 @@ class TestCreateTriageRule:
 
         assert resp.status_code == 422
 
-    async def test_create_route_to_unregistered_butler_returns_422(self):
+    async def test_create_route_to_unregistered_butler_returns_422(self, app):
         """route_to action with unregistered target must be rejected with 422."""
-        app, mock_pool = _app_with_mock()
+        app, mock_pool = _app_with_mock(app)
         # Registry lookup returns None → butler not found
         mock_pool.fetchrow = AsyncMock(return_value=None)
 
@@ -410,9 +410,9 @@ class TestCreateTriageRule:
         assert resp.status_code == 422
         assert "unknown_butler" in resp.json()["detail"]
 
-    async def test_create_header_condition_op_equals_requires_value(self):
+    async def test_create_header_condition_op_equals_requires_value(self, app):
         """header_condition with op=equals must require non-empty value."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -428,9 +428,9 @@ class TestCreateTriageRule:
 
         assert resp.status_code == 422
 
-    async def test_create_header_condition_op_present_rejects_value(self):
+    async def test_create_header_condition_op_present_rejects_value(self, app):
         """header_condition with op=present must reject non-null value."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -450,9 +450,9 @@ class TestCreateTriageRule:
 
         assert resp.status_code == 422
 
-    async def test_create_pool_unavailable_returns_503(self):
+    async def test_create_pool_unavailable_returns_503(self, app):
         """When DB pool is unavailable, must return 503."""
-        app, _ = _app_with_mock(pool_available=False)
+        app, _ = _app_with_mock(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -468,10 +468,10 @@ class TestCreateTriageRule:
 
         assert resp.status_code == 503
 
-    async def test_create_all_simple_actions_accepted(self):
+    async def test_create_all_simple_actions_accepted(self, app):
         """All four simple actions must be valid."""
         for action in ("skip", "metadata_only", "low_priority_queue", "pass_through"):
-            app, mock_pool = _app_with_mock()
+            app, mock_pool = _app_with_mock(app)
             created_row = _make_row({**_RULE_ROW, "action": action})
             mock_pool.fetchrow = AsyncMock(return_value=created_row)
 
@@ -490,9 +490,9 @@ class TestCreateTriageRule:
 
             assert resp.status_code == 201, f"action={action!r} failed with {resp.status_code}"
 
-    async def test_create_mime_type_rule(self):
+    async def test_create_mime_type_rule(self, app):
         """mime_type rule_type with valid condition must be accepted."""
-        app, mock_pool = _app_with_mock()
+        app, mock_pool = _app_with_mock(app)
         created_row = _make_row(
             {
                 **_RULE_ROW,
@@ -529,9 +529,9 @@ class TestCreateTriageRule:
 class TestUpdateTriageRule:
     _RULE_ID = "11111111-1111-1111-1111-111111111111"
 
-    async def test_update_priority_returns_200(self):
+    async def test_update_priority_returns_200(self, app):
         """Partial update of priority must return 200 with updated rule."""
-        app, mock_pool = _app_with_mock()
+        app, mock_pool = _app_with_mock(app)
         updated_row = _make_row({**_RULE_ROW, "priority": 99})
         # fetchrow calls: 1) existing rule SELECT, 2) UPDATE RETURNING
         mock_pool.fetchrow = AsyncMock(side_effect=[_make_row(_RULE_ROW), updated_row])
@@ -548,9 +548,9 @@ class TestUpdateTriageRule:
         body = resp.json()
         assert body["data"]["priority"] == 99
 
-    async def test_update_enabled_toggle(self):
+    async def test_update_enabled_toggle(self, app):
         """Toggling enabled must be accepted."""
-        app, mock_pool = _app_with_mock()
+        app, mock_pool = _app_with_mock(app)
         updated_row = _make_row({**_RULE_ROW, "enabled": False})
         mock_pool.fetchrow = AsyncMock(side_effect=[_make_row(_RULE_ROW), updated_row])
 
@@ -565,9 +565,9 @@ class TestUpdateTriageRule:
         assert resp.status_code == 200
         assert resp.json()["data"]["enabled"] is False
 
-    async def test_update_action_validates_route_to(self):
+    async def test_update_action_validates_route_to(self, app):
         """Updating action to route_to:<unregistered> must return 422."""
-        app, mock_pool = _app_with_mock()
+        app, mock_pool = _app_with_mock(app)
         # Existing rule found, then registry lookup returns None
         mock_pool.fetchrow = AsyncMock(side_effect=[_make_row(_RULE_ROW), None])
 
@@ -581,9 +581,9 @@ class TestUpdateTriageRule:
 
         assert resp.status_code == 422
 
-    async def test_update_condition_validated_against_rule_type(self):
+    async def test_update_condition_validated_against_rule_type(self, app):
         """Updating condition must be validated against existing rule_type."""
-        app, mock_pool = _app_with_mock()
+        app, mock_pool = _app_with_mock(app)
         # Existing rule is sender_domain; condition update with wrong schema
         mock_pool.fetchrow = AsyncMock(return_value=_make_row(_RULE_ROW))
 
@@ -598,9 +598,9 @@ class TestUpdateTriageRule:
 
         assert resp.status_code == 422
 
-    async def test_update_not_found_returns_404(self):
+    async def test_update_not_found_returns_404(self, app):
         """When rule doesn't exist (soft-deleted or never existed), return 404."""
-        app, mock_pool = _app_with_mock()
+        app, mock_pool = _app_with_mock(app)
         mock_pool.fetchrow = AsyncMock(return_value=None)
 
         async with httpx.AsyncClient(
@@ -613,9 +613,9 @@ class TestUpdateTriageRule:
 
         assert resp.status_code == 404
 
-    async def test_update_invalid_uuid_returns_422(self):
+    async def test_update_invalid_uuid_returns_422(self, app):
         """Non-UUID rule_id must return 422."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -626,9 +626,9 @@ class TestUpdateTriageRule:
 
         assert resp.status_code == 422
 
-    async def test_update_no_fields_returns_existing_rule(self):
+    async def test_update_no_fields_returns_existing_rule(self, app):
         """Empty patch body must return existing rule unchanged with 200."""
-        app, mock_pool = _app_with_mock()
+        app, mock_pool = _app_with_mock(app)
         mock_pool.fetchrow = AsyncMock(return_value=_make_row(_RULE_ROW))
 
         async with httpx.AsyncClient(
@@ -643,9 +643,9 @@ class TestUpdateTriageRule:
         body = resp.json()
         assert body["data"]["id"] == self._RULE_ID
 
-    async def test_update_negative_priority_returns_422(self):
+    async def test_update_negative_priority_returns_422(self, app):
         """Negative priority in update must be rejected with 422."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -656,9 +656,9 @@ class TestUpdateTriageRule:
 
         assert resp.status_code == 422
 
-    async def test_update_pool_unavailable_returns_503(self):
+    async def test_update_pool_unavailable_returns_503(self, app):
         """When DB pool is unavailable, must return 503."""
-        app, _ = _app_with_mock(pool_available=False)
+        app, _ = _app_with_mock(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -678,9 +678,9 @@ class TestUpdateTriageRule:
 class TestDeleteTriageRule:
     _RULE_ID = "11111111-1111-1111-1111-111111111111"
 
-    async def test_delete_returns_204(self):
+    async def test_delete_returns_204(self, app):
         """Successful soft-delete must return 204 No Content."""
-        app, mock_pool = _app_with_mock(execute_result="UPDATE 1")
+        app, mock_pool = _app_with_mock(app, execute_result="UPDATE 1")
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -690,9 +690,9 @@ class TestDeleteTriageRule:
         assert resp.status_code == 204
         assert resp.content == b""
 
-    async def test_delete_not_found_returns_404(self):
+    async def test_delete_not_found_returns_404(self, app):
         """When rule not found (already deleted or never existed), return 404."""
-        app, mock_pool = _app_with_mock(execute_result="UPDATE 0")
+        app, mock_pool = _app_with_mock(app, execute_result="UPDATE 0")
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -701,9 +701,9 @@ class TestDeleteTriageRule:
 
         assert resp.status_code == 404
 
-    async def test_delete_sets_soft_delete_columns(self):
+    async def test_delete_sets_soft_delete_columns(self, app):
         """DELETE must set deleted_at and enabled=FALSE in the UPDATE query."""
-        app, mock_pool = _app_with_mock(execute_result="UPDATE 1")
+        app, mock_pool = _app_with_mock(app, execute_result="UPDATE 1")
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -716,9 +716,9 @@ class TestDeleteTriageRule:
         assert "deleted_at" in query
         assert "enabled" in query
 
-    async def test_delete_invalid_uuid_returns_422(self):
+    async def test_delete_invalid_uuid_returns_422(self, app):
         """Non-UUID rule_id must return 422."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -726,9 +726,9 @@ class TestDeleteTriageRule:
 
         assert resp.status_code == 422
 
-    async def test_delete_pool_unavailable_returns_503(self):
+    async def test_delete_pool_unavailable_returns_503(self, app):
         """When DB pool is unavailable, must return 503."""
-        app, _ = _app_with_mock(pool_available=False)
+        app, _ = _app_with_mock(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -756,9 +756,9 @@ class TestTriageRuleTest:
         "payload": {"headers": {}, "mime_parts": []},
     }
 
-    async def test_matched_sender_domain_exact(self):
+    async def test_matched_sender_domain_exact(self, app):
         """Exact sender_domain match must return matched=True."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -778,9 +778,9 @@ class TestTriageRuleTest:
         assert data["matched_rule_type"] == "sender_domain"
         assert "reason" in data
 
-    async def test_no_match_returns_matched_false(self):
+    async def test_no_match_returns_matched_false(self, app):
         """Non-matching envelope must return matched=False."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -801,9 +801,9 @@ class TestTriageRuleTest:
         assert data["decision"] is None
         assert data["target_butler"] is None
 
-    async def test_sender_domain_suffix_match(self):
+    async def test_sender_domain_suffix_match(self, app):
         """Suffix match must match subdomains."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -829,9 +829,9 @@ class TestTriageRuleTest:
         assert data["matched"] is True
         assert data["target_butler"] == "travel"
 
-    async def test_sender_domain_exact_does_not_match_subdomain(self):
+    async def test_sender_domain_exact_does_not_match_subdomain(self, app):
         """Exact match must NOT match subdomains."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -855,9 +855,9 @@ class TestTriageRuleTest:
         data = resp.json()["data"]
         assert data["matched"] is False
 
-    async def test_sender_address_exact_match(self):
+    async def test_sender_address_exact_match(self, app):
         """sender_address rule must match on exact address."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -882,9 +882,9 @@ class TestTriageRuleTest:
         assert data["matched"] is True
         assert data["matched_rule_type"] == "sender_address"
 
-    async def test_header_condition_present_matched(self):
+    async def test_header_condition_present_matched(self, app):
         """header_condition op=present must match when header exists."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -912,9 +912,9 @@ class TestTriageRuleTest:
         assert data["matched"] is True
         assert data["decision"] == "metadata_only"
 
-    async def test_header_condition_present_not_matched(self):
+    async def test_header_condition_present_not_matched(self, app):
         """header_condition op=present must not match when header absent."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -938,9 +938,9 @@ class TestTriageRuleTest:
         data = resp.json()["data"]
         assert data["matched"] is False
 
-    async def test_header_condition_equals_matched(self):
+    async def test_header_condition_equals_matched(self, app):
         """header_condition op=equals must match on exact header value."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -968,9 +968,9 @@ class TestTriageRuleTest:
         assert data["matched"] is True
         assert data["decision"] == "low_priority_queue"
 
-    async def test_header_condition_contains_matched(self):
+    async def test_header_condition_contains_matched(self, app):
         """header_condition op=contains must match when value is substring."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1001,9 +1001,9 @@ class TestTriageRuleTest:
         data = resp.json()["data"]
         assert data["matched"] is True
 
-    async def test_mime_type_exact_match(self):
+    async def test_mime_type_exact_match(self, app):
         """mime_type rule must match when MIME part type equals target."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1034,9 +1034,9 @@ class TestTriageRuleTest:
         assert data["matched"] is True
         assert data["target_butler"] == "relationship"
 
-    async def test_mime_type_wildcard_match(self):
+    async def test_mime_type_wildcard_match(self, app):
         """mime_type with wildcard (image/*) must match any image/* subtype."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1063,9 +1063,9 @@ class TestTriageRuleTest:
         data = resp.json()["data"]
         assert data["matched"] is True
 
-    async def test_mime_type_no_match(self):
+    async def test_mime_type_no_match(self, app):
         """mime_type rule must not match when no part has the target type."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1092,9 +1092,9 @@ class TestTriageRuleTest:
         data = resp.json()["data"]
         assert data["matched"] is False
 
-    async def test_test_endpoint_is_dry_run(self):
+    async def test_test_endpoint_is_dry_run(self, app):
         """Test endpoint must not call pool.execute or pool.fetchrow for inserts."""
-        app, mock_pool = _app_with_mock()
+        app, mock_pool = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1111,9 +1111,9 @@ class TestTriageRuleTest:
         # fetchrow must not have been called (no reads — evaluator is pure)
         mock_pool.fetchrow.assert_not_called()
 
-    async def test_test_invalid_rule_returns_422(self):
+    async def test_test_invalid_rule_returns_422(self, app):
         """Test endpoint must reject invalid rule with 422."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1132,9 +1132,9 @@ class TestTriageRuleTest:
 
         assert resp.status_code == 422
 
-    async def test_test_response_structure(self):
+    async def test_test_response_structure(self, app):
         """Test response must have 'data' wrapper with required fields."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1153,9 +1153,9 @@ class TestTriageRuleTest:
         assert "matched" in data
         assert "reason" in data
 
-    async def test_test_pool_unavailable_returns_503(self):
+    async def test_test_pool_unavailable_returns_503(self, app):
         """When DB pool is unavailable, must return 503."""
-        app, _ = _app_with_mock(pool_available=False)
+        app, _ = _app_with_mock(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1169,9 +1169,9 @@ class TestTriageRuleTest:
 
         assert resp.status_code == 503
 
-    async def test_sender_address_no_match(self):
+    async def test_sender_address_no_match(self, app):
         """sender_address rule must not match on different address."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1195,9 +1195,9 @@ class TestTriageRuleTest:
         data = resp.json()["data"]
         assert data["matched"] is False
 
-    async def test_simple_action_decision_set_correctly(self):
+    async def test_simple_action_decision_set_correctly(self, app):
         """For simple (non-route_to) actions, decision must equal the action."""
-        app, _ = _app_with_mock()
+        app, _ = _app_with_mock(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

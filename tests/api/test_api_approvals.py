@@ -16,7 +16,6 @@ import httpx
 import pytest
 
 from butlers.api import deps as api_deps
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import wire_db_dependencies
 from butlers.api.routers.approvals import _clear_table_cache, _get_db_manager
@@ -102,6 +101,7 @@ def _make_approval_rule_record(
 
 
 def _app_with_mock_db(
+    app,
     *,
     has_approvals_tables=True,
     fetch_rows: list | None = None,
@@ -161,7 +161,6 @@ def _app_with_mock_db(
         mock_db.pool.side_effect = KeyError("No pool")
         mock_db.butler_names = []
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     return app, mock_conn
 
@@ -172,9 +171,9 @@ def _app_with_mock_db(
 
 
 @pytest.mark.asyncio
-async def test_list_actions_empty():
+async def test_list_actions_empty(app):
     """GET /api/approvals/actions returns empty list when no actions exist."""
-    app, mock_conn = _app_with_mock_db(fetch_rows=[], fetchval_return=0)
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=[], fetchval_return=0)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -190,12 +189,11 @@ async def test_list_actions_empty():
 
 
 @pytest.mark.asyncio
-async def test_list_actions_uses_global_db_dependency_wiring(monkeypatch):
+async def test_list_actions_uses_global_db_dependency_wiring(app, monkeypatch):
     """Approvals actions endpoint should use wire_db_dependencies override path."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = []
 
-    app = create_app()
     wire_db_dependencies(app)
     monkeypatch.setattr(api_deps, "_db_manager", mock_db)
 
@@ -211,7 +209,7 @@ async def test_list_actions_uses_global_db_dependency_wiring(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_list_actions_with_results():
+async def test_list_actions_with_results(app):
     """GET /api/approvals/actions returns paginated pending actions."""
     action1 = _make_pending_action_record(
         action_id=uuid4(), tool_name="telegram_send_message", status="pending"
@@ -220,7 +218,7 @@ async def test_list_actions_with_results():
         action_id=uuid4(), tool_name="email_send", status="approved"
     )
 
-    app, mock_conn = _app_with_mock_db(fetch_rows=[action1, action2], fetchval_return=2)
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=[action1, action2], fetchval_return=2)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -237,10 +235,10 @@ async def test_list_actions_with_results():
 
 
 @pytest.mark.asyncio
-async def test_list_actions_with_status_filter():
+async def test_list_actions_with_status_filter(app):
     """GET /api/approvals/actions?status=pending filters by status."""
     action = _make_pending_action_record(status="pending")
-    app, mock_conn = _app_with_mock_db(fetch_rows=[action], fetchval_return=1)
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=[action], fetchval_return=1)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -254,9 +252,9 @@ async def test_list_actions_with_status_filter():
 
 
 @pytest.mark.asyncio
-async def test_list_actions_no_approvals_tables():
+async def test_list_actions_no_approvals_tables(app):
     """GET /api/approvals/actions returns empty when no butler has approvals."""
-    app, _ = _app_with_mock_db(has_approvals_tables=False)
+    app, _ = _app_with_mock_db(app, has_approvals_tables=False)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -270,10 +268,10 @@ async def test_list_actions_no_approvals_tables():
 
 
 @pytest.mark.asyncio
-async def test_get_action_by_id():
+async def test_get_action_by_id(app):
     """GET /api/approvals/actions/{action_id} returns action details."""
     action = _make_pending_action_record(action_id=_ACTION_ID)
-    app, mock_conn = _app_with_mock_db(fetchrow_return=action)
+    app, mock_conn = _app_with_mock_db(app, fetchrow_return=action)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -287,9 +285,9 @@ async def test_get_action_by_id():
 
 
 @pytest.mark.asyncio
-async def test_get_action_not_found():
+async def test_get_action_not_found(app):
     """GET /api/approvals/actions/{action_id} returns 404 when action not found."""
-    app, mock_conn = _app_with_mock_db(fetchrow_return=None)
+    app, mock_conn = _app_with_mock_db(app, fetchrow_return=None)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -300,9 +298,9 @@ async def test_get_action_not_found():
 
 
 @pytest.mark.asyncio
-async def test_get_action_invalid_id():
+async def test_get_action_invalid_id(app):
     """GET /api/approvals/actions/{action_id} returns 400 for invalid UUID."""
-    app, _ = _app_with_mock_db()
+    app, _ = _app_with_mock_db(app)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -313,7 +311,7 @@ async def test_get_action_invalid_id():
 
 
 @pytest.mark.asyncio
-async def test_approve_action_success():
+async def test_approve_action_success(app):
     """POST /api/approvals/actions/{action_id}/approve approves and returns updated action."""
     action_id = uuid4()
     pending = _make_pending_action_record(action_id=action_id, status="pending")
@@ -327,6 +325,7 @@ async def test_approve_action_success():
 
     # fetchrow calls: initial SELECT, CAS approve RETURNING, CAS execute RETURNING, final SELECT
     app, mock_conn = _app_with_mock_db(
+        app,
         fetchrow_return=pending,
     )
     mock_conn.fetchrow = AsyncMock(side_effect=[pending, approved, executed, executed])
@@ -343,9 +342,9 @@ async def test_approve_action_success():
 
 
 @pytest.mark.asyncio
-async def test_approve_action_not_found():
+async def test_approve_action_not_found(app):
     """POST /api/approvals/actions/{action_id}/approve returns 404 when action not found."""
-    app, mock_conn = _app_with_mock_db()
+    app, mock_conn = _app_with_mock_db(app)
     mock_conn.fetchrow = AsyncMock(return_value=None)
 
     async with httpx.AsyncClient(
@@ -357,9 +356,9 @@ async def test_approve_action_not_found():
 
 
 @pytest.mark.asyncio
-async def test_approve_action_invalid_id():
+async def test_approve_action_invalid_id(app):
     """POST /api/approvals/actions/{action_id}/approve returns 400 for invalid UUID."""
-    app, _ = _app_with_mock_db()
+    app, _ = _app_with_mock_db(app)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -370,12 +369,12 @@ async def test_approve_action_invalid_id():
 
 
 @pytest.mark.asyncio
-async def test_approve_action_conflict():
+async def test_approve_action_conflict(app):
     """POST /api/approvals/actions/{action_id}/approve returns 409 for non-pending action."""
     action_id = uuid4()
     rejected = _make_pending_action_record(action_id=action_id, status="rejected")
 
-    app, mock_conn = _app_with_mock_db()
+    app, mock_conn = _app_with_mock_db(app)
     mock_conn.fetchrow = AsyncMock(return_value=rejected)
 
     async with httpx.AsyncClient(
@@ -387,9 +386,9 @@ async def test_approve_action_conflict():
 
 
 @pytest.mark.asyncio
-async def test_approve_action_no_subsystem():
+async def test_approve_action_no_subsystem(app):
     """POST /api/approvals/actions/{action_id}/approve returns 503 when no subsystem."""
-    app, _ = _app_with_mock_db(has_approvals_tables=False)
+    app, _ = _app_with_mock_db(app, has_approvals_tables=False)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -400,7 +399,7 @@ async def test_approve_action_no_subsystem():
 
 
 @pytest.mark.asyncio
-async def test_reject_action_success():
+async def test_reject_action_success(app):
     """POST /api/approvals/actions/{action_id}/reject rejects and returns updated action."""
     action_id = uuid4()
     pending = _make_pending_action_record(action_id=action_id, status="pending")
@@ -411,7 +410,7 @@ async def test_reject_action_success():
         decided_at=_NOW,
     )
 
-    app, mock_conn = _app_with_mock_db()
+    app, mock_conn = _app_with_mock_db(app)
     # fetchrow calls: initial SELECT, CAS reject RETURNING, final SELECT
     mock_conn.fetchrow = AsyncMock(side_effect=[pending, rejected, rejected])
 
@@ -430,13 +429,13 @@ async def test_reject_action_success():
 
 
 @pytest.mark.asyncio
-async def test_reject_action_no_reason():
+async def test_reject_action_no_reason(app):
     """POST /api/approvals/actions/{action_id}/reject works without a reason body."""
     action_id = uuid4()
     pending = _make_pending_action_record(action_id=action_id, status="pending")
     rejected = _make_pending_action_record(action_id=action_id, status="rejected")
 
-    app, mock_conn = _app_with_mock_db()
+    app, mock_conn = _app_with_mock_db(app)
     mock_conn.fetchrow = AsyncMock(side_effect=[pending, rejected, rejected])
 
     async with httpx.AsyncClient(
@@ -450,9 +449,9 @@ async def test_reject_action_no_reason():
 
 
 @pytest.mark.asyncio
-async def test_reject_action_not_found():
+async def test_reject_action_not_found(app):
     """POST /api/approvals/actions/{action_id}/reject returns 404 when action not found."""
-    app, mock_conn = _app_with_mock_db()
+    app, mock_conn = _app_with_mock_db(app)
     mock_conn.fetchrow = AsyncMock(return_value=None)
 
     async with httpx.AsyncClient(
@@ -464,12 +463,12 @@ async def test_reject_action_not_found():
 
 
 @pytest.mark.asyncio
-async def test_reject_action_conflict():
+async def test_reject_action_conflict(app):
     """POST /api/approvals/actions/{action_id}/reject returns 409 for non-pending action."""
     action_id = uuid4()
     approved = _make_pending_action_record(action_id=action_id, status="approved")
 
-    app, mock_conn = _app_with_mock_db()
+    app, mock_conn = _app_with_mock_db(app)
     mock_conn.fetchrow = AsyncMock(return_value=approved)
 
     async with httpx.AsyncClient(
@@ -481,12 +480,13 @@ async def test_reject_action_conflict():
 
 
 @pytest.mark.asyncio
-async def test_expire_stale_actions():
+async def test_expire_stale_actions(app):
     """POST /api/approvals/actions/expire-stale marks expired pending actions."""
     expired_id1 = uuid4()
     expired_id2 = uuid4()
 
     app, mock_conn = _app_with_mock_db(
+        app,
         fetch_rows=[{"id": expired_id1}, {"id": expired_id2}],
         fetchval_side_effect=[expired_id1, expired_id2],
     )
@@ -504,7 +504,7 @@ async def test_expire_stale_actions():
 
 
 @pytest.mark.asyncio
-async def test_list_executed_actions():
+async def test_list_executed_actions(app):
     """GET /api/approvals/actions/executed returns executed actions."""
     executed_action = _make_pending_action_record(
         action_id=uuid4(),
@@ -513,7 +513,7 @@ async def test_list_executed_actions():
         execution_result={"success": True},
     )
 
-    app, mock_conn = _app_with_mock_db(fetch_rows=[executed_action], fetchval_return=1)
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=[executed_action], fetchval_return=1)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -532,9 +532,9 @@ async def test_list_executed_actions():
 
 
 @pytest.mark.asyncio
-async def test_list_rules_empty():
+async def test_list_rules_empty(app):
     """GET /api/approvals/rules returns empty list when no rules exist."""
-    app, mock_conn = _app_with_mock_db(fetch_rows=[], fetchval_return=0)
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=[], fetchval_return=0)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -548,12 +548,12 @@ async def test_list_rules_empty():
 
 
 @pytest.mark.asyncio
-async def test_list_rules_with_results():
+async def test_list_rules_with_results(app):
     """GET /api/approvals/rules returns paginated rules."""
     rule1 = _make_approval_rule_record(rule_id=uuid4(), tool_name="telegram_send_message")
     _make_approval_rule_record(rule_id=uuid4(), tool_name="email_send", active=False)
 
-    app, mock_conn = _app_with_mock_db(fetch_rows=[rule1], fetchval_return=1)
+    app, mock_conn = _app_with_mock_db(app, fetch_rows=[rule1], fetchval_return=1)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -567,10 +567,10 @@ async def test_list_rules_with_results():
 
 
 @pytest.mark.asyncio
-async def test_get_rule_by_id():
+async def test_get_rule_by_id(app):
     """GET /api/approvals/rules/{rule_id} returns rule details."""
     rule = _make_approval_rule_record(rule_id=_RULE_ID)
-    app, mock_conn = _app_with_mock_db(fetchrow_return=rule)
+    app, mock_conn = _app_with_mock_db(app, fetchrow_return=rule)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -584,9 +584,9 @@ async def test_get_rule_by_id():
 
 
 @pytest.mark.asyncio
-async def test_get_rule_not_found():
+async def test_get_rule_not_found(app):
     """GET /api/approvals/rules/{rule_id} returns 404 when rule not found."""
-    app, mock_conn = _app_with_mock_db(fetchrow_return=None)
+    app, mock_conn = _app_with_mock_db(app, fetchrow_return=None)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -597,7 +597,7 @@ async def test_get_rule_not_found():
 
 
 @pytest.mark.asyncio
-async def test_create_rule_success():
+async def test_create_rule_success(app):
     """POST /api/approvals/rules creates and returns a new rule."""
     rule = _make_approval_rule_record(
         rule_id=_RULE_ID,
@@ -605,7 +605,7 @@ async def test_create_rule_success():
         arg_constraints={"chat_id": {"type": "exact", "value": "12345"}},
     )
 
-    app, mock_conn = _app_with_mock_db(fetchrow_return=rule)
+    app, mock_conn = _app_with_mock_db(app, fetchrow_return=rule)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -626,9 +626,9 @@ async def test_create_rule_success():
 
 
 @pytest.mark.asyncio
-async def test_create_rule_invalid_max_uses():
+async def test_create_rule_invalid_max_uses(app):
     """POST /api/approvals/rules returns 400 for invalid max_uses."""
-    app, _ = _app_with_mock_db()
+    app, _ = _app_with_mock_db(app)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -647,9 +647,9 @@ async def test_create_rule_invalid_max_uses():
 
 
 @pytest.mark.asyncio
-async def test_create_rule_no_subsystem():
+async def test_create_rule_no_subsystem(app):
     """POST /api/approvals/rules returns 503 when no subsystem."""
-    app, _ = _app_with_mock_db(has_approvals_tables=False)
+    app, _ = _app_with_mock_db(app, has_approvals_tables=False)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -667,14 +667,14 @@ async def test_create_rule_no_subsystem():
 
 
 @pytest.mark.asyncio
-async def test_create_rule_from_action_success():
+async def test_create_rule_from_action_success(app):
     """POST /api/approvals/rules/from-action creates rule from existing action."""
     action = _make_pending_action_record(
         action_id=_ACTION_ID,
         tool_args={"chat_id": "12345", "text": "Hello"},
     )
 
-    app, mock_conn = _app_with_mock_db(fetchrow_return=action)
+    app, mock_conn = _app_with_mock_db(app, fetchrow_return=action)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -691,9 +691,9 @@ async def test_create_rule_from_action_success():
 
 
 @pytest.mark.asyncio
-async def test_create_rule_from_action_not_found():
+async def test_create_rule_from_action_not_found(app):
     """POST /api/approvals/rules/from-action returns 404 when action not found."""
-    app, mock_conn = _app_with_mock_db()
+    app, mock_conn = _app_with_mock_db(app)
     mock_conn.fetchrow = AsyncMock(return_value=None)
 
     async with httpx.AsyncClient(
@@ -708,9 +708,9 @@ async def test_create_rule_from_action_not_found():
 
 
 @pytest.mark.asyncio
-async def test_create_rule_from_action_invalid_id():
+async def test_create_rule_from_action_invalid_id(app):
     """POST /api/approvals/rules/from-action returns 400 for invalid UUID."""
-    app, _ = _app_with_mock_db()
+    app, _ = _app_with_mock_db(app)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -724,12 +724,12 @@ async def test_create_rule_from_action_invalid_id():
 
 
 @pytest.mark.asyncio
-async def test_revoke_rule_success():
+async def test_revoke_rule_success(app):
     """POST /api/approvals/rules/{rule_id}/revoke deactivates the rule and returns it."""
     active_rule = _make_approval_rule_record(rule_id=_RULE_ID, active=True)
     revoked_rule = _make_approval_rule_record(rule_id=_RULE_ID, active=False)
 
-    app, mock_conn = _app_with_mock_db()
+    app, mock_conn = _app_with_mock_db(app)
     # fetchrow calls: initial SELECT, final SELECT after revoke
     mock_conn.fetchrow = AsyncMock(side_effect=[active_rule, revoked_rule])
 
@@ -745,9 +745,9 @@ async def test_revoke_rule_success():
 
 
 @pytest.mark.asyncio
-async def test_revoke_rule_not_found():
+async def test_revoke_rule_not_found(app):
     """POST /api/approvals/rules/{rule_id}/revoke returns 404 when rule not found."""
-    app, mock_conn = _app_with_mock_db()
+    app, mock_conn = _app_with_mock_db(app)
     mock_conn.fetchrow = AsyncMock(return_value=None)
 
     async with httpx.AsyncClient(
@@ -759,11 +759,11 @@ async def test_revoke_rule_not_found():
 
 
 @pytest.mark.asyncio
-async def test_revoke_rule_already_revoked():
+async def test_revoke_rule_already_revoked(app):
     """POST /api/approvals/rules/{rule_id}/revoke returns 409 for already revoked rule."""
     revoked_rule = _make_approval_rule_record(rule_id=_RULE_ID, active=False)
 
-    app, mock_conn = _app_with_mock_db()
+    app, mock_conn = _app_with_mock_db(app)
     mock_conn.fetchrow = AsyncMock(return_value=revoked_rule)
 
     async with httpx.AsyncClient(
@@ -775,9 +775,9 @@ async def test_revoke_rule_already_revoked():
 
 
 @pytest.mark.asyncio
-async def test_revoke_rule_invalid_id():
+async def test_revoke_rule_invalid_id(app):
     """POST /api/approvals/rules/{rule_id}/revoke returns 400 for invalid UUID."""
-    app, _ = _app_with_mock_db()
+    app, _ = _app_with_mock_db(app)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -788,9 +788,9 @@ async def test_revoke_rule_invalid_id():
 
 
 @pytest.mark.asyncio
-async def test_revoke_rule_no_subsystem():
+async def test_revoke_rule_no_subsystem(app):
     """POST /api/approvals/rules/{rule_id}/revoke returns 503 when no subsystem."""
-    app, _ = _app_with_mock_db(has_approvals_tables=False)
+    app, _ = _app_with_mock_db(app, has_approvals_tables=False)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -801,13 +801,13 @@ async def test_revoke_rule_no_subsystem():
 
 
 @pytest.mark.asyncio
-async def test_get_rule_suggestions():
+async def test_get_rule_suggestions(app):
     """GET /api/approvals/rules/suggestions/{action_id} returns suggestions."""
     action = _make_pending_action_record(
         action_id=_ACTION_ID,
         tool_args={"chat_id": "12345", "text": "Hello"},
     )
-    app, mock_conn = _app_with_mock_db(fetchrow_return=action)
+    app, mock_conn = _app_with_mock_db(app, fetchrow_return=action)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -827,9 +827,10 @@ async def test_get_rule_suggestions():
 
 
 @pytest.mark.asyncio
-async def test_get_metrics():
+async def test_get_metrics(app):
     """GET /api/approvals/metrics returns aggregate metrics."""
     app, mock_conn = _app_with_mock_db(
+        app,
         fetchval_side_effect=[
             5,  # total_pending
             10,  # total_approved_today
@@ -839,7 +840,7 @@ async def test_get_metrics():
             12,  # total_decisions_today
             2,  # failure_count_today (changed from fetch to fetchval)
             7,  # active_rules_count
-        ]
+        ],
     )
 
     # Mock avg_latency query
@@ -865,9 +866,9 @@ async def test_get_metrics():
 
 
 @pytest.mark.asyncio
-async def test_get_metrics_no_approvals_subsystem():
+async def test_get_metrics_no_approvals_subsystem(app):
     """GET /api/approvals/metrics returns zeroed metrics when no approvals subsystem."""
-    app, _ = _app_with_mock_db(has_approvals_tables=False)
+    app, _ = _app_with_mock_db(app, has_approvals_tables=False)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -887,6 +888,7 @@ async def test_get_metrics_no_approvals_subsystem():
 
 
 def _make_app_with_contact_resolution(
+    app,
     *,
     action_rows: list,
     contact_row: dict | None = None,
@@ -944,14 +946,13 @@ def _make_app_with_contact_resolution(
         mock_db.pool.side_effect = KeyError("No pool")
         mock_db.butler_names = []
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     return app
 
 
 @pytest.mark.asyncio
-async def test_list_actions_includes_target_contact_when_contact_id_in_tool_args():
+async def test_list_actions_includes_target_contact_when_contact_id_in_tool_args(app):
     """GET /api/approvals/actions includes target_contact when tool_args has contact_id."""
     contact_uuid = uuid4()
     action_row = _make_pending_action_record(
@@ -964,6 +965,7 @@ async def test_list_actions_includes_target_contact_when_contact_id_in_tool_args
     }
 
     app = _make_app_with_contact_resolution(
+        app,
         action_rows=[action_row],
         contact_row=contact_row_data,
     )
@@ -984,13 +986,14 @@ async def test_list_actions_includes_target_contact_when_contact_id_in_tool_args
 
 
 @pytest.mark.asyncio
-async def test_list_actions_target_contact_null_when_no_contact_id():
+async def test_list_actions_target_contact_null_when_no_contact_id(app):
     """GET /api/approvals/actions returns target_contact=null when no contact_id in tool_args."""
     action_row = _make_pending_action_record(
         tool_args={"chat_id": "99999", "text": "Hello"},
     )
 
     app = _make_app_with_contact_resolution(
+        app,
         action_rows=[action_row],
         contact_row=None,
     )
@@ -1007,7 +1010,7 @@ async def test_list_actions_target_contact_null_when_no_contact_id():
 
 
 @pytest.mark.asyncio
-async def test_list_actions_target_contact_null_when_contact_not_found():
+async def test_list_actions_target_contact_null_when_contact_not_found(app):
     """GET /api/approvals/actions: target_contact is null when contact_id not in DB."""
     contact_uuid = uuid4()
     action_row = _make_pending_action_record(
@@ -1015,6 +1018,7 @@ async def test_list_actions_target_contact_null_when_contact_not_found():
     )
 
     app = _make_app_with_contact_resolution(
+        app,
         action_rows=[action_row],
         contact_row=None,  # DB returns None for this contact
     )

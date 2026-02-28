@@ -20,7 +20,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
@@ -89,7 +88,7 @@ def _make_status_result(
 class TestListMultipleButlerStatuses:
     """Verify list endpoint correctly aggregates mixed statuses."""
 
-    async def test_mixed_statuses_ok_unreachable_timeout(self):
+    async def test_mixed_statuses_ok_unreachable_timeout(self, app):
         """Three butlers: A ok, B unreachable, C timeout — all appear in response."""
         configs = [
             ButlerConnectionInfo(name="alpha", port=40100, description="Butler A"),
@@ -111,7 +110,6 @@ class TestListMultipleButlerStatuses:
 
         mgr.get_client = _get_client_side_effect
 
-        app = create_app()
         app.dependency_overrides[get_mcp_manager] = lambda: mgr
         app.dependency_overrides[get_butler_configs] = lambda: configs
 
@@ -132,7 +130,7 @@ class TestListMultipleButlerStatuses:
         assert by_name["beta"]["status"] == "down"
         assert by_name["gamma"]["status"] == "down"
 
-    async def test_all_butlers_reachable(self):
+    async def test_all_butlers_reachable(self, app):
         """When all butlers respond, all show status='ok'."""
         configs = [
             ButlerConnectionInfo(name="one", port=40100),
@@ -143,7 +141,6 @@ class TestListMultipleButlerStatuses:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = create_app()
         app.dependency_overrides[get_mcp_manager] = lambda: mgr
         app.dependency_overrides[get_butler_configs] = lambda: configs
 
@@ -166,7 +163,7 @@ class TestListMultipleButlerStatuses:
 class TestListUnexpectedErrors:
     """Verify RuntimeError during probing yields status='down', not HTTP 500."""
 
-    async def test_runtime_error_yields_down_not_500(self):
+    async def test_runtime_error_yields_down_not_500(self, app):
         """RuntimeError from MCPClientManager results in status='down'."""
         configs = [
             ButlerConnectionInfo(name="borked", port=40200, description="Broken butler"),
@@ -175,7 +172,6 @@ class TestListUnexpectedErrors:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(side_effect=RuntimeError("something unexpected"))
 
-        app = create_app()
         app.dependency_overrides[get_mcp_manager] = lambda: mgr
         app.dependency_overrides[get_butler_configs] = lambda: configs
 
@@ -191,7 +187,7 @@ class TestListUnexpectedErrors:
         assert data[0]["status"] == "down"
         assert data[0]["port"] == 40200
 
-    async def test_os_error_yields_down_not_500(self):
+    async def test_os_error_yields_down_not_500(self, app):
         """OSError from MCPClientManager results in status='down'."""
         configs = [
             ButlerConnectionInfo(name="disk-fail", port=40201),
@@ -200,7 +196,6 @@ class TestListUnexpectedErrors:
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(side_effect=OSError("disk I/O error"))
 
-        app = create_app()
         app.dependency_overrides[get_mcp_manager] = lambda: mgr
         app.dependency_overrides[get_butler_configs] = lambda: configs
 
@@ -222,7 +217,7 @@ class TestListUnexpectedErrors:
 class TestDetailWithRealConfig:
     """Verify detail endpoint reads butler.toml from disk and populates response."""
 
-    async def test_basic_detail_from_disk(self, tmp_path: Path):
+    async def test_basic_detail_from_disk(self, app, tmp_path: Path):
         """Detail response includes name, port, description, db_name from disk config."""
         make_butler_dir(
             tmp_path,
@@ -251,7 +246,7 @@ class TestDetailWithRealConfig:
         assert data["db_name"] == "butler_general"
         assert "classify" in data["skills"]
 
-    async def test_detail_includes_modules_from_config(self, tmp_path: Path):
+    async def test_detail_includes_modules_from_config(self, app, tmp_path: Path):
         """Detail response includes modules from butler.toml."""
         make_butler_dir(
             tmp_path,
@@ -278,7 +273,7 @@ class TestDetailWithRealConfig:
         assert "telegram" in module_names
         assert "email" in module_names
 
-    async def test_detail_includes_schedules_from_config(self, tmp_path: Path):
+    async def test_detail_includes_schedules_from_config(self, app, tmp_path: Path):
         """Detail response includes schedule entries from butler.toml."""
         make_butler_dir(
             tmp_path,
@@ -306,7 +301,7 @@ class TestDetailWithRealConfig:
         assert "morning-check" in schedule_names
         assert "nightly-cleanup" in schedule_names
 
-    async def test_detail_with_multiple_skills(self, tmp_path: Path):
+    async def test_detail_with_multiple_skills(self, app, tmp_path: Path):
         """Detail response lists all skills from skills/ directory."""
         make_butler_dir(
             tmp_path,
@@ -340,7 +335,7 @@ class TestDetailWithRealConfig:
 class TestDetailOnline:
     """Verify detail endpoint reports 'online' when MCP ping succeeds."""
 
-    async def test_status_online_when_reachable(self, tmp_path: Path):
+    async def test_status_online_when_reachable(self, app, tmp_path: Path):
         """Butler is online when MCP client connects and pings successfully."""
         make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
@@ -370,7 +365,7 @@ class TestDetailOnline:
 class TestDetailOffline:
     """Verify detail endpoint reports 'offline' when MCP is unreachable."""
 
-    async def test_status_offline_when_unreachable(self, tmp_path: Path):
+    async def test_status_offline_when_unreachable(self, app, tmp_path: Path):
         """Butler is offline when MCP client raises ButlerUnreachableError."""
         make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
@@ -391,7 +386,7 @@ class TestDetailOffline:
         assert data["status"] == "offline"
         assert data["name"] == "general"
 
-    async def test_status_offline_when_unexpected_error(self, tmp_path: Path):
+    async def test_status_offline_when_unexpected_error(self, app, tmp_path: Path):
         """Butler is offline when MCP client raises an unexpected exception."""
         make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
@@ -409,7 +404,7 @@ class TestDetailOffline:
         data = response.json()["data"]
         assert data["status"] == "offline"
 
-    async def test_detail_still_returns_config_when_offline(self, tmp_path: Path):
+    async def test_detail_still_returns_config_when_offline(self, app, tmp_path: Path):
         """Config data (modules, skills, schedules) is still returned when offline."""
         make_butler_dir(
             tmp_path,
@@ -449,7 +444,7 @@ class TestDetailOffline:
 class TestConfigEndpointMarkdownFiles:
     """Verify config endpoint reads butler.toml and markdown files."""
 
-    async def test_reads_all_markdown_files(self, tmp_path: Path):
+    async def test_reads_all_markdown_files(self, app, tmp_path: Path):
         """All three markdown files are returned when present."""
         make_butler_dir(
             tmp_path,
@@ -475,7 +470,7 @@ class TestConfigEndpointMarkdownFiles:
         assert data["manifesto_md"] == "# Manifesto\nServe the user.\n"
         assert data["agents_md"] == "# Agent Notes\nRemember this.\n"
 
-    async def test_butler_toml_parsed_as_dict(self, tmp_path: Path):
+    async def test_butler_toml_parsed_as_dict(self, app, tmp_path: Path):
         """butler.toml is returned as a parsed dict, not raw text."""
         make_butler_dir(tmp_path, "general", 40101, description="A fine butler")
         configs = [ButlerConnectionInfo("general", 40101)]
@@ -504,7 +499,7 @@ class TestConfigEndpointMarkdownFiles:
 class TestConfigEndpointMissingMarkdown:
     """Verify missing markdown files are returned as null."""
 
-    async def test_all_markdown_files_missing(self, tmp_path: Path):
+    async def test_all_markdown_files_missing(self, app, tmp_path: Path):
         """When no markdown files exist, all fields are null."""
         make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
@@ -526,7 +521,7 @@ class TestConfigEndpointMissingMarkdown:
         assert data["agents_md"] is None
         assert data["manifesto_md"] is None
 
-    async def test_partial_markdown_files(self, tmp_path: Path):
+    async def test_partial_markdown_files(self, app, tmp_path: Path):
         """Only some markdown files present — missing ones are null."""
         make_butler_dir(
             tmp_path,
@@ -559,7 +554,7 @@ class TestConfigEndpointMissingMarkdown:
 class TestSkillsEndpointMultiple:
     """Verify skills endpoint returns all skills with correct content."""
 
-    async def test_returns_multiple_skills_with_content(self, tmp_path: Path):
+    async def test_returns_multiple_skills_with_content(self, app, tmp_path: Path):
         """Multiple skills are returned sorted with SKILL.md content."""
         make_butler_dir(
             tmp_path,
@@ -585,7 +580,7 @@ class TestSkillsEndpointMultiple:
         assert data[1]["name"] == "report-builder"
         assert "report-builder" in data[1]["content"]
 
-    async def test_skills_are_sorted_alphabetically(self, tmp_path: Path):
+    async def test_skills_are_sorted_alphabetically(self, app, tmp_path: Path):
         """Skills are returned in alphabetical order."""
         make_butler_dir(
             tmp_path,
@@ -617,7 +612,7 @@ class TestSkillsEndpointMultiple:
 class TestModulesEndpointMixedHealth:
     """Verify modules endpoint reports mixed health statuses correctly."""
 
-    async def test_mixed_module_health(self, tmp_path: Path):
+    async def test_mixed_module_health(self, app, tmp_path: Path):
         """Modules with mixed health: connected, error (not loaded)."""
         make_butler_dir(
             tmp_path,
@@ -652,7 +647,7 @@ class TestModulesEndpointMixedHealth:
         assert by_name["calendar"]["status"] == "error"
         assert by_name["calendar"]["error"] is not None
 
-    async def test_degraded_health_propagates_to_modules(self, tmp_path: Path):
+    async def test_degraded_health_propagates_to_modules(self, app, tmp_path: Path):
         """When butler health is 'degraded', loaded modules show 'degraded'."""
         make_butler_dir(
             tmp_path,
@@ -680,7 +675,7 @@ class TestModulesEndpointMixedHealth:
         for m in modules:
             assert m["status"] == "degraded"
 
-    async def test_modules_unknown_when_butler_unreachable(self, tmp_path: Path):
+    async def test_modules_unknown_when_butler_unreachable(self, app, tmp_path: Path):
         """All modules show 'unknown' when butler MCP server is unreachable."""
         make_butler_dir(
             tmp_path,
@@ -819,14 +814,13 @@ class TestFullDiscoveryFlow:
 class TestResponseEnvelope:
     """Verify all endpoints return standard ApiResponse envelope."""
 
-    async def test_list_envelope(self):
+    async def test_list_envelope(self, app):
         """GET /api/butlers returns {data: [...], meta: {...}}."""
         configs = [ButlerConnectionInfo("test", 40100)]
         mock_client = _make_mock_client()
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
 
-        app = create_app()
         app.dependency_overrides[get_mcp_manager] = lambda: mgr
         app.dependency_overrides[get_butler_configs] = lambda: configs
 
@@ -840,7 +834,7 @@ class TestResponseEnvelope:
         assert "meta" in body
         assert isinstance(body["data"], list)
 
-    async def test_detail_envelope(self, tmp_path: Path):
+    async def test_detail_envelope(self, app, tmp_path: Path):
         """GET /api/butlers/{name} returns {data: {...}, meta: {...}}."""
         make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
@@ -860,7 +854,7 @@ class TestResponseEnvelope:
         assert "meta" in body
         assert isinstance(body["data"], dict)
 
-    async def test_config_envelope(self, tmp_path: Path):
+    async def test_config_envelope(self, app, tmp_path: Path):
         """GET /api/butlers/{name}/config returns {data: {...}, meta: {...}}."""
         make_butler_dir(tmp_path, "general", 40101)
         configs = [ButlerConnectionInfo("general", 40101)]
@@ -877,7 +871,7 @@ class TestResponseEnvelope:
         assert "data" in body
         assert "meta" in body
 
-    async def test_skills_envelope(self, tmp_path: Path):
+    async def test_skills_envelope(self, app, tmp_path: Path):
         """GET /api/butlers/{name}/skills returns {data: [...], meta: {...}}."""
         butler_dir = tmp_path / "general"
         butler_dir.mkdir()
@@ -897,7 +891,7 @@ class TestResponseEnvelope:
         assert "meta" in body
         assert isinstance(body["data"], list)
 
-    async def test_modules_envelope(self, tmp_path: Path):
+    async def test_modules_envelope(self, app, tmp_path: Path):
         """GET /api/butlers/{name}/modules returns {data: [...], meta: {...}}."""
         make_butler_dir(tmp_path, "general", 40101, modules={"telegram": ""})
         configs = [ButlerConnectionInfo("general", 40101)]

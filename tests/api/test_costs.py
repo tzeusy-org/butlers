@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
@@ -94,12 +93,12 @@ def _make_manager_with_responses(
 
 
 def _app_with_overrides(
+    app,
     mgr: MCPClientManager,
     configs: list[ButlerConnectionInfo],
     pricing: PricingConfig,
 ):
-    """Create an app with dependency overrides for costs testing."""
-    app = create_app()
+    """Wire dependency overrides for costs testing onto a shared app."""
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_pricing] = lambda: pricing
@@ -112,10 +111,10 @@ def _app_with_overrides(
 
 
 class TestCostSummary:
-    async def test_summary_returns_zero_when_no_butlers(self):
+    async def test_summary_returns_zero_when_no_butlers(self, app):
         """Summary endpoint returns zeroed-out data when no butlers configured."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -133,10 +132,10 @@ class TestCostSummary:
         assert data["by_model"] == {}
         assert data["period"] == "today"
 
-    async def test_summary_default_period_is_today(self):
+    async def test_summary_default_period_is_today(self, app):
         """Default period parameter is 'today'."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -145,10 +144,10 @@ class TestCostSummary:
         data = response.json()["data"]
         assert data["period"] == "today"
 
-    async def test_summary_accepts_7d_period(self):
+    async def test_summary_accepts_7d_period(self, app):
         """Period '7d' is accepted."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -157,10 +156,10 @@ class TestCostSummary:
         assert response.status_code == 200
         assert response.json()["data"]["period"] == "7d"
 
-    async def test_summary_accepts_30d_period(self):
+    async def test_summary_accepts_30d_period(self, app):
         """Period '30d' is accepted."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -169,10 +168,10 @@ class TestCostSummary:
         assert response.status_code == 200
         assert response.json()["data"]["period"] == "30d"
 
-    async def test_summary_rejects_invalid_period(self):
+    async def test_summary_rejects_invalid_period(self, app):
         """Invalid period parameter returns 422."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -180,7 +179,7 @@ class TestCostSummary:
 
         assert response.status_code == 422
 
-    async def test_summary_aggregates_butler_costs(self):
+    async def test_summary_aggregates_butler_costs(self, app):
         """Summary aggregates cost data from multiple butlers."""
         configs = _make_configs()
         pricing = _make_pricing()
@@ -215,7 +214,7 @@ class TestCostSummary:
                 "general": _make_tool_result(general_data),
             },
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -241,7 +240,7 @@ class TestCostSummary:
         assert "claude-sonnet-4-20250514" in data["by_model"]
         assert "claude-haiku-35-20241022" in data["by_model"]
 
-    async def test_summary_calls_registered_sessions_summary_tool(self):
+    async def test_summary_calls_registered_sessions_summary_tool(self, app):
         """Summary fan-out should call the daemon-registered sessions_summary tool."""
         configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
         pricing = _make_pricing()
@@ -258,7 +257,7 @@ class TestCostSummary:
         mock_client.call_tool = AsyncMock(return_value=_make_tool_result(session_stats))
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -268,7 +267,7 @@ class TestCostSummary:
         assert response.status_code == 200
         mock_client.call_tool.assert_awaited_once_with("sessions_summary", {"period": "7d"})
 
-    async def test_summary_handles_unreachable_butler(self):
+    async def test_summary_handles_unreachable_butler(self, app):
         """Unreachable butlers contribute zero to the aggregate."""
         configs = _make_configs()
         pricing = _make_pricing()
@@ -292,7 +291,7 @@ class TestCostSummary:
                 "general": ButlerUnreachableError("general"),
             },
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -307,7 +306,7 @@ class TestCostSummary:
         assert data["total_output_tokens"] == 500
         assert "general" not in data["by_butler"]
 
-    async def test_summary_handles_empty_tool_result(self):
+    async def test_summary_handles_empty_tool_result(self, app):
         """Butler returning empty tool result contributes zero."""
         configs = [ButlerConnectionInfo(name="empty", port=40100)]
         pricing = _make_pricing()
@@ -316,7 +315,7 @@ class TestCostSummary:
             configs,
             {"empty": _make_empty_tool_result()},
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -328,10 +327,10 @@ class TestCostSummary:
         assert data["total_cost_usd"] == 0.0
         assert data["total_sessions"] == 0
 
-    async def test_summary_response_validates_as_model(self):
+    async def test_summary_response_validates_as_model(self, app):
         """Summary response data can be parsed as CostSummary model."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -343,7 +342,7 @@ class TestCostSummary:
         assert summary.total_sessions == 0
         assert summary.period == "today"
 
-    async def test_summary_unknown_model_contributes_zero_cost(self):
+    async def test_summary_unknown_model_contributes_zero_cost(self, app):
         """A model not in pricing.toml contributes zero cost."""
         configs = [ButlerConnectionInfo(name="test", port=40100)]
         pricing = _make_pricing()
@@ -364,7 +363,7 @@ class TestCostSummary:
             configs,
             {"test": _make_tool_result(data)},
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -378,7 +377,7 @@ class TestCostSummary:
         assert resp_data["total_input_tokens"] == 5000
         assert "test" not in resp_data["by_butler"]
 
-    async def test_summary_logs_tool_contract_failures(self, caplog):
+    async def test_summary_logs_tool_contract_failures(self, app, caplog):
         """Unexpected fan-out failures should emit a warning with butler/tool context."""
         configs = [ButlerConnectionInfo(name="switchboard", port=40100)]
         pricing = _make_pricing()
@@ -389,7 +388,7 @@ class TestCostSummary:
         )
         mgr = MagicMock(spec=MCPClientManager)
         mgr.get_client = AsyncMock(return_value=mock_client)
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         with caplog.at_level(logging.WARNING, logger="butlers.api.routers.costs"):
             async with httpx.AsyncClient(
@@ -412,10 +411,10 @@ class TestCostSummary:
 
 
 class TestDailyCosts:
-    async def test_daily_returns_empty_list_when_no_butlers(self):
+    async def test_daily_returns_empty_list_when_no_butlers(self, app):
         """Daily endpoint returns empty list when no butlers are configured."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -426,7 +425,7 @@ class TestDailyCosts:
         assert "data" in body
         assert body["data"] == []
 
-    async def test_daily_cost_model_validates(self):
+    async def test_daily_cost_model_validates(self, app):
         """DailyCost model validates a well-formed record."""
         record = DailyCost(
             date="2026-02-10",
@@ -439,10 +438,10 @@ class TestDailyCosts:
         assert record.cost_usd == 1.23
         assert record.sessions == 5
 
-    async def test_daily_defaults_to_last_7_days(self):
+    async def test_daily_defaults_to_last_7_days(self, app):
         """Without from/to params the endpoint still returns 200."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -451,10 +450,10 @@ class TestDailyCosts:
         assert response.status_code == 200
         assert response.json()["data"] == []
 
-    async def test_daily_accepts_from_and_to_params(self):
+    async def test_daily_accepts_from_and_to_params(self, app):
         """Explicit from/to date params are accepted."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -466,7 +465,7 @@ class TestDailyCosts:
         assert response.status_code == 200
         assert isinstance(response.json()["data"], list)
 
-    async def test_daily_aggregates_across_butlers(self):
+    async def test_daily_aggregates_across_butlers(self, app):
         """Daily costs from multiple butlers are merged by date."""
         configs = _make_configs()
         pricing = _make_pricing()
@@ -523,7 +522,7 @@ class TestDailyCosts:
                 "general": _make_tool_result(general_daily),
             },
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -558,7 +557,7 @@ class TestDailyCosts:
         # 4000*0.000003 + 2000*0.000015 = 0.012 + 0.030 = 0.042
         assert day_10["cost_usd"] == pytest.approx(0.042, abs=1e-4)
 
-    async def test_daily_handles_unreachable_butler(self):
+    async def test_daily_handles_unreachable_butler(self, app):
         """Unreachable butler is skipped gracefully."""
         configs = _make_configs()
         pricing = _make_pricing()
@@ -587,7 +586,7 @@ class TestDailyCosts:
                 "general": ButlerUnreachableError("general"),
             },
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -602,7 +601,7 @@ class TestDailyCosts:
         assert len(data) == 1
         assert data[0]["sessions"] == 1
 
-    async def test_daily_handles_empty_tool_result(self):
+    async def test_daily_handles_empty_tool_result(self, app):
         """Butler returning empty tool result contributes nothing."""
         configs = [ButlerConnectionInfo(name="empty", port=40100)]
         pricing = _make_pricing()
@@ -611,7 +610,7 @@ class TestDailyCosts:
             configs,
             {"empty": _make_empty_tool_result()},
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -624,7 +623,7 @@ class TestDailyCosts:
         assert response.status_code == 200
         assert response.json()["data"] == []
 
-    async def test_daily_results_sorted_by_date(self):
+    async def test_daily_results_sorted_by_date(self, app):
         """Results are sorted by date ascending even if butler returns unordered."""
         configs = [ButlerConnectionInfo(name="test", port=40100)]
         pricing = _make_pricing()
@@ -659,7 +658,7 @@ class TestDailyCosts:
             configs,
             {"test": _make_tool_result(daily_data)},
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -674,7 +673,7 @@ class TestDailyCosts:
         dates = [d["date"] for d in data]
         assert dates == ["2026-02-08", "2026-02-09", "2026-02-10"]
 
-    async def test_daily_unknown_model_contributes_zero_cost(self):
+    async def test_daily_unknown_model_contributes_zero_cost(self, app):
         """A model not in pricing config contributes zero cost."""
         configs = [ButlerConnectionInfo(name="test", port=40100)]
         pricing = _make_pricing()
@@ -700,7 +699,7 @@ class TestDailyCosts:
             configs,
             {"test": _make_tool_result(daily_data)},
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -717,7 +716,7 @@ class TestDailyCosts:
         assert data[0]["sessions"] == 1
         assert data[0]["input_tokens"] == 5000
 
-    async def test_daily_response_validates_as_model(self):
+    async def test_daily_response_validates_as_model(self, app):
         """Daily response items can be parsed as DailyCost models."""
         configs = [ButlerConnectionInfo(name="test", port=40100)]
         pricing = _make_pricing()
@@ -743,7 +742,7 @@ class TestDailyCosts:
             configs,
             {"test": _make_tool_result(daily_data)},
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -765,10 +764,10 @@ class TestDailyCosts:
 
 
 class TestTopSessions:
-    async def test_top_sessions_returns_empty_when_no_butlers(self):
+    async def test_top_sessions_returns_empty_when_no_butlers(self, app):
         """Top-sessions returns empty list when no butlers configured."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -779,7 +778,7 @@ class TestTopSessions:
         assert "data" in body
         assert body["data"] == []
 
-    async def test_top_session_model_validates(self):
+    async def test_top_session_model_validates(self, app):
         """TopSession model validates a well-formed record."""
         session = TopSession(
             session_id="abc-123",
@@ -794,10 +793,10 @@ class TestTopSessions:
         assert session.butler == "general"
         assert session.model == "claude-sonnet-4-20250514"
 
-    async def test_top_sessions_default_limit_is_10(self):
+    async def test_top_sessions_default_limit_is_10(self, app):
         """Default limit parameter is 10."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -806,10 +805,10 @@ class TestTopSessions:
         assert response.status_code == 200
         assert response.json()["data"] == []
 
-    async def test_top_sessions_limit_param_accepted(self):
+    async def test_top_sessions_limit_param_accepted(self, app):
         """Custom limit parameter is accepted."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -817,10 +816,10 @@ class TestTopSessions:
 
         assert response.status_code == 200
 
-    async def test_top_sessions_limit_max_50(self):
+    async def test_top_sessions_limit_max_50(self, app):
         """Limit above 50 returns 422."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -828,10 +827,10 @@ class TestTopSessions:
 
         assert response.status_code == 422
 
-    async def test_top_sessions_limit_min_1(self):
+    async def test_top_sessions_limit_min_1(self, app):
         """Limit below 1 returns 422."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -839,7 +838,7 @@ class TestTopSessions:
 
         assert response.status_code == 422
 
-    async def test_top_sessions_merges_and_sorts_by_cost(self):
+    async def test_top_sessions_merges_and_sorts_by_cost(self, app):
         """Sessions from multiple butlers are merged and sorted by cost descending."""
         configs = _make_configs()
         pricing = _make_pricing()
@@ -881,7 +880,7 @@ class TestTopSessions:
                 "general": _make_tool_result(general_sessions),
             },
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -907,7 +906,7 @@ class TestTopSessions:
         assert data[2]["butler"] == "general"
         assert data[2]["cost_usd"] == pytest.approx(0.012, abs=1e-4)
 
-    async def test_top_sessions_respects_limit(self):
+    async def test_top_sessions_respects_limit(self, app):
         """Only the top N sessions are returned when limit is set."""
         configs = _make_configs()
         pricing = _make_pricing()
@@ -949,7 +948,7 @@ class TestTopSessions:
                 "general": _make_tool_result(general_sessions),
             },
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -962,7 +961,7 @@ class TestTopSessions:
         assert data[0]["session_id"] == "gen-1"
         assert data[1]["session_id"] == "sw-1"
 
-    async def test_top_sessions_handles_unreachable_butler(self):
+    async def test_top_sessions_handles_unreachable_butler(self, app):
         """Unreachable butlers are skipped gracefully."""
         configs = _make_configs()
         pricing = _make_pricing()
@@ -986,7 +985,7 @@ class TestTopSessions:
                 "general": ButlerUnreachableError("general"),
             },
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -999,7 +998,7 @@ class TestTopSessions:
         assert data[0]["session_id"] == "sw-1"
         assert data[0]["butler"] == "switchboard"
 
-    async def test_top_sessions_handles_empty_tool_result(self):
+    async def test_top_sessions_handles_empty_tool_result(self, app):
         """Butler returning empty tool result contributes no sessions."""
         configs = [ButlerConnectionInfo(name="empty", port=40100)]
         pricing = _make_pricing()
@@ -1008,7 +1007,7 @@ class TestTopSessions:
             configs,
             {"empty": _make_empty_tool_result()},
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1018,7 +1017,7 @@ class TestTopSessions:
         assert response.status_code == 200
         assert response.json()["data"] == []
 
-    async def test_top_sessions_unknown_model_contributes_zero_cost(self):
+    async def test_top_sessions_unknown_model_contributes_zero_cost(self, app):
         """Sessions with unknown models have zero cost but are still returned."""
         configs = [ButlerConnectionInfo(name="test", port=40100)]
         pricing = _make_pricing()
@@ -1039,7 +1038,7 @@ class TestTopSessions:
             configs,
             {"test": _make_tool_result(data)},
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1053,7 +1052,7 @@ class TestTopSessions:
         assert resp_data[0]["model"] == "unknown-model-v9"
         assert resp_data[0]["butler"] == "test"
 
-    async def test_top_sessions_response_validates_as_model(self):
+    async def test_top_sessions_response_validates_as_model(self, app):
         """Top-sessions response data can be parsed as TopSession models."""
         configs = [ButlerConnectionInfo(name="test", port=40100)]
         pricing = _make_pricing()
@@ -1074,7 +1073,7 @@ class TestTopSessions:
             configs,
             {"test": _make_tool_result(data)},
         )
-        app = _app_with_overrides(mgr, configs, pricing)
+        _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1094,10 +1093,10 @@ class TestTopSessions:
 
 
 class TestResponseShape:
-    async def test_summary_has_meta(self):
+    async def test_summary_has_meta(self, app):
         """All responses include the meta field."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1106,10 +1105,10 @@ class TestResponseShape:
         body = response.json()
         assert "meta" in body
 
-    async def test_daily_has_meta(self):
+    async def test_daily_has_meta(self, app):
         """Daily response includes the meta field."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1118,10 +1117,10 @@ class TestResponseShape:
         body = response.json()
         assert "meta" in body
 
-    async def test_top_sessions_has_meta(self):
+    async def test_top_sessions_has_meta(self, app):
         """Top-sessions response includes the meta field."""
         mgr = MagicMock(spec=MCPClientManager)
-        app = _app_with_overrides(mgr, [], _make_pricing())
+        _app_with_overrides(app, mgr, [], _make_pricing())
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

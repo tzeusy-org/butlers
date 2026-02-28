@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 
 pytestmark = pytest.mark.unit
@@ -26,6 +26,7 @@ pytestmark = pytest.mark.unit
 
 
 def _app_with_mock_db(
+    app: FastAPI,
     *,
     fetch_rows: list | None = None,
     fetchval_result: int = 0,
@@ -51,8 +52,6 @@ def _app_with_mock_db(
     else:
         mock_db.pool.side_effect = KeyError("No pool for butler: general")
 
-    app = create_app()
-
     # Override the dependency for the dynamically-loaded general router
     # The router module is loaded during create_app() and stored in app.state
     for butler_name, router_module in app.state.butler_routers:
@@ -69,9 +68,9 @@ def _app_with_mock_db(
 
 
 class TestListCollections:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -86,9 +85,9 @@ class TestListCollections:
         assert "offset" in body["meta"]
         assert "limit" in body["meta"]
 
-    async def test_empty_results(self):
+    async def test_empty_results(self, app):
         """When no collections exist, data should be an empty list."""
-        app = _app_with_mock_db(fetchval_result=0)
+        _app_with_mock_db(app, fetchval_result=0)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -98,9 +97,9 @@ class TestListCollections:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_pagination_params_accepted(self):
+    async def test_pagination_params_accepted(self, app):
         """The ?offset= and ?limit= query parameters must be accepted."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -108,9 +107,9 @@ class TestListCollections:
 
         assert resp.status_code == 200
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When the general DB pool is unavailable, return 503."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -125,9 +124,9 @@ class TestListCollections:
 
 
 class TestListCollectionEntities:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -139,9 +138,9 @@ class TestListCollectionEntities:
         assert "meta" in body
         assert isinstance(body["data"], list)
 
-    async def test_empty_results(self):
+    async def test_empty_results(self, app):
         """When no entities exist in collection, data should be an empty list."""
-        app = _app_with_mock_db(fetchval_result=0)
+        _app_with_mock_db(app, fetchval_result=0)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -151,9 +150,9 @@ class TestListCollectionEntities:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When the general DB pool is unavailable, return 503."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -168,9 +167,9 @@ class TestListCollectionEntities:
 
 
 class TestListEntities:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -182,9 +181,9 @@ class TestListEntities:
         assert "meta" in body
         assert isinstance(body["data"], list)
 
-    async def test_search_param_accepted(self):
+    async def test_search_param_accepted(self, app):
         """The ?q= query parameter must not cause an error."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -192,9 +191,9 @@ class TestListEntities:
 
         assert resp.status_code == 200
 
-    async def test_collection_filter_accepted(self):
+    async def test_collection_filter_accepted(self, app):
         """The ?collection= query parameter must not cause an error."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -202,9 +201,9 @@ class TestListEntities:
 
         assert resp.status_code == 200
 
-    async def test_tag_filter_accepted(self):
+    async def test_tag_filter_accepted(self, app):
         """The ?tag= query parameter must not cause an error."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -212,9 +211,9 @@ class TestListEntities:
 
         assert resp.status_code == 200
 
-    async def test_empty_results(self):
+    async def test_empty_results(self, app):
         """When no entities exist, data should be an empty list."""
-        app = _app_with_mock_db(fetchval_result=0)
+        _app_with_mock_db(app, fetchval_result=0)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -224,9 +223,9 @@ class TestListEntities:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When the general DB pool is unavailable, return 503."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -241,9 +240,9 @@ class TestListEntities:
 
 
 class TestGetEntity:
-    async def test_missing_entity_returns_404(self):
+    async def test_missing_entity_returns_404(self, app):
         """A non-existent entity should return 404 when fetchrow returns None."""
-        app = _app_with_mock_db(fetchrow_result=None)
+        _app_with_mock_db(app, fetchrow_result=None)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -251,7 +250,7 @@ class TestGetEntity:
 
         assert resp.status_code == 404
 
-    async def test_returns_api_response_structure(self):
+    async def test_returns_api_response_structure(self, app):
         """Response must have 'data' and 'meta' keys when entity exists."""
         row = {
             "id": "ent-1",
@@ -262,7 +261,7 @@ class TestGetEntity:
             "created_at": "2025-01-01T00:00:00",
             "updated_at": "2025-01-01T00:00:00",
         }
-        app = _app_with_mock_db(fetchrow_result=row)
+        _app_with_mock_db(app, fetchrow_result=row)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -275,9 +274,9 @@ class TestGetEntity:
         assert body["data"]["id"] == "ent-1"
         assert body["data"]["collection_name"] == "bookmarks"
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When the general DB pool is unavailable, return 503."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

@@ -15,8 +15,8 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.traces import (
     _determine_trace_status,
@@ -89,12 +89,15 @@ def _make_trace_summary_row(
 
 
 def _app_with_mock_db(
+    app: FastAPI,
     *,
     fan_out_results: list[dict[str, list]] | None = None,
-):
-    """Create a FastAPI app with a mocked DatabaseManager.
+) -> FastAPI:
+    """Wire a FastAPI app with a mocked DatabaseManager.
 
-    fan_out_results is a list of dicts — one per fan_out call in order.
+    Accepts the shared module-scoped ``app`` fixture so that create_app()
+    is not called per test.  fan_out_results is a list of dicts — one per
+    fan_out call in order.
     """
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "switchboard"]
@@ -104,7 +107,6 @@ def _app_with_mock_db(
     else:
         mock_db.fan_out = AsyncMock(return_value={})
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     return app
@@ -377,9 +379,9 @@ class TestDetermineTraceStatus:
 
 
 class TestListTraces:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination fields."""
-        app = _app_with_mock_db(fan_out_results=[{}])
+        _app_with_mock_db(app, fan_out_results=[{}])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -394,7 +396,7 @@ class TestListTraces:
         assert "offset" in body["meta"]
         assert "limit" in body["meta"]
 
-    async def test_returns_trace_summaries(self):
+    async def test_returns_trace_summaries(self, app):
         """Traces from fan_out should be aggregated into summaries."""
         row1 = _make_trace_summary_row(trace_id="trace-1", span_count=3)
         row2 = _make_trace_summary_row(
@@ -403,10 +405,11 @@ class TestListTraces:
             started_at=_NOW - timedelta(minutes=5),
         )
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {"atlas": [row1], "switchboard": [row2]},
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -424,11 +427,11 @@ class TestListTraces:
         assert trace_ids[0] == "trace-1"
         assert trace_ids[1] == "trace-2"
 
-    async def test_trace_summary_fields(self):
+    async def test_trace_summary_fields(self, app):
         """Each trace summary should have the expected fields."""
         row = _make_trace_summary_row()
 
-        app = _app_with_mock_db(fan_out_results=[{"atlas": [row]}])
+        _app_with_mock_db(app, fan_out_results=[{"atlas": [row]}])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -446,9 +449,9 @@ class TestListTraces:
         assert trace["status"] == "success"
         assert "started_at" in trace
 
-    async def test_empty_trace_list(self):
+    async def test_empty_trace_list(self, app):
         """When no traces exist, return empty data with total 0."""
-        app = _app_with_mock_db(fan_out_results=[{}])
+        _app_with_mock_db(app, fan_out_results=[{}])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -459,7 +462,7 @@ class TestListTraces:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_cross_butler_aggregation(self):
+    async def test_cross_butler_aggregation(self, app):
         """Same trace_id from two butlers should be merged into one summary."""
         row_atlas = _make_trace_summary_row(
             trace_id="shared-trace",
@@ -474,10 +477,11 @@ class TestListTraces:
             started_at=_NOW - timedelta(seconds=1),
         )
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {"atlas": [row_atlas], "switchboard": [row_sw]},
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -495,7 +499,7 @@ class TestListTraces:
         # Root butler should be the one with earliest started_at
         assert trace["root_butler"] == "switchboard"
 
-    async def test_pagination(self):
+    async def test_pagination(self, app):
         """Pagination offset/limit should be respected."""
         rows = [
             _make_trace_summary_row(
@@ -506,7 +510,7 @@ class TestListTraces:
             for i in range(5)
         ]
 
-        app = _app_with_mock_db(fan_out_results=[{"atlas": rows}])
+        _app_with_mock_db(app, fan_out_results=[{"atlas": rows}])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -525,7 +529,7 @@ class TestListTraces:
 
 
 class TestGetTrace:
-    async def test_returns_trace_detail_with_spans(self):
+    async def test_returns_trace_detail_with_spans(self, app):
         """Response should contain trace detail with assembled span tree."""
         root_id = uuid4()
         child_id = uuid4()
@@ -543,10 +547,11 @@ class TestGetTrace:
             parent_session_id=root_id,
         )
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {"atlas": [root_row, child_row]},
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -570,12 +575,13 @@ class TestGetTrace:
         assert len(root_span["children"]) == 1
         assert root_span["children"][0]["id"] == str(child_id)
 
-    async def test_missing_trace_returns_404(self):
+    async def test_missing_trace_returns_404(self, app):
         """A non-existent trace should return 404."""
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {"atlas": [], "switchboard": []},
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -585,7 +591,7 @@ class TestGetTrace:
 
         assert resp.status_code == 404
 
-    async def test_cross_butler_span_tree(self):
+    async def test_cross_butler_span_tree(self, app):
         """Spans from multiple butlers should be merged into one tree."""
         root_id = uuid4()
         child_id = uuid4()
@@ -605,10 +611,11 @@ class TestGetTrace:
             parent_session_id=root_id,
         )
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {"atlas": [root_row], "switchboard": [child_row]},
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -626,7 +633,7 @@ class TestGetTrace:
         assert len(root_span["children"]) == 1
         assert root_span["children"][0]["butler"] == "switchboard"
 
-    async def test_trace_detail_fields(self):
+    async def test_trace_detail_fields(self, app):
         """TraceDetail should include all expected summary fields."""
         sid = uuid4()
         row = _make_session_row(
@@ -637,7 +644,7 @@ class TestGetTrace:
             parent_session_id=None,
         )
 
-        app = _app_with_mock_db(fan_out_results=[{"atlas": [row]}])
+        _app_with_mock_db(app, fan_out_results=[{"atlas": [row]}])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -654,7 +661,7 @@ class TestGetTrace:
         assert "started_at" in data
         assert "spans" in data
 
-    async def test_running_trace_status(self):
+    async def test_running_trace_status(self, app):
         """A trace with incomplete sessions should show 'running' status."""
         sid = uuid4()
         row = _make_session_row(
@@ -667,7 +674,7 @@ class TestGetTrace:
             parent_session_id=None,
         )
 
-        app = _app_with_mock_db(fan_out_results=[{"atlas": [row]}])
+        _app_with_mock_db(app, fan_out_results=[{"atlas": [row]}])
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

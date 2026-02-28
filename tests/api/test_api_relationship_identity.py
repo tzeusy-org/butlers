@@ -24,7 +24,6 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 
 # Load relationship router module dynamically using the same module name as router_discovery
@@ -61,6 +60,7 @@ _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _app_with_mock_pool(
+    app,
     *,
     fetchrow_side_effect=None,
     fetchrow_result=None,
@@ -89,8 +89,7 @@ def _app_with_mock_pool(
     mock_db.pool = MagicMock(return_value=mock_pool)
     mock_db.butler_names = ["relationship"]
 
-    app = create_app(cors_origins=["*"])
-
+    # Suppress lifespan so wire_db_dependencies() doesn't overwrite our mock.
     @asynccontextmanager
     async def _null_lifespan(_app):
         yield
@@ -158,11 +157,12 @@ def _contact_info_row(
 # ---------------------------------------------------------------------------
 
 
-def test_get_contact_includes_roles_and_entity_id():
+def test_get_contact_includes_roles_and_entity_id(app):
     """GET /contacts/{id} returns roles and entity_id fields."""
     cid = uuid4()
     eid = uuid4()
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             _contact_row(cid, roles=["owner"], entity_id=eid),
             None,  # no birthday
@@ -183,10 +183,11 @@ def test_get_contact_includes_roles_and_entity_id():
     assert data["entity_id"] == str(eid)
 
 
-def test_get_contact_roles_default_empty():
+def test_get_contact_roles_default_empty(app):
     """GET /contacts/{id} returns empty roles list when contact has no roles."""
     cid = uuid4()
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             _contact_row(cid, roles=[]),
             None,
@@ -204,13 +205,14 @@ def test_get_contact_roles_default_empty():
     assert data["entity_id"] is None
 
 
-def test_get_contact_masks_secured_contact_info():
+def test_get_contact_masks_secured_contact_info(app):
     """GET /contacts/{id} returns value=None for secured contact_info entries."""
     cid = uuid4()
     secured_info_id = uuid4()
     plain_info_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             _contact_row(cid),
             None,
@@ -252,11 +254,12 @@ def test_get_contact_masks_secured_contact_info():
     assert plain["value"] == "alice@example.com"  # not masked
 
 
-def test_get_contact_contact_info_not_masked_when_plain():
+def test_get_contact_contact_info_not_masked_when_plain(app):
     """GET /contacts/{id} returns actual value for non-secured contact_info."""
     cid = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             _contact_row(cid),
             None,
@@ -281,18 +284,19 @@ def test_get_contact_contact_info_not_masked_when_plain():
 # ---------------------------------------------------------------------------
 
 
-def test_reveal_contact_secret_returns_value():
+def test_reveal_contact_secret_returns_value(app):
     """GET /contacts/{id}/secrets/{info_id} returns the real value for secured entry."""
     cid = uuid4()
     info_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_result={
             "id": info_id,
             "type": "telegram",
             "value": "secret-chat-id",
             "secured": True,
-        }
+        },
     )
 
     with TestClient(app=app) as client:
@@ -305,12 +309,12 @@ def test_reveal_contact_secret_returns_value():
     assert data["id"] == str(info_id)
 
 
-def test_reveal_contact_secret_404_when_not_found():
+def test_reveal_contact_secret_404_when_not_found(app):
     """GET /contacts/{id}/secrets/{info_id} returns 404 when info_id not found for contact."""
     cid = uuid4()
     info_id = uuid4()
 
-    app, _, mock_pool = _app_with_mock_pool(fetchrow_result=None)
+    app, _, mock_pool = _app_with_mock_pool(app, fetchrow_result=None)
 
     with TestClient(app=app) as client:
         resp = client.get(f"/api/relationship/contacts/{cid}/secrets/{info_id}")
@@ -318,18 +322,19 @@ def test_reveal_contact_secret_404_when_not_found():
     assert resp.status_code == 404
 
 
-def test_reveal_contact_secret_400_when_not_secured():
+def test_reveal_contact_secret_400_when_not_secured(app):
     """GET /contacts/{id}/secrets/{info_id} returns 400 when entry is not secured."""
     cid = uuid4()
     info_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_result={
             "id": info_id,
             "type": "email",
             "value": "alice@example.com",
             "secured": False,
-        }
+        },
     )
 
     with TestClient(app=app) as client:
@@ -343,10 +348,11 @@ def test_reveal_contact_secret_400_when_not_secured():
 # ---------------------------------------------------------------------------
 
 
-def test_patch_contact_updates_roles():
+def test_patch_contact_updates_roles(app):
     """PATCH /contacts/{id} with roles updates the roles field."""
     cid = uuid4()
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {"id": cid},  # existence check
             _contact_row(cid, roles=["owner"]),  # get_contact refetch (contact row)
@@ -375,10 +381,11 @@ def test_patch_contact_updates_roles():
     assert "roles" in call_sql
 
 
-def test_patch_contact_updates_name():
+def test_patch_contact_updates_name(app):
     """PATCH /contacts/{id} with full_name updates the name field."""
     cid = uuid4()
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {"id": cid},
             _contact_row(cid, name="New Name"),
@@ -398,9 +405,9 @@ def test_patch_contact_updates_name():
     assert resp.json()["full_name"] == "New Name"
 
 
-def test_patch_contact_404_when_not_found():
+def test_patch_contact_404_when_not_found(app):
     """PATCH /contacts/{id} returns 404 when contact not found."""
-    app, _, mock_pool = _app_with_mock_pool(fetchrow_result=None)
+    app, _, mock_pool = _app_with_mock_pool(app, fetchrow_result=None)
 
     with TestClient(app=app) as client:
         resp = client.patch(f"/api/relationship/contacts/{uuid4()}", json={"roles": []})
@@ -408,10 +415,11 @@ def test_patch_contact_404_when_not_found():
     assert resp.status_code == 404
 
 
-def test_patch_contact_no_update_when_all_none():
+def test_patch_contact_no_update_when_all_none(app):
     """PATCH /contacts/{id} with all-None fields skips the UPDATE query."""
     cid = uuid4()
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {"id": cid},
             _contact_row(cid),
@@ -433,10 +441,11 @@ def test_patch_contact_no_update_when_all_none():
 # ---------------------------------------------------------------------------
 
 
-def test_list_pending_contacts_returns_needs_disambiguation():
+def test_list_pending_contacts_returns_needs_disambiguation(app):
     """GET /contacts/pending returns contacts with needs_disambiguation=true."""
     cid = uuid4()
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetch_side_effect=[
             [
                 {
@@ -458,7 +467,7 @@ def test_list_pending_contacts_returns_needs_disambiguation():
             [  # contact_info for cid
                 _contact_info_row(ci_type="telegram", value="99999"),
             ],
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:
@@ -471,9 +480,9 @@ def test_list_pending_contacts_returns_needs_disambiguation():
     assert data[0]["metadata"]["needs_disambiguation"] is True
 
 
-def test_list_pending_contacts_returns_empty_when_none():
+def test_list_pending_contacts_returns_empty_when_none(app):
     """GET /contacts/pending returns empty list when no pending contacts."""
-    app, _, mock_pool = _app_with_mock_pool(fetch_rows=[])
+    app, _, mock_pool = _app_with_mock_pool(app, fetch_rows=[])
 
     with TestClient(app=app) as client:
         resp = client.get("/api/relationship/contacts/pending")
@@ -487,10 +496,11 @@ def test_list_pending_contacts_returns_empty_when_none():
 # ---------------------------------------------------------------------------
 
 
-def test_confirm_contact_removes_needs_disambiguation():
+def test_confirm_contact_removes_needs_disambiguation(app):
     """POST /contacts/{id}/confirm clears needs_disambiguation from metadata."""
     cid = uuid4()
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {
                 "id": cid,
@@ -520,9 +530,9 @@ def test_confirm_contact_removes_needs_disambiguation():
     assert "UPDATE contacts SET metadata" in sql
 
 
-def test_confirm_contact_404_when_not_found():
+def test_confirm_contact_404_when_not_found(app):
     """POST /contacts/{id}/confirm returns 404 for unknown contact."""
-    app, _, mock_pool = _app_with_mock_pool(fetchrow_result=None)
+    app, _, mock_pool = _app_with_mock_pool(app, fetchrow_result=None)
 
     with TestClient(app=app) as client:
         resp = client.post(f"/api/relationship/contacts/{uuid4()}/confirm")
@@ -535,13 +545,14 @@ def test_confirm_contact_404_when_not_found():
 # ---------------------------------------------------------------------------
 
 
-def test_merge_contact_moves_contact_info_and_deletes_source():
+def test_merge_contact_moves_contact_info_and_deletes_source(app):
     """POST /contacts/{id}/merge moves contact_info and deletes source."""
     target_id = uuid4()
     source_id = uuid4()
     moved_info_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {"id": target_id, "entity_id": None},  # target lookup
             {"id": source_id, "entity_id": None},  # source lookup
@@ -570,10 +581,10 @@ def test_merge_contact_moves_contact_info_and_deletes_source():
     assert delete_call.args[1] == source_id
 
 
-def test_merge_contact_404_when_target_not_found():
+def test_merge_contact_404_when_target_not_found(app):
     """POST /contacts/{id}/merge returns 404 when target contact not found."""
     source_id = uuid4()
-    app, _, mock_pool = _app_with_mock_pool(fetchrow_result=None)
+    app, _, mock_pool = _app_with_mock_pool(app, fetchrow_result=None)
 
     with TestClient(app=app) as client:
         resp = client.post(
@@ -584,16 +595,17 @@ def test_merge_contact_404_when_target_not_found():
     assert resp.status_code == 404
 
 
-def test_merge_contact_404_when_source_not_found():
+def test_merge_contact_404_when_source_not_found(app):
     """POST /contacts/{id}/merge returns 404 when source contact not found."""
     target_id = uuid4()
     source_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {"id": target_id, "entity_id": None},
             None,  # source not found
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:
@@ -605,15 +617,16 @@ def test_merge_contact_404_when_source_not_found():
     assert resp.status_code == 404
 
 
-def test_merge_contact_400_when_same_contact():
+def test_merge_contact_400_when_same_contact(app):
     """POST /contacts/{id}/merge returns 400 when source == target."""
     cid = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {"id": cid, "entity_id": None},
             {"id": cid, "entity_id": None},
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:
@@ -631,13 +644,14 @@ def test_merge_contact_400_when_same_contact():
 # ---------------------------------------------------------------------------
 
 
-def test_owner_setup_status_has_both():
+def test_owner_setup_status_has_both(app):
     """GET /owner/setup-status returns true for both when owner has telegram and email."""
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetch_rows=[
             {"type": "telegram"},
             {"type": "email"},
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:
@@ -649,9 +663,9 @@ def test_owner_setup_status_has_both():
     assert data["has_email"] is True
 
 
-def test_owner_setup_status_has_telegram_only():
+def test_owner_setup_status_has_telegram_only(app):
     """GET /owner/setup-status returns has_telegram=true, has_email=false."""
-    app, _, mock_pool = _app_with_mock_pool(fetch_rows=[{"type": "telegram"}])
+    app, _, mock_pool = _app_with_mock_pool(app, fetch_rows=[{"type": "telegram"}])
 
     with TestClient(app=app) as client:
         resp = client.get("/api/relationship/owner/setup-status")
@@ -662,9 +676,9 @@ def test_owner_setup_status_has_telegram_only():
     assert data["has_email"] is False
 
 
-def test_owner_setup_status_has_neither():
+def test_owner_setup_status_has_neither(app):
     """GET /owner/setup-status returns false for both when owner has no channels."""
-    app, _, mock_pool = _app_with_mock_pool(fetch_rows=[])
+    app, _, mock_pool = _app_with_mock_pool(app, fetch_rows=[])
 
     with TestClient(app=app) as client:
         resp = client.get("/api/relationship/owner/setup-status")
@@ -675,10 +689,11 @@ def test_owner_setup_status_has_neither():
     assert data["has_email"] is False
 
 
-def test_owner_setup_status_includes_contact_id():
+def test_owner_setup_status_includes_contact_id(app):
     """GET /owner/setup-status includes the owner contact_id when found."""
     owner_id = uuid4()
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_result={"id": owner_id},
         fetch_rows=[{"type": "email"}],
     )
@@ -692,9 +707,9 @@ def test_owner_setup_status_includes_contact_id():
     assert data["has_email"] is True
 
 
-def test_owner_setup_status_contact_id_null_when_no_owner():
+def test_owner_setup_status_contact_id_null_when_no_owner(app):
     """GET /owner/setup-status returns null contact_id when no owner contact exists."""
-    app, _, mock_pool = _app_with_mock_pool(fetch_rows=[])
+    app, _, mock_pool = _app_with_mock_pool(app, fetch_rows=[])
 
     with TestClient(app=app) as client:
         resp = client.get("/api/relationship/owner/setup-status")
@@ -709,12 +724,13 @@ def test_owner_setup_status_contact_id_null_when_no_owner():
 # ---------------------------------------------------------------------------
 
 
-def test_create_contact_info_success():
+def test_create_contact_info_success(app):
     """POST /contacts/{id}/contact-info creates a new contact_info entry."""
     contact_id = uuid4()
     info_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {"id": contact_id},  # contact exists check
             {  # INSERT RETURNING
@@ -745,10 +761,10 @@ def test_create_contact_info_success():
     assert data["parent_id"] is None
 
 
-def test_create_contact_info_contact_not_found():
+def test_create_contact_info_contact_not_found(app):
     """POST /contacts/{id}/contact-info returns 404 for missing contact."""
     contact_id = uuid4()
-    app, _, mock_pool = _app_with_mock_pool(fetchrow_result=None)
+    app, _, mock_pool = _app_with_mock_pool(app, fetchrow_result=None)
 
     with TestClient(app=app) as client:
         resp = client.post(
@@ -759,13 +775,14 @@ def test_create_contact_info_contact_not_found():
     assert resp.status_code == 404
 
 
-def test_merge_contact_deduplicates_contact_info():
+def test_merge_contact_deduplicates_contact_info(app):
     """POST /contacts/{id}/merge issues a dedup DELETE before moving contact_info rows."""
     target_id = uuid4()
     source_id = uuid4()
     moved_info_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {"id": target_id, "entity_id": None},  # target lookup
             {"id": source_id, "entity_id": None},  # source lookup
@@ -802,13 +819,14 @@ def test_merge_contact_deduplicates_contact_info():
 # ---------------------------------------------------------------------------
 
 
-def test_create_contact_info_with_parent_id():
+def test_create_contact_info_with_parent_id(app):
     """POST /contacts/{id}/contact-info with parent_id stores the link."""
     contact_id = uuid4()
     parent_info_id = uuid4()
     child_info_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {"id": contact_id},  # contact exists check
             {  # INSERT RETURNING
@@ -845,13 +863,14 @@ def test_create_contact_info_with_parent_id():
     assert "parent_id" in insert_sql
 
 
-def test_get_contact_includes_parent_id_in_contact_info():
+def test_get_contact_includes_parent_id_in_contact_info(app):
     """GET /contacts/{id} includes parent_id in contact_info entries."""
     cid = uuid4()
     email_id = uuid4()
     password_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             _contact_row(cid),
             None,  # birthday
@@ -891,12 +910,13 @@ def test_get_contact_includes_parent_id_in_contact_info():
     assert password_entry["parent_id"] == str(email_id)
 
 
-def test_patch_contact_info_is_primary_clears_siblings():
+def test_patch_contact_info_is_primary_clears_siblings(app):
     """PATCH is_primary=true clears is_primary on siblings of the same type."""
     contact_id = uuid4()
     info_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {"id": info_id},  # existence check
             {"contact_id": contact_id, "type": "email"},  # fetch for sibling clear
@@ -934,13 +954,14 @@ def test_patch_contact_info_is_primary_clears_siblings():
     assert execute_calls[1].args[3] == info_id
 
 
-def test_patch_contact_info_returns_parent_id():
+def test_patch_contact_info_returns_parent_id(app):
     """PATCH /contacts/{id}/contact-info/{info_id} returns parent_id in response."""
     contact_id = uuid4()
     info_id = uuid4()
     parent_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetchrow_side_effect=[
             {"id": info_id},  # existence check
             {  # final SELECT
@@ -964,12 +985,13 @@ def test_patch_contact_info_returns_parent_id():
     assert resp.json()["parent_id"] == str(parent_id)
 
 
-def test_pending_contacts_includes_parent_id():
+def test_pending_contacts_includes_parent_id(app):
     """GET /contacts/pending includes parent_id in contact_info entries."""
     cid = uuid4()
     email_id = uuid4()
 
     app, _, mock_pool = _app_with_mock_pool(
+        app,
         fetch_side_effect=[
             [
                 {
@@ -996,7 +1018,7 @@ def test_pending_contacts_includes_parent_id():
                     parent_id=None,
                 ),
             ],
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:

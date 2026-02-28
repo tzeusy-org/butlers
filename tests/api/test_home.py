@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 
 pytestmark = pytest.mark.unit
@@ -69,6 +69,7 @@ def _make_bounds_row(
 
 
 def _app_with_mock_db(
+    app: FastAPI,
     *,
     fetch_rows: list | None = None,
     fetchval_result: int = 0,
@@ -94,8 +95,6 @@ def _app_with_mock_db(
     else:
         mock_db.pool.side_effect = KeyError("No pool for butler: home")
 
-    app = create_app()
-
     # Override the dependency for the dynamically-loaded home router
     for butler_name, router_module in app.state.butler_routers:
         if butler_name == "home" and hasattr(router_module, "_get_db_manager"):
@@ -111,9 +110,9 @@ def _app_with_mock_db(
 
 
 class TestListEntities:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination fields."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -128,9 +127,9 @@ class TestListEntities:
         assert "offset" in body["meta"]
         assert "limit" in body["meta"]
 
-    async def test_empty_results(self):
+    async def test_empty_results(self, app):
         """When no entities exist, data should be an empty list."""
-        app = _app_with_mock_db(fetchval_result=0)
+        _app_with_mock_db(app, fetchval_result=0)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -140,9 +139,9 @@ class TestListEntities:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_domain_filter_accepted(self):
+    async def test_domain_filter_accepted(self, app):
         """The ?domain= query parameter must not cause an error."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -150,9 +149,9 @@ class TestListEntities:
 
         assert resp.status_code == 200
 
-    async def test_area_filter_accepted(self):
+    async def test_area_filter_accepted(self, app):
         """The ?area= query parameter must not cause an error."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -160,9 +159,9 @@ class TestListEntities:
 
         assert resp.status_code == 200
 
-    async def test_pagination_params_accepted(self):
+    async def test_pagination_params_accepted(self, app):
         """The ?offset= and ?limit= query parameters must be accepted."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -170,10 +169,10 @@ class TestListEntities:
 
         assert resp.status_code == 200
 
-    async def test_entity_row_serialized_correctly(self):
+    async def test_entity_row_serialized_correctly(self, app):
         """A populated entity row should be serialized to EntitySummaryResponse fields."""
         row = _make_entity_row("light.kitchen")
-        app = _app_with_mock_db(fetch_rows=[row], fetchval_result=1)
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -188,9 +187,9 @@ class TestListEntities:
         assert entity["domain"] == "light"
         assert "captured_at" in entity
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When the home DB pool is unavailable, return 503."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -205,10 +204,10 @@ class TestListEntities:
 
 
 class TestGetEntity:
-    async def test_returns_entity_detail_when_found(self):
+    async def test_returns_entity_detail_when_found(self, app):
         """When entity exists, return full EntityStateResponse."""
         row = _make_entity_row("light.living_room")
-        app = _app_with_mock_db(fetchrow_result=row)
+        _app_with_mock_db(app, fetchrow_result=row)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -221,9 +220,9 @@ class TestGetEntity:
         assert "attributes" in body
         assert "captured_at" in body
 
-    async def test_returns_404_when_not_found(self):
+    async def test_returns_404_when_not_found(self, app):
         """When entity is not in cache, return 404."""
-        app = _app_with_mock_db(fetchrow_result=None)
+        _app_with_mock_db(app, fetchrow_result=None)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -231,9 +230,9 @@ class TestGetEntity:
 
         assert resp.status_code == 404
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When the home DB pool is unavailable, return 503."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -248,7 +247,7 @@ class TestGetEntity:
 
 
 class TestListAreas:
-    async def test_returns_list_of_areas(self):
+    async def test_returns_list_of_areas(self, app):
         """Response must be a JSON array of AreaResponse objects."""
         area_row = MagicMock()
         area_row.__getitem__ = lambda self, key: {
@@ -256,7 +255,7 @@ class TestListAreas:
             "entity_count": 5,
         }[key]
 
-        app = _app_with_mock_db(fetch_rows=[area_row])
+        _app_with_mock_db(app, fetch_rows=[area_row])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -269,9 +268,9 @@ class TestListAreas:
         assert body[0]["area_id"] == "living_room"
         assert body[0]["entity_count"] == 5
 
-    async def test_empty_areas(self):
+    async def test_empty_areas(self, app):
         """When no entities have area_id attributes, return empty list."""
-        app = _app_with_mock_db(fetch_rows=[])
+        _app_with_mock_db(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -280,9 +279,9 @@ class TestListAreas:
         assert resp.status_code == 200
         assert resp.json() == []
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When the home DB pool is unavailable, return 503."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -297,9 +296,9 @@ class TestListAreas:
 
 
 class TestListCommandLog:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination fields."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -312,9 +311,9 @@ class TestListCommandLog:
         assert isinstance(body["data"], list)
         assert "total" in body["meta"]
 
-    async def test_empty_results(self):
+    async def test_empty_results(self, app):
         """When no command log entries exist, data should be an empty list."""
-        app = _app_with_mock_db(fetchval_result=0)
+        _app_with_mock_db(app, fetchval_result=0)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -324,9 +323,9 @@ class TestListCommandLog:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_time_range_filters_accepted(self):
+    async def test_time_range_filters_accepted(self, app):
         """The ?start= and ?end= query parameters must not cause an error."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -337,9 +336,9 @@ class TestListCommandLog:
 
         assert resp.status_code == 200
 
-    async def test_domain_filter_accepted(self):
+    async def test_domain_filter_accepted(self, app):
         """The ?domain= query parameter must not cause an error."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -347,9 +346,9 @@ class TestListCommandLog:
 
         assert resp.status_code == 200
 
-    async def test_pagination_params_accepted(self):
+    async def test_pagination_params_accepted(self, app):
         """The ?offset= and ?limit= query parameters must be accepted."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -357,10 +356,10 @@ class TestListCommandLog:
 
         assert resp.status_code == 200
 
-    async def test_command_row_serialized_correctly(self):
+    async def test_command_row_serialized_correctly(self, app):
         """A populated command log row should be serialized to CommandLogEntry fields."""
         row = _make_command_row(id=42)
-        app = _app_with_mock_db(fetch_rows=[row], fetchval_result=1)
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -375,9 +374,9 @@ class TestListCommandLog:
         assert entry["service"] == "turn_on"
         assert "issued_at" in entry
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When the home DB pool is unavailable, return 503."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -392,7 +391,7 @@ class TestListCommandLog:
 
 
 class TestSnapshotStatus:
-    async def test_returns_statistics_response(self):
+    async def test_returns_statistics_response(self, app):
         """Response must have total_entities, domains, and freshness timestamps."""
         domain_row = MagicMock()
         domain_row.__getitem__ = lambda self, key: {"domain": "light", "cnt": 3}[key]
@@ -406,7 +405,6 @@ class TestSnapshotStatus:
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
 
-        app = create_app()
         for butler_name, router_module in app.state.butler_routers:
             if butler_name == "home" and hasattr(router_module, "_get_db_manager"):
                 app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
@@ -426,7 +424,7 @@ class TestSnapshotStatus:
         assert body["total_entities"] == 5
         assert body["domains"]["light"] == 3
 
-    async def test_empty_snapshot_cache(self):
+    async def test_empty_snapshot_cache(self, app):
         """When no entities are cached, return zeros and null timestamps."""
         mock_pool = AsyncMock()
         mock_pool.fetchval = AsyncMock(return_value=0)
@@ -438,7 +436,6 @@ class TestSnapshotStatus:
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
 
-        app = create_app()
         for butler_name, router_module in app.state.butler_routers:
             if butler_name == "home" and hasattr(router_module, "_get_db_manager"):
                 app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
@@ -456,9 +453,9 @@ class TestSnapshotStatus:
         assert body["oldest_captured_at"] is None
         assert body["newest_captured_at"] is None
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When the home DB pool is unavailable, return 503."""
-        app = _app_with_mock_db(pool_available=False)
+        _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -504,9 +501,9 @@ class TestHomeRouterDiscovery:
 
 
 class TestEntityListCombinedFilters:
-    async def test_domain_and_area_filters_combined(self):
+    async def test_domain_and_area_filters_combined(self, app):
         """Both ?domain= and ?area= can be provided simultaneously."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -519,9 +516,9 @@ class TestEntityListCombinedFilters:
         assert "data" in body
         assert "meta" in body
 
-    async def test_large_limit_clamped(self):
+    async def test_large_limit_clamped(self, app):
         """?limit= values above 500 should return 422 (validation error)."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -529,9 +526,9 @@ class TestEntityListCombinedFilters:
 
         assert resp.status_code == 422
 
-    async def test_negative_offset_returns_422(self):
+    async def test_negative_offset_returns_422(self, app):
         """?offset= values below 0 should return 422."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -539,9 +536,9 @@ class TestEntityListCombinedFilters:
 
         assert resp.status_code == 422
 
-    async def test_meta_reflects_pagination_params(self):
+    async def test_meta_reflects_pagination_params(self, app):
         """Response meta should echo back the requested offset and limit."""
-        app = _app_with_mock_db(fetchval_result=100)
+        _app_with_mock_db(app, fetchval_result=100)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -560,9 +557,9 @@ class TestEntityListCombinedFilters:
 
 
 class TestCommandLogCombinedFilters:
-    async def test_all_filters_combined(self):
+    async def test_all_filters_combined(self, app):
         """start, end, domain, offset, and limit can all be provided together."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -582,9 +579,9 @@ class TestCommandLogCombinedFilters:
         assert "data" in body
         assert "meta" in body
 
-    async def test_command_log_large_limit_rejected(self):
+    async def test_command_log_large_limit_rejected(self, app):
         """?limit= values above 500 should be rejected with 422."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -592,7 +589,7 @@ class TestCommandLogCombinedFilters:
 
         assert resp.status_code == 422
 
-    async def test_command_log_row_has_optional_null_fields(self):
+    async def test_command_log_row_has_optional_null_fields(self, app):
         """CommandLogEntry serializes correctly when target, data, result, context_id are None."""
         row = MagicMock()
         row.__getitem__ = lambda self, key: {
@@ -605,7 +602,7 @@ class TestCommandLogCombinedFilters:
             "context_id": None,
             "issued_at": "2026-02-28T12:00:00+00:00",
         }[key]
-        app = _app_with_mock_db(fetch_rows=[row], fetchval_result=1)
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

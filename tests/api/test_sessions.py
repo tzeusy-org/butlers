@@ -14,8 +14,8 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.sessions import _get_db_manager
 
@@ -96,15 +96,18 @@ def _make_detail_record(
 
 
 def _app_with_mock_db(
+    app: FastAPI,
     *,
     fan_out_result: dict[str, list] | None = None,
     fetch_rows: list | None = None,
     fetchval_result: int = 0,
     fetchrow_result: dict | None = None,
-):
-    """Create a FastAPI app with a mocked DatabaseManager.
+) -> FastAPI:
+    """Wire a FastAPI app with a mocked DatabaseManager.
 
-    The mock supports both fan_out (cross-butler) and pool (single-butler) modes.
+    Accepts the shared module-scoped ``app`` fixture so that create_app()
+    is not called per test.  The mock supports both fan_out (cross-butler)
+    and pool (single-butler) modes.
     """
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
@@ -121,7 +124,6 @@ def _app_with_mock_db(
     else:
         mock_db.fan_out = AsyncMock(return_value={})
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     return app
@@ -133,9 +135,9 @@ def _app_with_mock_db(
 
 
 class TestListSessions:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination fields."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -150,7 +152,7 @@ class TestListSessions:
         assert "offset" in body["meta"]
         assert "limit" in body["meta"]
 
-    async def test_returns_sessions_from_multiple_butlers(self):
+    async def test_returns_sessions_from_multiple_butlers(self, app):
         """Sessions from fan_out should be merged with butler names attached."""
         s1 = _make_summary_record(session_id=uuid4(), prompt="atlas job")
         s2 = _make_summary_record(session_id=uuid4(), prompt="switchboard job")
@@ -164,7 +166,6 @@ class TestListSessions:
             # Second call: data query — returns rows
             {"atlas": [s1], "switchboard": [s2]},
         ]
-        app = _app_with_mock_db()
         # Override fan_out to return different results for count vs data calls
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.butler_names = ["atlas", "switchboard"]
@@ -185,9 +186,9 @@ class TestListSessions:
         assert "atlas" in butlers_in_results
         assert "switchboard" in butlers_in_results
 
-    async def test_filter_params_accepted(self):
+    async def test_filter_params_accepted(self, app):
         """All query filter parameters should be accepted without error."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -206,9 +207,9 @@ class TestListSessions:
 
         assert resp.status_code == 200
 
-    async def test_empty_results(self):
+    async def test_empty_results(self, app):
         """When no sessions exist, return empty data with total 0."""
-        app = _app_with_mock_db(fan_out_result={})
+        _app_with_mock_db(app, fan_out_result={})
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -226,9 +227,9 @@ class TestListSessions:
 
 
 class TestListButlerSessions:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination fields."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -243,10 +244,10 @@ class TestListButlerSessions:
         assert "offset" in body["meta"]
         assert "limit" in body["meta"]
 
-    async def test_sessions_have_butler_name(self):
+    async def test_sessions_have_butler_name(self, app):
         """Each session in the response should have the butler name set."""
         row = _make_summary_record()
-        app = _app_with_mock_db(fetch_rows=[row], fetchval_result=1)
+        _app_with_mock_db(app, fetch_rows=[row], fetchval_result=1)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -257,9 +258,9 @@ class TestListButlerSessions:
         assert len(body["data"]) == 1
         assert body["data"][0]["butler"] == "atlas"
 
-    async def test_filter_params_accepted(self):
+    async def test_filter_params_accepted(self, app):
         """All query filter parameters should be accepted without error."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -277,9 +278,8 @@ class TestListButlerSessions:
 
         assert resp.status_code == 200
 
-    async def test_butler_db_unavailable_returns_503(self):
+    async def test_butler_db_unavailable_returns_503(self, app):
         """When the butler's DB pool doesn't exist, return 503."""
-        app = _app_with_mock_db()
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.side_effect = KeyError("no pool")
         app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -298,10 +298,10 @@ class TestListButlerSessions:
 
 
 class TestGetButlerSession:
-    async def test_returns_session_detail(self):
+    async def test_returns_session_detail(self, app):
         """Response should wrap a SessionDetail in ApiResponse envelope."""
         detail = _make_detail_record()
-        app = _app_with_mock_db(fetchrow_result=detail)
+        _app_with_mock_db(app, fetchrow_result=detail)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -319,9 +319,9 @@ class TestGetButlerSession:
         assert data["input_tokens"] == 100
         assert data["output_tokens"] == 200
 
-    async def test_missing_session_returns_404(self):
+    async def test_missing_session_returns_404(self, app):
         """A non-existent session should return 404."""
-        app = _app_with_mock_db(fetchrow_result=None)
+        _app_with_mock_db(app, fetchrow_result=None)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -331,9 +331,8 @@ class TestGetButlerSession:
 
         assert resp.status_code == 404
 
-    async def test_butler_db_unavailable_returns_503(self):
+    async def test_butler_db_unavailable_returns_503(self, app):
         """When the butler's DB pool doesn't exist, return 503."""
-        app = _app_with_mock_db()
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.side_effect = KeyError("no pool")
         app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -345,7 +344,7 @@ class TestGetButlerSession:
 
         assert resp.status_code == 503
 
-    async def test_detail_includes_all_fields(self):
+    async def test_detail_includes_all_fields(self, app):
         """SessionDetail should include all database columns."""
         parent_id = uuid4()
         detail = _make_detail_record(
@@ -355,7 +354,7 @@ class TestGetButlerSession:
             error=None,
             parent_session_id=parent_id,
         )
-        app = _app_with_mock_db(fetchrow_result=detail)
+        _app_with_mock_db(app, fetchrow_result=detail)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

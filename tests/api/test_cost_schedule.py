@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
@@ -91,9 +90,8 @@ def _make_schedule_data(
 # ---------------------------------------------------------------------------
 
 
-async def test_empty_butlers_returns_empty_list():
+async def test_empty_butlers_returns_empty_list(app):
     """No butlers configured → empty list."""
-    app = create_app()
     mock_mgr = MagicMock(spec=MCPClientManager)
 
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
@@ -110,9 +108,8 @@ async def test_empty_butlers_returns_empty_list():
     assert body["data"] == []
 
 
-async def test_single_butler_returns_schedule_costs():
+async def test_single_butler_returns_schedule_costs(app):
     """Single butler with schedule data returns ScheduleCost items."""
-    app = create_app()
     mock_mgr = MagicMock(spec=MCPClientManager)
 
     schedule_data = {
@@ -156,9 +153,8 @@ async def test_single_butler_returns_schedule_costs():
     assert item["projected_monthly_usd"] > 0
 
 
-async def test_multiple_butlers_merged_and_sorted():
+async def test_multiple_butlers_merged_and_sorted(app):
     """Multiple butlers' schedules are merged and sorted by projected cost descending."""
-    app = create_app()
     mock_mgr = MagicMock(spec=MCPClientManager)
 
     # Butler A has a cheap schedule
@@ -218,9 +214,8 @@ async def test_multiple_butlers_merged_and_sorted():
     assert body["data"][0]["projected_monthly_usd"] >= body["data"][1]["projected_monthly_usd"]
 
 
-async def test_butler_unreachable_returns_empty():
+async def test_butler_unreachable_returns_empty(app):
     """Unreachable butler is gracefully skipped, returning empty list."""
-    app = create_app()
     mock_mgr = MagicMock(spec=MCPClientManager)
     mock_mgr.get_client = AsyncMock(side_effect=ButlerUnreachableError("switchboard"))
 
@@ -239,9 +234,8 @@ async def test_butler_unreachable_returns_empty():
     assert body["data"] == []
 
 
-async def test_timeout_returns_empty():
+async def test_timeout_returns_empty(app):
     """Butler timeout is gracefully handled."""
-    app = create_app()
     mock_mgr = MagicMock(spec=MCPClientManager)
     mock_mgr.get_client = AsyncMock(side_effect=TimeoutError)
 
@@ -260,9 +254,8 @@ async def test_timeout_returns_empty():
     assert body["data"] == []
 
 
-async def test_zero_runs_avoids_division_by_zero():
+async def test_zero_runs_avoids_division_by_zero(app):
     """A schedule with zero runs should have zero avg/projected cost."""
-    app = create_app()
     mock_mgr = MagicMock(spec=MCPClientManager)
 
     schedule_data = {
@@ -300,9 +293,8 @@ async def test_zero_runs_avoids_division_by_zero():
     assert item["total_cost_usd"] == 0.0
 
 
-async def test_cost_estimation_uses_pricing_config():
+async def test_cost_estimation_uses_pricing_config(app):
     """Cost estimation correctly applies per-token pricing from the config."""
-    app = create_app()
     mock_mgr = MagicMock(spec=MCPClientManager)
 
     # 1000 input tokens * 0.000003 + 500 output tokens * 0.000015 = 0.003 + 0.0075 = 0.0105
@@ -343,9 +335,8 @@ async def test_cost_estimation_uses_pricing_config():
     assert item["projected_monthly_usd"] == pytest.approx(0.315, abs=1e-4)
 
 
-async def test_response_model_validation():
+async def test_response_model_validation(app):
     """Returned data matches the ScheduleCost schema."""
-    app = create_app()
     mock_mgr = MagicMock(spec=MCPClientManager)
 
     schedule_data = {
@@ -395,9 +386,8 @@ async def test_response_model_validation():
     assert "meta" in body
 
 
-async def test_unknown_model_costs_zero():
+async def test_unknown_model_costs_zero(app):
     """Schedule with an unknown model ID yields zero cost."""
-    app = create_app()
     mock_mgr = MagicMock(spec=MCPClientManager)
 
     schedule_data = {

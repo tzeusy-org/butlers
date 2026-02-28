@@ -278,10 +278,7 @@ class TestEventGenerator:
 class TestSSERouterRegistration:
     """Verify the SSE router is properly registered in the full app."""
 
-    async def test_events_endpoint_exists_in_full_app(self):
+    async def test_events_endpoint_exists_in_full_app(self, app):
         """The /api/events endpoint should be registered in the main app."""
-        from butlers.api.app import create_app
-
-        app = create_app()
         routes = [r.path for r in app.routes if hasattr(r, "path")]
         assert "/api/events" in routes

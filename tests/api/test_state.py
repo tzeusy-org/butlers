@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
 from butlers.api.routers.state import _get_db_manager
@@ -49,12 +49,13 @@ def _make_scalar_record(key: str, value: object, updated_at: datetime = _NOW) ->
 
 
 def _app_with_mock_db(
+    app: FastAPI,
     *,
     fetch_rows: list | None = None,
     fetchrow_result: dict | None = None,
     pool_side_effect: Exception | None = None,
-):
-    """Create a FastAPI app with a mocked DatabaseManager."""
+) -> FastAPI:
+    """Wire a FastAPI app with a mocked DatabaseManager."""
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_pool.fetchrow = AsyncMock(return_value=fetchrow_result)
@@ -65,18 +66,18 @@ def _app_with_mock_db(
     else:
         mock_db.pool.return_value = mock_pool
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     return app
 
 
 def _app_with_mock_mcp(
+    app: FastAPI,
     *,
     call_tool_result: MagicMock | None = None,
     unreachable: bool = False,
-):
-    """Create a FastAPI app with a mocked MCPClientManager for write endpoints."""
+) -> FastAPI:
+    """Wire a FastAPI app with a mocked MCPClientManager for write endpoints."""
     mock_mgr = MagicMock(spec=MCPClientManager)
 
     if unreachable:
@@ -95,7 +96,6 @@ def _app_with_mock_mcp(
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_audit_pool
 
-    app = create_app()
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
@@ -108,13 +108,13 @@ def _app_with_mock_mcp(
 
 
 class TestListState:
-    async def test_returns_array_of_state_entries(self):
+    async def test_returns_array_of_state_entries(self, app):
         """Response should wrap a list of StateEntry in ApiResponse envelope."""
         rows = [
             _make_state_record(key="alpha", value={"count": 1}),
             _make_state_record(key="beta", value={"count": 2}),
         ]
-        app = _app_with_mock_db(fetch_rows=rows)
+        _app_with_mock_db(app, fetch_rows=rows)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -130,9 +130,9 @@ class TestListState:
         assert body["data"][1]["key"] == "beta"
         assert body["data"][1]["value"] == {"count": 2}
 
-    async def test_empty_state_returns_empty_array(self):
+    async def test_empty_state_returns_empty_array(self, app):
         """When no state entries exist, return empty data list."""
-        app = _app_with_mock_db(fetch_rows=[])
+        _app_with_mock_db(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -142,9 +142,9 @@ class TestListState:
         body = resp.json()
         assert body["data"] == []
 
-    async def test_butler_db_unavailable_returns_503(self):
+    async def test_butler_db_unavailable_returns_503(self, app):
         """When the butler's DB pool doesn't exist, return 503."""
-        app = _app_with_mock_db(pool_side_effect=KeyError("no pool"))
+        _app_with_mock_db(app, pool_side_effect=KeyError("no pool"))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -152,10 +152,10 @@ class TestListState:
 
         assert resp.status_code == 503
 
-    async def test_boolean_value_returns_200(self):
+    async def test_boolean_value_returns_200(self, app):
         """Regression: list endpoint must not 400 when a state row has a boolean value."""
         rows = [_make_scalar_record(key="flag", value=True)]
-        app = _app_with_mock_db(fetch_rows=rows)
+        _app_with_mock_db(app, fetch_rows=rows)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -166,10 +166,10 @@ class TestListState:
         assert body["data"][0]["key"] == "flag"
         assert body["data"][0]["value"] is True
 
-    async def test_null_value_returns_200(self):
+    async def test_null_value_returns_200(self, app):
         """Regression: list endpoint must not 400 when a state row has a null value."""
         rows = [_make_scalar_record(key="empty", value=None)]
-        app = _app_with_mock_db(fetch_rows=rows)
+        _app_with_mock_db(app, fetch_rows=rows)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -179,10 +179,10 @@ class TestListState:
         body = resp.json()
         assert body["data"][0]["value"] is None
 
-    async def test_integer_value_returns_200(self):
+    async def test_integer_value_returns_200(self, app):
         """Regression: list endpoint must not 400 when a state row has an integer value."""
         rows = [_make_scalar_record(key="count", value=42)]
-        app = _app_with_mock_db(fetch_rows=rows)
+        _app_with_mock_db(app, fetch_rows=rows)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -191,10 +191,10 @@ class TestListState:
         assert resp.status_code == 200
         assert resp.json()["data"][0]["value"] == 42
 
-    async def test_array_value_returns_200(self):
+    async def test_array_value_returns_200(self, app):
         """Regression: list endpoint must not 400 when a state row has an array value."""
         rows = [_make_scalar_record(key="tags", value=["a", "b", "c"])]
-        app = _app_with_mock_db(fetch_rows=rows)
+        _app_with_mock_db(app, fetch_rows=rows)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -203,14 +203,14 @@ class TestListState:
         assert resp.status_code == 200
         assert resp.json()["data"][0]["value"] == ["a", "b", "c"]
 
-    async def test_mixed_value_types_return_200(self):
+    async def test_mixed_value_types_return_200(self, app):
         """Regression: list endpoint returns 200 when state rows have mixed value types."""
         rows = [
             _make_scalar_record(key="flag", value=True),
             _make_state_record(key="config", value={"theme": "dark"}),
             _make_scalar_record(key="count", value=0),
         ]
-        app = _app_with_mock_db(fetch_rows=rows)
+        _app_with_mock_db(app, fetch_rows=rows)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -230,10 +230,10 @@ class TestListState:
 
 
 class TestGetState:
-    async def test_returns_single_entry(self):
+    async def test_returns_single_entry(self, app):
         """Response should wrap a single StateEntry in ApiResponse envelope."""
         row = _make_state_record(key="my_key", value={"data": "hello"})
-        app = _app_with_mock_db(fetchrow_result=row)
+        _app_with_mock_db(app, fetchrow_result=row)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -246,9 +246,9 @@ class TestGetState:
         assert body["data"]["value"] == {"data": "hello"}
         assert "updated_at" in body["data"]
 
-    async def test_missing_key_returns_404(self):
+    async def test_missing_key_returns_404(self, app):
         """A non-existent key should return 404."""
-        app = _app_with_mock_db(fetchrow_result=None)
+        _app_with_mock_db(app, fetchrow_result=None)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -256,9 +256,9 @@ class TestGetState:
 
         assert resp.status_code == 404
 
-    async def test_butler_db_unavailable_returns_503(self):
+    async def test_butler_db_unavailable_returns_503(self, app):
         """When the butler's DB pool doesn't exist, return 503."""
-        app = _app_with_mock_db(pool_side_effect=KeyError("no pool"))
+        _app_with_mock_db(app, pool_side_effect=KeyError("no pool"))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -266,10 +266,10 @@ class TestGetState:
 
         assert resp.status_code == 503
 
-    async def test_boolean_value_returns_200(self):
+    async def test_boolean_value_returns_200(self, app):
         """Regression: get endpoint must not 400 when the row value is a boolean."""
         row = _make_scalar_record(key="flag", value=False)
-        app = _app_with_mock_db(fetchrow_result=row)
+        _app_with_mock_db(app, fetchrow_result=row)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -280,10 +280,10 @@ class TestGetState:
         assert body["data"]["key"] == "flag"
         assert body["data"]["value"] is False
 
-    async def test_null_value_returns_200(self):
+    async def test_null_value_returns_200(self, app):
         """Regression: get endpoint must not 400 when the row value is null."""
         row = _make_scalar_record(key="empty", value=None)
-        app = _app_with_mock_db(fetchrow_result=row)
+        _app_with_mock_db(app, fetchrow_result=row)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -299,9 +299,9 @@ class TestGetState:
 
 
 class TestSetState:
-    async def test_sets_value_via_mcp(self):
+    async def test_sets_value_via_mcp(self, app):
         """PUT should call MCP state_set and return success."""
-        app = _app_with_mock_mcp()
+        _app_with_mock_mcp(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -315,9 +315,9 @@ class TestSetState:
         assert body["data"]["key"] == "my_key"
         assert body["data"]["status"] == "ok"
 
-    async def test_butler_unreachable_returns_503(self):
+    async def test_butler_unreachable_returns_503(self, app):
         """When the butler MCP server is unreachable, return 503."""
-        app = _app_with_mock_mcp(unreachable=True)
+        _app_with_mock_mcp(app, unreachable=True)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -328,7 +328,7 @@ class TestSetState:
 
         assert resp.status_code == 503
 
-    async def test_calls_correct_mcp_tool(self):
+    async def test_calls_correct_mcp_tool(self, app):
         """PUT should call the state_set MCP tool with correct arguments."""
         mock_mgr = MagicMock(spec=MCPClientManager)
         mock_client = AsyncMock()
@@ -340,7 +340,6 @@ class TestSetState:
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_audit_pool
 
-        app = create_app()
         app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
         app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
@@ -363,9 +362,9 @@ class TestSetState:
 
 
 class TestDeleteState:
-    async def test_deletes_via_mcp(self):
+    async def test_deletes_via_mcp(self, app):
         """DELETE should call MCP state_delete and return success."""
-        app = _app_with_mock_mcp()
+        _app_with_mock_mcp(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -376,9 +375,9 @@ class TestDeleteState:
         assert body["data"]["key"] == "my_key"
         assert body["data"]["status"] == "deleted"
 
-    async def test_butler_unreachable_returns_503(self):
+    async def test_butler_unreachable_returns_503(self, app):
         """When the butler MCP server is unreachable, return 503."""
-        app = _app_with_mock_mcp(unreachable=True)
+        _app_with_mock_mcp(app, unreachable=True)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -386,7 +385,7 @@ class TestDeleteState:
 
         assert resp.status_code == 503
 
-    async def test_calls_correct_mcp_tool(self):
+    async def test_calls_correct_mcp_tool(self, app):
         """DELETE should call the state_delete MCP tool with correct key."""
         mock_mgr = MagicMock(spec=MCPClientManager)
         mock_client = AsyncMock()
@@ -398,7 +397,6 @@ class TestDeleteState:
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_audit_pool
 
-        app = create_app()
         app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
         app.dependency_overrides[_get_db_manager] = lambda: mock_db
 

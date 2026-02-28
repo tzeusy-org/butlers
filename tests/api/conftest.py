@@ -3,6 +3,7 @@
 Covers:
 - Notification test helpers (row factory, app builders for list/stats/error endpoints)
 - Butler API scaffolding (roster directory setup, mock MCP client managers, test app factory)
+- Shared app fixture (module-scoped) to avoid per-test create_app() overhead
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from fastapi import FastAPI
 
 from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
@@ -68,8 +70,15 @@ def make_notification_row(
 def build_notifications_app(
     rows: list[dict],
     total: int | None = None,
+    app: FastAPI | None = None,
 ) -> tuple:
-    """Create a FastAPI app with mocked DatabaseManager for list endpoints.
+    """Wire a FastAPI app with mocked DatabaseManager for list endpoints.
+
+    If ``app`` is provided (e.g. the shared module-scoped fixture), it is
+    mutated in-place; otherwise a fresh app is created.  The caller is
+    responsible for clearing ``app.dependency_overrides`` after the test
+    (the ``clear_dependency_overrides`` autouse fixture handles this when
+    the shared fixture is used).
 
     Returns (app, mock_pool, mock_db) so tests can inspect call args.
     """
@@ -92,7 +101,8 @@ def build_notifications_app(
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
 
-    app = create_app()
+    if app is None:
+        app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     return app, mock_pool, mock_db
@@ -105,8 +115,12 @@ def build_stats_app(
     failed: int = 0,
     channel_rows: list[dict] | None = None,
     butler_rows: list[dict] | None = None,
+    app: FastAPI | None = None,
 ) -> tuple:
-    """Create a FastAPI app with mocked DatabaseManager for the /stats endpoint.
+    """Wire a FastAPI app with mocked DatabaseManager for the /stats endpoint.
+
+    If ``app`` is provided (e.g. the shared module-scoped fixture), it is
+    mutated in-place; otherwise a fresh app is created.
 
     Returns (app, mock_pool, mock_db) so tests can inspect call args.
     """
@@ -144,18 +158,24 @@ def build_stats_app(
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
 
-    app = create_app()
+    if app is None:
+        app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     return app, mock_pool, mock_db
 
 
-def build_app_missing_switchboard() -> object:
-    """Return an app where the switchboard pool lookup raises KeyError."""
+def build_app_missing_switchboard(app: FastAPI | None = None) -> object:
+    """Return an app where the switchboard pool lookup raises KeyError.
+
+    If ``app`` is provided it is mutated in-place; otherwise a fresh app
+    is created.
+    """
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
 
-    app = create_app()
+    if app is None:
+        app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     return app
 
@@ -347,8 +367,12 @@ def make_test_app(
     roster_dir: Path,
     configs: list[ButlerConnectionInfo],
     mcp_manager: MCPClientManager | None = None,
+    app: FastAPI | None = None,
 ):
-    """Create a FastAPI test app wired with butler API dependency overrides.
+    """Wire a FastAPI test app with butler API dependency overrides.
+
+    If ``app`` is provided (e.g. the shared module-scoped fixture), it is
+    mutated in-place; otherwise a fresh app is created.
 
     Parameters
     ----------
@@ -359,11 +383,14 @@ def make_test_app(
     mcp_manager:
         MCP manager injected via get_mcp_manager override.
         Defaults to an online mock manager if not provided.
+    app:
+        Optional existing FastAPI app to mutate instead of creating a new one.
     """
     if mcp_manager is None:
         mcp_manager = make_mock_mcp_manager(online=True)
 
-    app = create_app()
+    if app is None:
+        app = create_app()
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
     app.dependency_overrides[_get_roster_dir] = lambda: roster_dir
@@ -391,3 +418,41 @@ def online_mcp_manager() -> MCPClientManager:
 def offline_mcp_manager() -> MCPClientManager:
     """A mock MCPClientManager that raises ButlerUnreachableError for all butlers."""
     return make_mock_mcp_manager(online=False)
+
+
+# ---------------------------------------------------------------------------
+# Shared app fixture (module-scoped) for performance optimisation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def app() -> FastAPI:
+    """A single FastAPI app instance shared across all tests in a module.
+
+    Using module scope avoids the ~0.3 s overhead of create_app() per test
+    (router discovery, middleware setup, dependency wiring).
+
+    Tests must not rely on ``dependency_overrides`` persisting between
+    tests — the ``clear_dependency_overrides`` autouse fixture resets the
+    overrides dict after every test function so there is no state leakage.
+
+    Tests that need a completely isolated app (e.g. tests for create_app()
+    itself or CORS configuration) should call ``create_app()`` directly
+    rather than requesting this fixture.
+    """
+    return create_app()
+
+
+@pytest.fixture(autouse=True)
+def clear_dependency_overrides(request: pytest.FixtureRequest) -> None:
+    """Clear dependency_overrides on the shared app after each test function.
+
+    Only active when the ``app`` fixture is in scope for the current test.
+    This ensures no mock state leaks between tests that share a single app
+    instance.
+    """
+    yield
+    # Post-test teardown: clear overrides only if the shared app fixture was used
+    if "app" in request.fixturenames:
+        shared_app = request.getfixturevalue("app")
+        shared_app.dependency_overrides.clear()

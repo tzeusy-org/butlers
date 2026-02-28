@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 
 # Dynamically load the switchboard router to get _get_db_manager
@@ -41,6 +40,7 @@ pytestmark = pytest.mark.unit
 
 
 def _app_with_mock_db(
+    app,
     *,
     fetch_rows: list | None = None,
     fetchval_result: int = 0,
@@ -66,7 +66,6 @@ def _app_with_mock_db(
     else:
         mock_db.pool.side_effect = KeyError("No pool for butler: switchboard")
 
-    app = create_app(cors_origins=["*"])
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     return app
@@ -78,9 +77,9 @@ def _app_with_mock_db(
 
 
 class TestListRoutingLog:
-    async def test_returns_paginated_response_structure(self):
+    async def test_returns_paginated_response_structure(self, app):
         """Response must have 'data' array and 'meta' with pagination."""
-        app = _app_with_mock_db()
+        app = _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -95,9 +94,9 @@ class TestListRoutingLog:
         assert "offset" in body["meta"]
         assert "limit" in body["meta"]
 
-    async def test_source_butler_filter_accepted(self):
+    async def test_source_butler_filter_accepted(self, app):
         """The ?source_butler= query parameter must not cause an error."""
-        app = _app_with_mock_db()
+        app = _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -107,9 +106,9 @@ class TestListRoutingLog:
 
         assert resp.status_code == 200
 
-    async def test_target_butler_filter_accepted(self):
+    async def test_target_butler_filter_accepted(self, app):
         """The ?target_butler= query parameter must not cause an error."""
-        app = _app_with_mock_db()
+        app = _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -119,9 +118,9 @@ class TestListRoutingLog:
 
         assert resp.status_code == 200
 
-    async def test_since_until_filters_accepted(self):
+    async def test_since_until_filters_accepted(self, app):
         """The ?since= and ?until= query parameters must not cause an error."""
-        app = _app_with_mock_db()
+        app = _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -132,9 +131,9 @@ class TestListRoutingLog:
 
         assert resp.status_code == 200
 
-    async def test_empty_results(self):
+    async def test_empty_results(self, app):
         """When no routing log entries exist, data should be an empty list."""
-        app = _app_with_mock_db(fetchval_result=0)
+        app = _app_with_mock_db(app, fetchval_result=0)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -144,9 +143,9 @@ class TestListRoutingLog:
         assert body["data"] == []
         assert body["meta"]["total"] == 0
 
-    async def test_pagination_params_accepted(self):
+    async def test_pagination_params_accepted(self, app):
         """The ?offset= and ?limit= query parameters must be accepted."""
-        app = _app_with_mock_db()
+        app = _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -156,9 +155,9 @@ class TestListRoutingLog:
 
         assert resp.status_code == 200
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When the switchboard DB pool is unavailable, return 503."""
-        app = _app_with_mock_db(pool_available=False)
+        app = _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -173,9 +172,9 @@ class TestListRoutingLog:
 
 
 class TestListRegistry:
-    async def test_returns_api_response_structure(self):
+    async def test_returns_api_response_structure(self, app):
         """Response must have 'data' array and 'meta' keys."""
-        app = _app_with_mock_db()
+        app = _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -187,9 +186,9 @@ class TestListRegistry:
         assert "meta" in body
         assert isinstance(body["data"], list)
 
-    async def test_empty_results(self):
+    async def test_empty_results(self, app):
         """When no registry entries exist, data should be an empty list."""
-        app = _app_with_mock_db()
+        app = _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -198,9 +197,9 @@ class TestListRegistry:
         body = resp.json()
         assert body["data"] == []
 
-    async def test_pool_unavailable_returns_503(self):
+    async def test_pool_unavailable_returns_503(self, app):
         """When the switchboard DB pool is unavailable, return 503."""
-        app = _app_with_mock_db(pool_available=False)
+        app = _app_with_mock_db(app, pool_available=False)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

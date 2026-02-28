@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
@@ -64,18 +63,18 @@ def _mock_mcp_manager(
 
 
 def _create_test_app(
+    app,
     configs: list[ButlerConnectionInfo],
     mcp_manager: MCPClientManager,
 ):
     """Create a FastAPI test app with dependency overrides."""
-    app = create_app()
     app.dependency_overrides[get_butler_configs] = lambda: configs
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
     return app
 
 
 class TestListButlerMcpTools:
-    async def test_returns_tool_catalog(self):
+    async def test_returns_tool_catalog(self, app):
         """Endpoint returns normalized tool metadata from list_tools()."""
         tools = [
             {
@@ -91,7 +90,7 @@ class TestListButlerMcpTools:
         ]
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(tools=tools)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -109,11 +108,11 @@ class TestListButlerMcpTools:
         mock_client = await mgr.get_client("general")
         mock_client.list_tools.assert_called_once_with()
 
-    async def test_returns_404_for_unknown_butler(self):
+    async def test_returns_404_for_unknown_butler(self, app):
         """Unknown butler name returns 404."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(unreachable=True)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -123,11 +122,11 @@ class TestListButlerMcpTools:
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
-    async def test_returns_503_when_unreachable(self):
+    async def test_returns_503_when_unreachable(self, app):
         """Unreachable butler MCP server returns 503."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(unreachable=True)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -139,12 +138,12 @@ class TestListButlerMcpTools:
 
 
 class TestCallButlerMcpTool:
-    async def test_calls_tool_with_arguments(self):
+    async def test_calls_tool_with_arguments(self, app):
         """POST endpoint proxies tool call and returns parsed JSON payload."""
         configs = [ButlerConnectionInfo("general", 40101)]
         call_result = _mock_call_tool_result('{"ok": true, "value": 123}')
         mgr = _mock_mcp_manager(call_result=call_result)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -168,12 +167,12 @@ class TestCallButlerMcpTool:
         mock_client = await mgr.get_client("general")
         mock_client.call_tool.assert_called_once_with("state_get", {"key": "dashboard.debug"})
 
-    async def test_returns_text_when_result_not_json(self):
+    async def test_returns_text_when_result_not_json(self, app):
         """Non-JSON tool output is returned as plain text."""
         configs = [ButlerConnectionInfo("general", 40101)]
         call_result = _mock_call_tool_result("plain-text-result")
         mgr = _mock_mcp_manager(call_result=call_result)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -189,12 +188,12 @@ class TestCallButlerMcpTool:
         assert body["data"]["result"] == "plain-text-result"
         assert body["data"]["raw_text"] == "plain-text-result"
 
-    async def test_returns_404_for_unknown_butler(self):
+    async def test_returns_404_for_unknown_butler(self, app):
         """Unknown butler name returns 404."""
         configs = [ButlerConnectionInfo("general", 40101)]
         call_result = _mock_call_tool_result(json.dumps({"ok": True}))
         mgr = _mock_mcp_manager(call_result=call_result)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -207,11 +206,11 @@ class TestCallButlerMcpTool:
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
-    async def test_returns_503_when_unreachable(self):
+    async def test_returns_503_when_unreachable(self, app):
         """Unreachable butler MCP server returns 503."""
         configs = [ButlerConnectionInfo("general", 40101)]
         mgr = _mock_mcp_manager(unreachable=True)
-        app = _create_test_app(configs, mgr)
+        _create_test_app(app, configs, mgr)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"

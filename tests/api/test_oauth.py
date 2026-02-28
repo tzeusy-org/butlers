@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.api.app import create_app
 from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
     _clear_state_store,
@@ -62,6 +61,7 @@ def clear_states():
 
 
 def _make_app(
+    app,
     *,
     db_client_id: str = "test-client-id.apps.googleusercontent.com",
     db_client_secret: str = "test-client-secret",
@@ -69,7 +69,6 @@ def _make_app(
     with_db_manager: bool = True,
 ):
     """Create a FastAPI test app with optional DB-backed OAuth credentials."""
-    app = create_app()
     if not with_db_manager:
         return app
 
@@ -186,9 +185,9 @@ class TestSanitizeProviderError:
 
 
 class TestOAuthGoogleStart:
-    async def test_start_redirects_to_google_by_default(self):
+    async def test_start_redirects_to_google_by_default(self, app):
         """GET /api/oauth/google/start redirects (302) to accounts.google.com."""
-        app = _make_app()
+        app = _make_app(app)
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -205,9 +204,9 @@ class TestOAuthGoogleStart:
         assert "access_type=offline" in location
         assert "state=" in location
 
-    async def test_start_returns_json_when_redirect_false(self):
+    async def test_start_returns_json_when_redirect_false(self, app):
         """GET /api/oauth/google/start?redirect=false returns JSON payload."""
-        app = _make_app()
+        app = _make_app(app)
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -221,9 +220,9 @@ class TestOAuthGoogleStart:
         assert "state" in body
         assert "accounts.google.com" in body["authorization_url"]
 
-    async def test_start_includes_prompt_consent(self):
+    async def test_start_includes_prompt_consent(self, app):
         """Start URL must include prompt=consent to force refresh token issuance."""
-        app = _make_app()
+        app = _make_app(app)
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -235,9 +234,9 @@ class TestOAuthGoogleStart:
         location = resp.headers["location"]
         assert "prompt=consent" in location
 
-    async def test_start_state_stored_in_state_store(self):
+    async def test_start_state_stored_in_state_store(self, app):
         """A state token is stored after calling the start endpoint."""
-        app = _make_app()
+        app = _make_app(app)
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -248,9 +247,9 @@ class TestOAuthGoogleStart:
 
         assert len(_state_store) == 1
 
-    async def test_start_missing_client_id_returns_503(self):
+    async def test_start_missing_client_id_returns_503(self, app):
         """When DB app credentials are missing client_id, start returns 503."""
-        app = _make_app(db_client_id="")
+        app = _make_app(app, db_client_id="")
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -260,9 +259,9 @@ class TestOAuthGoogleStart:
 
         assert resp.status_code == 503
 
-    async def test_callback_provider_error_consumes_state(self):
+    async def test_callback_provider_error_consumes_state(self, app):
         """Provider error with a valid state token consumes the state (one-time-use)."""
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _store_state(state)
 
@@ -281,9 +280,9 @@ class TestOAuthGoogleStart:
         # State must be consumed — cannot be replayed
         assert _validate_and_consume_state(state) is False
 
-    async def test_start_uses_default_scopes(self):
+    async def test_start_uses_default_scopes(self, app):
         """Authorization URL includes fixed Gmail/Calendar/People scopes by default."""
-        app = _make_app()
+        app = _make_app(app)
         env = {k: v for k, v in GOOGLE_ENV.items() if k != "GOOGLE_OAUTH_SCOPES"}
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
@@ -299,9 +298,9 @@ class TestOAuthGoogleStart:
         assert "contacts" in location.lower()
         assert "directory.readonly" in location.lower()
 
-    async def test_start_ignores_custom_scopes_from_env(self):
+    async def test_start_ignores_custom_scopes_from_env(self, app):
         """GOOGLE_OAUTH_SCOPES env var does not override the fixed scope set."""
-        app = _make_app()
+        app = _make_app(app)
         env = {**GOOGLE_ENV, "GOOGLE_OAUTH_SCOPES": "https://www.googleapis.com/auth/drive"}
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
@@ -325,9 +324,9 @@ class TestOAuthGoogleStart:
 
 
 class TestOAuthGoogleCallback:
-    async def test_callback_success_returns_json(self):
+    async def test_callback_success_returns_json(self, app):
         """Valid code+state callback returns 200 with success payload."""
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _store_state(state)
 
@@ -350,9 +349,9 @@ class TestOAuthGoogleCallback:
         assert body["success"] is True
         assert body["provider"] == "google"
 
-    async def test_callback_success_includes_granted_scope(self):
+    async def test_callback_success_includes_granted_scope(self, app):
         """Success payload includes the scope returned by Google."""
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _store_state(state)
 
@@ -378,9 +377,9 @@ class TestOAuthGoogleCallback:
         assert body["success"] is True
         assert "gmail" in body.get("scope", "")
 
-    async def test_callback_missing_code_returns_400(self):
+    async def test_callback_missing_code_returns_400(self, app):
         """Callback without code returns 400 with actionable error."""
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _store_state(state)
 
@@ -396,9 +395,9 @@ class TestOAuthGoogleCallback:
         assert body["success"] is False
         assert body["error_code"] == "missing_code"
 
-    async def test_callback_missing_state_returns_400(self):
+    async def test_callback_missing_state_returns_400(self, app):
         """Callback without state returns 400 with CSRF warning."""
-        app = _make_app()
+        app = _make_app(app)
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -411,9 +410,9 @@ class TestOAuthGoogleCallback:
         assert body["success"] is False
         assert body["error_code"] == "missing_state"
 
-    async def test_callback_invalid_state_returns_400(self):
+    async def test_callback_invalid_state_returns_400(self, app):
         """Callback with unknown/invalid state token returns 400."""
-        app = _make_app()
+        app = _make_app(app)
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -428,9 +427,9 @@ class TestOAuthGoogleCallback:
         body = resp.json()
         assert body["error_code"] == "invalid_state"
 
-    async def test_callback_expired_state_returns_400(self):
+    async def test_callback_expired_state_returns_400(self, app):
         """Callback with an expired state token returns 400."""
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _state_store[state] = time.monotonic() - 1  # Already expired
 
@@ -448,9 +447,9 @@ class TestOAuthGoogleCallback:
         body = resp.json()
         assert body["error_code"] == "invalid_state"
 
-    async def test_callback_state_is_one_time_use(self):
+    async def test_callback_state_is_one_time_use(self, app):
         """Reusing a state token on a second callback returns 400."""
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _store_state(state)
 
@@ -478,9 +477,9 @@ class TestOAuthGoogleCallback:
         assert resp2.status_code == 400
         assert resp2.json()["error_code"] == "invalid_state"
 
-    async def test_callback_provider_error_access_denied(self):
+    async def test_callback_provider_error_access_denied(self, app):
         """User-denied consent (error=access_denied) returns 400 with friendly message."""
-        app = _make_app()
+        app = _make_app(app)
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -497,9 +496,9 @@ class TestOAuthGoogleCallback:
         assert body["error_code"] == "provider_error"
         assert "denied" in body["message"].lower()
 
-    async def test_callback_provider_error_unknown_code(self):
+    async def test_callback_provider_error_unknown_code(self, app):
         """Unknown provider error returns generic message (no leakage)."""
-        app = _make_app()
+        app = _make_app(app)
         with patch.dict("os.environ", GOOGLE_ENV, clear=False):
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -514,9 +513,9 @@ class TestOAuthGoogleCallback:
         body = resp.json()
         assert "weird_internal_error_9876" not in body["message"]
 
-    async def test_callback_token_exchange_http_error(self):
+    async def test_callback_token_exchange_http_error(self, app):
         """HTTP error from token endpoint returns 400 with generic message."""
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _store_state(state)
 
@@ -540,9 +539,9 @@ class TestOAuthGoogleCallback:
         # Must not leak the raw Google error
         assert "invalid_grant" not in body["message"]
 
-    async def test_callback_no_refresh_token_in_response(self):
+    async def test_callback_no_refresh_token_in_response(self, app):
         """Token response without refresh_token returns 400 with actionable guidance."""
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _store_state(state)
 
@@ -571,9 +570,9 @@ class TestOAuthGoogleCallback:
         assert body["error_code"] == "no_refresh_token"
         assert "offline" in body["message"].lower() or "consent" in body["message"].lower()
 
-    async def test_callback_network_error_returns_400(self):
+    async def test_callback_network_error_returns_400(self, app):
         """Network error during token exchange returns 400."""
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _store_state(state)
 
@@ -595,9 +594,9 @@ class TestOAuthGoogleCallback:
         body = resp.json()
         assert body["error_code"] == "token_exchange_failed"
 
-    async def test_callback_success_redirects_to_dashboard_when_configured(self):
+    async def test_callback_success_redirects_to_dashboard_when_configured(self, app):
         """With OAUTH_DASHBOARD_URL set, success redirects to dashboard."""
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _store_state(state)
 
@@ -621,9 +620,9 @@ class TestOAuthGoogleCallback:
         assert "localhost:40173" in resp.headers["location"]
         assert "oauth_success=true" in resp.headers["location"]
 
-    async def test_callback_provider_error_redirects_to_dashboard_when_configured(self):
+    async def test_callback_provider_error_redirects_to_dashboard_when_configured(self, app):
         """With OAUTH_DASHBOARD_URL set, provider error redirects to dashboard."""
-        app = _make_app()
+        app = _make_app(app)
         env = {**GOOGLE_ENV, "OAUTH_DASHBOARD_URL": "http://localhost:40173"}
         with patch.dict("os.environ", env, clear=False):
             async with httpx.AsyncClient(
@@ -639,9 +638,9 @@ class TestOAuthGoogleCallback:
         assert resp.status_code == 302
         assert "oauth_error=provider_error" in resp.headers["location"]
 
-    async def test_callback_missing_client_secret_returns_503(self):
+    async def test_callback_missing_client_secret_returns_503(self, app):
         """When DB app credentials are missing client_secret, callback returns 503."""
-        app = _make_app(db_client_secret="")
+        app = _make_app(app, db_client_secret="")
         state = _generate_state()
         _store_state(state)
 
@@ -692,13 +691,13 @@ class TestCredentialStoreSelection:
 class TestOAuthCallbackCredentialPersistence:
     """Tests for credential persistence via store_google_credentials in callback."""
 
-    async def test_callback_success_persists_credentials_when_db_manager_available(self):
+    async def test_callback_success_persists_credentials_when_db_manager_available(self, app):
         """On success, credentials are stored in DB when DatabaseManager is wired."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from butlers.api.routers import oauth as oauth_module
 
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _store_state(state)
 
@@ -748,9 +747,9 @@ class TestOAuthCallbackCredentialPersistence:
         # store_google_credentials should have been called
         mock_store.assert_awaited_once()
 
-    async def test_callback_success_message_indicates_db_unavailable_when_no_manager(self):
+    async def test_callback_success_message_indicates_db_unavailable_when_no_manager(self, app):
         """When no DB manager is wired, callback returns 503."""
-        app = _make_app(with_db_manager=False)
+        app = _make_app(app, with_db_manager=False)
         state = _generate_state()
         _store_state(state)
 
@@ -780,13 +779,13 @@ class TestOAuthCallbackCredentialPersistence:
 
         assert resp.status_code == 503
 
-    async def test_callback_returns_503_when_db_store_unavailable(self):
+    async def test_callback_returns_503_when_db_store_unavailable(self, app):
         """DB-only contract: callback fails if credential store is unavailable."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from butlers.api.routers import oauth as oauth_module
 
-        app = _make_app()
+        app = _make_app(app)
         state = _generate_state()
         _store_state(state)
 

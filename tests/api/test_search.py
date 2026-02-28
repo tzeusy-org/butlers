@@ -15,8 +15,8 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.routers.search import _extract_snippet, _get_db_manager
 
@@ -70,12 +70,15 @@ def _make_state_search_row(
 
 
 def _app_with_mock_db(
+    app: FastAPI,
     *,
     fan_out_results: list[dict[str, list]] | None = None,
-):
-    """Create a FastAPI app with a mocked DatabaseManager.
+) -> FastAPI:
+    """Wire a FastAPI app with a mocked DatabaseManager.
 
-    fan_out_results is a list of dicts — one per fan_out call in order.
+    Accepts the shared module-scoped ``app`` fixture so that create_app()
+    is not called per test.  fan_out_results is a list of dicts — one per
+    fan_out call in order.
     """
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas", "switchboard"]
@@ -85,7 +88,6 @@ def _app_with_mock_db(
     else:
         mock_db.fan_out = AsyncMock(return_value={})
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
 
     return app
@@ -132,9 +134,9 @@ class TestExtractSnippet:
 
 
 class TestSearchResponseStructure:
-    async def test_returns_grouped_results(self):
+    async def test_returns_grouped_results(self, app):
         """Response must have 'sessions' and 'state' arrays."""
-        app = _app_with_mock_db(fan_out_results=[{}, {}])
+        _app_with_mock_db(app, fan_out_results=[{}, {}])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -147,9 +149,9 @@ class TestSearchResponseStructure:
         assert isinstance(body["sessions"], list)
         assert isinstance(body["state"], list)
 
-    async def test_empty_query_returns_empty_results(self):
+    async def test_empty_query_returns_empty_results(self, app):
         """An empty query string should return empty groups immediately."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -160,9 +162,9 @@ class TestSearchResponseStructure:
         assert body["sessions"] == []
         assert body["state"] == []
 
-    async def test_whitespace_query_returns_empty_results(self):
+    async def test_whitespace_query_returns_empty_results(self, app):
         """A whitespace-only query should return empty groups."""
-        app = _app_with_mock_db()
+        _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -180,7 +182,7 @@ class TestSearchResponseStructure:
 
 
 class TestSearchFanOut:
-    async def test_sessions_search_results(self):
+    async def test_sessions_search_results(self, app):
         """Session search results should include butler, matched_field, snippet, data."""
         sid = uuid4()
         row = _make_session_search_row(
@@ -189,11 +191,12 @@ class TestSearchFanOut:
             matched_field="prompt",
         )
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {"atlas": [row]},  # session fan_out
                 {},  # state fan_out
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -210,7 +213,7 @@ class TestSearchFanOut:
         assert "deploy" in result["snippet"]
         assert result["data"]["id"] == str(sid)
 
-    async def test_state_search_results(self):
+    async def test_state_search_results(self, app):
         """State search results should include butler, matched_field, snippet, data."""
         row = _make_state_search_row(
             key="last_deploy_time",
@@ -218,11 +221,12 @@ class TestSearchFanOut:
             matched_field="key",
         )
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {},  # session fan_out
                 {"atlas": [row]},  # state fan_out
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -239,16 +243,17 @@ class TestSearchFanOut:
         assert "deploy" in result["snippet"]
         assert result["data"]["key"] == "last_deploy_time"
 
-    async def test_cross_butler_results(self):
+    async def test_cross_butler_results(self, app):
         """Results from multiple butlers should all appear."""
         atlas_row = _make_session_search_row(prompt="atlas deploy")
         sw_row = _make_session_search_row(prompt="switchboard deploy")
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {"atlas": [atlas_row], "switchboard": [sw_row]},  # session fan_out
                 {},  # state fan_out
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -262,13 +267,14 @@ class TestSearchFanOut:
         butlers = {s["butler"] for s in sessions}
         assert butlers == {"atlas", "switchboard"}
 
-    async def test_no_results_found(self):
+    async def test_no_results_found(self, app):
         """When no matches are found, return empty groups."""
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {},  # session fan_out (no results)
                 {},  # state fan_out (no results)
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -288,16 +294,17 @@ class TestSearchFanOut:
 
 
 class TestSearchResultGrouping:
-    async def test_results_grouped_by_category(self):
+    async def test_results_grouped_by_category(self, app):
         """Sessions and state results should be in separate groups."""
         session_row = _make_session_search_row(prompt="search target in session")
         state_row = _make_state_search_row(key="search_target_key")
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {"atlas": [session_row]},  # session fan_out
                 {"atlas": [state_row]},  # state fan_out
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -310,15 +317,16 @@ class TestSearchResultGrouping:
         assert len(body["sessions"]) == 1
         assert len(body["state"]) == 1
 
-    async def test_limit_parameter_respected(self):
+    async def test_limit_parameter_respected(self, app):
         """The limit parameter should cap the number of results per category."""
         rows = [_make_session_search_row(prompt=f"match {i}") for i in range(10)]
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {"atlas": rows},  # session fan_out
                 {},  # state fan_out
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -330,7 +338,7 @@ class TestSearchResultGrouping:
         sessions = resp.json()["sessions"]
         assert len(sessions) <= 3
 
-    async def test_result_matched_field_prompt(self):
+    async def test_result_matched_field_prompt(self, app):
         """When a session matches on prompt, matched_field should be 'prompt'."""
         row = _make_session_search_row(
             prompt="specific query text",
@@ -338,11 +346,12 @@ class TestSearchResultGrouping:
             matched_field="prompt",
         )
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {"atlas": [row]},
                 {},
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(
@@ -354,7 +363,7 @@ class TestSearchResultGrouping:
         result = resp.json()["sessions"][0]
         assert result["matched_field"] == "prompt"
 
-    async def test_result_matched_field_result(self):
+    async def test_result_matched_field_result(self, app):
         """When a session matches on result, matched_field should be 'result'."""
         row = _make_session_search_row(
             prompt="other text",
@@ -362,11 +371,12 @@ class TestSearchResultGrouping:
             matched_field="result",
         )
 
-        app = _app_with_mock_db(
+        _app_with_mock_db(
+            app,
             fan_out_results=[
                 {"atlas": [row]},
                 {},
-            ]
+            ],
         )
 
         async with httpx.AsyncClient(

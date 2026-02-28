@@ -15,8 +15,8 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
 from butlers.api.routers.schedules import _get_db_manager
@@ -90,10 +90,11 @@ def _mock_mcp_result(payload: dict | str = "ok") -> list:
 
 
 def _app_with_mock_db(
+    app: FastAPI,
     *,
     fetch_rows: list | None = None,
-):
-    """Create a FastAPI app with a mocked DatabaseManager."""
+) -> FastAPI:
+    """Wire a FastAPI app with a mocked DatabaseManager."""
     mock_pool = AsyncMock()
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
 
@@ -101,17 +102,17 @@ def _app_with_mock_db(
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["atlas", "switchboard"]
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     return app
 
 
 def _app_with_mock_mcp(
+    app: FastAPI,
     *,
     call_tool_result=None,
     call_tool_side_effect=None,
-):
-    """Create a FastAPI app with a mocked MCPClientManager for write ops."""
+) -> tuple:
+    """Wire a FastAPI app with a mocked MCPClientManager for write ops."""
     mock_client = AsyncMock()
     if call_tool_side_effect is not None:
         mock_client.call_tool = AsyncMock(side_effect=call_tool_side_effect)
@@ -130,14 +131,13 @@ def _app_with_mock_mcp(
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["atlas"]
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_client
 
 
-def _app_with_unreachable_butler():
-    """Create a FastAPI app where MCP connections fail with 503."""
+def _app_with_unreachable_butler(app: FastAPI) -> FastAPI:
+    """Wire a FastAPI app where MCP connections fail with 503."""
     mock_mgr = AsyncMock(spec=MCPClientManager)
     mock_mgr.get_client = AsyncMock(
         side_effect=ButlerUnreachableError("atlas", cause=ConnectionRefusedError())
@@ -149,7 +149,6 @@ def _app_with_unreachable_butler():
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["atlas"]
 
-    app = create_app()
     app.dependency_overrides[_get_db_manager] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app
@@ -161,13 +160,13 @@ def _app_with_unreachable_butler():
 
 
 class TestListSchedules:
-    async def test_returns_array_of_schedules(self):
+    async def test_returns_array_of_schedules(self, app):
         """GET should return an ApiResponse wrapping a list of schedules."""
         rows = [
             _make_schedule_record(schedule_id=uuid4(), name="task-a"),
             _make_schedule_record(schedule_id=uuid4(), name="task-b"),
         ]
-        app = _app_with_mock_db(fetch_rows=rows)
+        _app_with_mock_db(app, fetch_rows=rows)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -181,9 +180,9 @@ class TestListSchedules:
         assert body["data"][0]["name"] == "task-a"
         assert body["data"][1]["name"] == "task-b"
 
-    async def test_empty_schedules(self):
+    async def test_empty_schedules(self, app):
         """When no schedules exist, return empty list."""
-        app = _app_with_mock_db(fetch_rows=[])
+        _app_with_mock_db(app, fetch_rows=[])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -193,10 +192,10 @@ class TestListSchedules:
         body = resp.json()
         assert body["data"] == []
 
-    async def test_schedule_fields(self):
+    async def test_schedule_fields(self, app):
         """Each schedule should include all expected fields."""
         row = _make_schedule_record()
-        app = _app_with_mock_db(fetch_rows=[row])
+        _app_with_mock_db(app, fetch_rows=[row])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -222,7 +221,7 @@ class TestListSchedules:
         assert "created_at" in schedule
         assert "updated_at" in schedule
 
-    async def test_schedule_fields_for_job_mode(self):
+    async def test_schedule_fields_for_job_mode(self, app):
         """Job-mode schedules include deterministic dispatch metadata."""
         row = _make_schedule_record(
             schedule_id=uuid4(),
@@ -232,7 +231,7 @@ class TestListSchedules:
             job_name="eligibility_sweep",
             job_args={"dry_run": True},
         )
-        app = _app_with_mock_db(fetch_rows=[row])
+        _app_with_mock_db(app, fetch_rows=[row])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -245,7 +244,7 @@ class TestListSchedules:
         assert schedule["job_name"] == "eligibility_sweep"
         assert schedule["job_args"] == {"dry_run": True}
 
-    async def test_schedule_fields_for_calendar_projection_linkage(self):
+    async def test_schedule_fields_for_calendar_projection_linkage(self, app):
         """Schedule rows include calendar linkage columns when present."""
         start_at = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
         end_at = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
@@ -261,7 +260,7 @@ class TestListSchedules:
             display_title="Medication check",
             calendar_event_id=calendar_event_id,
         )
-        app = _app_with_mock_db(fetch_rows=[row])
+        _app_with_mock_db(app, fetch_rows=[row])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -276,7 +275,7 @@ class TestListSchedules:
         assert schedule["display_title"] == "Medication check"
         assert schedule["calendar_event_id"] == calendar_event_id
 
-    async def test_legacy_schedule_row_defaults_to_prompt_mode(self):
+    async def test_legacy_schedule_row_defaults_to_prompt_mode(self, app):
         """Legacy DB rows without mode columns remain readable."""
         row = {
             "id": uuid4(),
@@ -290,7 +289,7 @@ class TestListSchedules:
             "created_at": _NOW,
             "updated_at": _NOW,
         }
-        app = _app_with_mock_db(fetch_rows=[row])
+        _app_with_mock_db(app, fetch_rows=[row])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -303,9 +302,8 @@ class TestListSchedules:
         assert schedule["job_name"] is None
         assert schedule["job_args"] is None
 
-    async def test_butler_db_unavailable_returns_503(self):
+    async def test_butler_db_unavailable_returns_503(self, app):
         """When the butler's DB pool doesn't exist, return 503."""
-        app = _app_with_mock_db()
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.side_effect = KeyError("no pool")
         app.dependency_overrides[_get_db_manager] = lambda: mock_db
@@ -324,10 +322,10 @@ class TestListSchedules:
 
 
 class TestCreateSchedule:
-    async def test_creates_schedule_via_mcp(self):
+    async def test_creates_schedule_via_mcp(self, app):
         """POST should proxy create through MCP and return 201."""
-        app, mock_client = _app_with_mock_mcp(
-            call_tool_result=_mock_mcp_result({"id": str(uuid4()), "name": "new-task"})
+        _, mock_client = _app_with_mock_mcp(
+            app, call_tool_result=_mock_mcp_result({"id": str(uuid4()), "name": "new-task"})
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -348,9 +346,10 @@ class TestCreateSchedule:
             {"name": "new-task", "cron": "*/5 * * * *", "prompt": "do stuff"},
         )
 
-    async def test_creates_job_schedule_via_mcp(self):
+    async def test_creates_job_schedule_via_mcp(self, app):
         """POST supports deterministic job-mode schedule creation."""
-        app, mock_client = _app_with_mock_mcp(
+        _, mock_client = _app_with_mock_mcp(
+            app,
             call_tool_result=_mock_mcp_result(
                 {
                     "id": str(uuid4()),
@@ -358,7 +357,7 @@ class TestCreateSchedule:
                     "job_name": "eligibility_sweep",
                     "job_args": {"dry_run": True},
                 }
-            )
+            ),
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -391,10 +390,10 @@ class TestCreateSchedule:
             },
         )
 
-    async def test_creates_schedule_with_projection_linkage_fields(self):
+    async def test_creates_schedule_with_projection_linkage_fields(self, app):
         """POST forwards projection linkage fields with JSON-safe encoding."""
-        app, mock_client = _app_with_mock_mcp(
-            call_tool_result=_mock_mcp_result({"id": str(uuid4()), "status": "created"})
+        _, mock_client = _app_with_mock_mcp(
+            app, call_tool_result=_mock_mcp_result({"id": str(uuid4()), "status": "created"})
         )
         start_at = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
         end_at = datetime(2026, 3, 1, 15, 0, tzinfo=UTC)
@@ -434,10 +433,10 @@ class TestCreateSchedule:
             },
         )
 
-    async def test_create_rejects_naive_projection_datetimes(self):
+    async def test_create_rejects_naive_projection_datetimes(self, app):
         """POST rejects naive projection timestamps at the API validation boundary."""
-        app, mock_client = _app_with_mock_mcp(
-            call_tool_result=_mock_mcp_result({"id": str(uuid4()), "status": "created"})
+        _, mock_client = _app_with_mock_mcp(
+            app, call_tool_result=_mock_mcp_result({"id": str(uuid4()), "status": "created"})
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -455,9 +454,9 @@ class TestCreateSchedule:
         assert resp.status_code == 422
         mock_client.call_tool.assert_not_called()
 
-    async def test_butler_unreachable_returns_503(self):
+    async def test_butler_unreachable_returns_503(self, app):
         """When butler is unreachable, POST returns 503."""
-        app = _app_with_unreachable_butler()
+        _app_with_unreachable_butler(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -475,11 +474,11 @@ class TestCreateSchedule:
 
 
 class TestUpdateSchedule:
-    async def test_updates_schedule_via_mcp(self):
+    async def test_updates_schedule_via_mcp(self, app):
         """PUT should proxy update through MCP."""
         sid = uuid4()
-        app, mock_client = _app_with_mock_mcp(
-            call_tool_result=_mock_mcp_result({"id": str(sid), "updated": True})
+        _, mock_client = _app_with_mock_mcp(
+            app, call_tool_result=_mock_mcp_result({"id": str(sid), "updated": True})
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -500,10 +499,11 @@ class TestUpdateSchedule:
             {"id": str(sid), "cron": "0 12 * * *", "prompt": "updated prompt"},
         )
 
-    async def test_updates_schedule_job_fields_via_mcp(self):
+    async def test_updates_schedule_job_fields_via_mcp(self, app):
         """PUT supports dispatch mode and deterministic metadata updates."""
         sid = uuid4()
-        app, mock_client = _app_with_mock_mcp(
+        _, mock_client = _app_with_mock_mcp(
+            app,
             call_tool_result=_mock_mcp_result(
                 {
                     "id": str(sid),
@@ -511,7 +511,7 @@ class TestUpdateSchedule:
                     "job_name": "eligibility_sweep",
                     "job_args": {"dry_run": True},
                 }
-            )
+            ),
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -541,11 +541,11 @@ class TestUpdateSchedule:
             },
         )
 
-    async def test_updates_schedule_projection_linkage_fields_via_mcp(self):
+    async def test_updates_schedule_projection_linkage_fields_via_mcp(self, app):
         """PUT forwards projection linkage updates with JSON-safe encoding."""
         sid = uuid4()
-        app, mock_client = _app_with_mock_mcp(
-            call_tool_result=_mock_mcp_result({"id": str(sid), "status": "updated"})
+        _, mock_client = _app_with_mock_mcp(
+            app, call_tool_result=_mock_mcp_result({"id": str(sid), "status": "updated"})
         )
         start_at = datetime(2026, 3, 2, 14, 0, tzinfo=UTC)
         end_at = datetime(2026, 3, 2, 15, 0, tzinfo=UTC)
@@ -580,11 +580,11 @@ class TestUpdateSchedule:
             },
         )
 
-    async def test_update_rejects_naive_projection_datetimes(self):
+    async def test_update_rejects_naive_projection_datetimes(self, app):
         """PUT rejects naive projection timestamps at the API validation boundary."""
         sid = uuid4()
-        app, mock_client = _app_with_mock_mcp(
-            call_tool_result=_mock_mcp_result({"id": str(sid), "status": "updated"})
+        _, mock_client = _app_with_mock_mcp(
+            app, call_tool_result=_mock_mcp_result({"id": str(sid), "status": "updated"})
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -597,9 +597,9 @@ class TestUpdateSchedule:
         assert resp.status_code == 422
         mock_client.call_tool.assert_not_called()
 
-    async def test_butler_unreachable_returns_503(self):
+    async def test_butler_unreachable_returns_503(self, app):
         """When butler is unreachable, PUT returns 503."""
-        app = _app_with_unreachable_butler()
+        _app_with_unreachable_butler(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -617,10 +617,12 @@ class TestUpdateSchedule:
 
 
 class TestDeleteSchedule:
-    async def test_deletes_schedule_via_mcp(self):
+    async def test_deletes_schedule_via_mcp(self, app):
         """DELETE should proxy delete through MCP."""
         sid = uuid4()
-        app, mock_client = _app_with_mock_mcp(call_tool_result=_mock_mcp_result({"deleted": True}))
+        _, mock_client = _app_with_mock_mcp(
+            app, call_tool_result=_mock_mcp_result({"deleted": True})
+        )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -636,9 +638,9 @@ class TestDeleteSchedule:
             {"id": str(sid)},
         )
 
-    async def test_butler_unreachable_returns_503(self):
+    async def test_butler_unreachable_returns_503(self, app):
         """When butler is unreachable, DELETE returns 503."""
-        app = _app_with_unreachable_butler()
+        _app_with_unreachable_butler(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -653,10 +655,12 @@ class TestDeleteSchedule:
 
 
 class TestToggleSchedule:
-    async def test_toggles_schedule_via_mcp(self):
+    async def test_toggles_schedule_via_mcp(self, app):
         """PATCH toggle should proxy through MCP."""
         sid = uuid4()
-        app, mock_client = _app_with_mock_mcp(call_tool_result=_mock_mcp_result({"enabled": False}))
+        _, mock_client = _app_with_mock_mcp(
+            app, call_tool_result=_mock_mcp_result({"enabled": False})
+        )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -672,10 +676,11 @@ class TestToggleSchedule:
             {"id": str(sid)},
         )
 
-    async def test_toggles_job_schedule_via_mcp(self):
+    async def test_toggles_job_schedule_via_mcp(self, app):
         """PATCH toggle keeps job-mode payloads round-trippable."""
         sid = uuid4()
-        app, mock_client = _app_with_mock_mcp(
+        _, mock_client = _app_with_mock_mcp(
+            app,
             call_tool_result=_mock_mcp_result(
                 {
                     "enabled": True,
@@ -683,7 +688,7 @@ class TestToggleSchedule:
                     "job_name": "eligibility_sweep",
                     "job_args": {"dry_run": True},
                 }
-            )
+            ),
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -698,9 +703,9 @@ class TestToggleSchedule:
         assert body["data"]["job_args"] == {"dry_run": True}
         mock_client.call_tool.assert_called_once_with("schedule_toggle", {"id": str(sid)})
 
-    async def test_butler_unreachable_returns_503(self):
+    async def test_butler_unreachable_returns_503(self, app):
         """When butler is unreachable, PATCH toggle returns 503."""
-        app = _app_with_unreachable_butler()
+        _app_with_unreachable_butler(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

@@ -20,7 +20,6 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from butlers.api.app import create_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerConnectionInfo,
@@ -50,6 +49,7 @@ pytestmark = pytest.mark.unit
 
 
 def _app_with_mock_db(
+    app,
     *,
     fetch_rows: list | None = None,
     fetchval_result: int = 0,
@@ -76,8 +76,6 @@ def _app_with_mock_db(
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool = MagicMock(return_value=mock_pool)
-
-    app = create_app(cors_origins=["*"])
 
     # Suppress lifespan so wire_db_dependencies() doesn't overwrite our mock.
     @asynccontextmanager
@@ -137,9 +135,9 @@ def _mock_mcp_manager(
 # ---------------------------------------------------------------------------
 
 
-def test_list_contacts_empty():
+def test_list_contacts_empty(app):
     """GET /contacts returns empty list when no data."""
-    app = _app_with_mock_db(fetchval_result=0, fetch_rows=[])
+    app = _app_with_mock_db(app, fetchval_result=0, fetch_rows=[])
     with TestClient(app=app) as client:
         resp = client.get("/api/relationship/contacts")
 
@@ -149,7 +147,7 @@ def test_list_contacts_empty():
     assert data["total"] == 0
 
 
-def test_list_contacts_returns_contacts_with_labels():
+def test_list_contacts_returns_contacts_with_labels(app):
     """GET /contacts returns contacts with aggregated labels."""
     cid = uuid4()
     contact_row = {
@@ -165,6 +163,7 @@ def test_list_contacts_returns_contacts_with_labels():
     label_rows = [{"contact_id": cid, "id": uuid4(), "name": "Friend", "color": "blue"}]
 
     app, mock_db, mock_pool = _app_with_mock_db(
+        app,
         fetchval_result=1,
         fetch_rows=[contact_row],
         include_mock_pool=True,
@@ -184,10 +183,10 @@ def test_list_contacts_returns_contacts_with_labels():
     assert data["contacts"][0]["labels"][0]["name"] == "Friend"
 
 
-def test_list_contacts_search():
+def test_list_contacts_search(app):
     """GET /contacts?q=alice filters by name."""
     app, mock_db, mock_pool = _app_with_mock_db(
-        fetchval_result=0, fetch_rows=[], include_mock_pool=True
+        app, fetchval_result=0, fetch_rows=[], include_mock_pool=True
     )
 
     with TestClient(app=app) as client:
@@ -203,13 +202,14 @@ def test_list_contacts_search():
 # ---------------------------------------------------------------------------
 
 
-def test_contacts_sync_incremental_dispatch():
+def test_contacts_sync_incremental_dispatch(app):
     """POST /contacts/sync dispatches incremental mode to MCP tool."""
     result = _mock_contacts_sync_result(
         {"created": 2, "updated": 1, "skipped": 5, "errors": 0, "message": "ok"}
     )
     mcp_manager = _mock_mcp_manager(call_result=result)
     app = _app_with_mock_db(
+        app,
         mcp_manager=mcp_manager,
         butler_configs=[ButlerConnectionInfo("relationship", 40102)],
     )
@@ -233,13 +233,14 @@ def test_contacts_sync_incremental_dispatch():
     )
 
 
-def test_contacts_sync_full_dispatch():
+def test_contacts_sync_full_dispatch(app):
     """POST /contacts/sync dispatches full mode to MCP tool."""
     result = _mock_contacts_sync_result(
         {"summary": {"created": 7, "updated": 4, "skipped": 0, "errors": 0}}
     )
     mcp_manager = _mock_mcp_manager(call_result=result)
     app = _app_with_mock_db(
+        app,
         mcp_manager=mcp_manager,
         butler_configs=[ButlerConnectionInfo("relationship", 40102)],
     )
@@ -261,10 +262,11 @@ def test_contacts_sync_full_dispatch():
     )
 
 
-def test_contacts_sync_invalid_mode():
+def test_contacts_sync_invalid_mode(app):
     """POST /contacts/sync rejects invalid mode."""
     mcp_manager = _mock_mcp_manager(call_result=_mock_contacts_sync_result({"created": 0}))
     app = _app_with_mock_db(
+        app,
         mcp_manager=mcp_manager,
         butler_configs=[ButlerConnectionInfo("relationship", 40102)],
     )
@@ -275,7 +277,7 @@ def test_contacts_sync_invalid_mode():
     assert resp.status_code == 422
 
 
-def test_contacts_sync_credential_error_actionable():
+def test_contacts_sync_credential_error_actionable(app):
     """POST /contacts/sync maps credential failures to actionable non-2xx response."""
     result = _mock_contacts_sync_result(
         {"error": "Google OAuth credentials are missing"},
@@ -283,6 +285,7 @@ def test_contacts_sync_credential_error_actionable():
     )
     mcp_manager = _mock_mcp_manager(call_result=result)
     app = _app_with_mock_db(
+        app,
         mcp_manager=mcp_manager,
         butler_configs=[ButlerConnectionInfo("relationship", 40102)],
     )
@@ -301,19 +304,20 @@ def test_contacts_sync_credential_error_actionable():
 # ---------------------------------------------------------------------------
 
 
-def test_get_contact_not_found():
+def test_get_contact_not_found(app):
     """GET /contacts/{id} returns 404 when not found."""
-    app = _app_with_mock_db(fetchrow_result=None)
+    app = _app_with_mock_db(app, fetchrow_result=None)
     with TestClient(app=app) as client:
         resp = client.get(f"/api/relationship/contacts/{uuid4()}")
 
     assert resp.status_code == 404
 
 
-def test_get_contact_detail():
+def test_get_contact_detail(app):
     """GET /contacts/{id} returns full contact with labels and birthday."""
     cid = uuid4()
     app, mock_db, mock_pool = _app_with_mock_db(
+        app,
         fetchrow_result={
             "id": cid,
             "full_name": "Bob Jones",
@@ -372,14 +376,14 @@ def test_get_contact_detail():
     assert data["birthday"] == "1990-03-15"
 
 
-def test_get_contact_detail_with_null_metadata_google_sync():
+def test_get_contact_detail_with_null_metadata_google_sync(app):
     """GET /contacts/{id} succeeds when metadata is None (Google-synced contact).
 
     Regression test for: "dictionary update sequence element #0 has length 1;
     2 is required" crash caused by passing non-dict metadata to dict().
     """
     cid = uuid4()
-    app, mock_db, mock_pool = _app_with_mock_db(include_mock_pool=True)
+    app, mock_db, mock_pool = _app_with_mock_db(app, include_mock_pool=True)
 
     # Google-synced contacts may have NULL metadata before rel_003 backfill runs
     mock_pool.fetchrow = AsyncMock(
@@ -419,14 +423,14 @@ def test_get_contact_detail_with_null_metadata_google_sync():
     assert data["metadata"] == {}
 
 
-def test_get_contact_detail_reads_dedicated_columns_not_details_jsonb():
+def test_get_contact_detail_reads_dedicated_columns_not_details_jsonb(app):
     """GET /contacts/{id} reads nickname/company/job_title from dedicated columns.
 
     Verifies that the detail SQL query selects c.nickname, c.company, c.job_title,
     and c.metadata instead of c.details->>'...' — post-rel_003 schema.
     """
     cid = uuid4()
-    app, mock_db, mock_pool = _app_with_mock_db(include_mock_pool=True)
+    app, mock_db, mock_pool = _app_with_mock_db(app, include_mock_pool=True)
 
     mock_pool.fetchrow = AsyncMock(
         side_effect=[
@@ -476,13 +480,13 @@ def test_get_contact_detail_reads_dedicated_columns_not_details_jsonb():
     assert "details->>'job_title'" not in contact_sql
 
 
-def test_list_contacts_reads_nickname_from_dedicated_column():
+def test_list_contacts_reads_nickname_from_dedicated_column(app):
     """GET /contacts reads nickname from c.nickname not c.details->>'nickname'.
 
     Verifies that the contacts list SQL query uses the post-rel_003 dedicated column.
     """
     cid = uuid4()
-    app, _, mock_pool = _app_with_mock_db(fetchval_result=1, include_mock_pool=True)
+    app, _, mock_pool = _app_with_mock_db(app, fetchval_result=1, include_mock_pool=True)
 
     contact_row = {
         "id": cid,
@@ -512,11 +516,12 @@ def test_list_contacts_reads_nickname_from_dedicated_column():
 # ---------------------------------------------------------------------------
 
 
-def test_list_contact_notes():
+def test_list_contact_notes(app):
     """GET /contacts/{id}/notes returns notes for a contact."""
     cid = uuid4()
     nid = uuid4()
     app = _app_with_mock_db(
+        app,
         fetch_rows=[
             {
                 "id": nid,
@@ -525,7 +530,7 @@ def test_list_contact_notes():
                 "created_at": datetime(2025, 1, 1, tzinfo=UTC),
                 "updated_at": datetime(2025, 1, 1, tzinfo=UTC),
             }
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:
@@ -542,11 +547,12 @@ def test_list_contact_notes():
 # ---------------------------------------------------------------------------
 
 
-def test_list_contact_interactions():
+def test_list_contact_interactions(app):
     """GET /contacts/{id}/interactions returns interactions."""
     cid = uuid4()
     iid = uuid4()
     app = _app_with_mock_db(
+        app,
         fetch_rows=[
             {
                 "id": iid,
@@ -557,7 +563,7 @@ def test_list_contact_interactions():
                 "occurred_at": datetime(2025, 1, 10, tzinfo=UTC),
                 "created_at": datetime(2025, 1, 10, tzinfo=UTC),
             }
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:
@@ -574,12 +580,13 @@ def test_list_contact_interactions():
 # ---------------------------------------------------------------------------
 
 
-def test_list_contact_gifts():
+def test_list_contact_gifts(app):
     """GET /contacts/{id}/gifts returns gifts."""
     cid = uuid4()
     gid = uuid4()
     now = datetime(2025, 1, 15, tzinfo=UTC)
     app = _app_with_mock_db(
+        app,
         fetch_rows=[
             {
                 "id": gid,
@@ -590,7 +597,7 @@ def test_list_contact_gifts():
                 "created_at": now,
                 "updated_at": now,
             }
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:
@@ -608,11 +615,12 @@ def test_list_contact_gifts():
 # ---------------------------------------------------------------------------
 
 
-def test_list_contact_loans():
+def test_list_contact_loans(app):
     """GET /contacts/{id}/loans returns loans."""
     cid = uuid4()
     lid = uuid4()
     app = _app_with_mock_db(
+        app,
         fetch_rows=[
             {
                 "id": lid,
@@ -624,7 +632,7 @@ def test_list_contact_loans():
                 "created_at": datetime(2025, 1, 1, tzinfo=UTC),
                 "settled_at": None,
             }
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:
@@ -642,11 +650,12 @@ def test_list_contact_loans():
 # ---------------------------------------------------------------------------
 
 
-def test_list_contact_feed():
+def test_list_contact_feed(app):
     """GET /contacts/{id}/feed returns activity feed."""
     cid = uuid4()
     fid = uuid4()
     app = _app_with_mock_db(
+        app,
         fetch_rows=[
             {
                 "id": fid,
@@ -655,7 +664,7 @@ def test_list_contact_feed():
                 "description": None,
                 "created_at": datetime(2025, 1, 1, tzinfo=UTC),
             }
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:
@@ -672,10 +681,11 @@ def test_list_contact_feed():
 # ---------------------------------------------------------------------------
 
 
-def test_list_groups():
+def test_list_groups(app):
     """GET /groups returns groups with member counts."""
     gid = uuid4()
     app, _, mock_pool = _app_with_mock_db(
+        app,
         fetchval_result=1,
         include_mock_pool=True,
     )
@@ -711,11 +721,11 @@ def test_list_groups():
     assert data["groups"][0]["member_count"] == 5
 
 
-def test_list_groups_legacy_schema_without_optional_group_columns():
+def test_list_groups_legacy_schema_without_optional_group_columns(app):
     """GET /groups works when groups lacks description/updated_at columns."""
     gid = uuid4()
     created_at = datetime(2025, 1, 1, tzinfo=UTC)
-    app, _, mock_pool = _app_with_mock_db(fetchval_result=1, include_mock_pool=True)
+    app, _, mock_pool = _app_with_mock_db(app, fetchval_result=1, include_mock_pool=True)
     mock_pool.fetch = AsyncMock(
         side_effect=[
             [
@@ -759,10 +769,11 @@ def test_list_groups_legacy_schema_without_optional_group_columns():
 # ---------------------------------------------------------------------------
 
 
-def test_get_group():
+def test_get_group(app):
     """GET /groups/{id} returns group detail."""
     gid = uuid4()
     app = _app_with_mock_db(
+        app,
         fetchrow_result={
             "id": gid,
             "name": "Family",
@@ -770,7 +781,7 @@ def test_get_group():
             "created_at": datetime(2025, 1, 1, tzinfo=UTC),
             "updated_at": datetime(2025, 1, 1, tzinfo=UTC),
             "member_count": 3,
-        }
+        },
     )
 
     with TestClient(app=app) as client:
@@ -781,20 +792,20 @@ def test_get_group():
     assert data["name"] == "Family"
 
 
-def test_get_group_not_found():
+def test_get_group_not_found(app):
     """GET /groups/{id} returns 404 when not found."""
-    app = _app_with_mock_db(fetchrow_result=None)
+    app = _app_with_mock_db(app, fetchrow_result=None)
     with TestClient(app=app) as client:
         resp = client.get(f"/api/relationship/groups/{uuid4()}")
 
     assert resp.status_code == 404
 
 
-def test_get_group_legacy_schema_without_optional_group_columns():
+def test_get_group_legacy_schema_without_optional_group_columns(app):
     """GET /groups/{id} works when groups lacks description/updated_at columns."""
     gid = uuid4()
     created_at = datetime(2025, 1, 1, tzinfo=UTC)
-    app, _, mock_pool = _app_with_mock_db(include_mock_pool=True)
+    app, _, mock_pool = _app_with_mock_db(app, include_mock_pool=True)
     mock_pool.fetch = AsyncMock(
         return_value=[
             {"column_name": "id"},
@@ -836,13 +847,14 @@ def test_get_group_legacy_schema_without_optional_group_columns():
 # ---------------------------------------------------------------------------
 
 
-def test_list_labels():
+def test_list_labels(app):
     """GET /labels returns all labels."""
     lid = uuid4()
     app = _app_with_mock_db(
+        app,
         fetch_rows=[
             {"id": lid, "name": "Friend", "color": "blue"},
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:
@@ -859,10 +871,11 @@ def test_list_labels():
 # ---------------------------------------------------------------------------
 
 
-def test_list_upcoming_dates():
+def test_list_upcoming_dates(app):
     """GET /upcoming-dates returns dates within window."""
     cid = uuid4()
     app = _app_with_mock_db(
+        app,
         fetch_rows=[
             {
                 "contact_id": cid,
@@ -872,7 +885,7 @@ def test_list_upcoming_dates():
                 "day": 20,
                 "year": 1995,
             }
-        ]
+        ],
     )
 
     with TestClient(app=app) as client:
