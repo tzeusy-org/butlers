@@ -1039,33 +1039,30 @@ class HomeAssistantModule(Module):
             result = await self._ws_command({"type": "config/entity_registry/list"}, timeout=10.0)
             entities: list[dict[str, Any]] = result if isinstance(result, list) else []
             new_registry: dict[str, CachedEntityRegistryEntry] = {}
-            new_map: dict[str, str] = {}
             for ent in entities:
                 eid = ent.get("entity_id")
                 if not eid:
                     continue
-                area_id = ent.get("area_id") or None
-                device_id = ent.get("device_id") or None
-                platform = ent.get("platform") or None
                 new_registry[eid] = CachedEntityRegistryEntry(
                     entity_id=eid,
-                    area_id=area_id,
-                    device_id=device_id,
-                    platform=platform,
+                    area_id=ent.get("area_id") or None,
+                    device_id=ent.get("device_id") or None,
+                    platform=ent.get("platform") or None,
                 )
-                if area_id:
-                    new_map[eid] = area_id
             self._entity_registry = new_registry
-            self._entity_area_map = new_map
+            # Derive area map from registry (convenience alias)
+            self._entity_area_map = {
+                eid: entry.area_id for eid, entry in self._entity_registry.items() if entry.area_id
+            }
 
             # Back-fill area_id into existing cached entities
             for eid, cached in self._entity_cache.items():
-                cached.area_id = new_map.get(eid)
+                cached.area_id = self._entity_area_map.get(eid)
 
             logger.debug(
                 "HomeAssistantModule: entity registry loaded; %d entries, %d area-mapped.",
-                len(new_registry),
-                len(new_map),
+                len(self._entity_registry),
+                len(self._entity_area_map),
             )
         except Exception as exc:
             logger.warning("HomeAssistantModule: failed to fetch entity registry: %s", exc)
