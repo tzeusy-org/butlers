@@ -32,7 +32,7 @@ Determines how long facts persist — choose the level that matches how stable t
 ### Tags
 
 Enable cross-cutting queries and discovery. Choose tags that support finding facts across different contexts.
-For `memory_store_fact`, `tags` must be a JSON array of strings (for example `["work", "project-x"]`), not a comma-separated string.
+For `memory_store_fact`, `tags` must be a array of strings (for example `["work", "project-x"]`), not a comma-separated string and not a JSON-encoded string.
 
 ### memory_search Input Shape
 
