@@ -94,6 +94,32 @@ class CachedArea:
     name: str
 
 
+@dataclass
+class CachedEntityRegistryEntry:
+    """In-memory cached entry from the HA entity registry.
+
+    Populated from ``config/entity_registry/list`` at startup and refreshed
+    on ``entity_registry_updated`` events.
+
+    Attributes
+    ----------
+    entity_id:
+        HA entity ID (e.g. ``"light.kitchen_ceiling"``).
+    area_id:
+        Area the entity is assigned to (may be ``None``).
+    device_id:
+        Device the entity belongs to (may be ``None``).
+    platform:
+        Integration platform that created the entity (e.g. ``"zha"``,
+        ``"hue"``, ``"mqtt"``).  May be ``None`` for virtual entities.
+    """
+
+    entity_id: str
+    area_id: str | None = None
+    device_id: str | None = None
+    platform: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -175,7 +201,9 @@ class HomeAssistantModule(Module):
         self._entity_cache: dict[str, CachedEntity] = {}
         # area_id → CachedArea
         self._area_cache: dict[str, CachedArea] = {}
-        # entity_id → area_id (from entity registry)
+        # entity_id → CachedEntityRegistryEntry (area_id, device_id, platform)
+        self._entity_registry: dict[str, CachedEntityRegistryEntry] = {}
+        # Convenience alias: entity_id → area_id (derived from _entity_registry)
         self._entity_area_map: dict[str, str] = {}
 
     # ------------------------------------------------------------------
@@ -1010,21 +1038,31 @@ class HomeAssistantModule(Module):
         try:
             result = await self._ws_command({"type": "config/entity_registry/list"}, timeout=10.0)
             entities: list[dict[str, Any]] = result if isinstance(result, list) else []
-            new_map: dict[str, str] = {}
+            new_registry: dict[str, CachedEntityRegistryEntry] = {}
             for ent in entities:
                 eid = ent.get("entity_id")
-                area_id = ent.get("area_id")
-                if eid and area_id:
-                    new_map[eid] = area_id
-            self._entity_area_map = new_map
+                if not eid:
+                    continue
+                new_registry[eid] = CachedEntityRegistryEntry(
+                    entity_id=eid,
+                    area_id=ent.get("area_id") or None,
+                    device_id=ent.get("device_id") or None,
+                    platform=ent.get("platform") or None,
+                )
+            self._entity_registry = new_registry
+            # Derive area map from registry (convenience alias)
+            self._entity_area_map = {
+                eid: entry.area_id for eid, entry in self._entity_registry.items() if entry.area_id
+            }
 
             # Back-fill area_id into existing cached entities
             for eid, cached in self._entity_cache.items():
-                cached.area_id = new_map.get(eid)
+                cached.area_id = self._entity_area_map.get(eid)
 
             logger.debug(
-                "HomeAssistantModule: entity registry loaded; %d area-mapped entities.",
-                len(new_map),
+                "HomeAssistantModule: entity registry loaded; %d entries, %d area-mapped.",
+                len(self._entity_registry),
+                len(self._entity_area_map),
             )
         except Exception as exc:
             logger.warning("HomeAssistantModule: failed to fetch entity registry: %s", exc)
