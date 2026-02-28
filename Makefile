@@ -34,8 +34,10 @@ test-e2e:
 	uv run pytest tests/e2e/ -v -s
 
 # Quality-gate default: parallel xdist (see docs/PYTEST_QG_ALTERNATIVES_QKX5.md benchmark).
+# --dist loadfile keeps tests from the same file on the same worker so module-scoped fixtures
+# are not torn down mid-module (important for shared FastAPI app and module-scoped DB pools).
 test-qg:
-	uv run pytest $(QG_PYTEST_ARGS) -n auto
+	uv run pytest $(QG_PYTEST_ARGS) -n auto --dist loadfile
 
 # Same quality-gate scope as test-qg, serial fallback for order-dependent debugging.
 test-qg-serial:
