@@ -49,6 +49,7 @@ pgdata/
 /tmp/butler_*/
 
 # bv (beads viewer) local config and caches
+.beads/.bv.lock
 .beads/issues.jsonl
 .bv/
 
@@ -344,5 +345,5 @@ node_modules/
 .worktrees/parallel-agents/butlers-2kmd.2/
 .worktrees/parallel-agents/butlers-ny8h/
 .worktrees/parallel-agents/butlers-2kmd.3/
-# bd worktree
 .worktrees/parallel-agents/butlers-2kmd.4/
+.worktrees/parallel-agents/butlers-bwth/
