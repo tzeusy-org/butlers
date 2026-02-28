@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
@@ -512,6 +513,7 @@ async def get_contact(
             c.updated_at,
             COALESCE(c.roles, '{}') AS roles,
             c.entity_id,
+            c.preferred_channel,
             (
                 SELECT ci.value FROM shared.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'email'
@@ -637,6 +639,7 @@ async def get_contact(
         roles=roles,
         entity_id=row["entity_id"],
         contact_info=contact_info_entries,
+        preferred_channel=row["preferred_channel"],
     )
 
 
@@ -765,6 +768,13 @@ async def patch_contact(
     if request.roles is not None:
         updates.append(f"roles = ${idx}")
         args.append(request.roles)
+        idx += 1
+
+    if request.preferred_channel is not None:
+        # Empty string clears the preference
+        val = request.preferred_channel if request.preferred_channel else None
+        updates.append(f"preferred_channel = ${idx}")
+        args.append(val)
         idx += 1
 
     if updates:
@@ -1058,18 +1068,24 @@ async def create_contact_info(
     if existing is None:
         raise HTTPException(status_code=404, detail="Contact not found")
 
-    row = await pool.fetchrow(
-        """
-        INSERT INTO shared.contact_info (contact_id, type, value, is_primary, secured)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, contact_id, type, value, is_primary, secured
-        """,
-        contact_id,
-        request.type,
-        request.value,
-        request.is_primary,
-        request.secured,
-    )
+    try:
+        row = await pool.fetchrow(
+            """
+            INSERT INTO shared.contact_info (contact_id, type, value, is_primary, secured)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id, contact_id, type, value, is_primary, secured
+            """,
+            contact_id,
+            request.type,
+            request.value,
+            request.is_primary,
+            request.secured,
+        )
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A {request.type} entry with this value already exists.",
+        )
 
     return CreateContactInfoResponse(
         id=row["id"],
@@ -1218,7 +1234,7 @@ async def list_contact_interactions(
     pool = _pool(db)
     rows = await pool.fetch(
         """
-        SELECT id, contact_id, type, summary, details, occurred_at, created_at
+        SELECT id, contact_id, type, summary, occurred_at, created_at
         FROM interactions
         WHERE contact_id = $1
         ORDER BY created_at DESC
@@ -1231,7 +1247,6 @@ async def list_contact_interactions(
             contact_id=r["contact_id"],
             type=r["type"],
             summary=r["summary"],
-            details=r["details"],
             occurred_at=r["occurred_at"],
             created_at=r["created_at"],
         )
@@ -1325,7 +1340,7 @@ async def list_contact_feed(
     pool = _pool(db)
     rows = await pool.fetch(
         """
-        SELECT id, contact_id, action, details, created_at
+        SELECT id, contact_id, type, description, created_at
         FROM activity_feed
         WHERE contact_id = $1
         ORDER BY created_at DESC
@@ -1336,8 +1351,8 @@ async def list_contact_feed(
         ActivityFeedItem(
             id=r["id"],
             contact_id=r["contact_id"],
-            action=r["action"],
-            details=dict(r["details"]) if isinstance(r["details"], dict) else {},
+            action=r["type"],
+            details={"description": r["description"]} if r["description"] else {},
             created_at=r["created_at"],
         )
         for r in rows

@@ -66,6 +66,7 @@ class ContactDetail(ContactSummary):
     roles: list[str] = Field(default_factory=list)
     entity_id: UUID | None = None
     contact_info: list[ContactInfoEntry] = Field(default_factory=list)
+    preferred_channel: str | None = None
 
 
 class ContactPatchRequest(BaseModel):
@@ -82,6 +83,7 @@ class ContactPatchRequest(BaseModel):
     company: str | None = None
     job_title: str | None = None
     roles: list[str] | None = None
+    preferred_channel: str | None = None
 
 
 class ContactMergeRequest(BaseModel):

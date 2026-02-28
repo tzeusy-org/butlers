@@ -126,6 +126,7 @@ def _contact_row(
         "updated_at": _NOW,
         "roles": roles or [],
         "entity_id": entity_id,
+        "preferred_channel": None,
         "email": None,
         "phone": None,
         "last_interaction_at": None,

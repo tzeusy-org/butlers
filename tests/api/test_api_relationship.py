@@ -354,6 +354,7 @@ def test_get_contact_detail():
                 "last_interaction_at": None,
                 "roles": [],
                 "entity_id": None,
+                "preferred_channel": None,
             },
             {"month": 3, "day": 15, "year": 1990},
             None,  # address
@@ -400,6 +401,7 @@ def test_get_contact_detail_with_null_metadata_google_sync():
                 "last_interaction_at": None,
                 "roles": [],
                 "entity_id": None,
+                "preferred_channel": None,
             },
             None,  # no birthday
             None,  # no address
@@ -445,6 +447,7 @@ def test_get_contact_detail_reads_dedicated_columns_not_details_jsonb():
                 "last_interaction_at": None,
                 "roles": [],
                 "entity_id": None,
+                "preferred_channel": None,
             },
             None,  # no birthday
             None,  # no address
@@ -648,8 +651,8 @@ def test_list_contact_feed():
             {
                 "id": fid,
                 "contact_id": cid,
-                "action": "note_added",
-                "details": {},
+                "type": "note_added",
+                "description": None,
                 "created_at": datetime(2025, 1, 1, tzinfo=UTC),
             }
         ]
