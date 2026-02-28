@@ -160,8 +160,8 @@ class TestModuleStartup:
         msg = str(excinfo.value)
         assert "GOOGLE_OAUTH_CLIENT_ID" in msg
         assert "GOOGLE_OAUTH_CLIENT_SECRET" in msg
-        assert "GOOGLE_REFRESH_TOKEN" in msg
-        assert "butler_secrets" in msg
+        assert "refresh token" in msg
+        assert "contact_info" in msg
 
     async def test_startup_no_credential_store_raises_actionable_error(self) -> None:
         """Absent credential_store (None) raises a clear RuntimeError."""
@@ -170,7 +170,7 @@ class TestModuleStartup:
             await mod.on_startup({"provider": "google"}, db=None, credential_store=None)
 
         msg = str(excinfo.value)
-        assert "butler_secrets" in msg
+        assert "shared credential store" in msg
         assert "GOOGLE_OAUTH_CLIENT_ID" in msg
 
     async def test_startup_config_stored_on_module(self) -> None:
