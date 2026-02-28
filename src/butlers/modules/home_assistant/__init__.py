@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 # only alphanumeric characters, underscores, or hyphens (no slashes or dots).
 _ENTITY_ID_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 
+# Matches valid HA service domain or service name (e.g. "light", "turn_on").
+# Only lowercase alphanumeric characters and underscores are permitted to
+# prevent path traversal attacks when constructing /api/services/<domain>/<svc>.
+_HA_IDENT_RE = re.compile(r"^[a-z0-9_]+$")
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -1427,6 +1432,18 @@ class HomeAssistantModule(Module):
         RuntimeError
             If the HTTP client has not been initialised (module not started).
         """
+        # Validate domain and service to prevent path traversal via the URL.
+        if not _HA_IDENT_RE.match(domain):
+            raise ValueError(
+                f"Invalid service domain {domain!r}: must contain only lowercase "
+                "alphanumeric characters and underscores."
+            )
+        if not _HA_IDENT_RE.match(service):
+            raise ValueError(
+                f"Invalid service name {service!r}: must contain only lowercase "
+                "alphanumeric characters and underscores."
+            )
+
         client = self._get_client()
         payload: dict[str, Any] = {}
         # Merge data first so that the explicit target argument always wins if
@@ -1445,7 +1462,7 @@ class HomeAssistantModule(Module):
             resp.raise_for_status()
             result = resp.json() if resp.content else {}
             # HA embeds the event context ID in the first state-change result entry.
-            if isinstance(result, list) and result:
+            if isinstance(result, list) and result and isinstance(result[0], dict):
                 context_id = result[0].get("context", {}).get("id")
             elif isinstance(result, dict):
                 context_id = result.get("context", {}).get("id")

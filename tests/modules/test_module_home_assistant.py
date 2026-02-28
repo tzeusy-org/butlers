@@ -2395,6 +2395,37 @@ class TestCallServiceCommandLogging:
             result={},
         )
 
+    async def test_call_service_invalid_domain_raises(self, ha_module: HomeAssistantModule) -> None:
+        """_call_service raises ValueError for domain with path traversal characters."""
+        ha_module._client = AsyncMock()
+        with pytest.raises(ValueError, match="Invalid service domain"):
+            await ha_module._call_service(domain="../config", service="info")
+
+    async def test_call_service_invalid_service_raises(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_call_service raises ValueError for service with path traversal characters."""
+        ha_module._client = AsyncMock()
+        with pytest.raises(ValueError, match="Invalid service name"):
+            await ha_module._call_service(domain="light", service="turn_on/../../config")
+
+    async def test_call_service_context_id_from_list_with_non_dict_entry(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_call_service handles HA response list containing non-dict entries without raising."""
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.content = b"[null]"
+        mock_resp.json = MagicMock(return_value=[None])  # non-dict list entry
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        ha_module._client = mock_client
+        ha_module._db = None
+
+        # Should not raise; context_id remains None
+        result = await ha_module._call_service(domain="light", service="turn_on")
+        assert result == [None]
+
 
 # ---------------------------------------------------------------------------
 # ha_activate_scene — validation and delegation
