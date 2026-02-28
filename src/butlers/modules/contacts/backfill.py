@@ -141,9 +141,10 @@ class ContactBackfillResolver:
     async def _match_source_link(self, external_id: str) -> uuid.UUID | None:
         row = await self._pool.fetchrow(
             """
-            SELECT local_contact_id FROM contacts_source_links
-            WHERE provider = $1 AND account_id = $2 AND external_contact_id = $3
-              AND deleted_at IS NULL
+            SELECT sl.local_contact_id FROM contacts_source_links sl
+            JOIN contacts c ON c.id = sl.local_contact_id
+            WHERE sl.provider = $1 AND sl.account_id = $2 AND sl.external_contact_id = $3
+              AND sl.deleted_at IS NULL
             """,
             self._provider,
             self._account_id,
@@ -783,6 +784,20 @@ class ContactBackfillEngine:
             # Cannot auto-merge; emit a review activity entry
             await self._emit_ambiguous_merge_activity(contact)
             return
+
+        if local_id is not None:
+            # Verify resolved contact still exists (stale source links, race conditions)
+            exists = await self._pool.fetchval(
+                "SELECT 1 FROM contacts WHERE id = $1", local_id
+            )
+            if not exists:
+                logger.warning(
+                    "ContactBackfill: resolved local_id=%s via %s but contact missing; "
+                    "treating as new",
+                    local_id,
+                    strategy,
+                )
+                local_id = None
 
         if local_id is None:
             # New contact — create CRM record
