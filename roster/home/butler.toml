@@ -20,7 +20,7 @@ route_contract_min = "route.v1"
 route_contract_max = "route.v1"
 
 [modules.home_assistant]
-url = "http://localhost:8123/api/mcp"
+url = "http://localhost:8123"
 
 [modules.memory]
 
