@@ -18,7 +18,7 @@ class TestNativeScheduleDispatch:
         from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
 
         expected_jobs = {"memory_consolidation", "memory_episode_cleanup"}
-        for butler_name in ("general", "health", "relationship", "switchboard"):
+        for butler_name in ("general", "health", "home", "relationship", "switchboard"):
             jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get(butler_name, {})
             missing = expected_jobs - set(jobs)
             assert not missing, (
