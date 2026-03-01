@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from tests.e2e.conftest import ButlerEcosystem
 
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
 # ---------------------------------------------------------------------------

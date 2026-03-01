@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from asyncpg.pool import Pool
 
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
 # ---------------------------------------------------------------------------

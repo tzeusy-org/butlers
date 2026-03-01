@@ -19,6 +19,7 @@ Scenarios:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
     from tests.e2e.conftest import ButlerEcosystem, CostTracker
 
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
 
 
 # ---------------------------------------------------------------------------
@@ -455,9 +456,3 @@ async def test_cost_tracking_accuracy(
         f"Cost tracker incremental output ({incremental_output}) should match "
         f"session output ({session_output})"
     )
-
-
-# ---------------------------------------------------------------------------
-# Helper: Add missing import for asyncio
-# ---------------------------------------------------------------------------
-import asyncio  # noqa: E402

@@ -23,6 +23,8 @@ from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 if TYPE_CHECKING:
     from asyncpg.pool import Pool
 
+pytestmark = [pytest.mark.asyncio, pytest.mark.e2e]
+
 
 # ---------------------------------------------------------------------------
 # Helper functions for envelope construction
