@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -118,6 +119,147 @@ class TestTelegramUserClientConnector:
         assert connector._mcp_client is not None
         assert connector._running is False
         assert connector._last_message_id is None
+        # Heartbeat and metrics are initialized
+        assert connector._metrics is not None
+        assert connector._switchboard_heartbeat is None
+        assert connector._last_checkpoint_save is None
+
+    def test_get_health_state_no_client(self, config: TelegramUserClientConnectorConfig) -> None:
+        """Health state is 'error' when Telegram client is not initialized."""
+        connector = TelegramUserClientConnector(config)
+        state, msg = connector._get_health_state()
+        assert state == "error"
+        assert msg is not None
+
+    def test_get_health_state_disconnected(self, config: TelegramUserClientConnectorConfig) -> None:
+        """Health state is 'error' when Telegram client is disconnected."""
+        connector = TelegramUserClientConnector(config)
+        mock_client = MagicMock()
+        mock_client.is_connected.return_value = False
+        connector._telegram_client = mock_client
+        state, msg = connector._get_health_state()
+        assert state == "error"
+        assert "disconnected" in msg.lower()
+
+    def test_get_health_state_connected(self, config: TelegramUserClientConnectorConfig) -> None:
+        """Health state is 'healthy' when Telegram client is connected."""
+        connector = TelegramUserClientConnector(config)
+        mock_client = MagicMock()
+        mock_client.is_connected.return_value = True
+        connector._telegram_client = mock_client
+        state, msg = connector._get_health_state()
+        assert state == "healthy"
+        assert msg is None
+
+    def test_get_checkpoint_no_messages(self, config: TelegramUserClientConnectorConfig) -> None:
+        """Checkpoint is (None, None) when no messages have been processed."""
+        connector = TelegramUserClientConnector(config)
+        cursor, updated_at = connector._get_checkpoint()
+        assert cursor is None
+        assert updated_at is None
+
+    def test_get_checkpoint_with_messages(self, config: TelegramUserClientConnectorConfig) -> None:
+        """Checkpoint includes last message ID when messages have been processed."""
+        connector = TelegramUserClientConnector(config)
+        connector._last_message_id = 99999
+        connector._last_checkpoint_save = time.time()
+
+        cursor, updated_at = connector._get_checkpoint()
+        assert cursor == "99999"
+        assert updated_at is not None
+        assert isinstance(updated_at, datetime)
+
+    def test_get_checkpoint_message_id_without_save_time(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Checkpoint cursor is set but updated_at is None when save time not recorded."""
+        connector = TelegramUserClientConnector(config)
+        connector._last_message_id = 12345
+        # _last_checkpoint_save remains None
+
+        cursor, updated_at = connector._get_checkpoint()
+        assert cursor == "12345"
+        assert updated_at is None
+
+    def test_start_heartbeat_creates_heartbeat(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_start_heartbeat() creates and starts a ConnectorHeartbeat."""
+        from butlers.connectors.heartbeat import ConnectorHeartbeat
+
+        connector = TelegramUserClientConnector(config)
+        assert connector._switchboard_heartbeat is None
+
+        with patch.object(ConnectorHeartbeat, "start") as mock_start:
+            connector._start_heartbeat()
+
+        assert connector._switchboard_heartbeat is not None
+        mock_start.assert_called_once()
+
+    def test_start_heartbeat_uses_hardcoded_connector_type(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_start_heartbeat() hardcodes connector_type='telegram_user_client'."""
+        from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+
+        connector = TelegramUserClientConnector(config)
+
+        captured_config: list[HeartbeatConfig] = []
+
+        original_init = ConnectorHeartbeat.__init__
+
+        def capturing_init(self, config, **kwargs):  # type: ignore[override]
+            captured_config.append(config)
+            original_init(self, config, **kwargs)
+
+        with (
+            patch.object(ConnectorHeartbeat, "__init__", capturing_init),
+            patch.object(ConnectorHeartbeat, "start"),
+        ):
+            connector._start_heartbeat()
+
+        assert len(captured_config) == 1
+        assert captured_config[0].connector_type == "telegram_user_client"
+
+    async def test_stop_stops_heartbeat(self, config: TelegramUserClientConnectorConfig) -> None:
+        """stop() calls stop() on the heartbeat if one is running."""
+        connector = TelegramUserClientConnector(config)
+
+        mock_heartbeat = MagicMock()
+        mock_heartbeat.stop = AsyncMock()
+        connector._switchboard_heartbeat = mock_heartbeat
+
+        # Mock telegram client as already disconnected
+        connector._telegram_client = None
+
+        await connector.stop()
+
+        mock_heartbeat.stop.assert_awaited_once()
+
+    async def test_save_checkpoint_records_save_time(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """_save_checkpoint() records the timestamp of the successful save."""
+        connector = TelegramUserClientConnector(config)
+        connector._last_message_id = 12345
+
+        assert connector._last_checkpoint_save is None
+
+        before = time.time()
+        connector._save_checkpoint()
+        after = time.time()
+
+        assert connector._last_checkpoint_save is not None
+        assert before <= connector._last_checkpoint_save <= after
+
+    def test_metrics_uses_hardcoded_connector_type(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """ConnectorMetrics is initialized with connector_type='telegram_user_client'."""
+        connector = TelegramUserClientConnector(config)
+        # Access private attribute to verify the connector type is hardcoded correctly
+        assert connector._metrics._connector_type == "telegram_user_client"
+        assert connector._metrics._endpoint_identity == config.endpoint_identity
 
     async def test_normalize_to_ingest_v1(self, config: TelegramUserClientConnectorConfig) -> None:
         """Test normalization of Telegram message to ingest.v1 format."""

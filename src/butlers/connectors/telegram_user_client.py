@@ -46,12 +46,15 @@ import html
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
+from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     resolve_owner_contact_info,
@@ -184,6 +187,18 @@ class TelegramUserClientConnector:
         self._semaphore = asyncio.Semaphore(config.max_inflight)
         self._last_message_id: int | None = None
 
+        # Metrics
+        self._metrics = ConnectorMetrics(
+            connector_type="telegram_user_client",
+            endpoint_identity=config.endpoint_identity,
+        )
+
+        # Checkpoint tracking for heartbeat
+        self._last_checkpoint_save: float | None = None
+
+        # Heartbeat (started in start(), stopped in stop())
+        self._switchboard_heartbeat: ConnectorHeartbeat | None = None
+
     async def start(self) -> None:
         """Start the Telegram user-client connector in live-stream mode.
 
@@ -207,6 +222,9 @@ class TelegramUserClientConnector:
             self._config.telegram_api_id,
             self._config.telegram_api_hash,
         )
+
+        # Start switchboard heartbeat (runs in background)
+        self._start_heartbeat()
 
         self._running = True
         logger.info(
@@ -255,8 +273,66 @@ class TelegramUserClientConnector:
         if self._telegram_client and self._telegram_client.is_connected():
             await self._telegram_client.disconnect()
 
+        # Stop switchboard heartbeat
+        if self._switchboard_heartbeat is not None:
+            await self._switchboard_heartbeat.stop()
+
         await self._mcp_client.aclose()
         logger.info("Telegram user-client connector stopped")
+
+    # -------------------------------------------------------------------------
+    # Internal: Heartbeat
+    # -------------------------------------------------------------------------
+
+    def _start_heartbeat(self) -> None:
+        """Initialize and start heartbeat background task."""
+        heartbeat_config = HeartbeatConfig.from_env(
+            connector_type="telegram_user_client",
+            endpoint_identity=self._config.endpoint_identity,
+            version=None,
+        )
+
+        self._switchboard_heartbeat = ConnectorHeartbeat(
+            config=heartbeat_config,
+            mcp_client=self._mcp_client,
+            metrics=self._metrics,
+            get_health_state=self._get_health_state,
+            get_checkpoint=self._get_checkpoint,
+        )
+
+        self._switchboard_heartbeat.start()
+
+    def _get_health_state(self) -> tuple[str, str | None]:
+        """Determine current health state for heartbeat.
+
+        Returns:
+            Tuple of (state, error_message) where state is one of:
+            "healthy", "degraded", "error"
+        """
+        if self._telegram_client is None:
+            return ("error", "Telegram client not initialized")
+
+        if not self._telegram_client.is_connected():
+            return ("error", "Telegram client disconnected")
+
+        return ("healthy", None)
+
+    def _get_checkpoint(self) -> tuple[str | None, datetime | None]:
+        """Get current checkpoint state for heartbeat.
+
+        Returns:
+            Tuple of (cursor, updated_at)
+        """
+        if self._last_message_id is None:
+            return (None, None)
+
+        cursor = str(self._last_message_id)
+        updated_at = (
+            datetime.fromtimestamp(self._last_checkpoint_save, UTC)
+            if self._last_checkpoint_save is not None
+            else None
+        )
+        return (cursor, updated_at)
 
     # -------------------------------------------------------------------------
     # Internal: Message processing
@@ -527,6 +603,7 @@ class TelegramUserClientConnector:
                 json.dump({"last_message_id": self._last_message_id}, f)
 
             tmp_path.replace(self._config.cursor_path)
+            self._last_checkpoint_save = time.time()
 
             logger.debug(
                 "Saved checkpoint",
