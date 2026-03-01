@@ -10,6 +10,7 @@ These tests verify:
 
 from __future__ import annotations
 
+import json
 import shutil
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -156,14 +157,27 @@ async def _create_test_schema(pool):
     )
 
     # Create message_inbox table (for fanout rollup tests)
+    # This matches the v2 schema introduced in migration sw_008: source_channel and
+    # source_endpoint_identity are stored inside the request_context JSONB column.
     await pool.execute(
         """
         CREATE TABLE message_inbox (
             id UUID NOT NULL DEFAULT gen_random_uuid(),
             received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            source_channel TEXT NOT NULL,
-            source_endpoint_identity TEXT NOT NULL,
+            request_context JSONB NOT NULL DEFAULT '{}'::jsonb,
+            raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+            normalized_text TEXT NOT NULL DEFAULT '',
+            decomposition_output JSONB,
             dispatch_outcomes JSONB,
+            response_summary TEXT,
+            lifecycle_state TEXT NOT NULL DEFAULT 'accepted',
+            schema_version TEXT NOT NULL DEFAULT 'message_inbox.v2',
+            processing_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            final_state_at TIMESTAMPTZ,
+            trace_id TEXT,
+            session_id UUID,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             PRIMARY KEY (received_at, id)
         ) PARTITION BY RANGE (received_at)
         """
@@ -578,39 +592,51 @@ async def test_fanout_rollup_parses_dispatch_outcomes(provisioned_postgres_pool)
 
         day = datetime(2026, 2, 15, tzinfo=UTC).date()
 
-        # Insert message_inbox data with dispatch_outcomes
-        await pool.execute(
-            """
-            INSERT INTO message_inbox (
-                source_channel,
-                source_endpoint_identity,
-                dispatch_outcomes,
-                received_at
-            ) VALUES
-            ('telegram_bot', 'telegram_bot.bot@789', '{"health": {"status": "success"}}', $1),
-            ('telegram_bot', 'telegram_bot.bot@789', '{"health": {"status": "success"}}', $2),
-            ('telegram_bot', 'telegram_bot.bot@789', '{"relationship": {"status": "success"}}', $3),
-            ('email', 'email.user@example.com', '{"general": {"status": "success"}}', $4)
-            """,
-            datetime(2026, 2, 15, 10, 30, 0, tzinfo=UTC),
-            datetime(2026, 2, 15, 11, 30, 0, tzinfo=UTC),
-            datetime(2026, 2, 15, 12, 30, 0, tzinfo=UTC),
-            datetime(2026, 2, 15, 13, 30, 0, tzinfo=UTC),
+        # Insert message_inbox data with dispatch_outcomes using v2 schema (sw_008+).
+        # source_channel and source_endpoint_identity live inside request_context JSONB.
+        tg_ctx = json.dumps(
+            {"source_channel": "telegram_bot", "source_endpoint_identity": "telegram_bot.bot@789"}
         )
+        email_ctx = json.dumps(
+            {"source_channel": "email", "source_endpoint_identity": "email.user@example.com"}
+        )
+        health_outcome = json.dumps({"health": {"status": "success"}})
+        relationship_outcome = json.dumps({"relationship": {"status": "success"}})
+        general_outcome = json.dumps({"general": {"status": "success"}})
 
-        # Run fanout rollup SQL
+        for ctx, outcome, ts in [
+            (tg_ctx, health_outcome, datetime(2026, 2, 15, 10, 30, 0, tzinfo=UTC)),
+            (tg_ctx, health_outcome, datetime(2026, 2, 15, 11, 30, 0, tzinfo=UTC)),
+            (tg_ctx, relationship_outcome, datetime(2026, 2, 15, 12, 30, 0, tzinfo=UTC)),
+            (email_ctx, general_outcome, datetime(2026, 2, 15, 13, 30, 0, tzinfo=UTC)),
+        ]:
+            await pool.execute(
+                """
+                INSERT INTO message_inbox (request_context, dispatch_outcomes, received_at)
+                VALUES ($1::jsonb, $2::jsonb, $3)
+                """,
+                ctx,
+                outcome,
+                ts,
+            )
+
+        # Run fanout rollup SQL (matching the production query in connector_stats.py).
+        # source_channel and source_endpoint_identity are extracted from request_context JSONB.
         await pool.execute(
             """
             WITH fanout_aggregates AS (
                 SELECT
-                    source_channel,
-                    source_endpoint_identity,
+                    request_context ->> 'source_channel' AS source_channel,
+                    request_context ->> 'source_endpoint_identity' AS source_endpoint_identity,
                     jsonb_object_keys(dispatch_outcomes) AS target_butler,
                     COUNT(*) AS message_count
                 FROM message_inbox
                 WHERE DATE(received_at) = $1
                 AND dispatch_outcomes IS NOT NULL
-                GROUP BY source_channel, source_endpoint_identity, target_butler
+                GROUP BY
+                    request_context ->> 'source_channel',
+                    request_context ->> 'source_endpoint_identity',
+                    target_butler
             )
             INSERT INTO connector_fanout_daily (
                 connector_type, endpoint_identity, target_butler, day, message_count
