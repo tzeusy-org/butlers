@@ -393,3 +393,68 @@ async def test_cas_concurrent_exactly_one_wins(pool):
     assert len(successes) == 1, f"Expected exactly 1 success, got: {results}"
     assert len(failures) == 1, f"Expected exactly 1 failure, got: {results}"
     assert successes[0] == 2  # new version after successful CAS
+
+
+# ------------------------------------------------------------------
+# decode_jsonb — double-encoding handling
+# ------------------------------------------------------------------
+
+
+class TestDecodeJsonb:
+    """Unit tests for decode_jsonb (no DB required)."""
+
+    def test_dict_passthrough(self):
+        """A dict value is returned unchanged."""
+        from butlers.core.state import decode_jsonb
+
+        val = {"status": "teaching", "mind_map_id": "abc"}
+        assert decode_jsonb(val) is val
+
+    def test_single_encoded_string(self):
+        """A JSON string containing a dict is decoded once."""
+        import json
+
+        from butlers.core.state import decode_jsonb
+
+        original = {"status": "teaching"}
+        result = decode_jsonb(json.dumps(original))
+        assert result == original
+
+    def test_double_encoded_string(self):
+        """A double-encoded JSON string is decoded twice to produce a dict."""
+        import json
+
+        from butlers.core.state import decode_jsonb
+
+        original = {"status": "teaching", "session_count": 3}
+        double_encoded = json.dumps(json.dumps(original))
+        result = decode_jsonb(double_encoded)
+        assert result == original
+
+    def test_plain_string_value(self):
+        """A JSON string that decodes to a plain string stays as that string."""
+        import json
+
+        from butlers.core.state import decode_jsonb
+
+        result = decode_jsonb(json.dumps("hello"))
+        assert result == "hello"
+
+    def test_int_passthrough(self):
+        """An int value is returned unchanged."""
+        from butlers.core.state import decode_jsonb
+
+        assert decode_jsonb(42) == 42
+
+    def test_none_passthrough(self):
+        """None is returned unchanged."""
+        from butlers.core.state import decode_jsonb
+
+        assert decode_jsonb(None) is None
+
+    def test_list_passthrough(self):
+        """A list value is returned unchanged."""
+        from butlers.core.state import decode_jsonb
+
+        val = [1, 2, 3]
+        assert decode_jsonb(val) is val

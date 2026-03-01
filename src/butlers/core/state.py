@@ -15,6 +15,26 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 
+def decode_jsonb(val: Any) -> Any:
+    """Decode a JSONB value, handling potential double-encoding.
+
+    asyncpg returns JSONB columns as Python strings (text representation)
+    when no custom codec is registered.  Normally one ``json.loads`` pass
+    suffices.  If the stored JSONB was accidentally double-encoded (a JSON
+    string containing JSON text), a second pass is needed.
+    """
+    if not isinstance(val, str):
+        return val
+    val = json.loads(val)
+    if isinstance(val, str):
+        logger.warning("Double-encoded JSONB detected — applying second decode pass")
+        try:
+            val = json.loads(val)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return val
+
+
 class CASConflictError(Exception):
     """Raised by state_compare_and_set when the expected version does not match.
 
@@ -47,12 +67,7 @@ async def state_get(pool: asyncpg.Pool, key: str) -> Any | None:
     )
     if row is None:
         return None
-    # asyncpg returns JSONB columns as already-decoded Python objects when the
-    # column type is known.  However, if the codec has not been set up it may
-    # return a raw string.  Handle both cases.
-    if isinstance(row, str):
-        return json.loads(row)
-    return row
+    return decode_jsonb(row)
 
 
 async def state_set(pool: asyncpg.Pool, key: str, value: Any) -> int:
@@ -174,8 +189,6 @@ async def state_list(
 
     results: list[dict[str, Any]] = []
     for row in rows:
-        val = row["value"]
-        if isinstance(val, str):
-            val = json.loads(val)
+        val = decode_jsonb(row["value"])
         results.append({"key": row["key"], "value": val})
     return results

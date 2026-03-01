@@ -241,6 +241,74 @@ class TestValidateStateInvariants:
 
 
 # ---------------------------------------------------------------------------
+# Tests: _get_state_with_version — double-encoded JSONB handling
+# ---------------------------------------------------------------------------
+
+
+class TestGetStateWithVersion:
+    async def test_double_encoded_jsonb_returns_dict(self) -> None:
+        """_get_state_with_version handles double-encoded JSONB (str wrapping JSON text)."""
+        import json
+
+        from butlers.tools.education.teaching_flows import _get_state_with_version
+
+        map_id = str(uuid.uuid4())
+        state = _pending_state(map_id)
+        # Simulate double-encoded JSONB: value column is a string containing JSON text
+        double_encoded = json.dumps(json.dumps(state))
+        pool = _make_pool(
+            fetchrow_returns=[_make_row({"value": double_encoded, "version": 1})]
+        )
+
+        result, version = await _get_state_with_version(pool, map_id)
+        assert isinstance(result, dict), f"Expected dict, got {type(result).__name__}"
+        assert result["status"] == "pending"
+        assert result["mind_map_id"] == map_id
+        assert version == 1
+
+    async def test_single_encoded_jsonb_returns_dict(self) -> None:
+        """_get_state_with_version handles normal single-encoded JSONB."""
+        import json
+
+        from butlers.tools.education.teaching_flows import _get_state_with_version
+
+        map_id = str(uuid.uuid4())
+        state = _pending_state(map_id)
+        pool = _make_pool(
+            fetchrow_returns=[_make_row({"value": json.dumps(state), "version": 2})]
+        )
+
+        result, version = await _get_state_with_version(pool, map_id)
+        assert isinstance(result, dict)
+        assert result["status"] == "pending"
+        assert version == 2
+
+    async def test_already_decoded_dict_returns_dict(self) -> None:
+        """_get_state_with_version handles already-decoded dict values."""
+        from butlers.tools.education.teaching_flows import _get_state_with_version
+
+        map_id = str(uuid.uuid4())
+        state = _pending_state(map_id)
+        pool = _make_pool(
+            fetchrow_returns=[_make_row({"value": state, "version": 3})]
+        )
+
+        result, version = await _get_state_with_version(pool, map_id)
+        assert isinstance(result, dict)
+        assert result["status"] == "pending"
+        assert version == 3
+
+    async def test_missing_key_returns_none(self) -> None:
+        """_get_state_with_version returns (None, None) for missing keys."""
+        from butlers.tools.education.teaching_flows import _get_state_with_version
+
+        pool = _make_pool(fetchrow_returns=[None])
+        result, version = await _get_state_with_version(pool, str(uuid.uuid4()))
+        assert result is None
+        assert version is None
+
+
+# ---------------------------------------------------------------------------
 # Tests: teaching_flow_get
 # ---------------------------------------------------------------------------
 

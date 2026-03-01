@@ -36,7 +36,13 @@ from typing import Any
 
 import asyncpg
 
-from butlers.core.state import CASConflictError, state_compare_and_set, state_get, state_set
+from butlers.core.state import (
+    CASConflictError,
+    decode_jsonb,
+    state_compare_and_set,
+    state_get,
+    state_set,
+)
 from butlers.tools.education.mastery import mastery_get_map_summary
 from butlers.tools.education.mind_map_queries import mind_map_frontier
 from butlers.tools.education.mind_maps import mind_map_create, mind_map_update_status
@@ -152,9 +158,7 @@ async def _get_state_with_version(
     )
     if row is None:
         return None, None
-    val = row["value"]
-    if isinstance(val, str):
-        val = json.loads(val)
+    val = decode_jsonb(row["value"])
     return val, row["version"]
 
 
