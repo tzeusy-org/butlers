@@ -48,6 +48,7 @@ dev = [
 [project.scripts]
 gmail-connector = "butlers.connectors.gmail:main"
 telegram-user-client-connector = "butlers.connectors.telegram_user_client:run_telegram_user_client_connector"
+discord-user-connector = "butlers.connectors.discord_user:run_discord_user_connector"
 butlers = "butlers.cli:cli"
 
 [tool.ruff]
