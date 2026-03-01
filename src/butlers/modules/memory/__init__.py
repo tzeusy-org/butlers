@@ -165,7 +165,8 @@ class MemoryModule(Module):
             - `importance` (float)
             - `permanence` (enum): `permanent|stable|standard|volatile|ephemeral`
             - `scope` (string)
-            - `tags` (array[string]) — must be a JSON array of strings (a list) and NOT a JSON-encoded string.
+            - `tags` (array[string]) — must be a JSON array of strings (a list)
+              and NOT a JSON-encoded string.
               A single string is invalid and will fail validation.
 
             Valid JSON example:

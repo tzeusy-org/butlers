@@ -11,14 +11,17 @@ Covers:
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from butlers.api.app import create_app
+from butlers.credential_store import CredentialStore  # noqa: F401 — used by spec= in mock
 from butlers.google_credentials import (
+    KEY_CLIENT_ID,
+    KEY_CLIENT_SECRET,
+    KEY_SCOPES,
     GoogleAppCredentials,
     delete_google_credentials,
     load_app_credentials,
@@ -33,8 +36,30 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_conn(row: dict | None = None, execute_result: str = "DELETE 0") -> AsyncMock:
-    """Build a fake asyncpg connection mock."""
+def _make_credential_store(
+    stored: dict[str, str] | None = None,
+    delete_returns: bool = False,
+) -> AsyncMock:
+    """Build a fake CredentialStore mock.
+
+    Parameters
+    ----------
+    stored:
+        Dict of key→value pairs that ``load()`` should return.
+        Keys not present return ``None``.
+    delete_returns:
+        Value that ``delete()`` returns for any key.
+    """
+    stored = stored or {}
+    store = AsyncMock(spec=CredentialStore)
+    store.load.side_effect = lambda key: stored.get(key)
+    store.delete.return_value = delete_returns
+    return store
+
+
+def _make_db_manager(row: dict | None = None, execute_result: str = "DELETE 0") -> MagicMock:
+    """Build a fake DatabaseManager mock."""
+    pool = MagicMock()
     conn = AsyncMock()
     if row is None:
         conn.fetchrow.return_value = None
@@ -43,13 +68,6 @@ def _make_conn(row: dict | None = None, execute_result: str = "DELETE 0") -> Asy
         record.__getitem__ = lambda self, key: row[key]
         conn.fetchrow.return_value = record
     conn.execute.return_value = execute_result
-    return conn
-
-
-def _make_db_manager(row: dict | None = None, execute_result: str = "DELETE 0") -> MagicMock:
-    """Build a fake DatabaseManager mock."""
-    pool = MagicMock()
-    conn = _make_conn(row=row, execute_result=execute_result)
 
     # pool.acquire() returns async context manager yielding conn
     cm = AsyncMock()
@@ -70,55 +88,41 @@ def _make_db_manager(row: dict | None = None, execute_result: str = "DELETE 0") 
 
 
 class TestStoreAppCredentials:
-    async def test_stores_client_id_and_secret_without_existing_row(self) -> None:
-        conn = _make_conn(row=None)
-        await store_app_credentials(conn, client_id="test-id", client_secret="test-secret")
-        assert conn.execute.call_count == 1
-        call_args = conn.execute.call_args
-        payload_json = call_args[0][2]
-        payload = json.loads(payload_json)
-        assert payload["client_id"] == "test-id"
-        assert payload["client_secret"] == "test-secret"
-        assert "refresh_token" not in payload
-
-    async def test_preserves_refresh_token_from_existing_row(self) -> None:
-        existing = {
-            "client_id": "old-id",
-            "client_secret": "old-secret",
-            "refresh_token": "existing-refresh-token",
-            "scope": "gmail",
-        }
-        conn = _make_conn(row={"credentials": json.dumps(existing)})
-        await store_app_credentials(conn, client_id="new-id", client_secret="new-secret")
-        payload_json = conn.execute.call_args[0][2]
-        payload = json.loads(payload_json)
-        assert payload["client_id"] == "new-id"
-        assert payload["client_secret"] == "new-secret"
-        assert payload["refresh_token"] == "existing-refresh-token"
-        assert payload["scope"] == "gmail"
+    async def test_stores_client_id_and_secret(self) -> None:
+        store = _make_credential_store()
+        await store_app_credentials(store, client_id="test-id", client_secret="test-secret")
+        assert store.store.call_count == 2
+        # Verify client_id stored
+        id_call = store.store.call_args_list[0]
+        assert id_call.args[0] == KEY_CLIENT_ID
+        assert id_call.args[1] == "test-id"
+        # Verify client_secret stored
+        secret_call = store.store.call_args_list[1]
+        assert secret_call.args[0] == KEY_CLIENT_SECRET
+        assert secret_call.args[1] == "test-secret"
 
     async def test_strips_whitespace(self) -> None:
-        conn = _make_conn(row=None)
-        await store_app_credentials(conn, client_id="  test-id  ", client_secret="  secret  ")
-        payload_json = conn.execute.call_args[0][2]
-        payload = json.loads(payload_json)
-        assert payload["client_id"] == "test-id"
-        assert payload["client_secret"] == "secret"
+        store = _make_credential_store()
+        await store_app_credentials(store, client_id="  test-id  ", client_secret="  secret  ")
+        id_call = store.store.call_args_list[0]
+        assert id_call.args[1] == "test-id"
+        secret_call = store.store.call_args_list[1]
+        assert secret_call.args[1] == "secret"
 
     async def test_empty_client_id_raises(self) -> None:
-        conn = _make_conn()
+        store = _make_credential_store()
         with pytest.raises(ValueError, match="client_id"):
-            await store_app_credentials(conn, client_id="", client_secret="secret")
+            await store_app_credentials(store, client_id="", client_secret="secret")
 
     async def test_empty_client_secret_raises(self) -> None:
-        conn = _make_conn()
+        store = _make_credential_store()
         with pytest.raises(ValueError, match="client_secret"):
-            await store_app_credentials(conn, client_id="id", client_secret="")
+            await store_app_credentials(store, client_id="id", client_secret="")
 
     async def test_does_not_log_secret(self, caplog: pytest.LogCaptureFixture) -> None:
-        conn = _make_conn(row=None)
+        store = _make_credential_store()
         with caplog.at_level("DEBUG"):
-            await store_app_credentials(conn, client_id="my-id", client_secret="my-super-secret")
+            await store_app_credentials(store, client_id="my-id", client_secret="my-super-secret")
         for record in caplog.records:
             assert "my-super-secret" not in record.getMessage()
 
@@ -130,19 +134,24 @@ class TestStoreAppCredentials:
 
 class TestLoadAppCredentials:
     async def test_returns_none_when_no_row(self) -> None:
-        conn = _make_conn(row=None)
-        result = await load_app_credentials(conn)
+        store = _make_credential_store(stored={})
+        result = await load_app_credentials(store)
         assert result is None
 
     async def test_returns_full_credentials(self) -> None:
-        data = {
-            "client_id": "test-id",
-            "client_secret": "test-secret",
-            "refresh_token": "test-refresh",
-            "scope": "gmail",
-        }
-        conn = _make_conn(row={"credentials": data})
-        result = await load_app_credentials(conn)
+        store = _make_credential_store(
+            stored={
+                KEY_CLIENT_ID: "test-id",
+                KEY_CLIENT_SECRET: "test-secret",
+                KEY_SCOPES: "gmail",
+            }
+        )
+        with patch(
+            "butlers.google_credentials.resolve_owner_contact_info",
+            return_value="test-refresh",
+        ):
+            pool = MagicMock()
+            result = await load_app_credentials(store, pool=pool)
         assert isinstance(result, GoogleAppCredentials)
         assert result.client_id == "test-id"
         assert result.client_secret == "test-secret"
@@ -150,25 +159,34 @@ class TestLoadAppCredentials:
         assert result.scope == "gmail"
 
     async def test_returns_partial_credentials_without_refresh_token(self) -> None:
-        data = {"client_id": "test-id", "client_secret": "test-secret"}
-        conn = _make_conn(row={"credentials": data})
-        result = await load_app_credentials(conn)
+        store = _make_credential_store(
+            stored={
+                KEY_CLIENT_ID: "test-id",
+                KEY_CLIENT_SECRET: "test-secret",
+            }
+        )
+        result = await load_app_credentials(store)
         assert result is not None
         assert result.client_id == "test-id"
         assert result.refresh_token is None
 
     async def test_returns_none_when_client_id_missing(self) -> None:
-        data = {"client_secret": "test-secret"}
-        conn = _make_conn(row={"credentials": data})
-        result = await load_app_credentials(conn)
+        store = _make_credential_store(
+            stored={
+                KEY_CLIENT_SECRET: "test-secret",
+            }
+        )
+        result = await load_app_credentials(store)
         assert result is None
 
-    async def test_parses_json_string_credentials(self) -> None:
-        data = {"client_id": "id", "client_secret": "secret"}
-        conn = _make_conn(row={"credentials": json.dumps(data)})
-        result = await load_app_credentials(conn)
-        assert result is not None
-        assert result.client_id == "id"
+    async def test_returns_none_when_client_secret_missing(self) -> None:
+        store = _make_credential_store(
+            stored={
+                KEY_CLIENT_ID: "id",
+            }
+        )
+        result = await load_app_credentials(store)
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -178,13 +196,13 @@ class TestLoadAppCredentials:
 
 class TestDeleteGoogleCredentials:
     async def test_returns_true_when_row_deleted(self) -> None:
-        conn = _make_conn(execute_result="DELETE 1")
-        result = await delete_google_credentials(conn)
+        store = _make_credential_store(delete_returns=True)
+        result = await delete_google_credentials(store)
         assert result is True
 
     async def test_returns_false_when_no_row(self) -> None:
-        conn = _make_conn(execute_result="DELETE 0")
-        result = await delete_google_credentials(conn)
+        store = _make_credential_store(delete_returns=False)
+        result = await delete_google_credentials(store)
         assert result is False
 
 
