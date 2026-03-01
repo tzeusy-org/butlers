@@ -184,34 +184,48 @@ def _node_row(
 class TestSm2Update:
     """Tests for the SM-2 interval/ease computation."""
 
-    def test_rep0_quality_pass_gives_1_day(self) -> None:
+    def test_rep0_quality_pass_gives_6h(self) -> None:
         from butlers.tools.education.spaced_repetition import sm2_update
 
         result = sm2_update(ease_factor=2.5, repetitions=0, quality=3)
-        assert result["interval_days"] == 1.0
+        assert result["interval_days"] == 0.25
         assert result["new_repetitions"] == 1
 
-    def test_rep1_quality_pass_gives_6_days(self) -> None:
+    def test_rep1_quality_pass_gives_12h(self) -> None:
         from butlers.tools.education.spaced_repetition import sm2_update
 
         result = sm2_update(ease_factor=2.5, repetitions=1, quality=4)
-        assert result["interval_days"] == 6.0
+        assert result["interval_days"] == 0.5
         assert result["new_repetitions"] == 2
 
-    def test_rep2_quality_pass_uses_last_interval_times_ef(self) -> None:
+    def test_rep2_quality_pass_gives_1_day(self) -> None:
+        from butlers.tools.education.spaced_repetition import sm2_update
+
+        result = sm2_update(ease_factor=2.5, repetitions=2, quality=4)
+        assert result["interval_days"] == 1.0
+        assert result["new_repetitions"] == 3
+
+    def test_rep3_quality_pass_gives_6_days(self) -> None:
+        from butlers.tools.education.spaced_repetition import sm2_update
+
+        result = sm2_update(ease_factor=2.5, repetitions=3, quality=4)
+        assert result["interval_days"] == 6.0
+        assert result["new_repetitions"] == 4
+
+    def test_rep4_quality_pass_uses_last_interval_times_ef(self) -> None:
         from butlers.tools.education.spaced_repetition import sm2_update
 
         # last_interval=6, ef=2.5 → next interval = 6 * new_ef (quality=4 keeps ef=2.5)
-        result = sm2_update(ease_factor=2.5, repetitions=2, quality=4, last_interval=6.0)
+        result = sm2_update(ease_factor=2.5, repetitions=4, quality=4, last_interval=6.0)
         expected_interval = 6.0 * result["new_ease_factor"]
         assert abs(result["interval_days"] - expected_interval) < 1e-9
-        assert result["new_repetitions"] == 3
+        assert result["new_repetitions"] == 5
 
-    def test_rep2_fallback_interval_when_last_interval_none(self) -> None:
+    def test_rep4_fallback_interval_when_last_interval_none(self) -> None:
         from butlers.tools.education.spaced_repetition import sm2_update
 
         # last_interval=None → uses 6.0 as fallback
-        result = sm2_update(ease_factor=2.5, repetitions=2, quality=4, last_interval=None)
+        result = sm2_update(ease_factor=2.5, repetitions=4, quality=4, last_interval=None)
         expected_interval = 6.0 * result["new_ease_factor"]
         assert abs(result["interval_days"] - expected_interval) < 1e-9
 
@@ -257,7 +271,7 @@ class TestSm2Update:
 
         result = sm2_update(ease_factor=2.5, repetitions=5, quality=2)
         assert result["new_repetitions"] == 0
-        assert result["interval_days"] == 1.0
+        assert result["interval_days"] == 0.25
 
     def test_quality_below_3_still_adjusts_ease_factor(self) -> None:
         """Ease factor is penalized even on failure."""
@@ -274,7 +288,7 @@ class TestSm2Update:
 
         result = sm2_update(ease_factor=2.5, repetitions=0, quality=3)
         assert result["new_repetitions"] == 1
-        assert result["interval_days"] == 1.0
+        assert result["interval_days"] == 0.25
 
     def test_quality_2_is_failure_threshold(self) -> None:
         """quality=2 resets repetitions."""
@@ -364,7 +378,7 @@ class TestSpacedRepetitionRecordResponse:
     """Tests for spaced_repetition_record_response."""
 
     async def test_happy_path_rep0_creates_individual_schedule(self) -> None:
-        """rep=0, quality=4 → interval=1d, new rep=1, individual schedule."""
+        """rep=0, quality=4 → interval=6h, new rep=1, individual schedule."""
         from butlers.tools.education.spaced_repetition import (
             spaced_repetition_record_response,
         )
@@ -399,7 +413,7 @@ class TestSpacedRepetitionRecordResponse:
         )
 
         assert result["repetitions"] == 1
-        assert result["interval_days"] == 1.0
+        assert result["interval_days"] == 0.25
         assert abs(result["ease_factor"] - 2.5) < 1e-9
         assert "next_review_at" in result
 
@@ -410,7 +424,7 @@ class TestSpacedRepetitionRecordResponse:
         assert call_kwargs["dispatch_mode"] == "prompt"
         assert "until_at" in call_kwargs
 
-    async def test_happy_path_rep1_gives_6d_interval(self) -> None:
+    async def test_happy_path_rep3_gives_6d_interval(self) -> None:
         from butlers.tools.education.spaced_repetition import (
             spaced_repetition_record_response,
         )
@@ -424,7 +438,7 @@ class TestSpacedRepetitionRecordResponse:
                     node_id=node_id,
                     mind_map_id=map_id,
                     ease_factor=2.5,
-                    repetitions=1,
+                    repetitions=3,
                     mastery_status="reviewing",
                 )
             ],
@@ -444,7 +458,7 @@ class TestSpacedRepetitionRecordResponse:
         )
 
         assert result["interval_days"] == 6.0
-        assert result["repetitions"] == 2
+        assert result["repetitions"] == 4
 
     async def test_failed_recall_resets_repetitions(self) -> None:
         from butlers.tools.education.spaced_repetition import (
@@ -480,7 +494,7 @@ class TestSpacedRepetitionRecordResponse:
         )
 
         assert result["repetitions"] == 0
-        assert result["interval_days"] == 1.0
+        assert result["interval_days"] == 0.25
 
     async def test_invalid_quality_raises(self) -> None:
         from butlers.tools.education.spaced_repetition import (
@@ -728,7 +742,7 @@ class TestSpacedRepetitionRecordResponse:
                 _node_row(
                     node_id=node_id,
                     ease_factor=2.5,
-                    repetitions=2,
+                    repetitions=4,
                     next_review_at=next_review,
                     last_reviewed_at=last_reviewed,
                     mastery_status="reviewing",

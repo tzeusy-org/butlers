@@ -190,9 +190,15 @@ questions remain) or `REVIEWING` (based on frontier state and SM-2 schedule).
 Notify the user of the next review timing and exit:
 
 ```python
+# Format interval as hours (<1d) or days (≥1d)
+if interval_days < 1:
+    interval_text = f"{int(interval_days * 24)} hours"
+else:
+    interval_text = f"{interval_days:.0f} day{'s' if interval_days != 1 else ''}"
+
 notify(
     channel="telegram",
-    message=f"[concept] covered. Well done! I'll check back with you in {interval_days} days "
+    message=f"[concept] covered. Well done! I'll check back with you in {interval_text} "
             f"to make sure it sticks.",
     intent="reply",
     request_context=<session_request_context>

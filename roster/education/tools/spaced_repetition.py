@@ -1,7 +1,7 @@
 """Education butler — SM-2 spaced repetition engine.
 
 Implements the SM-2 algorithm for scheduling knowledge reviews:
-- Interval progression: 1d → 6d → last * ease_factor
+- Interval progression: 6h → 12h → 1d → 6d → last * ease_factor
 - Ease factor floor at 1.3
 - Failed recall (quality < 3) resets repetitions to 0 but still adjusts ease factor
 - Creates one-shot cron schedules for next review, enforcing a per-map batch cap
@@ -73,9 +73,9 @@ def sm2_update(
     quality:
         Response quality 0–5 (0=blackout, 5=perfect recall).
     last_interval:
-        Days since the previous review. Used for rep ≥ 2 interval computation.
-        Ignored for rep 0 and rep 1 (fixed intervals apply).
-        When None and rep >= 2, falls back to 6.0 days.
+        Days since the previous review. Used for rep ≥ 4 interval computation.
+        Ignored for rep 0–3 (fixed intervals apply).
+        When None and rep >= 4, falls back to 6.0 days.
 
     Returns
     -------
@@ -92,16 +92,20 @@ def sm2_update(
         # Successful recall — increment repetitions and compute interval
         new_reps = repetitions + 1
         if repetitions == 0:
-            interval = 1.0
+            interval = 0.25  # 6 hours
         elif repetitions == 1:
-            interval = 6.0
+            interval = 0.5  # 12 hours
+        elif repetitions == 2:
+            interval = 1.0  # 1 day
+        elif repetitions == 3:
+            interval = 6.0  # 6 days
         else:
             base = last_interval if last_interval is not None else 6.0
             interval = base * new_ef
     else:
-        # Failed recall — reset repetitions, interval back to 1 day
+        # Failed recall — reset repetitions, interval back to 6 hours
         new_reps = 0
-        interval = 1.0
+        interval = 0.25
 
     return {
         "new_ease_factor": new_ef,
