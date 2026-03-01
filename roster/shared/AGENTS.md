@@ -36,3 +36,32 @@ notify(channel="telegram", intent="send", message="Your weekly health summary: .
 ```
 
 For full notify() usage — interactive responses, scheduled notifications, and response modes — consult the `butler-notifications` shared skill.
+
+## Creating Scheduled Tasks at Runtime
+
+When you call `schedule_create()` with `dispatch_mode="prompt"`, the prompt you provide will run in a **fresh ephemeral session with no memory of the current conversation**. That future session has no interactive user and no access to `request_context`.
+
+**If the scheduled task should message the user, you MUST embed an explicit `notify()` instruction in the prompt text itself.** The future session cannot infer this — it only sees the prompt you write now.
+
+Include in the prompt:
+- The exact `notify()` call with `channel` and `intent="send"` parameters
+- What data to gather and include in the message
+- When to skip notification (no-op path)
+
+**Good — explicit notify() in prompt:**
+```python
+schedule_create(
+    name="reminder-xyz",
+    cron="0 9 * * *",
+    prompt="Check X. If actionable, send via notify(channel='telegram', intent='send', message=<summary>). If nothing to report, exit silently.",
+)
+```
+
+**Bad — no notify() instruction (message will be lost):**
+```python
+schedule_create(
+    name="reminder-xyz",
+    cron="0 9 * * *",
+    prompt="Check X and tell the user about it.",  # "tell the user" means nothing in a headless session
+)
+```
