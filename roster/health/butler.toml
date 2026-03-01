@@ -64,4 +64,7 @@ full_sync_interval_days = 6
 
 [modules.health]
 
+[modules.home_assistant]
+read_only = true
+
 [modules.memory]

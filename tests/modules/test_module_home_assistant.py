@@ -52,6 +52,16 @@ EXPECTED_HA_TOOLS = {
     "ha_activate_scene",
 }
 
+EXPECTED_HA_READ_ONLY_TOOLS = {
+    "ha_get_entity_state",
+    "ha_list_entities",
+    "ha_list_areas",
+    "ha_list_services",
+    "ha_get_history",
+    "ha_get_statistics",
+    "ha_render_template",
+}
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -137,6 +147,13 @@ class TestModuleABCCompliance:
         assert "ha_get_entity_state" not in meta
         assert "ha_list_entities" not in meta
 
+    def test_tool_metadata_empty_when_read_only(self) -> None:
+        """tool_metadata() returns empty dict in read-only mode."""
+        module = HomeAssistantModule()
+        module._config = HomeAssistantConfig(read_only=True)
+        meta = module.tool_metadata()
+        assert meta == {}
+
 
 # ---------------------------------------------------------------------------
 # HomeAssistantConfig validation
@@ -196,6 +213,16 @@ class TestHomeAssistantConfig:
         """An empty dict is accepted because all fields are optional."""
         config = HomeAssistantConfig(**{})
         assert config.url is None
+
+    def test_read_only_defaults_to_false(self) -> None:
+        """read_only defaults to False."""
+        config = HomeAssistantConfig()
+        assert config.read_only is False
+
+    def test_read_only_configurable(self) -> None:
+        """read_only can be set to True."""
+        config = HomeAssistantConfig(read_only=True)
+        assert config.read_only is True
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +544,16 @@ class TestToolRegistration:
         )
         for name in mock_mcp._registered_tools:
             assert name.startswith("ha_"), f"Tool '{name}' does not start with 'ha_'"
+
+    async def test_read_only_registers_only_query_tools(self, mock_mcp: MagicMock) -> None:
+        """read_only=True registers only the 7 query tools, not write tools."""
+        module = HomeAssistantModule()
+        await module.register_tools(
+            mcp=mock_mcp,
+            config={"read_only": True},
+            db=None,
+        )
+        assert set(mock_mcp._registered_tools.keys()) == EXPECTED_HA_READ_ONLY_TOOLS
 
 
 # ---------------------------------------------------------------------------

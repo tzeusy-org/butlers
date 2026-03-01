@@ -158,6 +158,7 @@ class HomeAssistantConfig(BaseModel):
     websocket_ping_interval: int = 30
     poll_interval_seconds: int = 60
     snapshot_interval_seconds: int = 300
+    read_only: bool = False
 
     model_config = ConfigDict(extra="forbid")
 
@@ -240,7 +241,12 @@ class HomeAssistantModule(Module):
         ``ha_call_service`` has ``domain`` and ``service`` marked sensitive
         so the approvals module can classify risk dynamically (e.g., lock.unlock
         as always-require, cover.open_cover as medium).
+
+        In read-only mode the write tools are not registered, so no approval
+        metadata is needed.
         """
+        if self._config and self._config.read_only:
+            return {}
         return {
             "ha_call_service": ToolMeta(arg_sensitivities={"domain": True, "service": True}),
         }
@@ -591,8 +597,9 @@ class HomeAssistantModule(Module):
         mcp.tool()(ha_get_history)
         mcp.tool()(ha_get_statistics)
         mcp.tool()(ha_render_template)
-        mcp.tool()(ha_call_service)
-        mcp.tool()(ha_activate_scene)
+        if not self._config.read_only:
+            mcp.tool()(ha_call_service)
+            mcp.tool()(ha_activate_scene)
 
     # ------------------------------------------------------------------
     # WebSocket transport — connection and authentication
