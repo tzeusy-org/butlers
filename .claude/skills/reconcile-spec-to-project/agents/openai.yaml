@@ -1,0 +1,4 @@
+interface:
+  display_name: "Reconcile Spec to Project"
+  short_description: "Deep-dive spec vs. implementation gap analysis"
+  default_prompt: "Use $reconcile-spec-to-project to audit openspec/specs against the codebase and create beads for gaps."

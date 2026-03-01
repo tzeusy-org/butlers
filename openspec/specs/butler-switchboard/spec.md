@@ -520,6 +520,84 @@ The switchboard has two specialized skills for message triage and relationship e
 - **WHEN** the switchboard operates
 - **THEN** it has access to `message-triage` (classification and routing with confidence scoring) and `relationship-extractor` (structured relationship data extraction for 8 signal types: contact, interaction, life_event, date, fact, sentiment, gift, loan)
 
+### Requirement: Deterministic Pre-Classification Triage
+Before invoking LLM classification, Switchboard runs a fast deterministic triage pipeline that can route, skip, or deprioritize messages without LLM cost.
+
+#### Scenario: Rule-based first-match routing
+- **WHEN** an ingress message arrives
+- **THEN** it is evaluated against cached triage rules (ordered by priority ASC, created_at ASC) before LLM classification
+- **AND** the first matching rule wins; if no rule matches, the message falls through to LLM classification (`pass_through`)
+
+#### Scenario: Supported rule types
+- **WHEN** a triage rule is evaluated
+- **THEN** it matches on one of: `sender_domain` (exact or suffix match including subdomains), `sender_address` (case-insensitive exact), `header_condition` (present/equals/contains on email headers), or `mime_type` (exact or wildcard subtype)
+
+#### Scenario: Triage actions
+- **WHEN** a triage rule matches
+- **THEN** its action determines routing: `route_to:<butler>` (direct route), `skip` (drop message), `metadata_only` (ingest metadata without LLM), `low_priority_queue` (deprioritize), or `pass_through` (proceed to LLM)
+
+#### Scenario: Fail-open semantics
+- **WHEN** a rule evaluation throws an exception
+- **THEN** that rule is skipped and evaluation continues to the next rule
+- **AND** database errors during cache refresh preserve the last known good rule set
+
+#### Scenario: Triage rule cache
+- **WHEN** the Switchboard starts
+- **THEN** active triage rules are loaded from the `triage_rules` table into an in-memory cache
+- **AND** the cache refreshes periodically (default 60s) and invalid rows are individually skipped without affecting valid rules
+
+### Requirement: Email Thread Affinity Routing
+Follow-up emails in the same thread are routed to the same butler that handled prior messages, avoiding re-classification overhead and preserving conversational context.
+
+#### Scenario: Thread affinity hit
+- **WHEN** an email arrives with a `thread_id` that has a single butler in routing history within the TTL window (default 30 days)
+- **THEN** the message is routed directly to that butler, bypassing LLM classification
+
+#### Scenario: Thread affinity miss — conflict
+- **WHEN** an email thread has been routed to multiple distinct butlers within the TTL
+- **THEN** thread affinity returns a miss and the message falls through to LLM classification
+
+#### Scenario: Thread affinity miss — stale
+- **WHEN** an email thread has routing history but all entries are older than the TTL
+- **THEN** thread affinity returns a stale miss and the message falls through to LLM classification
+
+#### Scenario: Per-thread overrides
+- **WHEN** a thread-specific override exists in the `thread_affinity_settings` table
+- **THEN** `force:<butler>` overrides route directly; `disabled` suppresses affinity for that thread
+
+#### Scenario: Non-email channels
+- **WHEN** the source channel is not email
+- **THEN** thread affinity is not evaluated (immediate miss)
+
+#### Scenario: Thread affinity fail-open
+- **WHEN** a database error occurs during thread affinity lookup or settings load
+- **THEN** affinity returns a miss and the message falls through to LLM classification with safe defaults
+
+### Requirement: Triage Rule Management
+Dashboard and operator tools for managing triage rules.
+
+#### Scenario: Triage rule CRUD
+- **WHEN** an operator manages triage rules via the dashboard API
+- **THEN** rules can be created, listed, updated, and deleted through `/api/switchboard/triage-rules` endpoints
+- **AND** rule changes invalidate the in-memory cache for immediate effect
+
+#### Scenario: Thread affinity settings
+- **WHEN** an operator manages thread affinity via the dashboard API
+- **THEN** global enable/disable, TTL configuration, and per-thread overrides are accessible through `/api/switchboard/thread-affinity` endpoints
+
+### Requirement: Triage Observability
+The triage subsystem emits OpenTelemetry metrics for monitoring rule effectiveness and thread affinity performance.
+
+#### Scenario: Rule match metrics
+- **WHEN** a triage rule matches (or the message passes through)
+- **THEN** counters are incremented for `rule_matched` (by rule type, action, channel) and `pass_through` (by channel, reason)
+- **AND** evaluation latency is recorded as a histogram
+
+#### Scenario: Thread affinity metrics
+- **WHEN** thread affinity is evaluated
+- **THEN** counters are incremented for hits (destination butler), misses (reason), and stale lookups
+- **AND** metric attributes use bounded value sets to prevent cardinality blowup (no raw emails, thread IDs, or request IDs)
+
 ### Requirement: [TARGET-STATE] Ambiguity Resolution Contract
 Switchboard routing behavior under ambiguity.
 
