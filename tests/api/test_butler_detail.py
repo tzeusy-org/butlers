@@ -25,7 +25,7 @@ class TestDiscoverSkills:
     def test_empty_skills_dir(self, tmp_path: Path):
         butler_dir = tmp_path / "test"
         butler_dir.mkdir()
-        (butler_dir / "skills").mkdir()
+        (butler_dir / ".agents" / "skills").mkdir(parents=True)
         assert _discover_skills(butler_dir) == []
 
     def test_no_skills_dir(self, tmp_path: Path):
@@ -43,8 +43,8 @@ class TestDiscoverSkills:
     def test_ignores_dirs_without_skill_md(self, tmp_path: Path):
         butler_dir = tmp_path / "test"
         butler_dir.mkdir()
-        skills_dir = butler_dir / "skills"
-        skills_dir.mkdir()
+        skills_dir = butler_dir / ".agents" / "skills"
+        skills_dir.mkdir(parents=True)
         # Directory without SKILL.md
         (skills_dir / "incomplete").mkdir()
         # Directory with SKILL.md

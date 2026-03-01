@@ -223,21 +223,21 @@ def test_read_system_prompt_default_no_mcp_logging(tmp_path: Path) -> None:
 
 
 def test_get_skills_dir_exists(tmp_path: Path) -> None:
-    """When skills/ exists, the path is returned."""
-    skills = tmp_path / "skills"
-    skills.mkdir()
+    """When .agents/skills/ exists, the path is returned."""
+    skills = tmp_path / ".agents" / "skills"
+    skills.mkdir(parents=True)
     assert get_skills_dir(tmp_path) == skills
 
 
 def test_get_skills_dir_missing(tmp_path: Path) -> None:
-    """When skills/ does not exist, None is returned."""
+    """When .agents/skills/ does not exist, None is returned."""
     assert get_skills_dir(tmp_path) is None
 
 
 def test_skills_directory_structure(tmp_path: Path) -> None:
-    """Validates the expected skills/<name>/SKILL.md layout."""
-    skills = tmp_path / "skills"
-    skills.mkdir()
+    """Validates the expected .agents/skills/<name>/SKILL.md layout."""
+    skills = tmp_path / ".agents" / "skills"
+    skills.mkdir(parents=True)
     (skills / "email-send").mkdir()
     (skills / "email-send" / "SKILL.md").write_text("# Email Send Skill", encoding="utf-8")
     (skills / "calendar-check").mkdir()

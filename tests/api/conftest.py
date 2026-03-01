@@ -322,8 +322,8 @@ def make_butler_dir(
         all_skills = {s: f"# {s}\n\nSkill description.\n" for s in skills}
 
     if all_skills:
-        skills_dir = butler_dir / "skills"
-        skills_dir.mkdir(exist_ok=True)
+        skills_dir = butler_dir / ".agents" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
         for skill_name, content in all_skills.items():
             skill_dir = skills_dir / skill_name
             skill_dir.mkdir(exist_ok=True)

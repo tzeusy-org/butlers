@@ -33,7 +33,7 @@ Creating a butler involves these files (in recommended order):
 5. **tools/** — MCP tool implementations as a package or single file (required)
 6. **migrations/** — Alembic database schema (if butler needs persistence)
 7. **api/** — Dashboard API routes and Pydantic models (optional)
-8. **skills/** — Skill definitions for runtime instances (optional, add later)
+8. **.agents/skills/** — Skill definitions for runtime instances (optional, add later)
 9. **tests/** — Integration tests (required)
 
 ## Step 1: Create the Directory
@@ -57,11 +57,12 @@ roster/<butler-name>/
 ├── api/                        # Optional dashboard endpoints
 │   ├── router.py               # FastAPI router (exports 'router')
 │   └── models.py               # Pydantic response models
-├── skills/
+├── .agents/skills/
 │   ├── <custom-skill>/
 │   │   └── SKILL.md
-│   ├── butler-memory -> ../../shared/skills/butler-memory
-│   └── butler-notifications -> ../../shared/skills/butler-notifications
+│   ├── butler-memory -> ../../../shared/skills/butler-memory
+│   └── butler-notifications -> ../../../shared/skills/butler-notifications
+├── .claude -> .agents
 └── tests/
     └── test_tools.py
 ```
@@ -560,18 +561,21 @@ class MyModel(BaseModel):
     updated_at: str
 ```
 
-## Step 9: skills/
+## Step 9: .agents/skills/
 
-Skills provide detailed workflow guidance to runtime instances. Each skill is a subdirectory with a `SKILL.md` file.
+Skills provide detailed workflow guidance to runtime instances. Each skill is a subdirectory with a `SKILL.md` file. Skills live in `.agents/skills/` (discovered by Codex) with a `.claude -> .agents` symlink for Claude Code compatibility.
 
 ### Shared skills
 
 Most butlers should symlink to shared skills:
 
 ```bash
-cd roster/<butler-name>/skills/
-ln -s ../../shared/skills/butler-memory butler-memory
-ln -s ../../shared/skills/butler-notifications butler-notifications
+mkdir -p roster/<butler-name>/.agents/skills/
+cd roster/<butler-name>/.agents/skills/
+ln -s ../../../shared/skills/butler-memory butler-memory
+ln -s ../../../shared/skills/butler-notifications butler-notifications
+cd roster/<butler-name>/
+ln -s .agents .claude
 ```
 
 ### Custom skills
@@ -689,7 +693,7 @@ Simply placing the correct files in the right directory structure is sufficient 
 9. **TIMESTAMP instead of TIMESTAMPTZ**: Always use timezone-aware timestamps.
 10. **Missing Interactive Response Mode**: User-facing butlers that receive Telegram/email messages need the full IRM section in CLAUDE.md.
 11. **Missing memory taxonomy**: Butlers with `[modules.memory]` need domain-specific Memory Classification in CLAUDE.md.
-12. **Forgetting shared skill symlinks**: Most butlers should symlink `butler-memory` and `butler-notifications` from `roster/shared/skills/`.
+12. **Forgetting shared skill symlinks**: Most butlers should symlink `butler-memory` and `butler-notifications` from `roster/shared/skills/` into `.agents/skills/`.
 13. **Missing AGENTS.md**: Every butler needs this file, even if initially just a header.
 14. **API router missing `router` export**: Dashboard routes must export a module-level `router` variable (APIRouter instance).
 15. **Missing domain module**: If the butler defines tools in `roster/{name}/tools/`, a `{Name}Module` in `roster/{name}/module.py` is required to register them as MCP tools. Without it, the butler's runtime will not see any domain tools — only core and shared module tools. See Step 6b.

@@ -78,7 +78,8 @@ roster/butler-name/
 ├── api/            # Dashboard API routes (optional)
 │   ├── router.py   # FastAPI router (exports module-level 'router' variable)
 │   └── models.py   # Pydantic models for request/response schemas
-├── skills/         # Skills available to runtime instances (SKILL.md + optional scripts)
+├── .agents/skills/ # Skills available to runtime instances (Codex discovery)
+├── .claude -> .agents  # Claude Code compatibility symlink
 └── butler.toml     # Identity, schedule, modules config
 ```
 
@@ -98,7 +99,7 @@ When adding a new butler to the roster, follow this checklist:
    - Use `from butlers.api.db import DatabaseManager` and `Depends(_get_db_manager)` for DB access
    - No `__init__.py` needed in the api/ directory
    - Auto-discovery handles registration via `src/butlers/api/router_discovery.py`
-9. **Skills:** Add butler-specific skills to `roster/{butler-name}/skills/` (each skill needs a SKILL.md)
+9. **Skills:** Add butler-specific skills to `roster/{butler-name}/.agents/skills/` (each skill needs a SKILL.md)
 10. **Tests:** Write unit tests for MCP tools, API routes, and database operations
 11. **Switchboard registration:** Update the Switchboard butler to route requests to the new butler
 

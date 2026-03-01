@@ -274,8 +274,8 @@ async def get_butler_config(
 
 
 def _discover_skills(butler_dir: Path) -> list[str]:
-    """List skill names from the butler's skills/ directory."""
-    skills_dir = butler_dir / "skills"
+    """List skill names from the butler's .agents/skills/ directory."""
+    skills_dir = butler_dir / ".agents" / "skills"
     if not skills_dir.is_dir():
         return []
 
@@ -306,8 +306,8 @@ async def _get_live_status(name: str, mcp_manager: MCPClientManager) -> str:
 
 
 def _read_skills(butler_dir: Path) -> list[SkillInfo]:
-    """Read skill names and SKILL.md content from the butler's skills/ directory."""
-    skills_dir = butler_dir / "skills"
+    """Read skill names and SKILL.md content from the butler's .agents/skills/ directory."""
+    skills_dir = butler_dir / ".agents" / "skills"
     if not skills_dir.is_dir():
         return []
 

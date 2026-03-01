@@ -327,7 +327,8 @@ butlers/mybutler/
 ├── butler.toml    # Identity, port, schedules, modules
 ├── CLAUDE.md      # System prompt / personality
 ├── AGENTS.md      # Runtime agent notes
-└── skills/        # Skill definitions (future)
+├── .agents/skills/ # Skill definitions (Codex discovery)
+└── .claude -> .agents  # Claude Code compatibility
 ```
 
 For one-db/multi-schema deployments, update the scaffolded DB target:

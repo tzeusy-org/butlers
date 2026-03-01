@@ -137,8 +137,9 @@ class HomeAssistantConfig(BaseModel):
     Attributes
     ----------
     url:
-        Required base URL of the Home Assistant instance
-        (e.g. ``http://homeassistant.local:8123``).
+        Optional base URL of the Home Assistant instance.  Ignored at
+        runtime — the URL is resolved from owner contact_info
+        (type ``'home_assistant_url'``) at startup.
     verify_ssl:
         Whether to verify SSL certificates when using HTTPS. Defaults to
         ``False`` since many local HA installs use self-signed certs.
@@ -152,7 +153,7 @@ class HomeAssistantConfig(BaseModel):
         ``ha_entity_snapshot``. Defaults to ``300``.
     """
 
-    url: str
+    url: str | None = None
     verify_ssl: bool = False
     websocket_ping_interval: int = 30
     poll_interval_seconds: int = 60
@@ -181,6 +182,7 @@ class HomeAssistantModule(Module):
 
     def __init__(self) -> None:
         self._config: HomeAssistantConfig | None = None
+        self._url: str | None = None
         self._token: str | None = None
         self._client: Any | None = None  # httpx.AsyncClient, imported lazily
         self._db: Any = None
@@ -280,29 +282,40 @@ class HomeAssistantModule(Module):
         self._db = db
         self._shutdown = False
 
-        # --- Resolve token from owner contact_info ---
+        # --- Resolve URL and token from owner contact_info ---
         pool = getattr(db, "pool", None) if db is not None else None
+        url: str | None = None
         token: str | None = None
 
         if pool is not None:
+            url = await resolve_owner_contact_info(pool, "home_assistant_url")
             token = await resolve_owner_contact_info(pool, "home_assistant_token")
+
+        if not url:
+            raise RuntimeError(
+                "Home Assistant URL is not configured. "
+                "Add a 'home_assistant_url' entry (e.g. http://homeassistant.local:8123) "
+                "to the owner contact's contact_info via the dashboard."
+            )
 
         if not token:
             raise RuntimeError(
                 "Home Assistant token is not configured. "
                 "Add a 'home_assistant_token' entry to the owner contact's contact_info "
-                "via the dashboard or shared.contact_info table."
+                "via the dashboard."
             )
 
+        self._url = url
         self._token = token
         logger.debug(
-            "HomeAssistantModule: resolved HA token (prefix=%s...)",
+            "HomeAssistantModule: resolved HA URL=%s, token prefix=%s...",
+            url,
             token[:8],
         )
 
         # --- Create HTTP client ---
         self._client = httpx.AsyncClient(
-            base_url=self._config.url,
+            base_url=self._url,
             headers={
                 "Authorization": f"Bearer {token}",
                 "Content-Type": "application/json",
@@ -376,6 +389,7 @@ class HomeAssistantModule(Module):
             await self._client.aclose()
             self._client = None
 
+        self._url = None
         self._token = None
         self._config = None
         self._db = None
@@ -589,8 +603,8 @@ class HomeAssistantModule(Module):
 
         ``http://`` → ``ws://``, ``https://`` → ``wss://``.
         """
-        assert self._config is not None
-        url = self._config.url.rstrip("/")
+        assert self._url is not None
+        url = self._url.rstrip("/")
         if url.startswith("https://"):
             ws_url = "wss://" + url[len("https://") :]
         elif url.startswith("http://"):

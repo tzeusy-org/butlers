@@ -9,9 +9,10 @@ Butler config directory layout::
     butler-name/
     ├── CLAUDE.md       # Butler personality/instructions (system prompt)
     ├── AGENTS.md       # Runtime agent notes (read/write by runtime instances)
-    ├── skills/         # Skills available to runtime instances
+    ├── .agents/skills/ # Skills available to runtime instances (Codex discovery)
     │   └── <name>/
     │       └── SKILL.md
+    ├── .claude -> .agents  # Claude Code compatibility symlink
     └── butler.toml     # Identity, schedule, modules config
 """
 
@@ -116,8 +117,8 @@ def read_system_prompt(config_dir: Path, butler_name: str) -> str:
 
 
 def get_skills_dir(config_dir: Path) -> Path | None:
-    """Return the path to *config_dir*/skills/ if it exists, else ``None``."""
-    skills = config_dir / "skills"
+    """Return the path to *config_dir*/.agents/skills/ if it exists, else ``None``."""
+    skills = config_dir / ".agents" / "skills"
     if skills.is_dir():
         return skills
     return None

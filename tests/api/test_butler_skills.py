@@ -28,10 +28,10 @@ class TestReadSkills:
         assert _read_skills(butler_dir) == []
 
     def test_empty_skills_dir(self, tmp_path: Path):
-        """Returns empty list when skills/ directory is empty."""
+        """Returns empty list when .agents/skills/ directory is empty."""
         butler_dir = tmp_path / "test"
         butler_dir.mkdir()
-        (butler_dir / "skills").mkdir()
+        (butler_dir / ".agents" / "skills").mkdir(parents=True)
         assert _read_skills(butler_dir) == []
 
     def test_reads_skill_name_and_content(self, tmp_path: Path):
@@ -68,8 +68,8 @@ class TestReadSkills:
         """Skips directories that don't contain a SKILL.md file."""
         butler_dir = tmp_path / "test"
         butler_dir.mkdir()
-        skills_dir = butler_dir / "skills"
-        skills_dir.mkdir()
+        skills_dir = butler_dir / ".agents" / "skills"
+        skills_dir.mkdir(parents=True)
 
         # Directory without SKILL.md
         (skills_dir / "incomplete").mkdir()

@@ -4,9 +4,11 @@ port = 40108
 description = "Smart home automation orchestrator for comfort, energy, and device management"
 
 [butler.runtime]
-type = "codex"
-model = "gpt-5.2"
+model = "gpt-5.3-codex-spark"
 max_concurrent_sessions = 3
+
+[runtime]
+type = "codex"
 
 [butler.db]
 name = "butlers"
@@ -20,7 +22,6 @@ route_contract_min = "route.v1"
 route_contract_max = "route.v1"
 
 [modules.home_assistant]
-url = "http://localhost:8123"
 
 [modules.memory]
 

@@ -43,7 +43,7 @@ Every butler must be defined by a git-backed config directory with:
 - `butler.toml` (required)
 - `CLAUDE.md` (required)
 - `MANIFESTO.md` (required for product/role identity)
-- `skills/` (optional)
+- `.agents/skills/` (optional)
 - `AGENTS.md` (optional runtime/operator notes)
 
 Required `butler.toml` fields:

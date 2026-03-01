@@ -146,10 +146,10 @@ class TestModuleABCCompliance:
 class TestHomeAssistantConfig:
     """Verify HomeAssistantConfig validation and defaults."""
 
-    def test_url_required(self) -> None:
-        """url is required; omitting it raises ValidationError."""
-        with pytest.raises(ValidationError):
-            HomeAssistantConfig()  # type: ignore[call-arg]
+    def test_url_optional(self) -> None:
+        """url is optional; omitting it defaults to None."""
+        config = HomeAssistantConfig()
+        assert config.url is None
 
     def test_url_accepted(self) -> None:
         """url is accepted and stored as-is."""
@@ -158,7 +158,8 @@ class TestHomeAssistantConfig:
 
     def test_defaults(self) -> None:
         """All optional fields have correct defaults."""
-        config = HomeAssistantConfig(url="http://ha.local")
+        config = HomeAssistantConfig()
+        assert config.url is None
         assert config.verify_ssl is False
         assert config.websocket_ping_interval == 30
         assert config.poll_interval_seconds == 60
@@ -167,7 +168,7 @@ class TestHomeAssistantConfig:
     def test_extra_fields_rejected(self) -> None:
         """Extra fields raise ValidationError (extra='forbid')."""
         with pytest.raises(ValidationError):
-            HomeAssistantConfig(url="http://ha.local", unknown_field="boom")
+            HomeAssistantConfig(unknown_field="boom")
 
     def test_verify_ssl_configurable(self) -> None:
         """verify_ssl can be set to True."""
@@ -191,10 +192,10 @@ class TestHomeAssistantConfig:
         config = HomeAssistantConfig(**valid_config_dict)
         assert config.url == "http://homeassistant.local:8123"
 
-    def test_empty_dict_raises(self) -> None:
-        """An empty dict raises because url is required."""
-        with pytest.raises(ValidationError):
-            HomeAssistantConfig(**{})
+    def test_empty_dict_accepted(self) -> None:
+        """An empty dict is accepted because all fields are optional."""
+        config = HomeAssistantConfig(**{})
+        assert config.url is None
 
 
 # ---------------------------------------------------------------------------
@@ -202,15 +203,25 @@ class TestHomeAssistantConfig:
 # ---------------------------------------------------------------------------
 
 
-def _patch_startup(token: str = "test-ha-token-12345") -> Any:
+def _patch_startup(
+    token: str = "test-ha-token-12345",
+    url: str = "http://ha.local:8123",
+) -> Any:
     """Context manager stack that patches on_startup's external dependencies.
 
     Patches:
-    - ``resolve_owner_contact_info`` to return ``token``
+    - ``resolve_owner_contact_info`` to return ``url`` or ``token`` depending on type arg
     - ``httpx.AsyncClient`` to a MagicMock
     - ``HomeAssistantModule._ws_connect_and_seed`` to a no-op async
     """
     from contextlib import AsyncExitStack, nullcontext
+
+    async def _resolve_side_effect(pool: Any, info_type: str) -> str | None:
+        if info_type == "home_assistant_url":
+            return url
+        if info_type == "home_assistant_token":
+            return token
+        return None
 
     class _Stack:
         """Helper that sequences three patches without nested with-blocks."""
@@ -222,7 +233,7 @@ def _patch_startup(token: str = "test-ha-token-12345") -> Any:
         async def __aenter__(self) -> _Stack:
             self._p1 = patch(
                 "butlers.credential_store.resolve_owner_contact_info",
-                new=AsyncMock(return_value=token),
+                new=AsyncMock(side_effect=_resolve_side_effect),
             )
             self._p2 = patch("httpx.AsyncClient", return_value=MagicMock())
             self._p3 = patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock())
@@ -243,31 +254,36 @@ def _patch_startup(token: str = "test-ha-token-12345") -> Any:
 class TestOnStartupCredentialResolution:
     """Verify on_startup resolves token from owner contact_info."""
 
-    async def test_startup_resolves_token_from_contact_info(
+    async def test_startup_resolves_url_and_token_from_contact_info(
         self, ha_module: HomeAssistantModule
     ) -> None:
-        """on_startup calls resolve_owner_contact_info and caches the token."""
+        """on_startup calls resolve_owner_contact_info for both URL and token."""
         mock_pool = MagicMock()
         mock_db = MagicMock()
         mock_db.pool = mock_pool
 
+        async def _resolve(pool: Any, info_type: str) -> str | None:
+            if info_type == "home_assistant_url":
+                return "http://ha.local"
+            if info_type == "home_assistant_token":
+                return "test-ha-token-12345"
+            return None
+
         with patch(
             "butlers.credential_store.resolve_owner_contact_info",
-            new=AsyncMock(return_value="test-ha-token-12345"),
+            new=AsyncMock(side_effect=_resolve),
         ) as mock_resolve:
             with patch("httpx.AsyncClient", return_value=MagicMock()):
                 with patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock()):
-                    await ha_module.on_startup(
-                        config={"url": "http://ha.local"},
-                        db=mock_db,
-                    )
+                    await ha_module.on_startup(config={}, db=mock_db)
 
-            mock_resolve.assert_awaited_once_with(mock_pool, "home_assistant_token")
+            assert mock_resolve.await_count == 2
 
+        assert ha_module._url == "http://ha.local"
         assert ha_module._token == "test-ha-token-12345"
 
-    async def test_startup_raises_if_token_missing(self, ha_module: HomeAssistantModule) -> None:
-        """on_startup raises RuntimeError when token is not found in contact_info."""
+    async def test_startup_raises_if_url_missing(self, ha_module: HomeAssistantModule) -> None:
+        """on_startup raises RuntimeError when URL is not found in contact_info."""
         mock_db = MagicMock()
         mock_db.pool = MagicMock()
 
@@ -275,21 +291,30 @@ class TestOnStartupCredentialResolution:
             "butlers.credential_store.resolve_owner_contact_info",
             new=AsyncMock(return_value=None),
         ):
-            with pytest.raises(RuntimeError, match="home_assistant_token"):
-                await ha_module.on_startup(
-                    config={"url": "http://ha.local"},
-                    db=mock_db,
-                )
+            with pytest.raises(RuntimeError, match="home_assistant_url"):
+                await ha_module.on_startup(config={}, db=mock_db)
 
-    async def test_startup_raises_if_pool_none_and_no_token(
-        self, ha_module: HomeAssistantModule
-    ) -> None:
+    async def test_startup_raises_if_token_missing(self, ha_module: HomeAssistantModule) -> None:
+        """on_startup raises RuntimeError when token is not found in contact_info."""
+        mock_db = MagicMock()
+        mock_db.pool = MagicMock()
+
+        async def _resolve(pool: Any, info_type: str) -> str | None:
+            if info_type == "home_assistant_url":
+                return "http://ha.local"
+            return None
+
+        with patch(
+            "butlers.credential_store.resolve_owner_contact_info",
+            new=AsyncMock(side_effect=_resolve),
+        ):
+            with pytest.raises(RuntimeError, match="home_assistant_token"):
+                await ha_module.on_startup(config={}, db=mock_db)
+
+    async def test_startup_raises_if_pool_none(self, ha_module: HomeAssistantModule) -> None:
         """on_startup raises RuntimeError when db has no pool (no DB available)."""
-        with pytest.raises(RuntimeError, match="home_assistant_token"):
-            await ha_module.on_startup(
-                config={"url": "http://ha.local"},
-                db=None,
-            )
+        with pytest.raises(RuntimeError, match="home_assistant_url"):
+            await ha_module.on_startup(config={}, db=None)
 
     async def test_startup_creates_http_client_with_auth_header(
         self, ha_module: HomeAssistantModule
@@ -298,16 +323,20 @@ class TestOnStartupCredentialResolution:
         mock_db = MagicMock()
         mock_db.pool = MagicMock()
 
+        async def _resolve(pool: Any, info_type: str) -> str | None:
+            if info_type == "home_assistant_url":
+                return "http://ha.local"
+            if info_type == "home_assistant_token":
+                return "my-secret-token"
+            return None
+
         with patch(
             "butlers.credential_store.resolve_owner_contact_info",
-            new=AsyncMock(return_value="my-secret-token"),
+            new=AsyncMock(side_effect=_resolve),
         ):
             with patch("httpx.AsyncClient", return_value=MagicMock()) as mock_client_cls:
                 with patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock()):
-                    await ha_module.on_startup(
-                        config={"url": "http://ha.local"},
-                        db=mock_db,
-                    )
+                    await ha_module.on_startup(config={}, db=mock_db)
                 mock_client_cls.assert_called_once()
                 call_kwargs = mock_client_cls.call_args.kwargs
                 assert call_kwargs["base_url"] == "http://ha.local"
@@ -322,14 +351,21 @@ class TestOnStartupCredentialResolution:
         mock_db = MagicMock()
         mock_db.pool = MagicMock()
 
+        async def _resolve(pool: Any, info_type: str) -> str | None:
+            if info_type == "home_assistant_url":
+                return "https://ha.local"
+            if info_type == "home_assistant_token":
+                return "tok"
+            return None
+
         with patch(
             "butlers.credential_store.resolve_owner_contact_info",
-            new=AsyncMock(return_value="tok"),
+            new=AsyncMock(side_effect=_resolve),
         ):
             with patch("httpx.AsyncClient", return_value=MagicMock()) as mock_client_cls:
                 with patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock()):
                     await ha_module.on_startup(
-                        config={"url": "https://ha.local", "verify_ssl": True},
+                        config={"verify_ssl": True},
                         db=mock_db,
                     )
                 call_kwargs = mock_client_cls.call_args.kwargs
@@ -340,9 +376,16 @@ class TestOnStartupCredentialResolution:
         mock_db = MagicMock()
         mock_db.pool = MagicMock()
 
+        async def _resolve(pool: Any, info_type: str) -> str | None:
+            if info_type == "home_assistant_url":
+                return "http://ha.local"
+            if info_type == "home_assistant_token":
+                return "tok"
+            return None
+
         with patch(
             "butlers.credential_store.resolve_owner_contact_info",
-            new=AsyncMock(return_value="tok"),
+            new=AsyncMock(side_effect=_resolve),
         ):
             with patch("httpx.AsyncClient", return_value=MagicMock()):
                 with patch.object(
@@ -350,10 +393,7 @@ class TestOnStartupCredentialResolution:
                     "_ws_connect_and_seed",
                     new=AsyncMock(),
                 ) as mock_seed:
-                    await ha_module.on_startup(
-                        config={"url": "http://ha.local"},
-                        db=mock_db,
-                    )
+                    await ha_module.on_startup(config={}, db=mock_db)
                     mock_seed.assert_awaited_once()
 
 
@@ -369,13 +409,15 @@ class TestShutdown:
         """on_shutdown calls aclose() on the HTTP client and nullifies it."""
         mock_client = AsyncMock()
         ha_module._client = mock_client
+        ha_module._url = "http://ha.local"
         ha_module._token = "some-token"
-        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._config = HomeAssistantConfig()
 
         await ha_module.on_shutdown()
 
         mock_client.aclose.assert_awaited_once()
         assert ha_module._client is None
+        assert ha_module._url is None
         assert ha_module._token is None
         assert ha_module._config is None
 
@@ -393,7 +435,7 @@ class TestShutdown:
         mock_ws_session.closed = False
         ha_module._ws_session = mock_ws_session
         ha_module._client = AsyncMock()
-        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._config = HomeAssistantConfig()
 
         await ha_module.on_shutdown()
 
@@ -531,22 +573,22 @@ class TestWebSocketUrlDerivation:
 
     def test_http_becomes_ws(self, ha_module: HomeAssistantModule) -> None:
         """http:// base URL produces ws:// WebSocket URL."""
-        ha_module._config = HomeAssistantConfig(url="http://homeassistant.local:8123")
+        ha_module._url = "http://homeassistant.local:8123"
         assert ha_module._ws_url() == "ws://homeassistant.local:8123/api/websocket"
 
     def test_https_becomes_wss(self, ha_module: HomeAssistantModule) -> None:
         """https:// base URL produces wss:// WebSocket URL."""
-        ha_module._config = HomeAssistantConfig(url="https://ha.example.com:8123")
+        ha_module._url = "https://ha.example.com:8123"
         assert ha_module._ws_url() == "wss://ha.example.com:8123/api/websocket"
 
     def test_trailing_slash_stripped(self, ha_module: HomeAssistantModule) -> None:
         """Trailing slash in URL is stripped before appending /api/websocket."""
-        ha_module._config = HomeAssistantConfig(url="http://ha.local/")
+        ha_module._url = "http://ha.local/"
         assert ha_module._ws_url() == "ws://ha.local/api/websocket"
 
     def test_tailscale_url(self, ha_module: HomeAssistantModule) -> None:
         """Tailscale URLs work correctly."""
-        ha_module._config = HomeAssistantConfig(url="http://homeassistant.tail1234.ts.net:8123")
+        ha_module._url = "http://homeassistant.tail1234.ts.net:8123"
         url = ha_module._ws_url()
         assert url.startswith("ws://")
         assert url.endswith("/api/websocket")
@@ -588,7 +630,8 @@ class TestWebSocketAuthentication:
 
     async def test_auth_ok_sets_connected(self, ha_module: HomeAssistantModule) -> None:
         """Successful auth sets _ws_connected = True."""
-        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._config = HomeAssistantConfig()
+        ha_module._url = "http://ha.local"
         ha_module._token = "secret-token"
 
         ws = _make_ws_mock(
@@ -603,7 +646,8 @@ class TestWebSocketAuthentication:
 
     async def test_auth_sends_access_token(self, ha_module: HomeAssistantModule) -> None:
         """Auth message sent to HA contains the resolved access token."""
-        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._config = HomeAssistantConfig()
+        ha_module._url = "http://ha.local"
         ha_module._token = "my-llat-token"
 
         ws = _make_ws_mock(
@@ -622,7 +666,8 @@ class TestWebSocketAuthentication:
 
     async def test_auth_sends_supported_features(self, ha_module: HomeAssistantModule) -> None:
         """After auth_ok, supported_features with coalesce_messages: 1 is sent."""
-        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._config = HomeAssistantConfig()
+        ha_module._url = "http://ha.local"
         ha_module._token = "tok"
 
         ws = _make_ws_mock(
@@ -642,7 +687,8 @@ class TestWebSocketAuthentication:
 
     async def test_auth_invalid_raises(self, ha_module: HomeAssistantModule) -> None:
         """auth_invalid response raises RuntimeError."""
-        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._config = HomeAssistantConfig()
+        ha_module._url = "http://ha.local"
         ha_module._token = "bad-token"
 
         ws = _make_ws_mock(
@@ -658,7 +704,8 @@ class TestWebSocketAuthentication:
 
     async def test_unexpected_first_message_raises(self, ha_module: HomeAssistantModule) -> None:
         """If the first WS message is not auth_required, RuntimeError is raised."""
-        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._config = HomeAssistantConfig()
+        ha_module._url = "http://ha.local"
         ha_module._token = "tok"
 
         ws = _make_ws_mock({"type": "event", "data": {}})

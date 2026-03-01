@@ -176,7 +176,8 @@ def init(name: str, port: int, butlers_dir: Path) -> None:
         sys.exit(1)
 
     butler_dir.mkdir(parents=True)
-    (butler_dir / "skills").mkdir()
+    (butler_dir / ".agents" / "skills").mkdir(parents=True)
+    (butler_dir / ".claude").symlink_to(".agents")
 
     # butler.toml
     toml_content = f"""[butler]

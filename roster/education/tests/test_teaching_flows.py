@@ -256,9 +256,7 @@ class TestGetStateWithVersion:
         state = _pending_state(map_id)
         # Simulate double-encoded JSONB: value column is a string containing JSON text
         double_encoded = json.dumps(json.dumps(state))
-        pool = _make_pool(
-            fetchrow_returns=[_make_row({"value": double_encoded, "version": 1})]
-        )
+        pool = _make_pool(fetchrow_returns=[_make_row({"value": double_encoded, "version": 1})])
 
         result, version = await _get_state_with_version(pool, map_id)
         assert isinstance(result, dict), f"Expected dict, got {type(result).__name__}"
@@ -274,9 +272,7 @@ class TestGetStateWithVersion:
 
         map_id = str(uuid.uuid4())
         state = _pending_state(map_id)
-        pool = _make_pool(
-            fetchrow_returns=[_make_row({"value": json.dumps(state), "version": 2})]
-        )
+        pool = _make_pool(fetchrow_returns=[_make_row({"value": json.dumps(state), "version": 2})])
 
         result, version = await _get_state_with_version(pool, map_id)
         assert isinstance(result, dict)
@@ -289,9 +285,7 @@ class TestGetStateWithVersion:
 
         map_id = str(uuid.uuid4())
         state = _pending_state(map_id)
-        pool = _make_pool(
-            fetchrow_returns=[_make_row({"value": state, "version": 3})]
-        )
+        pool = _make_pool(fetchrow_returns=[_make_row({"value": state, "version": 3})])
 
         result, version = await _get_state_with_version(pool, map_id)
         assert isinstance(result, dict)

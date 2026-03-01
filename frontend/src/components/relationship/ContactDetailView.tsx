@@ -401,6 +401,7 @@ const CONTACT_INFO_TYPES = [
   "telegram",
   "telegram_chat_id",
   "website",
+  "home_assistant_url",
   "other",
 ] as const;
 
@@ -409,6 +410,7 @@ const SECURED_CONTACT_INFO_TYPES = [
   "telegram_api_id",
   "telegram_api_hash",
   "telegram_user_session",
+  "home_assistant_token",
 ] as const;
 
 const ALL_CONTACT_INFO_TYPES = [...CONTACT_INFO_TYPES, ...SECURED_CONTACT_INFO_TYPES] as const;
@@ -493,6 +495,8 @@ function contactInfoTypeLabel(type: string): string {
     case "telegram_api_id": return "Telegram API ID";
     case "telegram_api_hash": return "Telegram API Hash";
     case "telegram_user_session": return "Telegram User Session";
+    case "home_assistant_url": return "Home Assistant URL";
+    case "home_assistant_token": return "Home Assistant Token";
     default: return type;
   }
 }
@@ -506,6 +510,8 @@ function inputPlaceholder(type: string): string {
     case "telegram_api_id": return "12345678";
     case "telegram_api_hash": return "••••••••";
     case "telegram_user_session": return "••••••••";
+    case "home_assistant_url": return "http://homeassistant.local:8123";
+    case "home_assistant_token": return "eyJ...";
     default: return "";
   }
 }

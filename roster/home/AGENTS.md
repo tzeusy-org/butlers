@@ -251,17 +251,17 @@ memory_store_fact(
 
 The following scheduled tasks each have a dedicated skill defining their step-by-step workflow:
 
-- **`weekly-energy-digest`** (Sun 9am) — see `skills/weekly-energy-digest/SKILL.md`
-- **`daily-environment-report`** (Daily 8am) — see `skills/daily-environment-report/SKILL.md`
-- **`device-health-check`** (Nightly 4am) — see `skills/device-health-check/SKILL.md`
+- **`weekly-energy-digest`** (Sun 9am) — see `.agents/skills/weekly-energy-digest/SKILL.md`
+- **`daily-environment-report`** (Daily 8am) — see `.agents/skills/daily-environment-report/SKILL.md`
+- **`device-health-check`** (Nightly 4am) — see `.agents/skills/device-health-check/SKILL.md`
 
 ## Multi-Turn Conversation Skills
 
 For detailed multi-turn examples showing how to compose scenes iteratively or walk a user through
 energy optimization, see the relevant skill files:
 
-- **Scene building across turns** — see `skills/scenes/SKILL.md` (Multi-Turn Scene Composition section)
-- **Energy investigation and optimization** — see `skills/energy/SKILL.md` (Multi-Turn Example section)
+- **Scene building across turns** — see `.agents/skills/scenes/SKILL.md` (Multi-Turn Scene Composition section)
+- **Energy investigation and optimization** — see `.agents/skills/energy/SKILL.md` (Multi-Turn Example section)
 
 ## Safety and Confirmation
 
