@@ -168,6 +168,15 @@ class TestExtractNormalizedText:
         result = _extract_normalized_text(msg)
         assert result == "[Sticker: thumbsup]"
 
+    def test_returns_multiple_sticker_descriptors(self) -> None:
+        """Message with multiple stickers returns all descriptors joined."""
+        msg: dict[str, Any] = {
+            "content": "",
+            "sticker_items": [{"id": "1", "name": "thumbsup"}, {"id": "2", "name": "wave"}],
+        }
+        result = _extract_normalized_text(msg)
+        assert result == "[Sticker: thumbsup] [Sticker: wave]"
+
     def test_no_content_no_attachments_returns_none(self) -> None:
         """Message with no content, attachments, embeds, or stickers returns None."""
         msg: dict[str, Any] = {
@@ -455,6 +464,35 @@ class TestAllowlistFiltering:
         # Neither matches
         assert not conn._is_allowed({"guild_id": "999", "channel_id": "999"})
 
+    def test_dm_blocked_when_guild_allowlist_set_without_channel_allowlist(
+        self, mock_config: DiscordUserConnectorConfig
+    ) -> None:
+        """DMs (no guild_id) are blocked when guild allowlist is set but no channel allowlist."""
+        from dataclasses import replace
+
+        config = replace(mock_config, guild_allowlist=frozenset({"111", "222"}))
+        conn = DiscordUserConnector(config)
+
+        # DM event has no guild_id — must be blocked to prevent privacy leakage
+        assert not conn._is_allowed({"channel_id": "dm-channel-1"})
+        assert not conn._is_allowed({"guild_id": None, "channel_id": "dm-channel-2"})
+
+    def test_dm_allowed_when_channel_allowlist_permits(
+        self, mock_config: DiscordUserConnectorConfig
+    ) -> None:
+        """DMs are permitted when guild+channel allowlists are set and DM channel matches."""
+        from dataclasses import replace
+
+        config = replace(
+            mock_config,
+            guild_allowlist=frozenset({"111"}),
+            channel_allowlist=frozenset({"dm-channel-allowed"}),
+        )
+        conn = DiscordUserConnector(config)
+
+        assert conn._is_allowed({"channel_id": "dm-channel-allowed"})
+        assert not conn._is_allowed({"channel_id": "dm-channel-not-listed"})
+
 
 # ---------------------------------------------------------------------------
 # Checkpoint tests
@@ -489,14 +527,14 @@ class TestCheckpoint:
             "222": "9876543210000000001",
         }
 
-    def test_save_checkpoint(self, connector: DiscordUserConnector) -> None:
+    async def test_save_checkpoint(self, connector: DiscordUserConnector) -> None:
         """Checkpoint is saved correctly to file."""
         connector._channel_checkpoints = {
             "aaa": "111",
             "bbb": "222",
         }
 
-        connector._save_checkpoint()
+        await connector._save_checkpoint()
 
         assert connector._config.cursor_path is not None
         assert connector._config.cursor_path.exists()
@@ -512,12 +550,12 @@ class TestCheckpoint:
         connector._update_checkpoint("chan1", "msg1000")
         assert connector._channel_checkpoints["chan1"] == "msg1000"
 
-    def test_save_checkpoint_atomic(self, connector: DiscordUserConnector) -> None:
+    async def test_save_checkpoint_atomic(self, connector: DiscordUserConnector) -> None:
         """Checkpoint is written via temp file for atomicity."""
         connector._channel_checkpoints = {"c1": "m1"}
         assert connector._config.cursor_path is not None
 
-        connector._save_checkpoint()
+        await connector._save_checkpoint()
 
         # Temp file should be gone (replaced)
         tmp_path = connector._config.cursor_path.with_suffix(".tmp")

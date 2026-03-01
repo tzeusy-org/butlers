@@ -137,7 +137,7 @@ def _extract_normalized_text(msg: dict[str, Any]) -> str | None:
     if sticker_items and isinstance(sticker_items, list):
         sticker_names = [s.get("name", "sticker") for s in sticker_items if isinstance(s, dict)]
         if sticker_names:
-            return f"[Sticker: {sticker_names[0]}]"
+            return " ".join(f"[Sticker: {name}]" for name in sticker_names)
 
     # No extractable content
     return None
@@ -517,8 +517,15 @@ class DiscordUserConnector:
     # -------------------------------------------------------------------------
 
     async def _run_gateway_session(self) -> None:
-        """Run a single Discord Gateway WebSocket session."""
+        """Run a single Discord Gateway WebSocket session.
+
+        Returns normally only on a clean intentional disconnect (self._running is False).
+        Raises RuntimeError on unclean WebSocket close or error so the outer
+        reconnect loop can apply exponential backoff before retrying.
+        """
         assert self._http_session is not None
+
+        _unclean_disconnect: bool = False
 
         async with self._http_session.ws_connect(DISCORD_GATEWAY_URL) as ws:
             self._ws = ws
@@ -550,6 +557,7 @@ class DiscordUserConnector:
                             "error": str(error),
                         },
                     )
+                    _unclean_disconnect = True
                     break
                 elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED):
                     self._gateway_connected = False
@@ -560,9 +568,18 @@ class DiscordUserConnector:
                             "close_code": ws.close_code,
                         },
                     )
+                    _unclean_disconnect = True
                     break
 
         self._ws = None
+
+        # Raise so the outer loop applies backoff on unclean disconnects.
+        # Do NOT raise when self._running is False (graceful shutdown).
+        if _unclean_disconnect and self._running:
+            raise RuntimeError(
+                f"Discord Gateway disconnected unexpectedly "
+                f"(close_code={ws.close_code if hasattr(ws, 'close_code') else 'unknown'})"
+            )
 
     async def _handle_gateway_message(self, payload: dict[str, Any]) -> None:
         """Dispatch a Gateway message to the appropriate handler."""
@@ -762,7 +779,7 @@ class DiscordUserConnector:
                 message_id = event_data.get("id")
                 if channel_id and message_id:
                     self._update_checkpoint(channel_id, message_id)
-                    self._save_checkpoint()
+                    await self._save_checkpoint()
 
             except asyncio.CancelledError:
                 raise
@@ -779,13 +796,27 @@ class DiscordUserConnector:
         """Check whether this event passes the guild/channel allowlists.
 
         If an allowlist is empty, all values are allowed for that dimension.
+
+        Guild allowlist behavior for DMs (events without guild_id):
+        - If a guild allowlist is configured but no channel allowlist is set,
+          DM events are blocked. This prevents a guild-scoped allowlist from
+          accidentally leaking DM conversations.
+        - If both guild and channel allowlists are configured, DMs are allowed
+          only when the DM channel_id is in the channel allowlist.
         """
         guild_id = event_data.get("guild_id")
         channel_id = event_data.get("channel_id")
 
-        if self._config.guild_allowlist and guild_id:
-            if str(guild_id) not in self._config.guild_allowlist:
-                return False
+        if self._config.guild_allowlist:
+            if guild_id:
+                # Guild event: check guild against allowlist
+                if str(guild_id) not in self._config.guild_allowlist:
+                    return False
+            else:
+                # DM event (no guild_id): block unless channel allowlist permits it
+                if not self._config.channel_allowlist:
+                    return False
+                # Fall through to channel allowlist check below
 
         if self._config.channel_allowlist and channel_id:
             if str(channel_id) not in self._config.channel_allowlist:
@@ -871,7 +902,9 @@ class DiscordUserConnector:
                 "normalized_text": normalized_text,
             },
             "control": {
-                "idempotency_key": (f"discord:{self._config.endpoint_identity}:{message_id}"),
+                "idempotency_key": (
+                    f"{self._config.provider}:{self._config.endpoint_identity}:{message_id}"
+                ),
                 "policy_tier": "default",
             },
         }
@@ -956,19 +989,30 @@ class DiscordUserConnector:
                 extra={"cursor_path": str(self._config.cursor_path)},
             )
 
-    def _save_checkpoint(self) -> None:
-        """Persist per-channel checkpoints to checkpoint file atomically."""
+    async def _save_checkpoint(self) -> None:
+        """Persist per-channel checkpoints to checkpoint file atomically.
+
+        File I/O runs in a thread-pool executor to avoid blocking the asyncio
+        event loop while writing the checkpoint.
+        """
         if not self._config.cursor_path:
             return
 
-        try:
-            self._config.cursor_path.parent.mkdir(parents=True, exist_ok=True)
+        # Snapshot checkpoint state before entering executor to avoid data races
+        checkpoints_snapshot = dict(self._channel_checkpoints)
+        cursor_path = self._config.cursor_path
 
-            tmp_path = self._config.cursor_path.with_suffix(".tmp")
+        def _do_io_save() -> None:
+            """Synchronous file I/O portion executed off the event loop."""
+            cursor_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = cursor_path.with_suffix(".tmp")
             with tmp_path.open("w") as f:
-                json.dump({"channel_checkpoints": self._channel_checkpoints}, f)
+                json.dump({"channel_checkpoints": checkpoints_snapshot}, f)
+            tmp_path.replace(cursor_path)
 
-            tmp_path.replace(self._config.cursor_path)
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _do_io_save)
 
             self._last_checkpoint_save = time.time()
             self._metrics.record_checkpoint_save(status="success")
