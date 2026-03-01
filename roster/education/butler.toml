@@ -37,7 +37,7 @@ Generate and send a weekly learning progress digest for the user. Read analytics
 past 7 days across all active mind maps. Identify trends (velocity, retention rates, struggling
 areas). Highlight achievements (nodes mastered, streaks, improvements). Flag any areas where
 retention_rate_7d < 0.60 or struggling_nodes >= 3. Compose a structured summary and deliver via
-notify() using the owner contact's preferred channel.
+notify(channel="telegram", intent="send", message=<digest>).
 """
 
 [[butler.schedule]]

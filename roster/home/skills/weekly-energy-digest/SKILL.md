@@ -4,8 +4,8 @@
 
 Generate and send a weekly energy efficiency digest every Sunday at 9am. Analyze device energy
 consumption from the past 7 days, identify top consumers, compare against stored baselines,
-and compose a structured summary with recommendations. Deliver via `notify(intent="send")` to
-the owner's preferred channel.
+and compose a structured summary with recommendations. Deliver via
+`notify(channel="telegram", intent="send")`.
 
 ## When to Use
 
@@ -145,10 +145,10 @@ Send via:
 
 ```python
 notify(
+    channel="telegram",
     intent="send",
     subject="Weekly Energy Digest — [Date range]",
     message=<formatted_digest>,
-    request_context=<session_request_context>
 )
 ```
 
@@ -162,13 +162,13 @@ Use `intent="send"` — this is a scheduled proactive delivery, not a reply.
 - Top 5 consumers ranked; anomalies identified
 - 2-3 recommendations generated
 - `memory_store_fact()` called to update energy baseline and any anomaly facts
-- Digest composed and sent via `notify(intent="send")`
+- Digest composed and sent via `notify(channel="telegram", intent="send")`
 - Session exits — no interactive follow-up in this session
 
 ## Common Failure Modes
 
 ### No Energy Sensors Found
-- Alert via `notify(intent="send")`: "Could not find energy sensors in Home Assistant. Weekly digest
+- Alert via `notify(channel="telegram", intent="send")`: "Could not find energy sensors in Home Assistant. Weekly digest
   unavailable. Check that energy monitoring is configured in HA."
 - Exit cleanly.
 

@@ -5,7 +5,7 @@
 Generate and send a daily home environment report every morning at 8am. Check temperature,
 humidity, air quality, and lighting levels across all rooms, compare against the user's stored
 comfort preferences, and flag any out-of-range conditions with actionable recommendations.
-Deliver via `notify(intent="send")` to the owner's preferred channel.
+Deliver via `notify(channel="telegram", intent="send")`.
 
 ## When to Use
 
@@ -123,10 +123,10 @@ Send via:
 
 ```python
 notify(
+    channel="telegram",
     intent="send",
     subject="Morning Home Report — [Day, Date]",
     message=<formatted_report>,
-    request_context=<session_request_context>
 )
 ```
 
@@ -140,7 +140,7 @@ Use `intent="send"` — this is a scheduled proactive delivery, not a reply.
 - `memory_recall()` called to retrieve stored comfort preferences per room
 - Readings compared against preferences; deviations classified by severity
 - Deviation facts stored via `memory_store_fact()` for out-of-range conditions
-- Report composed and sent via `notify(intent="send")`
+- Report composed and sent via `notify(channel="telegram", intent="send")`
 - Session exits — no interactive follow-up in this session
 
 ## Common Failure Modes

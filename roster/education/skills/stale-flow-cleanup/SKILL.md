@@ -26,7 +26,7 @@ Call `teaching_flow_list(status="active")` to retrieve all active flows.
 The response includes, per flow: `mind_map_id`, `mind_map_title`, `status`, `created_at`,
 `last_session_at`.
 
-If no active flows are returned, notify the user that there is nothing to clean up and exit.
+If no active flows are returned, exit silently — no notification needed for a maintenance no-op.
 
 ### Step 2: Filter for Stale Flows
 
@@ -78,11 +78,11 @@ After processing all stale flows, send a summary notification:
 
 ```python
 notify(
-    intent="proactive",
+    channel="telegram",
+    intent="send",
     message=f"Weekly cleanup: {len(stale_flows)} stale learning flow(s) archived after 30+ days "
             f"of inactivity — {', '.join(f['mind_map_title'] for f in stale_flows)}. "
             f"Your progress is preserved. Say 'resume [topic]' anytime to pick up where you left off.",
-    request_context=<session_request_context>
 )
 ```
 

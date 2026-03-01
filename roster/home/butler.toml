@@ -45,8 +45,8 @@ Generate and send a weekly energy efficiency digest for the user. Analyze device
 energy consumption trends, and inefficiencies from the past 7 days. Identify devices with high
 energy usage, peak demand times, and opportunities for optimization. Include recommendations
 for adjusting schedules or settings. Compose a structured summary highlighting energy savings
-achieved and potential future savings. Deliver via notify() using the owner contact's preferred
-channel.
+achieved and potential future savings. Deliver via
+notify(channel="telegram", intent="send", message=<digest>).
 """
 
 [[butler.schedule]]
@@ -57,8 +57,8 @@ prompt = """
 Generate and send a daily home environment report for the user. Check current temperature,
 humidity, air quality, lighting levels, and other environmental metrics. Compare against
 user's comfort preferences and alert if any readings are outside acceptable ranges. Provide
-actionable recommendations (e.g., "humidity is low, consider running humidifier"). Deliver
-via notify() using the owner contact's preferred channel.
+actionable recommendations (e.g., "humidity is low, consider running humidifier"). Deliver via
+notify(channel="telegram", intent="send", message=<report>).
 """
 
 [[butler.schedule]]
@@ -68,8 +68,9 @@ dispatch_mode = "prompt"
 prompt = """
 Perform a nightly device health check. Query all connected devices for status, battery levels,
 last communication time, and firmware updates. Flag any devices that are offline, have low battery,
-or are due for updates. Store health check results for trend analysis. If critical issues are found
-(offline devices, imminent battery depletion), send an alert via notify().
+or are due for updates. Store health check results for trend analysis. Always send a summary via
+notify(channel="telegram", intent="send") — an alert if issues are found, or a brief all-clear
+if everything is healthy.
 """
 
 [[butler.schedule]]

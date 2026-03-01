@@ -5,7 +5,7 @@
 Perform a nightly device health survey at 4am. Query all connected Home Assistant entities for
 online status, battery levels, and last communication time. Flag offline devices, critically low
 batteries, and devices due for firmware updates. Store findings in memory and send an alert via
-`notify(intent="send")` if critical issues are found.
+`notify(channel="telegram", intent="send")` — alert if issues found, all-clear summary otherwise.
 
 ## When to Use
 
@@ -117,10 +117,10 @@ Send via:
 
 ```python
 notify(
+    channel="telegram",
     intent="send",
     subject="Device Health Alert — [N] issues found",
     message=<formatted_alert>,
-    request_context=<session_request_context>
 )
 ```
 
@@ -130,10 +130,10 @@ Use `intent="send"` — this is a scheduled proactive delivery, not a reply.
 
 ```python
 notify(
+    channel="telegram",
     intent="send",
     subject="Device Health Check — All Clear",
     message="Nightly check complete. All [N] devices online. No low battery alerts.",
-    request_context=<session_request_context>
 )
 ```
 
@@ -143,7 +143,7 @@ notify(
 - `ha_get_entity_state()` called for each battery sensor identified
 - Findings classified by severity (critical, warning, info)
 - `memory_store_fact()` called for each issue (and for a clean-bill-of-health if no issues)
-- `notify(intent="send")` called — either with alert (if issues) or all-clear summary
+- `notify(channel="telegram", intent="send")` called — either with alert (if issues) or all-clear summary
 - Session exits — no interactive troubleshooting in this session (that is handled by the
   `troubleshooting` skill when user follows up)
 
