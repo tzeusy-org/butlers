@@ -370,6 +370,13 @@ class TestBuildRoutingPrompt:
         prompt = _build_routing_prompt("test message", butlers)
         assert json.dumps({"message": "test message"}) in prompt
 
+    def test_includes_user_message_fencing_instruction(self):
+        butlers = [{"name": "general", "description": "General", "modules": []}]
+        prompt = _build_routing_prompt("test message", butlers)
+        assert "<user_message>" in prompt
+        assert "</user_message>" in prompt
+        assert "route_to_butler" in prompt
+
     def test_includes_routing_guidance(self):
         butlers = [
             {"name": "health", "description": "Health", "modules": ["health"]},
