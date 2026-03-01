@@ -1393,11 +1393,22 @@ class ButlerDaemon:
         if self.spawner is None:
             return
 
+        # Read enable_ingress_dedupe from PipelineModule config if the module is active.
+        from butlers.modules.pipeline import PipelineModule
+
+        pipeline_mod = next(
+            (m for m in self._active_modules if isinstance(m, PipelineModule)),
+            None,
+        )
+        enable_ingress_dedupe = (
+            pipeline_mod._config.enable_ingress_dedupe if pipeline_mod is not None else True
+        )
+
         pipeline = MessagePipeline(
             switchboard_pool=pool,
             dispatch_fn=self.spawner.trigger,
             source_butler="switchboard",
-            enable_ingress_dedupe=True,
+            enable_ingress_dedupe=enable_ingress_dedupe,
         )
         self._pipeline = pipeline
 

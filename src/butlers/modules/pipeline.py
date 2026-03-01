@@ -1655,6 +1655,8 @@ class PipelineModule(Module):
         self._config = (
             config if isinstance(config, PipelineConfig) else PipelineConfig(**(config or {}))
         )
+        # Cache the DB pool for potential future use (e.g. health checks).
+        # The actual pipeline is wired later by the daemon via set_pipeline().
         self._pool = getattr(db, "pool", None) if db is not None else None
         logger.debug(
             "PipelineModule started (enable_ingress_dedupe=%s)",

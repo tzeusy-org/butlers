@@ -1285,6 +1285,25 @@ def test_build_routing_prompt_empty_attachments_list():
 # ---------------------------------------------------------------------------
 
 
+def _make_fake_mcp() -> tuple[Any, dict[str, Any]]:
+    """Return a (FakeMCP instance, registered-tools dict) pair.
+
+    The FakeMCP records every tool registered via ``mcp.tool(name=...)(fn)``
+    into the shared dict so tests can invoke the tool function directly.
+    """
+    registered: dict[str, Any] = {}
+
+    class FakeMCP:
+        def tool(self, name: str):
+            def decorator(fn):
+                registered[name] = fn
+                return fn
+
+            return decorator
+
+    return FakeMCP(), registered
+
+
 class TestPipelineModule:
     """Unit tests for the PipelineModule Module ABC implementation."""
 
@@ -1355,33 +1374,15 @@ class TestPipelineModule:
     async def test_register_tools_registers_pipeline_process(self):
         """register_tools registers the 'pipeline.process' MCP tool."""
         mod = PipelineModule()
-        registered: dict[str, Any] = {}
-
-        class FakeMCP:
-            def tool(self, name: str):
-                def decorator(fn):
-                    registered[name] = fn
-                    return fn
-
-                return decorator
-
-        await mod.register_tools(mcp=FakeMCP(), config=None, db=None)
+        fake_mcp, registered = _make_fake_mcp()
+        await mod.register_tools(mcp=fake_mcp, config=None, db=None)
         assert "pipeline.process" in registered
 
     async def test_pipeline_process_tool_returns_error_when_no_pipeline(self):
         """pipeline.process tool returns an error dict when no pipeline is set."""
         mod = PipelineModule()
-        registered: dict[str, Any] = {}
-
-        class FakeMCP:
-            def tool(self, name: str):
-                def decorator(fn):
-                    registered[name] = fn
-                    return fn
-
-                return decorator
-
-        await mod.register_tools(mcp=FakeMCP(), config=None, db=None)
+        fake_mcp, registered = _make_fake_mcp()
+        await mod.register_tools(mcp=fake_mcp, config=None, db=None)
         tool_fn = registered["pipeline.process"]
         result = await tool_fn(message_text="hello")
         assert result["error"] == "pipeline_not_configured"
@@ -1390,17 +1391,8 @@ class TestPipelineModule:
     async def test_pipeline_process_tool_delegates_to_pipeline(self):
         """pipeline.process tool calls pipeline.process() and returns a serialised result."""
         mod = PipelineModule()
-        registered: dict[str, Any] = {}
-
-        class FakeMCP:
-            def tool(self, name: str):
-                def decorator(fn):
-                    registered[name] = fn
-                    return fn
-
-                return decorator
-
-        await mod.register_tools(mcp=FakeMCP(), config=None, db=None)
+        fake_mcp, registered = _make_fake_mcp()
+        await mod.register_tools(mcp=fake_mcp, config=None, db=None)
 
         fake_result = RoutingResult(
             target_butler="health",
@@ -1435,17 +1427,8 @@ class TestPipelineModule:
     async def test_pipeline_process_tool_passes_source_channel(self):
         """pipeline.process tool passes source_channel to the underlying pipeline."""
         mod = PipelineModule()
-        registered: dict[str, Any] = {}
-
-        class FakeMCP:
-            def tool(self, name: str):
-                def decorator(fn):
-                    registered[name] = fn
-                    return fn
-
-                return decorator
-
-        await mod.register_tools(mcp=FakeMCP(), config=None, db=None)
+        fake_mcp, registered = _make_fake_mcp()
+        await mod.register_tools(mcp=fake_mcp, config=None, db=None)
 
         fake_result = RoutingResult(target_butler="general")
         fake_pipeline = AsyncMock(spec=MessagePipeline)
@@ -1467,15 +1450,15 @@ class TestPipelineModule:
     async def test_register_tools_accepts_dict_config(self):
         """register_tools coerces a raw dict config to PipelineConfig."""
         mod = PipelineModule()
+        fake_mcp, _ = _make_fake_mcp()
+        await mod.register_tools(mcp=fake_mcp, config={"enable_ingress_dedupe": False}, db=None)
+        assert mod._config.enable_ingress_dedupe is False
 
-        class FakeMCP:
-            def tool(self, name: str):
-                def decorator(fn):
-                    return fn
-
-                return decorator
-
-        await mod.register_tools(mcp=FakeMCP(), config={"enable_ingress_dedupe": False}, db=None)
+    async def test_enable_ingress_dedupe_config_is_readable_after_startup(self):
+        """enable_ingress_dedupe from on_startup is exposed via _config for daemon wiring."""
+        mod = PipelineModule()
+        await mod.on_startup(config={"enable_ingress_dedupe": False}, db=None)
+        # The daemon reads mod._config.enable_ingress_dedupe in _wire_pipelines.
         assert mod._config.enable_ingress_dedupe is False
 
 
