@@ -79,6 +79,8 @@ async def _insert_message(
     channel: str = "telegram",
 ) -> None:
     """Insert a v2-schema message_inbox row."""
+    # Ensure the monthly partition exists (mirrors production ingestion behaviour).
+    await pool.execute("SELECT switchboard_message_inbox_ensure_partition($1)", received_at)
     request_context = {
         "source_channel": channel,
         "source_sender_identity": sender,
@@ -382,6 +384,8 @@ async def _insert_outbound_message(
     """Insert an outbound (direction='outbound') message_inbox row."""
     import json
 
+    # Ensure the monthly partition exists (mirrors production ingestion behaviour).
+    await pool.execute("SELECT switchboard_message_inbox_ensure_partition($1)", received_at)
     request_context = {
         "source_channel": channel,
         "source_sender_identity": origin_butler,

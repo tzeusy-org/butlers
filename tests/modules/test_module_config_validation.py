@@ -176,6 +176,16 @@ def _make_registry(*module_classes: type[Module]) -> ModuleRegistry:
 def _patch_infra():
     """Return a dict of patches for all infrastructure dependencies."""
     mock_pool = AsyncMock()
+    # pool.acquire() must return a proper async context manager (not a coroutine)
+    # so that ``async with pool.acquire() as conn:`` works in route_inbox recovery.
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+    mock_pool.acquire = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_conn),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
 
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
@@ -327,10 +337,10 @@ class TestValidConfigPasses:
 
 
 class TestUnconfiguredRequiredSchemaModules:
-    """Modules with required config fields are skipped when omitted."""
+    """Modules with a config_schema are skipped when no explicit config section exists."""
 
-    async def test_unconfigured_required_module_is_skipped(self, tmp_path: Path) -> None:
-        """Absent config skips required-schema modules but keeps default-only modules."""
+    async def test_unconfigured_modules_are_skipped(self, tmp_path: Path) -> None:
+        """Absent config skips all modules with a config_schema (explicit config required)."""
         butler_dir = _make_butler_toml(tmp_path, modules={})
         registry = _make_registry(StrictModule, AllDefaultsModule)
         patches = _patch_infra()
@@ -355,7 +365,33 @@ class TestUnconfiguredRequiredSchemaModules:
 
         loaded_names = {mod.name for mod in daemon._modules}
         assert "strict_mod" not in loaded_names
-        assert "strict_mod" not in daemon._module_statuses
+        assert "defaults_mod" not in loaded_names
+
+    async def test_defaults_module_loads_with_empty_config(self, tmp_path: Path) -> None:
+        """An empty config section is enough to load a module with all-default fields."""
+        butler_dir = _make_butler_toml(tmp_path, modules={"defaults_mod": {}})
+        registry = _make_registry(AllDefaultsModule)
+        patches = _patch_infra()
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["validate_core_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patches["FastMCP"],
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patches["start_mcp_server"],
+            patches["connect_switchboard"],
+        ):
+            daemon = ButlerDaemon(butler_dir, registry=registry)
+            await daemon.start()
+
+        loaded_names = {mod.name for mod in daemon._modules}
         assert "defaults_mod" in loaded_names
 
         defaults_mod = next(mod for mod in daemon._modules if mod.name == "defaults_mod")

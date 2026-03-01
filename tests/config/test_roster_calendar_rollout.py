@@ -35,6 +35,20 @@ def test_calendar_enabled_butlers_do_not_hardcode_calendar_id() -> None:
         )
 
 
+def _resolve_includes(path: Path) -> str:
+    """Read a file and inline any ``@<relative-path>`` include directives."""
+    lines: list[str] = []
+    for raw_line in path.read_text().splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("@"):
+            ref = path.parent / stripped[1:]
+            if ref.is_file():
+                lines.append(_resolve_includes(ref))
+                continue
+        lines.append(raw_line)
+    return "\n".join(lines)
+
+
 def test_calendar_enabled_butlers_document_conflict_and_v1_scope() -> None:
     """Calendar-enabled CLAUDE guidance should include conflict and scope constraints."""
     required_fragments = (
@@ -46,6 +60,6 @@ def test_calendar_enabled_butlers_document_conflict_and_v1_scope() -> None:
 
     for butler_name in CALENDAR_ENABLED_BUTLERS:
         guidance_path = REPO_ROOT / "roster" / butler_name / "CLAUDE.md"
-        guidance = guidance_path.read_text().lower()
+        guidance = _resolve_includes(guidance_path).lower()
         for fragment in required_fragments:
             assert fragment in guidance, f"{butler_name} missing guidance fragment: {fragment}"
