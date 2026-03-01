@@ -917,8 +917,7 @@ async def test_hourly_rollup_handles_counter_reset_with_greatest(provisioned_pos
         )
         # Source API similarly: 0 + 0 + 7 = 7
         assert row["source_api_calls"] == 7
-        # messages_ingested must never be negative
-        assert row["messages_ingested"] >= 0
-        assert row["messages_failed"] >= 0
-        assert row["source_api_calls"] >= 0
-        assert row["dedupe_accepted"] >= 0
+        # messages_failed: 5->0->0; all deltas clamped to 0, total = 0
+        assert row["messages_failed"] == 0
+        # dedupe_accepted: 195->5->20; reset delta clamped to 0, post-reset delta=15, total=15
+        assert row["dedupe_accepted"] == 15
