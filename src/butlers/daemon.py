@@ -352,6 +352,7 @@ async def _run_education_compute_analytics_snapshots_job(
 _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicScheduleJobHandler]] = {
     "general": dict(_MEMORY_MAINTENANCE_JOB_HANDLERS),
     "health": dict(_MEMORY_MAINTENANCE_JOB_HANDLERS),
+    "home": dict(_MEMORY_MAINTENANCE_JOB_HANDLERS),
     "relationship": dict(_MEMORY_MAINTENANCE_JOB_HANDLERS),
     "education": {
         "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
