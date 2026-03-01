@@ -273,7 +273,9 @@ async def spaced_repetition_record_response(
                 f"Batch spaced-repetition review for mind map {mind_map_id}. "
                 f"There are {schedule_count + 1} pending reviews. "
                 f"Call spaced_repetition_pending_reviews(mind_map_id='{mind_map_id}') "
-                "to get all due nodes and review each one."
+                "to get all due nodes and review each one. "
+                "Deliver all questions via notify(channel='telegram', intent='send', "
+                "message=<your_question>). Follow the review-session skill protocol."
             ),
             until_at=until_at,
         )
@@ -290,7 +292,9 @@ async def spaced_repetition_record_response(
                 f"Spaced repetition review for node '{label}' "
                 f"(node_id={node_id}, mind_map_id={mind_map_id}). "
                 f"Repetition #{new_reps}, ease_factor={new_ef:.2f}. "
-                "Ask the user a focused recall question for this concept."
+                "Ask the user a focused recall question for this concept. "
+                "Deliver the question via notify(channel='telegram', intent='send', "
+                "message=<your_question>). Follow the review-session skill protocol."
             ),
             until_at=until_at,
         )

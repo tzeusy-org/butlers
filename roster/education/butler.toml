@@ -49,6 +49,8 @@ Check for stale teaching flows and clean up associated pending review schedules.
 if last_session_at is more than 30 days ago and status is not completed or abandoned. For each
 stale flow: transition status to abandoned, call spaced_repetition_schedule_cleanup() to remove
 pending review schedules, and store a memory fact recording the abandonment.
+If any flows were abandoned, notify the user via notify(channel="telegram", intent="send",
+message=<cleanup_summary>).
 """
 
 [modules.education]
