@@ -66,22 +66,22 @@ async def run_connector_stats_hourly_rollup(db_pool: asyncpg.Pool) -> dict[str, 
                 SELECT
                     connector_type,
                     endpoint_identity,
-                    COALESCE(
+                    GREATEST(0, COALESCE(
                         counter_messages_ingested - prev_messages_ingested,
                         0
-                    ) AS delta_messages_ingested,
-                    COALESCE(
+                    )) AS delta_messages_ingested,
+                    GREATEST(0, COALESCE(
                         counter_messages_failed - prev_messages_failed,
                         0
-                    ) AS delta_messages_failed,
-                    COALESCE(
+                    )) AS delta_messages_failed,
+                    GREATEST(0, COALESCE(
                         counter_source_api_calls - prev_source_api_calls,
                         0
-                    ) AS delta_source_api_calls,
-                    COALESCE(
+                    )) AS delta_source_api_calls,
+                    GREATEST(0, COALESCE(
                         counter_dedupe_accepted - prev_dedupe_accepted,
                         0
-                    ) AS delta_dedupe_accepted,
+                    )) AS delta_dedupe_accepted,
                     state
                 FROM heartbeats
             ),

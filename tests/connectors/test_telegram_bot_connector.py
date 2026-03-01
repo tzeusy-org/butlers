@@ -1068,3 +1068,74 @@ async def test_polling_backoff_consecutive_failures_in_health_state(
     state, msg = connector._get_health_state()
     assert state == "error"
     assert "5" in (msg or "")
+
+
+# -----------------------------------------------------------------------------
+# Heartbeat connector_type alignment tests (butlers-2cf1)
+# -----------------------------------------------------------------------------
+
+
+def test_heartbeat_connector_type_matches_metrics_label(
+    connector: TelegramBotConnector,
+) -> None:
+    """HeartbeatConfig must use 'telegram_bot' to match ConnectorMetrics label.
+
+    Root cause of butlers-2cf1: _start_heartbeat() was passing
+    connector_type=self._config.provider ('telegram') but ConnectorMetrics
+    labels all Prometheus metrics with connector_type='telegram_bot'.
+    The mismatch caused _collect_counters() to find zero matching samples,
+    so heartbeat records reported all counters as 0.
+    """
+    # ConnectorMetrics is always labelled "telegram_bot"
+    assert connector._metrics._connector_type == "telegram_bot"
+
+
+@patch("butlers.connectors.telegram_bot.ConnectorHeartbeat")
+@patch("butlers.connectors.telegram_bot.HeartbeatConfig")
+def test_start_heartbeat_passes_telegram_bot_as_connector_type(
+    mock_heartbeat_config_cls: Mock,
+    mock_heartbeat_cls: Mock,
+    connector: TelegramBotConnector,
+) -> None:
+    """_start_heartbeat() must pass connector_type='telegram_bot', not provider.
+
+    This ensures HeartbeatConfig.connector_type matches ConnectorMetrics labels
+    so that _collect_counters() can find the correct Prometheus samples.
+    """
+    mock_cfg_instance = Mock()
+    mock_heartbeat_config_cls.from_env.return_value = mock_cfg_instance
+
+    mock_hb_instance = Mock()
+    mock_hb_instance.start = Mock()
+    mock_heartbeat_cls.return_value = mock_hb_instance
+
+    connector._start_heartbeat()
+
+    # Verify connector_type is hardcoded "telegram_bot", not self._config.provider
+    mock_heartbeat_config_cls.from_env.assert_called_once()
+    call_kwargs = mock_heartbeat_config_cls.from_env.call_args.kwargs
+    assert call_kwargs["connector_type"] == "telegram_bot", (
+        f"Expected connector_type='telegram_bot', got '{call_kwargs['connector_type']}'. "
+        "This mismatch causes zero ingestion counts in the dashboard."
+    )
+    # endpoint_identity should still come from config
+    assert call_kwargs["endpoint_identity"] == connector._config.endpoint_identity
+
+
+def test_heartbeat_connector_type_is_not_provider(
+    connector: TelegramBotConnector,
+) -> None:
+    """connector_type for heartbeat must be 'telegram_bot', not 'telegram'.
+
+    The TelegramBotConnectorConfig.provider defaults to 'telegram', but
+    ConnectorMetrics always uses 'telegram_bot'. If heartbeat uses provider,
+    counter filtering returns zero matches and the dashboard shows 0.
+    """
+    # Confirm the provider is 'telegram' (the default that caused the bug)
+    assert connector._config.provider == "telegram"
+
+    # Confirm metrics label is 'telegram_bot' (what the heartbeat should match)
+    assert connector._metrics._connector_type == "telegram_bot"
+
+    # Confirm they differ — this is the mismatch that was the bug
+    assert connector._config.provider != connector._metrics._connector_type

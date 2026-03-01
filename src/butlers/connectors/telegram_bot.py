@@ -321,7 +321,7 @@ class TelegramBotConnector:
     def _start_heartbeat(self) -> None:
         """Initialize and start heartbeat background task."""
         heartbeat_config = HeartbeatConfig.from_env(
-            connector_type=self._config.provider,
+            connector_type="telegram_bot",
             endpoint_identity=self._config.endpoint_identity,
             version=None,  # Could be set from env or git sha
         )
