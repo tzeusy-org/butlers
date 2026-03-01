@@ -765,3 +765,160 @@ async def test_pruning_removes_old_hourly_and_daily_data(provisioned_postgres_po
             "SELECT COUNT(*) FROM connector_stats_daily WHERE endpoint_identity = 'bot@old'"
         )
         assert daily_count == 0
+
+
+async def test_hourly_rollup_handles_counter_reset_with_greatest(provisioned_postgres_pool):
+    """Test that GREATEST(0, delta) prevents negative deltas when connector restarts.
+
+    When a connector process restarts, Prometheus counters reset to 0. The
+    LAG-based delta can then be negative (e.g., prev=200, current=5 -> delta=-195).
+    GREATEST(0, ...) clamps these to 0 so the hourly sum is never negative.
+
+    Regression test for butlers-2cf1.
+    """
+    async with provisioned_postgres_pool() as pool:
+        await _create_test_schema(pool)
+
+        base_time = datetime(2026, 2, 16, 12, 0, 0, tzinfo=UTC)
+        hour_start = datetime(2026, 2, 16, 12, 0, 0, tzinfo=UTC)
+        hour_end = datetime(2026, 2, 16, 13, 0, 0, tzinfo=UTC)
+
+        # Simulate counter reset: counters climb then restart at low values
+        # Row 1: normal reading at 200 ingested
+        # Row 2: counter reset — process restarted, now only 5 ingested since restart
+        # Row 3: normal increment after restart at 20
+        await pool.execute(
+            """
+            INSERT INTO connector_heartbeat_log (
+                connector_type,
+                endpoint_identity,
+                state,
+                counter_messages_ingested,
+                counter_messages_failed,
+                counter_source_api_calls,
+                counter_dedupe_accepted,
+                received_at
+            ) VALUES
+            ('telegram_bot', 'reset_bot', 'healthy', 200, 5, 100, 195, $1),
+            ('telegram_bot', 'reset_bot', 'healthy',   5, 0,   3,   5, $2),
+            ('telegram_bot', 'reset_bot', 'healthy',  20, 0,  10,  20, $3)
+            """,
+            base_time + timedelta(minutes=5),
+            base_time + timedelta(minutes=10),
+            base_time + timedelta(minutes=15),
+        )
+
+        # Run rollup with the GREATEST(0, ...) hardening applied
+        await pool.execute(
+            """
+            WITH heartbeats AS (
+                SELECT
+                    connector_type,
+                    endpoint_identity,
+                    state,
+                    counter_messages_ingested,
+                    counter_messages_failed,
+                    counter_source_api_calls,
+                    counter_dedupe_accepted,
+                    received_at,
+                    LAG(counter_messages_ingested) OVER w AS prev_messages_ingested,
+                    LAG(counter_messages_failed) OVER w AS prev_messages_failed,
+                    LAG(counter_source_api_calls) OVER w AS prev_source_api_calls,
+                    LAG(counter_dedupe_accepted) OVER w AS prev_dedupe_accepted
+                FROM connector_heartbeat_log
+                WHERE received_at >= $1 AND received_at < $2
+                WINDOW w AS (
+                    PARTITION BY connector_type, endpoint_identity
+                    ORDER BY received_at
+                )
+            ),
+            deltas AS (
+                SELECT
+                    connector_type,
+                    endpoint_identity,
+                    GREATEST(0, COALESCE(
+                        counter_messages_ingested - prev_messages_ingested, 0
+                    )) AS delta_messages_ingested,
+                    GREATEST(0, COALESCE(
+                        counter_messages_failed - prev_messages_failed, 0
+                    )) AS delta_messages_failed,
+                    GREATEST(0, COALESCE(
+                        counter_source_api_calls - prev_source_api_calls, 0
+                    )) AS delta_source_api_calls,
+                    GREATEST(0, COALESCE(
+                        counter_dedupe_accepted - prev_dedupe_accepted, 0
+                    )) AS delta_dedupe_accepted,
+                    state
+                FROM heartbeats
+            ),
+            aggregates AS (
+                SELECT
+                    connector_type,
+                    endpoint_identity,
+                    SUM(delta_messages_ingested) AS messages_ingested,
+                    SUM(delta_messages_failed) AS messages_failed,
+                    SUM(delta_source_api_calls) AS source_api_calls,
+                    SUM(delta_dedupe_accepted) AS dedupe_accepted,
+                    COUNT(*) AS heartbeat_count,
+                    SUM(CASE WHEN state = 'healthy' THEN 1 ELSE 0 END) AS healthy_count,
+                    SUM(CASE WHEN state = 'degraded' THEN 1 ELSE 0 END) AS degraded_count,
+                    SUM(CASE WHEN state = 'error' THEN 1 ELSE 0 END) AS error_count
+                FROM deltas
+                GROUP BY connector_type, endpoint_identity
+            )
+            INSERT INTO connector_stats_hourly (
+                connector_type,
+                endpoint_identity,
+                hour,
+                messages_ingested,
+                messages_failed,
+                source_api_calls,
+                dedupe_accepted,
+                heartbeat_count,
+                healthy_count,
+                degraded_count,
+                error_count
+            )
+            SELECT
+                connector_type,
+                endpoint_identity,
+                $1,
+                messages_ingested,
+                messages_failed,
+                source_api_calls,
+                dedupe_accepted,
+                heartbeat_count::integer,
+                healthy_count::integer,
+                degraded_count::integer,
+                error_count::integer
+            FROM aggregates
+            """,
+            hour_start,
+            hour_end,
+        )
+
+        row = await pool.fetchrow(
+            """
+            SELECT * FROM connector_stats_hourly
+            WHERE connector_type = 'telegram_bot'
+            AND endpoint_identity = 'reset_bot'
+            AND hour = $1
+            """,
+            hour_start,
+        )
+
+        assert row is not None
+        # Row 1 (first, no prev): delta = 0 (COALESCE gives 0)
+        # Row 2 (reset): counter went 200 → 5, delta = -195, GREATEST(0,-195) = 0
+        # Row 3 (post-reset): counter went 5 → 20, delta = 15
+        # Total: 0 + 0 + 15 = 15
+        assert row["messages_ingested"] == 15, (
+            f"Expected 15 (counter reset clamped to 0), got {row['messages_ingested']}"
+        )
+        # Source API similarly: 0 + 0 + 7 = 7
+        assert row["source_api_calls"] == 7
+        # messages_ingested must never be negative
+        assert row["messages_ingested"] >= 0
+        assert row["messages_failed"] >= 0
+        assert row["source_api_calls"] >= 0
+        assert row["dedupe_accepted"] >= 0
