@@ -2,6 +2,9 @@
 
 Provides a ``MessagePipeline`` that connects input modules (Telegram, Email)
 to the switchboard's ``classify_message()`` and ``route()`` functions.
+
+Also provides the ``PipelineModule`` class, which wraps ``MessagePipeline``
+as a pluggable butler module conforming to the ``Module`` abstract base class.
 """
 
 from __future__ import annotations
@@ -21,7 +24,9 @@ from typing import Any, Literal
 from uuid import UUID
 
 from opentelemetry import trace
+from pydantic import BaseModel
 
+from butlers.modules.base import Module
 from butlers.tools.switchboard.routing.telemetry import (
     get_switchboard_telemetry,
     normalize_error_class,
@@ -1473,3 +1478,192 @@ class MessagePipeline:
 
                 finally:
                     self._clear_routing_context()
+
+
+# ---------------------------------------------------------------------------
+# PipelineModule — Module ABC wrapper for MessagePipeline
+# ---------------------------------------------------------------------------
+
+
+class PipelineConfig(BaseModel):
+    """Configuration for the pipeline module.
+
+    The pipeline module is primarily used by the switchboard butler.
+    All configuration is optional; the pipeline is wired at daemon startup
+    via :meth:`_wire_pipelines`.
+    """
+
+    enable_ingress_dedupe: bool = True
+    """Whether to deduplicate incoming messages by idempotency key."""
+
+
+class PipelineModule(Module):
+    """Module that exposes the ``MessagePipeline`` as a pluggable butler module.
+
+    The pipeline module connects input modules (Telegram, Email) and the
+    ingest API to the switchboard's classification and routing functions.
+    It registers the ``pipeline.process`` MCP tool, which allows the butler
+    to classify and route inbound messages programmatically.
+
+    This module is typically enabled only on the switchboard butler.
+    Other butlers can enable it if they need direct pipeline access, but
+    routing context will still be scoped to the switchboard's DB pool.
+
+    Usage
+    -----
+    In ``butler.toml``::
+
+        [modules.pipeline]
+        enable_ingress_dedupe = true
+    """
+
+    def __init__(self) -> None:
+        self._config: PipelineConfig = PipelineConfig()
+        self._pipeline: MessagePipeline | None = None
+        self._pool: Any = None
+
+    @property
+    def name(self) -> str:
+        return "pipeline"
+
+    @property
+    def config_schema(self) -> type[BaseModel]:
+        return PipelineConfig
+
+    @property
+    def dependencies(self) -> list[str]:
+        return []
+
+    def migration_revisions(self) -> str | None:
+        # No module-specific tables; pipeline uses shared switchboard schema.
+        return None
+
+    def set_pipeline(self, pipeline: MessagePipeline) -> None:
+        """Attach a pre-constructed ``MessagePipeline`` instance.
+
+        Called by the daemon's ``_wire_pipelines()`` step for the switchboard
+        butler, which constructs the pipeline with the switchboard DB pool and
+        spawner dispatch function.
+
+        Parameters
+        ----------
+        pipeline:
+            The :class:`MessagePipeline` instance to use for routing.
+        """
+        self._pipeline = pipeline
+
+    async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
+        """Register the ``pipeline.process`` MCP tool.
+
+        The registered tool allows external callers (or scheduled tasks) to
+        push a message through the classification-and-routing pipeline
+        directly via MCP, without going through the ingest endpoint.
+
+        Parameters
+        ----------
+        mcp:
+            FastMCP server instance.
+        config:
+            Module configuration (``PipelineConfig`` or raw dict).
+        db:
+            Butler database instance.
+        """
+        self._config = (
+            config if isinstance(config, PipelineConfig) else PipelineConfig(**(config or {}))
+        )
+        module = self  # capture for closures
+
+        async def pipeline_process(
+            message_text: str,
+            source_channel: str = "mcp",
+            source_identity: str = "unknown",
+            request_id: str = "",
+        ) -> dict[str, Any]:
+            """Classify and route a message through the pipeline.
+
+            Pushes ``message_text`` through the classification-and-routing
+            pipeline and returns the :class:`RoutingResult` as a dict.
+
+            Parameters
+            ----------
+            message_text:
+                The raw message text to classify and route.
+            source_channel:
+                Channel the message arrived on (e.g. ``"telegram"``,
+                ``"email"``, ``"mcp"``).  Defaults to ``"mcp"``.
+            source_identity:
+                Opaque identity string for the sender endpoint.
+                Defaults to ``"unknown"``.
+            request_id:
+                Optional caller-provided UUIDv7 string for tracing.
+                A fresh ID is generated when absent or invalid.
+
+            Returns
+            -------
+            dict
+                Serialised :class:`RoutingResult` with keys ``target_butler``,
+                ``routed_targets``, ``acked_targets``, ``failed_targets``,
+                ``classification_error``, ``routing_error``.
+            """
+            pipeline = module._pipeline
+            if pipeline is None:
+                return {
+                    "error": "pipeline_not_configured",
+                    "message": (
+                        "No MessagePipeline is attached to this module. "
+                        "Ensure the pipeline module is enabled on the switchboard butler "
+                        "and that startup wiring has completed."
+                    ),
+                }
+
+            result = await pipeline.process(
+                message_text=message_text,
+                tool_name="pipeline.process",
+                tool_args={
+                    "source_channel": source_channel,
+                    "source_identity": source_identity,
+                    "request_id": request_id,
+                },
+            )
+            return {
+                "target_butler": result.target_butler,
+                "routed_targets": result.routed_targets,
+                "acked_targets": result.acked_targets,
+                "failed_targets": result.failed_targets,
+                "classification_error": result.classification_error,
+                "routing_error": result.routing_error,
+            }
+
+        mcp.tool(name="pipeline.process")(pipeline_process)
+
+    async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
+        """Validate config and cache the DB pool for later pipeline wiring.
+
+        The pipeline itself is wired by the daemon after all modules have
+        started, via :meth:`set_pipeline`.  This method only validates the
+        module config and stores a reference to the DB pool.
+
+        Parameters
+        ----------
+        config:
+            Module configuration (``PipelineConfig`` or raw dict).
+        db:
+            Butler database instance (provides ``db.pool`` for asyncpg).
+        credential_store:
+            Unused — the pipeline module does not resolve credentials.
+        """
+        self._config = (
+            config if isinstance(config, PipelineConfig) else PipelineConfig(**(config or {}))
+        )
+        # Cache the DB pool for potential future use (e.g. health checks).
+        # The actual pipeline is wired later by the daemon via set_pipeline().
+        self._pool = getattr(db, "pool", None) if db is not None else None
+        logger.debug(
+            "PipelineModule started (enable_ingress_dedupe=%s)",
+            self._config.enable_ingress_dedupe,
+        )
+
+    async def on_shutdown(self) -> None:
+        """Release references on shutdown."""
+        self._pipeline = None
+        self._pool = None

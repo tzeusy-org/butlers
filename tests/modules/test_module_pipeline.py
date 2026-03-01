@@ -25,6 +25,8 @@ import pytest
 
 from butlers.modules.pipeline import (
     MessagePipeline,
+    PipelineConfig,
+    PipelineModule,
     RoutingResult,
     _build_routing_prompt,
     _extract_routed_butlers,
@@ -1276,6 +1278,207 @@ def test_build_routing_prompt_empty_attachments_list():
 
     # Empty list should not show attachment section
     assert "## Attachments" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# PipelineModule — Module ABC implementation tests
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_mcp() -> tuple[Any, dict[str, Any]]:
+    """Return a (FakeMCP instance, registered-tools dict) pair.
+
+    The FakeMCP records every tool registered via ``mcp.tool(name=...)(fn)``
+    into the shared dict so tests can invoke the tool function directly.
+    """
+    registered: dict[str, Any] = {}
+
+    class FakeMCP:
+        def tool(self, name: str):
+            def decorator(fn):
+                registered[name] = fn
+                return fn
+
+            return decorator
+
+    return FakeMCP(), registered
+
+
+class TestPipelineModule:
+    """Unit tests for the PipelineModule Module ABC implementation."""
+
+    def test_name_property(self):
+        """PipelineModule.name returns 'pipeline'."""
+        mod = PipelineModule()
+        assert mod.name == "pipeline"
+
+    def test_config_schema_property(self):
+        """PipelineModule.config_schema returns PipelineConfig."""
+        mod = PipelineModule()
+        assert mod.config_schema is PipelineConfig
+
+    def test_dependencies_property(self):
+        """PipelineModule declares no dependencies."""
+        mod = PipelineModule()
+        assert mod.dependencies == []
+
+    def test_migration_revisions_returns_none(self):
+        """PipelineModule has no module-specific migrations."""
+        mod = PipelineModule()
+        assert mod.migration_revisions() is None
+
+    async def test_on_startup_accepts_none_db(self):
+        """on_startup does not raise when db is None."""
+        mod = PipelineModule()
+        await mod.on_startup(config=None, db=None)
+        assert mod._pool is None
+
+    async def test_on_startup_accepts_pydantic_config(self):
+        """on_startup accepts a PipelineConfig instance directly."""
+        mod = PipelineModule()
+        cfg = PipelineConfig(enable_ingress_dedupe=False)
+        await mod.on_startup(config=cfg, db=None)
+        assert mod._config.enable_ingress_dedupe is False
+
+    async def test_on_startup_accepts_dict_config(self):
+        """on_startup accepts a raw dict and coerces it to PipelineConfig."""
+        mod = PipelineModule()
+        await mod.on_startup(config={"enable_ingress_dedupe": False}, db=None)
+        assert mod._config.enable_ingress_dedupe is False
+
+    async def test_on_startup_caches_pool(self):
+        """on_startup caches db.pool for later use."""
+        mod = PipelineModule()
+        fake_pool = object()
+        fake_db = MagicMock()
+        fake_db.pool = fake_pool
+        await mod.on_startup(config=None, db=fake_db)
+        assert mod._pool is fake_pool
+
+    async def test_on_shutdown_clears_pipeline_and_pool(self):
+        """on_shutdown releases pipeline and pool references."""
+        mod = PipelineModule()
+        mod._pipeline = MagicMock()
+        mod._pool = MagicMock()
+        await mod.on_shutdown()
+        assert mod._pipeline is None
+        assert mod._pool is None
+
+    def test_set_pipeline_stores_instance(self):
+        """set_pipeline stores the MessagePipeline reference."""
+        mod = PipelineModule()
+        fake_pipeline = MagicMock(spec=MessagePipeline)
+        mod.set_pipeline(fake_pipeline)
+        assert mod._pipeline is fake_pipeline
+
+    async def test_register_tools_registers_pipeline_process(self):
+        """register_tools registers the 'pipeline.process' MCP tool."""
+        mod = PipelineModule()
+        fake_mcp, registered = _make_fake_mcp()
+        await mod.register_tools(mcp=fake_mcp, config=None, db=None)
+        assert "pipeline.process" in registered
+
+    async def test_pipeline_process_tool_returns_error_when_no_pipeline(self):
+        """pipeline.process tool returns an error dict when no pipeline is set."""
+        mod = PipelineModule()
+        fake_mcp, registered = _make_fake_mcp()
+        await mod.register_tools(mcp=fake_mcp, config=None, db=None)
+        tool_fn = registered["pipeline.process"]
+        result = await tool_fn(message_text="hello")
+        assert result["error"] == "pipeline_not_configured"
+        assert "message" in result
+
+    async def test_pipeline_process_tool_delegates_to_pipeline(self):
+        """pipeline.process tool calls pipeline.process() and returns a serialised result."""
+        mod = PipelineModule()
+        fake_mcp, registered = _make_fake_mcp()
+        await mod.register_tools(mcp=fake_mcp, config=None, db=None)
+
+        fake_result = RoutingResult(
+            target_butler="health",
+            route_result={"cc_summary": "Routed to health."},
+            routed_targets=["health"],
+            acked_targets=["health"],
+            failed_targets=[],
+        )
+        fake_pipeline = AsyncMock(spec=MessagePipeline)
+        fake_pipeline.process.return_value = fake_result
+        mod.set_pipeline(fake_pipeline)
+
+        tool_fn = registered["pipeline.process"]
+        result = await tool_fn(
+            message_text="I need to track my medication",
+            source_channel="mcp",
+            source_identity="caller-1",
+            request_id="",
+        )
+
+        assert result["target_butler"] == "health"
+        assert result["routed_targets"] == ["health"]
+        assert result["acked_targets"] == ["health"]
+        assert result["failed_targets"] == []
+        assert result["classification_error"] is None
+        assert result["routing_error"] is None
+
+        fake_pipeline.process.assert_awaited_once()
+        call_kwargs = fake_pipeline.process.call_args
+        assert call_kwargs.kwargs["message_text"] == "I need to track my medication"
+
+    async def test_pipeline_process_tool_passes_source_channel(self):
+        """pipeline.process tool passes source_channel to the underlying pipeline."""
+        mod = PipelineModule()
+        fake_mcp, registered = _make_fake_mcp()
+        await mod.register_tools(mcp=fake_mcp, config=None, db=None)
+
+        fake_result = RoutingResult(target_butler="general")
+        fake_pipeline = AsyncMock(spec=MessagePipeline)
+        fake_pipeline.process.return_value = fake_result
+        mod.set_pipeline(fake_pipeline)
+
+        tool_fn = registered["pipeline.process"]
+        await tool_fn(
+            message_text="hello",
+            source_channel="telegram",
+            source_identity="bot-main",
+        )
+
+        _, call_kwargs = fake_pipeline.process.call_args
+        tool_args = call_kwargs.get("tool_args", {})
+        assert tool_args.get("source_channel") == "telegram"
+        assert tool_args.get("source_identity") == "bot-main"
+
+    async def test_register_tools_accepts_dict_config(self):
+        """register_tools coerces a raw dict config to PipelineConfig."""
+        mod = PipelineModule()
+        fake_mcp, _ = _make_fake_mcp()
+        await mod.register_tools(mcp=fake_mcp, config={"enable_ingress_dedupe": False}, db=None)
+        assert mod._config.enable_ingress_dedupe is False
+
+    async def test_enable_ingress_dedupe_config_is_readable_after_startup(self):
+        """enable_ingress_dedupe from on_startup is exposed via _config for daemon wiring."""
+        mod = PipelineModule()
+        await mod.on_startup(config={"enable_ingress_dedupe": False}, db=None)
+        # The daemon reads mod._config.enable_ingress_dedupe in _wire_pipelines.
+        assert mod._config.enable_ingress_dedupe is False
+
+
+class TestPipelineConfig:
+    """Unit tests for PipelineConfig defaults and validation."""
+
+    def test_default_config(self):
+        """PipelineConfig has sensible defaults."""
+        cfg = PipelineConfig()
+        assert cfg.enable_ingress_dedupe is True
+
+    def test_custom_config(self):
+        """PipelineConfig can be overridden."""
+        cfg = PipelineConfig(enable_ingress_dedupe=False)
+        assert cfg.enable_ingress_dedupe is False
+
+    def test_from_dict(self):
+        """PipelineConfig can be constructed from a dict."""
+        cfg = PipelineConfig(**{"enable_ingress_dedupe": False})
+        assert cfg.enable_ingress_dedupe is False
 
 
 if __name__ == "__main__":
