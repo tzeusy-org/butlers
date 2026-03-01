@@ -31,10 +31,11 @@ Creating a butler involves these files (in recommended order):
 3. **CLAUDE.md** — System prompt for spawned runtime instances, including Interactive Response Mode and Memory Classification (required)
 4. **AGENTS.md** — Runtime agent notes (required, initialize with header)
 5. **tools/** — MCP tool implementations as a package or single file (required)
-6. **migrations/** — Alembic database schema (if butler needs persistence)
-7. **api/** — Dashboard API routes and Pydantic models (optional)
-8. **.agents/skills/** — Skill definitions for runtime instances (optional, add later)
-9. **tests/** — Integration tests (required)
+6. **modules/** — Roster module package wiring tools to the MCP server (required if butler has tools)
+7. **migrations/** — Alembic database schema (if butler needs persistence)
+8. **api/** — Dashboard API routes and Pydantic models (optional)
+9. **.agents/skills/** — Skill definitions for runtime instances (optional, add later)
+10. **tests/** — Integration tests (required)
 
 ## Step 1: Create the Directory
 
@@ -46,6 +47,9 @@ roster/<butler-name>/
 ├── MANIFESTO.md
 ├── CLAUDE.md
 ├── AGENTS.md
+├── modules/                    # Wires tools/ to MCP server (required if tools/ exists)
+│   ├── __init__.py             # Module class (config, lifecycle, _get_pool)
+│   └── tools.py                # @mcp.tool() closure registrations
 ├── tools/                      # Package for complex butlers
 │   ├── __init__.py             # Re-exports all public symbols
 │   ├── _helpers.py             # Private helpers (underscore prefix)
@@ -305,13 +309,21 @@ logger = logging.getLogger(__name__)
 - **No framework imports**: Tools are pure async functions. No FastMCP, no decorators — the framework wraps them.
 - **Type hints**: Use `from __future__ import annotations` and modern union syntax (`str | None`)
 
-## Step 6b: Domain Module (Required if butler has domain tools)
+## Step 6b: Domain Module Package (Required if butler has domain tools)
 
-If the butler defines domain-specific tools in `roster/{name}/tools/`, a dedicated `{Name}Module` in `roster/{name}/module.py` is **required** to wire them as MCP tools on the daemon's FastMCP server.
+If the butler defines domain-specific tools in `roster/{name}/tools/`, a dedicated module package at `roster/{name}/modules/` is **required** to wire them as MCP tools on the daemon's FastMCP server.
 
 **Why this is needed:** The daemon only registers MCP tools via the module system (`_register_module_tools()`). Tool functions in `roster/{name}/tools/` are importable Python, but they are NOT callable via MCP unless a module wraps them with `@mcp.tool()` closures. Without a domain module, the butler's runtime LLM instance will not see the tools in its MCP tool list, and every tool call will fail with "tool not found".
 
-**Pattern:** Follow `roster/education/module.py` (the EducationModule). Key elements:
+**Package structure:**
+
+```
+roster/{name}/modules/
+├── __init__.py    # Module class (config, lifecycle, _get_pool, register_tools)
+└── tools.py       # @mcp.tool() closure registrations
+```
+
+**`modules/__init__.py`** — Module class with boilerplate and delegation:
 
 ```python
 """<Name> module — wires <name> domain tools into the butler's MCP server."""
@@ -366,15 +378,29 @@ class <Name>Module(Module):
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
         self._db = db
-        module = self
+        from .tools import register_tools
+        register_tools(mcp, self)
+```
 
-        # Deferred imports
-        from butlers.tools.<name> import <submodule> as _sub
+**`modules/tools.py`** — Tool wiring closures:
 
-        @mcp.tool()
-        async def my_tool(param: str) -> dict[str, Any]:
-            """Tool docstring (becomes MCP tool description)."""
-            return await _sub.my_tool(module._get_pool(), param)
+```python
+"""MCP tool wiring for the <name> module."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def register_tools(mcp: Any, module: Any) -> None:
+    """Register all <name> MCP tools."""
+    # Deferred imports
+    from butlers.tools.<name> import <submodule> as _sub
+
+    @mcp.tool()
+    async def my_tool(param: str) -> dict[str, Any]:
+        """Tool docstring (becomes MCP tool description)."""
+        return await _sub.my_tool(module._get_pool(), param)
 ```
 
 **Key conventions:**
@@ -383,7 +409,6 @@ class <Name>Module(Module):
 - Type conversions at the MCP boundary (e.g., ISO string → `datetime.fromisoformat()`, float → `Decimal`) when the implementation expects richer types than MCP provides
 - Empty config is fine — the module just needs to exist to register tools
 - `migration_revisions()` returns `None` when migrations are handled separately in `roster/{name}/migrations/`
-- For complex modules (like `home_assistant`), use a package: `roster/{name}/module/__init__.py`
 
 **butler.toml:** Add `[modules.<name>]` (can be empty) so the daemon loads the module:
 
@@ -391,7 +416,7 @@ class <Name>Module(Module):
 [modules.<name>]
 ```
 
-**Auto-discovery:** The module is auto-discovered by `_register_roster_modules()` in `src/butlers/modules/registry.py`, which scans `roster/*/module.py` (or `roster/*/module/__init__.py`) for `Module` subclasses. No manual registration needed — just placing the file at `roster/{name}/module.py` is sufficient. Only butlers that declare `[modules.<name>]` in their `butler.toml` will actually load the module at startup.
+**Auto-discovery:** The module is auto-discovered by `_register_roster_modules()` in `src/butlers/modules/registry.py`, which scans `roster/*/modules/__init__.py` for `Module` subclasses. No manual registration needed — just placing the package at `roster/{name}/modules/` is sufficient. Only butlers that declare `[modules.<name>]` in their `butler.toml` will actually load the module at startup.
 
 ## Step 7: migrations/
 
@@ -673,6 +698,7 @@ Note: The framework auto-discovers butlers via `discover_butlers()` scanning but
 
 The framework automatically discovers new butlers — no registration code needed:
 
+- **Modules**: `_register_roster_modules()` in `src/butlers/modules/registry.py` scans `roster/*/modules/__init__.py` for `Module` subclasses — this is how domain tools get wired to MCP
 - **Tools**: `register_all_butler_tools()` in `src/butlers/tools/_loader.py` scans `roster/*/tools.py` or `roster/*/tools/__init__.py`
 - **Migrations**: `_discover_butler_chains()` in `src/butlers/migrations.py` scans `roster/*/migrations/`
 - **API Routers**: `discover_butler_routers()` in `src/butlers/api/router_discovery.py` scans `roster/*/api/router.py`
@@ -696,4 +722,4 @@ Simply placing the correct files in the right directory structure is sufficient 
 12. **Forgetting shared skill symlinks**: Most butlers should symlink `butler-memory` and `butler-notifications` from `roster/shared/skills/` into `.agents/skills/`.
 13. **Missing AGENTS.md**: Every butler needs this file, even if initially just a header.
 14. **API router missing `router` export**: Dashboard routes must export a module-level `router` variable (APIRouter instance).
-15. **Missing domain module**: If the butler defines tools in `roster/{name}/tools/`, a `{Name}Module` in `roster/{name}/module.py` is required to register them as MCP tools. Without it, the butler's runtime will not see any domain tools — only core and shared module tools. See Step 6b.
+15. **Missing domain module package**: If the butler defines tools in `roster/{name}/tools/`, a `modules/` package at `roster/{name}/modules/` is required to register them as MCP tools. Without it, the butler's runtime will not see any domain tools — only core and shared module tools. See Step 6b.

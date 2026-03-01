@@ -61,9 +61,12 @@ A butler's tool surface is composed from three layers: core tools (always presen
 - **AND** a proxy validates that modules only register tools they declared in their `tool_metadata()`
 
 #### Scenario: Butler-specific tools
-- **WHEN** a butler role has domain-specific tools not covered by modules
-- **THEN** it implements them as a custom module in `src/butlers/modules/` or directly in the daemon's tool registration
-- **AND** these tools are only available on that butler's MCP server (e.g., Relationship butler has `entity_resolve`, Health butler has `record_measurement`)
+- **WHEN** a butler role has domain-specific tools not covered by shared modules
+- **THEN** it implements them as pure async functions in `roster/{butler-name}/tools/` and wires them via a roster module package at `roster/{butler-name}/modules/` (with `__init__.py` for the Module class and additional `*.py` files for tool wiring)
+- **AND** the roster module subclasses `Module`, registers each tool via `@mcp.tool()` closures in `register_tools()`, and injects the DB pool via `module._get_pool()` — the MCP caller never sees the pool parameter
+- **AND** the butler's `butler.toml` declares `[modules.{butler-name}]` so the module is loaded at startup
+- **AND** these tools are only available on that butler's MCP server (e.g., Relationship butler has `contact_resolve`, Health butler has `measurement_log`)
+- **AND** without a roster module, tools in `roster/{butler-name}/tools/` are importable Python but NOT callable via MCP — the runtime LLM instance will not see them
 
 #### Scenario: Tool gating via approvals
 - **WHEN** a butler has the approvals module enabled with gated_tools configuration
@@ -102,8 +105,10 @@ Modules are pluggable units that add domain-specific MCP tools and database tabl
 
 #### Scenario: Available modules
 - **WHEN** configuring a butler's `butler.toml`
-- **THEN** opt-in modules include: `calendar` (unified calendar view, Google Calendar integration), `contacts` (Google sync, shared schema, entity linkage), `memory` (episodes/facts/rules storage, hybrid search, embedding, consolidation), `telegram` (bot/user client tools), `email` (Gmail integration, IMAP/SMTP tools), `approvals` (gate wrapper, pending actions, standing rules)
+- **THEN** shared modules (in `src/butlers/modules/`) include: `calendar` (unified calendar view, Google Calendar integration), `contacts` (Google sync, shared schema, entity linkage), `memory` (episodes/facts/rules storage, hybrid search, embedding, consolidation), `telegram` (bot/user client tools), `email` (Gmail integration, IMAP/SMTP tools), `approvals` (gate wrapper, pending actions, standing rules)
+- **AND** roster modules (in `roster/{butler-name}/modules/`) wire butler-specific tools as MCP tools — every butler that has domain tools in `roster/{butler-name}/tools/` must have a corresponding roster module package
 - **AND** each module has its own nested TOML configuration (e.g., `modules.calendar.provider`, `modules.telegram.bot.token_env`, `modules.memory.consolidation.interval_hours`)
+- **AND** roster modules typically need only an empty `[modules.{butler-name}]` section in `butler.toml`
 
 ### Requirement: Skills System
 Skills are structured behavioral guides (per agentskills.io spec) that are loaded into runtime sessions to provide domain expertise, workflows, and decision frameworks. They are documentation-as-configuration — not executable code within the daemon.
@@ -229,6 +234,13 @@ Every butler lives in `roster/{butler-name}/` and follows a fixed directory layo
 #### Scenario: Required config files
 - **WHEN** a new butler directory is created under `roster/`
 - **THEN** it contains at minimum: `butler.toml` (identity, runtime, database, modules, schedules), `MANIFESTO.md` (public-facing purpose and value proposition), `CLAUDE.md` (system prompt entry point — contains `@AGENTS.md`), and `AGENTS.md` (butler identity, tool summary, behavioral guidelines, skill references, and runtime agent notes — see AGENTS.md Content Principles)
+
+#### Scenario: Roster module package (required when butler has domain tools)
+- **WHEN** a butler defines domain-specific tools in `roster/{butler-name}/tools/`
+- **THEN** a roster module package at `roster/{butler-name}/modules/` is required to wire those tools as MCP tools
+- **AND** the package contains `__init__.py` (Module class with boilerplate: config, lifecycle, `_get_pool()`) and one or more `*.py` files with the `@mcp.tool()` closure registrations
+- **AND** the module is auto-discovered by `_register_roster_modules()` in `src/butlers/modules/registry.py` — no manual registration needed
+- **AND** the butler's `butler.toml` declares `[modules.{butler-name}]` so the module is loaded at startup
 
 #### Scenario: Optional subdirectories
 - **WHEN** a butler has domain-specific features

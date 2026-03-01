@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 
 
 def _register_roster_modules(registry: ModuleRegistry) -> None:
-    """Scan ``roster/*/module.py`` (or ``module/__init__.py``) for Module subclasses.
+    """Scan ``roster/*/modules/__init__.py`` for Module subclasses.
+
+    Also supports legacy ``roster/*/module.py`` and ``roster/*/module/__init__.py``
+    for backwards compatibility.
 
     Roster modules are loaded under synthetic names like
     ``butlers.modules._roster_{butler}`` so they are accessible via
@@ -33,10 +36,15 @@ def _register_roster_modules(registry: ModuleRegistry) -> None:
         if not entry.is_dir():
             continue
 
+        # Preferred: roster/{butler}/modules/__init__.py (package)
+        modules_pkg_init = entry / "modules" / "__init__.py"
+        # Legacy: roster/{butler}/module.py or module/__init__.py
         module_file = entry / "module.py"
         module_pkg_init = entry / "module" / "__init__.py"
 
-        if module_file.is_file():
+        if modules_pkg_init.is_file():
+            target, is_package = modules_pkg_init, True
+        elif module_file.is_file():
             target, is_package = module_file, False
         elif module_pkg_init.is_file():
             target, is_package = module_pkg_init, True

@@ -31,6 +31,8 @@ policy = "suggest"
 
 [modules.memory]
 
+[modules.finance]
+
 [[butler.schedule]]
 name = "upcoming-bills-check"
 cron = "0 8 * * *"

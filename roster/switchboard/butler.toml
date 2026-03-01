@@ -49,6 +49,8 @@ password_env = "BUTLER_EMAIL_PASSWORD"
 [modules.pipeline]
 enable_ingress_dedupe = true
 
+[modules.switchboard]
+
 # Connector statistics rollup and pruning jobs
 [[butler.schedule]]
 name = "connector-stats-hourly-rollup"

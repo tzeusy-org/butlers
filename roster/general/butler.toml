@@ -68,4 +68,6 @@ Steps:
 6. Send the summary via notify(channel="telegram", intent="send").
 """
 
+[modules.general]
+
 [modules.memory]

@@ -57,3 +57,5 @@ risk_tier = "medium"
 
 [modules.approvals.gated_tools.notify]
 risk_tier = "medium"
+
+[modules.messenger]

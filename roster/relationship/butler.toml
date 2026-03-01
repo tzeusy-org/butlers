@@ -69,3 +69,5 @@ interval_minutes = 15
 full_sync_interval_days = 6
 
 [modules.memory]
+
+[modules.relationship]
