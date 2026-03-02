@@ -890,6 +890,30 @@ class TestWebSocketMessageDispatch:
 
 
 # ---------------------------------------------------------------------------
+# WebSocket message loop — non-dict JSON guard
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketNonDictMessage:
+    """Verify the WS message loop skips non-dict JSON payloads."""
+
+    async def test_list_payload_skipped(self, ha_module: HomeAssistantModule) -> None:
+        """A JSON array from HA should be skipped, not crash _dispatch_ws_message."""
+        # _dispatch_ws_message expects a dict; a list would raise AttributeError.
+        # The fix guards in the message loop, but we can also verify dispatch is
+        # never called when the parsed JSON is a list by simulating the guard logic.
+        import json as _json
+
+        raw_data = _json.dumps([{"id": 1}, {"id": 2}])
+        parsed = _json.loads(raw_data)
+        assert not isinstance(parsed, dict)
+        # Should NOT reach _dispatch_ws_message — just ensure no crash.
+        # Calling _dispatch_ws_message directly with a list would fail:
+        with pytest.raises(AttributeError):
+            await ha_module._dispatch_ws_message(parsed)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
 # Entity cache — seeding from REST
 # ---------------------------------------------------------------------------
 

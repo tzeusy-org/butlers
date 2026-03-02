@@ -782,6 +782,9 @@ class HomeAssistantModule(Module):
                     except json.JSONDecodeError:
                         logger.warning("HomeAssistantModule: invalid JSON from WS: %r", raw.data)
                         continue
+                    if not isinstance(msg, dict):
+                        logger.debug("HomeAssistantModule: non-dict WS message: %r", type(msg))
+                        continue
                     await self._dispatch_ws_message(msg)
 
                 elif raw.type == aiohttp.WSMsgType.BINARY:
@@ -789,6 +792,9 @@ class HomeAssistantModule(Module):
                         msg = json.loads(raw.data)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         logger.warning("HomeAssistantModule: invalid binary WS message")
+                        continue
+                    if not isinstance(msg, dict):
+                        logger.debug("HomeAssistantModule: non-dict binary WS msg: %r", type(msg))
                         continue
                     await self._dispatch_ws_message(msg)
 
