@@ -10,6 +10,7 @@ Configured via [modules.telegram] with optional
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 from typing import Any
@@ -84,6 +85,50 @@ class TelegramConfig(BaseModel):
     user: TelegramUserCredentialsConfig = Field(default_factory=TelegramUserCredentialsConfig)
     bot: TelegramBotCredentialsConfig = Field(default_factory=TelegramBotCredentialsConfig)
     model_config = ConfigDict(extra="forbid")
+
+
+def _markdown_to_telegram_html(text: str) -> str:
+    """Convert common Markdown formatting to Telegram-compatible HTML.
+
+    Handles ``**bold**``, ``*italic*``, `` `code` ``, ``` ```code blocks``` ```,
+    and ``~~strikethrough~~``.  Other constructs (lists, links) pass through
+    as-is — Telegram renders them acceptably as plain text.
+
+    Uses HTML parse_mode rather than MarkdownV2 because HTML requires escaping
+    only ``<``, ``>``, ``&`` (handled by :func:`html.escape`), whereas
+    MarkdownV2 demands backslash-escaping of ``.-()!+=|{}~>#_`` which makes
+    LLM-generated text fragile.
+    """
+    placeholders: list[str] = []
+
+    def _save_code(match: re.Match[str]) -> str:
+        idx = len(placeholders)
+        placeholders.append(match.group(0))
+        return f"\x00PH{idx}\x00"
+
+    # Protect code blocks from further processing
+    text = re.sub(r"```(.*?)```", _save_code, text, flags=re.DOTALL)
+    text = re.sub(r"`([^`\n]+)`", _save_code, text)
+
+    # HTML-escape remaining text
+    text = html.escape(text)
+
+    # Markdown → HTML (order matters: bold before italic)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"(?<!\*)\*(?!\*)(?!\s)(.+?)(?<!\s)\*(?!\*)", r"<i>\1</i>", text)
+    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text)
+
+    # Re-insert code placeholders with proper HTML tags
+    for idx, original in enumerate(placeholders):
+        if original.startswith("```"):
+            content = original[3:-3].lstrip("\n")
+            replacement = f"<pre>{html.escape(content)}</pre>"
+        else:
+            content = original[1:-1]
+            replacement = f"<code>{html.escape(content)}</code>"
+        text = text.replace(f"\x00PH{idx}\x00", replacement)
+
+    return text
 
 
 class TelegramModule(Module):
@@ -280,7 +325,11 @@ class TelegramModule(Module):
     ) -> dict[str, Any]:
         """Call Telegram sendMessage API."""
         url = f"{self._base_url()}/sendMessage"
-        payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": _markdown_to_telegram_html(text),
+            "parse_mode": "HTML",
+        }
         if reply_to_message_id is not None:
             payload["reply_to_message_id"] = reply_to_message_id
         client = self._get_client()

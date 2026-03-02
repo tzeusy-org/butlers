@@ -10,7 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from butlers.modules.base import Module
-from butlers.modules.telegram import TelegramConfig, TelegramModule
+from butlers.modules.telegram import TelegramConfig, TelegramModule, _markdown_to_telegram_html
 
 pytestmark = pytest.mark.unit
 
@@ -198,7 +198,7 @@ class TestSendMessage:
 
         mock_client.post.assert_called_once_with(
             "https://api.telegram.org/bottest-token-123/sendMessage",
-            json={"chat_id": "12345", "text": "Hello!"},
+            json={"chat_id": "12345", "text": "Hello!", "parse_mode": "HTML"},
         )
         assert result["ok"] is True
         assert result["result"]["message_id"] == 42
@@ -239,7 +239,12 @@ class TestReplyToMessage:
         assert result["ok"] is True
         mock_client.post.assert_called_once_with(
             "https://api.telegram.org/bottest-token/sendMessage",
-            json={"chat_id": "12345", "text": "Reply text", "reply_to_message_id": 77},
+            json={
+                "chat_id": "12345",
+                "text": "Reply text",
+                "parse_mode": "HTML",
+                "reply_to_message_id": 77,
+            },
         )
 
     async def test_reply_tool_via_registration(
@@ -259,7 +264,12 @@ class TestReplyToMessage:
         assert result["ok"] is True
         mock_client.post.assert_called_once_with(
             "https://api.telegram.org/bottest-token/sendMessage",
-            json={"chat_id": "999", "text": "Thread reply", "reply_to_message_id": 12},
+            json={
+                "chat_id": "999",
+                "text": "Thread reply",
+                "parse_mode": "HTML",
+                "reply_to_message_id": 12,
+            },
         )
 
 
@@ -368,6 +378,65 @@ class TestWebhookHelpers:
             "https://api.telegram.org/bottest-token-abc/deleteWebhook",
         )
         assert result["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Markdown → HTML conversion
+# ---------------------------------------------------------------------------
+
+
+class TestMarkdownToTelegramHtml:
+    """Test _markdown_to_telegram_html conversion."""
+
+    def test_plain_text_unchanged(self):
+        assert _markdown_to_telegram_html("Hello world") == "Hello world"
+
+    def test_bold(self):
+        assert _markdown_to_telegram_html("**bold**") == "<b>bold</b>"
+
+    def test_bold_in_sentence(self):
+        result = _markdown_to_telegram_html("This is **important** text")
+        assert result == "This is <b>important</b> text"
+
+    def test_italic(self):
+        assert _markdown_to_telegram_html("*italic*") == "<i>italic</i>"
+
+    def test_inline_code(self):
+        assert _markdown_to_telegram_html("`some_func()`") == "<code>some_func()</code>"
+
+    def test_fenced_code_block(self):
+        result = _markdown_to_telegram_html("```\nprint('hi')\n```")
+        assert result == "<pre>print(&#x27;hi&#x27;)\n</pre>"
+
+    def test_strikethrough(self):
+        assert _markdown_to_telegram_html("~~removed~~") == "<s>removed</s>"
+
+    def test_html_entities_escaped(self):
+        result = _markdown_to_telegram_html("x < y & z > w")
+        assert result == "x &lt; y &amp; z &gt; w"
+
+    def test_bold_with_special_chars(self):
+        result = _markdown_to_telegram_html("**x < y**")
+        assert result == "<b>x &lt; y</b>"
+
+    def test_mixed_formatting(self):
+        result = _markdown_to_telegram_html("**bold** and *italic* and `code`")
+        assert "<b>bold</b>" in result
+        assert "<i>italic</i>" in result
+        assert "<code>code</code>" in result
+
+    def test_numbered_list_with_bold(self):
+        """Reproduces the exact pattern from the user's report."""
+        text = "1) **Open-loop vs closed-loop**\n- Description here"
+        result = _markdown_to_telegram_html(text)
+        assert "<b>Open-loop vs closed-loop</b>" in result
+
+    def test_bullet_asterisk_not_treated_as_italic(self):
+        """Asterisk bullet points should not become italic tags."""
+        text = "* item one\n* item two"
+        result = _markdown_to_telegram_html(text)
+        # Asterisks at line start followed by space are bullets, not italic
+        assert "<i>" not in result
 
 
 # ---------------------------------------------------------------------------
