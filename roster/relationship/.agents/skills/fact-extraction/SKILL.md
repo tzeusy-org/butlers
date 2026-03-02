@@ -18,7 +18,7 @@ Scan the message for people mentioned by name (first name, full name, nickname, 
 For each person mentioned, call:
 
 ```python
-entity_resolve(
+memory_entity_resolve(
     name="<mention>",
     entity_type="person",
     context_hints={
@@ -44,15 +44,15 @@ Use the resolution thresholds from the spec (§10.4):
 
 ## Step 4: Handle New People (NONE confidence)
 
-When `entity_resolve` returns zero candidates:
+When `memory_entity_resolve` returns zero candidates:
 
 - **If sufficient identifying info (full name or enough context):**
-  1. Call `entity_create(canonical_name="<full name>", entity_type="person", aliases=["<first name>", "<nickname if known>"])`
+  1. Call `memory_entity_create(canonical_name="<full name>", entity_type="person", aliases=["<first name>", "<nickname if known>"])`
   2. Optionally call `contact_create(...)` and store the returned `entity_id` if the person seems like a recurring contact
   3. Proceed with the new `entity_id`
 
 - **If only a first name or minimal info:**
-  1. Call `entity_create(canonical_name="<first name>", entity_type="person")` to establish a minimal entity
+  1. Call `memory_entity_create(canonical_name="<first name>", entity_type="person")` to establish a minimal entity
   2. Defer contact creation until more information is available
   3. Proceed with the new `entity_id`
 
@@ -122,7 +122,7 @@ When extracted facts map to structured fields, update both memory and domain rec
 
 ```python
 # From: "Sarah mentioned she's allergic to shellfish"
-# Step 1: entity_resolve("Sarah", entity_type="person", ...) → entity_id="uuid-sarah"
+# Step 1: memory_entity_resolve("Sarah", entity_type="person", ...) → entity_id="uuid-sarah"
 memory_store_fact(
     subject="Sarah",
     predicate="food_allergy",
@@ -134,7 +134,7 @@ memory_store_fact(
 )
 
 # From: "John just started learning guitar"
-# Step 1: entity_resolve("John", entity_type="person", ...) → entity_id="uuid-john"
+# Step 1: memory_entity_resolve("John", entity_type="person", ...) → entity_id="uuid-john"
 memory_store_fact(
     subject="John",
     predicate="current_interest",
@@ -146,7 +146,7 @@ memory_store_fact(
 )
 
 # From: "Mom's birthday is March 15th"
-# Step 1: entity_resolve("Mom", entity_type="person", ...) → entity_id="uuid-mom"
+# Step 1: memory_entity_resolve("Mom", entity_type="person", ...) → entity_id="uuid-mom"
 memory_store_fact(
     subject="Mom",
     predicate="birthday",
@@ -170,7 +170,7 @@ When the user asks a question about a contact or relationship:
 Example flow:
 ```
 User: "What does Alice like?"
-1. entity_resolve("Alice", entity_type="person") → entity_id="uuid-alice"
+1. memory_entity_resolve("Alice", entity_type="person") → entity_id="uuid-alice"
 2. memory_recall(topic="Alice", limit=10)
 3. contact_get(name="Alice")
 4. note_search(query="Alice preferences")
@@ -185,7 +185,7 @@ User: "What does Alice like?"
 **User message**: "Sarah's birthday is June 10th"
 
 **Actions**:
-1. `entity_resolve("Sarah", entity_type="person", context_hints={...})` → returns `entity_id="<uuid>"`
+1. `memory_entity_resolve("Sarah", entity_type="person", context_hints={...})` → returns `entity_id="<uuid>"`
    - Single candidate (HIGH): proceed silently
 2. `date_add(contact_id="<contact_id>", date_type="birthday", month=6, day=10)`
 3. `memory_store_fact(subject="Sarah", predicate="birthday", content="June 10", entity_id="<uuid>", permanence="permanent", importance=9.0, tags=["important-dates"])`
@@ -196,7 +196,7 @@ User: "What does Alice like?"
 **User message**: "Had lunch with Alex today, we talked about his new startup"
 
 **Actions**:
-1. `entity_resolve("Alex", entity_type="person", context_hints={"topic": "startup, lunch"})` → `entity_id="<uuid>"`, single match
+1. `memory_entity_resolve("Alex", entity_type="person", context_hints={"topic": "startup, lunch"})` → `entity_id="<uuid>"`, single match
 2. `interaction_log(contact_id="<contact_id>", interaction_type="meal", summary="Discussed his new startup")`
 3. `memory_store_fact(subject="Alex", predicate="current_project", content="working on a new startup", entity_id="<uuid>", permanence="standard", importance=6.0)`
 4. `note_create(contact_id="<contact_id>", body="Discussed his new startup over lunch", emotion="positive")`
@@ -207,7 +207,7 @@ User: "What does Alice like?"
 **User message**: "When is Mom's birthday?"
 
 **Actions**:
-1. `entity_resolve("Mom", entity_type="person")` → `entity_id="<uuid>"`
+1. `memory_entity_resolve("Mom", entity_type="person")` → `entity_id="<uuid>"`
 2. `memory_recall(topic="Mom birthday")`
 3. `date_list(contact_id="<contact_id>")`
 4. Find birthday: March 15
@@ -218,7 +218,7 @@ User: "What does Alice like?"
 **User message**: "Gift idea for Lisa: that book she mentioned"
 
 **Actions**:
-1. `entity_resolve("Lisa", entity_type="person")` → `entity_id="<uuid>"`
+1. `memory_entity_resolve("Lisa", entity_type="person")` → `entity_id="<uuid>"`
 2. `gift_add(contact_id="<contact_id>", description="Book she mentioned", status="idea")`
 3. `memory_search(query="Lisa book")`
 4. Check if there's a specific book reference in memory
@@ -230,8 +230,8 @@ User: "What does Alice like?"
 **User message**: "Met with John and Sarah for dinner. John mentioned he's moving to Seattle next month for a new job at Amazon. Sarah said she might visit."
 
 **Actions**:
-1. `entity_resolve("John", entity_type="person", context_hints={"topic": "dinner, Seattle, Amazon", "mentioned_with": ["Sarah"]})` → `entity_id="<uuid-john>"`, single match
-2. `entity_resolve("Sarah", entity_type="person", context_hints={"topic": "dinner, visit", "mentioned_with": ["John"]})` → `entity_id="<uuid-sarah>"`, single match
+1. `memory_entity_resolve("John", entity_type="person", context_hints={"topic": "dinner, Seattle, Amazon", "mentioned_with": ["Sarah"]})` → `entity_id="<uuid-john>"`, single match
+2. `memory_entity_resolve("Sarah", entity_type="person", context_hints={"topic": "dinner, visit", "mentioned_with": ["John"]})` → `entity_id="<uuid-sarah>"`, single match
 3. `interaction_log(contact_id="<john_contact_id>", interaction_type="meal", summary="Dinner with Sarah. John moving to Seattle for Amazon job.")`
 4. `interaction_log(contact_id="<sarah_contact_id>", interaction_type="meal", summary="Dinner with John. Mentioned might visit.")`
 5. `memory_store_fact(subject="John", predicate="workplace", content="Amazon (starting next month)", entity_id="<uuid-john>", permanence="stable", importance=8.0, tags=["work", "major-change"])`
@@ -245,7 +245,7 @@ User: "What does Alice like?"
 **User message**: "Chloe came by today, we had coffee"
 
 **Actions**:
-1. `entity_resolve("Chloe", entity_type="person", context_hints={"domain_scores": {"<uuid-chloe-wong>": 95, "<uuid-chloe-tan>": 12}})` → two candidates, top leads by 83 points → HIGH confidence, `inferred=true`, `inferred_reason="partner, most frequent contact"`
+1. `memory_entity_resolve("Chloe", entity_type="person", context_hints={"domain_scores": {"<uuid-chloe-wong>": 95, "<uuid-chloe-tan>": 12}})` → two candidates, top leads by 83 points → HIGH confidence, `inferred=true`, `inferred_reason="partner, most frequent contact"`
 2. Use `entity_id="<uuid-chloe-wong>"`
 3. `interaction_log(contact_id="<chloe_wong_contact_id>", interaction_type="coffee", summary="Came by, had coffee")`
 4. `notify(channel="telegram", message="Assuming you're referring to Chloe Wong (your partner) — logged your coffee catch-up.", intent="reply", request_context=...)`
@@ -255,7 +255,7 @@ User: "What does Alice like?"
 **User message**: "Alex got promoted!"
 
 **Actions**:
-1. `entity_resolve("Alex", entity_type="person", context_hints={"topic": "promotion"})` → two candidates, gap <30 points → MEDIUM confidence
+1. `memory_entity_resolve("Alex", entity_type="person", context_hints={"topic": "promotion"})` → two candidates, gap <30 points → MEDIUM confidence
 2. Do NOT store facts yet.
 3. `notify(channel="telegram", message="Did you mean Alex Chen or Alex Rivera?", intent="reply", request_context=...)`
 4. Wait for user clarification before proceeding.
@@ -265,8 +265,8 @@ User: "What does Alice like?"
 **User message**: "I met someone new today — Marcus Webb, he's a product designer at Figma"
 
 **Actions**:
-1. `entity_resolve("Marcus Webb", entity_type="person")` → zero candidates
-2. Enough info (full name) → `entity_create(canonical_name="Marcus Webb", entity_type="person", aliases=["Marcus"])` → `entity_id="<uuid-marcus>"`
+1. `memory_entity_resolve("Marcus Webb", entity_type="person")` → zero candidates
+2. Enough info (full name) → `memory_entity_create(canonical_name="Marcus Webb", entity_type="person", aliases=["Marcus"])` → `entity_id="<uuid-marcus>"`
 3. `contact_create(first_name="Marcus", last_name="Webb", job_title="Product Designer", company="Figma")` → store returned `entity_id` on contact
 4. `memory_store_fact(subject="Marcus Webb", predicate="workplace", content="Product designer at Figma", entity_id="<uuid-marcus>", permanence="stable", importance=6.0, tags=["work"])`
 5. `notify(channel="telegram", message="Added Marcus Webb to your contacts — product designer at Figma.", intent="reply", request_context=...)`
@@ -275,7 +275,7 @@ User: "What does Alice like?"
 
 - **Always respond** when `request_context` is present — silence feels like failure
 - **Be concise** — users are on mobile devices
-- **Resolve before storing** — always call entity_resolve before memory_store_fact; never store facts with only a raw subject string
+- **Resolve before storing** — always call memory_entity_resolve before memory_store_fact; never store facts with only a raw subject string
 - **Extract liberally** — capture facts even if tangential to the main request
 - **Use tags** — they enable rich cross-cutting queries later
 - **Permanence matters** — stable facts (workplace, location) need different TTL than volatile facts (mood, temporary interests)

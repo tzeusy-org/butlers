@@ -375,7 +375,7 @@ class MemoryModule(Module):
         # --- Entity tools ---
 
         @mcp.tool()
-        async def entity_create(
+        async def memory_entity_create(
             canonical_name: Annotated[str, Field(description="The canonical name of the entity.")],
             entity_type: Annotated[
                 Literal["person", "organization", "place", "other"],
@@ -391,7 +391,7 @@ class MemoryModule(Module):
                 Field(description="Optional JSONB metadata dict."),
             ] = None,
         ) -> dict[str, Any]:
-            """Create a new named entity.
+            """Create a new named entity in the memory entity graph.
 
             Inserts a new entity record. Fails if (tenant_id, canonical_name, entity_type)
             already exists.
@@ -409,11 +409,11 @@ class MemoryModule(Module):
             )
 
         @mcp.tool()
-        async def entity_get(
+        async def memory_entity_get(
             entity_id: Annotated[str, Field(description="UUID string of the entity.")],
             tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
         ) -> dict[str, Any] | None:
-            """Retrieve a named entity by ID.
+            """Retrieve a named entity from the memory entity graph by ID.
 
             Returns the full entity record including aliases and metadata,
             or None if the entity does not exist within the given tenant.
@@ -425,7 +425,7 @@ class MemoryModule(Module):
             )
 
         @mcp.tool()
-        async def entity_update(
+        async def memory_entity_update(
             entity_id: Annotated[str, Field(description="UUID string of the entity to update.")],
             tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
             canonical_name: Annotated[
@@ -443,7 +443,7 @@ class MemoryModule(Module):
                 Field(description="Metadata keys to merge into existing metadata. Optional."),
             ] = None,
         ) -> dict[str, Any] | None:
-            """Update a named entity.
+            """Update a named entity in the memory entity graph.
 
             - canonical_name: replaces current value when provided.
             - aliases: replace-all semantics — pass the full desired list.
@@ -507,14 +507,14 @@ class MemoryModule(Module):
             )
 
         @mcp.tool()
-        async def entity_resolve(
+        async def memory_entity_resolve(
             name: str,
             tenant_id: str = "default",
             entity_type: str | None = None,
             context_hints: dict[str, Any] | None = None,
             enable_fuzzy: bool = False,
         ) -> list[dict[str, Any]]:
-            """Resolve an ambiguous name string to ranked entity candidates.
+            """Resolve an ambiguous name string to ranked memory entity candidates.
 
             Returns a list of candidate entities ordered by composite score
             (name-match quality + graph neighborhood similarity). Returns an
@@ -533,7 +533,7 @@ class MemoryModule(Module):
             )
 
         @mcp.tool()
-        async def entity_merge(
+        async def memory_entity_merge(
             source_entity_id: Annotated[
                 str,
                 Field(description="UUID string of the entity to be merged (will be tombstoned)."),
@@ -543,7 +543,7 @@ class MemoryModule(Module):
             ],
             tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
         ) -> dict[str, Any] | None:
-            """Merge source entity into target entity.
+            """Merge source entity into target entity in the memory entity graph.
 
             All facts referencing the source entity are re-pointed to the target.
             Uniqueness conflicts are resolved via supersession (higher-confidence fact wins).

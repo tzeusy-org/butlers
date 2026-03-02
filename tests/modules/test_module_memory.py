@@ -104,11 +104,11 @@ EXPECTED_TOOL_NAMES = {
     "memory_context",
     "memory_run_consolidation",
     "memory_run_episode_cleanup",
-    "entity_create",
-    "entity_get",
-    "entity_update",
-    "entity_resolve",
-    "entity_merge",
+    "memory_entity_create",
+    "memory_entity_get",
+    "memory_entity_update",
+    "memory_entity_resolve",
+    "memory_entity_merge",
 }
 
 

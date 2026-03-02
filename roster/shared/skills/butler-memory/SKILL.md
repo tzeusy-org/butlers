@@ -14,9 +14,9 @@ Extract facts from conversational messages and store them using the butler's dom
 
 Before calling `memory_store_fact` for any person mention:
 
-1. Call `entity_resolve(name, entity_type="person", context_hints={...})` to get ranked candidates.
+1. Call `memory_entity_resolve(name, entity_type="person", context_hints={...})` to get ranked candidates.
 2. Apply the disambiguation policy:
-   - **Zero candidates:** Call `entity_create` to register the new person, then use the returned `entity_id`.
+   - **Zero candidates:** Call `memory_entity_create` to register the new person, then use the returned `entity_id`.
    - **Single candidate or top score leads by ≥30 points:** Use the top `entity_id`. If inferred, confirm to the user transparently.
    - **Multiple candidates, gap <30 points:** Ask the user for clarification before storing any facts.
 3. Pass the resolved `entity_id` to `memory_store_fact`.
@@ -48,7 +48,7 @@ Capture facts proactively from conversational messages, even if tangential to th
 
 ```python
 # Step 1: resolve the person mention
-candidates = entity_resolve(
+candidates = memory_entity_resolve(
     name="Sarah",
     entity_type="person",
     context_hints={"topic": "shellfish, allergy", "domain_scores": {"<uuid-sarah>": 50}}
