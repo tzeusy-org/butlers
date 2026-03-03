@@ -55,7 +55,21 @@ For each event returned, extract:
 
 Sort the events by start time (ascending) to build a chronological timeline.
 
-### Step 4: Compose the Summary
+### Step 4: Check User Preferences (Optional)
+
+Optionally call `memory_recall` to retrieve any stored user preferences that may enhance
+the briefing — for example, preferred prep lead times, known commute durations, or
+recurring preparation notes for specific event types:
+
+```python
+preferences = memory_recall(topic="user preferences")
+```
+
+Use any returned preferences to personalize step 5 (e.g., adjust prep note recommendations
+based on known habits). If `memory_recall` returns nothing or is unavailable, proceed
+without preferences — the briefing remains complete without them.
+
+### Step 5: Compose the Summary
 
 Build a structured Telegram message using the following template:
 
@@ -88,7 +102,7 @@ Heads-up:
 - Keep the heads-up section concise — maximum 3–4 bullets
 - Mobile-friendly: keep the total message under ~400 words
 
-### Step 5: Handle the Empty-Calendar Case
+### Step 6: Handle the Empty-Calendar Case
 
 If `calendar_list_events` returns zero events for tomorrow:
 
@@ -100,7 +114,7 @@ Tomorrow: [Weekday], [Date in SGT]
 No events scheduled — clear day ahead.
 ```
 
-### Step 6: Send via notify()
+### Step 7: Send via notify()
 
 Send the composed message using `intent="send"` (outbound, not a reply):
 
@@ -120,6 +134,7 @@ Do not wait for a user reply. This is a proactive outbound notification.
 - Tomorrow's date determined in SGT (UTC+8)
 - `calendar_list_events` called with correct SGT start/end bounds
 - All events extracted with title, time, duration, location, description
+- `memory_recall(topic="user preferences")` attempted; result used if available
 - Summary composed with chronological timeline, prep notes, free blocks, and heads-up
 - `notify(channel="telegram", intent="send", ...)` called once
 - Session exits after delivery
