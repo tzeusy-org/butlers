@@ -12,6 +12,7 @@ existing state store (KV JSONB) for restart durability — no migrations.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -21,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from butlers.core.metrics import get_meter
 from butlers.modules.base import Module
 from butlers.modules.metrics.prometheus import async_query, async_query_range
-from butlers.modules.metrics.storage import load_all_definitions
+from butlers.modules.metrics.storage import count_definitions, load_all_definitions, save_definition
 
 if TYPE_CHECKING:
     import asyncpg
@@ -75,6 +76,8 @@ class MetricsModule(Module):
         self._pool: asyncpg.Pool | None = None
         # Maps bare name → (full_otel_name, OTELInstrument)
         self._instrument_cache: dict[str, tuple[str, Any]] = {}
+        # Maps bare name → definition dict (name, type, help, labels, registered_at)
+        self._definition_cache: dict[str, dict[str, Any]] = {}
 
     @property
     def name(self) -> str:
@@ -159,6 +162,222 @@ class MetricsModule(Module):
                 return []
             return await load_all_definitions(module._db)
 
+        # Ensure pool and butler_name are populated (on_startup runs first, but
+        # register_tools may be called in contexts where on_startup did not run,
+        # e.g. tests — fall back gracefully).
+        if self._pool is None:
+            self._pool = getattr(db, "pool", None)
+        if self._butler_name is None:
+            schema: str | None = getattr(db, "schema", None)
+            if schema:
+                self._butler_name = schema.replace("-", "_")
+
+        module = self  # capture for closures
+
+        @mcp.tool()
+        async def metrics_define(
+            name: str,
+            metric_type: str,
+            help: str,
+            labels: list[str] | None = None,
+        ) -> dict[str, Any]:
+            """Define a new named metric (counter, gauge, or histogram) for this butler.
+
+            Creates the metric instrument in the OTEL pipeline and persists the
+            definition to the butler's state store so it survives daemon restarts.
+            Re-defining an existing metric (idempotent) returns the cached entry
+            without touching the state store.
+
+            **Cardinality advisory**: avoid using high-cardinality values as label
+            keys — do NOT use user IDs, UUIDs, request IDs, or other unbounded
+            identifiers as label names.  High-cardinality labels create a unique
+            time-series per distinct combination, which will exhaust Prometheus
+            storage and degrade query performance.  Good label names are low-
+            cardinality enum-like values (e.g. ``status``, ``method``, ``env``).
+
+            Parameters
+            ----------
+            name:
+                Bare metric name, e.g. ``api_calls``.  Must match
+                ``^[a-z][a-z0-9_]*$`` (lowercase, starts with a letter).
+            metric_type:
+                One of ``"counter"``, ``"gauge"``, or ``"histogram"``.
+            help:
+                Human-readable description of what the metric measures.
+            labels:
+                Optional list of label key names (low-cardinality only — see
+                cardinality advisory above).  Defaults to an empty list.
+
+            Returns
+            -------
+            dict
+                ``{"ok": true, "name": ..., "type": ..., "full_name": ...,
+                  "registered_at": ..., "cached": <bool>}`` on success, or
+                ``{"error": "..."}`` on validation or cap failure.
+            """
+            # Validate name format.
+            if not module._validate_name(name):
+                return {
+                    "error": (
+                        f"Invalid metric name {name!r}: must match ^[a-z][a-z0-9_]*$ "
+                        "(lowercase, start with a letter, letters/digits/underscores only)"
+                    )
+                }
+
+            # Validate metric type.
+            if metric_type not in _VALID_TYPES:
+                return {
+                    "error": (
+                        f"Invalid metric_type {metric_type!r}; "
+                        f"must be one of {sorted(_VALID_TYPES)}"
+                    )
+                }
+
+            # Idempotency: return cached entry if already defined.
+            if name in module._instrument_cache:
+                full_name, _ = module._instrument_cache[name]
+                return {
+                    "ok": True,
+                    "name": name,
+                    "type": metric_type,
+                    "full_name": full_name,
+                    "cached": True,
+                }
+
+            # Check the 1,000-metric cap.
+            if module._pool is None:
+                return {"error": "MetricsModule pool is not available; cannot persist definition"}
+            current_count = await count_definitions(module._pool)
+            if current_count >= _MAX_METRICS:
+                return {
+                    "error": (
+                        f"Metric cap reached: this butler already has {current_count} "
+                        f"defined metrics (limit {_MAX_METRICS}).  Remove unused metrics "
+                        "before adding new ones."
+                    )
+                }
+
+            # Build the fully-qualified OTEL name.
+            if module._butler_name:
+                full_name = module._full_name(module._butler_name, name)
+            else:
+                full_name = name
+
+            # Create the OTEL instrument.
+            instrument = module._build_instrument(full_name, metric_type, help)
+
+            # Persist to state store.
+            now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+            defn: dict[str, Any] = {
+                "name": name,
+                "type": metric_type,
+                "help": help,
+                "labels": labels or [],
+                "registered_at": now_iso,
+            }
+            await save_definition(module._pool, name, defn)
+
+            # Update the in-process caches.
+            module._instrument_cache[name] = (full_name, instrument)
+            module._definition_cache[name] = defn
+
+            return {
+                "ok": True,
+                "name": name,
+                "type": metric_type,
+                "full_name": full_name,
+                "registered_at": now_iso,
+                "cached": False,
+            }
+
+        @mcp.tool()
+        async def metrics_emit(
+            name: str,
+            value: float,
+            labels: dict[str, str] | None = None,
+        ) -> dict[str, Any]:
+            """Emit a single observation to a previously defined metric.
+
+            Looks up the metric by *name* in the in-process instrument cache and
+            records the observation via the OTEL SDK.  The metric must have been
+            registered with ``metrics_define`` first.
+
+            Parameters
+            ----------
+            name:
+                Bare metric name previously registered with ``metrics_define``.
+            value:
+                Numeric observation.  Must be >= 0 for counters and histograms;
+                any float is accepted for gauges (UpDownCounter).
+            labels:
+                Dict mapping label key names to string values.  Must contain
+                exactly the keys declared in the metric's ``labels`` list — no
+                extra keys, no missing keys.  Omit or pass ``null``/``{}``
+                when the metric was defined with an empty labels list.
+
+            Returns
+            -------
+            dict
+                ``{"ok": true}`` on success, or ``{"error": "..."}`` on
+                validation failure.
+            """
+            # Look up instrument in cache.
+            if name not in module._instrument_cache:
+                return {"error": (f"Unknown metric {name!r}: define it first with metrics_define")}
+
+            full_name, instrument = module._instrument_cache[name]
+
+            # Look up the stored definition for type and label validation.
+            # Guard against inconsistent cache state (instrument exists but definition missing).
+            defn = module._definition_cache.get(name)
+            if not defn:
+                logger.error(
+                    "MetricsModule: inconsistent cache state for metric %r: "
+                    "instrument exists but definition is missing",
+                    name,
+                )
+                return {"error": f"Internal error: inconsistent cache state for metric {name!r}"}
+            metric_type: str = defn["type"]
+            declared_labels: list[str] = defn.get("labels") or []
+
+            # Validate value constraints.
+            if metric_type in ("counter", "histogram") and value < 0:
+                return {
+                    "error": (
+                        f"Value {value!r} is invalid for {metric_type} metric {name!r}: "
+                        "must be >= 0"
+                    )
+                }
+
+            # Validate labels against the declared label set.
+            provided_labels: dict[str, str] = labels or {}
+            declared_set = set(declared_labels)
+            provided_set = set(provided_labels.keys())
+
+            if provided_set != declared_set:
+                missing = declared_set - provided_set
+                extra = provided_set - declared_set
+                parts: list[str] = []
+                if missing:
+                    parts.append(f"missing keys: {sorted(missing)}")
+                if extra:
+                    parts.append(f"extra keys: {sorted(extra)}")
+                return {
+                    "error": (
+                        f"Label mismatch for metric {name!r}: {'; '.join(parts)}. "
+                        f"Expected exactly: {sorted(declared_set)}"
+                    )
+                }
+
+            # Emit the observation.
+            attributes = provided_labels if provided_labels else None
+            if metric_type == "histogram":
+                instrument.record(value, attributes=attributes)
+            else:
+                instrument.add(value, attributes=attributes)
+
+            return {"ok": True}
+
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Store config, derive butler name, and restore instrument cache.
 
@@ -195,6 +414,7 @@ class MetricsModule(Module):
         self._butler_name = None
         self._pool = None
         self._instrument_cache.clear()
+        self._definition_cache.clear()
         logger.debug("MetricsModule: shutdown complete")
 
     # ------------------------------------------------------------------
@@ -319,6 +539,7 @@ class MetricsModule(Module):
             try:
                 instrument = self._build_instrument(full_name, metric_type, help_text)
                 self._instrument_cache[name] = (full_name, instrument)
+                self._definition_cache[name] = defn
             except Exception:
                 logger.exception(
                     "MetricsModule: failed to build instrument for name=%r during restore", name
