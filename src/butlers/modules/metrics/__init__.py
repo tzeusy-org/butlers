@@ -13,13 +13,29 @@ existing state store (KV JSONB) for restart durability — no migrations.
 from __future__ import annotations
 
 import logging
-from typing import Any
+import re
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from butlers.core.metrics import get_meter
 from butlers.modules.base import Module
+from butlers.modules.metrics.storage import load_all_definitions
+
+if TYPE_CHECKING:
+    import asyncpg
 
 logger = logging.getLogger(__name__)
+
+# Regex for valid bare metric names: lowercase, starts with a letter,
+# may contain digits and underscores.
+_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+# Valid metric type strings accepted by _build_instrument.
+_VALID_TYPES = frozenset({"counter", "gauge", "histogram"})
+
+# Hard cap on defined metrics per butler.
+_MAX_METRICS = 1000
 
 
 class MetricsModuleConfig(BaseModel):
@@ -43,11 +59,21 @@ class MetricsModule(Module):
     are rebuilt from the state store during ``on_startup``.
 
     Hard cap: 1,000 defined metrics per butler.
+
+    Instrument cache
+    ----------------
+    ``_instrument_cache`` maps bare metric names to ``(full_name, instrument)``
+    tuples, where *full_name* is the OTEL instrument name (e.g.
+    ``butler_finance_api_calls``) and *instrument* is the live OTEL object.
     """
 
     def __init__(self) -> None:
         self._config: MetricsModuleConfig | None = None
         self._db: Any = None
+        self._butler_name: str | None = None
+        self._pool: asyncpg.Pool | None = None
+        # Maps bare name → (full_otel_name, OTELInstrument)
+        self._instrument_cache: dict[str, tuple[str, Any]] = {}
 
     @property
     def name(self) -> str:
@@ -68,29 +94,178 @@ class MetricsModule(Module):
         """Register metrics MCP tools on the butler's FastMCP server.
 
         Tool registration is a no-op on this stub; concrete tool wiring is
-        implemented in a follow-on task (butlers-lxiq.2 onwards).
+        implemented in a follow-on task (butlers-lxiq.3 onwards).
         """
         self._config = self._coerce_config(config)
         self._db = db
 
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
-        """Store config and DB reference.
+        """Store config, derive butler name, and restore instrument cache.
 
-        Instrument cache population from the persisted state store is
-        implemented in a follow-on task (butlers-lxiq.3).
+        Derives ``_butler_name`` from ``db.schema`` (hyphens → underscores),
+        stores the asyncpg pool, then loads all persisted metric definitions
+        from the state store and rebuilds the in-process OTEL instrument cache.
         """
         self._config = self._coerce_config(config)
         self._db = db
-        logger.debug("MetricsModule: startup complete (no instruments to restore yet)")
+
+        # Derive butler name from the DB schema (e.g. "my-butler" → "my_butler").
+        schema: str | None = getattr(db, "schema", None)
+        if schema:
+            self._butler_name = schema.replace("-", "_")
+        else:
+            self._butler_name = None
+
+        # Store pool for state-store access.
+        self._pool = getattr(db, "pool", None)
+
+        # Rebuild instrument cache from persisted definitions.
+        await self._restore_instrument_cache()
+
+        logger.debug(
+            "MetricsModule: startup complete, butler=%s, instruments_restored=%d",
+            self._butler_name,
+            len(self._instrument_cache),
+        )
 
     async def on_shutdown(self) -> None:
-        """Release state references."""
+        """Release state references and clear instrument cache."""
         self._config = None
         self._db = None
+        self._butler_name = None
+        self._pool = None
+        self._instrument_cache.clear()
         logger.debug("MetricsModule: shutdown complete")
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Internal helpers — naming
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _full_name(butler_schema: str, metric_name: str) -> str:
+        """Build the fully-qualified OTEL instrument name.
+
+        Parameters
+        ----------
+        butler_schema:
+            The butler's DB schema name (hyphens are replaced with underscores).
+        metric_name:
+            Bare metric name (must pass ``_validate_name``).
+
+        Returns
+        -------
+        str
+            e.g. ``butler_finance_api_calls`` for schema ``finance`` and
+            name ``api_calls``.
+        """
+        safe_schema = butler_schema.replace("-", "_")
+        return f"butler_{safe_schema}_{metric_name}"
+
+    @staticmethod
+    def _validate_name(name: str) -> bool:
+        """Return True iff *name* is a valid bare metric name.
+
+        Valid names match ``^[a-z][a-z0-9_]*$``:
+        - Must start with a lowercase letter.
+        - May contain lowercase letters, digits, and underscores.
+        - No uppercase letters, leading digits, spaces, or hyphens.
+        """
+        return bool(_NAME_RE.match(name))
+
+    # ------------------------------------------------------------------
+    # Internal helpers — OTEL instrument construction
+    # ------------------------------------------------------------------
+
+    def _build_instrument(
+        self,
+        full_name: str,
+        metric_type: str,
+        help_text: str,
+    ) -> Any:
+        """Create and return an OTEL instrument for the given parameters.
+
+        Parameters
+        ----------
+        full_name:
+            Fully-qualified OTEL instrument name (e.g. ``butler_finance_api_calls``).
+        metric_type:
+            One of ``"counter"``, ``"gauge"``, or ``"histogram"``.
+        help_text:
+            Human-readable description for the instrument.
+
+        Returns
+        -------
+        OTELInstrument
+            A live ``Counter``, ``UpDownCounter``, or ``Histogram`` from the
+            global MeterProvider.
+
+        Raises
+        ------
+        ValueError
+            If *metric_type* is not one of the supported types.
+        """
+        meter = get_meter()
+        if metric_type == "counter":
+            return meter.create_counter(name=full_name, description=help_text)
+        if metric_type == "gauge":
+            return meter.create_up_down_counter(name=full_name, description=help_text)
+        if metric_type == "histogram":
+            return meter.create_histogram(name=full_name, description=help_text)
+        raise ValueError(
+            f"Unsupported metric_type {metric_type!r}; expected one of {sorted(_VALID_TYPES)}"
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers — cache population
+    # ------------------------------------------------------------------
+
+    async def _restore_instrument_cache(self) -> None:
+        """Load all persisted definitions and build OTEL instruments.
+
+        Safe to call with an empty state store — returns immediately with
+        an empty cache.  Also safe to call when ``_pool`` is None (e.g. during
+        tests that do not wire up a real DB pool) — skips restoration.
+        """
+        if self._pool is None:
+            logger.debug("MetricsModule: no pool available, skipping instrument cache restoration")
+            return
+
+        definitions = await load_all_definitions(self._pool)
+
+        for defn in definitions:
+            name: str | None = defn.get("name")
+            metric_type: str | None = defn.get("type")
+            help_text: str = defn.get("help", "")
+
+            if not isinstance(name, str) or not self._validate_name(name):
+                logger.warning(
+                    "MetricsModule: skipping invalid definition name=%r during restore", name
+                )
+                continue
+
+            if metric_type not in _VALID_TYPES:
+                logger.warning(
+                    "MetricsModule: skipping unknown metric type=%r for name=%r during restore",
+                    metric_type,
+                    name,
+                )
+                continue
+
+            if self._butler_name:
+                full_name = self._full_name(self._butler_name, name)
+            else:
+                full_name = name
+
+            try:
+                instrument = self._build_instrument(full_name, metric_type, help_text)
+                self._instrument_cache[name] = (full_name, instrument)
+            except Exception:
+                logger.exception(
+                    "MetricsModule: failed to build instrument for name=%r during restore", name
+                )
+
+    # ------------------------------------------------------------------
+    # Internal helpers — config coercion
     # ------------------------------------------------------------------
 
     @staticmethod
