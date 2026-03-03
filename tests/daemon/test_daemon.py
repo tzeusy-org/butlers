@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 import time
 from pathlib import Path
 from typing import Any
@@ -865,7 +866,7 @@ class TestMCPServerStartup:
             }
 
             # Verify the socket was configured with SO_REUSEADDR and passed to serve().
-            mock_sock.setsockopt.assert_called_once()
+            mock_sock.setsockopt.assert_called_once_with(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             mock_sock.bind.assert_called_once_with(("0.0.0.0", 9100))
             mock_sock.listen.assert_called_once()
             mock_uvicorn_server.serve.assert_called_once_with(sockets=[mock_sock])
