@@ -328,8 +328,16 @@ class MetricsModule(Module):
             full_name, instrument = module._instrument_cache[name]
 
             # Look up the stored definition for type and label validation.
-            defn = module._definition_cache.get(name, {})
-            metric_type: str = defn.get("type", "unknown")
+            # Guard against inconsistent cache state (instrument exists but definition missing).
+            defn = module._definition_cache.get(name)
+            if not defn:
+                logger.error(
+                    "MetricsModule: inconsistent cache state for metric %r: "
+                    "instrument exists but definition is missing",
+                    name,
+                )
+                return {"error": f"Internal error: inconsistent cache state for metric {name!r}"}
+            metric_type: str = defn["type"]
             declared_labels: list[str] = defn.get("labels") or []
 
             # Validate value constraints.
