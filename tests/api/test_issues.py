@@ -20,7 +20,7 @@ from butlers.api.deps import (
     get_mcp_manager,
 )
 from butlers.api.models import Issue
-from butlers.api.routers.issues import _check_butler_reachability, _get_db_manager_optional
+from butlers.api.routers.issues import _check_butler_reachability, _get_db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -53,7 +53,7 @@ def _override_deps(app, mgr, configs, db=None):
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
     app.dependency_overrides[get_butler_configs] = lambda: configs
     if db is not None:
-        app.dependency_overrides[_get_db_manager_optional] = lambda: db
+        app.dependency_overrides[_get_db_manager] = lambda: db
 
 
 # ---------------------------------------------------------------------------
