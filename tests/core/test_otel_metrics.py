@@ -169,6 +169,22 @@ class TestButlerMetrics:
     def _metrics_map(self) -> dict[str, Any]:
         return _collect_metrics(self._reader)
 
+    # --- ensure_registered ---
+
+    def test_ensure_registered_creates_zero_series(self) -> None:
+        m = ButlerMetrics("idle-butler")
+        m.ensure_registered()
+
+        data = self._metrics_map()
+        assert "butlers.spawner.active_sessions" in data
+        dp = data["butlers.spawner.active_sessions"][0]
+        assert dp.value == 0
+        assert dp.attributes == {"butler": "idle-butler"}
+
+        assert "butlers.spawner.queued_triggers" in data
+        dp2 = data["butlers.spawner.queued_triggers"][0]
+        assert dp2.value == 0
+
     # --- spawner metrics ---
 
     def test_spawner_active_sessions_inc_dec(self) -> None:

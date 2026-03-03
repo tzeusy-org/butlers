@@ -117,9 +117,9 @@
       {
         "current": { "selected": true, "text": "All", "value": "$__all" },
         "datasource": { "type": "prometheus", "uid": "${datasource}" },
-        "definition": "label_values(butlers_buffer_process_latency_ms_milliseconds_count{job=\"butlers\"}, butler)",
+        "definition": "label_values(butlers_spawner_active_sessions{job=\"butlers\"}, butler)",
         "hide": 0, "includeAll": true, "label": "Butler", "multi": true, "name": "butler",
-        "options": [], "query": { "query": "label_values(butlers_buffer_process_latency_ms_milliseconds_count{job=\"butlers\"}, butler)", "refId": "StandardVariableQuery" },
+        "options": [], "query": { "query": "label_values(butlers_spawner_active_sessions{job=\"butlers\"}, butler)", "refId": "StandardVariableQuery" },
         "refresh": 2, "sort": 1, "type": "query"
       }
     ]

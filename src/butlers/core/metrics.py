@@ -501,6 +501,16 @@ class ButlerMetrics:
             self.__switchboard_ingest_result = _switchboard_ingest_result()
         return self.__switchboard_ingest_result
 
+    def ensure_registered(self) -> None:
+        """Emit zero-value adds on key gauges so the butler appears in Prometheus.
+
+        OTel UpDownCounters only create a time series after the first `add()`.
+        Call this at daemon startup so that idle butlers are discoverable by
+        Grafana variable queries like ``label_values(..., butler)``.
+        """
+        self._spawner_active.add(0, self._attrs)
+        self._spawner_queued.add(0, self._attrs)
+
     # -- spawner recording helpers ------------------------------------------
 
     def spawner_active_sessions_inc(self) -> None:

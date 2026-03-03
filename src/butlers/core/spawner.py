@@ -485,6 +485,7 @@ class Spawner:
         self._in_flight_event = asyncio.Event()
         self._in_flight_event.set()  # Initially no in-flight sessions
         self._metrics = ButlerMetrics(butler_name=config.name)
+        self._metrics.ensure_registered()
 
         if runtime is not None:
             self._runtime = runtime

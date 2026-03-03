@@ -167,7 +167,7 @@ Use `schemaVersion: 39`. Required structure:
 {
   "name": "butler", "type": "query", "multi": true, "includeAll": true, "label": "Butler",
   "datasource": { "type": "prometheus", "uid": "${datasource}" },
-  "query": { "query": "label_values(butlers_buffer_process_latency_ms_milliseconds_count{job=\"butlers\"}, butler)" }
+  "query": { "query": "label_values(butlers_spawner_active_sessions{job=\"butlers\"}, butler)" }
 }
 ```
 
