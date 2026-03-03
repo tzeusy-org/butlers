@@ -63,6 +63,10 @@ Route to education when the message involves:
 - **Curriculum or syllabus requests**: "create a curriculum for", "learning path for", "study plan for", "help me plan to learn"
 - **Active learning phrases**: "I'm trying to learn", "I want to get better at", "I need to understand [topic]", "walk me through [topic]"
 
+- **Short factual/conceptual questions** on any technical, scientific, historical, or academic topic: "What is X?", "How does Y work?", "Why does Z happen?", "What's the difference between A and B?" — route to education when X/Y/Z/A/B is not health, finance, travel, or relationship territory
+- **Quiz-session continuity**: When conversation context suggests an active quiz or lesson (prior turn included a quiz question, technical explanation, or "quick check" prompt), treat the follow-up as belonging to education regardless of phrasing
+- **Curiosity responses**: Single-word or one-line answers to a technical quiz question, immediately followed by a new conceptual question (e.g., answering "the node's routing/CNI" then asking "What is CNI?"), are part of the same learning session — route to education
+
 **Disambiguation rules for education routing:**
 
 - "review my calendar" — NOT education — route to general or health/finance depending on context
@@ -71,6 +75,7 @@ Route to education when the message involves:
 - "learn about" with a health topic (e.g., "learn about my medications") — health unless explicit tutoring intent is present
 - "quiz me" — education, regardless of topic domain
 - Finance, health, or travel questions that are informational requests (not tracking/logging) with explicit "teach me" framing — education
+- "What is X?" where X is a technical/conceptual topic (e.g., networking, software, science, math, history) — education, not general
 
 ### Relationship Classification
 
@@ -116,7 +121,8 @@ Route to general when:
 - **Finance vs travel**: Finance should not capture travel itineraries unless the primary intent is billing/refund/payment resolution
 - **Travel vs general**: Travel wins tie-breaks when explicit booking, itinerary, or flight semantics are present
 - **Travel vs finance**: Travel should not capture financial transactions for travel services — those go to finance unless the primary intent is itinerary/booking, not expense tracking
-- **Education vs general**: Education wins tie-breaks when explicit learning, teaching, or quizzing intent is present ("teach me", "quiz me", "what do I know about")
+- **Education vs general**: Education wins tie-breaks when explicit learning, teaching, or quizzing intent is present ("teach me", "quiz me", "what do I know about"). Education also wins for any short factual/conceptual question ("What is X?", "How does Y work?") about a technical, scientific, historical, or academic topic that does not belong to a specialist domain (health/finance/travel/relationship). General is the catch-all for tasks, reminders, and queries that are clearly non-educational.
+- **Education vs general (conversation continuity)**: When the prior message was a quiz question, technical explanation, or active lesson, treat the follow-up as education even if it lacks explicit learning framing.
 - **Education vs health**: Education should NOT capture health questions that are factual lookups without tutoring intent (e.g., "what does metformin do?" — health, not education; "teach me about diabetes" — education)
 - **Education vs calendar**: "review" without educational context (e.g., "review my calendar") MUST NOT route to education
 - **Ambiguous commerce/relationship**: Defer to Switchboard confidence policy and fallback routing contract
@@ -159,6 +165,8 @@ Route to general when:
 | Teaching request | "teach me" + topic | HIGH | education |
 | Quiz request | "quiz me" + topic | HIGH | education |
 | Knowledge self-check | "what do I know about" + topic | HIGH | education |
+| Factual technical question | "What is X?" / "How does Y work?" — technical/academic topic | HIGH | education |
+| Quiz follow-up question | bare question immediately after answering a quiz | HIGH | education |
 | Medication question (factual) | drug name, no tutoring intent | HIGH | health |
 | Calendar review | "review my schedule" | HIGH | general |
 | Person's birthday | name + date | HIGH | relationship |
@@ -322,7 +330,33 @@ Each sub-prompt must be independently understandable. Include:
 
 ---
 
-### Example 13: Calendar-review (does NOT route to education)
+### Example 13: Quiz follow-up question (routes to education, not general)
+
+**Context (prior turn):** Education butler asked a quiz question about Kubernetes networking: "Quick check: after DNAT picks a backend pod, what decides whether the packet stays on the same node vs goes to another node — kube-proxy, or the node's routing/CNI?"
+
+**Input:** "the node's routing/CNI.\n\nWhat is CNI?"
+
+**Reasoning:** The user answered the quiz ("the node's routing/CNI") and immediately followed up with a conceptual question. Even though "What is CNI?" has no explicit learning framing, it is (a) a technical/conceptual question and (b) a direct continuation of an active learning session. Education wins decisively.
+
+**Action:** Call `route_to_butler(butler="education", prompt="The user answered 'the node's routing/CNI' to the Kubernetes networking quiz and is now asking: What is CNI? Please explain CNI in the context of the Kubernetes networking lesson.")`
+
+**Response:** "Routed to education butler — follow-up conceptual question during an active networking lesson."
+
+---
+
+### Example 14: Bare factual technical question (routes to education, not general)
+
+**Input:** "What is a CNI plugin?"
+
+**Reasoning:** No health, finance, travel, or relationship signals. "What is X?" about a technical concept → education.
+
+**Action:** Call `route_to_butler(butler="education", prompt="The user is asking: What is a CNI plugin? Please explain the concept and check if they have any related mind maps to connect this to.")`
+
+**Response:** "Routed technical knowledge question to education butler."
+
+---
+
+### Example 16: Calendar-review (does NOT route to education)
 
 **Input:** "Review my schedule for tomorrow"
 
