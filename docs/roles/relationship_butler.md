@@ -207,7 +207,7 @@ Each contact record holds an `entity_id` FK pointing to the memory module's enti
 - **On contact merge:** The butler calls `entity_merge` on the memory side as well, so facts from both source entities consolidate under the surviving contact's entity.
 - **Nullable:** `entity_id` is nullable to support legacy contacts created before the entity registry existed. The Contact Health Audit (§8.5) should flag contacts without linked entities for backfill.
 
-All memory facts extracted about a contact MUST be stored with the contact's `entity_id`, not a raw name string. This ensures that facts about "Chloe", "Chloe Wong", and "Chlo" all resolve to the same identity and are retrievable together.
+All memory facts extracted about a contact MUST be stored with the contact's `entity_id`, not a raw name string. This ensures that facts about "Tze", "TzeHow Lee", and "Tze How" all resolve to the same identity and are retrievable together.
 
 ### 6.4 Data Integrity Rules
 - All entity mutations auto-populate the `activity_feed` table.

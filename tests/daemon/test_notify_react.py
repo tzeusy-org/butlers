@@ -74,10 +74,6 @@ def _patch_infra() -> dict[str, Any]:
             new_callable=AsyncMock,
             return_value={},
         ),
-        "validate_core_credentials": patch(
-            "butlers.daemon.validate_core_credentials_async",
-            new_callable=AsyncMock,
-        ),
         "init_telemetry": patch("butlers.daemon.init_telemetry"),
         "configure_logging": patch("butlers.core.logging.configure_logging"),
         "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
@@ -125,7 +121,6 @@ class TestNotifyReactIntent:
             patches["run_migrations"],
             patches["validate_credentials"],
             patches["validate_module_credentials"],
-            patches["validate_core_credentials"],
             patches["init_telemetry"],
             patches["configure_logging"],
             patches["sync_schedules"],

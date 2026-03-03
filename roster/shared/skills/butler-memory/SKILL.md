@@ -8,7 +8,7 @@ version: 2.0.0
 
 Extract facts from conversational messages and store them using the butler's domain tools and memory tools.
 
-**Critical: Resolve before storing.** Every fact about a person MUST be anchored to a resolved entity via `entity_id`. Never store facts using only a raw `subject` string. This ensures facts about "Chloe", "Chloe Wong", and "Chlo" all resolve to the same identity and are retrievable together.
+**Critical: Resolve before storing.** Every fact about a person MUST be anchored to a resolved entity via `entity_id`. Never store facts using only a raw `subject` string. This ensures that facts about "Tze", "TzeHow Lee", and "Tze How" all resolve to the same identity and are retrievable together.
 
 ### Entity Resolution Before Fact Storage
 

@@ -118,10 +118,6 @@ def _patch_infra():
             new_callable=AsyncMock,
             return_value={},
         ),
-        "validate_core_credentials": patch(
-            "butlers.daemon.validate_core_credentials_async",
-            new_callable=AsyncMock,
-        ),
         "sync_schedules": patch("butlers.daemon.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.daemon.FastMCP"),
         "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
@@ -164,7 +160,6 @@ async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
         patches["run_migrations"],
         patches["validate_credentials"],
         patches["validate_module_credentials"],
-        patches["validate_core_credentials"],
         patch("butlers.daemon.init_telemetry", return_value=trace.get_tracer("butlers")),
         patches["sync_schedules"],
         patch("butlers.daemon.FastMCP", return_value=mock_mcp),

@@ -10,7 +10,6 @@ The ButlerDaemon manages the lifecycle of a butler:
 7. Run core Alembic migrations
 8. Run module Alembic migrations
 8b. Create CredentialStore; validate module credentials via DB-first resolution (non-fatal)
-8c. Validate core credentials (ANTHROPIC_API_KEY) via DB-first resolution (fatal)
 9. Module on_startup (topological order)
 10. Create Spawner with runtime adapter (verify binary on PATH)
 10b. Wire message classification pipeline (switchboard only)
@@ -111,7 +110,6 @@ from butlers.credential_store import (
 )
 from butlers.credentials import (
     detect_secrets,
-    validate_core_credentials_async,
     validate_credentials,
     validate_module_credentials_async,
 )
@@ -1162,8 +1160,8 @@ class ButlerDaemon:
         self._module_configs = self._validate_module_configs()
 
         # 5. Validate butler.env credentials (env-only fast-fail for non-secret config).
-        # Core secrets (ANTHROPIC_API_KEY) and module credentials are validated later
-        # (steps 8b/8c) after the DB pool is available, so DB-stored secrets are visible.
+        # Module credentials are validated later (step 8b) after the DB pool is
+        # available, so DB-stored secrets are visible.
         module_creds = self._collect_module_credentials()
         validate_credentials(
             self.config.env_required,
@@ -1234,10 +1232,6 @@ class ButlerDaemon:
             )
             logger.warning("Module '%s' disabled: %s", root_mod, error_msg)
         self._cascade_module_failures()
-
-        # 8c. Validate core credentials via DB-first resolution (runtime-aware).
-        # Only credentials required by the configured runtime are checked.
-        await validate_core_credentials_async(credential_store, self.config.runtime.type)
 
         # Filter module_creds to exclude failed modules for spawner.
         active_module_creds = {

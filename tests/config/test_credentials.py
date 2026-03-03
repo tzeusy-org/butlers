@@ -9,7 +9,6 @@ import pytest
 
 from butlers.credentials import (
     CredentialError,
-    validate_core_credentials_async,
     validate_credentials,
     validate_module_credentials_async,
 )
@@ -47,43 +46,6 @@ def test_all_present(monkeypatch: pytest.MonkeyPatch):
         env_optional=[],
         module_credentials={"email": ["EMAIL_PASS"]},
     )
-
-
-# ---------------------------------------------------------------------------
-# Missing core credential
-# ---------------------------------------------------------------------------
-
-
-async def test_missing_anthropic_key():
-    """Missing ANTHROPIC_API_KEY raises CredentialError for claude-code runtime."""
-    store = _make_credential_store_simple({})  # nothing in DB or env
-
-    with pytest.raises(CredentialError, match="ANTHROPIC_API_KEY"):
-        await validate_core_credentials_async(store, "claude-code")  # type: ignore[arg-type]
-
-
-async def test_anthropic_key_in_db_passes():
-    """ANTHROPIC_API_KEY stored in DB passes core credential validation."""
-    store = _make_credential_store_simple({"ANTHROPIC_API_KEY": "sk-db-key"})
-
-    # Should not raise
-    await validate_core_credentials_async(store, "claude-code")  # type: ignore[arg-type]
-
-
-async def test_codex_runtime_skips_anthropic_key():
-    """Codex runtime does not require ANTHROPIC_API_KEY."""
-    store = _make_credential_store_simple({})  # nothing in DB or env
-
-    # Should not raise — codex has no core credential requirements
-    await validate_core_credentials_async(store, "codex")  # type: ignore[arg-type]
-
-
-async def test_gemini_runtime_requires_google_key():
-    """Gemini runtime requires GOOGLE_API_KEY."""
-    store = _make_credential_store_simple({})
-
-    with pytest.raises(CredentialError, match="GOOGLE_API_KEY"):
-        await validate_core_credentials_async(store, "gemini")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

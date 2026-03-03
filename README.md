@@ -214,11 +214,81 @@ Module ABC
 └── on_shutdown()     → cleanup (reverse topological order)
 ```
 
+## Prerequisites
+
+Before running `./scripts/dev.sh` or `butlers up`, make sure the following are installed and configured.
+
+### System Dependencies
+
+| Dependency | Version | Purpose |
+| ---------- | ------- | ------- |
+| **Python** | 3.12+ | Runtime |
+| **uv** | latest | Python package manager (replaces pip) |
+| **Node.js** | 22+ | Frontend dev server (Vite) |
+| **npm** | (bundled with Node) | Frontend dependency management |
+| **Docker** + **Docker Compose** | latest | PostgreSQL and optional production containers |
+| **tmux** | any | `dev.sh` runs all services in tmux panes |
+| **psql** | any | OAuth gate polls the DB at startup (part of `postgresql-client`) |
+| **Tailscale** | latest | HTTPS for Google OAuth callbacks (skippable with `--skip-tailscale-check`) |
+
+### LLM Runtime CLIs
+
+Butlers spawn ephemeral LLM CLI instances to reason and act. Each butler declares a runtime in its `butler.toml` (`[butler.runtime].type`). You need to install **and authenticate** the CLI for whichever runtimes your butlers use.
+
+| Runtime type | CLI binary | Install | Authenticate |
+| ------------ | ---------- | ------- | ------------ |
+| `claude-code` (default) | `claude` | `npm install -g @anthropic-ai/claude-code` | `claude` (interactive login), or set `ANTHROPIC_API_KEY` |
+| `codex` | `codex` | `npm install -g @openai/codex` | `codex` (interactive login), or set `OPENAI_API_KEY` |
+| `gemini` | `gemini` | `npm install -g @anthropic-ai/gemini-cli` | Set `GOOGLE_API_KEY` |
+
+The daemon verifies the configured binary is on `PATH` at startup and will fail fast if it's missing or unauthenticated.
+
+Most butlers default to `claude-code`. If you only plan to use the default runtime, you only need `claude` installed and authenticated.
+
+### API Keys and Credentials
+
+```bash
+# Required — at least one, matching your configured runtime(s)
+export ANTHROPIC_API_KEY="sk-ant-..."   # For claude-code runtime
+export OPENAI_API_KEY="sk-..."          # For codex runtime
+# GOOGLE_API_KEY is needed for the gemini runtime
+
+# Optional — Google OAuth (Calendar, Contacts, Gmail modules)
+# Can also be bootstrapped via the dashboard UI after first start
+export GOOGLE_OAUTH_CLIENT_ID="..."
+export GOOGLE_OAUTH_CLIENT_SECRET="..."
+```
+
+Module-specific credentials (Telegram tokens, email passwords, etc.) are managed through the dashboard secrets page after first boot — see the Environment Variables section below for details.
+
+### Secrets Directory (dev.sh)
+
+`dev.sh` sources environment files from `/secrets/.dev.env` and per-connector files under `secrets/connectors/`. Create these before first run:
+
+```
+/secrets/.dev.env                       # Global dev secrets (API keys, DB passwords)
+secrets/connectors/telegram_bot         # BUTLER_TELEGRAM_TOKEN, etc.
+secrets/connectors/telegram_user_client # Telegram user-client credentials
+secrets/connectors/gmail                # Gmail connector credentials
+```
+
+If you don't use certain connectors, the corresponding files can be empty or absent — those panes will just fail to start.
+
 ## Getting Started
 
 ### Development
 
-Start infrastructure in Docker, run butlers locally:
+Start the full dev environment (PostgreSQL, all butlers, connectors, dashboard) in tmux:
+
+```bash
+# Install Python dependencies
+uv sync --dev
+
+# Start everything via tmux
+./scripts/dev.sh
+```
+
+Or start services manually:
 
 ```bash
 # Install dependencies
