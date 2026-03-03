@@ -2929,7 +2929,12 @@
       "versionNonce": 160004,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step1_badge_txt", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step1_badge_txt",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false
     },
@@ -2985,7 +2990,12 @@
       "versionNonce": 160008,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step2_badge_txt", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step2_badge_txt",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false
     },
@@ -3041,7 +3051,12 @@
       "versionNonce": 160012,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step3_badge_txt", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step3_badge_txt",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false
     },
@@ -3097,7 +3112,12 @@
       "versionNonce": 160016,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step4_badge_txt", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step4_badge_txt",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false
     },
@@ -3153,7 +3173,12 @@
       "versionNonce": 160020,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step5_badge_txt", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step5_badge_txt",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false
     },
@@ -3209,7 +3234,12 @@
       "versionNonce": 160028,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step6_badge_txt", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step6_badge_txt",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false
     },
@@ -3265,7 +3295,12 @@
       "versionNonce": 160032,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step7_badge_txt", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step7_badge_txt",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false
     },
@@ -3321,10 +3356,17 @@
       "versionNonce": 170004,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "sched_summary_txt", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "sched_summary_txt",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -3333,8 +3375,8 @@
       "y": 638,
       "width": 430,
       "height": 48,
-      "text": "All 3 scheduled tasks:\nweekly-health-summary  0 9 * * 0 (Sun 09:00)\nmemory-consolidation  0 */6 * * *  |  memory-episode-cleanup  0 4 * * *",
-      "originalText": "All 3 scheduled tasks:\nweekly-health-summary  0 9 * * 0 (Sun 09:00)\nmemory-consolidation  0 */6 * * *  |  memory-episode-cleanup  0 4 * * *",
+      "text": "All 3 scheduled tasks:\n- weekly-health-summary: 0 9 * * 0 (Sun 09:00)\n- memory-consolidation: 0 */6 * * *\n- memory-episode-cleanup: 0 4 * * *",
+      "originalText": "All 3 scheduled tasks:\n- weekly-health-summary: 0 9 * * 0 (Sun 09:00)\n- memory-consolidation: 0 */6 * * *\n- memory-episode-cleanup: 0 4 * * *",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "left",
