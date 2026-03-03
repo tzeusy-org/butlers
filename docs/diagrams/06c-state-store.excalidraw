@@ -10,8 +10,8 @@
       "y": 30,
       "width": 600,
       "height": 40,
-      "text": "State Store — PostgreSQL JSONB Key-Value Engine",
-      "originalText": "State Store — PostgreSQL JSONB Key-Value Engine",
+      "text": "State Store \u2014 PostgreSQL JSONB Key-Value Engine",
+      "originalText": "State Store \u2014 PostgreSQL JSONB Key-Value Engine",
       "fontSize": 28,
       "fontFamily": 3,
       "textAlign": "left",
@@ -42,8 +42,8 @@
       "y": 74,
       "width": 700,
       "height": 24,
-      "text": "Per-butler schema isolation · Async CRUD · CAS for optimistic concurrency · Versioned rows",
-      "originalText": "Per-butler schema isolation · Async CRUD · CAS for optimistic concurrency · Versioned rows",
+      "text": "Per-butler schema isolation \u00b7 Async CRUD \u00b7 CAS for optimistic concurrency \u00b7 Versioned rows",
+      "originalText": "Per-butler schema isolation \u00b7 Async CRUD \u00b7 CAS for optimistic concurrency \u00b7 Versioned rows",
       "fontSize": 15,
       "fontFamily": 3,
       "textAlign": "left",
@@ -90,9 +90,17 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [1460, 0]]
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1460,
+          0
+        ]
+      ]
     },
-
     {
       "type": "text",
       "id": "schema_section_label",
@@ -145,10 +153,17 @@
       "versionNonce": 100010,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "table_header_text", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "table_header_text",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -205,7 +220,9 @@
       "boundElements": [],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -214,8 +231,8 @@
       "y": 204,
       "width": 310,
       "height": 178,
-      "text": "key         TEXT        PRIMARY KEY\nvalue       JSONB       NOT NULL\nversion     INTEGER     NOT NULL\ncreated_at  TIMESTAMPTZ NOT NULL\nupdated_at  TIMESTAMPTZ NOT NULL",
-      "originalText": "key         TEXT        PRIMARY KEY\nvalue       JSONB       NOT NULL\nversion     INTEGER     NOT NULL\ncreated_at  TIMESTAMPTZ NOT NULL\nupdated_at  TIMESTAMPTZ NOT NULL",
+      "text": "key         TEXT        PRIMARY KEY\nvalue       JSONB       NOT NULL\nversion     INTEGER     NOT NULL DEFAULT 1\nupdated_at  TIMESTAMPTZ NOT NULL",
+      "originalText": "key         TEXT        PRIMARY KEY\nvalue       JSONB       NOT NULL\nversion     INTEGER     NOT NULL DEFAULT 1\nupdated_at  TIMESTAMPTZ NOT NULL",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "left",
@@ -246,8 +263,8 @@
       "y": 400,
       "width": 340,
       "height": 40,
-      "text": "version starts at 1, increments on every write\ncreated_at set at INSERT only",
-      "originalText": "version starts at 1, increments on every write\ncreated_at set at INSERT only",
+      "text": "version starts at 1, increments on every write",
+      "originalText": "version starts at 1, increments on every write",
       "fontSize": 12,
       "fontFamily": 3,
       "textAlign": "left",
@@ -271,7 +288,6 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "text",
       "id": "crud_section_label",
@@ -304,7 +320,6 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "ellipse",
       "id": "pool_start",
@@ -326,11 +341,26 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "pool_start_text", "type": "text"},
-        {"id": "arrow_pool_to_get", "type": "arrow"},
-        {"id": "arrow_pool_to_set", "type": "arrow"},
-        {"id": "arrow_pool_to_delete", "type": "arrow"},
-        {"id": "arrow_pool_to_list", "type": "arrow"}
+        {
+          "id": "pool_start_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_pool_to_get",
+          "type": "arrow"
+        },
+        {
+          "id": "arrow_pool_to_set",
+          "type": "arrow"
+        },
+        {
+          "id": "arrow_pool_to_delete",
+          "type": "arrow"
+        },
+        {
+          "id": "arrow_pool_to_list",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false
@@ -367,7 +397,6 @@
       "containerId": "pool_start",
       "lineHeight": 1.25
     },
-
     {
       "type": "rectangle",
       "id": "op_get",
@@ -389,12 +418,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "op_get_text", "type": "text"},
-        {"id": "arrow_pool_to_get", "type": "arrow"}
+        {
+          "id": "op_get_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_pool_to_get",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -403,8 +440,8 @@
       "y": 156,
       "width": 294,
       "height": 74,
-      "text": "state_get(pool, key)\nSELECT value FROM state\nWHERE key = $1\n→ returns Any | None",
-      "originalText": "state_get(pool, key)\nSELECT value FROM state\nWHERE key = $1\n→ returns Any | None",
+      "text": "state_get(pool, key)\nSELECT value FROM state\nWHERE key = $1\n\u2192 returns Any | None",
+      "originalText": "state_get(pool, key)\nSELECT value FROM state\nWHERE key = $1\n\u2192 returns Any | None",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "left",
@@ -428,7 +465,6 @@
       "containerId": "op_get",
       "lineHeight": 1.5
     },
-
     {
       "type": "rectangle",
       "id": "op_set",
@@ -450,12 +486,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "op_set_text", "type": "text"},
-        {"id": "arrow_pool_to_set", "type": "arrow"}
+        {
+          "id": "op_set_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_pool_to_set",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -464,8 +508,8 @@
       "y": 266,
       "width": 294,
       "height": 84,
-      "text": "state_set(pool, key, value)\nINSERT ... ON CONFLICT (key)\nDO UPDATE SET version = version + 1\n→ returns new version: int",
-      "originalText": "state_set(pool, key, value)\nINSERT ... ON CONFLICT (key)\nDO UPDATE SET version = version + 1\n→ returns new version: int",
+      "text": "state_set(pool, key, value)\nINSERT ... ON CONFLICT (key)\nDO UPDATE SET version = version + 1\n\u2192 returns new version: int",
+      "originalText": "state_set(pool, key, value)\nINSERT ... ON CONFLICT (key)\nDO UPDATE SET version = version + 1\n\u2192 returns new version: int",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "left",
@@ -489,7 +533,6 @@
       "containerId": "op_set",
       "lineHeight": 1.5
     },
-
     {
       "type": "rectangle",
       "id": "op_delete",
@@ -511,12 +554,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "op_delete_text", "type": "text"},
-        {"id": "arrow_pool_to_delete", "type": "arrow"}
+        {
+          "id": "op_delete_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_pool_to_delete",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -525,8 +576,8 @@
       "y": 386,
       "width": 294,
       "height": 54,
-      "text": "state_delete(pool, key)\nDELETE FROM state WHERE key = $1\n→ no-op if key absent",
-      "originalText": "state_delete(pool, key)\nDELETE FROM state WHERE key = $1\n→ no-op if key absent",
+      "text": "state_delete(pool, key)\nDELETE FROM state WHERE key = $1\n\u2192 no-op if key absent",
+      "originalText": "state_delete(pool, key)\nDELETE FROM state WHERE key = $1\n\u2192 no-op if key absent",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "left",
@@ -550,7 +601,6 @@
       "containerId": "op_delete",
       "lineHeight": 1.5
     },
-
     {
       "type": "rectangle",
       "id": "op_list",
@@ -572,12 +622,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "op_list_text", "type": "text"},
-        {"id": "arrow_pool_to_list", "type": "arrow"}
+        {
+          "id": "op_list_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_pool_to_list",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -586,8 +644,8 @@
       "y": 476,
       "width": 294,
       "height": 84,
-      "text": "state_list(pool, prefix, keys_only)\nSELECT key, value FROM state\n  WHERE key LIKE $1 ORDER BY key\n→ list[str] or list[dict]",
-      "originalText": "state_list(pool, prefix, keys_only)\nSELECT key, value FROM state\n  WHERE key LIKE $1 ORDER BY key\n→ list[str] or list[dict]",
+      "text": "state_list(pool, prefix, keys_only)\nSELECT key, value FROM state\n  WHERE key LIKE $1 ORDER BY key\n\u2192 list[str] or list[dict]",
+      "originalText": "state_list(pool, prefix, keys_only)\nSELECT key, value FROM state\n  WHERE key LIKE $1 ORDER BY key\n\u2192 list[str] or list[dict]",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "left",
@@ -611,7 +669,6 @@
       "containerId": "op_list",
       "lineHeight": 1.5
     },
-
     {
       "type": "arrow",
       "id": "arrow_pool_to_get",
@@ -635,9 +692,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [78, 8]],
-      "startBinding": {"elementId": "pool_start", "focus": -0.5, "gap": 2},
-      "endBinding": {"elementId": "op_get", "focus": -0.5, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          78,
+          8
+        ]
+      ],
+      "startBinding": {
+        "elementId": "pool_start",
+        "focus": -0.5,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "op_get",
+        "focus": -0.5,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -664,9 +738,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [78, 130]],
-      "startBinding": {"elementId": "pool_start", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "op_set", "focus": -0.5, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          78,
+          130
+        ]
+      ],
+      "startBinding": {
+        "elementId": "pool_start",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "op_set",
+        "focus": -0.5,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -693,9 +784,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [83, 228]],
-      "startBinding": {"elementId": "pool_start", "focus": 0.4, "gap": 2},
-      "endBinding": {"elementId": "op_delete", "focus": -0.5, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          83,
+          228
+        ]
+      ],
+      "startBinding": {
+        "elementId": "pool_start",
+        "focus": 0.4,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "op_delete",
+        "focus": -0.5,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -722,13 +830,29 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [86, 333]],
-      "startBinding": {"elementId": "pool_start", "focus": 0.8, "gap": 2},
-      "endBinding": {"elementId": "op_list", "focus": -0.5, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          86,
+          333
+        ]
+      ],
+      "startBinding": {
+        "elementId": "pool_start",
+        "focus": 0.8,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "op_list",
+        "focus": -0.5,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "text",
       "id": "cas_section_label",
@@ -736,8 +860,8 @@
       "y": 120,
       "width": 420,
       "height": 22,
-      "text": "CAS — COMPARE-AND-SET (OPTIMISTIC CONCURRENCY)",
-      "originalText": "CAS — COMPARE-AND-SET (OPTIMISTIC CONCURRENCY)",
+      "text": "CAS \u2014 COMPARE-AND-SET (OPTIMISTIC CONCURRENCY)",
+      "originalText": "CAS \u2014 COMPARE-AND-SET (OPTIMISTIC CONCURRENCY)",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "left",
@@ -761,7 +885,6 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "ellipse",
       "id": "cas_start",
@@ -783,8 +906,14 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "cas_start_text", "type": "text"},
-        {"id": "arrow_cas1", "type": "arrow"}
+        {
+          "id": "cas_start_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_cas1",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false
@@ -821,7 +950,6 @@
       "containerId": "cas_start",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arrow_cas1",
@@ -845,13 +973,29 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [0, 44]],
-      "startBinding": {"elementId": "cas_start", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "cas_call", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          44
+        ]
+      ],
+      "startBinding": {
+        "elementId": "cas_start",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "cas_call",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "cas_call",
@@ -873,13 +1017,24 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "cas_call_text", "type": "text"},
-        {"id": "arrow_cas1", "type": "arrow"},
-        {"id": "arrow_cas2", "type": "arrow"}
+        {
+          "id": "cas_call_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_cas1",
+          "type": "arrow"
+        },
+        {
+          "id": "arrow_cas2",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -913,7 +1068,6 @@
       "containerId": "cas_call",
       "lineHeight": 1.5
     },
-
     {
       "type": "arrow",
       "id": "arrow_cas2",
@@ -937,13 +1091,29 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [0, 38]],
-      "startBinding": {"elementId": "cas_call", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "cas_decision", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          38
+        ]
+      ],
+      "startBinding": {
+        "elementId": "cas_call",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "cas_decision",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "diamond",
       "id": "cas_decision",
@@ -965,10 +1135,22 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "cas_decision_text", "type": "text"},
-        {"id": "arrow_cas2", "type": "arrow"},
-        {"id": "arrow_cas_yes", "type": "arrow"},
-        {"id": "arrow_cas_no", "type": "arrow"}
+        {
+          "id": "cas_decision_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_cas2",
+          "type": "arrow"
+        },
+        {
+          "id": "arrow_cas_yes",
+          "type": "arrow"
+        },
+        {
+          "id": "arrow_cas_no",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false
@@ -1005,7 +1187,6 @@
       "containerId": "cas_decision",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arrow_cas_yes",
@@ -1029,9 +1210,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [0, 44]],
-      "startBinding": {"elementId": "cas_decision", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "cas_success", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          44
+        ]
+      ],
+      "startBinding": {
+        "elementId": "cas_decision",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "cas_success",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -1067,7 +1265,6 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arrow_cas_no",
@@ -1091,9 +1288,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [90, 0]],
-      "startBinding": {"elementId": "cas_decision", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "cas_conflict", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          90,
+          0
+        ]
+      ],
+      "startBinding": {
+        "elementId": "cas_decision",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "cas_conflict",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -1129,7 +1343,6 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "ellipse",
       "id": "cas_success",
@@ -1151,8 +1364,14 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "cas_success_text", "type": "text"},
-        {"id": "arrow_cas_yes", "type": "arrow"}
+        {
+          "id": "cas_success_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_cas_yes",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false
@@ -1189,7 +1408,6 @@
       "containerId": "cas_success",
       "lineHeight": 1.25
     },
-
     {
       "type": "rectangle",
       "id": "cas_conflict",
@@ -1211,12 +1429,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "cas_conflict_text", "type": "text"},
-        {"id": "arrow_cas_no", "type": "arrow"}
+        {
+          "id": "cas_conflict_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_cas_no",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -1250,7 +1476,6 @@
       "containerId": "cas_conflict",
       "lineHeight": 1.5
     },
-
     {
       "type": "text",
       "id": "version_section_label",
@@ -1283,7 +1508,6 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "line",
       "id": "version_timeline",
@@ -1307,9 +1531,17 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [360, 0]]
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          360,
+          0
+        ]
+      ]
     },
-
     {
       "type": "ellipse",
       "id": "v1_dot",
@@ -1366,7 +1598,6 @@
       "containerId": null,
       "lineHeight": 1.4
     },
-
     {
       "type": "ellipse",
       "id": "v2_dot",
@@ -1423,7 +1654,6 @@
       "containerId": null,
       "lineHeight": 1.4
     },
-
     {
       "type": "ellipse",
       "id": "v3_dot",
@@ -1480,7 +1710,6 @@
       "containerId": null,
       "lineHeight": 1.4
     },
-
     {
       "type": "text",
       "id": "version_key_label",
@@ -1513,7 +1742,6 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "text",
       "id": "concurrent_section_label",
@@ -1521,8 +1749,8 @@
       "y": 620,
       "width": 460,
       "height": 22,
-      "text": "CONCURRENT WRITER CONFLICT — CAS SCENARIO",
-      "originalText": "CONCURRENT WRITER CONFLICT — CAS SCENARIO",
+      "text": "CONCURRENT WRITER CONFLICT \u2014 CAS SCENARIO",
+      "originalText": "CONCURRENT WRITER CONFLICT \u2014 CAS SCENARIO",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "left",
@@ -1546,7 +1774,6 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "line",
       "id": "concurrent_divider",
@@ -1570,9 +1797,17 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [1460, 0]]
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1460,
+          0
+        ]
+      ]
     },
-
     {
       "type": "rectangle",
       "id": "shared_state_box",
@@ -1594,13 +1829,24 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "shared_state_text", "type": "text"},
-        {"id": "arrow_w1_read", "type": "arrow"},
-        {"id": "arrow_w2_read", "type": "arrow"}
+        {
+          "id": "shared_state_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_w1_read",
+          "type": "arrow"
+        },
+        {
+          "id": "arrow_w2_read",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -1641,8 +1887,8 @@
       "y": 712,
       "width": 200,
       "height": 20,
-      "text": "PostgreSQL — both readers see v5",
-      "originalText": "PostgreSQL — both readers see v5",
+      "text": "PostgreSQL \u2014 both readers see v5",
+      "originalText": "PostgreSQL \u2014 both readers see v5",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "center",
@@ -1666,7 +1912,6 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "ellipse",
       "id": "writer1_box",
@@ -1688,9 +1933,18 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "writer1_text", "type": "text"},
-        {"id": "arrow_w1_read", "type": "arrow"},
-        {"id": "arrow_w1_cas", "type": "arrow"}
+        {
+          "id": "writer1_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_w1_read",
+          "type": "arrow"
+        },
+        {
+          "id": "arrow_w1_cas",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false
@@ -1727,7 +1981,6 @@
       "containerId": "writer1_box",
       "lineHeight": 1.4
     },
-
     {
       "type": "ellipse",
       "id": "writer2_box",
@@ -1749,9 +2002,18 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "writer2_text", "type": "text"},
-        {"id": "arrow_w2_read", "type": "arrow"},
-        {"id": "arrow_w2_cas", "type": "arrow"}
+        {
+          "id": "writer2_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_w2_read",
+          "type": "arrow"
+        },
+        {
+          "id": "arrow_w2_cas",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false
@@ -1788,7 +2050,6 @@
       "containerId": "writer2_box",
       "lineHeight": 1.4
     },
-
     {
       "type": "arrow",
       "id": "arrow_w1_read",
@@ -1812,9 +2073,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [76, 0]],
-      "startBinding": {"elementId": "writer1_box", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "shared_state_box", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          76,
+          0
+        ]
+      ],
+      "startBinding": {
+        "elementId": "writer1_box",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "shared_state_box",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -1841,13 +2119,29 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [76, 0]],
-      "startBinding": {"elementId": "shared_state_box", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "writer2_box", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          76,
+          0
+        ]
+      ],
+      "startBinding": {
+        "elementId": "shared_state_box",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "writer2_box",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "w1_cas_box",
@@ -1869,12 +2163,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "w1_cas_text", "type": "text"},
-        {"id": "arrow_w1_cas", "type": "arrow"}
+        {
+          "id": "w1_cas_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_w1_cas",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -1883,8 +2185,8 @@
       "y": 758,
       "width": 204,
       "height": 44,
-      "text": "CAS(key, expected=5, value=11)\n→ version matches → SUCCESS\n→ returns version 6",
-      "originalText": "CAS(key, expected=5, value=11)\n→ version matches → SUCCESS\n→ returns version 6",
+      "text": "CAS(key, expected=5, value=11)\n\u2192 version matches \u2192 SUCCESS\n\u2192 returns version 6",
+      "originalText": "CAS(key, expected=5, value=11)\n\u2192 version matches \u2192 SUCCESS\n\u2192 returns version 6",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "left",
@@ -1908,7 +2210,6 @@
       "containerId": "w1_cas_box",
       "lineHeight": 1.4
     },
-
     {
       "type": "rectangle",
       "id": "w2_cas_box",
@@ -1930,12 +2231,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "w2_cas_text", "type": "text"},
-        {"id": "arrow_w2_cas", "type": "arrow"}
+        {
+          "id": "w2_cas_text",
+          "type": "text"
+        },
+        {
+          "id": "arrow_w2_cas",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -1944,8 +2253,8 @@
       "y": 758,
       "width": 204,
       "height": 44,
-      "text": "CAS(key, expected=5, value=12)\n→ version now 6 ≠ 5 → CONFLICT\n→ raises CASConflictError",
-      "originalText": "CAS(key, expected=5, value=12)\n→ version now 6 ≠ 5 → CONFLICT\n→ raises CASConflictError",
+      "text": "CAS(key, expected=5, value=12)\n\u2192 version now 6 \u2260 5 \u2192 CONFLICT\n\u2192 raises CASConflictError",
+      "originalText": "CAS(key, expected=5, value=12)\n\u2192 version now 6 \u2260 5 \u2192 CONFLICT\n\u2192 raises CASConflictError",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "left",
@@ -1969,7 +2278,6 @@
       "containerId": "w2_cas_box",
       "lineHeight": 1.4
     },
-
     {
       "type": "arrow",
       "id": "arrow_w1_cas",
@@ -1993,9 +2301,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [0, 38]],
-      "startBinding": {"elementId": "writer1_box", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "w1_cas_box", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          38
+        ]
+      ],
+      "startBinding": {
+        "elementId": "writer1_box",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "w1_cas_box",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -2022,13 +2347,29 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [0, 38]],
-      "startBinding": {"elementId": "writer2_box", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "w2_cas_box", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          38
+        ]
+      ],
+      "startBinding": {
+        "elementId": "writer2_box",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "w2_cas_box",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "text",
       "id": "w1_result",
@@ -2093,7 +2434,6 @@
       "containerId": null,
       "lineHeight": 1.4
     },
-
     {
       "type": "text",
       "id": "timing_note",
