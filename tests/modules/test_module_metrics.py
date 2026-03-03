@@ -494,10 +494,17 @@ class TestMetricsModuleOnStartupCache:
         assert "latency" in mod._instrument_cache
 
     async def test_on_startup_skips_invalid_name(self, monkeypatch):
-        """Definitions with invalid names are skipped (no exception raised)."""
+        """Definitions with invalid names are skipped (no exception raised).
+
+        Covers non-string, None, empty string, and invalid string names to
+        ensure _restore_instrument_cache never raises TypeError from re.match.
+        """
         definitions = [
-            {"name": "2bad_name", "type": "counter", "help": "Should be skipped"},
+            {"name": "2bad_name", "type": "counter", "help": "Invalid string name"},
             {"name": "good_name", "type": "counter", "help": "Should be kept"},
+            {"name": 123, "type": "counter", "help": "Non-string name"},
+            {"name": None, "type": "counter", "help": "None name"},
+            {"name": "", "type": "counter", "help": "Empty string name"},
         ]
         self._patch_module(monkeypatch, definitions)
 
@@ -505,8 +512,8 @@ class TestMetricsModuleOnStartupCache:
         fake_db = self._make_fake_db()
         await mod.on_startup(config=None, db=fake_db)
 
-        assert "2bad_name" not in mod._instrument_cache
         assert "good_name" in mod._instrument_cache
+        assert len(mod._instrument_cache) == 1
 
     async def test_on_startup_skips_unknown_metric_type(self, monkeypatch):
         """Definitions with unknown metric types are skipped gracefully."""

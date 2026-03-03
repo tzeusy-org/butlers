@@ -237,7 +237,7 @@ class MetricsModule(Module):
             metric_type: str | None = defn.get("type")
             help_text: str = defn.get("help", "")
 
-            if not name or not self._validate_name(name):
+            if not isinstance(name, str) or not self._validate_name(name):
                 logger.warning(
                     "MetricsModule: skipping invalid definition name=%r during restore", name
                 )
