@@ -1605,7 +1605,7 @@ class GmailConnectorRuntime:
 
         return list(message_ids)
 
-    # Exception types that indicate a transient Switchboard connectivity failure.
+    # Exception types that indicate a transient connectivity failure.
     # When these are raised during message delivery, the batch cursor must NOT be
     # advanced so the message will be retried on the next poll cycle.
     _TRANSIENT_DELIVERY_ERRORS: tuple[type[Exception], ...] = (
@@ -1618,8 +1618,8 @@ class GmailConnectorRuntime:
     async def _ingest_messages(self, message_ids: list[str]) -> None:
         """Fetch and ingest messages concurrently with bounded parallelism.
 
-        If any message delivery fails with a transient Switchboard connectivity
-        error (ConnectionError, httpx.ConnectError, etc.), that error is re-raised
+        If any message fails with a transient connectivity error
+        (ConnectionError, httpx.ConnectError, etc.), that error is re-raised
         after all tasks complete so the caller knows NOT to advance the batch
         cursor.  Per-message errors that are not transient (e.g. a malformed
         message) are logged and swallowed so they do not block other messages.
@@ -1646,9 +1646,9 @@ class GmailConnectorRuntime:
            - Tier 2 (metadata): submit slim envelope with ingestion_tier=metadata.
            - Tier 1 (full): submit full envelope.
 
-        Transient Switchboard connectivity errors (ConnectionError,
-        httpx.ConnectError, etc.) are re-raised so that _ingest_messages can
-        propagate them to the batch loop, preventing cursor advancement.
+        Transient connectivity errors (ConnectionError, httpx.ConnectError,
+        etc.) are re-raised so that _ingest_messages can propagate them to the
+        batch loop, preventing cursor advancement.
         Per-message non-transient errors are logged and swallowed.
         """
         async with self._semaphore:
@@ -1691,13 +1691,14 @@ class GmailConnectorRuntime:
                     policy_result.policy_tier,
                 )
 
-            except self._TRANSIENT_DELIVERY_ERRORS:
-                # Re-raise transient Switchboard connectivity errors so the
-                # batch loop can skip cursor advancement and retry.
+            except self._TRANSIENT_DELIVERY_ERRORS as exc:
+                # Re-raise transient connectivity errors so the batch loop
+                # can skip cursor advancement and retry.
                 logger.error(
-                    "Transient delivery failure for message %s — Switchboard unreachable; "
-                    "cursor will not advance",
+                    "Transient connectivity failure for message %s (%s); cursor will not advance",
                     message_id,
+                    type(exc).__name__,
+                    exc_info=True,
                 )
                 raise
             except Exception as exc:
