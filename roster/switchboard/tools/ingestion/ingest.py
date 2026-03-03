@@ -388,9 +388,7 @@ async def ingest_v1(
             dedupe_key,
             existing["request_id"],
         )
-        _ingest_metrics.record_ingest_result(
-            source=envelope.source.channel, outcome="success"
-        )
+        _ingest_metrics.record_ingest_result(source=envelope.source.channel, outcome="success")
         return IngestAcceptedResponse(
             request_id=existing["request_id"],
             status="accepted",
@@ -546,9 +544,7 @@ async def ingest_v1(
                         dedupe_key,
                         existing["request_id"],
                     )
-                    _ingest_metrics.record_ingest_result(
-                        source=source_channel, outcome="success"
-                    )
+                    _ingest_metrics.record_ingest_result(source=source_channel, outcome="success")
                     return IngestAcceptedResponse(
                         request_id=existing["request_id"],
                         status="accepted",

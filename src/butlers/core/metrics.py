@@ -595,9 +595,7 @@ class ButlerMetrics:
 
     # -- scheduler recording helpers ----------------------------------------
 
-    def record_task_dispatched(
-        self, *, butler: str, task_name: str, outcome: str
-    ) -> None:
+    def record_task_dispatched(self, *, butler: str, task_name: str, outcome: str) -> None:
         """Record one scheduled task dispatch (outcome: success|failure)."""
         self._scheduler_tasks.add(1, {"butler": butler, "task_name": task_name, "outcome": outcome})
 
