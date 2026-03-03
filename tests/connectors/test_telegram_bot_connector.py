@@ -897,6 +897,10 @@ async def test_polling_backoff_resets_after_success(
         patch.object(connector, "_start_health_server"),
         patch.object(connector, "_start_heartbeat"),
         patch.object(connector, "_load_checkpoint"),
+        patch(
+            "butlers.connectors.telegram_bot.wait_for_switchboard_ready",
+            new_callable=AsyncMock,
+        ),
     ):
         await connector.start_polling()
 
@@ -936,6 +940,10 @@ async def test_polling_backoff_increases_on_consecutive_failures(
         patch.object(connector, "_start_health_server"),
         patch.object(connector, "_start_heartbeat"),
         patch.object(connector, "_load_checkpoint"),
+        patch(
+            "butlers.connectors.telegram_bot.wait_for_switchboard_ready",
+            new_callable=AsyncMock,
+        ),
     ):
         await connector.start_polling()
 
@@ -981,6 +989,10 @@ async def test_polling_backoff_capped_at_60_seconds(
         patch.object(connector, "_start_health_server"),
         patch.object(connector, "_start_heartbeat"),
         patch.object(connector, "_load_checkpoint"),
+        patch(
+            "butlers.connectors.telegram_bot.wait_for_switchboard_ready",
+            new_callable=AsyncMock,
+        ),
     ):
         await connector.start_polling()
 
@@ -1032,6 +1044,10 @@ async def test_polling_backoff_resets_after_recovery(
         patch.object(connector, "_start_health_server"),
         patch.object(connector, "_start_heartbeat"),
         patch.object(connector, "_load_checkpoint"),
+        patch(
+            "butlers.connectors.telegram_bot.wait_for_switchboard_ready",
+            new_callable=AsyncMock,
+        ),
     ):
         await connector.start_polling()
 
@@ -1139,3 +1155,188 @@ def test_heartbeat_connector_type_is_not_provider(
 
     # Confirm they differ — this is the mismatch that was the bug
     assert connector._config.provider != connector._metrics._connector_type
+
+
+# -----------------------------------------------------------------------------
+# Switchboard readiness probe tests (butlers-p4qf)
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_polling_waits_for_switchboard_ready(
+    connector: TelegramBotConnector,
+    mock_config: TelegramBotConnectorConfig,
+) -> None:
+    """start_polling() calls wait_for_switchboard_ready before entering the loop.
+
+    This ensures messages are not polled from Telegram (and thus offsets
+    advanced) before the Switchboard is accepting connections.
+    """
+    mock_response = Mock()
+    mock_response.json.return_value = {"ok": True, "result": []}
+    mock_response.raise_for_status = Mock()
+
+    connector._running = True
+
+    async def stop_after_first_sleep(secs: float) -> None:
+        connector._running = False
+
+    probe_calls: list[str] = []
+
+    async def mock_probe(url: str, **kwargs: Any) -> None:
+        probe_calls.append(url)
+
+    with (
+        patch.object(connector._http_client, "get", return_value=mock_response),
+        patch("butlers.connectors.telegram_bot.asyncio.sleep", side_effect=stop_after_first_sleep),
+        patch.object(connector, "_start_health_server"),
+        patch.object(connector, "_start_heartbeat"),
+        patch.object(connector, "_load_checkpoint"),
+        patch(
+            "butlers.connectors.telegram_bot.wait_for_switchboard_ready",
+            side_effect=mock_probe,
+        ),
+    ):
+        await connector.start_polling()
+
+    # Probe must have been called exactly once with the configured SSE URL
+    assert probe_calls == [mock_config.switchboard_mcp_url]
+
+
+@pytest.mark.asyncio
+async def test_start_polling_continues_if_probe_times_out(
+    connector: TelegramBotConnector,
+    mock_config: TelegramBotConnectorConfig,
+) -> None:
+    """start_polling() logs a warning and continues if the readiness probe times out.
+
+    The connector must still start even when Switchboard takes unusually long
+    to become healthy (so the connector doesn't hang forever).
+    """
+    mock_response = Mock()
+    mock_response.json.return_value = {"ok": True, "result": []}
+    mock_response.raise_for_status = Mock()
+
+    connector._running = True
+
+    async def stop_after_first_sleep(secs: float) -> None:
+        connector._running = False
+
+    async def mock_probe_timeout(url: str, **kwargs: Any) -> None:
+        raise TimeoutError("probe timed out")
+
+    with (
+        patch.object(connector._http_client, "get", return_value=mock_response),
+        patch("butlers.connectors.telegram_bot.asyncio.sleep", side_effect=stop_after_first_sleep),
+        patch.object(connector, "_start_health_server"),
+        patch.object(connector, "_start_heartbeat"),
+        patch.object(connector, "_load_checkpoint"),
+        patch(
+            "butlers.connectors.telegram_bot.wait_for_switchboard_ready",
+            side_effect=mock_probe_timeout,
+        ),
+    ):
+        # Must not raise — timeout is treated as a warning, not a hard failure
+        await connector.start_polling()
+
+
+@pytest.mark.asyncio
+async def test_process_update_reraises_connection_error(
+    connector: TelegramBotConnector,
+    sample_telegram_update: dict[str, Any],
+) -> None:
+    """_process_update() re-raises ConnectionError so the outer loop can retry.
+
+    When the Switchboard is unavailable, ConnectionError must propagate up to
+    start_polling()'s except block so that the checkpoint is NOT saved past
+    the failed update batch.  Silently swallowing ConnectionError causes
+    permanent message loss because Telegram advances the offset regardless.
+    """
+    with patch.object(
+        connector._mcp_client,
+        "call_tool",
+        new_callable=AsyncMock,
+        side_effect=ConnectionError("Switchboard not reachable"),
+    ):
+        with pytest.raises(ConnectionError, match="Switchboard not reachable"):
+            await connector._process_update(sample_telegram_update)
+
+
+@pytest.mark.asyncio
+async def test_process_update_swallows_other_exceptions(
+    connector: TelegramBotConnector,
+    sample_telegram_update: dict[str, Any],
+) -> None:
+    """_process_update() swallows non-ConnectionError exceptions (malformed updates, etc.).
+
+    A single bad update must not block delivery of the rest of the batch.
+    Only transient infrastructure failures (ConnectionError) should abort the
+    whole batch.
+    """
+    with patch.object(
+        connector._mcp_client,
+        "call_tool",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("Application error from MCP tool"),
+    ):
+        # Must NOT raise — other errors are logged and swallowed
+        await connector._process_update(sample_telegram_update)
+
+
+@pytest.mark.asyncio
+async def test_connection_error_prevents_checkpoint_save(
+    connector: TelegramBotConnector,
+    mock_config: TelegramBotConnectorConfig,
+    sample_telegram_update: dict[str, Any],
+) -> None:
+    """When delivery raises ConnectionError, the batch checkpoint is NOT saved.
+
+    This is the key safety property: if Switchboard is unreachable during
+    polling, we must not advance our cursor past the failed updates.
+    """
+    # Arrange: give the connector a checkpoint position
+    connector._last_update_id = 12340
+
+    # simulate getUpdates returning a new update
+    updates_response = Mock()
+    updates_response.json.return_value = {
+        "ok": True,
+        "result": [sample_telegram_update],
+    }
+    updates_response.raise_for_status = Mock()
+
+    checkpoint_saves: list[int | None] = []
+
+    original_save = connector._save_checkpoint
+
+    def record_save() -> None:
+        checkpoint_saves.append(connector._last_update_id)
+        original_save()
+
+    async def stop_after_sleep(secs: float) -> None:
+        connector._running = False
+
+    with (
+        patch.object(connector._http_client, "get", return_value=updates_response),
+        patch.object(
+            connector._mcp_client,
+            "call_tool",
+            new_callable=AsyncMock,
+            side_effect=ConnectionError("Switchboard not reachable"),
+        ),
+        patch.object(connector, "_save_checkpoint", side_effect=record_save),
+        patch("butlers.connectors.telegram_bot.asyncio.sleep", side_effect=stop_after_sleep),
+        patch.object(connector, "_start_health_server"),
+        patch.object(connector, "_start_heartbeat"),
+        patch.object(connector, "_load_checkpoint"),
+        patch(
+            "butlers.connectors.telegram_bot.wait_for_switchboard_ready",
+            new_callable=AsyncMock,
+        ),
+    ):
+        await connector.start_polling()
+
+    # Checkpoint must NOT have been saved because delivery failed
+    assert checkpoint_saves == [], (
+        "Checkpoint was saved despite ConnectionError — messages would be permanently lost"
+    )

@@ -13,11 +13,119 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from typing import Any
+from urllib.parse import urlparse
 
+import httpx
 from fastmcp import Client as MCPClient
 
 logger = logging.getLogger(__name__)
+
+# Readiness probe defaults
+_PROBE_INITIAL_DELAY_S: float = 0.5
+_PROBE_MAX_DELAY_S: float = 30.0
+_PROBE_MAX_ATTEMPTS: int = 60  # up to ~5 min total with 30s cap
+_PROBE_HTTP_TIMEOUT_S: float = 5.0
+
+
+def _switchboard_health_url(sse_url: str) -> str:
+    """Derive the switchboard health endpoint URL from its SSE endpoint URL.
+
+    Example: ``http://localhost:40100/sse`` → ``http://localhost:40100/health``
+    """
+    parsed = urlparse(sse_url)
+    return f"{parsed.scheme}://{parsed.netloc}/health"
+
+
+async def wait_for_switchboard_ready(
+    sse_url: str,
+    *,
+    max_attempts: int = _PROBE_MAX_ATTEMPTS,
+    initial_delay_s: float = _PROBE_INITIAL_DELAY_S,
+    max_delay_s: float = _PROBE_MAX_DELAY_S,
+    http_timeout_s: float = _PROBE_HTTP_TIMEOUT_S,
+) -> None:
+    """Poll the Switchboard health endpoint until it responds 200 OK.
+
+    Connectors call this before entering their main poll/listen loop to avoid
+    delivering messages into a ``ConnectionError`` when the Switchboard butler
+    is still starting up.  Dropped messages are permanent for polling connectors
+    because the offset is advanced by the upstream source (Telegram, Gmail)
+    regardless of whether delivery to Switchboard succeeded.
+
+    Uses exponential backoff with ±10 % jitter, capped at ``max_delay_s``.
+
+    Parameters
+    ----------
+    sse_url:
+        The MCP SSE endpoint URL used by the connector (e.g.
+        ``http://localhost:40100/sse``).  The health URL is derived from it.
+    max_attempts:
+        Maximum number of probe attempts before giving up and raising
+        ``TimeoutError``.
+    initial_delay_s:
+        Sleep duration before the first retry.
+    max_delay_s:
+        Upper bound on the per-retry sleep duration.
+    http_timeout_s:
+        Per-request HTTP timeout for each probe call.
+
+    Raises
+    ------
+    TimeoutError
+        If the Switchboard does not become healthy within ``max_attempts``
+        attempts.
+    """
+    health_url = _switchboard_health_url(sse_url)
+    # Redact any embedded credentials from the URL before logging or raising.
+    _parsed_health = urlparse(health_url)
+    _host_part = (
+        f"{_parsed_health.hostname}:{_parsed_health.port}"
+        if _parsed_health.port is not None
+        else _parsed_health.hostname
+    )
+    _safe_url = f"{_parsed_health.scheme}://{_host_part}/health"
+    logger.info(
+        "Switchboard readiness probe: waiting for %s to become healthy",
+        _safe_url,
+    )
+
+    async with httpx.AsyncClient(timeout=http_timeout_s) as client:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = await client.get(health_url)
+                if resp.status_code == 200:
+                    logger.info(
+                        "Switchboard readiness probe: healthy after %d attempt(s)",
+                        attempt,
+                    )
+                    return
+                logger.debug(
+                    "Switchboard readiness probe: HTTP %d on attempt %d",
+                    resp.status_code,
+                    attempt,
+                )
+            except httpx.RequestError as exc:
+                logger.debug(
+                    "Switchboard readiness probe: attempt %d failed: %s",
+                    attempt,
+                    exc,
+                )
+
+            if attempt >= max_attempts:
+                break
+
+            # Exponential backoff with ±10 % jitter
+            base_delay = initial_delay_s * (2 ** (attempt - 1))
+            capped_delay = min(base_delay, max_delay_s)
+            jitter = capped_delay * 0.1 * (2 * random.random() - 1)
+            sleep_s = capped_delay + jitter
+            await asyncio.sleep(sleep_s)
+
+    raise TimeoutError(
+        f"Switchboard at {_safe_url} did not become healthy within {max_attempts} probe attempt(s)"
+    )
 
 
 class CachedMCPClient:
