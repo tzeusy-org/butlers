@@ -32,11 +32,13 @@ _STATUS_TIMEOUT_S = 5.0
 _ISSUE_TYPE_MAX_LEN = 80
 
 
-def _get_db_manager_optional() -> DatabaseManager | None:
-    """Return DatabaseManager when initialized; otherwise ``None``.
+def _get_db_manager() -> DatabaseManager | None:
+    """Stub dependency for DatabaseManager injection.
 
-    The issues endpoint should remain available even when DB pools are not yet
-    initialized (for example in unit tests or partial startup states).
+    Overridden by ``wire_db_dependencies()`` at app startup.  Returns ``None``
+    when the DatabaseManager has not been initialized (e.g. partial startup or
+    unit-test context without a live DB), allowing the issues endpoint to
+    remain available with reduced functionality.
     """
     try:
         return get_db_manager()
@@ -220,7 +222,7 @@ async def _check_butler_reachability(
 async def list_issues(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
-    db: DatabaseManager | None = Depends(_get_db_manager_optional),
+    db: DatabaseManager | None = Depends(_get_db_manager),
 ) -> ApiResponse[list[Issue]]:
     """Return grouped issues across butler infrastructure.
 
