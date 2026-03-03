@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -928,6 +929,7 @@ class ButlerDaemon:
         self._accepting_connections = False
         self._server: uvicorn.Server | None = None
         self._server_task: asyncio.Task | None = None
+        self._mcp_socket: socket.socket | None = None
         self._switchboard_heartbeat_task: asyncio.Task | None = None
         self._scheduler_loop_task: asyncio.Task | None = None
         self._liveness_reporter_task: asyncio.Task | None = None
@@ -1653,8 +1655,12 @@ class ButlerDaemon:
     async def _start_mcp_server(self) -> None:
         """Start the FastMCP SSE server as a background asyncio task.
 
-        Creates a uvicorn server bound to the configured port and launches it
-        in a background task so that ``start()`` returns immediately.
+        Pre-creates a TCP socket with SO_REUSEADDR set, then passes it to uvicorn
+        via the ``sockets`` parameter so that re-binding after a crash (e.g. sockets
+        stuck in TIME_WAIT) does not trigger uvicorn's sys.exit(1) shutdown path.
+
+        The socket is stored on ``self._mcp_socket`` and closed in shutdown after
+        the server task finishes.
         """
         app = self._build_mcp_http_app(self.mcp, butler_name=self.config.name)
         config = uvicorn.Config(
@@ -1664,8 +1670,17 @@ class ButlerDaemon:
             log_level="warning",
             timeout_graceful_shutdown=0,
         )
+        # Pre-create the socket with SO_REUSEADDR so that a previously bound socket
+        # in TIME_WAIT (e.g. after SIGKILL) does not block re-binding.  Raising the
+        # OSError here (before the asyncio task is running) gives callers a clear,
+        # catchable error instead of uvicorn's sys.exit(1).
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("0.0.0.0", self.config.port))
+        sock.listen(config.backlog)
+        self._mcp_socket = sock
         self._server = uvicorn.Server(config)
-        self._server_task = asyncio.create_task(self._server.serve())
+        self._server_task = asyncio.create_task(self._server.serve(sockets=[sock]))
 
     @staticmethod
     def _route_signature(route: Any) -> tuple[str, str | None, tuple[str, ...] | None]:
@@ -4608,6 +4623,12 @@ class ButlerDaemon:
                 logger.exception("Error while stopping MCP server")
             self._server_task = None
             self._server = None
+        if self._mcp_socket is not None:
+            try:
+                self._mcp_socket.close()
+            except Exception:
+                logger.exception("Error while closing MCP socket")
+            self._mcp_socket = None
 
         # 2. Stop durable buffer — drain remaining queue then cancel workers/scanner
         if self._buffer is not None:
