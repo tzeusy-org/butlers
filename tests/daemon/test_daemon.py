@@ -224,6 +224,12 @@ def _patch_infra():
     mock_adapter.binary_name = "claude"
     mock_adapter_cls = MagicMock(return_value=mock_adapter)
 
+    # Mock socket to avoid real port binds in tests.  Tests that exercise the
+    # full _start_mcp_server path (TestMCPServerStartup) apply this patch
+    # directly; the rest rely on "start_mcp_server" which short-circuits before
+    # any socket is created.
+    mock_sock = MagicMock()
+
     return {
         "db_from_env": patch("butlers.daemon.Database.from_env", return_value=mock_db),
         "run_migrations": patch("butlers.daemon.run_migrations", new_callable=AsyncMock),
@@ -239,6 +245,7 @@ def _patch_infra():
         "FastMCP": patch("butlers.daemon.FastMCP"),
         "Spawner": patch("butlers.daemon.Spawner", return_value=mock_spawner),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
+        "socket": patch("butlers.daemon.socket.socket", return_value=mock_sock),
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
@@ -255,6 +262,7 @@ def _patch_infra():
         "mock_spawner": mock_spawner,
         "mock_adapter_cls": mock_adapter_cls,
         "mock_adapter": mock_adapter,
+        "mock_sock": mock_sock,
     }
 
 
@@ -809,6 +817,8 @@ class TestMCPServerStartup:
         mock_uvicorn_server = MagicMock()
         mock_uvicorn_server.serve = AsyncMock()
 
+        mock_sock = MagicMock()
+
         with (
             patches["db_from_env"],
             patches["run_migrations"],
@@ -822,6 +832,7 @@ class TestMCPServerStartup:
             patches["shutil_which"],
             patch("butlers.daemon.uvicorn.Config") as mock_config_cls,
             patch("butlers.daemon.uvicorn.Server", return_value=mock_uvicorn_server),
+            patch("butlers.daemon.socket.socket", return_value=mock_sock),
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
@@ -853,6 +864,12 @@ class TestMCPServerStartup:
                 "timeout_graceful_shutdown": 0,
             }
 
+            # Verify the socket was configured with SO_REUSEADDR and passed to serve().
+            mock_sock.setsockopt.assert_called_once()
+            mock_sock.bind.assert_called_once_with(("0.0.0.0", 9100))
+            mock_sock.listen.assert_called_once()
+            mock_uvicorn_server.serve.assert_called_once_with(sockets=[mock_sock])
+
         # Verify server instance was stored
         assert daemon._server is mock_uvicorn_server
         # Verify a background task was created
@@ -872,7 +889,7 @@ class TestMCPServerStartup:
         # Create a mock server whose serve() blocks until cancelled
         serve_started = asyncio.Event()
 
-        async def mock_serve():
+        async def mock_serve(sockets=None):
             serve_started.set()
             await asyncio.sleep(999)  # Block indefinitely
 
@@ -887,6 +904,8 @@ class TestMCPServerStartup:
         mock_uvicorn_server = MagicMock()
         mock_uvicorn_server.serve = mock_serve
 
+        mock_sock = MagicMock()
+
         with (
             patches["db_from_env"],
             patches["run_migrations"],
@@ -900,6 +919,7 @@ class TestMCPServerStartup:
             patches["shutil_which"],
             patch("butlers.daemon.uvicorn.Config"),
             patch("butlers.daemon.uvicorn.Server", return_value=mock_uvicorn_server),
+            patch("butlers.daemon.socket.socket", return_value=mock_sock),
         ):
             daemon = ButlerDaemon(butler_dir)
             # start() should return even though serve() blocks
@@ -918,6 +938,41 @@ class TestMCPServerStartup:
             await daemon._server_task
         except asyncio.CancelledError:
             pass
+
+    async def test_start_mcp_server_port_in_use_raises_oserror(self, butler_dir: Path) -> None:
+        """When the port is already bound, _start_mcp_server raises OSError instead of sys.exit."""
+        patches = _patch_infra()
+
+        mock_mcp = MagicMock()
+        streamable_app = FastAPI()
+        streamable_app.add_api_route("/mcp", endpoint=lambda: None, methods=["GET", "POST"])
+        sse_app = FastAPI()
+        sse_app.add_api_route("/sse", endpoint=lambda: None, methods=["GET"])
+        sse_app.mount("/messages", app=FastAPI())
+        mock_mcp.http_app.side_effect = [streamable_app, sse_app]
+
+        mock_sock = MagicMock()
+        mock_sock.bind.side_effect = OSError(98, "address already in use")
+
+        with (
+            patches["db_from_env"],
+            patches["run_migrations"],
+            patches["validate_credentials"],
+            patches["validate_module_credentials"],
+            patches["init_telemetry"],
+            patches["sync_schedules"],
+            patch("butlers.daemon.FastMCP", return_value=mock_mcp),
+            patches["Spawner"],
+            patches["get_adapter"],
+            patches["shutil_which"],
+            patch("butlers.daemon.uvicorn.Config"),
+            patch("butlers.daemon.uvicorn.Server"),
+            patch("butlers.daemon.socket.socket", return_value=mock_sock),
+        ):
+            daemon = ButlerDaemon(butler_dir)
+            # start() propagates the OSError rather than calling sys.exit(1)
+            with pytest.raises(OSError, match="address already in use"):
+                await daemon.start()
 
     def test_build_mcp_http_app_exposes_routes_and_content_type_behavior(self) -> None:
         """Combined app keeps SSE routes and serves streamable HTTP at /mcp."""
@@ -1432,6 +1487,7 @@ class TestSecretDetection:
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             caplog.at_level(logging.WARNING, logger="butlers.daemon"),
         ):
             daemon = ButlerDaemon(butler_dir)
@@ -1468,6 +1524,7 @@ name = "butler_test"
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             patches["configure_logging"],
             caplog.at_level(logging.WARNING, logger="butlers.daemon"),
         ):
@@ -1500,6 +1557,7 @@ name = "butler_test"
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             caplog.at_level(logging.WARNING, logger="butlers.daemon"),
         ):
             daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
@@ -1542,6 +1600,7 @@ optional = ["OPTIONAL_KEY"]
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             caplog.at_level(logging.WARNING, logger="butlers.daemon"),
         ):
             daemon = ButlerDaemon(tmp_path)
@@ -1580,6 +1639,7 @@ class TestModuleCredentialsTomlSource:
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
             patches["recover_route_inbox"],
@@ -1614,6 +1674,7 @@ class TestModuleCredentialsTomlSource:
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
             patches["recover_route_inbox"],
@@ -1651,6 +1712,7 @@ class TestModuleCredentialsTomlSource:
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
             patches["recover_route_inbox"],
@@ -1686,6 +1748,7 @@ class TestModuleCredentialsTomlSource:
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
             patches["recover_route_inbox"],
@@ -1720,6 +1783,7 @@ class TestModuleCredentialsTomlSource:
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
             patches["recover_route_inbox"],
@@ -1757,6 +1821,7 @@ class TestModuleCredentialsTomlSource:
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
             patches["recover_route_inbox"],
@@ -1793,6 +1858,7 @@ class TestModuleCredentialsTomlSource:
             patches["Spawner"] as mock_spawner_cls,
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
             patches["recover_route_inbox"],
@@ -1897,6 +1963,7 @@ name = "ghp_1234567890abcdefghij1234567890abcdef"
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             patches["configure_logging"],
             caplog.at_level(logging.WARNING, logger="butlers.daemon"),
         ):
@@ -2034,6 +2101,7 @@ class TestRuntimeAdapterPassedToSpawner:
             patches["Spawner"] as mock_spawner_cls,
             patches["get_adapter"],
             patches["shutil_which"],
+            patches["socket"],
             patches["connect_switchboard"],
             patches["create_audit_pool"],
             patches["recover_route_inbox"],
@@ -2194,6 +2262,7 @@ class TestRuntimeBinaryCheck:
             patches["Spawner"],
             patches["get_adapter"],
             patches["shutil_which"] as mock_which,
+            patches["socket"],
         ):
             daemon = ButlerDaemon(butler_dir)
             await daemon.start()
