@@ -1,0 +1,4 @@
+interface:
+  display_name: "Generate Grafana Dashboard"
+  short_description: "Generate Grafana dashboards from live Prometheus metrics"
+  default_prompt: "Generate a Grafana dashboard for this application"
