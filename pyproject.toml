@@ -14,6 +14,7 @@ dependencies = [
     "croniter",
     "opentelemetry-sdk",
     "opentelemetry-exporter-otlp",
+    "opentelemetry-instrumentation-fastapi",
     "click",
     "pydantic",
     "alembic",

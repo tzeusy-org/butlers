@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.propagate import extract, inject
-from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 
 if TYPE_CHECKING:
@@ -68,7 +67,9 @@ def init_telemetry(service_name: str) -> trace.Tracer:
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    resource = Resource.create({"service.name": "butlers"})
+    from butlers.core.metrics import _build_resource
+
+    resource = _build_resource()
     provider = TracerProvider(resource=resource)
 
     exporter = OTLPSpanExporter(endpoint=endpoint)

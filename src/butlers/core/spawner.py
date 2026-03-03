@@ -686,6 +686,7 @@ class Spawner:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
         runtime_session_id: str | None = None
+        spawner_result: SpawnerResult | None = None
         runtime = self._runtime.create_worker()
         runtime_invoked = False
         routing_context = _capture_pipeline_routing_context()
@@ -913,6 +914,14 @@ class Spawner:
                 clear_runtime_session_routing_context(runtime_session_id)
             # Record session duration metric using wall-clock time from t0
             self._metrics.record_session_duration(int((time.monotonic() - t0) * 1000))
+            # Record token usage when available (success path only; model always set)
+            if spawner_result is not None and spawner_result.input_tokens is not None:
+                self._metrics.record_token_usage(
+                    input_tokens=spawner_result.input_tokens,
+                    output_tokens=spawner_result.output_tokens or 0,
+                    model=spawner_result.model or "unknown",
+                    butler=self._config.name,
+                )
             # Clear session context before ending span so tool handlers
             # arriving after this point don't attach to a finished span.
             clear_active_session_context()

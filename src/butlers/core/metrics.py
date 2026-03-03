@@ -1,8 +1,9 @@
 """OpenTelemetry metrics instruments for the butler concurrency subsystem.
 
-Emits 11 metrics covering spawner concurrency, durable buffer health, and
-route.execute accept/process phases.  Instruments are created lazily from the
-global MeterProvider, so callers do not need to pass a Meter instance around.
+Emits metrics covering spawner concurrency, token usage, durable buffer health,
+route.execute accept/process phases, scheduler task dispatch, and switchboard
+ingest outcomes.  Instruments are created lazily from the global MeterProvider,
+so callers do not need to pass a Meter instance around.
 
 Initialization
 --------------
@@ -22,6 +23,12 @@ Spawner (emitted from spawner.py):
 
   butlers.spawner.session_duration_ms Histogram
       End-to-end session duration in milliseconds.
+
+  butlers.spawner.input_tokens        Counter (labels: butler, model)
+      LLM input tokens consumed per session.
+
+  butlers.spawner.output_tokens       Counter (labels: butler, model)
+      LLM output tokens produced per session.
 
 Buffer (emitted from buffer.py):
 
@@ -51,7 +58,19 @@ Route (emitted from daemon.py route.execute):
   butlers.route.process_latency_ms    Histogram
       Time from acceptance (inbox insert) to processing start.
 
+Scheduler (emitted from scheduler.py):
+
+  butlers.scheduler.tasks_dispatched  Counter (labels: butler, task_name, outcome)
+      Scheduled tasks dispatched, tagged by success/failure outcome.
+
+Switchboard (emitted from ingestion/ingest.py):
+
+  butlers.switchboard.ingest_result   Counter (labels: source, outcome)
+      Ingest boundary outcomes (success, validation_error, db_error).
+
 All instruments carry a ``butler`` label for per-butler drill-down in Grafana.
+The ``deployment.environment`` resource attribute is set from the ``ENV``
+environment variable when present (e.g. ENV=prod or ENV=dev).
 """
 
 from __future__ import annotations
@@ -73,6 +92,25 @@ _meter_provider_installed: bool = False
 # ---------------------------------------------------------------------------
 # MeterProvider initialization
 # ---------------------------------------------------------------------------
+
+
+def _build_resource():
+    """Build an OTel Resource with service.name and optional deployment.environment.
+
+    Reads ``ENV`` from the environment to set ``deployment.environment``
+    (e.g. ``ENV=prod`` → ``deployment.environment=prod``).  When ``ENV`` is
+    not set, the attribute is omitted so dashboards degrade gracefully.
+
+    Returns:
+        An opentelemetry.sdk.resources.Resource instance.
+    """
+    from opentelemetry.sdk.resources import Resource
+
+    attrs: dict = {"service.name": "butlers"}
+    env = os.environ.get("ENV")
+    if env:
+        attrs["deployment.environment"] = env
+    return Resource.create(attrs)
 
 
 def init_metrics(service_name: str) -> metrics.Meter:
@@ -112,9 +150,8 @@ def init_metrics(service_name: str) -> metrics.Meter:
     from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-    from opentelemetry.sdk.resources import Resource
 
-    resource = Resource.create({"service.name": "butlers"})
+    resource = _build_resource()
     exporter = OTLPMetricExporter(endpoint=endpoint)
     reader = PeriodicExportingMetricReader(exporter, export_interval_millis=15_000)
     provider = MeterProvider(resource=resource, metric_readers=[reader])
@@ -259,6 +296,57 @@ def _route_process_latency_ms() -> metrics.Histogram:
 
 
 # ---------------------------------------------------------------------------
+# Spawner token instruments
+# ---------------------------------------------------------------------------
+
+
+def _spawner_input_tokens() -> metrics.Counter:
+    """Counter: LLM input tokens consumed per session (labels: butler, model)."""
+    return get_meter().create_counter(
+        name="butlers.spawner.input_tokens",
+        description="LLM input tokens consumed per session",
+        unit="tokens",
+    )
+
+
+def _spawner_output_tokens() -> metrics.Counter:
+    """Counter: LLM output tokens produced per session (labels: butler, model)."""
+    return get_meter().create_counter(
+        name="butlers.spawner.output_tokens",
+        description="LLM output tokens produced per session",
+        unit="tokens",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Scheduler instruments
+# ---------------------------------------------------------------------------
+
+
+def _scheduler_tasks_dispatched() -> metrics.Counter:
+    """Counter: scheduled tasks dispatched (labels: butler, task_name, outcome)."""
+    return get_meter().create_counter(
+        name="butlers.scheduler.tasks_dispatched",
+        description="Scheduled tasks dispatched, tagged by success/failure outcome",
+        unit="tasks",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Switchboard ingest instruments
+# ---------------------------------------------------------------------------
+
+
+def _switchboard_ingest_result() -> metrics.Counter:
+    """Counter: ingest boundary outcomes (labels: source, outcome)."""
+    return get_meter().create_counter(
+        name="butlers.switchboard.ingest_result",
+        description="Switchboard ingest boundary outcomes (success, validation_error, db_error)",
+        unit="requests",
+    )
+
+
+# ---------------------------------------------------------------------------
 # ButlerMetrics — convenience wrapper that caches instruments per butler
 # ---------------------------------------------------------------------------
 
@@ -301,6 +389,8 @@ class ButlerMetrics:
         self.__spawner_active: metrics.UpDownCounter | None = None
         self.__spawner_queued: metrics.UpDownCounter | None = None
         self.__spawner_duration: metrics.Histogram | None = None
+        self.__spawner_input_tokens: metrics.Counter | None = None
+        self.__spawner_output_tokens: metrics.Counter | None = None
         self.__buf_depth: metrics.UpDownCounter | None = None
         self.__buf_enqueue: metrics.Counter | None = None
         self.__buf_backpressure: metrics.Counter | None = None
@@ -310,6 +400,8 @@ class ButlerMetrics:
         self.__route_accept: metrics.Histogram | None = None
         self.__route_depth: metrics.UpDownCounter | None = None
         self.__route_process: metrics.Histogram | None = None
+        self.__scheduler_tasks_dispatched: metrics.Counter | None = None
+        self.__switchboard_ingest_result: metrics.Counter | None = None
 
     # -- instrument accessors (lazy init) ------------------------------------
 
@@ -330,6 +422,18 @@ class ButlerMetrics:
         if self.__spawner_duration is None:
             self.__spawner_duration = _spawner_session_duration_ms()
         return self.__spawner_duration
+
+    @property
+    def _spawner_input_tokens(self) -> metrics.Counter:
+        if self.__spawner_input_tokens is None:
+            self.__spawner_input_tokens = _spawner_input_tokens()
+        return self.__spawner_input_tokens
+
+    @property
+    def _spawner_output_tokens(self) -> metrics.Counter:
+        if self.__spawner_output_tokens is None:
+            self.__spawner_output_tokens = _spawner_output_tokens()
+        return self.__spawner_output_tokens
 
     @property
     def _buf_depth(self) -> metrics.UpDownCounter:
@@ -384,6 +488,18 @@ class ButlerMetrics:
         if self.__route_process is None:
             self.__route_process = _route_process_latency_ms()
         return self.__route_process
+
+    @property
+    def _scheduler_tasks(self) -> metrics.Counter:
+        if self.__scheduler_tasks_dispatched is None:
+            self.__scheduler_tasks_dispatched = _scheduler_tasks_dispatched()
+        return self.__scheduler_tasks_dispatched
+
+    @property
+    def _ingest_result(self) -> metrics.Counter:
+        if self.__switchboard_ingest_result is None:
+            self.__switchboard_ingest_result = _switchboard_ingest_result()
+        return self.__switchboard_ingest_result
 
     # -- spawner recording helpers ------------------------------------------
 
@@ -466,3 +582,27 @@ class ButlerMetrics:
     def record_route_process_latency(self, latency_ms: float) -> None:
         """Record time from route_inbox acceptance to processing start in ms."""
         self._route_process.record(latency_ms, self._attrs)
+
+    # -- spawner token recording helpers ------------------------------------
+
+    def record_token_usage(
+        self, *, input_tokens: int, output_tokens: int, model: str, butler: str
+    ) -> None:
+        """Record LLM token usage for a completed session."""
+        attrs = {"butler": butler, "model": model}
+        self._spawner_input_tokens.add(input_tokens, attrs)
+        self._spawner_output_tokens.add(output_tokens, attrs)
+
+    # -- scheduler recording helpers ----------------------------------------
+
+    def record_task_dispatched(
+        self, *, butler: str, task_name: str, outcome: str
+    ) -> None:
+        """Record one scheduled task dispatch (outcome: success|failure)."""
+        self._scheduler_tasks.add(1, {"butler": butler, "task_name": task_name, "outcome": outcome})
+
+    # -- switchboard ingest recording helpers --------------------------------
+
+    def record_ingest_result(self, *, source: str, outcome: str) -> None:
+        """Record one ingest boundary outcome (outcome: success|validation_error|db_error)."""
+        self._ingest_result.add(1, {"source": source, "outcome": outcome})

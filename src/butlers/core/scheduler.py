@@ -18,6 +18,8 @@ import asyncpg
 from croniter import croniter
 from opentelemetry import trace
 
+from butlers.core.metrics import ButlerMetrics
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_STAGGER_SECONDS = 15 * 60
@@ -422,6 +424,7 @@ async def tick(
     *,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+    metrics: ButlerMetrics | None = None,
 ) -> int:
     """Evaluate due tasks and dispatch them.
 
@@ -485,10 +488,22 @@ async def tick(
                     )
                 result_json = _result_to_jsonb(result)
                 dispatched += 1
+                if metrics is not None:
+                    metrics.record_task_dispatched(
+                        butler=stagger_key or "unknown",
+                        task_name=name,
+                        outcome="success",
+                    )
                 logger.info("Dispatched scheduled task: %s", name)
             except Exception as exc:
                 logger.exception("Failed to dispatch scheduled task: %s", name)
                 result_json = _result_to_jsonb({"error": str(exc)})
+                if metrics is not None:
+                    metrics.record_task_dispatched(
+                        butler=stagger_key or "unknown",
+                        task_name=name,
+                        outcome="failure",
+                    )
 
             # Always advance next_run_at whether dispatch succeeded or failed.
             # If the computed next run would exceed until_at, auto-disable the task.

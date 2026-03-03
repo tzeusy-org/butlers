@@ -46,6 +46,7 @@ from uuid import UUID
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
+from butlers.core.metrics import ButlerMetrics
 from butlers.tools.switchboard.routing.contracts import (
     IngestEnvelopeV1,
     parse_ingest_envelope,
@@ -62,6 +63,11 @@ from butlers.tools.switchboard.triage.thread_affinity import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Module-level metrics instance for the switchboard ingest boundary.
+# Safe to construct before init_metrics() is called; recordings are no-ops
+# until a real MeterProvider is installed.
+_ingest_metrics = ButlerMetrics("switchboard")
 
 
 class IngestAcceptedResponse(BaseModel):
@@ -351,11 +357,21 @@ async def ingest_v1(
     RuntimeError
         If database persistence fails unexpectedly.
     """
+    # Best-effort source extraction for metrics before full validation
+    _source_for_metrics = "unknown"
+    try:
+        src = payload.get("source") if hasattr(payload, "get") else None
+        if isinstance(src, dict):
+            _source_for_metrics = src.get("channel", "unknown") or "unknown"
+    except Exception:
+        pass
+
     # 1. Parse and validate envelope using canonical contract model
     try:
         envelope = parse_ingest_envelope(payload)
     except Exception as exc:
         logger.warning("Ingest envelope validation failed: %s", exc)
+        _ingest_metrics.record_ingest_result(source=_source_for_metrics, outcome="validation_error")
         raise ValueError(f"Invalid ingest.v1 envelope: {exc}") from exc
 
     # 2. Compute stable dedupe key
@@ -371,6 +387,9 @@ async def ingest_v1(
             "returning existing request_id=%s",
             dedupe_key,
             existing["request_id"],
+        )
+        _ingest_metrics.record_ingest_result(
+            source=envelope.source.channel, outcome="success"
         )
         return IngestAcceptedResponse(
             request_id=existing["request_id"],
@@ -527,6 +546,9 @@ async def ingest_v1(
                         dedupe_key,
                         existing["request_id"],
                     )
+                    _ingest_metrics.record_ingest_result(
+                        source=source_channel, outcome="success"
+                    )
                     return IngestAcceptedResponse(
                         request_id=existing["request_id"],
                         status="accepted",
@@ -571,6 +593,7 @@ async def ingest_v1(
                 )
     except Exception as exc:
         logger.error("Failed to persist ingest envelope: %s", exc, exc_info=True)
+        _ingest_metrics.record_ingest_result(source=source_channel, outcome="db_error")
         raise RuntimeError(f"Failed to persist ingest envelope: {exc}") from exc
 
     logger.info(
@@ -586,6 +609,7 @@ async def ingest_v1(
         triage_decision.decision if triage_decision else "n/a",
     )
 
+    _ingest_metrics.record_ingest_result(source=source_channel, outcome="success")
     return IngestAcceptedResponse(
         request_id=request_id,
         status="accepted",

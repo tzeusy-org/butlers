@@ -124,6 +124,21 @@ def create_app(
     )
     app.router.redirect_slashes = False
 
+    # OTel instrumentation (only when OTLP endpoint is configured)
+    if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+            from butlers.core.metrics import init_metrics
+            from butlers.core.telemetry import init_telemetry
+
+            init_telemetry("butlers-dashboard")
+            init_metrics("butlers-dashboard")
+            FastAPIInstrumentor().instrument_app(app)
+            logger.info("FastAPI OTel instrumentation enabled")
+        except Exception:
+            logger.warning("Failed to enable FastAPI OTel instrumentation", exc_info=True)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
