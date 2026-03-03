@@ -448,8 +448,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [118, 94]
+        [
+          0,
+          0
+        ],
+        [
+          118,
+          94
+        ]
       ],
       "startBinding": {
         "elementId": "conn_tgbot",
@@ -488,8 +494,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [118, 14]
+        [
+          0,
+          0
+        ],
+        [
+          118,
+          14
+        ]
       ],
       "startBinding": {
         "elementId": "conn_tguser",
@@ -528,8 +540,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [118, -60]
+        [
+          0,
+          0
+        ],
+        [
+          118,
+          -60
+        ]
       ],
       "startBinding": {
         "elementId": "conn_gmail",
@@ -568,8 +586,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [118, -130]
+        [
+          0,
+          0
+        ],
+        [
+          118,
+          -130
+        ]
       ],
       "startBinding": {
         "elementId": "conn_discord",
@@ -1124,8 +1148,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [98, -224]
+        [
+          0,
+          0
+        ],
+        [
+          98,
+          -224
+        ]
       ],
       "startBinding": {
         "elementId": "switchboard",
@@ -1164,8 +1194,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [98, -156]
+        [
+          0,
+          0
+        ],
+        [
+          98,
+          -156
+        ]
       ],
       "startBinding": {
         "elementId": "switchboard",
@@ -1204,8 +1240,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [98, -89]
+        [
+          0,
+          0
+        ],
+        [
+          98,
+          -89
+        ]
       ],
       "startBinding": {
         "elementId": "switchboard",
@@ -1244,8 +1286,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [98, -14]
+        [
+          0,
+          0
+        ],
+        [
+          98,
+          -14
+        ]
       ],
       "startBinding": {
         "elementId": "switchboard",
@@ -1284,8 +1332,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [98, 51]
+        [
+          0,
+          0
+        ],
+        [
+          98,
+          51
+        ]
       ],
       "startBinding": {
         "elementId": "switchboard",
@@ -1324,8 +1378,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [98, 116]
+        [
+          0,
+          0
+        ],
+        [
+          98,
+          116
+        ]
       ],
       "startBinding": {
         "elementId": "switchboard",
@@ -1364,8 +1424,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [98, 181]
+        [
+          0,
+          0
+        ],
+        [
+          98,
+          181
+        ]
       ],
       "startBinding": {
         "elementId": "switchboard",
@@ -1500,8 +1566,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [200, 244]
+        [
+          0,
+          0
+        ],
+        [
+          200,
+          244
+        ]
       ],
       "startBinding": {
         "elementId": "switchboard",
@@ -1924,8 +1996,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [78, 1]
+        [
+          0,
+          0
+        ],
+        [
+          78,
+          1
+        ]
       ],
       "startBinding": {
         "elementId": "butler_messenger",
@@ -1964,8 +2042,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [78, 32]
+        [
+          0,
+          0
+        ],
+        [
+          78,
+          32
+        ]
       ],
       "startBinding": {
         "elementId": "butler_messenger",
@@ -2100,8 +2184,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [0, 428]
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          428
+        ]
       ],
       "startBinding": {
         "elementId": "switchboard",
@@ -2140,8 +2230,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [0, 686]
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          686
+        ]
       ],
       "startBinding": {
         "elementId": "butler_general",
@@ -2180,8 +2276,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [0, 142]
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          142
+        ]
       ],
       "startBinding": {
         "elementId": "butler_messenger",
@@ -2467,8 +2569,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [98, -207]
+        [
+          0,
+          0
+        ],
+        [
+          98,
+          -207
+        ]
       ],
       "startBinding": null,
       "endBinding": null,
@@ -2546,7 +2654,7 @@
       "y": 378,
       "width": 220,
       "height": 64,
-      "text": "Dashboard API Gateway\n19 core + 8 butler-specific routers\nSSE streaming",
+      "text": "Dashboard API Gateway\n20 core + 8 butler-specific routers\nSSE streaming",
       "originalText": "Dashboard API Gateway\n19 core + 8 butler-specific routers\nSSE streaming",
       "fontSize": 12,
       "fontFamily": 3,
@@ -2595,8 +2703,14 @@
       "link": null,
       "locked": false,
       "points": [
-        [0, 0],
-        [-80, 0]
+        [
+          0,
+          0
+        ],
+        [
+          -80,
+          0
+        ]
       ],
       "startBinding": {
         "elementId": "dashboard",
