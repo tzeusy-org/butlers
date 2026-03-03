@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from butlers.core.metrics import get_meter
 from butlers.modules.base import Module
+from butlers.modules.metrics.prometheus import async_query, async_query_range
 from butlers.modules.metrics.storage import load_all_definitions
 
 if TYPE_CHECKING:
@@ -91,13 +92,72 @@ class MetricsModule(Module):
         return None
 
     async def register_tools(self, mcp: Any, config: Any, db: Any) -> None:
-        """Register metrics MCP tools on the butler's FastMCP server.
-
-        Tool registration is a no-op on this stub; concrete tool wiring is
-        implemented in a follow-on task (butlers-lxiq.3 onwards).
-        """
+        """Register metrics MCP tools on the butler's FastMCP server."""
         self._config = self._coerce_config(config)
         self._db = db
+        module = self  # capture for closures
+
+        @mcp.tool()
+        async def metrics_query(query: str, time: str | None = None) -> list[dict]:
+            """Execute an instant PromQL query against the configured Prometheus endpoint.
+
+            Returns the vector result on success.  On error (network failure,
+            invalid PromQL, Prometheus unavailable), returns a list with a
+            single ``{"error": "..."}`` dict describing the problem.
+
+            Parameters
+            ----------
+            query:
+                PromQL expression, e.g. ``up`` or ``rate(http_requests_total[5m])``.
+            time:
+                Optional evaluation timestamp (RFC 3339 or Unix epoch string).
+                Defaults to Prometheus server time when omitted.
+            """
+            if module._config is None:
+                return [{"error": "MetricsModule is not configured (prometheus_query_url missing)"}]
+            return await async_query(module._config.prometheus_query_url, query, time)
+
+        @mcp.tool()
+        async def metrics_query_range(
+            query: str,
+            start: str,
+            end: str,
+            step: str,
+        ) -> list[dict]:
+            """Execute a range PromQL query against the configured Prometheus endpoint.
+
+            Returns the matrix result on success.  On error, returns a list
+            with a single ``{"error": "..."}`` dict.
+
+            Parameters
+            ----------
+            query:
+                PromQL expression.
+            start:
+                Range start (RFC 3339 or Unix epoch string).
+            end:
+                Range end (RFC 3339 or Unix epoch string).
+            step:
+                Resolution step, e.g. ``"15s"``, ``"1m"``, ``"300"``.
+            """
+            if module._config is None:
+                return [{"error": "MetricsModule is not configured (prometheus_query_url missing)"}]
+            return await async_query_range(
+                module._config.prometheus_query_url, query, start, end, step
+            )
+
+        @mcp.tool()
+        async def metrics_list() -> list[dict]:
+            """Return all metric definitions registered with this butler.
+
+            Each definition is a dict with at minimum ``name``, ``type``,
+            ``help``, ``labels``, and ``registered_at`` keys (as originally
+            stored by ``metrics_define``).  Returns an empty list when no
+            definitions have been saved yet.
+            """
+            if module._db is None:
+                return []
+            return await load_all_definitions(module._db)
 
     async def on_startup(self, config: Any, db: Any, credential_store: Any = None) -> None:
         """Store config, derive butler name, and restore instrument cache.
@@ -283,4 +343,6 @@ class MetricsModule(Module):
 __all__ = [
     "MetricsModule",
     "MetricsModuleConfig",
+    "async_query",
+    "async_query_range",
 ]
