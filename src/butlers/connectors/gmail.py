@@ -1605,10 +1605,33 @@ class GmailConnectorRuntime:
 
         return list(message_ids)
 
+    # Exception types that indicate a transient Switchboard connectivity failure.
+    # When these are raised during message delivery, the batch cursor must NOT be
+    # advanced so the message will be retried on the next poll cycle.
+    _TRANSIENT_DELIVERY_ERRORS: tuple[type[Exception], ...] = (
+        ConnectionError,
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.RemoteProtocolError,
+    )
+
     async def _ingest_messages(self, message_ids: list[str]) -> None:
-        """Fetch and ingest messages concurrently with bounded parallelism."""
+        """Fetch and ingest messages concurrently with bounded parallelism.
+
+        If any message delivery fails with a transient Switchboard connectivity
+        error (ConnectionError, httpx.ConnectError, etc.), that error is re-raised
+        after all tasks complete so the caller knows NOT to advance the batch
+        cursor.  Per-message errors that are not transient (e.g. a malformed
+        message) are logged and swallowed so they do not block other messages.
+        """
         tasks = [self._ingest_single_message(msg_id) for msg_id in message_ids]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Re-raise the first transient connectivity error so the polling loop
+        # skips cursor advancement and retries the batch on the next cycle.
+        for result in results:
+            if isinstance(result, self._TRANSIENT_DELIVERY_ERRORS):
+                raise result
 
     async def _ingest_single_message(self, message_id: str) -> None:
         """Fetch and ingest a single Gmail message.
@@ -1622,6 +1645,11 @@ class GmailConnectorRuntime:
            - Tier 3 (skip): emit skip log, no Switchboard submission.
            - Tier 2 (metadata): submit slim envelope with ingestion_tier=metadata.
            - Tier 1 (full): submit full envelope.
+
+        Transient Switchboard connectivity errors (ConnectionError,
+        httpx.ConnectError, etc.) are re-raised so that _ingest_messages can
+        propagate them to the batch loop, preventing cursor advancement.
+        Per-message non-transient errors are logged and swallowed.
         """
         async with self._semaphore:
             try:
@@ -1663,6 +1691,15 @@ class GmailConnectorRuntime:
                     policy_result.policy_tier,
                 )
 
+            except self._TRANSIENT_DELIVERY_ERRORS:
+                # Re-raise transient Switchboard connectivity errors so the
+                # batch loop can skip cursor advancement and retry.
+                logger.error(
+                    "Transient delivery failure for message %s — Switchboard unreachable; "
+                    "cursor will not advance",
+                    message_id,
+                )
+                raise
             except Exception as exc:
                 logger.error("Failed to ingest message %s: %s", message_id, exc, exc_info=True)
 

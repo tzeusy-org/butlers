@@ -592,6 +592,167 @@ class TestGmailConnectorRuntime:
 
         assert body == "(no body)"
 
+    # ------------------------------------------------------------------
+    # Mid-session Switchboard ConnectionError tests (butlers-tt60)
+    # ------------------------------------------------------------------
+
+    async def test_ingest_single_message_reraises_connection_error(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """ConnectionError from Switchboard is re-raised (not swallowed) so cursor stays put."""
+        message_data = {
+            "id": "msg_conn_err",
+            "threadId": "thread1",
+            "internalDate": "1708000000000",
+            "labelIds": ["INBOX"],
+            "payload": {
+                "headers": [
+                    {"name": "From", "value": "sender@example.com"},
+                    {"name": "Subject", "value": "Test"},
+                    {"name": "Message-ID", "value": "<msg1@example.com>"},
+                ],
+                "mimeType": "text/plain",
+                "body": {"data": "dGVzdA=="},
+            },
+        }
+        with (
+            patch.object(
+                gmail_runtime,
+                "_fetch_message",
+                new=AsyncMock(return_value=message_data),
+            ),
+            patch.object(
+                gmail_runtime,
+                "_submit_to_ingest_api",
+                new=AsyncMock(side_effect=ConnectionError("Switchboard is down")),
+            ),
+        ):
+            with pytest.raises(ConnectionError, match="Switchboard is down"):
+                await gmail_runtime._ingest_single_message("msg_conn_err")
+
+    async def test_ingest_single_message_swallows_non_transient_error(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """Non-transient errors (e.g. malformed message) are logged and swallowed."""
+        with patch.object(
+            gmail_runtime,
+            "_fetch_message",
+            new=AsyncMock(side_effect=RuntimeError("Malformed message")),
+        ):
+            # Should not raise — non-transient errors are swallowed
+            await gmail_runtime._ingest_single_message("msg_bad")
+
+    async def test_ingest_messages_propagates_connection_error(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """_ingest_messages re-raises ConnectionError when any delivery fails transiently."""
+        call_count = 0
+
+        async def fake_ingest(msg_id: str) -> None:
+            nonlocal call_count
+            call_count += 1
+            if msg_id == "msg2":
+                raise ConnectionError("Switchboard down mid-batch")
+
+        with patch.object(gmail_runtime, "_ingest_single_message", side_effect=fake_ingest):
+            with pytest.raises(ConnectionError, match="Switchboard down mid-batch"):
+                await gmail_runtime._ingest_messages(["msg1", "msg2", "msg3"])
+
+        # All three tasks must have been attempted (gather runs all concurrently)
+        assert call_count == 3
+
+    async def test_ingest_messages_no_error_when_all_succeed(
+        self, gmail_runtime: GmailConnectorRuntime
+    ) -> None:
+        """_ingest_messages completes without raising when all messages ingest cleanly."""
+        with patch.object(
+            gmail_runtime, "_ingest_single_message", new=AsyncMock(return_value=None)
+        ):
+            await gmail_runtime._ingest_messages(["msg1", "msg2"])  # Should not raise
+
+    async def test_polling_loop_does_not_advance_cursor_on_connection_error(
+        self, gmail_runtime: GmailConnectorRuntime, temp_cursor_path: Path
+    ) -> None:
+        """Polling loop cursor is NOT advanced when Switchboard is down mid-session."""
+        initial_cursor = GmailCursor(history_id="100", last_updated_at="2026-01-01T00:00:00Z")
+        temp_cursor_path.write_text(initial_cursor.model_dump_json())
+        gmail_runtime._running = True
+
+        call_count = 0
+
+        async def fake_ingest_messages(message_ids: list[str]) -> None:
+            nonlocal call_count
+            call_count += 1
+            gmail_runtime._running = False  # Stop the loop after first iteration
+            raise ConnectionError("Switchboard down mid-session")
+
+        mock_history = [{"id": "200", "messagesAdded": [{"message": {"id": "msgX"}}]}]
+
+        with (
+            patch.object(
+                gmail_runtime,
+                "_fetch_history_changes",
+                new=AsyncMock(return_value=mock_history),
+            ),
+            patch.object(
+                gmail_runtime,
+                "_ingest_messages",
+                side_effect=fake_ingest_messages,
+            ),
+            patch("butlers.connectors.gmail.asyncio.sleep", new=AsyncMock()),
+        ):
+            await gmail_runtime._run_polling_ingestion_loop()
+
+        # Cursor must remain at initial value — not advanced to "200"
+        loaded = GmailCursor.model_validate_json(temp_cursor_path.read_text())
+        assert loaded.history_id == "100", (
+            f"Cursor was incorrectly advanced to {loaded.history_id!r}; "
+            "messages may have been permanently lost"
+        )
+        assert call_count == 1  # Exactly one ingestion attempt was made
+
+    async def test_pubsub_loop_does_not_advance_cursor_on_connection_error(
+        self, gmail_runtime: GmailConnectorRuntime, temp_cursor_path: Path
+    ) -> None:
+        """Pub/Sub loop cursor is NOT advanced when Switchboard is down mid-session."""
+        initial_cursor = GmailCursor(history_id="200", last_updated_at="2026-01-01T00:00:00Z")
+        temp_cursor_path.write_text(initial_cursor.model_dump_json())
+        gmail_runtime._running = True
+
+        async def fake_ingest_messages(message_ids: list[str]) -> None:
+            gmail_runtime._running = False  # Stop the loop after first batch
+            raise ConnectionError("Switchboard down in pubsub path")
+
+        mock_history = [{"id": "300", "messagesAdded": [{"message": {"id": "msgY"}}]}]
+
+        # Use a real asyncio.Queue with one item so the loop gets a notification
+        notification_queue: asyncio.Queue[dict] = asyncio.Queue()
+        await notification_queue.put({"historyId": "300"})
+        gmail_runtime._notification_queue = notification_queue
+
+        with (
+            patch.object(gmail_runtime, "_gmail_watch_renew_if_needed", new=AsyncMock()),
+            patch.object(
+                gmail_runtime,
+                "_fetch_history_changes",
+                new=AsyncMock(return_value=mock_history),
+            ),
+            patch.object(
+                gmail_runtime,
+                "_ingest_messages",
+                side_effect=fake_ingest_messages,
+            ),
+            patch("butlers.connectors.gmail.asyncio.sleep", new=AsyncMock()),
+        ):
+            await gmail_runtime._run_pubsub_ingestion_loop()
+
+        # Cursor must remain at initial value — not advanced to "300"
+        loaded = GmailCursor.model_validate_json(temp_cursor_path.read_text())
+        assert loaded.history_id == "200", (
+            f"Cursor was incorrectly advanced to {loaded.history_id!r}; "
+            "messages may have been permanently lost"
+        )
+
 
 class TestGmailPubSubConfig:
     """Tests for Gmail Pub/Sub configuration."""
