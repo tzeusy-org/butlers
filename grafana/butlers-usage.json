@@ -1,0 +1,126 @@
+{
+  "annotations": { "list": [{ "builtIn": 1, "datasource": { "type": "grafana", "uid": "-- Grafana --" }, "enable": true, "hide": true, "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts", "type": "dashboard" }] },
+  "description": "Per-butler session rates, LLM token consumption by model, buffer throughput, and scheduled task dispatch.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "id": 100, "title": "Sessions", "type": "row" },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 10, "lineWidth": 1 }, "unit": "reqps" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 }, "id": 1,
+      "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(butler) (rate(butlers_spawner_session_duration_ms_milliseconds_count{job=\"butlers\", butler=~\"$butler\"}[$__rate_interval]))", "legendFormat": "{{butler}}", "refId": "A" }],
+      "title": "Session Rate (sessions/s) per Butler", "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 15, "lineWidth": 1, "stacking": { "group": "A", "mode": "normal" } }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 }, "id": 2,
+      "options": { "legend": { "calcs": ["max", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(butler) (butlers_spawner_active_sessions{job=\"butlers\", butler=~\"$butler\"})", "legendFormat": "{{butler}}", "refId": "A" }],
+      "title": "Active Sessions per Butler", "type": "timeseries"
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }, "id": 101, "title": "Token Usage", "type": "row" },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 10, "lineWidth": 1 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 }, "id": 3,
+      "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(butler, model) (rate(butlers_spawner_input_tokens_total{job=\"butlers\", butler=~\"$butler\"}[$__rate_interval]))", "legendFormat": "{{butler}} / {{model}}", "refId": "A" }],
+      "title": "Input Tokens Rate (tokens/s)", "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 10, "lineWidth": 1 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 }, "id": 4,
+      "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(butler, model) (rate(butlers_spawner_output_tokens_total{job=\"butlers\", butler=~\"$butler\"}[$__rate_interval]))", "legendFormat": "{{butler}} / {{model}}", "refId": "A" }],
+      "title": "Output Tokens Rate (tokens/s)", "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 10, "lineWidth": 1 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 }, "id": 5,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(butler, model) (increase(butlers_spawner_input_tokens_total{job=\"butlers\", butler=~\"$butler\"}[$__range]))", "legendFormat": "{{butler}} / {{model}}", "refId": "A" }],
+      "title": "Total Input Tokens (window)", "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 10, "lineWidth": 1 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 }, "id": 6,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(butler, model) (increase(butlers_spawner_output_tokens_total{job=\"butlers\", butler=~\"$butler\"}[$__range]))", "legendFormat": "{{butler}} / {{model}}", "refId": "A" }],
+      "title": "Total Output Tokens (window)", "type": "timeseries"
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 }, "id": 102, "title": "Buffer Throughput", "type": "row" },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 15, "lineWidth": 1, "stacking": { "group": "A", "mode": "normal" } }, "unit": "mps" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 }, "id": 7,
+      "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(butler, path) (rate(butlers_buffer_enqueue_messages_total{job=\"butlers\", butler=~\"$butler\"}[$__rate_interval]))", "legendFormat": "{{butler}} ({{path}})", "refId": "A" }],
+      "title": "Buffer Enqueue Rate (hot / cold)", "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 15, "lineWidth": 1, "stacking": { "group": "A", "mode": "normal" } }, "unit": "mps" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 }, "id": 8,
+      "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(policy_tier, queue_name, starvation_override) (rate(butlers_switchboard_queue_dequeue_by_tier_messages_total{job=\"butlers\"}[$__rate_interval]))", "legendFormat": "tier={{policy_tier}} queue={{queue_name}} starve={{starvation_override}}", "refId": "A" }],
+      "title": "Queue Dequeue by Priority Tier", "type": "timeseries"
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 }, "id": 103, "title": "Scheduled Tasks", "type": "row" },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 15, "lineWidth": 1, "stacking": { "group": "A", "mode": "normal" } }, "unit": "reqps" } },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 36 }, "id": 9,
+      "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(butler, task_name, outcome) (rate(butlers_scheduler_tasks_dispatched_tasks_total{job=\"butlers\", butler=~\"$butler\"}[$__rate_interval]))", "legendFormat": "{{butler}} / {{task_name}} ({{outcome}})", "refId": "A" }],
+      "title": "Scheduled Tasks Dispatched Rate", "type": "timeseries"
+    }
+
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["butlers", "opentelemetry", "ai-agents", "usage"],
+  "templating": {
+    "list": [
+      {
+        "current": {}, "hide": 0, "includeAll": false, "label": "Datasource", "name": "datasource",
+        "options": [], "query": "prometheus", "refresh": 1, "type": "datasource"
+      },
+      {
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(butlers_buffer_process_latency_ms_milliseconds_count{job=\"butlers\"}, butler)",
+        "hide": 0, "includeAll": true, "label": "Butler", "multi": true, "name": "butler",
+        "options": [], "query": { "query": "label_values(butlers_buffer_process_latency_ms_milliseconds_count{job=\"butlers\"}, butler)", "refId": "StandardVariableQuery" },
+        "refresh": 2, "sort": 1, "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-3h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Butlers — Usage & Cost",
+  "uid": "butlers-usage-v1",
+  "version": 1
+}

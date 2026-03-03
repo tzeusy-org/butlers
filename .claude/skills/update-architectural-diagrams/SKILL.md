@@ -207,6 +207,10 @@ Use `/beads-writer` conventions:
 2. `bd ready | grep <epic-prefix>` — confirm children are unblocked
 3. `bd export -o .beads/issues.jsonl && bd sync` — persist
 
+> **Merge policy:** If a worker's changes are exclusively docs/diagram files
+> (`.excalidraw`, `docs/`), a direct commit + push to `main` is fine — no PR
+> needed. Only open a PR when implementation code is also changed.
+
 Present the created beads as a table:
 
 | ID | Title | Action | File |
