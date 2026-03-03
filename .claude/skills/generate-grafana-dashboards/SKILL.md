@@ -1,6 +1,6 @@
 ---
-name: generate-grafana-dashboard
-description: Generate or update Grafana dashboard JSON for the Butlers application. Use when asked to create, refresh, or expand Grafana dashboards. Queries live Prometheus to discover actual metric names and label sets before generating any JSON. Knows where instrumentation source code lives, where dashboards are stored, and the OTel→Prometheus naming conventions for this project.
+name: generate-grafana-dashboards
+description: Generate or update Grafana dashboard JSONs for the Butlers application. Use when asked to create, refresh, or expand Grafana dashboards. Queries live Prometheus to discover actual metric names and label sets before generating any JSONs. Knows where instrumentation source code lives, where dashboards are stored, and the OTel→Prometheus naming conventions for this project.
 ---
 
 # Generate Grafana Dashboard
