@@ -125,6 +125,13 @@ class TestMetricsModuleLifecycle:
         assert mod._config is cfg
         assert mod._db is fake_db
 
+    async def test_on_startup_raises_on_unsupported_config_type(self):
+        """_coerce_config raises TypeError for unexpected config types."""
+        mod = MetricsModule()
+        fake_db = MagicMock()
+        with pytest.raises(TypeError, match="Unsupported config type for MetricsModule"):
+            await mod.on_startup(config=42, db=fake_db)
+
 
 # ---------------------------------------------------------------------------
 # ModuleRegistry auto-discovery

@@ -102,7 +102,7 @@ class MetricsModule(Module):
             return config
         if isinstance(config, dict):
             return MetricsModuleConfig(**config)
-        return config
+        raise TypeError(f"Unsupported config type for MetricsModule: {type(config).__name__}")
 
 
 __all__ = [
