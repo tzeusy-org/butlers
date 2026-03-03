@@ -1,6 +1,6 @@
 {
   "annotations": { "list": [{ "builtIn": 1, "datasource": { "type": "grafana", "uid": "-- Grafana --" }, "enable": true, "hide": true, "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts", "type": "dashboard" }] },
-  "description": "Latency percentiles, backpressure, circuit breakers, and inflight ratios across the Butlers fleet.",
+  "description": "Latency percentiles, backpressure, and queue health across the Butlers fleet. All panels filter by butler.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -84,88 +84,24 @@
       "title": "Route Process Latency P50 / P95", "type": "timeseries"
     },
 
-    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }, "id": 103, "title": "Switchboard End-to-End Latency", "type": "row" },
-
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 10, "lineWidth": 1 }, "unit": "ms" } },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 }, "id": 7,
-      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.50, sum by(le, source) (rate(butlers_switchboard_end_to_end_latency_ms_milliseconds_bucket{job=\"butlers\"}[$__rate_interval])))", "legendFormat": "p50 {{source}}", "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.95, sum by(le, source) (rate(butlers_switchboard_end_to_end_latency_ms_milliseconds_bucket{job=\"butlers\"}[$__rate_interval])))", "legendFormat": "p95 {{source}}", "refId": "B" }
-      ],
-      "title": "Switchboard E2E Latency P50 / P95", "type": "timeseries"
-    },
-
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 10, "lineWidth": 1 }, "unit": "ms" } },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 }, "id": 8,
-      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.50, sum by(le, source) (rate(butlers_switchboard_ingress_accept_latency_ms_milliseconds_bucket{job=\"butlers\"}[$__rate_interval])))", "legendFormat": "p50 {{source}}", "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "histogram_quantile(0.95, sum by(le, source) (rate(butlers_switchboard_ingress_accept_latency_ms_milliseconds_bucket{job=\"butlers\"}[$__rate_interval])))", "legendFormat": "p95 {{source}}", "refId": "B" }
-      ],
-      "title": "Ingress Accept Latency P50 / P95", "type": "timeseries"
-    },
-
-    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 }, "id": 104, "title": "Health Gauges", "type": "row" },
-
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.01 }] } } },
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 37 }, "id": 9,
-      "options": { "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showThresholdLabels": false, "showThresholdMarkers": true },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "butlers_switchboard_circuit_open_targets_ratio{job=\"butlers\"}", "legendFormat": "Circuit Open", "refId": "A" }],
-      "title": "Circuit Open Targets", "type": "gauge"
-    },
-
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.7 }, { "color": "red", "value": 0.9 }] } } },
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 37 }, "id": 10,
-      "options": { "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showThresholdLabels": false, "showThresholdMarkers": true },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "butlers_switchboard_inflight_requests_ratio{job=\"butlers\"}", "legendFormat": "Inflight", "refId": "A" }],
-      "title": "Inflight Requests Ratio", "type": "gauge"
-    },
-
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.7 }, { "color": "red", "value": 0.9 }] } } },
-      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 37 }, "id": 11,
-      "options": { "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showThresholdLabels": false, "showThresholdMarkers": true },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "butlers_switchboard_queue_depth_ratio{job=\"butlers\"}", "legendFormat": "Queue Fill", "refId": "A" }],
-      "title": "Queue Depth Ratio", "type": "gauge"
-    },
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }, "id": 103, "title": "Health", "type": "row" },
 
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "short", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 200 }] } } },
-      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 37 }, "id": 12,
+      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 28 }, "id": 7,
       "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(butlers_buffer_queue_depth_messages{job=\"butlers\", butler=~\"$butler\"})", "legendFormat": "Buffer Depth", "refId": "A" }],
-      "title": "Buffer Queue Depth (total)", "type": "stat"
+      "title": "Buffer Queue Depth", "type": "stat"
     },
-
-    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 }, "id": 105, "title": "Errors & Recovery", "type": "row" },
 
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 10, "lineWidth": 1 }, "unit": "ops" } },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 }, "id": 13,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 }, "id": 8,
       "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(butler) (rate(butlers_buffer_scanner_recovered_messages_total{job=\"butlers\", butler=~\"$butler\"}[$__rate_interval]))", "legendFormat": "{{butler}}", "refId": "A" }],
       "title": "Buffer Scanner Recovery Rate", "type": "timeseries"
-    },
-
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "fillOpacity": 10, "lineWidth": 1 }, "unit": "reqps" } },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 }, "id": 14,
-      "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi", "sort": "desc" } },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by(source) (rate(butlers_switchboard_retry_attempt_total{job=\"butlers\"}[$__rate_interval]))", "legendFormat": "{{source}}", "refId": "A" }],
-      "title": "Switchboard Retry Attempts by Source", "type": "timeseries"
     }
 
   ],
