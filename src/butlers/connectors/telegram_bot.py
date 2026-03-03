@@ -44,7 +44,7 @@ from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
-from butlers.connectors.mcp_client import CachedMCPClient
+from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
@@ -389,6 +389,20 @@ class TelegramBotConnector:
         # Load checkpoint
         self._load_checkpoint()
 
+        # Wait for Switchboard to be ready before entering the poll loop.
+        # Telegram advances the update offset as soon as getUpdates returns —
+        # messages received while the Switchboard is down would be permanently
+        # lost if we started polling immediately.  Block here until the
+        # Switchboard health endpoint responds 200 OK.
+        try:
+            await wait_for_switchboard_ready(self._config.switchboard_mcp_url)
+        except TimeoutError:
+            logger.warning(
+                "Switchboard readiness probe timed out; proceeding anyway. "
+                "Messages may be dropped if Switchboard is still starting.",
+                extra={"endpoint_identity": self._config.endpoint_identity},
+            )
+
         self._running = True
         logger.info(
             "Starting Telegram bot connector in polling mode",
@@ -677,6 +691,15 @@ class TelegramBotConnector:
         Updates that produce no usable content (service messages, non-message
         updates) are silently skipped.
 
+        ``ConnectionError`` is re-raised so the outer polling loop can catch it
+        and retry the entire batch without saving the checkpoint.  Telegram
+        advances the update offset as soon as ``getUpdates`` returns, so the
+        only way to prevent message loss is to not advance our own checkpoint
+        when delivery to Switchboard fails.
+
+        Other exceptions are logged and swallowed — a single malformed update
+        must not block the rest of the batch.
+
         Does NOT classify or route - that happens downstream.
         """
         async with self._semaphore:
@@ -685,6 +708,10 @@ class TelegramBotConnector:
                 if envelope is None:
                     return  # Nothing to ingest
                 await self._submit_to_ingest(envelope)
+            except ConnectionError:
+                # Switchboard unavailable — propagate so the outer loop
+                # retries with backoff and does NOT save the checkpoint.
+                raise
             except Exception:
                 logger.exception(
                     "Failed to process Telegram update",

@@ -73,7 +73,7 @@ from butlers.connectors.gmail_policy import (
     parse_label_list,
 )
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
-from butlers.connectors.mcp_client import CachedMCPClient
+from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
@@ -700,6 +700,19 @@ class GmailConnectorRuntime:
             except Exception as exc:
                 logger.error("Failed to start Gmail watch, falling back to polling: %s", exc)
                 self._config = self._config.model_copy(update={"gmail_pubsub_enabled": False})
+
+        # Wait for Switchboard to be ready before beginning live ingestion.
+        # Gmail's historyId cursor is only advanced after a successful
+        # ingestion batch, so this probe mainly guards against the first-poll
+        # window where the Switchboard may still be starting up.
+        try:
+            await wait_for_switchboard_ready(self._config.switchboard_mcp_url)
+        except TimeoutError:
+            logger.warning(
+                "Switchboard readiness probe timed out; proceeding anyway. "
+                "Messages may be dropped if Switchboard is still starting.",
+                extra={"endpoint_identity": self._config.connector_endpoint_identity},
+            )
 
         logger.info(
             "Gmail connector starting: cursor=%s, pubsub=%s",
