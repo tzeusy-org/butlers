@@ -3,14 +3,15 @@
   "version": 2,
   "source": "https://excalidraw.com",
   "elements": [
-
     {
       "type": "text",
       "id": "main_title",
-      "x": 80, "y": 20,
-      "width": 900, "height": 40,
-      "text": "Finance Butler — User Flows",
-      "originalText": "Finance Butler — User Flows",
+      "x": 80,
+      "y": 20,
+      "width": 900,
+      "height": 40,
+      "text": "Finance Butler \u2014 User Flows",
+      "originalText": "Finance Butler \u2014 User Flows",
       "fontSize": 30,
       "fontFamily": 3,
       "textAlign": "left",
@@ -37,10 +38,12 @@
     {
       "type": "text",
       "id": "subtitle",
-      "x": 80, "y": 66,
-      "width": 950, "height": 22,
-      "text": "Modules: email · calendar · memory · finance  |  Port 40105  |  Inbound receipt ingestion, scheduled alerts, and monthly spending summary",
-      "originalText": "Modules: email · calendar · memory · finance  |  Port 40105  |  Inbound receipt ingestion, scheduled alerts, and monthly spending summary",
+      "x": 80,
+      "y": 66,
+      "width": 950,
+      "height": 22,
+      "text": "Modules: email \u00b7 calendar \u00b7 memory \u00b7 finance  |  Port 40105  |  Inbound receipt ingestion, scheduled alerts, and monthly spending summary",
+      "originalText": "Modules: email \u00b7 calendar \u00b7 memory \u00b7 finance  |  Port 40105  |  Inbound receipt ingestion, scheduled alerts, and monthly spending summary",
       "fontSize": 14,
       "fontFamily": 3,
       "textAlign": "left",
@@ -64,12 +67,13 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "text",
       "id": "section_modules_title",
-      "x": 80, "y": 108,
-      "width": 300, "height": 24,
+      "x": 80,
+      "y": 108,
+      "width": 300,
+      "height": 24,
       "text": "MODULES",
       "originalText": "MODULES",
       "fontSize": 13,
@@ -95,12 +99,13 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "rectangle",
       "id": "mod_email",
-      "x": 80, "y": 136,
-      "width": 160, "height": 44,
+      "x": 80,
+      "y": 136,
+      "width": 160,
+      "height": 44,
       "strokeColor": "#047857",
       "backgroundColor": "#a7f3d0",
       "fillStyle": "solid",
@@ -114,16 +119,25 @@
       "versionNonce": 10011,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "mod_email_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "mod_email_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "mod_email_label",
-      "x": 90, "y": 148,
-      "width": 140, "height": 20,
+      "x": 90,
+      "y": 148,
+      "width": 140,
+      "height": 20,
       "text": "email (IMAP)",
       "originalText": "email (IMAP)",
       "fontSize": 13,
@@ -149,12 +163,13 @@
       "containerId": "mod_email",
       "lineHeight": 1.25
     },
-
     {
       "type": "rectangle",
       "id": "mod_calendar",
-      "x": 260, "y": 136,
-      "width": 160, "height": 44,
+      "x": 260,
+      "y": 136,
+      "width": 160,
+      "height": 44,
       "strokeColor": "#047857",
       "backgroundColor": "#a7f3d0",
       "fillStyle": "solid",
@@ -168,16 +183,25 @@
       "versionNonce": 10021,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "mod_calendar_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "mod_calendar_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "mod_calendar_label",
-      "x": 270, "y": 148,
-      "width": 140, "height": 20,
+      "x": 270,
+      "y": 148,
+      "width": 140,
+      "height": 20,
       "text": "calendar (Google)",
       "originalText": "calendar (Google)",
       "fontSize": 13,
@@ -203,12 +227,13 @@
       "containerId": "mod_calendar",
       "lineHeight": 1.25
     },
-
     {
       "type": "rectangle",
       "id": "mod_memory",
-      "x": 440, "y": 136,
-      "width": 160, "height": 44,
+      "x": 440,
+      "y": 136,
+      "width": 160,
+      "height": 44,
       "strokeColor": "#047857",
       "backgroundColor": "#a7f3d0",
       "fillStyle": "solid",
@@ -222,16 +247,25 @@
       "versionNonce": 10031,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "mod_memory_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "mod_memory_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "mod_memory_label",
-      "x": 450, "y": 148,
-      "width": 140, "height": 20,
+      "x": 450,
+      "y": 148,
+      "width": 140,
+      "height": 20,
       "text": "memory (17 tools)",
       "originalText": "memory (17 tools)",
       "fontSize": 13,
@@ -257,12 +291,13 @@
       "containerId": "mod_memory",
       "lineHeight": 1.25
     },
-
     {
       "type": "rectangle",
       "id": "mod_finance",
-      "x": 620, "y": 136,
-      "width": 160, "height": 44,
+      "x": 620,
+      "y": 136,
+      "width": 160,
+      "height": 44,
       "strokeColor": "#047857",
       "backgroundColor": "#a7f3d0",
       "fillStyle": "solid",
@@ -276,16 +311,25 @@
       "versionNonce": 10041,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "mod_finance_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "mod_finance_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "mod_finance_label",
-      "x": 630, "y": 148,
-      "width": 140, "height": 20,
+      "x": 630,
+      "y": 148,
+      "width": 140,
+      "height": 20,
       "text": "finance",
       "originalText": "finance",
       "fontSize": 13,
@@ -311,12 +355,13 @@
       "containerId": "mod_finance",
       "lineHeight": 1.25
     },
-
     {
       "type": "text",
       "id": "mod_email_tools",
-      "x": 80, "y": 185,
-      "width": 160, "height": 28,
+      "x": 80,
+      "y": 185,
+      "width": 160,
+      "height": 28,
       "text": "invoice/receipt extraction\nIMAP, payment confirmations",
       "originalText": "invoice/receipt extraction\nIMAP, payment confirmations",
       "fontSize": 10,
@@ -345,8 +390,10 @@
     {
       "type": "text",
       "id": "mod_calendar_tools",
-      "x": 260, "y": 185,
-      "width": 160, "height": 28,
+      "x": 260,
+      "y": 185,
+      "width": 160,
+      "height": 28,
       "text": "bill due date reminders\nsubscription renewal dates",
       "originalText": "bill due date reminders\nsubscription renewal dates",
       "fontSize": 10,
@@ -375,8 +422,10 @@
     {
       "type": "text",
       "id": "mod_memory_tools",
-      "x": 440, "y": 185,
-      "width": 160, "height": 28,
+      "x": 440,
+      "y": 185,
+      "width": 160,
+      "height": 28,
       "text": "financial history\nspending pattern consolidation",
       "originalText": "financial history\nspending pattern consolidation",
       "fontSize": 10,
@@ -405,8 +454,10 @@
     {
       "type": "text",
       "id": "mod_finance_tools",
-      "x": 620, "y": 185,
-      "width": 160, "height": 42,
+      "x": 620,
+      "y": 185,
+      "width": 160,
+      "height": 42,
       "text": "receipt capture, bill tracking\nsubscription mgmt\nspend categorization, budgets\nportfolio insights",
       "originalText": "receipt capture, bill tracking\nsubscription mgmt\nspend categorization, budgets\nportfolio insights",
       "fontSize": 10,
@@ -432,12 +483,13 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "line",
       "id": "divider_1",
-      "x": 80, "y": 236,
-      "width": 1340, "height": 0,
+      "x": 80,
+      "y": 236,
+      "width": 1340,
+      "height": 0,
       "strokeColor": "#d1d5db",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -454,21 +506,31 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [1340, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1340,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
       "endArrowhead": null
     },
-
     {
       "type": "text",
       "id": "section_inbound_title",
-      "x": 80, "y": 252,
-      "width": 700, "height": 26,
-      "text": "PRIMARY USER FLOW — Receipt / Invoice Ingestion (numbered sequence)",
-      "originalText": "PRIMARY USER FLOW — Receipt / Invoice Ingestion (numbered sequence)",
+      "x": 80,
+      "y": 252,
+      "width": 700,
+      "height": 26,
+      "text": "PRIMARY USER FLOW \u2014 Receipt / Invoice Ingestion (numbered sequence)",
+      "originalText": "PRIMARY USER FLOW \u2014 Receipt / Invoice Ingestion (numbered sequence)",
       "fontSize": 16,
       "fontFamily": 3,
       "textAlign": "left",
@@ -492,14 +554,15 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "text",
       "id": "flow_participants_label",
-      "x": 80, "y": 284,
-      "width": 1000, "height": 18,
-      "text": "Participants:  User  →  Switchboard  →  Finance Butler  →  LLM (ephemeral Codex)  →  PostgreSQL (finance schema)",
-      "originalText": "Participants:  User  →  Switchboard  →  Finance Butler  →  LLM (ephemeral Codex)  →  PostgreSQL (finance schema)",
+      "x": 80,
+      "y": 284,
+      "width": 1000,
+      "height": 18,
+      "text": "Participants:  User  \u2192  Switchboard  \u2192  Finance Butler  \u2192  LLM (ephemeral Codex)  \u2192  PostgreSQL (finance schema)",
+      "originalText": "Participants:  User  \u2192  Switchboard  \u2192  Finance Butler  \u2192  LLM (ephemeral Codex)  \u2192  PostgreSQL (finance schema)",
       "fontSize": 12,
       "fontFamily": 3,
       "textAlign": "left",
@@ -523,12 +586,13 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "rectangle",
       "id": "step1_user",
-      "x": 80, "y": 316,
-      "width": 170, "height": 64,
+      "x": 80,
+      "y": 316,
+      "width": 170,
+      "height": 64,
       "strokeColor": "#b45309",
       "backgroundColor": "#fef3c7",
       "fillStyle": "solid",
@@ -542,16 +606,25 @@
       "versionNonce": 10121,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step1_user_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step1_user_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "step1_user_label",
-      "x": 90, "y": 326,
-      "width": 150, "height": 44,
+      "x": 90,
+      "y": 326,
+      "width": 150,
+      "height": 44,
       "text": "1. User forwards\nreceipt/invoice via\nEmail or Telegram",
       "originalText": "1. User forwards\nreceipt/invoice via\nEmail or Telegram",
       "fontSize": 11,
@@ -577,12 +650,13 @@
       "containerId": "step1_user",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_1_to_2",
-      "x": 252, "y": 348,
-      "width": 58, "height": 0,
+      "x": 252,
+      "y": 348,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -599,19 +673,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "step1_user", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "step2_switchboard", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "step1_user",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "step2_switchboard",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "step2_switchboard",
-      "x": 316, "y": 316,
-      "width": 170, "height": 64,
+      "x": 316,
+      "y": 316,
+      "width": 170,
+      "height": 64,
       "strokeColor": "#1e3a5f",
       "backgroundColor": "#3b82f6",
       "fillStyle": "solid",
@@ -625,16 +717,25 @@
       "versionNonce": 10141,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step2_switchboard_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step2_switchboard_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "step2_switchboard_label",
-      "x": 326, "y": 326,
-      "width": 150, "height": 44,
+      "x": 326,
+      "y": 326,
+      "width": 150,
+      "height": 44,
       "text": "2. Switchboard routes\nto Finance butler\n(route.v1 contract)",
       "originalText": "2. Switchboard routes\nto Finance butler\n(route.v1 contract)",
       "fontSize": 11,
@@ -660,12 +761,13 @@
       "containerId": "step2_switchboard",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_2_to_3",
-      "x": 488, "y": 348,
-      "width": 58, "height": 0,
+      "x": 488,
+      "y": 348,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -682,19 +784,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "step2_switchboard", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "step3_spawner", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "step2_switchboard",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "step3_spawner",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "step3_spawner",
-      "x": 552, "y": 316,
-      "width": 170, "height": 64,
+      "x": 552,
+      "y": 316,
+      "width": 170,
+      "height": 64,
       "strokeColor": "#1e3a5f",
       "backgroundColor": "#1d4ed8",
       "fillStyle": "solid",
@@ -708,16 +828,25 @@
       "versionNonce": 10161,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step3_spawner_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step3_spawner_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "step3_spawner_label",
-      "x": 562, "y": 326,
-      "width": 150, "height": 44,
+      "x": 562,
+      "y": 326,
+      "width": 150,
+      "height": 44,
       "text": "3. Spawner creates\nephemeral LLM session\n(Codex runtime)",
       "originalText": "3. Spawner creates\nephemeral LLM session\n(Codex runtime)",
       "fontSize": 11,
@@ -743,12 +872,13 @@
       "containerId": "step3_spawner",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_3_to_4",
-      "x": 724, "y": 348,
-      "width": 58, "height": 0,
+      "x": 724,
+      "y": 348,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -765,19 +895,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "step3_spawner", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "step4_llm_extract", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "step3_spawner",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "step4_llm_extract",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "step4_llm_extract",
-      "x": 788, "y": 308,
-      "width": 190, "height": 80,
+      "x": 788,
+      "y": 308,
+      "width": 190,
+      "height": 80,
       "strokeColor": "#6d28d9",
       "backgroundColor": "#ddd6fe",
       "fillStyle": "solid",
@@ -791,16 +939,25 @@
       "versionNonce": 10181,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step4_llm_extract_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step4_llm_extract_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "step4_llm_extract_label",
-      "x": 798, "y": 316,
-      "width": 170, "height": 64,
+      "x": 798,
+      "y": 316,
+      "width": 170,
+      "height": 64,
       "text": "4. LLM extracts\namount, vendor, category\nfrom receipt\n(record_transaction)",
       "originalText": "4. LLM extracts\namount, vendor, category\nfrom receipt\n(record_transaction)",
       "fontSize": 11,
@@ -826,12 +983,13 @@
       "containerId": "step4_llm_extract",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_4_to_5",
-      "x": 980, "y": 348,
-      "width": 58, "height": 0,
+      "x": 980,
+      "y": 348,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -848,19 +1006,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "step4_llm_extract", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "step5_store", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "step4_llm_extract",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "step5_store",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "step5_store",
-      "x": 1044, "y": 316,
-      "width": 180, "height": 64,
+      "x": 1044,
+      "y": 316,
+      "width": 180,
+      "height": 64,
       "strokeColor": "#b45309",
       "backgroundColor": "#fffbeb",
       "fillStyle": "solid",
@@ -874,16 +1050,25 @@
       "versionNonce": 10201,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step5_store_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step5_store_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "step5_store_label",
-      "x": 1054, "y": 326,
-      "width": 160, "height": 44,
+      "x": 1054,
+      "y": 326,
+      "width": 160,
+      "height": 44,
       "text": "5. Data stored in\nfinance schema\n(PostgreSQL)",
       "originalText": "5. Data stored in\nfinance schema\n(PostgreSQL)",
       "fontSize": 11,
@@ -909,12 +1094,13 @@
       "containerId": "step5_store",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_5_to_6",
-      "x": 1134, "y": 382,
-      "width": 0, "height": 58,
+      "x": 1134,
+      "y": 382,
+      "width": 0,
+      "height": 58,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -931,19 +1117,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [0, 58]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          58
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "step5_store", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "step6_budget_check", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "step5_store",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "step6_budget_check",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "step6_budget_check",
-      "x": 1044, "y": 446,
-      "width": 180, "height": 64,
+      "x": 1044,
+      "y": 446,
+      "width": 180,
+      "height": 64,
       "strokeColor": "#6d28d9",
       "backgroundColor": "#ddd6fe",
       "fillStyle": "solid",
@@ -957,17 +1161,26 @@
       "versionNonce": 10221,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step6_budget_check_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step6_budget_check_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "step6_budget_check_label",
-      "x": 1054, "y": 456,
-      "width": 160, "height": 44,
-      "text": "6. LLM checks budget\nand upcoming bills\n(upcoming_bills)",
+      "x": 1054,
+      "y": 456,
+      "width": 160,
+      "height": 44,
+      "text": "6. LLM checks\nupcoming bills\n(upcoming_bills)",
       "originalText": "6. LLM checks budget\nand upcoming bills\n(upcoming_bills)",
       "fontSize": 11,
       "fontFamily": 3,
@@ -992,12 +1205,13 @@
       "containerId": "step6_budget_check",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_6_to_7",
-      "x": 1042, "y": 478,
-      "width": -58, "height": 0,
+      "x": 1042,
+      "y": 478,
+      "width": -58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -1014,19 +1228,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [-58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          -58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "step6_budget_check", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "step7_response", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "step6_budget_check",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "step7_response",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "step7_response",
-      "x": 788, "y": 446,
-      "width": 190, "height": 64,
+      "x": 788,
+      "y": 446,
+      "width": 190,
+      "height": 64,
       "strokeColor": "#047857",
       "backgroundColor": "#a7f3d0",
       "fillStyle": "solid",
@@ -1040,16 +1272,25 @@
       "versionNonce": 10241,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "step7_response_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "step7_response_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "step7_response_label",
-      "x": 798, "y": 456,
-      "width": 170, "height": 44,
+      "x": 798,
+      "y": 456,
+      "width": 170,
+      "height": 44,
       "text": "7. Response with\nsummary returned\nto user via notify()",
       "originalText": "7. Response with\nsummary returned\nto user via notify()",
       "fontSize": 11,
@@ -1075,14 +1316,15 @@
       "containerId": "step7_response",
       "lineHeight": 1.25
     },
-
     {
       "type": "text",
       "id": "email_extraction_note",
-      "x": 80, "y": 398,
-      "width": 680, "height": 28,
-      "text": "Email receipt extraction: IMAP module polls inbox → extracts amount, vendor, category from forwarded receipts/invoices → deduplicates via source_message_id",
-      "originalText": "Email receipt extraction: IMAP module polls inbox → extracts amount, vendor, category from forwarded receipts/invoices → deduplicates via source_message_id",
+      "x": 80,
+      "y": 398,
+      "width": 680,
+      "height": 28,
+      "text": "Email receipt extraction: IMAP module polls inbox \u2192 extracts amount, vendor, category from forwarded receipts/invoices \u2192 deduplicates via source_message_id",
+      "originalText": "Email receipt extraction: IMAP module polls inbox \u2192 extracts amount, vendor, category from forwarded receipts/invoices \u2192 deduplicates via source_message_id",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "left",
@@ -1106,12 +1348,13 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "line",
       "id": "divider_2",
-      "x": 80, "y": 536,
-      "width": 1340, "height": 0,
+      "x": 80,
+      "y": 536,
+      "width": 1340,
+      "height": 0,
       "strokeColor": "#d1d5db",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -1128,19 +1371,29 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [1340, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1340,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
       "endArrowhead": null
     },
-
     {
       "type": "text",
       "id": "section_scheduled_title",
-      "x": 80, "y": 550,
-      "width": 700, "height": 26,
+      "x": 80,
+      "y": 550,
+      "width": 700,
+      "height": 26,
       "text": "SCHEDULED FLOWS",
       "originalText": "SCHEDULED FLOWS",
       "fontSize": 16,
@@ -1166,14 +1419,15 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "text",
       "id": "sched_bills_title",
-      "x": 80, "y": 588,
-      "width": 500, "height": 20,
-      "text": "upcoming-bills-check  (cron: 0 8 * * *  — daily 08:00)",
-      "originalText": "upcoming-bills-check  (cron: 0 8 * * *  — daily 08:00)",
+      "x": 80,
+      "y": 588,
+      "width": 500,
+      "height": 20,
+      "text": "upcoming-bills-check  (cron: 0 8 * * *  \u2014 daily 08:00)",
+      "originalText": "upcoming-bills-check  (cron: 0 8 * * *  \u2014 daily 08:00)",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "left",
@@ -1197,12 +1451,13 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "rectangle",
       "id": "bills_scheduler",
-      "x": 80, "y": 616,
-      "width": 130, "height": 44,
+      "x": 80,
+      "y": 616,
+      "width": 130,
+      "height": 44,
       "strokeColor": "#b45309",
       "backgroundColor": "#fef3c7",
       "fillStyle": "solid",
@@ -1216,16 +1471,25 @@
       "versionNonce": 10331,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "bills_scheduler_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "bills_scheduler_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "bills_scheduler_label",
-      "x": 90, "y": 630,
-      "width": 110, "height": 16,
+      "x": 90,
+      "y": 630,
+      "width": 110,
+      "height": 16,
       "text": "Scheduler fires",
       "originalText": "Scheduler fires",
       "fontSize": 12,
@@ -1251,12 +1515,13 @@
       "containerId": "bills_scheduler",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_bills_1",
-      "x": 212, "y": 638,
-      "width": 58, "height": 0,
+      "x": 212,
+      "y": 638,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -1273,19 +1538,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "bills_scheduler", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "bills_query", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "bills_scheduler",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "bills_query",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "bills_query",
-      "x": 276, "y": 616,
-      "width": 180, "height": 44,
+      "x": 276,
+      "y": 616,
+      "width": 180,
+      "height": 44,
       "strokeColor": "#065f46",
       "backgroundColor": "#d1fae5",
       "fillStyle": "solid",
@@ -1299,16 +1582,25 @@
       "versionNonce": 10351,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "bills_query_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "bills_query_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "bills_query_label",
-      "x": 286, "y": 626,
-      "width": 160, "height": 24,
+      "x": 286,
+      "y": 626,
+      "width": 160,
+      "height": 24,
       "text": "upcoming_bills(\ndays_ahead=14, overdue=true)",
       "originalText": "upcoming_bills(\ndays_ahead=14, overdue=true)",
       "fontSize": 11,
@@ -1334,12 +1626,13 @@
       "containerId": "bills_query",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_bills_2",
-      "x": 458, "y": 638,
-      "width": 58, "height": 0,
+      "x": 458,
+      "y": 638,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -1356,19 +1649,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "bills_query", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "bills_urgency", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "bills_query",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "bills_urgency",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "bills_urgency",
-      "x": 522, "y": 608,
-      "width": 180, "height": 60,
+      "x": 522,
+      "y": 608,
+      "width": 180,
+      "height": 60,
       "strokeColor": "#065f46",
       "backgroundColor": "#d1fae5",
       "fillStyle": "solid",
@@ -1382,18 +1693,27 @@
       "versionNonce": 10371,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "bills_urgency_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "bills_urgency_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "bills_urgency_label",
-      "x": 532, "y": 616,
-      "width": 160, "height": 44,
-      "text": "rank by urgency:\noverdue → today → week\n→ 14-day horizon",
-      "originalText": "rank by urgency:\noverdue → today → week\n→ 14-day horizon",
+      "x": 532,
+      "y": 616,
+      "width": 160,
+      "height": 44,
+      "text": "rank by urgency:\noverdue \u2192 today \u2192 week\n\u2192 14-day horizon",
+      "originalText": "rank by urgency:\noverdue \u2192 today \u2192 week\n\u2192 14-day horizon",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "center",
@@ -1417,12 +1737,13 @@
       "containerId": "bills_urgency",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_bills_3",
-      "x": 704, "y": 638,
-      "width": 58, "height": 0,
+      "x": 704,
+      "y": 638,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -1439,19 +1760,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "bills_urgency", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "bills_notify", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "bills_urgency",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "bills_notify",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "bills_notify",
-      "x": 768, "y": 616,
-      "width": 180, "height": 44,
+      "x": 768,
+      "y": 616,
+      "width": 180,
+      "height": 44,
       "strokeColor": "#1e40af",
       "backgroundColor": "#dbeafe",
       "fillStyle": "solid",
@@ -1465,16 +1804,25 @@
       "versionNonce": 10391,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "bills_notify_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "bills_notify_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "bills_notify_label",
-      "x": 778, "y": 630,
-      "width": 160, "height": 16,
+      "x": 778,
+      "y": 630,
+      "width": 160,
+      "height": 16,
       "text": "notify(telegram, intent=send)",
       "originalText": "notify(telegram, intent=send)",
       "fontSize": 11,
@@ -1500,12 +1848,13 @@
       "containerId": "bills_notify",
       "lineHeight": 1.25
     },
-
     {
       "type": "text",
       "id": "bills_skip_note",
-      "x": 768, "y": 668,
-      "width": 180, "height": 14,
+      "x": 768,
+      "y": 668,
+      "width": 180,
+      "height": 14,
       "text": "skip if no upcoming bills",
       "originalText": "skip if no upcoming bills",
       "fontSize": 10,
@@ -1531,14 +1880,15 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "text",
       "id": "sched_subs_title",
-      "x": 80, "y": 700,
-      "width": 500, "height": 20,
-      "text": "subscription-renewal-alerts  (cron: 30 8 * * *  — daily 08:30)",
-      "originalText": "subscription-renewal-alerts  (cron: 30 8 * * *  — daily 08:30)",
+      "x": 80,
+      "y": 700,
+      "width": 500,
+      "height": 20,
+      "text": "subscription-renewal-alerts  (cron: 30 8 * * *  \u2014 daily 08:30)",
+      "originalText": "subscription-renewal-alerts  (cron: 30 8 * * *  \u2014 daily 08:30)",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "left",
@@ -1562,12 +1912,13 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "rectangle",
       "id": "subs_scheduler",
-      "x": 80, "y": 728,
-      "width": 130, "height": 44,
+      "x": 80,
+      "y": 728,
+      "width": 130,
+      "height": 44,
       "strokeColor": "#b45309",
       "backgroundColor": "#fef3c7",
       "fillStyle": "solid",
@@ -1581,16 +1932,25 @@
       "versionNonce": 10411,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "subs_scheduler_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "subs_scheduler_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "subs_scheduler_label",
-      "x": 90, "y": 742,
-      "width": 110, "height": 16,
+      "x": 90,
+      "y": 742,
+      "width": 110,
+      "height": 16,
       "text": "Scheduler fires",
       "originalText": "Scheduler fires",
       "fontSize": 12,
@@ -1616,12 +1976,13 @@
       "containerId": "subs_scheduler",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_subs_1",
-      "x": 212, "y": 750,
-      "width": 58, "height": 0,
+      "x": 212,
+      "y": 750,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -1638,19 +1999,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "subs_scheduler", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "subs_scan", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "subs_scheduler",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "subs_scan",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "subs_scan",
-      "x": 276, "y": 720,
-      "width": 180, "height": 60,
+      "x": 276,
+      "y": 720,
+      "width": 180,
+      "height": 60,
       "strokeColor": "#065f46",
       "backgroundColor": "#d1fae5",
       "fillStyle": "solid",
@@ -1664,16 +2043,25 @@
       "versionNonce": 10431,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "subs_scan_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "subs_scan_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "subs_scan_label",
-      "x": 286, "y": 728,
-      "width": 160, "height": 44,
+      "x": 286,
+      "y": 728,
+      "width": 160,
+      "height": 44,
       "text": "check subscriptions\nrenewing within 7 days\n(service, amount, date)",
       "originalText": "check subscriptions\nrenewing within 7 days\n(service, amount, date)",
       "fontSize": 11,
@@ -1699,12 +2087,13 @@
       "containerId": "subs_scan",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_subs_2",
-      "x": 458, "y": 750,
-      "width": 58, "height": 0,
+      "x": 458,
+      "y": 750,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -1721,19 +2110,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "subs_scan", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "subs_flag", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "subs_scan",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "subs_flag",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "subs_flag",
-      "x": 522, "y": 720,
-      "width": 180, "height": 60,
+      "x": 522,
+      "y": 720,
+      "width": 180,
+      "height": 60,
       "strokeColor": "#065f46",
       "backgroundColor": "#d1fae5",
       "fillStyle": "solid",
@@ -1747,16 +2154,25 @@
       "versionNonce": 10451,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "subs_flag_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "subs_flag_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "subs_flag_label",
-      "x": 532, "y": 728,
-      "width": 160, "height": 44,
+      "x": 532,
+      "y": 728,
+      "width": 160,
+      "height": 44,
       "text": "flag renewals for review\nbefore auto-renewal\noccurs",
       "originalText": "flag renewals for review\nbefore auto-renewal\noccurs",
       "fontSize": 11,
@@ -1782,12 +2198,13 @@
       "containerId": "subs_flag",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_subs_3",
-      "x": 704, "y": 750,
-      "width": 58, "height": 0,
+      "x": 704,
+      "y": 750,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -1804,19 +2221,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "subs_flag", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "subs_notify", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "subs_flag",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "subs_notify",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "subs_notify",
-      "x": 768, "y": 728,
-      "width": 180, "height": 44,
+      "x": 768,
+      "y": 728,
+      "width": 180,
+      "height": 44,
       "strokeColor": "#1e40af",
       "backgroundColor": "#dbeafe",
       "fillStyle": "solid",
@@ -1830,16 +2265,25 @@
       "versionNonce": 10471,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "subs_notify_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "subs_notify_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "subs_notify_label",
-      "x": 778, "y": 742,
-      "width": 160, "height": 16,
+      "x": 778,
+      "y": 742,
+      "width": 160,
+      "height": 16,
       "text": "notify(telegram, intent=send)",
       "originalText": "notify(telegram, intent=send)",
       "fontSize": 11,
@@ -1865,12 +2309,13 @@
       "containerId": "subs_notify",
       "lineHeight": 1.25
     },
-
     {
       "type": "text",
       "id": "subs_skip_note",
-      "x": 768, "y": 780,
-      "width": 180, "height": 14,
+      "x": 768,
+      "y": 780,
+      "width": 180,
+      "height": 14,
       "text": "skip if no renewals within 7 days",
       "originalText": "skip if no renewals within 7 days",
       "fontSize": 10,
@@ -1896,12 +2341,13 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "line",
       "id": "divider_3",
-      "x": 80, "y": 808,
-      "width": 1340, "height": 0,
+      "x": 80,
+      "y": 808,
+      "width": 1340,
+      "height": 0,
       "strokeColor": "#d1d5db",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -1918,21 +2364,31 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [1340, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1340,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
       "endArrowhead": null
     },
-
     {
       "type": "text",
       "id": "sched_monthly_title",
-      "x": 80, "y": 822,
-      "width": 700, "height": 20,
-      "text": "monthly-spending-summary  (cron: 0 9 1 * *  — 1st of month, 09:00)",
-      "originalText": "monthly-spending-summary  (cron: 0 9 1 * *  — 1st of month, 09:00)",
+      "x": 80,
+      "y": 822,
+      "width": 700,
+      "height": 20,
+      "text": "monthly-spending-summary  (cron: 0 9 1 * *  \u2014 1st of month, 09:00)",
+      "originalText": "monthly-spending-summary  (cron: 0 9 1 * *  \u2014 1st of month, 09:00)",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "left",
@@ -1956,12 +2412,13 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "rectangle",
       "id": "monthly_scheduler",
-      "x": 80, "y": 854,
-      "width": 130, "height": 54,
+      "x": 80,
+      "y": 854,
+      "width": 130,
+      "height": 54,
       "strokeColor": "#b45309",
       "backgroundColor": "#fef3c7",
       "fillStyle": "solid",
@@ -1975,16 +2432,25 @@
       "versionNonce": 10521,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "monthly_scheduler_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "monthly_scheduler_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "monthly_scheduler_label",
-      "x": 90, "y": 868,
-      "width": 110, "height": 26,
+      "x": 90,
+      "y": 868,
+      "width": 110,
+      "height": 26,
       "text": "Scheduler fires\n(1st of month)",
       "originalText": "Scheduler fires\n(1st of month)",
       "fontSize": 11,
@@ -2010,12 +2476,13 @@
       "containerId": "monthly_scheduler",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_monthly_1",
-      "x": 212, "y": 881,
-      "width": 58, "height": 0,
+      "x": 212,
+      "y": 881,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -2032,19 +2499,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "monthly_scheduler", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "monthly_query", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "monthly_scheduler",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "monthly_query",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "monthly_query",
-      "x": 276, "y": 854,
-      "width": 180, "height": 54,
+      "x": 276,
+      "y": 854,
+      "width": 180,
+      "height": 54,
       "strokeColor": "#065f46",
       "backgroundColor": "#d1fae5",
       "fillStyle": "solid",
@@ -2058,16 +2543,25 @@
       "versionNonce": 10541,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "monthly_query_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "monthly_query_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "monthly_query_label",
-      "x": 286, "y": 862,
-      "width": 160, "height": 38,
+      "x": 286,
+      "y": 862,
+      "width": 160,
+      "height": 38,
       "text": "spending_summary(\nprev calendar month,\ngroup_by=category)",
       "originalText": "spending_summary(\nprev calendar month,\ngroup_by=category)",
       "fontSize": 11,
@@ -2093,12 +2587,13 @@
       "containerId": "monthly_query",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_monthly_2",
-      "x": 458, "y": 881,
-      "width": 58, "height": 0,
+      "x": 458,
+      "y": 881,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -2115,19 +2610,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "monthly_query", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "monthly_categorize", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "monthly_query",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "monthly_categorize",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "monthly_categorize",
-      "x": 522, "y": 846,
-      "width": 180, "height": 70,
+      "x": 522,
+      "y": 846,
+      "width": 180,
+      "height": 70,
       "strokeColor": "#065f46",
       "backgroundColor": "#d1fae5",
       "fillStyle": "solid",
@@ -2141,16 +2654,25 @@
       "versionNonce": 10561,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "monthly_categorize_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "monthly_categorize_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "monthly_categorize_label",
-      "x": 532, "y": 854,
-      "width": 160, "height": 54,
+      "x": 532,
+      "y": 854,
+      "width": 160,
+      "height": 54,
       "text": "categorize spending\ntotal + top categories\n+ MoM delta\n+ outstanding obligations",
       "originalText": "categorize spending\ntotal + top categories\n+ MoM delta\n+ outstanding obligations",
       "fontSize": 11,
@@ -2176,12 +2698,13 @@
       "containerId": "monthly_categorize",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_monthly_3",
-      "x": 704, "y": 881,
-      "width": 58, "height": 0,
+      "x": 704,
+      "y": 881,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -2198,19 +2721,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "monthly_categorize", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "monthly_compose", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "monthly_categorize",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "monthly_compose",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "monthly_compose",
-      "x": 768, "y": 854,
-      "width": 180, "height": 54,
+      "x": 768,
+      "y": 854,
+      "width": 180,
+      "height": 54,
       "strokeColor": "#065f46",
       "backgroundColor": "#d1fae5",
       "fillStyle": "solid",
@@ -2224,16 +2765,25 @@
       "versionNonce": 10581,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "monthly_compose_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "monthly_compose_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "monthly_compose_label",
-      "x": 778, "y": 868,
-      "width": 160, "height": 26,
+      "x": 778,
+      "y": 868,
+      "width": 160,
+      "height": 26,
       "text": "compose formatted\nmonthly summary",
       "originalText": "compose formatted\nmonthly summary",
       "fontSize": 11,
@@ -2259,12 +2809,13 @@
       "containerId": "monthly_compose",
       "lineHeight": 1.25
     },
-
     {
       "type": "arrow",
       "id": "arr_monthly_4",
-      "x": 950, "y": 881,
-      "width": 58, "height": 0,
+      "x": 950,
+      "y": 881,
+      "width": 58,
+      "height": 0,
       "strokeColor": "#6b7280",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -2281,19 +2832,37 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [58, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          58,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
-      "startBinding": {"elementId": "monthly_compose", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "monthly_notify", "focus": 0, "gap": 2},
+      "startBinding": {
+        "elementId": "monthly_compose",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "monthly_notify",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
-
     {
       "type": "rectangle",
       "id": "monthly_notify",
-      "x": 1014, "y": 854,
-      "width": 200, "height": 54,
+      "x": 1014,
+      "y": 854,
+      "width": 200,
+      "height": 54,
       "strokeColor": "#1e40af",
       "backgroundColor": "#dbeafe",
       "fillStyle": "solid",
@@ -2307,16 +2876,25 @@
       "versionNonce": 10601,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "monthly_notify_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "monthly_notify_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "monthly_notify_label",
-      "x": 1024, "y": 868,
-      "width": 180, "height": 26,
+      "x": 1024,
+      "y": 868,
+      "width": 180,
+      "height": 26,
       "text": "notify(telegram,\nintent=send)",
       "originalText": "notify(telegram,\nintent=send)",
       "fontSize": 12,
@@ -2342,14 +2920,15 @@
       "containerId": "monthly_notify",
       "lineHeight": 1.25
     },
-
     {
       "type": "text",
       "id": "monthly_detail_note",
-      "x": 276, "y": 920,
-      "width": 938, "height": 14,
-      "text": "monthly summary always fires — sends formatted overview regardless of zero-spend scenarios",
-      "originalText": "monthly summary always fires — sends formatted overview regardless of zero-spend scenarios",
+      "x": 276,
+      "y": 920,
+      "width": 938,
+      "height": 14,
+      "text": "monthly summary always fires \u2014 sends formatted overview regardless of zero-spend scenarios",
+      "originalText": "monthly summary always fires \u2014 sends formatted overview regardless of zero-spend scenarios",
       "fontSize": 10,
       "fontFamily": 3,
       "textAlign": "left",
@@ -2373,12 +2952,13 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "line",
       "id": "divider_4",
-      "x": 80, "y": 948,
-      "width": 1340, "height": 0,
+      "x": 80,
+      "y": 948,
+      "width": 1340,
+      "height": 0,
       "strokeColor": "#d1d5db",
       "backgroundColor": "transparent",
       "fillStyle": "solid",
@@ -2395,21 +2975,31 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [1340, 0]],
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1340,
+          0
+        ]
+      ],
       "lastCommittedPoint": null,
       "startBinding": null,
       "endBinding": null,
       "startArrowhead": null,
       "endArrowhead": null
     },
-
     {
       "type": "text",
       "id": "section_datamodel_title",
-      "x": 80, "y": 966,
-      "width": 700, "height": 26,
-      "text": "DATA MODEL — finance schema tables",
-      "originalText": "DATA MODEL — finance schema tables",
+      "x": 80,
+      "y": 966,
+      "width": 700,
+      "height": 26,
+      "text": "DATA MODEL \u2014 finance schema tables",
+      "originalText": "DATA MODEL \u2014 finance schema tables",
       "fontSize": 16,
       "fontFamily": 3,
       "textAlign": "left",
@@ -2433,12 +3023,13 @@
       "containerId": null,
       "lineHeight": 1.25
     },
-
     {
       "type": "rectangle",
       "id": "table_receipts",
-      "x": 80, "y": 1004,
-      "width": 260, "height": 130,
+      "x": 80,
+      "y": 1004,
+      "width": 260,
+      "height": 130,
       "strokeColor": "#b45309",
       "backgroundColor": "#fffbeb",
       "fillStyle": "solid",
@@ -2452,18 +3043,27 @@
       "versionNonce": 10721,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "table_receipts_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "table_receipts_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "table_receipts_label",
-      "x": 90, "y": 1012,
-      "width": 240, "height": 114,
-      "text": "finance.transactions\n─────────────────\nid, account_id (FK)\nposted_at (TIMESTAMPTZ)\nmerchant, description\namount (NUMERIC 14,2), currency\ndirection (debit|credit)\ncategory, payment_method\nsource_message_id, external_ref\nmetadata (JSONB)",
-      "originalText": "finance.transactions\n─────────────────\nid, account_id (FK)\nposted_at (TIMESTAMPTZ)\nmerchant, description\namount (NUMERIC 14,2), currency\ndirection (debit|credit)\ncategory, payment_method\nsource_message_id, external_ref\nmetadata (JSONB)",
+      "x": 90,
+      "y": 1012,
+      "width": 240,
+      "height": 114,
+      "text": "finance.transactions\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, account_id (FK)\nposted_at (TIMESTAMPTZ)\nmerchant, description\namount (NUMERIC 14,2), currency\ndirection (debit|credit)\ncategory, payment_method\nsource_message_id, external_ref\nmetadata (JSONB)",
+      "originalText": "finance.transactions\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, account_id (FK)\nposted_at (TIMESTAMPTZ)\nmerchant, description\namount (NUMERIC 14,2), currency\ndirection (debit|credit)\ncategory, payment_method\nsource_message_id, external_ref\nmetadata (JSONB)",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "left",
@@ -2487,12 +3087,13 @@
       "containerId": "table_receipts",
       "lineHeight": 1.4
     },
-
     {
       "type": "rectangle",
       "id": "table_bills",
-      "x": 370, "y": 1004,
-      "width": 260, "height": 130,
+      "x": 370,
+      "y": 1004,
+      "width": 260,
+      "height": 130,
       "strokeColor": "#b45309",
       "backgroundColor": "#fffbeb",
       "fillStyle": "solid",
@@ -2506,18 +3107,27 @@
       "versionNonce": 10731,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "table_bills_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "table_bills_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "table_bills_label",
-      "x": 380, "y": 1012,
-      "width": 240, "height": 114,
-      "text": "finance.bills\n─────────────────\nid, payee, amount, currency\ndue_date (DATE), frequency\nstatus (pending|paid|overdue)\npayment_method, account_id (FK)\nstatement_period_start/end\npaid_at (TIMESTAMPTZ)\nsource_message_id, metadata",
-      "originalText": "finance.bills\n─────────────────\nid, payee, amount, currency\ndue_date (DATE), frequency\nstatus (pending|paid|overdue)\npayment_method, account_id (FK)\nstatement_period_start/end\npaid_at (TIMESTAMPTZ)\nsource_message_id, metadata",
+      "x": 380,
+      "y": 1012,
+      "width": 240,
+      "height": 114,
+      "text": "finance.bills\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, payee, amount, currency\ndue_date (DATE), frequency\nstatus (pending|paid|overdue)\npayment_method, account_id (FK)\nstatement_period_start/end\npaid_at (TIMESTAMPTZ)\nsource_message_id, metadata",
+      "originalText": "finance.bills\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, payee, amount, currency\ndue_date (DATE), frequency\nstatus (pending|paid|overdue)\npayment_method, account_id (FK)\nstatement_period_start/end\npaid_at (TIMESTAMPTZ)\nsource_message_id, metadata",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "left",
@@ -2541,12 +3151,13 @@
       "containerId": "table_bills",
       "lineHeight": 1.4
     },
-
     {
       "type": "rectangle",
       "id": "table_subscriptions",
-      "x": 660, "y": 1004,
-      "width": 280, "height": 130,
+      "x": 660,
+      "y": 1004,
+      "width": 280,
+      "height": 130,
       "strokeColor": "#b45309",
       "backgroundColor": "#fffbeb",
       "fillStyle": "solid",
@@ -2560,18 +3171,27 @@
       "versionNonce": 10741,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "table_subscriptions_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "table_subscriptions_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "table_subscriptions_label",
-      "x": 670, "y": 1012,
-      "width": 260, "height": 114,
-      "text": "finance.subscriptions\n─────────────────\nid, service, amount, currency\nfrequency (weekly|monthly|\n  quarterly|yearly|custom)\nnext_renewal (DATE)\nstatus (active|cancelled|paused)\nauto_renew (BOOL)\npayment_method, account_id (FK)\nsource_message_id, metadata",
-      "originalText": "finance.subscriptions\n─────────────────\nid, service, amount, currency\nfrequency (weekly|monthly|\n  quarterly|yearly|custom)\nnext_renewal (DATE)\nstatus (active|cancelled|paused)\nauto_renew (BOOL)\npayment_method, account_id (FK)\nsource_message_id, metadata",
+      "x": 670,
+      "y": 1012,
+      "width": 260,
+      "height": 114,
+      "text": "finance.subscriptions\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, service, amount, currency\nfrequency (weekly|monthly|\n  quarterly|yearly|custom)\nnext_renewal (DATE)\nstatus (active|cancelled|paused)\nauto_renew (BOOL)\npayment_method, account_id (FK)\nsource_message_id, metadata",
+      "originalText": "finance.subscriptions\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, service, amount, currency\nfrequency (weekly|monthly|\n  quarterly|yearly|custom)\nnext_renewal (DATE)\nstatus (active|cancelled|paused)\nauto_renew (BOOL)\npayment_method, account_id (FK)\nsource_message_id, metadata",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "left",
@@ -2595,17 +3215,18 @@
       "containerId": "table_subscriptions",
       "lineHeight": 1.4
     },
-
     {
       "type": "rectangle",
       "id": "table_budgets",
-      "x": 80, "y": 1154,
-      "width": 260, "height": 110,
-      "strokeColor": "#b45309",
-      "backgroundColor": "#fffbeb",
+      "x": 80,
+      "y": 1154,
+      "width": 260,
+      "height": 110,
+      "strokeColor": "#9ca3af",
+      "backgroundColor": "#f5f5f5",
       "fillStyle": "solid",
       "strokeWidth": 2,
-      "strokeStyle": "solid",
+      "strokeStyle": "dashed",
       "roughness": 0,
       "opacity": 100,
       "angle": 0,
@@ -2614,18 +3235,27 @@
       "versionNonce": 10751,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "table_budgets_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "table_budgets_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "table_budgets_label",
-      "x": 90, "y": 1162,
-      "width": 240, "height": 94,
-      "text": "finance.budgets\n─────────────────\nid, category, period\namount_limit (NUMERIC 14,2)\ncurrency (CHAR 3)\nperiod_start, period_end (DATE)\nalert_threshold (NUMERIC 5,2)\ncreated_at, updated_at",
-      "originalText": "finance.budgets\n─────────────────\nid, category, period\namount_limit (NUMERIC 14,2)\ncurrency (CHAR 3)\nperiod_start, period_end (DATE)\nalert_threshold (NUMERIC 5,2)\ncreated_at, updated_at",
+      "x": 90,
+      "y": 1162,
+      "width": 240,
+      "height": 94,
+      "text": "finance.budgets  (future)\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, category, period\namount_limit (NUMERIC 14,2)\ncurrency (CHAR 3)\nperiod_start, period_end (DATE)\nalert_threshold (NUMERIC 5,2)\ncreated_at, updated_at",
+      "originalText": "finance.budgets\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, category, period\namount_limit (NUMERIC 14,2)\ncurrency (CHAR 3)\nperiod_start, period_end (DATE)\nalert_threshold (NUMERIC 5,2)\ncreated_at, updated_at",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "left",
@@ -2649,17 +3279,18 @@
       "containerId": "table_budgets",
       "lineHeight": 1.4
     },
-
     {
       "type": "rectangle",
       "id": "table_categories",
-      "x": 370, "y": 1154,
-      "width": 260, "height": 110,
-      "strokeColor": "#b45309",
-      "backgroundColor": "#fffbeb",
+      "x": 370,
+      "y": 1154,
+      "width": 260,
+      "height": 110,
+      "strokeColor": "#9ca3af",
+      "backgroundColor": "#f5f5f5",
       "fillStyle": "solid",
       "strokeWidth": 2,
-      "strokeStyle": "solid",
+      "strokeStyle": "dashed",
       "roughness": 0,
       "opacity": 100,
       "angle": 0,
@@ -2668,18 +3299,27 @@
       "versionNonce": 10761,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "table_categories_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "table_categories_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "table_categories_label",
-      "x": 380, "y": 1162,
-      "width": 240, "height": 94,
-      "text": "finance.categories\n─────────────────\nid, name, slug (UNIQUE)\nparent_id (FK self-ref)\ncolor, icon\nis_system (BOOL)\ncreated_at, updated_at",
-      "originalText": "finance.categories\n─────────────────\nid, name, slug (UNIQUE)\nparent_id (FK self-ref)\ncolor, icon\nis_system (BOOL)\ncreated_at, updated_at",
+      "x": 380,
+      "y": 1162,
+      "width": 240,
+      "height": 94,
+      "text": "finance.categories  (future)\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, name, slug (UNIQUE)\nparent_id (FK self-ref)\ncolor, icon\nis_system (BOOL)\ncreated_at, updated_at",
+      "originalText": "finance.categories\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, name, slug (UNIQUE)\nparent_id (FK self-ref)\ncolor, icon\nis_system (BOOL)\ncreated_at, updated_at",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "left",
@@ -2703,12 +3343,13 @@
       "containerId": "table_categories",
       "lineHeight": 1.4
     },
-
     {
       "type": "rectangle",
       "id": "table_accounts",
-      "x": 660, "y": 1154,
-      "width": 280, "height": 110,
+      "x": 660,
+      "y": 1154,
+      "width": 280,
+      "height": 110,
       "strokeColor": "#b45309",
       "backgroundColor": "#fffbeb",
       "fillStyle": "solid",
@@ -2722,18 +3363,27 @@
       "versionNonce": 10771,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "table_accounts_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "table_accounts_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
       "id": "table_accounts_label",
-      "x": 670, "y": 1162,
-      "width": 260, "height": 94,
-      "text": "finance.accounts\n─────────────────\nid, institution (TEXT)\ntype (checking|savings|\n  credit|investment)\nname, last_four (CHAR 4)\ncurrency (CHAR 3)\nmetadata (JSONB)\ncreated_at, updated_at",
-      "originalText": "finance.accounts\n─────────────────\nid, institution (TEXT)\ntype (checking|savings|\n  credit|investment)\nname, last_four (CHAR 4)\ncurrency (CHAR 3)\nmetadata (JSONB)\ncreated_at, updated_at",
+      "x": 670,
+      "y": 1162,
+      "width": 260,
+      "height": 94,
+      "text": "finance.accounts\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, institution (TEXT)\ntype (checking|savings|\n  credit|investment)\nname, last_four (CHAR 4)\ncurrency (CHAR 3)\nmetadata (JSONB)\ncreated_at, updated_at",
+      "originalText": "finance.accounts\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nid, institution (TEXT)\ntype (checking|savings|\n  credit|investment)\nname, last_four (CHAR 4)\ncurrency (CHAR 3)\nmetadata (JSONB)\ncreated_at, updated_at",
       "fontSize": 11,
       "fontFamily": 3,
       "textAlign": "left",
@@ -2757,7 +3407,6 @@
       "containerId": "table_accounts",
       "lineHeight": 1.4
     }
-
   ],
   "appState": {
     "viewBackgroundColor": "#ffffff",
