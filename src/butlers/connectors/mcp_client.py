@@ -78,9 +78,17 @@ async def wait_for_switchboard_ready(
         attempts.
     """
     health_url = _switchboard_health_url(sse_url)
+    # Redact any embedded credentials from the URL before logging or raising.
+    _parsed_health = urlparse(health_url)
+    _host_part = (
+        f"{_parsed_health.hostname}:{_parsed_health.port}"
+        if _parsed_health.port is not None
+        else _parsed_health.hostname
+    )
+    _safe_url = f"{_parsed_health.scheme}://{_host_part}/health"
     logger.info(
         "Switchboard readiness probe: waiting for %s to become healthy",
-        health_url,
+        _safe_url,
     )
 
     async with httpx.AsyncClient(timeout=http_timeout_s) as client:
@@ -98,7 +106,7 @@ async def wait_for_switchboard_ready(
                     resp.status_code,
                     attempt,
                 )
-            except Exception as exc:
+            except httpx.RequestError as exc:
                 logger.debug(
                     "Switchboard readiness probe: attempt %d failed: %s",
                     attempt,
@@ -116,7 +124,7 @@ async def wait_for_switchboard_ready(
             await asyncio.sleep(sleep_s)
 
     raise TimeoutError(
-        f"Switchboard at {health_url} did not become healthy within {max_attempts} probe attempt(s)"
+        f"Switchboard at {_safe_url} did not become healthy within {max_attempts} probe attempt(s)"
     )
 
 
