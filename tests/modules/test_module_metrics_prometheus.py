@@ -379,27 +379,8 @@ class TestAsyncQueryRangeErrors:
 class TestMetricsListMCPTool:
     """metrics_list MCP tool returns definitions from the storage layer."""
 
-    def _setup_module_with_captured_tools(self, cfg, db) -> tuple[Any, dict]:
-        """Helper: create MetricsModule with a tool-capturing fake MCP."""
-        from butlers.modules.metrics import MetricsModule
-
-        mod = MetricsModule()
-        registered_tools: dict = {}
-
-        fake_mcp = MagicMock()
-
-        def capture_tool():
-            def decorator(fn):
-                registered_tools[fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        fake_mcp.tool = capture_tool
-        return mod, fake_mcp, registered_tools
-
     async def test_metrics_list_returns_all_definitions(self, monkeypatch):
-        from butlers.modules.metrics import MetricsModule, MetricsModuleConfig, storage
+        from butlers.modules.metrics import MetricsModuleConfig, storage
 
         defns = [
             {
@@ -428,18 +409,7 @@ class TestMetricsListMCPTool:
             ),
         )
 
-        mod = MetricsModule()
-        registered_tools: dict = {}
-        fake_mcp = MagicMock()
-
-        def capture_tool():
-            def decorator(fn):
-                registered_tools[fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        fake_mcp.tool = capture_tool
+        mod, fake_mcp, registered_tools = _make_module_with_captured_tools()
         cfg = MetricsModuleConfig(prometheus_query_url=PROM_URL)
         fake_db = MagicMock()
 
@@ -450,22 +420,11 @@ class TestMetricsListMCPTool:
         assert result == defns
 
     async def test_metrics_list_returns_empty_list_when_no_definitions(self, monkeypatch):
-        from butlers.modules.metrics import MetricsModule, MetricsModuleConfig, storage
+        from butlers.modules.metrics import MetricsModuleConfig, storage
 
         monkeypatch.setattr(storage, "state_list", AsyncMock(return_value=[]))
 
-        mod = MetricsModule()
-        registered_tools: dict = {}
-        fake_mcp = MagicMock()
-
-        def capture_tool():
-            def decorator(fn):
-                registered_tools[fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        fake_mcp.tool = capture_tool
+        mod, fake_mcp, registered_tools = _make_module_with_captured_tools()
         cfg = MetricsModuleConfig(prometheus_query_url=PROM_URL)
         fake_db = MagicMock()
 
@@ -475,26 +434,47 @@ class TestMetricsListMCPTool:
         assert result == []
 
     async def test_metrics_list_returns_empty_list_when_db_is_none(self):
-        from butlers.modules.metrics import MetricsModule, MetricsModuleConfig
+        from butlers.modules.metrics import MetricsModuleConfig
 
-        mod = MetricsModule()
-        registered_tools: dict = {}
-        fake_mcp = MagicMock()
-
-        def capture_tool():
-            def decorator(fn):
-                registered_tools[fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        fake_mcp.tool = capture_tool
+        mod, fake_mcp, registered_tools = _make_module_with_captured_tools()
         cfg = MetricsModuleConfig(prometheus_query_url=PROM_URL)
 
         await mod.register_tools(mcp=fake_mcp, config=cfg, db=None)
 
         result = await registered_tools["metrics_list"]()
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Shared helper for MCP tool wiring tests
+# ---------------------------------------------------------------------------
+
+
+def _make_module_with_captured_tools() -> tuple[Any, Any, dict]:
+    """Create a MetricsModule with a tool-capturing fake MCP server.
+
+    Returns
+    -------
+    tuple[MetricsModule, MagicMock, dict]
+        The module instance, fake MCP object, and the registered_tools dict
+        that will be populated after ``register_tools()`` is awaited.
+    """
+    from butlers.modules.metrics import MetricsModule
+
+    mod = MetricsModule()
+    registered_tools: dict = {}
+
+    fake_mcp = MagicMock()
+
+    def capture_tool():
+        def decorator(fn):
+            registered_tools[fn.__name__] = fn
+            return fn
+
+        return decorator
+
+    fake_mcp.tool = capture_tool
+    return mod, fake_mcp, registered_tools
 
 
 # ---------------------------------------------------------------------------
@@ -507,24 +487,13 @@ class TestMetricsQueryMCPTool:
 
     async def test_metrics_query_returns_vector_result(self, monkeypatch):
         import butlers.modules.metrics as metrics_module
-        from butlers.modules.metrics import MetricsModule, MetricsModuleConfig
+        from butlers.modules.metrics import MetricsModuleConfig
 
         expected = [{"metric": {"__name__": "up"}, "value": [1234, "1"]}]
         # Patch the name as imported into __init__.py (the closure references it directly).
         monkeypatch.setattr(metrics_module, "async_query", AsyncMock(return_value=expected))
 
-        mod = MetricsModule()
-        registered_tools: dict = {}
-        fake_mcp = MagicMock()
-
-        def capture_tool():
-            def decorator(fn):
-                registered_tools[fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        fake_mcp.tool = capture_tool
+        mod, fake_mcp, registered_tools = _make_module_with_captured_tools()
         cfg = MetricsModuleConfig(prometheus_query_url=PROM_URL)
 
         await mod.register_tools(mcp=fake_mcp, config=cfg, db=MagicMock())
@@ -533,20 +502,7 @@ class TestMetricsQueryMCPTool:
         assert result == expected
 
     async def test_metrics_query_returns_error_when_config_none(self):
-        from butlers.modules.metrics import MetricsModule
-
-        mod = MetricsModule()
-        registered_tools: dict = {}
-        fake_mcp = MagicMock()
-
-        def capture_tool():
-            def decorator(fn):
-                registered_tools[fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        fake_mcp.tool = capture_tool
+        mod, fake_mcp, registered_tools = _make_module_with_captured_tools()
         await mod.register_tools(mcp=fake_mcp, config=None, db=MagicMock())
 
         result = await registered_tools["metrics_query"](query="up")
@@ -564,24 +520,13 @@ class TestMetricsQueryRangeMCPTool:
 
     async def test_metrics_query_range_returns_matrix_result(self, monkeypatch):
         import butlers.modules.metrics as metrics_module
-        from butlers.modules.metrics import MetricsModule, MetricsModuleConfig
+        from butlers.modules.metrics import MetricsModuleConfig
 
         expected = [{"metric": {}, "values": [[1234, "1"], [1249, "1"]]}]
         # Patch the name as imported into __init__.py (the closure references it directly).
         monkeypatch.setattr(metrics_module, "async_query_range", AsyncMock(return_value=expected))
 
-        mod = MetricsModule()
-        registered_tools: dict = {}
-        fake_mcp = MagicMock()
-
-        def capture_tool():
-            def decorator(fn):
-                registered_tools[fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        fake_mcp.tool = capture_tool
+        mod, fake_mcp, registered_tools = _make_module_with_captured_tools()
         cfg = MetricsModuleConfig(prometheus_query_url=PROM_URL)
 
         await mod.register_tools(mcp=fake_mcp, config=cfg, db=MagicMock())
@@ -595,20 +540,7 @@ class TestMetricsQueryRangeMCPTool:
         assert result == expected
 
     async def test_metrics_query_range_returns_error_when_config_none(self):
-        from butlers.modules.metrics import MetricsModule
-
-        mod = MetricsModule()
-        registered_tools: dict = {}
-        fake_mcp = MagicMock()
-
-        def capture_tool():
-            def decorator(fn):
-                registered_tools[fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        fake_mcp.tool = capture_tool
+        mod, fake_mcp, registered_tools = _make_module_with_captured_tools()
         await mod.register_tools(mcp=fake_mcp, config=None, db=MagicMock())
 
         result = await registered_tools["metrics_query_range"](
