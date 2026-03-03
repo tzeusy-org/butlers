@@ -1,5 +1,6 @@
-"""Tests for the MetricsModule skeleton and storage layer (butlers-lxiq.1)
-and instrument cache, naming, and on_startup re-registration (butlers-lxiq.2).
+"""Tests for the MetricsModule skeleton and storage layer (butlers-lxiq.1),
+instrument cache, naming, and on_startup re-registration (butlers-lxiq.2),
+and metrics_define / metrics_emit MCP tools (butlers-lxiq.3).
 
 Covers acceptance criteria (lxiq.1):
 1. MetricsModule can be instantiated without error
@@ -14,6 +15,14 @@ Covers acceptance criteria (lxiq.2):
 8. _validate_name rejects uppercase, leading digits, spaces
 9. on_startup restores all definitions from state store into instrument cache
 10. on_startup with empty state store completes without error
+
+Covers acceptance criteria (lxiq.3):
+11. metrics_define creates counter/gauge/histogram correctly
+12. Re-define of existing metric returns cached instrument without state store write
+13. Cap at 1,000 enforced with clear error message
+14. Cardinality advisory present in tool description
+15. metrics_emit rejects undefined metric, negative counter, label mismatch
+16. metrics_emit calls correct OTEL method for each type
 """
 
 from __future__ import annotations
@@ -570,6 +579,494 @@ class TestMetricsModuleOnStartupCache:
         fake_db.pool = MagicMock()
         await mod.on_startup(config=None, db=fake_db)
         assert mod._butler_name is None
+
+
+# ---------------------------------------------------------------------------
+# butlers-lxiq.3: metrics_define MCP tool
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsDefine:
+    """Tests for the metrics_define MCP tool."""
+
+    def _make_fake_db(self, *, schema: str = "finance", pool: Any = None):
+        """Build a mock db object with .schema and .pool."""
+        fake_db = MagicMock()
+        fake_db.schema = schema
+        fake_db.pool = pool or MagicMock()
+        return fake_db
+
+    def _patch_storage_and_meter(self, monkeypatch, *, current_count: int = 0):
+        """Patch count_definitions, save_definition, and get_meter."""
+        import butlers.modules.metrics as metrics_mod
+
+        mock_count = AsyncMock(return_value=current_count)
+        mock_save = AsyncMock()
+        monkeypatch.setattr(metrics_mod, "count_definitions", mock_count)
+        monkeypatch.setattr(metrics_mod, "save_definition", mock_save)
+
+        mock_meter = MagicMock()
+        mock_counter = MagicMock()
+        mock_updown = MagicMock()
+        mock_histogram = MagicMock()
+        mock_meter.create_counter.return_value = mock_counter
+        mock_meter.create_up_down_counter.return_value = mock_updown
+        mock_meter.create_histogram.return_value = mock_histogram
+        monkeypatch.setattr(metrics_mod, "get_meter", lambda: mock_meter)
+
+        return mock_count, mock_save, mock_meter, mock_counter, mock_updown, mock_histogram
+
+    async def _build_module_with_tools(
+        self, monkeypatch, *, schema: str = "finance", current_count: int = 0
+    ):
+        """Set up MetricsModule with register_tools called; return (mod, captured_tools)."""
+        mock_count, mock_save, mock_meter, mock_counter, mock_updown, mock_histogram = (
+            self._patch_storage_and_meter(monkeypatch, current_count=current_count)
+        )
+        mod = MetricsModule()
+        fake_db = self._make_fake_db(schema=schema)
+
+        # Capture registered tools in a dict by name.
+        tools: dict[str, Any] = {}
+
+        class CaptureMCP:
+            def tool(self):
+                def decorator(fn):
+                    tools[fn.__name__] = fn
+                    return fn
+
+                return decorator
+
+        await mod.register_tools(mcp=CaptureMCP(), config=None, db=fake_db)
+        return (
+            mod,
+            tools,
+            mock_count,
+            mock_save,
+            mock_meter,
+            mock_counter,
+            mock_updown,
+            mock_histogram,
+        )
+
+    async def test_define_counter_creates_instrument(self, monkeypatch):
+        """metrics_define with type='counter' creates a counter instrument."""
+        (
+            mod,
+            tools,
+            mock_count,
+            mock_save,
+            mock_meter,
+            mock_counter,
+            _,
+            _,
+        ) = await self._build_module_with_tools(monkeypatch, schema="finance")
+
+        result = await tools["metrics_define"](
+            name="api_calls", metric_type="counter", help="Total API calls"
+        )
+
+        assert result["ok"] is True
+        assert result["name"] == "api_calls"
+        assert result["type"] == "counter"
+        assert result["full_name"] == "butler_finance_api_calls"
+        assert result["cached"] is False
+        mock_meter.create_counter.assert_called_once_with(
+            name="butler_finance_api_calls", description="Total API calls"
+        )
+        mock_save.assert_awaited_once()
+
+    async def test_define_gauge_creates_updown_counter(self, monkeypatch):
+        """metrics_define with type='gauge' creates an UpDownCounter instrument."""
+        mod, tools, _, _, mock_meter, _, mock_updown, _ = await self._build_module_with_tools(
+            monkeypatch, schema="finance"
+        )
+
+        result = await tools["metrics_define"](
+            name="active_sessions", metric_type="gauge", help="Active sessions"
+        )
+
+        assert result["ok"] is True
+        assert result["type"] == "gauge"
+        assert result["full_name"] == "butler_finance_active_sessions"
+        mock_meter.create_up_down_counter.assert_called_once_with(
+            name="butler_finance_active_sessions", description="Active sessions"
+        )
+
+    async def test_define_histogram_creates_histogram(self, monkeypatch):
+        """metrics_define with type='histogram' creates a histogram instrument."""
+        mod, tools, _, _, mock_meter, _, _, mock_histogram = await self._build_module_with_tools(
+            monkeypatch, schema="finance"
+        )
+
+        result = await tools["metrics_define"](
+            name="latency_ms", metric_type="histogram", help="Request latency"
+        )
+
+        assert result["ok"] is True
+        assert result["type"] == "histogram"
+        assert result["full_name"] == "butler_finance_latency_ms"
+        mock_meter.create_histogram.assert_called_once_with(
+            name="butler_finance_latency_ms", description="Request latency"
+        )
+
+    async def test_define_populates_instrument_cache(self, monkeypatch):
+        """metrics_define updates _instrument_cache after successful definition."""
+        mod, tools, _, _, _, _, _, _ = await self._build_module_with_tools(
+            monkeypatch, schema="finance"
+        )
+
+        assert "api_calls" not in mod._instrument_cache
+        await tools["metrics_define"](
+            name="api_calls", metric_type="counter", help="Total API calls"
+        )
+        assert "api_calls" in mod._instrument_cache
+        full_name, _ = mod._instrument_cache["api_calls"]
+        assert full_name == "butler_finance_api_calls"
+
+    async def test_define_persists_to_state_store(self, monkeypatch):
+        """metrics_define calls save_definition with the correct args."""
+        mod, tools, _, mock_save, _, _, _, _ = await self._build_module_with_tools(
+            monkeypatch, schema="finance"
+        )
+
+        await tools["metrics_define"](
+            name="api_calls",
+            metric_type="counter",
+            help="Total API calls",
+            labels=["status", "method"],
+        )
+
+        mock_save.assert_awaited_once()
+        call_args = mock_save.call_args
+        # save_definition(pool, name, defn)
+        assert call_args[0][1] == "api_calls"
+        saved_defn = call_args[0][2]
+        assert saved_defn["name"] == "api_calls"
+        assert saved_defn["type"] == "counter"
+        assert saved_defn["help"] == "Total API calls"
+        assert saved_defn["labels"] == ["status", "method"]
+        assert "registered_at" in saved_defn
+
+    async def test_define_idempotent_returns_cached(self, monkeypatch):
+        """Re-defining an existing metric returns cached entry without state store write."""
+        mod, tools, _, mock_save, _, mock_counter, _, _ = await self._build_module_with_tools(
+            monkeypatch, schema="finance"
+        )
+
+        # First define.
+        await tools["metrics_define"](
+            name="api_calls", metric_type="counter", help="Total API calls"
+        )
+        assert mock_save.await_count == 1
+
+        # Second define (idempotent).
+        result = await tools["metrics_define"](
+            name="api_calls", metric_type="counter", help="Total API calls"
+        )
+
+        assert result["ok"] is True
+        assert result["cached"] is True
+        # save_definition should not be called again.
+        assert mock_save.await_count == 1
+
+    async def test_define_rejects_invalid_name(self, monkeypatch):
+        """metrics_define returns an error dict for invalid metric names."""
+        mod, tools, _, _, _, _, _, _ = await self._build_module_with_tools(monkeypatch)
+
+        for bad_name in ["2bad", "ApiCalls", "api-calls", "", "_bad", "api calls"]:
+            result = await tools["metrics_define"](
+                name=bad_name, metric_type="counter", help="Help"
+            )
+            assert "error" in result, f"Expected error for name={bad_name!r}"
+
+    async def test_define_rejects_invalid_metric_type(self, monkeypatch):
+        """metrics_define returns an error dict for unknown metric_type."""
+        mod, tools, _, _, _, _, _, _ = await self._build_module_with_tools(monkeypatch)
+
+        result = await tools["metrics_define"](name="api_calls", metric_type="summary", help="Help")
+        assert "error" in result
+        assert "summary" in result["error"]
+
+    async def test_define_enforces_cap_at_1000(self, monkeypatch):
+        """metrics_define returns an error when the 1,000-metric cap is reached."""
+        mod, tools, _, _, _, _, _, _ = await self._build_module_with_tools(
+            monkeypatch, current_count=1000
+        )
+
+        result = await tools["metrics_define"](
+            name="new_metric", metric_type="counter", help="Help"
+        )
+        assert "error" in result
+        assert "1000" in result["error"] or "cap" in result["error"].lower()
+
+    async def test_define_no_pool_returns_error(self, monkeypatch):
+        """metrics_define returns an error when pool is not available."""
+        import butlers.modules.metrics as metrics_mod
+
+        mock_count = AsyncMock(return_value=0)
+        mock_save = AsyncMock()
+        monkeypatch.setattr(metrics_mod, "count_definitions", mock_count)
+        monkeypatch.setattr(metrics_mod, "save_definition", mock_save)
+        monkeypatch.setattr(metrics_mod, "get_meter", lambda: MagicMock())
+
+        mod = MetricsModule()
+        fake_db = MagicMock()
+        fake_db.schema = "finance"
+        fake_db.pool = None  # No pool
+
+        tools: dict[str, Any] = {}
+
+        class CaptureMCP:
+            def tool(self):
+                def decorator(fn):
+                    tools[fn.__name__] = fn
+                    return fn
+
+                return decorator
+
+        await mod.register_tools(mcp=CaptureMCP(), config=None, db=fake_db)
+
+        result = await tools["metrics_define"](name="api_calls", metric_type="counter", help="Help")
+        assert "error" in result
+        assert "pool" in result["error"].lower()
+
+    async def test_define_cardinality_advisory_in_docstring(self, monkeypatch):
+        """The metrics_define tool description must include a cardinality advisory."""
+        mod, tools, _, _, _, _, _, _ = await self._build_module_with_tools(monkeypatch)
+        docstring = tools["metrics_define"].__doc__ or ""
+        assert "cardinality" in docstring.lower(), (
+            "metrics_define docstring must contain a cardinality advisory"
+        )
+
+    async def test_define_default_labels_empty(self, monkeypatch):
+        """When labels is omitted, the saved definition has an empty labels list."""
+        mod, tools, _, mock_save, _, _, _, _ = await self._build_module_with_tools(
+            monkeypatch, schema="finance"
+        )
+
+        await tools["metrics_define"](name="api_calls", metric_type="counter", help="Help")
+
+        call_args = mock_save.call_args
+        saved_defn = call_args[0][2]
+        assert saved_defn["labels"] == []
+
+
+# ---------------------------------------------------------------------------
+# butlers-lxiq.3: metrics_emit MCP tool
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsEmit:
+    """Tests for the metrics_emit MCP tool."""
+
+    def _make_fake_db(self, *, schema: str = "finance", pool: Any = None):
+        fake_db = MagicMock()
+        fake_db.schema = schema
+        fake_db.pool = pool or MagicMock()
+        return fake_db
+
+    def _patch_storage_and_meter(self, monkeypatch, *, current_count: int = 0):
+        import butlers.modules.metrics as metrics_mod
+
+        mock_count = AsyncMock(return_value=current_count)
+        mock_save = AsyncMock()
+        monkeypatch.setattr(metrics_mod, "count_definitions", mock_count)
+        monkeypatch.setattr(metrics_mod, "save_definition", mock_save)
+
+        mock_meter = MagicMock()
+        mock_counter = MagicMock()
+        mock_updown = MagicMock()
+        mock_histogram = MagicMock()
+        mock_meter.create_counter.return_value = mock_counter
+        mock_meter.create_up_down_counter.return_value = mock_updown
+        mock_meter.create_histogram.return_value = mock_histogram
+        monkeypatch.setattr(metrics_mod, "get_meter", lambda: mock_meter)
+
+        return mock_count, mock_save, mock_meter, mock_counter, mock_updown, mock_histogram
+
+    async def _build_module_with_tools(
+        self, monkeypatch, *, schema: str = "finance", current_count: int = 0
+    ):
+        mock_count, mock_save, mock_meter, mock_counter, mock_updown, mock_histogram = (
+            self._patch_storage_and_meter(monkeypatch, current_count=current_count)
+        )
+        mod = MetricsModule()
+        fake_db = self._make_fake_db(schema=schema)
+
+        tools: dict[str, Any] = {}
+
+        class CaptureMCP:
+            def tool(self):
+                def decorator(fn):
+                    tools[fn.__name__] = fn
+                    return fn
+
+                return decorator
+
+        await mod.register_tools(mcp=CaptureMCP(), config=None, db=fake_db)
+        return (
+            mod,
+            tools,
+            mock_count,
+            mock_save,
+            mock_meter,
+            mock_counter,
+            mock_updown,
+            mock_histogram,
+        )
+
+    async def _define_metric(
+        self, tools, *, name: str, metric_type: str, labels: list[str] | None = None
+    ):
+        """Helper: define a metric via the tools dict."""
+        return await tools["metrics_define"](
+            name=name,
+            metric_type=metric_type,
+            help=f"Test {metric_type}",
+            labels=labels,
+        )
+
+    async def test_emit_undefined_metric_returns_error(self, monkeypatch):
+        """metrics_emit rejects metrics that haven't been defined."""
+        mod, tools, _, _, _, _, _, _ = await self._build_module_with_tools(monkeypatch)
+
+        result = await tools["metrics_emit"](name="unknown_metric", value=1.0)
+        assert "error" in result
+        assert "unknown_metric" in result["error"]
+
+    async def test_emit_counter_calls_add(self, monkeypatch):
+        """metrics_emit for a counter calls instrument.add(value)."""
+        mod, tools, _, _, _, mock_counter, _, _ = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(tools, name="api_calls", metric_type="counter")
+
+        result = await tools["metrics_emit"](name="api_calls", value=5.0)
+
+        assert result == {"ok": True}
+        mock_counter.add.assert_called_once_with(5.0, attributes=None)
+
+    async def test_emit_gauge_calls_add(self, monkeypatch):
+        """metrics_emit for a gauge (UpDownCounter) calls instrument.add(value)."""
+        mod, tools, _, _, _, _, mock_updown, _ = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(tools, name="active_sessions", metric_type="gauge")
+
+        result = await tools["metrics_emit"](name="active_sessions", value=-3.0)
+
+        assert result == {"ok": True}
+        mock_updown.add.assert_called_once_with(-3.0, attributes=None)
+
+    async def test_emit_histogram_calls_record(self, monkeypatch):
+        """metrics_emit for a histogram calls instrument.record(value)."""
+        mod, tools, _, _, _, _, _, mock_histogram = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(tools, name="latency_ms", metric_type="histogram")
+
+        result = await tools["metrics_emit"](name="latency_ms", value=42.5)
+
+        assert result == {"ok": True}
+        mock_histogram.record.assert_called_once_with(42.5, attributes=None)
+
+    async def test_emit_counter_negative_value_returns_error(self, monkeypatch):
+        """metrics_emit rejects negative values for counter metrics."""
+        mod, tools, _, _, _, _, _, _ = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(tools, name="api_calls", metric_type="counter")
+
+        result = await tools["metrics_emit"](name="api_calls", value=-1.0)
+        assert "error" in result
+        assert (
+            "-1.0" in result["error"]
+            or "negative" in result["error"].lower()
+            or ">= 0" in result["error"]
+        )
+
+    async def test_emit_histogram_negative_value_returns_error(self, monkeypatch):
+        """metrics_emit rejects negative values for histogram metrics."""
+        mod, tools, _, _, _, _, _, _ = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(tools, name="latency_ms", metric_type="histogram")
+
+        result = await tools["metrics_emit"](name="latency_ms", value=-0.1)
+        assert "error" in result
+
+    async def test_emit_gauge_accepts_negative_value(self, monkeypatch):
+        """metrics_emit accepts negative values for gauge (UpDownCounter) metrics."""
+        mod, tools, _, _, _, _, mock_updown, _ = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(tools, name="temp", metric_type="gauge")
+
+        result = await tools["metrics_emit"](name="temp", value=-50.0)
+        assert result == {"ok": True}
+        mock_updown.add.assert_called_once()
+
+    async def test_emit_counter_zero_value_accepted(self, monkeypatch):
+        """metrics_emit accepts zero value for counters."""
+        mod, tools, _, _, _, mock_counter, _, _ = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(tools, name="api_calls", metric_type="counter")
+
+        result = await tools["metrics_emit"](name="api_calls", value=0.0)
+        assert result == {"ok": True}
+        mock_counter.add.assert_called_once_with(0.0, attributes=None)
+
+    async def test_emit_with_matching_labels(self, monkeypatch):
+        """metrics_emit passes labels as attributes when they match declared labels."""
+        mod, tools, _, _, _, mock_counter, _, _ = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(
+            tools, name="req_count", metric_type="counter", labels=["status", "method"]
+        )
+
+        result = await tools["metrics_emit"](
+            name="req_count",
+            value=1.0,
+            labels={"status": "200", "method": "GET"},
+        )
+        assert result == {"ok": True}
+        mock_counter.add.assert_called_once_with(1.0, attributes={"status": "200", "method": "GET"})
+
+    async def test_emit_missing_label_returns_error(self, monkeypatch):
+        """metrics_emit rejects observations with missing label keys."""
+        mod, tools, _, _, _, _, _, _ = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(
+            tools, name="req_count", metric_type="counter", labels=["status", "method"]
+        )
+
+        result = await tools["metrics_emit"](
+            name="req_count",
+            value=1.0,
+            labels={"status": "200"},  # 'method' is missing
+        )
+        assert "error" in result
+        assert "missing" in result["error"].lower() or "method" in result["error"]
+
+    async def test_emit_extra_label_returns_error(self, monkeypatch):
+        """metrics_emit rejects observations with extra (undeclared) label keys."""
+        mod, tools, _, _, _, _, _, _ = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(tools, name="req_count", metric_type="counter", labels=["status"])
+
+        result = await tools["metrics_emit"](
+            name="req_count",
+            value=1.0,
+            labels={"status": "200", "extra_key": "oops"},
+        )
+        assert "error" in result
+        assert "extra" in result["error"].lower() or "extra_key" in result["error"]
+
+    async def test_emit_no_labels_when_none_declared(self, monkeypatch):
+        """metrics_emit succeeds with empty/null labels when metric has no declared labels."""
+        mod, tools, _, _, _, mock_counter, _, _ = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(tools, name="api_calls", metric_type="counter", labels=[])
+
+        result = await tools["metrics_emit"](name="api_calls", value=1.0, labels=None)
+        assert result == {"ok": True}
+        mock_counter.add.assert_called_once_with(1.0, attributes=None)
+
+    async def test_emit_with_labels_when_none_declared_returns_error(self, monkeypatch):
+        """metrics_emit rejects labels when metric was declared with no labels."""
+        mod, tools, _, _, _, _, _, _ = await self._build_module_with_tools(monkeypatch)
+        await self._define_metric(tools, name="api_calls", metric_type="counter", labels=[])
+
+        result = await tools["metrics_emit"](
+            name="api_calls",
+            value=1.0,
+            labels={"extra": "val"},
+        )
+        assert "error" in result
 
 
 # ---------------------------------------------------------------------------
