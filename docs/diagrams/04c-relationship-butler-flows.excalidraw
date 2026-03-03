@@ -119,10 +119,17 @@
       "versionNonce": 100008,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "mod_calendar_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "mod_calendar_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -176,10 +183,17 @@
       "versionNonce": 100012,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "mod_contacts_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "mod_contacts_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -233,10 +247,17 @@
       "versionNonce": 100016,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "mod_relationship_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "mod_relationship_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -290,10 +311,17 @@
       "versionNonce": 100020,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "mod_memory_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "mod_memory_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -350,7 +378,16 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [980, 0]]
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          980,
+          0
+        ]
+      ]
     },
     {
       "type": "text",
@@ -405,15 +442,32 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "crm_contacts_root_label", "type": "text"},
-        {"id": "arr_c_to_dates", "type": "arrow"},
-        {"id": "arr_c_to_gifts", "type": "arrow"},
-        {"id": "arr_c_to_interactions", "type": "arrow"},
-        {"id": "arr_c_to_reminders", "type": "arrow"}
+        {
+          "id": "crm_contacts_root_label",
+          "type": "text"
+        },
+        {
+          "id": "arr_c_to_dates",
+          "type": "arrow"
+        },
+        {
+          "id": "arr_c_to_gifts",
+          "type": "arrow"
+        },
+        {
+          "id": "arr_c_to_interactions",
+          "type": "arrow"
+        },
+        {
+          "id": "arr_c_to_reminders",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -502,9 +556,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [90, -60]],
-      "startBinding": {"elementId": "crm_contacts_root", "focus": -0.5, "gap": 2},
-      "endBinding": {"elementId": "crm_dates_box", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          90,
+          -60
+        ]
+      ],
+      "startBinding": {
+        "elementId": "crm_contacts_root",
+        "focus": -0.5,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "crm_dates_box",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -531,9 +602,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [90, -15]],
-      "startBinding": {"elementId": "crm_contacts_root", "focus": -0.1, "gap": 2},
-      "endBinding": {"elementId": "crm_gifts_box", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          90,
+          -15
+        ]
+      ],
+      "startBinding": {
+        "elementId": "crm_contacts_root",
+        "focus": -0.1,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "crm_gifts_box",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -560,9 +648,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [90, 30]],
-      "startBinding": {"elementId": "crm_contacts_root", "focus": 0.2, "gap": 2},
-      "endBinding": {"elementId": "crm_interactions_box", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          90,
+          30
+        ]
+      ],
+      "startBinding": {
+        "elementId": "crm_contacts_root",
+        "focus": 0.2,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "crm_interactions_box",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -589,9 +694,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [90, 75]],
-      "startBinding": {"elementId": "crm_contacts_root", "focus": 0.5, "gap": 2},
-      "endBinding": {"elementId": "crm_reminders_box", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          90,
+          75
+        ]
+      ],
+      "startBinding": {
+        "elementId": "crm_contacts_root",
+        "focus": 0.5,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "crm_reminders_box",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -615,10 +737,17 @@
       "versionNonce": 200016,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "crm_dates_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "crm_dates_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -672,10 +801,17 @@
       "versionNonce": 200020,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "crm_gifts_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "crm_gifts_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -684,8 +820,8 @@
       "y": 327,
       "width": 173,
       "height": 40,
-      "text": "Gift Ideas\nidea → purchased → given",
-      "originalText": "Gift Ideas\nidea → purchased → given",
+      "text": "Gift Ideas\nidea → purchased → wrapped → given → thanked",
+      "originalText": "Gift Ideas\nidea → purchased → wrapped → given → thanked",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "center",
@@ -729,10 +865,17 @@
       "versionNonce": 200024,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "crm_interactions_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "crm_interactions_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -741,8 +884,8 @@
       "y": 389,
       "width": 173,
       "height": 40,
-      "text": "Interaction Log\ndate · channel · emotion",
-      "originalText": "Interaction Log\ndate · channel · emotion",
+      "text": "Interaction Log\ndate · channel · direction · duration · emotion",
+      "originalText": "Interaction Log\ndate · channel · direction · duration · emotion",
       "fontSize": 13,
       "fontFamily": 3,
       "textAlign": "center",
@@ -786,10 +929,17 @@
       "versionNonce": 200028,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "crm_reminders_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "crm_reminders_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -846,7 +996,16 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [0, 270]]
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          270
+        ]
+      ]
     },
     {
       "type": "text",
@@ -901,12 +1060,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "flow1_trigger_label", "type": "text"},
-        {"id": "arr_flow1_t_to_q", "type": "arrow"}
+        {
+          "id": "flow1_trigger_label",
+          "type": "text"
+        },
+        {
+          "id": "arr_flow1_t_to_q",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -963,9 +1130,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [55, 0]],
-      "startBinding": {"elementId": "flow1_trigger", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "flow1_query", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          55,
+          0
+        ]
+      ],
+      "startBinding": {
+        "elementId": "flow1_trigger",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "flow1_query",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -990,12 +1174,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "flow1_query_label", "type": "text"},
-        {"id": "arr_flow1_q_to_m", "type": "arrow"}
+        {
+          "id": "flow1_query_label",
+          "type": "text"
+        },
+        {
+          "id": "arr_flow1_q_to_m",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -1052,9 +1244,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [0, 45]],
-      "startBinding": {"elementId": "flow1_query", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "flow1_memory", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          45
+        ]
+      ],
+      "startBinding": {
+        "elementId": "flow1_query",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "flow1_memory",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -1079,12 +1288,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "flow1_memory_label", "type": "text"},
-        {"id": "arr_flow1_m_to_n", "type": "arrow"}
+        {
+          "id": "flow1_memory_label",
+          "type": "text"
+        },
+        {
+          "id": "arr_flow1_m_to_n",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -1141,9 +1358,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [-160, 35]],
-      "startBinding": {"elementId": "flow1_memory", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "flow1_notify", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          -160,
+          35
+        ]
+      ],
+      "startBinding": {
+        "elementId": "flow1_memory",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "flow1_notify",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -1167,10 +1401,17 @@
       "versionNonce": 300020,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "flow1_notify_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "flow1_notify_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -1225,12 +1466,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "flow2_trigger_label", "type": "text"},
-        {"id": "arr_flow2_t_to_i", "type": "arrow"}
+        {
+          "id": "flow2_trigger_label",
+          "type": "text"
+        },
+        {
+          "id": "arr_flow2_t_to_i",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -1287,9 +1536,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [55, 0]],
-      "startBinding": {"elementId": "flow2_trigger", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "flow2_identify", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          55,
+          0
+        ]
+      ],
+      "startBinding": {
+        "elementId": "flow2_trigger",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "flow2_identify",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -1314,12 +1580,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "flow2_identify_label", "type": "text"},
-        {"id": "arr_flow2_i_to_s", "type": "arrow"}
+        {
+          "id": "flow2_identify_label",
+          "type": "text"
+        },
+        {
+          "id": "arr_flow2_i_to_s",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -1376,9 +1650,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [0, 40]],
-      "startBinding": {"elementId": "flow2_identify", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "flow2_suggest", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          40
+        ]
+      ],
+      "startBinding": {
+        "elementId": "flow2_identify",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "flow2_suggest",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -1403,12 +1694,20 @@
       "isDeleted": false,
       "groupIds": [],
       "boundElements": [
-        {"id": "flow2_suggest_label", "type": "text"},
-        {"id": "arr_flow2_s_to_n", "type": "arrow"}
+        {
+          "id": "flow2_suggest_label",
+          "type": "text"
+        },
+        {
+          "id": "arr_flow2_s_to_n",
+          "type": "arrow"
+        }
       ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -1465,9 +1764,26 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [-160, 0]],
-      "startBinding": {"elementId": "flow2_suggest", "focus": 0, "gap": 2},
-      "endBinding": {"elementId": "flow2_notify", "focus": 0, "gap": 2},
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          -160,
+          0
+        ]
+      ],
+      "startBinding": {
+        "elementId": "flow2_suggest",
+        "focus": 0,
+        "gap": 2
+      },
+      "endBinding": {
+        "elementId": "flow2_notify",
+        "focus": 0,
+        "gap": 2
+      },
       "startArrowhead": null,
       "endArrowhead": "arrow"
     },
@@ -1491,10 +1807,17 @@
       "versionNonce": 300042,
       "isDeleted": false,
       "groupIds": [],
-      "boundElements": [{"id": "flow2_notify_label", "type": "text"}],
+      "boundElements": [
+        {
+          "id": "flow2_notify_label",
+          "type": "text"
+        }
+      ],
       "link": null,
       "locked": false,
-      "roundness": {"type": 3}
+      "roundness": {
+        "type": 3
+      }
     },
     {
       "type": "text",
@@ -1551,7 +1874,16 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [980, 0]]
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          980,
+          0
+        ]
+      ]
     },
     {
       "type": "text",
@@ -1608,7 +1940,16 @@
       "boundElements": null,
       "link": null,
       "locked": false,
-      "points": [[0, 0], [915, 0]]
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          915,
+          0
+        ]
+      ]
     },
     {
       "type": "ellipse",
