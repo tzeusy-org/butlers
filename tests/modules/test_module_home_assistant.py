@@ -1761,6 +1761,66 @@ class TestWsConnectAndSeed:
         assert poll_started, "_start_poll_fallback was not called on WS failure"
         assert reconnect_scheduled, "_schedule_reconnect was not called on WS failure"
 
+    async def test_message_loop_started_before_registry_commands(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_start_ws_message_loop is called before _fetch_area_registry etc.
+
+        This is the fix for butlers-jref: without the message loop running,
+        _ws_command() futures never resolve (nobody reads from the socket),
+        causing asyncio.TimeoutError with an empty str() → blank log message.
+        The message loop must be started immediately after _ws_connect() so
+        that WS responses are dispatched while registry fetches await futures.
+        """
+        ha_module._config = HomeAssistantConfig(url="http://ha.local")
+        ha_module._token = "tok"
+
+        call_order: list[str] = []
+
+        async def mock_connect() -> None:
+            ha_module._ws_connected = True
+            call_order.append("connect")
+
+        async def mock_seed() -> None:
+            call_order.append("seed")
+
+        async def mock_area() -> None:
+            call_order.append("area")
+
+        async def mock_entity() -> None:
+            call_order.append("entity")
+
+        async def mock_subscribe() -> None:
+            call_order.append("subscribe")
+
+        def mock_message_loop() -> None:
+            call_order.append("message_loop")
+
+        def mock_ping() -> None:
+            call_order.append("ping")
+
+        with (
+            patch.object(ha_module, "_ws_connect", side_effect=mock_connect),
+            patch.object(ha_module, "_seed_entity_cache_from_rest", side_effect=mock_seed),
+            patch.object(ha_module, "_fetch_area_registry", side_effect=mock_area),
+            patch.object(ha_module, "_fetch_entity_registry", side_effect=mock_entity),
+            patch.object(ha_module, "_ws_subscribe_events", side_effect=mock_subscribe),
+            patch.object(ha_module, "_start_ws_message_loop", side_effect=mock_message_loop),
+            patch.object(ha_module, "_start_ws_ping_task", side_effect=mock_ping),
+        ):
+            await ha_module._ws_connect_and_seed()
+
+        # The message loop must be running before any WS command is issued.
+        # Registry fetches (area, entity) and subscribe all use _ws_command()
+        # which awaits a Future that only the message loop can resolve.
+        assert "message_loop" in call_order, "_start_ws_message_loop was not called"
+        for ws_cmd_step in ("area", "entity", "subscribe"):
+            assert ws_cmd_step in call_order, f"{ws_cmd_step} step was not called"
+            assert call_order.index("message_loop") < call_order.index(ws_cmd_step), (
+                f"_start_ws_message_loop must be called before {ws_cmd_step} "
+                f"(got order: {call_order})"
+            )
+
 
 # ---------------------------------------------------------------------------
 # REST polling fallback — _poll_loop behavior

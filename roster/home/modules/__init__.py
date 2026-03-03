@@ -639,6 +639,14 @@ class HomeAssistantModule(Module):
             self._schedule_reconnect(delay=_WS_RECONNECT_INITIAL)
             return
 
+        # Start the message loop immediately after auth so that _ws_command()
+        # futures are resolved as WS responses arrive.  Without this, registry
+        # fetches and event subscriptions time out because nobody is reading
+        # from the socket (asyncio.TimeoutError has an empty str(), which
+        # produced misleading ": " log lines at startup).
+        self._start_ws_message_loop()
+        self._start_ws_ping_task()
+
         # Seed entity cache from REST (faster than WS for initial bulk load)
         await self._seed_entity_cache_from_rest()
 
@@ -648,10 +656,6 @@ class HomeAssistantModule(Module):
 
         # Subscribe to state_changed and registry events
         await self._ws_subscribe_events()
-
-        # Start background tasks
-        self._start_ws_message_loop()
-        self._start_ws_ping_task()
 
     async def _ws_connect(self) -> None:
         """Open WebSocket connection and complete the HA auth handshake.
@@ -1082,6 +1086,14 @@ class HomeAssistantModule(Module):
                     "HomeAssistantModule: WebSocket reconnected after %d attempt(s).",
                     attempt + 1,
                 )
+
+                # Stop polling fallback and start WS tasks before making any
+                # WS commands so that _ws_command() futures are resolved by
+                # the message loop as responses arrive.
+                self._stop_poll_fallback()
+                self._start_ws_message_loop()
+                self._start_ws_ping_task()
+
                 try:
                     await self._seed_entity_cache_from_rest()
                     await self._fetch_area_registry()
@@ -1092,11 +1104,6 @@ class HomeAssistantModule(Module):
                         "HomeAssistantModule: error rehydrating state after reconnect: %s",
                         exc,
                     )
-
-                # Stop polling fallback, start WS tasks
-                self._stop_poll_fallback()
-                self._start_ws_message_loop()
-                self._start_ws_ping_task()
                 break
 
         except asyncio.CancelledError:
@@ -1193,7 +1200,7 @@ class HomeAssistantModule(Module):
                 "HomeAssistantModule: fetched %d areas from registry.", len(self._area_cache)
             )
         except Exception as exc:
-            logger.warning("HomeAssistantModule: failed to fetch area registry: %s", exc)
+            logger.warning("HomeAssistantModule: failed to fetch area registry: %r", exc)
 
     async def _fetch_entity_registry(self) -> None:
         """Fetch entity registry via WebSocket and populate ``_entity_area_map``.
@@ -1234,7 +1241,7 @@ class HomeAssistantModule(Module):
                 len(self._entity_area_map),
             )
         except Exception as exc:
-            logger.warning("HomeAssistantModule: failed to fetch entity registry: %s", exc)
+            logger.warning("HomeAssistantModule: failed to fetch entity registry: %r", exc)
 
     async def _ws_subscribe_events(self) -> None:
         """Subscribe to state_changed, area_registry_updated, entity_registry_updated events."""
@@ -1257,7 +1264,7 @@ class HomeAssistantModule(Module):
                 logger.debug("HomeAssistantModule: subscribed to %s events.", event_type)
             except Exception as exc:
                 logger.warning(
-                    "HomeAssistantModule: failed to subscribe to %s: %s",
+                    "HomeAssistantModule: failed to subscribe to %s: %r",
                     event_type,
                     exc,
                 )
