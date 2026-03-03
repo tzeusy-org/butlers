@@ -219,6 +219,11 @@ engage interactive response mode.
 
 ---
 
+## Notes to self
+
+- `education.mind_maps.root_node_id` is created as `NULL` and is not currently set by `mind_map_node_create()`; any UI/logic should rely on node/edge presence (or add a write path to set the root).
+- `curriculum_generate()` validates `diagnostic_results` as a dict (not a string); pass the probe summary mapping `{node_id: {quality, inferred_mastery}}`.
+
 #### Example 6: Abandoning a Topic
 
 **User message**: "I want to stop studying machine learning for now"
