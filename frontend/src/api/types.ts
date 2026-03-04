@@ -465,6 +465,20 @@ export interface CalendarWorkspaceMetaResponse {
   writable_calendars: CalendarWorkspaceWritableCalendar[];
   lane_definitions: CalendarWorkspaceLaneDefinition[];
   default_timezone: string;
+  primary_calendar_id: string | null;
+}
+
+/** Request payload for PUT /api/calendar/workspace/primary. */
+export interface SetPrimaryCalendarRequest {
+  butler_name: string;
+  calendar_id: string;
+}
+
+/** Response payload for PUT /api/calendar/workspace/primary. */
+export interface SetPrimaryCalendarResponse {
+  old_calendar_id: string | null;
+  new_calendar_id: string;
+  persisted: boolean;
 }
 
 /** Query parameters for GET /api/calendar/workspace. */

@@ -58,6 +58,7 @@ const navSections: NavSection[] = [
       { path: '/ingestion', label: 'Ingestion' },
       { path: '/approvals', label: 'Approvals' },
       { path: '/memory', label: 'Memory' },
+      { path: '/entities', label: 'Entities' },
       { path: '/secrets', label: 'Secrets' },
       { path: '/settings', label: 'Settings' },
     ],

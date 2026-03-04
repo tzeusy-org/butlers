@@ -100,6 +100,7 @@ export {
   getRuleSuggestions,
   rejectAction,
   revokeApprovalRule,
+  setPrimaryCalendar,
   syncCalendarWorkspace,
 } from "./client.ts";
 
@@ -132,6 +133,8 @@ export type {
   CalendarWorkspaceSyncTarget,
   CalendarWorkspaceView,
   CalendarWorkspaceWritableCalendar,
+  SetPrimaryCalendarRequest,
+  SetPrimaryCalendarResponse,
   UnifiedCalendarEntry,
   UnifiedCalendarSourceType,
   CostSummary,

@@ -16,7 +16,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.api.models.memory import Episode, Fact, MemoryActivity, MemoryStats, Rule
+from butlers.api.models.memory import (
+    EntityDetail,
+    EntitySummary,
+    Episode,
+    Fact,
+    MemoryActivity,
+    MemoryStats,
+    Rule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -560,6 +568,177 @@ async def list_activity(
     items = items[:limit]
 
     return ApiResponse[list[MemoryActivity]](data=items)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/entities
+# ---------------------------------------------------------------------------
+
+
+@router.get("/entities", response_model=PaginatedResponse[EntitySummary])
+async def list_entities(
+    q: str | None = Query(None, description="Search canonical_name and aliases"),
+    entity_type: str | None = Query(None, description="Filter by entity type"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[EntitySummary]:
+    """List entities with optional search and type filter, paginated."""
+    conditions: list[str] = [
+        "(metadata->>'merged_into') IS NULL",
+        "tenant_id = 'default'",
+    ]
+    args: list[object] = []
+    idx = 1
+
+    if q is not None:
+        conditions.append(
+            f"(LOWER(canonical_name) LIKE '%' || ${idx} || '%'"
+            f" OR EXISTS (SELECT 1 FROM UNNEST(aliases) AS a"
+            f" WHERE LOWER(a) LIKE '%' || ${idx} || '%'))"
+        )
+        args.append(q.lower())
+        idx += 1
+
+    if entity_type is not None:
+        conditions.append(f"entity_type = ${idx}")
+        args.append(entity_type)
+        idx += 1
+
+    where = " WHERE " + " AND ".join(conditions)
+    row_limit = offset + limit
+
+    async def _query_pool(_: str, pool: object) -> tuple[int, list[object]]:
+        total = await pool.fetchval(f"SELECT count(*) FROM entities{where}", *args) or 0
+
+        rows = await pool.fetch(
+            f"SELECT e.id, e.canonical_name, e.entity_type, e.aliases,"
+            f" e.created_at, e.updated_at,"
+            f" (SELECT count(*) FROM facts f"
+            f"  WHERE f.entity_id = e.id AND f.validity = 'active'"
+            f" ) AS fact_count,"
+            f" (SELECT c.id FROM shared.contacts c"
+            f"  WHERE c.entity_id = e.id LIMIT 1"
+            f" ) AS linked_contact_id"
+            f" FROM entities e{where}"
+            f" ORDER BY e.canonical_name ASC"
+            f" OFFSET ${idx} LIMIT ${idx + 1}",
+            *args,
+            0,
+            row_limit,
+        )
+        return total, list(rows)
+
+    per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="entities",
+        query_fn=_query_pool,
+    )
+    total = sum(pool_total for pool_total, _ in per_pool)
+    merged_rows: list[object] = []
+    for _, rows in per_pool:
+        merged_rows.extend(rows)
+    # Sort by canonical_name for cross-pool merge
+    merged_rows.sort(key=lambda r: r["canonical_name"])
+    rows = merged_rows[offset : offset + limit]
+
+    data = [
+        EntitySummary(
+            id=str(r["id"]),
+            canonical_name=r["canonical_name"],
+            entity_type=r["entity_type"],
+            aliases=list(r["aliases"]) if r["aliases"] else [],
+            fact_count=r["fact_count"],
+            linked_contact_id=str(r["linked_contact_id"]) if r["linked_contact_id"] else None,
+            created_at=str(r["created_at"]),
+            updated_at=str(r["updated_at"]),
+        )
+        for r in rows
+    ]
+
+    return PaginatedResponse[EntitySummary](
+        data=data,
+        meta=PaginationMeta(total=total, offset=offset, limit=limit),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/entities/{entity_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/entities/{entity_id}", response_model=ApiResponse[EntityDetail])
+async def get_entity(
+    entity_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[EntityDetail]:
+    """Return a single entity with recent facts and linked contact info."""
+
+    async def _query_pool(_: str, pool: object):
+        import uuid as _uuid
+
+        eid = _uuid.UUID(entity_id)
+
+        row = await pool.fetchrow(
+            "SELECT e.id, e.canonical_name, e.entity_type,"
+            " e.aliases, e.metadata,"
+            " e.created_at, e.updated_at,"
+            " (SELECT count(*) FROM facts f"
+            "  WHERE f.entity_id = e.id"
+            "  AND f.validity = 'active'"
+            " ) AS fact_count,"
+            " (SELECT c.id FROM shared.contacts c"
+            "  WHERE c.entity_id = e.id LIMIT 1"
+            " ) AS linked_contact_id,"
+            " (SELECT c.name FROM shared.contacts c"
+            "  WHERE c.entity_id = e.id LIMIT 1"
+            " ) AS linked_contact_name"
+            " FROM entities e"
+            " WHERE e.id = $1 AND e.tenant_id = 'default'",
+            eid,
+        )
+        if row is None:
+            return None
+
+        fact_rows = await pool.fetch(
+            "SELECT id, subject, predicate, content, importance, confidence,"
+            " decay_rate, permanence, source_butler, source_episode_id, supersedes_id,"
+            " validity, scope, reference_count, created_at, last_referenced_at,"
+            " last_confirmed_at, tags, metadata"
+            " FROM facts WHERE entity_id = $1 AND validity = 'active'"
+            " ORDER BY created_at DESC LIMIT 20",
+            eid,
+        )
+
+        return row, list(fact_rows)
+
+    results = await _fan_out_memory_queries(
+        db,
+        query_name="entity_by_id",
+        query_fn=_query_pool,
+    )
+    if not results:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    row, fact_rows = results[0]
+
+    recent_facts = [_row_to_fact(f) for f in fact_rows]
+
+    detail = EntityDetail(
+        id=str(row["id"]),
+        canonical_name=row["canonical_name"],
+        entity_type=row["entity_type"],
+        aliases=list(row["aliases"]) if row["aliases"] else [],
+        metadata=_parse_jsonb(row["metadata"]),
+        fact_count=row["fact_count"],
+        linked_contact_id=str(row["linked_contact_id"]) if row["linked_contact_id"] else None,
+        linked_contact_name=row["linked_contact_name"],
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+        recent_facts=recent_facts,
+    )
+
+    return ApiResponse[EntityDetail](data=detail)
 
 
 # ---------------------------------------------------------------------------

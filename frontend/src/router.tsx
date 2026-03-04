@@ -28,6 +28,8 @@ import ApprovalRulesPage from './pages/ApprovalRulesPage.tsx'
 import SecretsPage from './pages/SecretsPage.tsx'
 import CalendarWorkspacePage from './pages/CalendarWorkspacePage.tsx'
 import EducationPage from './pages/EducationPage.tsx'
+import EntitiesPage from './pages/EntitiesPage.tsx'
+import EntityDetailPage from './pages/EntityDetailPage.tsx'
 import IngestionPage from './pages/IngestionPage.tsx'
 import ConnectorDetailPage from './pages/ConnectorDetailPage.tsx'
 
@@ -74,6 +76,8 @@ export const router = createBrowserRouter(
         { path: '/health/research', element: <ResearchPage /> },
         { path: '/costs', element: <CostsPage /> },
         { path: '/memory', element: <MemoryPage /> },
+        { path: '/entities', element: <EntitiesPage /> },
+        { path: '/entities/:entityId', element: <EntityDetailPage /> },
         { path: '/settings', element: <SettingsPage /> },
         { path: '/secrets', element: <SecretsPage /> },
         { path: '/education', element: <EducationPage /> },

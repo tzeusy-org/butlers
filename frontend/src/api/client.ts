@@ -31,6 +31,8 @@ import type {
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceSyncResponse,
   CalendarWorkspaceUserMutationRequest,
+  SetPrimaryCalendarRequest,
+  SetPrimaryCalendarResponse,
   ContactDetail,
   ContactListResponse,
   ContactParams,
@@ -628,6 +630,19 @@ export function syncCalendarWorkspace(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/** Set the primary calendar for a butler. */
+export function setPrimaryCalendar(
+  body: SetPrimaryCalendarRequest,
+): Promise<ApiResponse<SetPrimaryCalendarResponse>> {
+  return apiFetch<ApiResponse<SetPrimaryCalendarResponse>>(
+    "/calendar/workspace/primary",
+    {
+      method: "PUT",
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 /** Create, update, or delete a user-view provider event through workspace APIs. */

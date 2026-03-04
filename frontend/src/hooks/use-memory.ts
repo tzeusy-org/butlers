@@ -5,6 +5,8 @@
 import { useQuery } from "@tanstack/react-query";
 
 import {
+  getEntities,
+  getEntity,
   getEpisodes,
   getFact,
   getFacts,
@@ -14,6 +16,7 @@ import {
   getRules,
 } from "@/api/index.ts";
 import type {
+  EntityParams,
   EpisodeParams,
   FactParams,
   RuleParams,
@@ -79,5 +82,23 @@ export function useMemoryActivity(limit?: number) {
     queryKey: ["memory-activity", limit],
     queryFn: () => getMemoryActivity(limit),
     refetchInterval: 15_000,
+  });
+}
+
+/** Fetch a paginated list of entities. */
+export function useEntities(params?: EntityParams) {
+  return useQuery({
+    queryKey: ["memory-entities", params],
+    queryFn: () => getEntities(params),
+    refetchInterval: 30_000,
+  });
+}
+
+/** Fetch a single entity by ID. */
+export function useEntity(entityId: string | undefined) {
+  return useQuery({
+    queryKey: ["memory-entity", entityId],
+    queryFn: () => getEntity(entityId!),
+    enabled: !!entityId,
   });
 }

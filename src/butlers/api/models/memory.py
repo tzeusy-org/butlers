@@ -89,6 +89,27 @@ class MemoryStats(BaseModel):
     anti_pattern_rules: int = 0
 
 
+class EntitySummary(BaseModel):
+    """Lightweight entity representation for list views."""
+
+    id: str
+    canonical_name: str
+    entity_type: str
+    aliases: list[str] = []
+    fact_count: int = 0
+    linked_contact_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class EntityDetail(EntitySummary):
+    """Full entity detail including recent facts and linked contact info."""
+
+    metadata: dict = {}
+    recent_facts: list[Fact] = []
+    linked_contact_name: str | None = None
+
+
 class MemoryActivity(BaseModel):
     """A recent memory activity event (new fact, rule, or episode)."""
 
