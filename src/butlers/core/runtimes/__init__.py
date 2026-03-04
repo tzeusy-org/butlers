@@ -12,11 +12,13 @@ from butlers.core.runtimes.base import (
 from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
 from butlers.core.runtimes.codex import CodexAdapter
 from butlers.core.runtimes.gemini import GeminiAdapter
+from butlers.core.runtimes.opencode import OpenCodeAdapter
 
 __all__ = [
     "ClaudeCodeAdapter",
     "CodexAdapter",
     "GeminiAdapter",
+    "OpenCodeAdapter",
     "RuntimeAdapter",
     "get_adapter",
     "register_adapter",
