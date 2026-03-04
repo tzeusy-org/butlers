@@ -6,6 +6,11 @@ All data is queried directly from the switchboard butler's PostgreSQL
 database via asyncpg.
 
 Ingestion has moved to the Switchboard MCP server's ``ingest`` tool.
+
+Connector stats and fanout endpoints query Prometheus via PromQL when
+``PROMETHEUS_URL`` is set (e.g. ``http://lgtm:9090``).  When the env var
+is absent or Prometheus is unavailable, those endpoints return empty lists
+gracefully.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import datetime
 import importlib.util
 import json
 import logging
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -25,6 +31,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.config import load_config
+from butlers.modules.metrics.prometheus import async_query, async_query_range
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -75,6 +82,19 @@ logger = logging.getLogger(__name__)
 # Period literal for query parameter validation
 PeriodLiteral = Literal["24h", "7d", "30d"]
 _PERIOD_HOURS: dict[str, int] = {"24h": 24, "7d": 168, "30d": 720}
+
+# Step sizes for Prometheus range queries, keyed by period.
+# Hourly step for 24h gives 24 buckets; daily step for 7d/30d gives 7 or 30 buckets.
+_PERIOD_PROM_STEP: dict[str, str] = {"24h": "1h", "7d": "1d", "30d": "1d"}
+
+
+def _get_prometheus_url() -> str | None:
+    """Return the configured Prometheus base URL, or None if not set.
+
+    Reads ``PROMETHEUS_URL`` from the environment.  Example value:
+    ``http://lgtm:9090``.  No trailing slash required.
+    """
+    return os.environ.get("PROMETHEUS_URL")
 
 
 def _normalize_jsonb_string_list(raw: Any) -> list[str]:
@@ -930,91 +950,97 @@ async def get_connector_stats(
     period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
-    """Return time-series rollup stats for a single connector.
+    """Return time-series connector stats sourced from Prometheus.
 
-    - ``period=24h``: hourly rollup for the last 24 hours (connector_stats_hourly)
-    - ``period=7d``: daily rollup for the last 7 days (connector_stats_daily)
-    - ``period=30d``: daily rollup for the last 30 days (connector_stats_daily)
+    Queries Prometheus range metrics for messages ingested and failed,
+    bucketed by the requested period:
+    - ``period=24h``: hourly buckets for the last 24 hours → ConnectorStatsHourly
+    - ``period=7d``: daily buckets for the last 7 days → ConnectorStatsDaily
+    - ``period=30d``: daily buckets for the last 30 days → ConnectorStatsDaily
 
-    Falls back gracefully to an empty list when rollup tables are missing.
+    Requires ``PROMETHEUS_URL`` env var (e.g. ``http://lgtm:9090``).
+    Returns an empty list when Prometheus is not configured or unavailable.
+
+    Prometheus metric names expected:
+    - ``connector_messages_ingested_total`` (labels: connector_type, endpoint_identity)
+    - ``connector_messages_failed_total``   (labels: connector_type, endpoint_identity)
+    - ``connector_source_api_calls_total``  (labels: connector_type, endpoint_identity)
+    - ``connector_dedupe_accepted_total``   (labels: connector_type, endpoint_identity)
     """
-    pool = _pool(db)
+    prom_url = _get_prometheus_url()
+    if not prom_url:
+        logger.debug("PROMETHEUS_URL not set; returning empty connector stats")
+        return ApiResponse(data=[])
+
+    hours = _PERIOD_HOURS[period]
+    step = _PERIOD_PROM_STEP[period]
+    now = datetime.datetime.now(datetime.UTC)
+    start = (now - datetime.timedelta(hours=hours)).isoformat()
+    end = now.isoformat()
+
+    label_filter = f'{{connector_type="{connector_type}",endpoint_identity="{endpoint_identity}"}}'
+
+    async def _prom_range(metric: str) -> dict[str, float]:
+        """Query a counter's per-bucket increase; return {timestamp_iso: value}."""
+        q = f"increase({metric}{label_filter}[{step}])"
+        results = await async_query_range(prom_url, q, start, end, step)
+        if results and isinstance(results[0], dict) and "error" in results[0]:
+            logger.warning(
+                "Prometheus range query error for %s/%s %s: %s",
+                connector_type,
+                endpoint_identity,
+                metric,
+                results[0]["error"],
+            )
+            return {}
+        out: dict[str, float] = {}
+        for series in results:
+            for ts, val in series.get("values", []):
+                try:
+                    out[str(ts)] = float(val)
+                except (TypeError, ValueError):
+                    pass
+        return out
+
+    ingested = await _prom_range("connector_messages_ingested_total")
+    failed = await _prom_range("connector_messages_failed_total")
+    api_calls = await _prom_range("connector_source_api_calls_total")
+    dedupe = await _prom_range("connector_dedupe_accepted_total")
+
+    # Union all timestamps from all metrics
+    all_ts = sorted(
+        set(ingested) | set(failed) | set(api_calls) | set(dedupe),
+        key=lambda x: float(x),
+    )
+
+    if not all_ts:
+        return ApiResponse(data=[])
 
     if period == "24h":
-        cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=24)
-        try:
-            rows = await pool.fetch(
-                "SELECT connector_type, endpoint_identity, hour,"
-                " messages_ingested, messages_failed, source_api_calls, dedupe_accepted,"
-                " heartbeat_count, healthy_count, degraded_count, error_count"
-                " FROM connector_stats_hourly"
-                " WHERE connector_type = $1 AND endpoint_identity = $2"
-                " AND hour >= $3"
-                " ORDER BY hour ASC",
-                connector_type,
-                endpoint_identity,
-                cutoff,
-            )
-        except Exception:
-            logger.warning(
-                "connector_stats_hourly not available; returning empty list", exc_info=True
-            )
-            return ApiResponse(data=[])
-
         data: list = [
             ConnectorStatsHourly(
-                connector_type=r["connector_type"],
-                endpoint_identity=r["endpoint_identity"],
-                hour=str(r["hour"]),
-                messages_ingested=int(r["messages_ingested"] or 0),
-                messages_failed=int(r["messages_failed"] or 0),
-                source_api_calls=int(r["source_api_calls"] or 0),
-                dedupe_accepted=int(r["dedupe_accepted"] or 0),
-                heartbeat_count=int(r["heartbeat_count"] or 0),
-                healthy_count=int(r["healthy_count"] or 0),
-                degraded_count=int(r["degraded_count"] or 0),
-                error_count=int(r["error_count"] or 0),
+                connector_type=connector_type,
+                endpoint_identity=endpoint_identity,
+                hour=datetime.datetime.fromtimestamp(float(ts), tz=datetime.UTC).isoformat(),
+                messages_ingested=int(ingested.get(ts, 0)),
+                messages_failed=int(failed.get(ts, 0)),
+                source_api_calls=int(api_calls.get(ts, 0)),
+                dedupe_accepted=int(dedupe.get(ts, 0)),
             )
-            for r in rows
+            for ts in all_ts
         ]
     else:
-        days = 7 if period == "7d" else 30
-        cutoff_date = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)).date()
-        try:
-            rows = await pool.fetch(
-                "SELECT connector_type, endpoint_identity, day,"
-                " messages_ingested, messages_failed, source_api_calls, dedupe_accepted,"
-                " heartbeat_count, healthy_count, degraded_count, error_count, uptime_pct"
-                " FROM connector_stats_daily"
-                " WHERE connector_type = $1 AND endpoint_identity = $2"
-                " AND day >= $3"
-                " ORDER BY day ASC",
-                connector_type,
-                endpoint_identity,
-                cutoff_date,
-            )
-        except Exception:
-            logger.warning(
-                "connector_stats_daily not available; returning empty list", exc_info=True
-            )
-            return ApiResponse(data=[])
-
         data = [
             ConnectorStatsDaily(
-                connector_type=r["connector_type"],
-                endpoint_identity=r["endpoint_identity"],
-                day=str(r["day"]),
-                messages_ingested=int(r["messages_ingested"] or 0),
-                messages_failed=int(r["messages_failed"] or 0),
-                source_api_calls=int(r["source_api_calls"] or 0),
-                dedupe_accepted=int(r["dedupe_accepted"] or 0),
-                heartbeat_count=int(r["heartbeat_count"] or 0),
-                healthy_count=int(r["healthy_count"] or 0),
-                degraded_count=int(r["degraded_count"] or 0),
-                error_count=int(r["error_count"] or 0),
-                uptime_pct=float(r["uptime_pct"]) if r.get("uptime_pct") is not None else None,
+                connector_type=connector_type,
+                endpoint_identity=endpoint_identity,
+                day=datetime.datetime.fromtimestamp(float(ts), tz=datetime.UTC).date().isoformat(),
+                messages_ingested=int(ingested.get(ts, 0)),
+                messages_failed=int(failed.get(ts, 0)),
+                source_api_calls=int(api_calls.get(ts, 0)),
+                dedupe_accepted=int(dedupe.get(ts, 0)),
             )
-            for r in rows
+            for ts in all_ts
         ]
 
     return ApiResponse(data=data)
@@ -1035,51 +1061,59 @@ async def get_connector_fanout(
     period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[FanoutRow]]:
-    """Return fanout distribution for a single connector.
+    """Return fanout distribution for a single connector sourced from Prometheus.
 
-    Aggregates message counts per target butler over the requested period.
+    Aggregates routed message counts per target butler over the requested period.
     Used to populate the fanout distribution table in the Connectors tab detail
-    view and the Overview tab fanout matrix.
+    view.
 
-    Note: This endpoint queries the ``connector_fanout_daily`` table, which has
-    daily granularity only. ``period="24h"`` therefore covers the current and
-    previous calendar day (yesterday + today UTC), not a strict rolling 24-hour
-    window. This is consistent with the table schema; the ``/stats`` endpoint
-    uses hourly granularity for the 24h window.
+    Requires ``PROMETHEUS_URL`` env var.  Returns an empty list when Prometheus
+    is not configured or unavailable.
 
-    Falls back gracefully to an empty list when rollup tables are missing.
+    Prometheus metric name expected:
+    - ``switchboard_routed_messages_total``
+      (labels: connector_type, endpoint_identity, target_butler, outcome)
     """
-    pool = _pool(db)
-
-    days = _PERIOD_HOURS.get(period, 24) // 24 or 1
-    cutoff_date = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)).date()
-
-    try:
-        rows = await pool.fetch(
-            "SELECT connector_type, endpoint_identity, target_butler,"
-            " sum(message_count) AS message_count"
-            " FROM connector_fanout_daily"
-            " WHERE connector_type = $1 AND endpoint_identity = $2"
-            " AND day >= $3"
-            " GROUP BY connector_type, endpoint_identity, target_butler"
-            " ORDER BY message_count DESC",
-            connector_type,
-            endpoint_identity,
-            cutoff_date,
-        )
-    except Exception:
-        logger.warning("connector_fanout_daily not available; returning empty list", exc_info=True)
+    prom_url = _get_prometheus_url()
+    if not prom_url:
+        logger.debug("PROMETHEUS_URL not set; returning empty fanout data")
         return ApiResponse[list[FanoutRow]](data=[])
 
-    data = [
-        FanoutRow(
-            connector_type=r["connector_type"],
-            endpoint_identity=r["endpoint_identity"],
-            target_butler=r["target_butler"],
-            message_count=int(r["message_count"] or 0),
+    hours = _PERIOD_HOURS[period]
+    label_filter = f'connector_type="{connector_type}",endpoint_identity="{endpoint_identity}"'
+    q = (
+        f"sum by (target_butler) "
+        f"(increase(switchboard_routed_messages_total{{{label_filter}}}[{hours}h]))"
+    )
+
+    results = await async_query(prom_url, q)
+    if results and isinstance(results[0], dict) and "error" in results[0]:
+        logger.warning(
+            "Prometheus query error for connector fanout %s/%s: %s",
+            connector_type,
+            endpoint_identity,
+            results[0]["error"],
         )
-        for r in rows
-    ]
+        return ApiResponse[list[FanoutRow]](data=[])
+
+    data = []
+    for series in results:
+        target_butler = series.get("metric", {}).get("target_butler", "unknown")
+        try:
+            count = int(float(series["value"][1]))
+        except (KeyError, IndexError, TypeError, ValueError):
+            count = 0
+        if count > 0:
+            data.append(
+                FanoutRow(
+                    connector_type=connector_type,
+                    endpoint_identity=endpoint_identity,
+                    target_butler=target_butler,
+                    message_count=count,
+                )
+            )
+
+    data.sort(key=lambda r: r.message_count, reverse=True)
     return ApiResponse[list[FanoutRow]](data=data)
 
 
@@ -1210,47 +1244,53 @@ async def get_ingestion_fanout(
     period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> ApiResponse[list[FanoutRow]]:
-    """Return the cross-connector × butler fanout matrix for the Overview tab.
+    """Return the cross-connector × butler fanout matrix sourced from Prometheus.
 
     Aggregates message counts per (connector_type, endpoint_identity, target_butler)
     over the requested period. Used to populate the fanout matrix table on the
     Overview tab.
 
-    Note: This endpoint queries the ``connector_fanout_daily`` table, which has
-    daily granularity only. ``period="24h"`` therefore covers the current and
-    previous calendar day (yesterday + today UTC), not a strict rolling 24-hour
-    window.
+    Requires ``PROMETHEUS_URL`` env var.  Returns an empty list when Prometheus
+    is not configured or unavailable.
 
-    Falls back gracefully to an empty list when rollup tables are missing.
+    Prometheus metric name expected:
+    - ``switchboard_routed_messages_total``
+      (labels: connector_type, endpoint_identity, target_butler, outcome)
     """
-    pool = _pool(db)
-
-    days = _PERIOD_HOURS.get(period, 24) // 24 or 1
-    cutoff_date = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)).date()
-
-    try:
-        rows = await pool.fetch(
-            "SELECT connector_type, endpoint_identity, target_butler,"
-            " sum(message_count) AS message_count"
-            " FROM connector_fanout_daily"
-            " WHERE day >= $1"
-            " GROUP BY connector_type, endpoint_identity, target_butler"
-            " ORDER BY connector_type, endpoint_identity, message_count DESC",
-            cutoff_date,
-        )
-    except Exception:
-        logger.warning("connector_fanout_daily not available; returning empty list", exc_info=True)
+    prom_url = _get_prometheus_url()
+    if not prom_url:
+        logger.debug("PROMETHEUS_URL not set; returning empty ingestion fanout")
         return ApiResponse[list[FanoutRow]](data=[])
 
-    data = [
-        FanoutRow(
-            connector_type=r["connector_type"],
-            endpoint_identity=r["endpoint_identity"],
-            target_butler=r["target_butler"],
-            message_count=int(r["message_count"] or 0),
-        )
-        for r in rows
-    ]
+    hours = _PERIOD_HOURS[period]
+    q = (
+        f"sum by (connector_type, endpoint_identity, target_butler) "
+        f"(increase(switchboard_routed_messages_total[{hours}h]))"
+    )
+
+    results = await async_query(prom_url, q)
+    if results and isinstance(results[0], dict) and "error" in results[0]:
+        logger.warning("Prometheus query error for ingestion fanout: %s", results[0]["error"])
+        return ApiResponse[list[FanoutRow]](data=[])
+
+    data = []
+    for series in results:
+        m = series.get("metric", {})
+        try:
+            count = int(float(series["value"][1]))
+        except (KeyError, IndexError, TypeError, ValueError):
+            count = 0
+        if count > 0:
+            data.append(
+                FanoutRow(
+                    connector_type=m.get("connector_type", "unknown"),
+                    endpoint_identity=m.get("endpoint_identity", "unknown"),
+                    target_butler=m.get("target_butler", "unknown"),
+                    message_count=count,
+                )
+            )
+
+    data.sort(key=lambda r: (r.connector_type, r.endpoint_identity, -r.message_count))
     return ApiResponse[list[FanoutRow]](data=data)
 
 

@@ -20,13 +20,21 @@ def test_switchboard_deterministic_schedules_use_job_mode() -> None:
     schedules = config.get("butler", {}).get("schedule", [])
     by_name = {entry["name"]: entry for entry in schedules}
     expected_jobs = {
-        "connector-stats-hourly-rollup": "connector_stats_hourly_rollup",
-        "connector-stats-daily-rollup": "connector_stats_daily_rollup",
-        "connector-stats-pruning": "connector_stats_pruning",
         "eligibility-sweep": "eligibility_sweep",
         "memory-consolidation": "memory_consolidation",
         "memory-episode-cleanup": "memory_episode_cleanup",
     }
+
+    # Verify rollup jobs were removed (replaced by OTel/Prometheus pipeline in butlers-ufzc)
+    removed_jobs = {
+        "connector-stats-hourly-rollup",
+        "connector-stats-daily-rollup",
+        "connector-stats-pruning",
+    }
+    still_present = removed_jobs & set(by_name)
+    assert not still_present, (
+        f"Rollup schedule entries should have been removed (butlers-ufzc): {sorted(still_present)}"
+    )
 
     missing = set(expected_jobs) - set(by_name)
     assert not missing, f"Missing switchboard deterministic schedules: {sorted(missing)}"

@@ -25,19 +25,30 @@ class TestNativeScheduleDispatch:
                 f"Missing deterministic memory jobs for {butler_name}: {sorted(missing)}"
             )
 
-    def test_registry_includes_switchboard_connector_stats_jobs(self):
-        """Switchboard deterministic connector stats jobs should be registered."""
+    def test_registry_includes_switchboard_eligibility_sweep_job(self):
+        """Switchboard deterministic eligibility sweep job should be registered.
+
+        The connector stats rollup jobs (connector_stats_hourly_rollup,
+        connector_stats_daily_rollup, connector_stats_pruning) were removed in
+        butlers-ufzc and replaced by the OTel/Prometheus-native metrics pipeline.
+        """
         from butlers.daemon import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
 
         jobs = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY.get("switchboard", {})
-        expected_jobs = {
+        expected_jobs = {"eligibility_sweep"}
+        missing = expected_jobs - set(jobs)
+        assert not missing, f"Missing switchboard deterministic jobs: {sorted(missing)}"
+
+        # Verify rollup jobs are no longer present (removed in butlers-ufzc)
+        removed_jobs = {
             "connector_stats_hourly_rollup",
             "connector_stats_daily_rollup",
             "connector_stats_pruning",
-            "eligibility_sweep",
         }
-        missing = expected_jobs - set(jobs)
-        assert not missing, f"Missing switchboard deterministic jobs: {sorted(missing)}"
+        still_present = removed_jobs & set(jobs)
+        assert not still_present, (
+            f"Rollup jobs should have been removed (butlers-ufzc): {sorted(still_present)}"
+        )
 
     async def test_switchboard_job_mode_dispatches_via_registry(self, tmp_path):
         """Job-mode deterministic schedules should dispatch via registry handler."""

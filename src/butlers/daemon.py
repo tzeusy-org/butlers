@@ -220,35 +220,6 @@ def _load_switchboard_eligibility_sweep_job() -> Callable[
     return module.run_eligibility_sweep_job
 
 
-@functools.lru_cache(maxsize=1)
-def _load_switchboard_connector_stats_jobs() -> tuple[
-    Callable[[asyncpg.Pool], Awaitable[dict[str, int]]],
-    Callable[[asyncpg.Pool], Awaitable[dict[str, int]]],
-    Callable[[asyncpg.Pool], Awaitable[dict[str, int]]],
-]:
-    """Load switchboard connector statistics jobs from roster/ by file path."""
-    import importlib.util as _ilu
-
-    module_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "switchboard"
-        / "jobs"
-        / "connector_stats.py"
-    )
-    module_name = "roster_switchboard_connector_stats_jobs"
-    spec = _ilu.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load switchboard connector stats jobs from {module_path}")
-    module = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return (
-        module.run_connector_stats_hourly_rollup,
-        module.run_connector_stats_daily_rollup,
-        module.run_connector_stats_pruning,
-    )
-
-
 async def _run_switchboard_eligibility_sweep_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -257,36 +228,6 @@ async def _run_switchboard_eligibility_sweep_job(
     del job_args
     run_eligibility_sweep_job = _load_switchboard_eligibility_sweep_job()
     return await run_eligibility_sweep_job(pool)
-
-
-async def _run_switchboard_connector_stats_hourly_rollup_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, int]:
-    """Run the switchboard connector statistics hourly rollup deterministic job."""
-    del job_args
-    run_hourly_rollup, _, _ = _load_switchboard_connector_stats_jobs()
-    return await run_hourly_rollup(pool)
-
-
-async def _run_switchboard_connector_stats_daily_rollup_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, int]:
-    """Run the switchboard connector statistics daily rollup deterministic job."""
-    del job_args
-    _, run_daily_rollup, _ = _load_switchboard_connector_stats_jobs()
-    return await run_daily_rollup(pool)
-
-
-async def _run_switchboard_connector_stats_pruning_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, int]:
-    """Run the switchboard connector statistics pruning deterministic job."""
-    del job_args
-    _, _, run_pruning = _load_switchboard_connector_stats_jobs()
-    return await run_pruning(pool)
 
 
 async def _run_memory_consolidation_job(
@@ -357,9 +298,6 @@ _DETERMINISTIC_SCHEDULE_JOB_REGISTRY: dict[str, dict[str, _DeterministicSchedule
         "compute_analytics_snapshots": _run_education_compute_analytics_snapshots_job,
     },
     "switchboard": {
-        "connector_stats_hourly_rollup": _run_switchboard_connector_stats_hourly_rollup_job,
-        "connector_stats_daily_rollup": _run_switchboard_connector_stats_daily_rollup_job,
-        "connector_stats_pruning": _run_switchboard_connector_stats_pruning_job,
         "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
         **_MEMORY_MAINTENANCE_JOB_HANDLERS,
     },
@@ -377,9 +315,6 @@ _DETERMINISTIC_SCHEDULE_LEGACY_ALIASES: dict[str, dict[str, str]] = {
     "health": dict(_MEMORY_SCHEDULE_LEGACY_ALIASES),
     "relationship": dict(_MEMORY_SCHEDULE_LEGACY_ALIASES),
     "switchboard": {
-        "connector-stats-hourly-rollup": "connector_stats_hourly_rollup",
-        "connector-stats-daily-rollup": "connector_stats_daily_rollup",
-        "connector-stats-pruning": "connector_stats_pruning",
         "eligibility-sweep": "eligibility_sweep",
         **_MEMORY_SCHEDULE_LEGACY_ALIASES,
     },
