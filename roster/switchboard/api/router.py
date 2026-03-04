@@ -1140,11 +1140,9 @@ async def get_ingestion_overview(
 
     ``total_ingested`` is derived from ``message_inbox`` as the sum of all
     tier1 + tier2 + tier3 messages in the period.  This ensures that messages
-    processed by internal modules (which do not write to the connector rollup
-    tables) are counted correctly.  The connector rollup tables
-    (``connector_stats_hourly`` / ``connector_stats_daily``) are still
-    populated by external connectors and are used by the per-connector stats
-    endpoints.
+    processed by internal modules are counted correctly.  Per-connector
+    time-series stats are now sourced from Prometheus (see
+    ``get_connector_stats``).
 
     Falls back gracefully when tables are missing.
     """
