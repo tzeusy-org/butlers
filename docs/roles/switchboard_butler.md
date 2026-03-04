@@ -387,9 +387,10 @@ Long-term durable tables and purposes:
 Connector heartbeat and statistics tables:
 - `connector_registry`: current state of each known connector (self-registered, never auto-pruned).
 - `connector_heartbeat_log`: append-only heartbeat history (7-day retention, month-partitioned).
-- `connector_stats_hourly`: pre-aggregated hourly volume and health metrics (30-day retention).
-- `connector_stats_daily`: pre-aggregated daily volume, health, and uptime (1-year retention).
-- `connector_fanout_daily`: per-connector per-target-butler daily message counts (1-year retention).
+
+Note: The pre-aggregated rollup tables (`connector_stats_hourly`, `connector_stats_daily`,
+`connector_fanout_daily`) were dropped by migration sw_025. Dashboard stats endpoints now
+query Prometheus via PromQL instead of pre-aggregated SQL tables.
 
 Long-term storage summary:
 - `butler_registry`, `routing_log`, `extraction_queue`, `extraction_log`, `notifications`, `dashboard_audit_log`, and `backfill_jobs` are persistent operational tables.
@@ -847,28 +848,17 @@ Full heartbeat protocol specification: `docs/connectors/heartbeat.md`.
 
 ### 17.6 Connector Statistics and Aggregation
 
-Switchboard owns pre-aggregated connector statistics derived from heartbeat logs and `message_inbox` routing outcomes.
+Switchboard exposes connector statistics via the OTel/Prometheus metrics pipeline (migrated from
+SQL rollup tables in butlers-ufzc). The pre-aggregated rollup tables (`connector_stats_hourly`,
+`connector_stats_daily`, `connector_fanout_daily`) have been dropped (migration sw_025).
 
-Rollup tables:
-- `connector_stats_hourly`: Per-connector hourly volume and health metrics.
-- `connector_stats_daily`: Per-connector daily volume, health, and uptime percentage.
-- `connector_fanout_daily`: Per-connector per-target-butler daily message counts, derived from `message_inbox.dispatch_outcomes`.
+Metrics sources:
+- `connector_heartbeat_log`: append-only heartbeat history (7-day retention, month-partitioned).
+- Prometheus: time-series volume and fanout metrics exported via OTel collector.
 
-Rollup schedule:
-- Hourly rollup: runs at minute 5 of every hour.
-- Daily rollup + fanout rollup: runs at 00:15 UTC daily.
-
-Retention and pruning:
+Retention:
 - `connector_heartbeat_log`: 7 days (partition drop).
-- `connector_stats_hourly`: 30 days (row delete).
-- `connector_stats_daily`: 1 year (row delete).
-- `connector_fanout_daily`: 1 year (row delete).
 - `connector_registry`: never auto-pruned.
-
-Rules:
-- Rollup jobs are Switchboard scheduled tasks (cron-based).
-- Rollups MUST be idempotent and safe to re-run.
-- Pruning MUST log what was removed.
 
 Full statistics specification: `docs/connectors/statistics.md`.
 
@@ -884,9 +874,9 @@ Required endpoints:
 - `GET /api/connectors/fanout?period=7d|30d` — connector-to-butler routing distribution matrix.
 
 Rules:
-- Endpoints query Switchboard database directly (rollup tables and `connector_registry`).
+- Stats and fanout endpoints query Prometheus via PromQL (PROMETHEUS_URL env var).
+- Endpoints gracefully degrade to empty lists when PROMETHEUS_URL is not set.
 - Liveness is derived at query time from `last_heartbeat_at` using staleness thresholds.
-- Fanout data is derived from pre-aggregated `connector_fanout_daily`, not live `message_inbox` queries.
 - Response models follow the standard `ApiResponse[T]` / `PaginatedResponse[T]` wrappers.
 
 Full endpoint specification and response schemas: `docs/connectors/statistics.md`.

@@ -271,20 +271,16 @@ The Switchboard derives connector liveness from heartbeat recency and manages el
 - **WHEN** a connector goes offline
 - **THEN** the record persists in `connector_registry` for historical visibility — cleanup is operator-only
 
-### Requirement: Statistics Rollup Tables
-Pre-aggregated statistics derived from heartbeat counter deltas and message inbox dispatch outcomes.
+### Requirement: Statistics Pipeline (OTel/Prometheus)
+Connector statistics are exported via the OTel/Prometheus metrics pipeline. The pre-aggregated SQL rollup tables (`connector_stats_hourly`, `connector_stats_daily`, `connector_fanout_daily`) were dropped by migration sw_025 (butlers-ufzc).
 
-#### Scenario: Hourly rollup
-- **WHEN** the hourly stats rollup job runs
-- **THEN** `connector_stats_hourly` stores per-connector per-hour: `messages_ingested`, `messages_failed`, `source_api_calls`, `dedupe_accepted`, `heartbeat_count`, `healthy_count`, `degraded_count`, `error_count`
+#### Scenario: Volume metrics
+- **WHEN** connectors emit OTel metrics
+- **THEN** per-connector volume metrics (messages_ingested, messages_failed, source_api_calls, dedupe_accepted) are available in Prometheus for dashboard time-series queries
 
-#### Scenario: Daily rollup
-- **WHEN** the daily stats rollup job runs
-- **THEN** `connector_stats_daily` stores per-connector per-day: sums of hourly counters plus `uptime_pct` = `healthy_count / heartbeat_count * 100`
-
-#### Scenario: Fanout distribution
-- **WHEN** the fanout rollup job runs
-- **THEN** `connector_fanout_daily` stores per-connector per-target-butler per-day: `message_count`
+#### Scenario: Fanout metrics
+- **WHEN** connector messages are routed by Switchboard
+- **THEN** per-connector per-target-butler fanout metrics are available in Prometheus for dashboard distribution queries
 
 ---
 

@@ -363,7 +363,8 @@ Switchboard persistence has two classes: long-term durable storage and short-liv
 
 #### Scenario: Connector persistence surfaces
 - **WHEN** connector heartbeats and statistics are processed
-- **THEN** data is persisted in `connector_registry` (never auto-pruned), `connector_heartbeat_log` (7-day retention, month-partitioned), `connector_stats_hourly` (30-day retention), `connector_stats_daily` (1-year retention), and `connector_fanout_daily` (1-year retention)
+- **THEN** data is persisted in `connector_registry` (never auto-pruned) and `connector_heartbeat_log` (7-day retention, month-partitioned)
+- **AND** time-series volume and fanout statistics are available via Prometheus (OTel metrics pipeline, migrated from SQL rollup tables in butlers-ufzc)
 
 ### Requirement: Backfill Jobs Table Contract
 Switchboard owns the canonical backfill orchestration table for MCP-mediated connector backfill.
@@ -437,31 +438,22 @@ Switchboard owns the connector heartbeat ingestion boundary.
 - **THEN** they are processed asynchronously and do not block the ingestion path
 
 ### Requirement: Connector Statistics and Aggregation
-Switchboard owns pre-aggregated connector statistics derived from heartbeat logs and `message_inbox` routing outcomes.
+Switchboard exposes connector statistics via the OTel/Prometheus metrics pipeline. The pre-aggregated SQL rollup tables (`connector_stats_hourly`, `connector_stats_daily`, `connector_fanout_daily`) were dropped by migration sw_025 (butlers-ufzc).
 
-#### Scenario: Hourly statistics rollup
-- **WHEN** the `connector-stats-hourly-rollup` job fires (cron `5 * * * *`)
-- **THEN** counter deltas between consecutive heartbeats are computed for each connector
-- **AND** results are upserted into `connector_stats_hourly` with volume (messages_ingested, messages_failed, source_api_calls, dedupe_accepted) and health (heartbeat_count, healthy_count, degraded_count, error_count)
+#### Scenario: Heartbeat log pruning
+- **WHEN** the connector heartbeat log partition pruning job runs
+- **THEN** `connector_heartbeat_log` partitions older than 7 days are dropped
+- **AND** pruning logs what was removed (partition names, date ranges)
 
-#### Scenario: Daily statistics rollup
-- **WHEN** the `connector-stats-daily-rollup` job fires (cron `15 0 * * *`)
-- **THEN** `connector_stats_hourly` rows for the previous day are summed into `connector_stats_daily`
-- **AND** `uptime_pct` is computed as `healthy_count / heartbeat_count * 100`
+#### Scenario: Prometheus-backed stats endpoint
+- **WHEN** `GET /api/connectors/{connector_type}/{endpoint_identity}/stats?period=24h|7d|30d` is called
+- **THEN** time-series volume statistics are returned by querying Prometheus via PromQL
+- **AND** the endpoint gracefully degrades to an empty list when `PROMETHEUS_URL` is not set
 
-#### Scenario: Fanout distribution rollup
-- **WHEN** the daily rollup job runs
-- **THEN** `message_inbox` rows from the previous day are grouped by `(source_channel, source_endpoint_identity, target_butler)` from `dispatch_outcomes`
-- **AND** results are upserted into `connector_fanout_daily`
-
-#### Scenario: Statistics pruning
-- **WHEN** the `connector-stats-pruning` job fires (cron `30 1 * * *`)
-- **THEN** `connector_heartbeat_log` partitions older than 7 days are dropped, `connector_stats_hourly` rows older than 30 days are deleted, and `connector_stats_daily`/`connector_fanout_daily` rows older than 1 year are deleted
-- **AND** pruning logs what was removed (row counts, date ranges)
-
-#### Scenario: Rollup idempotency
-- **WHEN** a rollup job is re-run
-- **THEN** it produces the same result (idempotent upsert)
+#### Scenario: Prometheus-backed fanout endpoint
+- **WHEN** `GET /api/connectors/fanout` or `GET /api/connectors/{connector_type}/{endpoint_identity}/fanout` is called
+- **THEN** connector-to-butler routing distribution is returned by querying Prometheus via PromQL
+- **AND** the endpoint gracefully degrades to an empty list when `PROMETHEUS_URL` is not set
 
 ### Requirement: Canonical Ingest Event Shape
 All sources submit through the same canonical ingest contract.
@@ -751,14 +743,16 @@ Switchboard connector state and statistics are exposed via core dashboard API en
 - **WHEN** `GET /api/connectors/{connector_type}/{endpoint_identity}` is called
 - **THEN** full detail is returned including instance_id, registered_via, checkpoint, and all counters
 
-#### Scenario: [TARGET-STATE] Connector statistics endpoint
+#### Scenario: Connector statistics endpoint
 - **WHEN** `GET /api/connectors/{connector_type}/{endpoint_identity}/stats?period=24h|7d|30d` is called
-- **THEN** time-series volume and health statistics are returned with hourly buckets (24h/7d from `connector_stats_hourly`) or daily buckets (30d from `connector_stats_daily`)
+- **THEN** time-series volume and health statistics are returned via Prometheus PromQL with hourly buckets (24h/7d) or daily buckets (30d)
+- **AND** falls back to empty list when `PROMETHEUS_URL` is not set
 
-#### Scenario: [TARGET-STATE] Cross-connector summary endpoint
+#### Scenario: Cross-connector summary endpoint
 - **WHEN** `GET /api/connectors/summary?period=24h|7d|30d` is called
 - **THEN** aggregate statistics across all connectors are returned with online/stale/offline counts and per-connector breakdown
 
-#### Scenario: [TARGET-STATE] Fanout distribution endpoint
+#### Scenario: Fanout distribution endpoint
 - **WHEN** `GET /api/connectors/fanout?period=7d|30d` is called
-- **THEN** the connector-to-butler routing distribution matrix is returned from pre-aggregated `connector_fanout_daily`
+- **THEN** the connector-to-butler routing distribution matrix is returned via Prometheus PromQL
+- **AND** falls back to empty list when `PROMETHEUS_URL` is not set

@@ -10,7 +10,6 @@ Tested behaviors:
 - get_ingestion_fanout: queries Prometheus instant API for cross-connector matrix.
 - All endpoints fall back to empty lists when PROMETHEUS_URL is not set.
 - All endpoints fall back to empty lists when Prometheus returns an error.
-- No-op stubs: the deprecated rollup functions now return empty result dicts.
 """
 
 from __future__ import annotations
@@ -32,49 +31,6 @@ def _load_router():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-# ---------------------------------------------------------------------------
-# Tests: deprecated rollup stubs return empty results (no DB needed)
-# ---------------------------------------------------------------------------
-
-
-async def test_hourly_rollup_stub_returns_empty():
-    """Deprecated run_connector_stats_hourly_rollup returns empty result without DB access."""
-    jobs_path = Path(__file__).resolve().parents[1] / "jobs" / "connector_stats.py"
-    spec = importlib.util.spec_from_file_location("_sw_connector_stats_jobs", jobs_path)
-    jobs_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(jobs_mod)
-
-    result = await jobs_mod.run_connector_stats_hourly_rollup(None)
-    assert result == {"rows_processed": 0, "connectors_updated": 0}
-
-
-async def test_daily_rollup_stub_returns_empty():
-    """Deprecated run_connector_stats_daily_rollup returns empty result without DB access."""
-    jobs_path = Path(__file__).resolve().parents[1] / "jobs" / "connector_stats.py"
-    spec = importlib.util.spec_from_file_location("_sw_connector_stats_jobs_daily", jobs_path)
-    jobs_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(jobs_mod)
-
-    result = await jobs_mod.run_connector_stats_daily_rollup(None)
-    assert result == {"stats_updated": 0, "fanout_updated": 0}
-
-
-async def test_pruning_stub_returns_empty():
-    """Deprecated run_connector_stats_pruning returns empty result without DB access."""
-    jobs_path = Path(__file__).resolve().parents[1] / "jobs" / "connector_stats.py"
-    spec = importlib.util.spec_from_file_location("_sw_connector_stats_jobs_pruning", jobs_path)
-    jobs_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(jobs_mod)
-
-    result = await jobs_mod.run_connector_stats_pruning(None)
-    assert result == {
-        "heartbeat_partitions_dropped": 0,
-        "hourly_rows_deleted": 0,
-        "daily_rows_deleted": 0,
-        "fanout_rows_deleted": 0,
-    }
 
 
 # ---------------------------------------------------------------------------
