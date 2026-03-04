@@ -2,17 +2,18 @@
 
 Encapsulates all OpenCode CLI-specific logic:
 - Subprocess invocation of the ``opencode`` binary
-- MCP config file generation (JSONC format with mcp key)
+- Temporary config file generation (JSONC format with mcp/instructions/permission keys)
 - OPENCODE.md / AGENTS.md system prompt reading
-- Result parsing: extracts text output and tool call records
+- Result parsing: extracts text output, tool call records, and token usage
 
-The OpenCode CLI is invoked with ``opencode run --format json`` and
-``--model <provider/model>`` to pass the model. System prompt is written
-to a temp file and referenced in the config's ``instructions`` array.
-MCP server configs are written to a temporary JSONC config file and
-passed via the ``OPENCODE_CONFIG`` environment variable.
+The OpenCode CLI is invoked via ``opencode run --format json``. Config is passed
+via the ``OPENCODE_CONFIG`` environment variable pointing to a temporary JSONC file
+written per invocation. MCP servers are mapped as ``remote`` type entries. The
+system prompt is written to a temp file and referenced in the ``instructions`` array.
 
-If the opencode binary is not installed on PATH, invoke() raises
+Permission prompts are disabled by setting ``"permission": {}`` in the config.
+
+If the OpenCode CLI binary is not installed on PATH, invoke() raises
 FileNotFoundError.
 """
 
@@ -30,6 +31,394 @@ logger = logging.getLogger(__name__)
 # Default timeout for OpenCode CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
 
+
+
+def _parse_opencode_output(
+    stdout: str, stderr: str, returncode: int
+) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+    """Parse OpenCode CLI JSON output into (result_text, tool_calls, usage).
+
+    OpenCode CLI emits JSON-lines on stdout when invoked with ``--format json``.
+    The exact event shapes are not fully documented; this parser handles multiple
+    known variants and degrades gracefully on unknown types.
+
+    Known event types handled:
+    - ``type: "text"`` — plain text delta or result text
+    - ``type: "message"`` — assistant message with text or multi-part content
+    - ``type: "assistant"`` — assistant response wrapper
+    - ``type: "result"`` — final result payload
+    - ``type: "tool_use"`` — standard MCP/Claude tool use
+    - ``type: "tool_call"`` — alternative tool call variant
+    - ``type: "function_call"`` — OpenAI function_call format
+    - ``type: "mcp_tool_call"`` — explicit MCP tool call events
+    - ``type: "usage"`` — token usage counts
+    - ``type: "turn.completed"`` / ``type: "response.completed"`` — final usage wrapper
+    - ``type: "item.completed"`` / ``type: "response.output_item.done"`` — nested items
+
+    Unknown event types are logged at DEBUG level and skipped.
+
+    Parameters
+    ----------
+    stdout:
+        Raw stdout from the OpenCode process.
+    stderr:
+        Raw stderr from the OpenCode process.
+    returncode:
+        Exit code from the OpenCode process.
+
+    Returns
+    -------
+    tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]
+        (result_text, tool_calls, usage) where:
+        - result_text is the concatenated assistant response text, or None
+        - tool_calls is a list of normalized {id, name, input} dicts
+        - usage is {input_tokens, output_tokens} or None when unavailable
+    """
+    if returncode != 0:
+        error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+        logger.error("OpenCode CLI exited with code %d: %s", returncode, error_detail)
+        return (f"Error: {error_detail}", [], None)
+
+    tool_calls: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    usage: dict[str, Any] | None = None
+
+    # Try to parse as JSON-lines (one JSON object per line)
+    lines = stdout.strip().splitlines()
+    parsed_any_json = False
+    fallback_text_parts: list[str] = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            # Not JSON — accumulate for possible plain-text fallback
+            if not parsed_any_json:
+                fallback_text_parts.append(line)
+            continue
+
+        if not isinstance(obj, dict):
+            if not parsed_any_json:
+                fallback_text_parts.append(line)
+            continue
+
+        parsed_any_json = True
+        obj_type = obj.get("type", "")
+
+        if obj_type == "text":
+            # Plain text delta — OpenCode may emit incremental text events
+            text_val = obj.get("text") or obj.get("content") or obj.get("value") or obj.get("delta")
+            if isinstance(text_val, str) and text_val:
+                text_parts.append(text_val)
+
+        elif obj_type == "message":
+            # Standard message event with text or multi-part content blocks
+            content = obj.get("content", "")
+            if isinstance(content, str) and content:
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        block_type = block.get("type", "")
+                        if block_type == "text":
+                            text_val = block.get("text", "")
+                            if text_val:
+                                text_parts.append(text_val)
+                        elif _looks_like_tool_call_event(block):
+                            tool_calls.append(_extract_opencode_tool_call(block))
+
+        elif obj_type == "assistant":
+            # Assistant response wrapper — may contain message or content directly
+            inner = obj.get("message") or obj.get("response")
+            if isinstance(inner, dict):
+                # Recurse into inner message content
+                content = inner.get("content", "")
+                if isinstance(content, str) and content:
+                    text_parts.append(content)
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            block_type = block.get("type", "")
+                            if block_type == "text":
+                                text_val = block.get("text", "")
+                                if text_val:
+                                    text_parts.append(text_val)
+                            elif _looks_like_tool_call_event(block):
+                                tool_calls.append(_extract_opencode_tool_call(block))
+            else:
+                # Content may be directly on the assistant event
+                content = obj.get("content", "")
+                if isinstance(content, str) and content:
+                    text_parts.append(content)
+
+        elif obj_type == "result":
+            # Final result object — plain result or text field
+            result_content = obj.get("result") or obj.get("text")
+            if result_content:
+                text_parts.append(str(result_content))
+
+        elif _looks_like_tool_call_event(obj):
+            # Heuristic match — object looks like a tool call (known types and structural patterns)
+            tool_calls.append(_extract_opencode_tool_call(obj))
+
+        elif obj_type in (
+            "item.completed",
+            "item.started",
+            "response.output_item.done",
+            "response.output_item.added",
+        ):
+            # Wrapper events with nested item payloads
+            item = obj.get("item")
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type", "")
+            if item_type in ("agent_message", "text"):
+                text_val = item.get("text") or item.get("content", "")
+                if isinstance(text_val, str) and text_val:
+                    text_parts.append(text_val)
+            elif _looks_like_tool_call_event(item):
+                tool_calls.append(_extract_opencode_tool_call(item))
+
+        elif obj_type == "usage":
+            # Standalone usage event
+            usage = _extract_usage(obj)
+
+        elif obj_type in ("turn.completed", "response.completed"):
+            # Final usage wrapper — may embed usage directly or in response sub-object
+            extracted = _extract_usage(obj)
+            if extracted is not None:
+                usage = extracted
+            else:
+                # Try nested response.usage
+                response_obj = obj.get("response")
+                if isinstance(response_obj, dict):
+                    extracted = _extract_usage(response_obj.get("usage") or response_obj)
+                    if extracted is not None:
+                        usage = extracted
+
+        else:
+            # Unknown event type — log and skip, but harvest any text/content
+            if obj_type:
+                logger.debug("OpenCode: unknown event type %r — skipping", obj_type)
+            if "text" in obj and isinstance(obj["text"], str):
+                text_parts.append(obj["text"])
+            elif "content" in obj and isinstance(obj["content"], str):
+                text_parts.append(obj["content"])
+
+    # If we couldn't parse any JSON, treat entire stdout as result text
+    if not parsed_any_json and not text_parts:
+        text_parts = fallback_text_parts or ([stdout.strip()] if stdout.strip() else [])
+
+    result_text = "\n".join(part for part in text_parts if part) or None
+    return result_text, tool_calls, usage
+
+
+def _extract_usage(obj: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract token usage from a usage dict or event object.
+
+    Looks for ``input_tokens`` and ``output_tokens`` keys in the given object.
+    Also accepts ``prompt_tokens`` / ``completion_tokens`` (OpenAI format).
+
+    Parameters
+    ----------
+    obj:
+        An event or usage sub-object from OpenCode output.
+
+    Returns
+    -------
+    dict[str, Any] | None
+        A dict with ``input_tokens`` and ``output_tokens`` (int or None),
+        or None if no recognizable usage fields are found.
+    """
+    if not isinstance(obj, dict):
+        return None
+
+    # Primary: input_tokens / output_tokens (Anthropic / OpenCode native)
+    input_tokens = obj.get("input_tokens") or obj.get("prompt_tokens")
+    output_tokens = obj.get("output_tokens") or obj.get("completion_tokens")
+
+    # Also check a nested "usage" key (e.g. turn.completed with usage={...})
+    if input_tokens is None and output_tokens is None:
+        nested = obj.get("usage")
+        if isinstance(nested, dict):
+            input_tokens = nested.get("input_tokens") or nested.get("prompt_tokens")
+            output_tokens = nested.get("output_tokens") or nested.get("completion_tokens")
+
+    if input_tokens is None and output_tokens is None:
+        return None
+
+    return {
+        "input_tokens": input_tokens if isinstance(input_tokens, int) else None,
+        "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
+    }
+
+
+def _looks_like_tool_call_event(obj: dict[str, Any]) -> bool:
+    """Return True when an event object appears to encode a tool call.
+
+    Uses heuristic matching: checks known tool-call type strings first,
+    then falls back to checking for a name field + input/arguments fields.
+
+    Parameters
+    ----------
+    obj:
+        A JSON event object to inspect.
+
+    Returns
+    -------
+    bool
+        True if the object appears to be a tool call.
+    """
+    obj_type = str(obj.get("type", ""))
+    if obj_type in {
+        "tool_use",
+        "tool_call",
+        "function_call",
+        "mcp_tool_call",
+        "mcp_tool_use",
+        "custom_tool_call",
+        "command_execution",
+    }:
+        return True
+
+    # Heuristic: look for nested call containers
+    nested_containers = [
+        container
+        for container in (
+            obj.get("function"),
+            obj.get("tool"),
+            obj.get("call"),
+            obj.get("tool_call"),
+            obj.get("toolCall"),
+        )
+        if isinstance(container, dict)
+    ]
+
+    name = (
+        obj.get("name")
+        or obj.get("tool_name")
+        or obj.get("toolName")
+        or next(
+            (
+                container.get("name") or container.get("tool_name") or container.get("toolName")
+                for container in nested_containers
+                if (
+                    container.get("name") or container.get("tool_name") or container.get("toolName")
+                )
+            ),
+            None,
+        )
+    )
+    has_args = any(
+        any(key in container for key in ("input", "arguments", "args", "parameters"))
+        for container in [obj, *nested_containers]
+    )
+    if isinstance(name, str) and name.strip() and has_args:
+        return True
+
+    return False
+
+
+def _extract_opencode_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
+    """Extract a normalized tool call dict from an OpenCode JSON event.
+
+    Handles multiple event shapes:
+    - Standard tool_use: ``{"id": ..., "name": ..., "input": {...}}``
+    - Function call: ``{"id": ..., "function": {"name": ..., "arguments": {...}}}``
+    - MCP tool call with nested call: ``{"id": ..., "call": {"name": ..., "arguments": {...}}}``
+    - toolCall camelCase variant
+    - Stringified JSON arguments (parsed into dict when possible)
+
+    Parameters
+    ----------
+    obj:
+        A JSON object representing a tool call event.
+
+    Returns
+    -------
+    dict[str, Any]
+        Normalized tool call with 'id', 'name', and 'input' keys.
+    """
+    # Collect nested call container candidates
+    nested_containers = [
+        container
+        for container in (
+            obj.get("function"),
+            obj.get("tool"),
+            obj.get("call"),
+            obj.get("tool_call"),
+            obj.get("toolCall"),
+        )
+        if isinstance(container, dict)
+    ]
+
+    # Resolve tool name — check top-level and nested containers
+    tool_name = (
+        obj.get("name")
+        or obj.get("tool_name")
+        or obj.get("toolName")
+        or next(
+            (
+                container.get("name") or container.get("tool_name") or container.get("toolName")
+                for container in nested_containers
+                if (
+                    container.get("name") or container.get("tool_name") or container.get("toolName")
+                )
+            ),
+            "",
+        )
+    )
+
+    # Resolve tool ID — check top-level and nested containers
+    tool_id = (
+        obj.get("id")
+        or obj.get("call_id")
+        or next(
+            (
+                container.get("id") or container.get("call_id")
+                for container in nested_containers
+                if container.get("id") or container.get("call_id")
+            ),
+            None,
+        )
+    )
+
+    # Resolve input payload — check top-level then nested containers
+    input_payload: Any = obj.get("input")
+    if input_payload is None:
+        input_payload = obj.get("args")
+    if input_payload is None:
+        input_payload = obj.get("arguments")
+    if input_payload is None:
+        input_payload = obj.get("parameters")
+    if input_payload is None:
+        for container in nested_containers:
+            for key in ("input", "args", "arguments", "parameters"):
+                if key in container:
+                    input_payload = container[key]
+                    break
+            if input_payload is not None:
+                break
+    if input_payload is None:
+        input_payload = {}
+
+    # Parse stringified JSON arguments
+    if isinstance(input_payload, str):
+        try:
+            parsed = json.loads(input_payload)
+            input_payload = parsed if isinstance(parsed, dict) else input_payload
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return {
+        "id": tool_id if isinstance(tool_id, str) else "",
+        "name": tool_name if isinstance(tool_name, str) else "",
+        "input": input_payload,
+    }
 
 def parse_system_prompt_file(config_dir: Path) -> str:
     """Read system prompt from the butler's config directory.
