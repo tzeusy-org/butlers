@@ -492,8 +492,7 @@ def build_config_file(
         Temporary directory to write the config file into.
     instructions_path:
         Optional path to a system prompt file to include in the
-        ``instructions`` array. When provided, the path is included
-        as a relative reference if possible, otherwise absolute.
+        ``instructions`` array. The absolute path string is used directly.
 
     Returns
     -------
@@ -731,7 +730,7 @@ class OpenCodeAdapter(RuntimeAdapter):
                 if stderr:
                     logger.debug("OpenCode stderr: %s", stderr[:500])
 
-                returncode = proc.returncode or 0
+                returncode = proc.returncode if proc.returncode is not None else 0
                 if returncode != 0:
                     error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
                     logger.error("OpenCode CLI exited with code %d: %s", returncode, error_detail)
