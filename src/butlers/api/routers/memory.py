@@ -586,7 +586,7 @@ async def list_entities(
     """List entities with optional search and type filter, paginated."""
     conditions: list[str] = [
         "(metadata->>'merged_into') IS NULL",
-        "tenant_id = 'default'",
+        "tenant_id IN ('default', 'shared')",
     ]
     args: list[object] = []
     idx = 1
@@ -694,7 +694,7 @@ async def get_entity(
             "  WHERE c.entity_id = e.id LIMIT 1"
             " ) AS linked_contact_name"
             " FROM entities e"
-            " WHERE e.id = $1 AND e.tenant_id = 'default'",
+            " WHERE e.id = $1 AND e.tenant_id IN ('default', 'shared')",
             eid,
         )
         if row is None:
