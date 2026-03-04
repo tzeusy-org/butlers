@@ -25,8 +25,8 @@ downgrade() reverses all of the above in reverse order.
 
 Design notes:
   - All DDL is guarded with IF (NOT) EXISTS / DO blocks for idempotency.
-  - contacts.roles column is kept for backward compatibility during the
-    transition period.  A follow-up core_015 migration will drop it.
+  - contacts.roles column was kept for backward compatibility during the
+    transition period.  core_015 drops it.
   - The general butler has its own unrelated entities table (collection items);
     search_path ordering (general, shared, public) ensures general.entities
     resolves first for the general butler, so no collision occurs.
@@ -445,12 +445,10 @@ def upgrade() -> None:
         _grant_schema_usage_if_exists("shared", role)
 
     # -------------------------------------------------------------------------
-    # 7. Drop old owner singleton index from contacts (not needed anymore;
-    #    ix_entities_owner_singleton on shared.entities is the new authority).
-    #    NOTE: kept commented out for the transition period.  Uncomment in
-    #    core_015 when contacts.roles column is dropped.
+    # 7. (no-op here) Drop old owner singleton index from contacts.
+    #    ix_contacts_owner_singleton is dropped by core_015 together with the
+    #    contacts.roles column.  Keeping this comment for cross-reference.
     # -------------------------------------------------------------------------
-    # op.execute("DROP INDEX IF EXISTS shared.ix_contacts_owner_singleton")
 
 
 def downgrade() -> None:

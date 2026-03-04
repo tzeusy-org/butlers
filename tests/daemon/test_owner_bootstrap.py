@@ -7,7 +7,8 @@ Verifies:
 - Concurrent startups create exactly one owner (relying on ON CONFLICT DO NOTHING).
 - If shared.entities does not exist, falls back to contact-only bootstrap.
 - If shared.contacts does not exist the function skips silently.
-- If roles column on contacts does not exist the function skips silently.
+- If roles column on contacts does not exist (post-core_015), inserts contact
+  without roles column (roles live on shared.entities after core_015).
 - Exceptions from the pool are caught and logged (non-fatal).
 """
 
@@ -169,13 +170,39 @@ class TestEnsureOwnerEntityAndContactTableAbsent:
 
 
 class TestEnsureOwnerEntityAndContactRolesColumnAbsent:
-    async def test_skips_when_roles_column_missing(self) -> None:
-        """Function does nothing when shared.contacts.roles column does not exist."""
+    async def test_inserts_contact_without_roles_when_column_missing(self) -> None:
+        """After core_015, contacts.roles is gone; contact is inserted without it."""
         pool, conn = _make_pool(roles_col_exists=False)
 
         await _ensure_owner_entity_and_contact(pool)
 
-        conn.execute.assert_not_awaited()
+        conn.execute.assert_awaited_once()
+        call_sql = conn.execute.call_args[0][0]
+        assert "INSERT INTO shared.contacts" in call_sql
+        assert "roles" not in call_sql
+
+    async def test_inserts_contact_with_entity_id_when_roles_column_missing(self) -> None:
+        """When contacts.roles is absent but entity exists, inserts contact with entity_id."""
+        pool, conn = _make_pool(roles_col_exists=False)
+
+        await _ensure_owner_entity_and_contact(pool)
+
+        call_sql = conn.execute.call_args[0][0]
+        assert "entity_id" in call_sql
+        call_args = conn.execute.call_args[0]
+        assert _OWNER_ENTITY_ID in call_args
+
+    async def test_inserts_contact_name_only_without_entity_or_roles(self) -> None:
+        """When both contacts.roles and shared.entities are absent, inserts contact by name only."""
+        pool, conn = _make_pool(entities_table_exists=False, roles_col_exists=False)
+
+        await _ensure_owner_entity_and_contact(pool)
+
+        conn.execute.assert_awaited_once()
+        call_sql = conn.execute.call_args[0][0]
+        assert "INSERT INTO shared.contacts" in call_sql
+        assert "roles" not in call_sql
+        assert "entity_id" not in call_sql
 
 
 class TestEnsureOwnerEntityAndContactErrorHandling:

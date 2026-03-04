@@ -855,27 +855,46 @@ async def _ensure_owner_entity_and_contact(pool: asyncpg.Pool) -> None:
                 )
                 """
             )
-            if not roles_col_exists:
-                return
 
-            if owner_entity_id is not None:
-                await conn.execute(
-                    """
-                    INSERT INTO shared.contacts (name, roles, entity_id)
-                    VALUES ($1, $2, $3)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    "Owner",
-                    ["owner"],
-                    owner_entity_id,
-                )
+            # After core_015 the contacts.roles column has been dropped; roles
+            # now live exclusively on shared.entities.roles.  We still insert
+            # the owner contact but without the legacy roles column.
+            if roles_col_exists:
+                if owner_entity_id is not None:
+                    await conn.execute(
+                        """
+                        INSERT INTO shared.contacts (name, roles, entity_id)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        "Owner",
+                        ["owner"],
+                        owner_entity_id,
+                    )
+                else:
+                    await conn.execute(
+                        "INSERT INTO shared.contacts (name, roles) "
+                        "VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                        "Owner",
+                        ["owner"],
+                    )
             else:
-                await conn.execute(
-                    "INSERT INTO shared.contacts (name, roles) "
-                    "VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                    "Owner",
-                    ["owner"],
-                )
+                # contacts.roles has been dropped (core_015 applied).
+                if owner_entity_id is not None:
+                    await conn.execute(
+                        """
+                        INSERT INTO shared.contacts (name, entity_id)
+                        VALUES ($1, $2)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        "Owner",
+                        owner_entity_id,
+                    )
+                else:
+                    await conn.execute(
+                        "INSERT INTO shared.contacts (name) VALUES ($1) ON CONFLICT DO NOTHING",
+                        "Owner",
+                    )
     except Exception:  # noqa: BLE001
         logger.warning("Owner entity/contact bootstrap skipped (non-fatal)", exc_info=True)
 
