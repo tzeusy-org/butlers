@@ -12,6 +12,7 @@ from butlers.core.runtimes import RuntimeAdapter, get_adapter, register_adapter
 from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
 from butlers.core.runtimes.codex import CodexAdapter
 from butlers.core.runtimes.gemini import GeminiAdapter
+from butlers.core.runtimes.opencode import OpenCodeAdapter
 
 pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
@@ -213,6 +214,12 @@ def test_get_adapter_gemini():
     assert cls is GeminiAdapter
 
 
+def test_get_adapter_opencode():
+    """get_adapter('opencode') returns OpenCodeAdapter."""
+    cls = get_adapter("opencode")
+    assert cls is OpenCodeAdapter
+
+
 def test_get_adapter_unknown_raises():
     """get_adapter() raises ValueError for unregistered type strings."""
     with pytest.raises(ValueError, match="Unknown runtime type 'unknown-runtime'"):
@@ -226,6 +233,7 @@ def test_get_adapter_error_lists_available():
     msg = str(exc_info.value)
     assert "codex" in msg
     assert "gemini" in msg
+    assert "opencode" in msg
 
 
 def test_register_custom_adapter():
@@ -244,6 +252,7 @@ def test_all_adapters_are_runtime_adapters():
     assert issubclass(ClaudeCodeAdapter, RuntimeAdapter)
     assert issubclass(CodexAdapter, RuntimeAdapter)
     assert issubclass(GeminiAdapter, RuntimeAdapter)
+    assert issubclass(OpenCodeAdapter, RuntimeAdapter)
 
 
 def test_all_adapters_instantiate():
@@ -251,6 +260,7 @@ def test_all_adapters_instantiate():
     assert ClaudeCodeAdapter()
     assert CodexAdapter()
     assert GeminiAdapter()
+    assert OpenCodeAdapter()
 
 
 @pytest.mark.parametrize(
@@ -272,6 +282,32 @@ def test_build_config_file_preserves_streamable_http_urls(
     assert config_path == tmp_path / expected_filename
     data = json.loads(config_path.read_text())
     assert data["mcpServers"]["switchboard"]["url"] == "http://localhost:40100/mcp"
+
+
+def test_opencode_adapter_binary_name():
+    """OpenCodeAdapter.binary_name returns 'opencode'."""
+    adapter = OpenCodeAdapter()
+    assert adapter.binary_name == "opencode"
+
+
+def test_opencode_adapter_build_config_file_preserves_url(tmp_path: Path):
+    """OpenCodeAdapter.build_config_file() writes opencode.jsonc with correct URL."""
+    adapter = OpenCodeAdapter()
+    mcp_servers = {"switchboard": {"url": "http://localhost:40100/mcp"}}
+    config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
+
+    assert config_path == tmp_path / "opencode.jsonc"
+    assert config_path.exists()
+    data = json.loads(config_path.read_text())
+    assert data["mcp"]["switchboard"]["url"] == "http://localhost:40100/mcp"
+    assert data["mcp"]["switchboard"]["type"] == "remote"
+
+
+def test_opencode_adapter_importable_from_runtimes():
+    """OpenCodeAdapter is importable from butlers.core.runtimes."""
+    from butlers.core.runtimes import OpenCodeAdapter as OCA
+
+    assert OCA is OpenCodeAdapter
 
 
 # ---------------------------------------------------------------------------
