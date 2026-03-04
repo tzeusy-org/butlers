@@ -136,6 +136,7 @@ def _make_entity_row(
         "entity_type": "person",
         "aliases": aliases or [],
         "metadata": {},
+        "roles": [],
         "created_at": None,
         "updated_at": None,
     }
@@ -635,6 +636,7 @@ class TestEntityMerge:
             "tenant_id": "relationship",
             "canonical_name": "Alice",
             "metadata": {},
+            "roles": [],
         }
         tgt_row = {
             "id": ENTITY_UUID2,
@@ -643,6 +645,7 @@ class TestEntityMerge:
             "canonical_name": "Alice Smith",
             "entity_type": "person",
             "metadata": {},
+            "roles": [],
             "created_at": None,
             "updated_at": None,
         }

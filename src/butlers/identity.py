@@ -34,9 +34,10 @@ class ResolvedContact:
     name:
         Display name of the contact (may be ``None`` if not set).
     roles:
-        List of roles assigned to the contact (e.g., ``['owner']``).
+        List of roles assigned to the linked entity (e.g., ``['owner']``).
+        Sourced from ``shared.entities.roles`` via entity JOIN.
     entity_id:
-        UUID of the linked memory entity, or ``None`` if not linked.
+        UUID of the linked entity in shared.entities, or ``None`` if not linked.
     """
 
     contact_id: UUID
@@ -52,9 +53,10 @@ async def resolve_contact_by_channel(
 ) -> ResolvedContact | None:
     """Resolve a contact from a channel identifier.
 
-    Queries ``shared.contact_info JOIN shared.contacts`` to map a channel
-    identifier to a known contact record.  Returns ``None`` when no contact
-    is found for the given (type, value) pair.
+    Queries ``shared.contact_info JOIN shared.contacts LEFT JOIN shared.entities``
+    to map a channel identifier to a known contact record.  Roles are read from
+    the linked entity (``shared.entities.roles``).  Returns ``None`` when no
+    contact is found for the given (type, value) pair.
 
     Parameters
     ----------
@@ -77,21 +79,22 @@ async def resolve_contact_by_channel(
     -----
     - The UNIQUE constraint on ``(type, value)`` in ``shared.contact_info``
       (added by core_007 migration) guarantees at most one result.
-    - ``entity_id`` is cross-schema (entities lives in the memory butler
-      schema); the value is read from the ``contacts.entity_id`` column which
-      stores the UUID reference.
+    - ``entity_id`` is read from ``contacts.entity_id`` which references
+      ``shared.entities(id)``.  Roles are sourced from the entity, not the
+      contact.
     - This function is safe to call if the migration has not yet run —
       it returns ``None`` gracefully.
     """
     try:
         row: asyncpg.Record | None = await pool.fetchrow(
             """
-            SELECT c.id          AS contact_id,
-                   c.name        AS name,
-                   c.roles       AS roles,
-                   c.entity_id   AS entity_id
+            SELECT c.id                          AS contact_id,
+                   c.name                        AS name,
+                   COALESCE(e.roles, '{}')       AS roles,
+                   c.entity_id                   AS entity_id
             FROM   shared.contact_info ci
             JOIN   shared.contacts c ON c.id = ci.contact_id
+            LEFT JOIN shared.entities e ON e.id = c.entity_id
             WHERE  ci.type = $1
               AND  ci.value = $2
             LIMIT  1
@@ -176,12 +179,13 @@ async def create_temp_contact(
                 # Re-check under transaction to avoid double-creation.
                 existing: asyncpg.Record | None = await conn.fetchrow(
                     """
-                    SELECT c.id        AS contact_id,
-                           c.name      AS name,
-                           c.roles     AS roles,
-                           c.entity_id AS entity_id
+                    SELECT c.id                          AS contact_id,
+                           c.name                        AS name,
+                           COALESCE(e.roles, '{}')       AS roles,
+                           c.entity_id                   AS entity_id
                     FROM   shared.contact_info ci
                     JOIN   shared.contacts c ON c.id = ci.contact_id
+                    LEFT JOIN shared.entities e ON e.id = c.entity_id
                     WHERE  ci.type = $1
                       AND  ci.value = $2
                     LIMIT  1
@@ -218,12 +222,11 @@ async def create_temp_contact(
                 }
                 contact_row: asyncpg.Record = await conn.fetchrow(
                     """
-                    INSERT INTO shared.contacts (name, roles, metadata)
-                    VALUES ($1, $2, $3::jsonb)
-                    RETURNING id, name, roles, entity_id
+                    INSERT INTO shared.contacts (name, metadata)
+                    VALUES ($1, $2::jsonb)
+                    RETURNING id, name, entity_id
                     """,
                     name,
-                    [],
                     json.dumps(metadata),
                 )
                 contact_id: UUID = contact_row["id"]

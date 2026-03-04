@@ -95,15 +95,16 @@ class TestEntityCreate:
             tenant_id=TENANT_ID,
             aliases=["Ali", "A. Smith"],
         )
-        _, tenant, name, etype, aliases_arg, _ = mock_pool.fetchval.call_args[0]
-        assert aliases_arg == ["Ali", "A. Smith"]
+        call_args = mock_pool.fetchval.call_args[0]
+        # SQL, tenant_id, canonical_name, entity_type, aliases, metadata_json, roles
+        assert call_args[4] == ["Ali", "A. Smith"]
 
     async def test_defaults_aliases_to_empty_list(self, mock_pool: AsyncMock) -> None:
         """Omitting aliases passes an empty list to DB."""
         mock_pool.fetchval = AsyncMock(return_value=SAMPLE_UUID)
         await entity_create(mock_pool, "Bob", "person", tenant_id=TENANT_ID)
-        _, tenant, name, etype, aliases_arg, _ = mock_pool.fetchval.call_args[0]
-        assert aliases_arg == []
+        call_args = mock_pool.fetchval.call_args[0]
+        assert call_args[4] == []
 
     async def test_passes_metadata_as_json(self, mock_pool: AsyncMock) -> None:
         """Metadata dict is serialized to JSON for the DB."""
@@ -116,15 +117,15 @@ class TestEntityCreate:
             tenant_id=TENANT_ID,
             metadata=meta,
         )
-        _, tenant, name, etype, aliases_arg, metadata_arg = mock_pool.fetchval.call_args[0]
-        assert json.loads(metadata_arg) == meta
+        call_args = mock_pool.fetchval.call_args[0]
+        assert json.loads(call_args[5]) == meta
 
     async def test_defaults_metadata_to_empty_json_object(self, mock_pool: AsyncMock) -> None:
         """Omitting metadata passes '{}' JSON to DB."""
         mock_pool.fetchval = AsyncMock(return_value=SAMPLE_UUID)
         await entity_create(mock_pool, "Dave", "person", tenant_id=TENANT_ID)
-        _, tenant, name, etype, aliases_arg, metadata_arg = mock_pool.fetchval.call_args[0]
-        assert json.loads(metadata_arg) == {}
+        call_args = mock_pool.fetchval.call_args[0]
+        assert json.loads(call_args[5]) == {}
 
     async def test_raises_value_error_on_unique_constraint_violation(
         self, mock_pool: AsyncMock

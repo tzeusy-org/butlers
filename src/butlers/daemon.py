@@ -844,23 +844,70 @@ class _ToolCallLoggingMCP:
         return getattr(self._mcp, name)
 
 
-async def _ensure_owner_contact(pool: asyncpg.Pool) -> None:
-    """Bootstrap the owner contact in shared.contacts (idempotent).
+async def _ensure_owner_entity_and_contact(pool: asyncpg.Pool) -> None:
+    """Bootstrap the owner entity and contact (idempotent).
 
-    Creates exactly one contact row with roles=[''owner''] on first boot.
-    The partial unique index ix_contacts_owner_singleton (created by core_007
-    migration) prevents duplicate owner contacts even under concurrent startup.
+    Entity-first bootstrap:
+    1. Create owner entity in shared.entities with roles=[''owner''] (if table exists).
+    2. Create owner contact in shared.contacts linked to the entity via entity_id.
+
+    The partial unique indexes ix_entities_owner_singleton and
+    ix_contacts_owner_singleton prevent duplicates under concurrent startup.
 
     Safe to call if:
-    - shared.contacts does not yet exist (skips silently)
-    - owner contact already exists (ON CONFLICT DO NOTHING)
+    - shared.entities or shared.contacts do not yet exist (skips silently)
+    - owner entity/contact already exist (ON CONFLICT DO NOTHING)
     - migration has not yet run (graceful no-op)
     """
     try:
         async with pool.acquire() as conn:
-            # Check whether shared.contacts exists and has the roles column.
-            table_exists = await conn.fetchval("SELECT to_regclass('shared.contacts') IS NOT NULL")
-            if not table_exists:
+            # ------------------------------------------------------------------
+            # Phase 1: Ensure owner entity in shared.entities
+            # ------------------------------------------------------------------
+            entities_table_exists = await conn.fetchval(
+                "SELECT to_regclass('shared.entities') IS NOT NULL"
+            )
+
+            owner_entity_id = None
+            if entities_table_exists:
+                roles_on_entities = await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'shared'
+                          AND table_name = 'entities'
+                          AND column_name = 'roles'
+                    )
+                    """
+                )
+                if roles_on_entities:
+                    owner_entity_id = await conn.fetchval(
+                        """
+                        INSERT INTO shared.entities
+                            (tenant_id, canonical_name, entity_type, roles)
+                        VALUES ('shared', 'Owner', 'person', $1)
+                        ON CONFLICT (tenant_id, canonical_name, entity_type) DO NOTHING
+                        RETURNING id
+                        """,
+                        ["owner"],
+                    )
+                    if owner_entity_id is None:
+                        owner_entity_id = await conn.fetchval(
+                            """
+                            SELECT id FROM shared.entities
+                            WHERE tenant_id = 'shared'
+                              AND canonical_name = 'Owner'
+                              AND entity_type = 'person'
+                            """
+                        )
+
+            # ------------------------------------------------------------------
+            # Phase 2: Ensure owner contact in shared.contacts
+            # ------------------------------------------------------------------
+            contacts_table_exists = await conn.fetchval(
+                "SELECT to_regclass('shared.contacts') IS NOT NULL"
+            )
+            if not contacts_table_exists:
                 return
 
             roles_col_exists = await conn.fetchval(
@@ -876,15 +923,26 @@ async def _ensure_owner_contact(pool: asyncpg.Pool) -> None:
             if not roles_col_exists:
                 return
 
-            # Insert owner contact; ON CONFLICT on the partial unique index
-            # (ix_contacts_owner_singleton) handles concurrent startups.
-            await conn.execute(
-                "INSERT INTO shared.contacts (name, roles) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                "Owner",
-                ["owner"],
-            )
+            if owner_entity_id is not None:
+                await conn.execute(
+                    """
+                    INSERT INTO shared.contacts (name, roles, entity_id)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    "Owner",
+                    ["owner"],
+                    owner_entity_id,
+                )
+            else:
+                await conn.execute(
+                    "INSERT INTO shared.contacts (name, roles) "
+                    "VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    "Owner",
+                    ["owner"],
+                )
     except Exception:  # noqa: BLE001
-        logger.warning("Owner contact bootstrap skipped (non-fatal)", exc_info=True)
+        logger.warning("Owner entity/contact bootstrap skipped (non-fatal)", exc_info=True)
 
 
 class RuntimeBinaryNotFoundError(RuntimeError):
@@ -1247,7 +1305,7 @@ class ButlerDaemon:
         #     Ensures exactly one contact with roles=[''owner''] exists in shared.contacts.
         #     This is safe to call concurrently — the partial unique index + ON CONFLICT
         #     prevent double-insertion even under race conditions.
-        await _ensure_owner_contact(pool)
+        await _ensure_owner_entity_and_contact(pool)
 
         # 9. Call module on_startup (non-fatal per-module)
         started_modules: list[Module] = []

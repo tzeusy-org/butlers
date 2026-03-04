@@ -212,7 +212,6 @@ async def test_create_temp_contact_creates_new():
     mock_contact_row.__getitem__ = lambda self, k: {
         "id": new_id,
         "name": "Unknown (telegram 555)",
-        "roles": [],
         "entity_id": None,
     }[k]
 

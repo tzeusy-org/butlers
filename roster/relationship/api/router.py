@@ -421,9 +421,10 @@ async def list_pending_contacts(
             c.metadata,
             c.created_at,
             c.updated_at,
-            COALESCE(c.roles, '{}') AS roles,
+            COALESCE(e.roles, '{}') AS roles,
             c.entity_id
         FROM contacts c
+        LEFT JOIN shared.entities e ON e.id = c.entity_id
         WHERE c.archived_at IS NULL
           AND (c.metadata->>'needs_disambiguation')::boolean = true
         ORDER BY c.created_at DESC
@@ -880,7 +881,7 @@ async def get_contact(
             c.metadata,
             c.created_at,
             c.updated_at,
-            COALESCE(c.roles, '{}') AS roles,
+            COALESCE(e.roles, '{}') AS roles,
             c.entity_id,
             c.preferred_channel,
             (
@@ -900,6 +901,7 @@ async def get_contact(
                 WHERE i.contact_id = c.id
             ) AS last_interaction_at
         FROM contacts c
+        LEFT JOIN shared.entities e ON e.id = c.entity_id
         WHERE c.id = $1 AND c.archived_at IS NULL
         """,
         contact_id,
@@ -1135,10 +1137,8 @@ async def patch_contact(
         args.append(request.job_title)
         idx += 1
 
-    if request.roles is not None:
-        updates.append(f"roles = ${idx}")
-        args.append(request.roles)
-        idx += 1
+    # Roles are updated on the entity, not the contact.
+    # Handled separately below after the contact UPDATE.
 
     if request.preferred_channel is not None:
         # Empty string clears the preference
@@ -1155,6 +1155,19 @@ async def patch_contact(
             f"UPDATE contacts SET {set_clause} WHERE id = ${idx}",
             *args,
         )
+
+    # Update roles on the linked entity (if roles provided and entity linked)
+    if request.roles is not None:
+        entity_row = await pool.fetchrow(
+            "SELECT entity_id FROM contacts WHERE id = $1",
+            contact_id,
+        )
+        if entity_row and entity_row["entity_id"] is not None:
+            await pool.execute(
+                "UPDATE shared.entities SET roles = $1, updated_at = now() WHERE id = $2",
+                request.roles,
+                entity_row["entity_id"],
+            )
 
     # Return updated contact detail
     return await get_contact(contact_id=contact_id, db=db)
@@ -1364,9 +1377,15 @@ async def get_owner_setup_status(
     """
     pool = _pool(db)
 
-    # Find the owner contact
+    # Find the owner contact (via entity JOIN for roles)
     owner_row = await pool.fetchrow(
-        "SELECT id, name FROM contacts WHERE 'owner' = ANY(COALESCE(roles, '{}')) LIMIT 1",
+        """
+        SELECT c.id, c.name
+        FROM contacts c
+        JOIN shared.entities e ON e.id = c.entity_id
+        WHERE 'owner' = ANY(COALESCE(e.roles, '{}'))
+        LIMIT 1
+        """,
     )
     owner_id = owner_row["id"] if owner_row else None
     # The bootstrap name "Owner" is a placeholder — treat it as not yet set
@@ -1383,7 +1402,8 @@ async def get_owner_setup_status(
         SELECT ci.type
         FROM shared.contact_info ci
         JOIN contacts c ON c.id = ci.contact_id
-        WHERE 'owner' = ANY(COALESCE(c.roles, '{}'))
+        JOIN shared.entities e ON e.id = c.entity_id
+        WHERE 'owner' = ANY(COALESCE(e.roles, '{}'))
           AND ci.type IN ('telegram', 'telegram_chat_id', 'email')
         """,
     )

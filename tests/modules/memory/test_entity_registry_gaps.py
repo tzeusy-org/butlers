@@ -126,6 +126,7 @@ def _make_merge_pool(
         "canonical_name": "Alice",
         "aliases": src_aliases or [],
         "metadata": src_metadata or {},
+        "roles": [],
     }[key]
 
     tgt_row = MagicMock()
@@ -134,6 +135,7 @@ def _make_merge_pool(
         "canonical_name": "Alice Smith",
         "aliases": tgt_aliases or [],
         "metadata": tgt_metadata or {},
+        "roles": [],
     }[key]
 
     conn.fetchrow = AsyncMock(side_effect=[src_row, tgt_row])
@@ -204,11 +206,14 @@ class TestEntityCreateGaps:
         mock_pool.fetchval = AsyncMock(return_value=ENTITY_UUID)
 
         await entity_create(mock_pool, "Alice", "person", tenant_id=TENANT_A, aliases=None)
-        _, _, _, _, aliases_arg_none, _ = mock_pool.fetchval.call_args_list[0][0]
+        call_args_none = mock_pool.fetchval.call_args_list[0][0]
+        # SQL, tenant_id, canonical_name, entity_type, aliases, metadata_json, roles
+        aliases_arg_none = call_args_none[4]
         assert aliases_arg_none == []
 
         await entity_create(mock_pool, "Bob", "person", tenant_id=TENANT_A, aliases=[])
-        _, _, _, _, aliases_arg_empty, _ = mock_pool.fetchval.call_args_list[1][0]
+        call_args_empty = mock_pool.fetchval.call_args_list[1][0]
+        aliases_arg_empty = call_args_empty[4]
         assert aliases_arg_empty == []
 
 
@@ -476,6 +481,7 @@ class TestEntityMergeGaps:
             "canonical_name": "Alice",
             "aliases": [],
             "metadata": {},
+            "roles": [],
         }[key]
 
         tgt_row = MagicMock()
@@ -484,6 +490,7 @@ class TestEntityMergeGaps:
             "canonical_name": "Alice Smith",
             "aliases": [],
             "metadata": {},
+            "roles": [],
         }[key]
 
         fact_id_1 = uuid.UUID("cccccccc-0001-0001-0001-cccccccccccc")

@@ -465,7 +465,8 @@ async def resolve_owner_contact_info(pool: asyncpg.Pool, info_type: str) -> str 
                 SELECT ci.value
                 FROM shared.contact_info ci
                 JOIN shared.contacts c ON c.id = ci.contact_id
-                WHERE 'owner' = ANY(c.roles)
+                JOIN shared.entities e ON e.id = c.entity_id
+                WHERE 'owner' = ANY(e.roles)
                   AND ci.type = $1
                 ORDER BY ci.is_primary DESC NULLS LAST, ci.created_at ASC
                 LIMIT 1
@@ -502,9 +503,9 @@ async def upsert_owner_contact_info(
 ) -> bool:
     """Upsert a ``shared.contact_info`` row on the owner contact.
 
-    Finds the owner contact (``'owner' = ANY(roles)``), then in a single
-    transaction deletes any existing row for ``(contact_id, type)`` and inserts
-    a new one.
+    Finds the owner contact (via entity JOIN, ``'owner' = ANY(e.roles)``),
+    then in a single transaction deletes any existing row for
+    ``(contact_id, type)`` and inserts a new one.
 
     Parameters
     ----------
@@ -526,7 +527,13 @@ async def upsert_owner_contact_info(
     try:
         async with _acquire_conn(pool) as conn:
             owner = await conn.fetchrow(
-                "SELECT id FROM shared.contacts WHERE 'owner' = ANY(roles) LIMIT 1"
+                """
+                SELECT c.id
+                FROM shared.contacts c
+                JOIN shared.entities e ON e.id = c.entity_id
+                WHERE 'owner' = ANY(e.roles)
+                LIMIT 1
+                """,
             )
             if owner is None:
                 logger.debug("upsert_owner_contact_info: no owner contact found")
@@ -581,7 +588,13 @@ async def delete_owner_contact_info(
     try:
         async with _acquire_conn(pool) as conn:
             owner = await conn.fetchrow(
-                "SELECT id FROM shared.contacts WHERE 'owner' = ANY(roles) LIMIT 1"
+                """
+                SELECT c.id
+                FROM shared.contacts c
+                JOIN shared.entities e ON e.id = c.entity_id
+                WHERE 'owner' = ANY(e.roles)
+                LIMIT 1
+                """,
             )
             if owner is None:
                 logger.debug("delete_owner_contact_info: no owner contact found")

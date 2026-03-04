@@ -58,6 +58,7 @@ def _make_entity_row(
         "canonical_name": canonical_name,
         "aliases": aliases or [],
         "metadata": metadata or {},
+        "roles": [],
     }[key]
     return row
 

@@ -19,65 +19,65 @@ The `contacts` table SHALL reside in the `shared` PostgreSQL schema. All butler 
 
 ---
 
-### Requirement: Roles column on contacts
+### Requirement: Roles sourced from entity (not contacts)
 
-The `contacts` table SHALL have a `roles TEXT[] NOT NULL DEFAULT '{}'` column. Each element in the array represents a role assigned to that contact. The initial supported role value is `'owner'`.
+Identity roles (e.g., `'owner'`) are stored on `shared.entities.roles`, NOT on `shared.contacts.roles`. The `contacts.roles` column is retained during the transition period but is no longer the source of truth. All role lookups MUST JOIN through `shared.entities` via `contacts.entity_id`. See the `entity-identity` spec for the authoritative roles definition.
 
-#### Scenario: Owner contact has owner role
+#### Scenario: Contact roles resolved via entity JOIN
 
-- **WHEN** a contact is the system owner
-- **THEN** the contact's `roles` column MUST contain `'owner'`
-
-#### Scenario: Non-owner contact has empty roles
-
-- **WHEN** a contact is created without explicit role assignment
-- **THEN** the contact's `roles` column MUST be `'{}'` (empty array)
-
-#### Scenario: Query contacts by role
-
-- **WHEN** a system component queries `SELECT * FROM contacts WHERE 'owner' = ANY(roles)`
-- **THEN** the query MUST return exactly the contacts that have `'owner'` in their roles array
+- **WHEN** a system component needs to determine a contact's roles
+- **THEN** it MUST query `COALESCE(e.roles, '{}')` via `LEFT JOIN shared.entities e ON e.id = c.entity_id`
+- **AND** MUST NOT read roles directly from `c.roles`
 
 ---
 
 ### Requirement: Role modification restricted to dashboard API
 
-Contact roles SHALL only be modifiable through the dashboard API (authenticated HTTP endpoints). Butler runtime instances (MCP tool calls from LLM CLI sessions) MUST NOT be able to modify the `roles` column. The `contact_update` MCP tool MUST explicitly exclude `roles` from its writable fields.
+Entity roles SHALL only be modifiable through the dashboard API (authenticated HTTP endpoints). Butler runtime instances (MCP tool calls from LLM CLI sessions) MUST NOT be able to modify roles. The `entity_create` and `entity_update` MCP tools MUST NOT expose `roles` as a writable field.
 
 #### Scenario: MCP tool attempts to set roles
 
-- **WHEN** a runtime instance calls `contact_update(contact_id, roles=['owner'])`
+- **WHEN** a runtime instance calls `entity_update(entity_id, roles=['owner'])`
 - **THEN** the tool MUST ignore the `roles` field and NOT modify it
-- **AND** the tool MUST return a success result with the contact's unchanged roles
 
 #### Scenario: Dashboard API updates roles
 
 - **WHEN** `PATCH /api/contacts/{id}` is called with `{"roles": ["owner", "family"]}` from an authenticated dashboard session
-- **THEN** the contact's `roles` column MUST be updated to `['owner', 'family']`
+- **THEN** the linked entity's `roles` column MUST be updated to `['owner', 'family']` via `UPDATE shared.entities SET roles = $1 WHERE id = $2`
 - **AND** the response MUST include the updated roles
 
 ---
 
-### Requirement: Owner contact bootstrap on first startup
+### Requirement: Owner entity and contact bootstrap on first startup
 
-When any butler daemon starts, it SHALL check for the existence of a contact with `'owner' = ANY(roles)` in `shared.contacts`. If no such contact exists, the daemon MUST create a seed contact with `roles = ['owner']`, `name = 'Owner'`, and no channel identifiers. The operation MUST be idempotent across concurrent butler startups.
+When any butler daemon starts, it SHALL follow entity-first bootstrap:
+1. Create an owner entity in `shared.entities` with `roles=['owner']`, `tenant_id='shared'`, `entity_type='person'` (if `shared.entities` exists).
+2. Create an owner contact in `shared.contacts` linked to the entity via `entity_id`.
 
-#### Scenario: First butler starts with empty contacts table
+The operation MUST be idempotent across concurrent butler startups. See the `entity-identity` spec for the authoritative entity bootstrap definition.
 
-- **WHEN** the first butler daemon starts and `shared.contacts` contains no rows
-- **THEN** the daemon MUST create a contact with `roles = ['owner']` and `name = 'Owner'`
+#### Scenario: First butler starts with empty tables
+
+- **WHEN** the first butler daemon starts and both `shared.entities` and `shared.contacts` contain no rows
+- **THEN** the daemon MUST create an entity with `roles = ['owner']` in `shared.entities`
+- **AND** MUST create a contact with `name = 'Owner'` linked to the entity via `entity_id`
 - **AND** the contact MUST have no `contact_info` entries
+
+#### Scenario: Entities table not ready
+
+- **WHEN** a butler daemon starts and `shared.entities` does not yet exist
+- **THEN** the daemon MUST fall back to creating a contact without entity link
+- **AND** the contact MUST still have `roles = ['owner']` (backward compat)
 
 #### Scenario: Multiple butlers start concurrently
 
-- **WHEN** three butler daemons start simultaneously and no owner contact exists
-- **THEN** exactly one owner contact MUST be created (no duplicates)
-- **AND** subsequent startups MUST detect the existing owner and skip creation
+- **WHEN** three butler daemons start simultaneously and no owner exists
+- **THEN** exactly one owner entity and one owner contact MUST be created (no duplicates)
 
-#### Scenario: Owner contact already exists
+#### Scenario: Owner already exists
 
-- **WHEN** a butler daemon starts and a contact with `'owner' = ANY(roles)` already exists
-- **THEN** the daemon MUST NOT create a new contact
+- **WHEN** a butler daemon starts and the owner entity already exists
+- **THEN** the daemon MUST NOT create a new entity or contact
 - **AND** startup MUST proceed normally
 
 ---
@@ -118,18 +118,18 @@ The `shared.contact_info` table SHALL have a foreign key constraint `contact_inf
 
 ### Requirement: Reverse-lookup from channel identifier to contact
 
-The system SHALL provide a `resolve_contact_by_channel(type, value)` function that returns the contact and their role-set for a given channel identifier. The function MUST query `shared.contact_info JOIN shared.contacts` using the `UNIQUE(type, value)` index.
+The system SHALL provide a `resolve_contact_by_channel(type, value)` function that returns the contact and their role-set for a given channel identifier. The function MUST query `shared.contact_info JOIN shared.contacts LEFT JOIN shared.entities` to resolve roles from the entity.
 
 #### Scenario: Known channel identifier resolves to contact
 
 - **WHEN** `resolve_contact_by_channel('telegram', '12345')` is called
-- **AND** a `contact_info` entry exists with `type='telegram'` and `value='12345'` linked to contact "Chloe" with `roles = []`
-- **THEN** the function MUST return the contact's `id`, `name`, `roles`, and `entity_id`
+- **AND** a `contact_info` entry exists linked to contact "Chloe" whose entity has `roles = []`
+- **THEN** the function MUST return the contact's `id`, `name`, `roles` (from entity), and `entity_id`
 
 #### Scenario: Owner channel identifier resolves with owner role
 
 - **WHEN** `resolve_contact_by_channel('telegram', '99999')` is called
-- **AND** the contact_info entry is linked to the owner contact with `roles = ['owner']`
+- **AND** the contact_info entry is linked to the owner contact whose entity has `roles = ['owner']`
 - **THEN** the function MUST return `roles` containing `'owner'`
 
 #### Scenario: Unknown channel identifier returns null
@@ -266,14 +266,14 @@ When a temporary contact is created for an unknown sender, the system SHALL noti
 
 ---
 
-### Requirement: Contacts sync preserves roles and secured fields
+### Requirement: Contacts sync preserves entity roles and secured fields
 
-The Google Contacts sync module MUST NOT overwrite the `roles` column or `secured` flag on `contact_info` entries during sync operations. These fields are owner-managed and MUST be preserved during upserts.
+The Google Contacts sync module MUST NOT overwrite entity `roles` or `secured` flag on `contact_info` entries during sync operations. These fields are owner-managed and MUST be preserved during upserts.
 
-#### Scenario: Google sync does not overwrite roles
+#### Scenario: Google sync does not overwrite entity roles
 
-- **WHEN** the Google Contacts sync runs and updates a contact that has `roles = ['owner']`
-- **THEN** the sync MUST NOT modify the `roles` column
+- **WHEN** the Google Contacts sync runs and updates a contact linked to an entity with `roles = ['owner']`
+- **THEN** the sync MUST NOT modify the entity's `roles` column
 
 #### Scenario: Google sync does not overwrite secured flag
 

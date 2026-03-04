@@ -349,13 +349,15 @@ def test_reveal_contact_secret_400_when_not_secured(app):
 
 
 def test_patch_contact_updates_roles(app):
-    """PATCH /contacts/{id} with roles updates the roles field."""
+    """PATCH /contacts/{id} with roles updates the entity roles field."""
     cid = uuid4()
+    eid = uuid4()
     app, _, mock_pool = _app_with_mock_pool(
         app,
         fetchrow_side_effect=[
             {"id": cid},  # existence check
-            _contact_row(cid, roles=["owner"]),  # get_contact refetch (contact row)
+            {"entity_id": eid},  # entity_id lookup for roles update
+            _contact_row(cid, roles=["owner"], entity_id=eid),  # get_contact refetch
             None,  # birthday
             None,  # address
         ],
@@ -375,9 +377,10 @@ def test_patch_contact_updates_roles(app):
     data = resp.json()
     assert data["roles"] == ["owner"]
 
-    # Verify execute was called for update
+    # Verify execute was called to update entity roles
     mock_pool.execute.assert_awaited_once()
     call_sql = mock_pool.execute.await_args.args[0]
+    assert "shared.entities" in call_sql
     assert "roles" in call_sql
 
 

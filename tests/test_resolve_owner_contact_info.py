@@ -76,8 +76,8 @@ class TestResolveOwnerContactInfoSuccess:
         # Second positional arg is the type parameter
         assert call_args.args[1] == "email"
 
-    async def test_sql_references_owner_role(self) -> None:
-        """The query references the owner role in the WHERE clause."""
+    async def test_sql_references_owner_role_via_entity(self) -> None:
+        """The query references the owner role via entity JOIN in the WHERE clause."""
         row = _make_row("bot_token_value")
         pool, conn = _make_pool(fetchrow_return=row)
 
@@ -87,6 +87,8 @@ class TestResolveOwnerContactInfoSuccess:
         assert "owner" in query
         assert "shared.contact_info" in query
         assert "shared.contacts" in query
+        assert "shared.entities" in query
+        assert "e.roles" in query
 
     async def test_orders_primary_first(self) -> None:
         """The query includes ORDER BY is_primary DESC to prefer primary entries."""

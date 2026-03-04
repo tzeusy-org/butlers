@@ -42,6 +42,7 @@ async def entity_create(
     tenant_id: str,
     aliases: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    roles: list[str] | None = None,
 ) -> dict[str, Any]:
     """Insert a new entity and return its UUID.
 
@@ -52,6 +53,8 @@ async def entity_create(
         tenant_id: Tenant scope for isolation.
         aliases: Optional list of alternative names for the entity.
         metadata: Optional JSONB metadata dict.
+        roles: Optional list of identity roles (e.g. ['owner']).  Internal use
+               only — not exposed to runtime MCP tool callers.
 
     Returns:
         Dict with key ``entity_id`` (UUID string).
@@ -66,13 +69,14 @@ async def entity_create(
         )
 
     aliases_list = aliases or []
+    roles_list = roles or []
     metadata_json = json.dumps(metadata or {})
 
     try:
         entity_id = await pool.fetchval(
             """
-            INSERT INTO entities (tenant_id, canonical_name, entity_type, aliases, metadata)
-            VALUES ($1, $2, $3, $4, $5::jsonb)
+            INSERT INTO entities (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6)
             RETURNING id
             """,
             tenant_id,
@@ -80,6 +84,7 @@ async def entity_create(
             entity_type,
             aliases_list,
             metadata_json,
+            roles_list,
         )
     except Exception as exc:
         exc_str = str(exc)
@@ -112,7 +117,7 @@ async def entity_get(
     row = await pool.fetchrow(
         """
         SELECT id, tenant_id, canonical_name, entity_type, aliases, metadata,
-               created_at, updated_at
+               roles, created_at, updated_at
         FROM entities
         WHERE id = $1 AND tenant_id = $2
         """,
@@ -194,7 +199,7 @@ async def entity_update(
         SET {", ".join(set_clauses)}
         WHERE id = ${where_id_idx} AND tenant_id = ${where_tenant_idx}
         RETURNING id, tenant_id, canonical_name, entity_type, aliases, metadata,
-                  created_at, updated_at
+                  roles, created_at, updated_at
         """,
         *params,
     )
@@ -574,7 +579,7 @@ async def entity_merge(
             # 1. Fetch source and target entities (with lock)
             # ---------------------------------------------------------------
             src_row = await conn.fetchrow(
-                "SELECT id, canonical_name, aliases, metadata "
+                "SELECT id, canonical_name, aliases, metadata, roles "
                 "FROM entities WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                 src_uuid,
                 tenant_id,
@@ -585,7 +590,7 @@ async def entity_merge(
                 )
 
             tgt_row = await conn.fetchrow(
-                "SELECT id, canonical_name, aliases, metadata "
+                "SELECT id, canonical_name, aliases, metadata, roles "
                 "FROM entities WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                 tgt_uuid,
                 tenant_id,
@@ -678,6 +683,18 @@ async def entity_merge(
                     aliases_added += 1
 
             # ---------------------------------------------------------------
+            # 3b. Merge roles (union source roles into target, deduplicated)
+            # ---------------------------------------------------------------
+            src_roles: list[str] = list(src_row["roles"]) if src_row["roles"] else []
+            tgt_roles: list[str] = list(tgt_row["roles"]) if tgt_row["roles"] else []
+            tgt_role_set = set(tgt_roles)
+            merged_roles: list[str] = list(tgt_roles)
+            for role in src_roles:
+                if role not in tgt_role_set:
+                    merged_roles.append(role)
+                    tgt_role_set.add(role)
+
+            # ---------------------------------------------------------------
             # 4. Merge metadata (target wins on conflict)
             # ---------------------------------------------------------------
             tgt_metadata: dict[str, Any] = dict(tgt_row["metadata"]) if tgt_row["metadata"] else {}
@@ -685,10 +702,11 @@ async def entity_merge(
             merged_metadata = {**src_metadata, **tgt_metadata}
 
             await conn.execute(
-                "UPDATE entities SET aliases = $1, metadata = $2::jsonb, updated_at = now() "
-                "WHERE id = $3",
+                "UPDATE entities SET aliases = $1, metadata = $2::jsonb, roles = $3, "
+                "updated_at = now() WHERE id = $4",
                 new_aliases,
                 json.dumps(merged_metadata),
+                merged_roles,
                 tgt_uuid,
             )
 
