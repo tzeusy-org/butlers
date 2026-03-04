@@ -250,21 +250,38 @@ async def run_connector_stats_daily_rollup(db_pool: asyncpg.Pool) -> dict[str, i
         # Rollup fanout statistics from message_inbox
         # NOTE: source_channel and source_endpoint_identity were moved into the
         # request_context JSONB column in migration sw_008.
+        # dispatch_outcomes has shape: {"request_id": "...", "acked": [...], "failed": [...]}
+        # Unnest the acked/failed arrays to get actual butler names.
         fanout_result = await conn.fetch(
             """
-            WITH fanout_aggregates AS (
+            WITH fanout_unnested AS (
                 SELECT
                     request_context ->> 'source_channel' AS source_channel,
                     request_context ->> 'source_endpoint_identity' AS source_endpoint_identity,
-                    jsonb_object_keys(dispatch_outcomes) AS target_butler,
-                    COUNT(*) AS message_count
+                    jsonb_array_elements_text(dispatch_outcomes -> 'acked') AS target_butler
                 FROM message_inbox
                 WHERE DATE(received_at) = $1
                 AND dispatch_outcomes IS NOT NULL
-                GROUP BY
+                AND jsonb_typeof(dispatch_outcomes -> 'acked') = 'array'
+              UNION ALL
+                SELECT
                     request_context ->> 'source_channel',
                     request_context ->> 'source_endpoint_identity',
-                    target_butler
+                    jsonb_array_elements_text(dispatch_outcomes -> 'failed')
+                FROM message_inbox
+                WHERE DATE(received_at) = $1
+                AND dispatch_outcomes IS NOT NULL
+                AND jsonb_typeof(dispatch_outcomes -> 'failed') = 'array'
+            ),
+            fanout_aggregates AS (
+                SELECT
+                    source_channel,
+                    source_endpoint_identity,
+                    target_butler,
+                    COUNT(*) AS message_count
+                FROM fanout_unnested
+                WHERE target_butler IS NOT NULL
+                GROUP BY source_channel, source_endpoint_identity, target_butler
             )
             INSERT INTO connector_fanout_daily (
                 connector_type,

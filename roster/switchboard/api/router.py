@@ -702,10 +702,18 @@ async def list_connectors(
             " FROM connector_registry cr"
             " LEFT JOIN ("
             "   SELECT connector_type, endpoint_identity,"
-            "     SUM(messages_ingested) AS today_ingested,"
-            "     SUM(messages_failed) AS today_failed"
-            "   FROM connector_stats_hourly"
-            "   WHERE DATE(hour) = CURRENT_DATE"
+            "     SUM(delta_ingested) AS today_ingested,"
+            "     SUM(delta_failed) AS today_failed"
+            "   FROM ("
+            "     SELECT connector_type, endpoint_identity, instance_id,"
+            "       GREATEST(0, MAX(counter_messages_ingested)"
+            "         - MIN(counter_messages_ingested)) AS delta_ingested,"
+            "       GREATEST(0, MAX(counter_messages_failed)"
+            "         - MIN(counter_messages_failed)) AS delta_failed"
+            "     FROM connector_heartbeat_log"
+            "     WHERE received_at >= CURRENT_DATE"
+            "     GROUP BY connector_type, endpoint_identity, instance_id"
+            "   ) per_instance"
             "   GROUP BY connector_type, endpoint_identity"
             " ) ts ON cr.connector_type = ts.connector_type"
             "   AND cr.endpoint_identity = ts.endpoint_identity"
@@ -815,10 +823,18 @@ async def get_connector_detail(
             " FROM connector_registry cr"
             " LEFT JOIN ("
             "   SELECT connector_type, endpoint_identity,"
-            "     SUM(messages_ingested) AS today_ingested,"
-            "     SUM(messages_failed) AS today_failed"
-            "   FROM connector_stats_hourly"
-            "   WHERE DATE(hour) = CURRENT_DATE"
+            "     SUM(delta_ingested) AS today_ingested,"
+            "     SUM(delta_failed) AS today_failed"
+            "   FROM ("
+            "     SELECT connector_type, endpoint_identity, instance_id,"
+            "       GREATEST(0, MAX(counter_messages_ingested)"
+            "         - MIN(counter_messages_ingested)) AS delta_ingested,"
+            "       GREATEST(0, MAX(counter_messages_failed)"
+            "         - MIN(counter_messages_failed)) AS delta_failed"
+            "     FROM connector_heartbeat_log"
+            "     WHERE received_at >= CURRENT_DATE"
+            "     GROUP BY connector_type, endpoint_identity, instance_id"
+            "   ) per_instance"
             "   GROUP BY connector_type, endpoint_identity"
             " ) ts ON cr.connector_type = ts.connector_type"
             "   AND cr.endpoint_identity = ts.endpoint_identity"
@@ -842,6 +858,61 @@ async def get_connector_detail(
         )
 
     return ApiResponse[ConnectorEntry](data=_row_to_connector_entry(dict(row)))
+
+
+# ---------------------------------------------------------------------------
+# DELETE /connectors/{connector_type}/{endpoint_identity} — deregister connector
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/connectors/{connector_type}/{endpoint_identity}",
+    response_model=ApiResponse[dict],
+)
+async def delete_connector(
+    connector_type: str,
+    endpoint_identity: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[dict]:
+    """Remove a connector from the registry.
+
+    Use this to clean up stale or renamed connectors that are no longer active.
+    Also removes associated heartbeat log entries.
+    """
+    pool = _pool(db)
+
+    deleted = await pool.fetchval(
+        "DELETE FROM connector_registry"
+        " WHERE connector_type = $1 AND endpoint_identity = $2"
+        " RETURNING connector_type",
+        connector_type,
+        endpoint_identity,
+    )
+
+    if deleted is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connector '{connector_type}/{endpoint_identity}' not found",
+        )
+
+    # Best-effort cleanup of heartbeat log entries
+    try:
+        await pool.execute(
+            "DELETE FROM connector_heartbeat_log"
+            " WHERE connector_type = $1 AND endpoint_identity = $2",
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to clean up heartbeat_log for %s/%s",
+            connector_type,
+            endpoint_identity,
+            exc_info=True,
+        )
+
+    logger.info("Deregistered connector: %s/%s", connector_type, endpoint_identity)
+    return ApiResponse[dict](data={"deleted": f"{connector_type}/{endpoint_identity}"})
 
 
 # ---------------------------------------------------------------------------

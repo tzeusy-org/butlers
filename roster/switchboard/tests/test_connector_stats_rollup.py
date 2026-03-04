@@ -586,29 +586,47 @@ async def test_daily_rollup_sums_hourly_data_and_computes_uptime(provisioned_pos
 
 
 async def test_fanout_rollup_parses_dispatch_outcomes(provisioned_postgres_pool):
-    """Test that fanout rollup correctly parses dispatch_outcomes JSONB."""
+    """Test that fanout rollup correctly parses dispatch_outcomes JSONB.
+
+    Production dispatch_outcomes has shape:
+        {"request_id": "...", "acked": ["butler1", ...], "failed": ["butler2", ...]}
+    The rollup must unnest the acked/failed arrays to extract actual butler names.
+    """
     async with provisioned_postgres_pool() as pool:
         await _create_test_schema(pool)
 
         day = datetime(2026, 2, 15, tzinfo=UTC).date()
 
-        # Insert message_inbox data with dispatch_outcomes using v2 schema (sw_008+).
-        # source_channel and source_endpoint_identity live inside request_context JSONB.
+        # Insert message_inbox data with dispatch_outcomes using the real production shape.
         tg_ctx = json.dumps(
             {"source_channel": "telegram_bot", "source_endpoint_identity": "telegram_bot.bot@789"}
         )
         email_ctx = json.dumps(
             {"source_channel": "email", "source_endpoint_identity": "email.user@example.com"}
         )
-        health_outcome = json.dumps({"health": {"status": "success"}})
-        relationship_outcome = json.dumps({"relationship": {"status": "success"}})
-        general_outcome = json.dumps({"general": {"status": "success"}})
+        # Two messages acked to health butler from telegram
+        health_acked = json.dumps(
+            {"request_id": "req1", "acked": ["health"], "failed": []}
+        )
+        # One message acked to relationship butler from telegram
+        relationship_acked = json.dumps(
+            {"request_id": "req2", "acked": ["relationship"], "failed": []}
+        )
+        # One message acked to general butler from email
+        general_acked = json.dumps(
+            {"request_id": "req3", "acked": ["general"], "failed": []}
+        )
+        # One message with a failed delivery (should also appear in fanout)
+        mixed_outcome = json.dumps(
+            {"request_id": "req4", "acked": ["health"], "failed": ["memory"]}
+        )
 
         for ctx, outcome, ts in [
-            (tg_ctx, health_outcome, datetime(2026, 2, 15, 10, 30, 0, tzinfo=UTC)),
-            (tg_ctx, health_outcome, datetime(2026, 2, 15, 11, 30, 0, tzinfo=UTC)),
-            (tg_ctx, relationship_outcome, datetime(2026, 2, 15, 12, 30, 0, tzinfo=UTC)),
-            (email_ctx, general_outcome, datetime(2026, 2, 15, 13, 30, 0, tzinfo=UTC)),
+            (tg_ctx, health_acked, datetime(2026, 2, 15, 10, 30, 0, tzinfo=UTC)),
+            (tg_ctx, health_acked, datetime(2026, 2, 15, 11, 30, 0, tzinfo=UTC)),
+            (tg_ctx, relationship_acked, datetime(2026, 2, 15, 12, 30, 0, tzinfo=UTC)),
+            (email_ctx, general_acked, datetime(2026, 2, 15, 13, 30, 0, tzinfo=UTC)),
+            (tg_ctx, mixed_outcome, datetime(2026, 2, 15, 14, 30, 0, tzinfo=UTC)),
         ]:
             await pool.execute(
                 """
@@ -621,22 +639,36 @@ async def test_fanout_rollup_parses_dispatch_outcomes(provisioned_postgres_pool)
             )
 
         # Run fanout rollup SQL (matching the production query in connector_stats.py).
-        # source_channel and source_endpoint_identity are extracted from request_context JSONB.
         await pool.execute(
             """
-            WITH fanout_aggregates AS (
+            WITH fanout_unnested AS (
                 SELECT
                     request_context ->> 'source_channel' AS source_channel,
                     request_context ->> 'source_endpoint_identity' AS source_endpoint_identity,
-                    jsonb_object_keys(dispatch_outcomes) AS target_butler,
-                    COUNT(*) AS message_count
+                    jsonb_array_elements_text(dispatch_outcomes -> 'acked') AS target_butler
                 FROM message_inbox
                 WHERE DATE(received_at) = $1
                 AND dispatch_outcomes IS NOT NULL
-                GROUP BY
+                AND jsonb_typeof(dispatch_outcomes -> 'acked') = 'array'
+              UNION ALL
+                SELECT
                     request_context ->> 'source_channel',
                     request_context ->> 'source_endpoint_identity',
-                    target_butler
+                    jsonb_array_elements_text(dispatch_outcomes -> 'failed')
+                FROM message_inbox
+                WHERE DATE(received_at) = $1
+                AND dispatch_outcomes IS NOT NULL
+                AND jsonb_typeof(dispatch_outcomes -> 'failed') = 'array'
+            ),
+            fanout_aggregates AS (
+                SELECT
+                    source_channel,
+                    source_endpoint_identity,
+                    target_butler,
+                    COUNT(*) AS message_count
+                FROM fanout_unnested
+                WHERE target_butler IS NOT NULL
+                GROUP BY source_channel, source_endpoint_identity, target_butler
             )
             INSERT INTO connector_fanout_daily (
                 connector_type, endpoint_identity, target_butler, day, message_count
@@ -662,26 +694,31 @@ async def test_fanout_rollup_parses_dispatch_outcomes(provisioned_postgres_pool)
             day,
         )
 
-        assert len(rows) == 3
+        assert len(rows) == 4
 
-        # Check all rows without assuming specific order beyond the ORDER BY clause
-        # Email comes before telegram_bot alphabetically
+        # email -> general (1 message)
         assert rows[0]["connector_type"] == "email"
         assert rows[0]["endpoint_identity"] == "email.user@example.com"
         assert rows[0]["target_butler"] == "general"
         assert rows[0]["message_count"] == 1
 
-        # telegram_bot.bot@789 -> health (2 messages)
+        # telegram_bot -> health (3 messages: 2 acked + 1 from mixed_outcome)
         assert rows[1]["connector_type"] == "telegram_bot"
         assert rows[1]["endpoint_identity"] == "telegram_bot.bot@789"
         assert rows[1]["target_butler"] == "health"
-        assert rows[1]["message_count"] == 2
+        assert rows[1]["message_count"] == 3
 
-        # telegram_bot.bot@789 -> relationship (1 message)
+        # telegram_bot -> memory (1 message: failed delivery from mixed_outcome)
         assert rows[2]["connector_type"] == "telegram_bot"
         assert rows[2]["endpoint_identity"] == "telegram_bot.bot@789"
-        assert rows[2]["target_butler"] == "relationship"
+        assert rows[2]["target_butler"] == "memory"
         assert rows[2]["message_count"] == 1
+
+        # telegram_bot -> relationship (1 message)
+        assert rows[3]["connector_type"] == "telegram_bot"
+        assert rows[3]["endpoint_identity"] == "telegram_bot.bot@789"
+        assert rows[3]["target_butler"] == "relationship"
+        assert rows[3]["message_count"] == 1
 
 
 # Pruning tests
