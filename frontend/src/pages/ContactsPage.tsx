@@ -112,9 +112,6 @@ export default function ContactsPage() {
       {/* Pending identities — shown when temp contacts exist */}
       <PendingIdentitiesSection />
 
-      {/* Unlinked entities — shown when contacts without entity_id exist */}
-      <UnlinkedEntitiesSection />
-
       {/* Contact table */}
       <Card>
         <CardHeader>
@@ -135,6 +132,9 @@ export default function ContactsPage() {
           />
         </CardContent>
       </Card>
+
+      {/* Unlinked entities — shown when contacts without entity_id exist */}
+      <UnlinkedEntitiesSection />
 
       {/* Pagination */}
       {total > 0 && (

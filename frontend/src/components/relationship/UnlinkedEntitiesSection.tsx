@@ -234,7 +234,6 @@ export function UnlinkedEntitiesSection() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Details</TableHead>
                 <TableHead>Best Match</TableHead>
                 <TableHead>Actions</TableHead>
               </TableRow>
@@ -246,11 +245,6 @@ export function UnlinkedEntitiesSection() {
                   <TableRow key={contact.id}>
                     <TableCell className="font-medium">
                       {contact.full_name}
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {contact.email && <div>{contact.email}</div>}
-                      {contact.phone && <div>{contact.phone}</div>}
-                      {contact.company && <div>{contact.company}</div>}
                     </TableCell>
                     <TableCell>
                       {bestMatch ? (
