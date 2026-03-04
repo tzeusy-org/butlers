@@ -92,6 +92,9 @@ import type {
   RoutingLogParams,
   UpcomingDate,
   Episode,
+  EntityDetail,
+  EntityParams,
+  EntitySummary,
   EpisodeParams,
   Fact,
   FactParams,
@@ -1148,6 +1151,38 @@ export function getMemoryActivity(
 ): Promise<ApiResponse<MemoryActivity[]>> {
   const params = limit != null ? `?limit=${limit}` : "";
   return apiFetch<ApiResponse<MemoryActivity[]>>(`/memory/activity${params}`);
+}
+
+// ---------------------------------------------------------------------------
+// Entities (Knowledge Graph)
+// ---------------------------------------------------------------------------
+
+function entitySearchParams(params?: EntityParams): URLSearchParams {
+  const sp = new URLSearchParams();
+  if (params?.q) sp.set("q", params.q);
+  if (params?.entity_type) sp.set("entity_type", params.entity_type);
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  return sp;
+}
+
+/** Fetch a paginated list of entities. */
+export function getEntities(
+  params?: EntityParams,
+): Promise<PaginatedResponse<EntitySummary>> {
+  const qs = entitySearchParams(params).toString();
+  return apiFetch<PaginatedResponse<EntitySummary>>(
+    qs ? `/memory/entities?${qs}` : "/memory/entities",
+  );
+}
+
+/** Fetch a single entity by ID. */
+export function getEntity(
+  entityId: string,
+): Promise<ApiResponse<EntityDetail>> {
+  return apiFetch<ApiResponse<EntityDetail>>(
+    `/memory/entities/${encodeURIComponent(entityId)}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

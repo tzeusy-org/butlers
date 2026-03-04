@@ -1257,6 +1257,37 @@ export interface RuleParams {
 }
 
 // ---------------------------------------------------------------------------
+// Entities (Knowledge Graph)
+// ---------------------------------------------------------------------------
+
+/** Lightweight entity representation for list views. */
+export interface EntitySummary {
+  id: string;
+  canonical_name: string;
+  entity_type: string;
+  aliases: string[];
+  fact_count: number;
+  linked_contact_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Full entity detail including recent facts and linked contact info. */
+export interface EntityDetail extends EntitySummary {
+  metadata: Record<string, unknown>;
+  recent_facts: Fact[];
+  linked_contact_name: string | null;
+}
+
+/** Query parameters for entity list endpoints. */
+export interface EntityParams {
+  q?: string;
+  entity_type?: string;
+  offset?: number;
+  limit?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Approvals
 // ---------------------------------------------------------------------------
 
