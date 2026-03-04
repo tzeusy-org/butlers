@@ -106,7 +106,7 @@ class ConnectorEntry(BaseModel):
     counter_source_api_calls: int = 0
     counter_checkpoint_saves: int = 0
     counter_dedupe_accepted: int = 0
-    # Today's aggregated stats (from connector_stats_hourly)
+    # Today's aggregated stats (from connector_heartbeat_log via Prometheus)
     today_messages_ingested: int = 0
     today_messages_failed: int = 0
     # Checkpoint info

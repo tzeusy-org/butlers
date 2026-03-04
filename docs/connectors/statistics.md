@@ -1,7 +1,7 @@
 # Connector Statistics and Dashboard API
 
 Status: Normative (Target State)
-Last updated: 2026-02-16
+Last updated: 2026-03-04
 Primary owner: Platform/Core
 
 ## 1. Purpose
@@ -24,140 +24,34 @@ Statistics are derived from two sources:
 
 1. **Connector heartbeats** (`connector_heartbeat_log`): Counter snapshots reported every 2 minutes by each connector. Provides ingestion volume, error counts, and source API call counts.
 
-2. **Message inbox** (`message_inbox`): Switchboard's canonical ingress lifecycle table. Provides routing/fanout outcomes — which butlers received messages from which connectors.
+2. **Prometheus/OTel metrics**: Time-series metrics exported by connectors and ingested via the OTel collector. Provides volume, health, and fanout metrics for dashboard time-series queries.
 
-## 3. Pre-Aggregated Rollups
+Note: The pre-aggregated SQL rollup tables (`connector_stats_hourly`, `connector_stats_daily`,
+`connector_fanout_daily`) were dropped by migration sw_025 (butlers-ufzc). Dashboard stats
+endpoints now query Prometheus via PromQL instead of pre-aggregated tables.
 
-Raw heartbeat logs and message inbox rows are rolled up into pre-aggregated tables for efficient dashboard queries.
+## 3. Metrics Pipeline
 
-### 3.1 Connector Hourly Rollup
+The OTel/Prometheus pipeline replaces the former SQL rollup jobs:
 
-```
-connector_stats_hourly (
-  connector_type      TEXT NOT NULL,
-  endpoint_identity   TEXT NOT NULL,
-  hour                TIMESTAMPTZ NOT NULL,  -- truncated to hour
+- Connectors emit metrics via OpenTelemetry (OTLP) to the OTel collector.
+- The collector forwards to Prometheus.
+- Dashboard endpoints query Prometheus using `PROMETHEUS_URL` (env var).
+- All stats and fanout endpoints gracefully degrade to empty lists when `PROMETHEUS_URL` is not set.
 
-  -- Volume (derived from counter deltas between heartbeats)
-  messages_ingested   BIGINT NOT NULL DEFAULT 0,
-  messages_failed     BIGINT NOT NULL DEFAULT 0,
-  source_api_calls    BIGINT NOT NULL DEFAULT 0,
-  dedupe_accepted     BIGINT NOT NULL DEFAULT 0,
+## 4. Retention
 
-  -- Health (derived from heartbeat states in this hour)
-  heartbeat_count     INTEGER NOT NULL DEFAULT 0,
-  healthy_count       INTEGER NOT NULL DEFAULT 0,
-  degraded_count      INTEGER NOT NULL DEFAULT 0,
-  error_count         INTEGER NOT NULL DEFAULT 0,
-
-  PRIMARY KEY (connector_type, endpoint_identity, hour)
-)
-```
-
-### 3.2 Connector Daily Rollup
-
-```
-connector_stats_daily (
-  connector_type      TEXT NOT NULL,
-  endpoint_identity   TEXT NOT NULL,
-  day                 DATE NOT NULL,
-
-  -- Volume (sum of hourly)
-  messages_ingested   BIGINT NOT NULL DEFAULT 0,
-  messages_failed     BIGINT NOT NULL DEFAULT 0,
-  source_api_calls    BIGINT NOT NULL DEFAULT 0,
-  dedupe_accepted     BIGINT NOT NULL DEFAULT 0,
-
-  -- Health (sum of hourly)
-  heartbeat_count     INTEGER NOT NULL DEFAULT 0,
-  healthy_count       INTEGER NOT NULL DEFAULT 0,
-  degraded_count      INTEGER NOT NULL DEFAULT 0,
-  error_count         INTEGER NOT NULL DEFAULT 0,
-
-  -- Uptime (derived)
-  uptime_pct          REAL,  -- healthy_count / heartbeat_count * 100
-
-  PRIMARY KEY (connector_type, endpoint_identity, day)
-)
-```
-
-### 3.3 Fanout Distribution Rollup
-
-Tracks how messages from each connector get routed to each butler. Derived from `message_inbox.dispatch_outcomes` JSONB.
-
-```
-connector_fanout_daily (
-  connector_type      TEXT NOT NULL,   -- source_channel from message_inbox
-  endpoint_identity   TEXT NOT NULL,   -- source_endpoint_identity from message_inbox
-  target_butler       TEXT NOT NULL,
-  day                 DATE NOT NULL,
-
-  message_count       BIGINT NOT NULL DEFAULT 0,
-
-  PRIMARY KEY (connector_type, endpoint_identity, target_butler, day)
-)
-```
-
-## 4. Rollup Jobs
-
-### 4.1 Hourly Rollup
-
-Runs every hour (on the hour). Processes:
-- `connector_heartbeat_log` rows from the previous hour.
-- Computes counter deltas between consecutive heartbeat snapshots for each connector.
-- Counts heartbeat states (healthy/degraded/error) for health metrics.
-- Upserts into `connector_stats_hourly`.
-
-### 4.2 Daily Rollup
-
-Runs once daily (after midnight UTC). Processes:
-- Sums `connector_stats_hourly` rows for the previous day.
-- Computes `uptime_pct`.
-- Upserts into `connector_stats_daily`.
-
-### 4.3 Fanout Rollup
-
-Runs once daily. Processes:
-- `message_inbox` rows from the previous day.
-- Groups by `(source_channel, source_endpoint_identity, target_butler)` extracted from `dispatch_outcomes`.
-- Upserts into `connector_fanout_daily`.
-
-### 4.4 Scheduling
-
-Rollup jobs are Switchboard scheduled tasks (cron-based via butler.toml):
-
-```toml
-[[butler.schedule]]
-name = "connector-stats-hourly-rollup"
-cron = "5 * * * *"
-prompt = "Run the hourly connector statistics rollup."
-
-[[butler.schedule]]
-name = "connector-stats-daily-rollup"
-cron = "15 0 * * *"
-prompt = "Run the daily connector statistics rollup and fanout distribution rollup."
-```
-
-## 5. Retention and Pruning
-
-| Table | Retention | Pruning Schedule |
+| Source | Retention | Pruning |
 |---|---|---|
 | `connector_heartbeat_log` | 7 days | Daily, drop partitions older than 7 days |
-| `connector_stats_hourly` | 30 days | Daily, delete rows older than 30 days |
-| `connector_stats_daily` | 1 year | Monthly, delete rows older than 1 year |
-| `connector_fanout_daily` | 1 year | Monthly, delete rows older than 1 year |
 | `connector_registry` | Never pruned | Operator-managed cleanup only |
+| Prometheus | Configured in Prometheus retention policy | Outside Switchboard scope |
 
-Pruning rules:
-- Pruning jobs run as Switchboard scheduled tasks.
-- Pruning MUST be idempotent and safe to re-run.
-- Pruning MUST log what was removed (row counts, date ranges).
+## 5. Dashboard API Endpoints
 
-## 6. Dashboard API Endpoints
+All endpoints are core API routes (in `src/butlers/api/routers/connectors.py`), not butler-specific routes.
 
-All endpoints are core API routes (in `src/butlers/api/routers/connectors.py`), not butler-specific routes. They query the Switchboard database directly.
-
-### 6.1 List Connectors
+### 5.1 List Connectors
 
 ```
 GET /api/connectors
@@ -192,7 +86,7 @@ Response:
 
 Liveness is derived from `last_heartbeat_at` using the staleness thresholds defined in `docs/connectors/heartbeat.md`.
 
-### 6.2 Connector Detail
+### 5.2 Connector Detail
 
 ```
 GET /api/connectors/{connector_type}/{endpoint_identity}
@@ -231,13 +125,13 @@ Response:
 }
 ```
 
-### 6.3 Connector Statistics
+### 5.3 Connector Statistics
 
 ```
 GET /api/connectors/{connector_type}/{endpoint_identity}/stats?period=24h|7d|30d
 ```
 
-Returns time-series volume and health statistics for a connector.
+Returns time-series volume and health statistics for a connector, sourced from Prometheus.
 
 Query parameters:
 - `period`: Time window. One of `24h`, `7d`, `30d`. Default: `24h`.
@@ -245,38 +139,27 @@ Query parameters:
 Response:
 ```json
 {
-  "data": {
-    "connector_type": "telegram_bot",
-    "endpoint_identity": "bot-123456",
-    "period": "24h",
-    "summary": {
-      "messages_ingested": 342,
-      "messages_failed": 5,
-      "error_rate_pct": 1.4,
-      "uptime_pct": 98.5,
-      "avg_messages_per_hour": 14.25
-    },
-    "timeseries": [
-      {
-        "bucket": "2026-02-15T13:00:00Z",
-        "messages_ingested": 12,
-        "messages_failed": 0,
-        "healthy_count": 30,
-        "degraded_count": 0,
-        "error_count": 0
-      }
-    ]
-  },
+  "data": [
+    {
+      "connector_type": "telegram_bot",
+      "endpoint_identity": "bot-123456",
+      "hour": "2026-02-15T13:00:00Z",
+      "messages_ingested": 12,
+      "messages_failed": 0
+    }
+  ],
   "meta": {}
 }
 ```
 
-Timeseries granularity:
-- `24h`: hourly buckets (from `connector_stats_hourly`)
-- `7d`: hourly buckets (from `connector_stats_hourly`)
-- `30d`: daily buckets (from `connector_stats_daily`)
+Timeseries granularity (Prometheus range queries):
+- `24h`: hourly buckets
+- `7d`: hourly buckets
+- `30d`: daily buckets
 
-### 6.4 Cross-Connector Summary
+Falls back to `{"data": []}` when `PROMETHEUS_URL` is not set or Prometheus returns an error.
+
+### 5.4 Cross-Connector Summary
 
 ```
 GET /api/connectors/summary?period=24h|7d|30d
@@ -303,13 +186,6 @@ Response:
         "liveness": "online",
         "messages_ingested": 800,
         "messages_failed": 3
-      },
-      {
-        "connector_type": "gmail",
-        "endpoint_identity": "user@gmail.com",
-        "liveness": "online",
-        "messages_ingested": 450,
-        "messages_failed": 5
       }
     ]
   },
@@ -317,49 +193,36 @@ Response:
 }
 ```
 
-### 6.5 Fanout Distribution
+### 5.5 Fanout Distribution
 
 ```
 GET /api/connectors/fanout?period=7d|30d
 ```
 
-Returns the connector-to-butler routing distribution matrix.
+Returns the connector-to-butler routing distribution matrix, sourced from Prometheus.
 
 Response:
 ```json
 {
-  "data": {
-    "period": "7d",
-    "matrix": [
-      {
-        "connector_type": "telegram_bot",
-        "endpoint_identity": "bot-123456",
-        "targets": {
-          "health": 320,
-          "relationship": 180,
-          "general": 45
-        }
-      },
-      {
-        "connector_type": "gmail",
-        "endpoint_identity": "user@gmail.com",
-        "targets": {
-          "relationship": 280,
-          "general": 120,
-          "health": 50
-        }
-      }
-    ]
-  },
+  "data": [
+    {
+      "connector_type": "telegram_bot",
+      "endpoint_identity": "bot@123",
+      "target_butler": "health",
+      "message_count": 15
+    }
+  ],
   "meta": {}
 }
 ```
 
-## 7. Frontend Page: /connectors
+Falls back to `{"data": []}` when `PROMETHEUS_URL` is not set or Prometheus returns an error.
+
+## 6. Frontend Page: /connectors
 
 The dashboard frontend exposes a `/connectors` page with the following views:
 
-### 7.1 Connector Overview Cards
+### 6.1 Connector Overview Cards
 
 One card per registered connector showing:
 - Connector type icon (Telegram, Gmail, etc.)
@@ -370,7 +233,7 @@ One card per registered connector showing:
 - Last heartbeat age (e.g., "2 min ago")
 - Today's ingestion count
 
-### 7.2 Volume Time Series
+### 6.2 Volume Time Series
 
 Line or bar chart showing ingestion volume per connector over the selected time period.
 
@@ -378,7 +241,7 @@ Controls:
 - Period selector: 24h / 7d / 30d
 - Toggle per-connector visibility
 
-### 7.3 Fanout Distribution
+### 6.3 Fanout Distribution
 
 Table or heatmap showing the connector x butler routing matrix.
 
@@ -386,7 +249,7 @@ Columns: target butlers
 Rows: connectors
 Cells: message count for the selected period
 
-### 7.4 Error Log
+### 6.4 Error Log
 
 Recent connector errors (from heartbeats with `state != healthy`).
 
@@ -396,7 +259,7 @@ Columns:
 - State (degraded/error)
 - Error message
 
-## 8. Pydantic Models
+## 7. Pydantic Models
 
 Core response models for the connectors API (in `src/butlers/api/models/connector.py`):
 

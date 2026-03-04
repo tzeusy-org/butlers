@@ -740,10 +740,10 @@ class TestIngestionOverview:
         assert "tier3_skip_count" in data
 
     async def test_total_ingested_is_sum_of_tiers_from_message_inbox(self, app):
-        """total_ingested equals tier1+tier2+tier3 from message_inbox (not rollup tables).
+        """total_ingested equals tier1+tier2+tier3 from message_inbox.
 
         This verifies the fix for the bug where internal-module messages were
-        not counted because connector_stats_hourly only covers external connectors.
+        not counted because the old connector stats rollup only covered external connectors.
         """
         app = await self._make_overview_app(
             app, tier_row={"tier1_full": 70, "tier2_metadata": 20, "tier3_skip": 10}

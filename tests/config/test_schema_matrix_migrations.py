@@ -79,11 +79,8 @@ CHAIN_TABLES: dict[str, set[str]] = {
     "switchboard": {
         "butler_registry",
         "butler_registry_eligibility_log",
-        "connector_fanout_daily",
         "connector_heartbeat_log",
         "connector_registry",
-        "connector_stats_daily",
-        "connector_stats_hourly",
         "dashboard_audit_log",
         "dead_letter_queue",
         "extraction_log",

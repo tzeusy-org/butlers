@@ -104,8 +104,8 @@ class ConnectorDetail(ConnectorSummary):
 class ConnectorStatsBucket(BaseModel):
     """A single time bucket in a connector stats time-series.
 
-    For 24h/7d periods, buckets are hourly (from connector_stats_hourly).
-    For 30d period, buckets are daily (from connector_stats_daily).
+    For 24h/7d periods, buckets are hourly (from Prometheus range queries).
+    For 30d period, buckets are daily (from Prometheus range queries).
     """
 
     bucket: datetime
