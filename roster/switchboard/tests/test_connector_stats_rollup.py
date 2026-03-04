@@ -1,923 +1,505 @@
-"""Unit tests for connector statistics rollup SQL logic.
+"""Tests for connector stats and fanout endpoints (OTel/Prometheus pipeline).
 
-These tests verify:
-- Hourly rollup SQL correctly computes counter deltas and health states
-- Daily rollup SQL correctly sums hourly data and computes uptime percentage
-- Fanout rollup SQL correctly parses dispatch_outcomes JSONB
-- Rollups are idempotent (safe to re-run)
-- Pruning SQL correctly removes old data
+These tests verify the Prometheus-backed connector stats and fanout API
+endpoints that replaced the deprecated SQL rollup pipeline (butlers-ufzc).
+
+Tested behaviors:
+- get_connector_stats: queries Prometheus range API, returns ConnectorStatsHourly
+  (period=24h) or ConnectorStatsDaily (period=7d/30d).
+- get_connector_fanout: queries Prometheus instant API for per-connector fanout.
+- get_ingestion_fanout: queries Prometheus instant API for cross-connector matrix.
+- All endpoints fall back to empty lists when PROMETHEUS_URL is not set.
+- All endpoints fall back to empty lists when Prometheus returns an error.
+- No-op stubs: the deprecated rollup functions now return empty result dicts.
 """
 
 from __future__ import annotations
 
-import json
-import shutil
-from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+import importlib
+import sys
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
-import pytest
-
-# Skip all tests if Docker not available
-docker_available = shutil.which("docker") is not None
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(not docker_available, reason="Docker not available"),
-]
+# ---------------------------------------------------------------------------
+# Helper: load the router module with a fresh import
+# ---------------------------------------------------------------------------
 
 
-async def _create_test_schema(pool):
-    """Create test schema for connector statistics tables."""
-    # Create connector_heartbeat_log table (partitioned)
-    await pool.execute(
-        """
-        CREATE TABLE connector_heartbeat_log (
-            id BIGINT GENERATED ALWAYS AS IDENTITY,
-            connector_type TEXT NOT NULL,
-            endpoint_identity TEXT NOT NULL,
-            instance_id UUID,
-            state TEXT NOT NULL,
-            error_message TEXT,
-            uptime_s INTEGER,
-            counter_messages_ingested BIGINT,
-            counter_messages_failed BIGINT,
-            counter_source_api_calls BIGINT,
-            counter_checkpoint_saves BIGINT,
-            counter_dedupe_accepted BIGINT,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            sent_at TIMESTAMPTZ,
-            PRIMARY KEY (received_at, id)
-        ) PARTITION BY RANGE (received_at)
-        """
+def _load_router():
+    """Reload the switchboard router to pick up patched env vars."""
+    mod_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+    spec = importlib.util.spec_from_file_location("_sw_router_under_test", mod_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# Tests: deprecated rollup stubs return empty results (no DB needed)
+# ---------------------------------------------------------------------------
+
+
+async def test_hourly_rollup_stub_returns_empty():
+    """Deprecated run_connector_stats_hourly_rollup returns empty result without DB access."""
+    jobs_path = Path(__file__).resolve().parents[1] / "jobs" / "connector_stats.py"
+    spec = importlib.util.spec_from_file_location("_sw_connector_stats_jobs", jobs_path)
+    jobs_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(jobs_mod)
+
+    result = await jobs_mod.run_connector_stats_hourly_rollup(None)
+    assert result == {"rows_processed": 0, "connectors_updated": 0}
+
+
+async def test_daily_rollup_stub_returns_empty():
+    """Deprecated run_connector_stats_daily_rollup returns empty result without DB access."""
+    jobs_path = Path(__file__).resolve().parents[1] / "jobs" / "connector_stats.py"
+    spec = importlib.util.spec_from_file_location("_sw_connector_stats_jobs_daily", jobs_path)
+    jobs_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(jobs_mod)
+
+    result = await jobs_mod.run_connector_stats_daily_rollup(None)
+    assert result == {"stats_updated": 0, "fanout_updated": 0}
+
+
+async def test_pruning_stub_returns_empty():
+    """Deprecated run_connector_stats_pruning returns empty result without DB access."""
+    jobs_path = Path(__file__).resolve().parents[1] / "jobs" / "connector_stats.py"
+    spec = importlib.util.spec_from_file_location("_sw_connector_stats_jobs_pruning", jobs_path)
+    jobs_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(jobs_mod)
+
+    result = await jobs_mod.run_connector_stats_pruning(None)
+    assert result == {
+        "heartbeat_partitions_dropped": 0,
+        "hourly_rows_deleted": 0,
+        "daily_rows_deleted": 0,
+        "fanout_rows_deleted": 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Fixtures: minimal stubs for FastAPI dependency injection
+# ---------------------------------------------------------------------------
+
+
+class _FakePool:
+    """Minimal pool stub that raises on any DB access."""
+
+    async def fetchrow(self, *args, **kwargs):
+        raise RuntimeError("Should not query DB in Prometheus-backed endpoints")
+
+    async def fetch(self, *args, **kwargs):
+        raise RuntimeError("Should not query DB in Prometheus-backed endpoints")
+
+    async def fetchval(self, *args, **kwargs):
+        raise RuntimeError("Should not query DB in Prometheus-backed endpoints")
+
+
+class _FakeDB:
+    def pool(self, name: str):
+        return _FakePool()
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_connector_stats endpoint — no Prometheus URL → empty list
+# ---------------------------------------------------------------------------
+
+
+async def test_get_connector_stats_no_prometheus_url():
+    """When PROMETHEUS_URL is not set, get_connector_stats returns empty list."""
+    import importlib
+    import os
+    from pathlib import Path
+
+    os.environ.pop("PROMETHEUS_URL", None)
+
+    sys.modules.pop("switchboard_api_models", None)
+    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+    spec = importlib.util.spec_from_file_location("_sw_router_stats_nourl", router_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    result = await mod.get_connector_stats(
+        connector_type="telegram_bot",
+        endpoint_identity="bot@123",
+        period="24h",
+        db=_FakeDB(),
+    )
+    assert result.data == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_connector_stats — Prometheus returns data → ConnectorStatsHourly
+# ---------------------------------------------------------------------------
+
+
+async def test_get_connector_stats_24h_returns_hourly_rows():
+    """get_connector_stats with period=24h returns ConnectorStatsHourly list from Prometheus."""
+    # Fake Prometheus range query results
+    fake_range_result = [
+        {
+            "metric": {
+                "connector_type": "telegram_bot",
+                "endpoint_identity": "bot@123",
+            },
+            "values": [
+                [1740000000, "42"],
+                [1740003600, "17"],
+            ],
+        }
+    ]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query_range",
+        new=AsyncMock(return_value=fake_range_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            import importlib
+            from pathlib import Path
+
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_24h_test", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            # Call the endpoint function directly
+            class _FakeRequest:
+                pass
+
+            result = await mod.get_connector_stats(
+                connector_type="telegram_bot",
+                endpoint_identity="bot@123",
+                period="24h",
+                db=_FakeDB(),
+            )
+
+    assert result.data is not None
+    assert len(result.data) > 0
+    row = result.data[0]
+    # ConnectorStatsHourly has .hour attribute
+    assert hasattr(row, "hour")
+    assert row.connector_type == "telegram_bot"
+    assert row.endpoint_identity == "bot@123"
+    assert row.messages_ingested == 42
+
+
+async def test_get_connector_stats_prometheus_error_returns_empty():
+    """When Prometheus returns an error dict, get_connector_stats returns empty list."""
+    fake_error_result = [{"error": "connection refused"}]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query_range",
+        new=AsyncMock(return_value=fake_error_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            import importlib
+            from pathlib import Path
+
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_err_test", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            result = await mod.get_connector_stats(
+                connector_type="telegram_bot",
+                endpoint_identity="bot@123",
+                period="24h",
+                db=_FakeDB(),
+            )
+
+    assert result.data == []
+
+
+async def test_get_connector_stats_7d_returns_daily_rows():
+    """get_connector_stats with period=7d returns ConnectorStatsDaily list from Prometheus."""
+    fake_range_result = [
+        {
+            "metric": {},
+            "values": [
+                [1740000000, "100"],
+                [1740086400, "200"],
+            ],
+        }
+    ]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query_range",
+        new=AsyncMock(return_value=fake_range_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            import importlib
+            from pathlib import Path
+
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_7d_test", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            result = await mod.get_connector_stats(
+                connector_type="email",
+                endpoint_identity="user@example.com",
+                period="7d",
+                db=_FakeDB(),
+            )
+
+    assert result.data is not None
+    assert len(result.data) > 0
+    row = result.data[0]
+    # ConnectorStatsDaily has .day attribute
+    assert hasattr(row, "day")
+    assert row.connector_type == "email"
+    assert row.endpoint_identity == "user@example.com"
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_connector_fanout — no Prometheus URL → empty list
+# ---------------------------------------------------------------------------
+
+
+async def test_get_connector_fanout_no_prometheus_url():
+    """When PROMETHEUS_URL is not set, get_connector_fanout returns empty list."""
+    import os
+
+    os.environ.pop("PROMETHEUS_URL", None)
+
+    sys.modules.pop("switchboard_api_models", None)
+    import importlib
+    from pathlib import Path
+
+    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+    spec = importlib.util.spec_from_file_location("_sw_router_fanout_nourl", router_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    result = await mod.get_connector_fanout(
+        connector_type="telegram_bot",
+        endpoint_identity="bot@123",
+        period="24h",
+        db=_FakeDB(),
     )
 
-    # Create partition for current month
-    await pool.execute(
-        """
-        CREATE TABLE connector_heartbeat_log_p202602
-        PARTITION OF connector_heartbeat_log
-        FOR VALUES FROM ('2026-02-01') TO ('2026-03-01')
-        """
+    assert result.data == []
+
+
+async def test_get_connector_fanout_returns_rows_from_prometheus():
+    """get_connector_fanout returns FanoutRow list from Prometheus instant query."""
+    fake_instant_result = [
+        {
+            "metric": {"target_butler": "health"},
+            "value": [1740000000, "15"],
+        },
+        {
+            "metric": {"target_butler": "relationship"},
+            "value": [1740000000, "7"],
+        },
+    ]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=fake_instant_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            import importlib
+            from pathlib import Path
+
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_fanout_ok", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            result = await mod.get_connector_fanout(
+                connector_type="telegram_bot",
+                endpoint_identity="bot@123",
+                period="24h",
+                db=_FakeDB(),
+            )
+
+    assert result.data is not None
+    assert len(result.data) == 2
+    # Sorted by message_count DESC
+    assert result.data[0].target_butler == "health"
+    assert result.data[0].message_count == 15
+    assert result.data[1].target_butler == "relationship"
+    assert result.data[1].message_count == 7
+    for row in result.data:
+        assert row.connector_type == "telegram_bot"
+        assert row.endpoint_identity == "bot@123"
+
+
+async def test_get_connector_fanout_prometheus_error_returns_empty():
+    """When Prometheus returns an error, get_connector_fanout returns empty list."""
+    fake_error_result = [{"error": "timeout"}]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=fake_error_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            import importlib
+            from pathlib import Path
+
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_fanout_err", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            result = await mod.get_connector_fanout(
+                connector_type="telegram_bot",
+                endpoint_identity="bot@123",
+                period="24h",
+                db=_FakeDB(),
+            )
+
+    assert result.data == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_ingestion_fanout — no Prometheus URL → empty list
+# ---------------------------------------------------------------------------
+
+
+async def test_get_ingestion_fanout_no_prometheus_url():
+    """When PROMETHEUS_URL is not set, get_ingestion_fanout returns empty list."""
+    import os
+
+    os.environ.pop("PROMETHEUS_URL", None)
+
+    sys.modules.pop("switchboard_api_models", None)
+    import importlib
+    from pathlib import Path
+
+    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+    spec = importlib.util.spec_from_file_location("_sw_router_ifanout_nourl", router_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    result = await mod.get_ingestion_fanout(
+        period="24h",
+        db=_FakeDB(),
     )
 
-    # Create partition management function
-    await pool.execute(
-        """
-        CREATE OR REPLACE FUNCTION drop_expired_partitions(
-            retention INTERVAL DEFAULT INTERVAL '7 days',
-            reference_ts TIMESTAMPTZ DEFAULT now()
-        ) RETURNS INTEGER
-        LANGUAGE plpgsql
-        AS $$
-        DECLARE
-            partition_name TEXT;
-            partition_month DATE;
-            cutoff_month DATE;
-            dropped_count INTEGER := 0;
-        BEGIN
-            cutoff_month := date_trunc('month', reference_ts - retention)::date;
-
-            FOR partition_name IN
-                SELECT child.relname
-                FROM pg_inherits
-                JOIN pg_class parent ON parent.oid = pg_inherits.inhparent
-                JOIN pg_class child ON child.oid = pg_inherits.inhrelid
-                JOIN pg_namespace ns ON ns.oid = child.relnamespace
-                WHERE parent.relname = 'connector_heartbeat_log'
-                AND ns.nspname = current_schema()
-                AND child.relname ~ '^connector_heartbeat_log_p[0-9]{6}$'
-            LOOP
-                partition_month := to_date(
-                    substring(partition_name from '[0-9]{6}$'), 'YYYYMM'
-                );
-                IF partition_month < cutoff_month THEN
-                    EXECUTE format('DROP TABLE IF EXISTS %I', partition_name);
-                    dropped_count := dropped_count + 1;
-                END IF;
-            END LOOP;
-
-            RETURN dropped_count;
-        END;
-        $$
-        """
-    )
-
-    # Create connector_stats_hourly table
-    await pool.execute(
-        """
-        CREATE TABLE connector_stats_hourly (
-            connector_type TEXT NOT NULL,
-            endpoint_identity TEXT NOT NULL,
-            hour TIMESTAMPTZ NOT NULL,
-            messages_ingested BIGINT DEFAULT 0,
-            messages_failed BIGINT DEFAULT 0,
-            source_api_calls BIGINT DEFAULT 0,
-            dedupe_accepted BIGINT DEFAULT 0,
-            heartbeat_count INTEGER DEFAULT 0,
-            healthy_count INTEGER DEFAULT 0,
-            degraded_count INTEGER DEFAULT 0,
-            error_count INTEGER DEFAULT 0,
-            PRIMARY KEY (connector_type, endpoint_identity, hour)
-        )
-        """
-    )
-
-    # Create connector_stats_daily table
-    await pool.execute(
-        """
-        CREATE TABLE connector_stats_daily (
-            connector_type TEXT NOT NULL,
-            endpoint_identity TEXT NOT NULL,
-            day DATE NOT NULL,
-            messages_ingested BIGINT DEFAULT 0,
-            messages_failed BIGINT DEFAULT 0,
-            source_api_calls BIGINT DEFAULT 0,
-            dedupe_accepted BIGINT DEFAULT 0,
-            heartbeat_count INTEGER DEFAULT 0,
-            healthy_count INTEGER DEFAULT 0,
-            degraded_count INTEGER DEFAULT 0,
-            error_count INTEGER DEFAULT 0,
-            uptime_pct NUMERIC(5, 2),
-            PRIMARY KEY (connector_type, endpoint_identity, day)
-        )
-        """
-    )
-
-    # Create connector_fanout_daily table
-    await pool.execute(
-        """
-        CREATE TABLE connector_fanout_daily (
-            connector_type TEXT NOT NULL,
-            endpoint_identity TEXT NOT NULL,
-            target_butler TEXT NOT NULL,
-            day DATE NOT NULL,
-            message_count BIGINT DEFAULT 0,
-            PRIMARY KEY (connector_type, endpoint_identity, target_butler, day)
-        )
-        """
-    )
-
-    # Create message_inbox table (for fanout rollup tests)
-    # This matches the v2 schema introduced in migration sw_008: source_channel and
-    # source_endpoint_identity are stored inside the request_context JSONB column.
-    await pool.execute(
-        """
-        CREATE TABLE message_inbox (
-            id UUID NOT NULL DEFAULT gen_random_uuid(),
-            received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            request_context JSONB NOT NULL DEFAULT '{}'::jsonb,
-            raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-            normalized_text TEXT NOT NULL DEFAULT '',
-            decomposition_output JSONB,
-            dispatch_outcomes JSONB,
-            response_summary TEXT,
-            lifecycle_state TEXT NOT NULL DEFAULT 'accepted',
-            schema_version TEXT NOT NULL DEFAULT 'message_inbox.v2',
-            processing_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-            final_state_at TIMESTAMPTZ,
-            trace_id TEXT,
-            session_id UUID,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            PRIMARY KEY (received_at, id)
-        ) PARTITION BY RANGE (received_at)
-        """
-    )
-
-    # Create partition for message_inbox
-    await pool.execute(
-        """
-        CREATE TABLE message_inbox_p202602
-        PARTITION OF message_inbox
-        FOR VALUES FROM ('2026-02-01') TO ('2026-03-01')
-        """
-    )
+    assert result.data == []
 
 
-# Hourly rollup tests
+async def test_get_ingestion_fanout_returns_matrix_from_prometheus():
+    """get_ingestion_fanout returns cross-connector FanoutRow matrix from Prometheus."""
+    fake_instant_result = [
+        {
+            "metric": {
+                "connector_type": "telegram_bot",
+                "endpoint_identity": "bot@123",
+                "target_butler": "health",
+            },
+            "value": [1740000000, "20"],
+        },
+        {
+            "metric": {
+                "connector_type": "email",
+                "endpoint_identity": "user@example.com",
+                "target_butler": "relationship",
+            },
+            "value": [1740000000, "5"],
+        },
+    ]
 
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=fake_instant_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            import importlib
+            from pathlib import Path
 
-async def test_hourly_rollup_computes_deltas_correctly(provisioned_postgres_pool):
-    """Test that hourly rollup correctly computes counter deltas between heartbeats."""
-    async with provisioned_postgres_pool() as pool:
-        await _create_test_schema(pool)
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_ifanout_ok", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
 
-        # Insert heartbeat data with incrementing counters
-        base_time = datetime(2026, 2, 16, 10, 0, 0, tzinfo=UTC)
-        hour_start = datetime(2026, 2, 16, 10, 0, 0, tzinfo=UTC)
-        hour_end = datetime(2026, 2, 16, 11, 0, 0, tzinfo=UTC)
-
-        await pool.execute(
-            """
-            INSERT INTO connector_heartbeat_log (
-                connector_type,
-                endpoint_identity,
-                state,
-                counter_messages_ingested,
-                counter_messages_failed,
-                counter_source_api_calls,
-                counter_dedupe_accepted,
-                received_at
-            ) VALUES
-            ('telegram_bot', 'bot@123', 'healthy', 100, 5, 50, 95, $1),
-            ('telegram_bot', 'bot@123', 'healthy', 150, 6, 75, 144, $2),
-            ('telegram_bot', 'bot@123', 'degraded', 200, 8, 100, 192, $3)
-            """,
-            base_time + timedelta(minutes=10),
-            base_time + timedelta(minutes=20),
-            base_time + timedelta(minutes=30),
-        )
-
-        # Run hourly rollup SQL
-        await pool.execute(
-            """
-            WITH heartbeats AS (
-                SELECT
-                    connector_type,
-                    endpoint_identity,
-                    state,
-                    counter_messages_ingested,
-                    counter_messages_failed,
-                    counter_source_api_calls,
-                    counter_dedupe_accepted,
-                    received_at,
-                    LAG(counter_messages_ingested) OVER w AS prev_messages_ingested,
-                    LAG(counter_messages_failed) OVER w AS prev_messages_failed,
-                    LAG(counter_source_api_calls) OVER w AS prev_source_api_calls,
-                    LAG(counter_dedupe_accepted) OVER w AS prev_dedupe_accepted
-                FROM connector_heartbeat_log
-                WHERE received_at >= $1 AND received_at < $2
-                WINDOW w AS (
-                    PARTITION BY connector_type, endpoint_identity
-                    ORDER BY received_at
-                )
-            ),
-            deltas AS (
-                SELECT
-                    connector_type,
-                    endpoint_identity,
-                    COALESCE(
-                        counter_messages_ingested - prev_messages_ingested,
-                        0
-                    ) AS delta_messages_ingested,
-                    COALESCE(
-                        counter_messages_failed - prev_messages_failed,
-                        0
-                    ) AS delta_messages_failed,
-                    COALESCE(
-                        counter_source_api_calls - prev_source_api_calls,
-                        0
-                    ) AS delta_source_api_calls,
-                    COALESCE(
-                        counter_dedupe_accepted - prev_dedupe_accepted,
-                        0
-                    ) AS delta_dedupe_accepted,
-                    state
-                FROM heartbeats
-            ),
-            aggregates AS (
-                SELECT
-                    connector_type,
-                    endpoint_identity,
-                    SUM(delta_messages_ingested) AS messages_ingested,
-                    SUM(delta_messages_failed) AS messages_failed,
-                    SUM(delta_source_api_calls) AS source_api_calls,
-                    SUM(delta_dedupe_accepted) AS dedupe_accepted,
-                    COUNT(*) AS heartbeat_count,
-                    SUM(CASE WHEN state = 'healthy' THEN 1 ELSE 0 END) AS healthy_count,
-                    SUM(CASE WHEN state = 'degraded' THEN 1 ELSE 0 END) AS degraded_count,
-                    SUM(CASE WHEN state = 'error' THEN 1 ELSE 0 END) AS error_count
-                FROM deltas
-                GROUP BY connector_type, endpoint_identity
-            )
-            INSERT INTO connector_stats_hourly (
-                connector_type,
-                endpoint_identity,
-                hour,
-                messages_ingested,
-                messages_failed,
-                source_api_calls,
-                dedupe_accepted,
-                heartbeat_count,
-                healthy_count,
-                degraded_count,
-                error_count
-            )
-            SELECT
-                connector_type,
-                endpoint_identity,
-                $1,
-                messages_ingested,
-                messages_failed,
-                source_api_calls,
-                dedupe_accepted,
-                heartbeat_count::integer,
-                healthy_count::integer,
-                degraded_count::integer,
-                error_count::integer
-            FROM aggregates
-            """,
-            hour_start,
-            hour_end,
-        )
-
-        # Verify the rollup data
-        row = await pool.fetchrow(
-            """
-            SELECT * FROM connector_stats_hourly
-            WHERE connector_type = 'telegram_bot'
-            AND endpoint_identity = 'bot@123'
-            AND hour = $1
-            """,
-            hour_start,
-        )
-
-        assert row is not None
-        # Deltas: (150-100) + (200-150) = 50 + 50 = 100
-        assert row["messages_ingested"] == 100
-        # Deltas: (6-5) + (8-6) = 1 + 2 = 3
-        assert row["messages_failed"] == 3
-        # Deltas: (75-50) + (100-75) = 25 + 25 = 50
-        assert row["source_api_calls"] == 50
-        # Deltas: (144-95) + (192-144) = 49 + 48 = 97
-        assert row["dedupe_accepted"] == 97
-        # Total heartbeats: 3
-        assert row["heartbeat_count"] == 3
-        # Healthy: 2, Degraded: 1
-        assert row["healthy_count"] == 2
-        assert row["degraded_count"] == 1
-        assert row["error_count"] == 0
-
-
-async def test_hourly_rollup_is_idempotent(provisioned_postgres_pool):
-    """Test that running hourly rollup multiple times produces the same result."""
-    async with provisioned_postgres_pool() as pool:
-        await _create_test_schema(pool)
-
-        base_time = datetime(2026, 2, 16, 11, 0, 0, tzinfo=UTC)
-        hour_start = datetime(2026, 2, 16, 11, 0, 0, tzinfo=UTC)
-        hour_end = datetime(2026, 2, 16, 12, 0, 0, tzinfo=UTC)
-
-        await pool.execute(
-            """
-            INSERT INTO connector_heartbeat_log (
-                connector_type,
-                endpoint_identity,
-                state,
-                counter_messages_ingested,
-                counter_messages_failed,
-                counter_source_api_calls,
-                counter_dedupe_accepted,
-                received_at
-            ) VALUES
-            ('email', 'user@example.com', 'healthy', 10, 0, 5, 10, $1),
-            ('email', 'user@example.com', 'healthy', 20, 0, 10, 20, $2)
-            """,
-            base_time + timedelta(minutes=15),
-            base_time + timedelta(minutes=45),
-        )
-
-        # SQL for rollup (extracted as reusable query)
-        rollup_sql = """
-            WITH heartbeats AS (
-                SELECT
-                    connector_type,
-                    endpoint_identity,
-                    state,
-                    counter_messages_ingested,
-                    counter_messages_failed,
-                    counter_source_api_calls,
-                    counter_dedupe_accepted,
-                    LAG(counter_messages_ingested) OVER w AS prev_messages_ingested,
-                    LAG(counter_messages_failed) OVER w AS prev_messages_failed,
-                    LAG(counter_source_api_calls) OVER w AS prev_source_api_calls,
-                    LAG(counter_dedupe_accepted) OVER w AS prev_dedupe_accepted
-                FROM connector_heartbeat_log
-                WHERE received_at >= $1 AND received_at < $2
-                WINDOW w AS (
-                    PARTITION BY connector_type, endpoint_identity
-                    ORDER BY received_at
-                )
-            ),
-            deltas AS (
-                SELECT
-                    connector_type,
-                    endpoint_identity,
-                    COALESCE(
-                        counter_messages_ingested - prev_messages_ingested, 0
-                    ) AS delta_messages_ingested,
-                    COALESCE(
-                        counter_messages_failed - prev_messages_failed, 0
-                    ) AS delta_messages_failed,
-                    COALESCE(
-                        counter_source_api_calls - prev_source_api_calls, 0
-                    ) AS delta_source_api_calls,
-                    COALESCE(
-                        counter_dedupe_accepted - prev_dedupe_accepted, 0
-                    ) AS delta_dedupe_accepted,
-                    state
-                FROM heartbeats
-            ),
-            aggregates AS (
-                SELECT
-                    connector_type,
-                    endpoint_identity,
-                    SUM(delta_messages_ingested) AS messages_ingested,
-                    SUM(delta_messages_failed) AS messages_failed,
-                    SUM(delta_source_api_calls) AS source_api_calls,
-                    SUM(delta_dedupe_accepted) AS dedupe_accepted,
-                    COUNT(*) AS heartbeat_count,
-                    SUM(CASE WHEN state = 'healthy' THEN 1 ELSE 0 END) AS healthy_count,
-                    SUM(CASE WHEN state = 'degraded' THEN 1 ELSE 0 END) AS degraded_count,
-                    SUM(CASE WHEN state = 'error' THEN 1 ELSE 0 END) AS error_count
-                FROM deltas
-                GROUP BY connector_type, endpoint_identity
-            )
-            INSERT INTO connector_stats_hourly (
-                connector_type, endpoint_identity, hour,
-                messages_ingested, messages_failed, source_api_calls, dedupe_accepted,
-                heartbeat_count, healthy_count, degraded_count, error_count
-            )
-            SELECT
-                connector_type, endpoint_identity, $1,
-                messages_ingested, messages_failed, source_api_calls, dedupe_accepted,
-                heartbeat_count::integer, healthy_count::integer,
-                degraded_count::integer, error_count::integer
-            FROM aggregates
-            ON CONFLICT (connector_type, endpoint_identity, hour)
-            DO UPDATE SET
-                messages_ingested = EXCLUDED.messages_ingested,
-                messages_failed = EXCLUDED.messages_failed,
-                source_api_calls = EXCLUDED.source_api_calls,
-                dedupe_accepted = EXCLUDED.dedupe_accepted,
-                heartbeat_count = EXCLUDED.heartbeat_count,
-                healthy_count = EXCLUDED.healthy_count,
-                degraded_count = EXCLUDED.degraded_count,
-                error_count = EXCLUDED.error_count
-        """
-
-        # Run rollup first time
-        await pool.execute(rollup_sql, hour_start, hour_end)
-
-        row1 = await pool.fetchrow(
-            """
-            SELECT * FROM connector_stats_hourly
-            WHERE connector_type = 'email'
-            AND endpoint_identity = 'user@example.com'
-            AND hour = $1
-            """,
-            hour_start,
-        )
-
-        # Run rollup second time
-        await pool.execute(rollup_sql, hour_start, hour_end)
-
-        row2 = await pool.fetchrow(
-            """
-            SELECT * FROM connector_stats_hourly
-            WHERE connector_type = 'email'
-            AND endpoint_identity = 'user@example.com'
-            AND hour = $1
-            """,
-            hour_start,
-        )
-
-        # Results should be identical
-        assert row1 == row2
-
-
-# Daily rollup tests
-
-
-async def test_daily_rollup_sums_hourly_data_and_computes_uptime(provisioned_postgres_pool):
-    """Test that daily rollup correctly sums hourly data and computes uptime."""
-    async with provisioned_postgres_pool() as pool:
-        await _create_test_schema(pool)
-
-        day = datetime(2026, 2, 15, tzinfo=UTC).date()
-
-        # Insert hourly data for 3 hours
-        await pool.execute(
-            """
-            INSERT INTO connector_stats_hourly (
-                connector_type,
-                endpoint_identity,
-                hour,
-                messages_ingested,
-                messages_failed,
-                source_api_calls,
-                dedupe_accepted,
-                heartbeat_count,
-                healthy_count,
-                degraded_count,
-                error_count
-            ) VALUES
-            ('telegram_bot', 'bot@456', $1, 100, 5, 50, 95, 10, 9, 1, 0),
-            ('telegram_bot', 'bot@456', $2, 150, 3, 75, 147, 12, 10, 2, 0),
-            ('telegram_bot', 'bot@456', $3, 200, 7, 100, 193, 15, 12, 2, 1)
-            """,
-            datetime(2026, 2, 15, 10, 0, 0, tzinfo=UTC),
-            datetime(2026, 2, 15, 11, 0, 0, tzinfo=UTC),
-            datetime(2026, 2, 15, 12, 0, 0, tzinfo=UTC),
-        )
-
-        # Run daily rollup SQL
-        await pool.execute(
-            """
-            WITH daily_aggregates AS (
-                SELECT
-                    connector_type,
-                    endpoint_identity,
-                    SUM(messages_ingested) AS messages_ingested,
-                    SUM(messages_failed) AS messages_failed,
-                    SUM(source_api_calls) AS source_api_calls,
-                    SUM(dedupe_accepted) AS dedupe_accepted,
-                    SUM(heartbeat_count) AS heartbeat_count,
-                    SUM(healthy_count) AS healthy_count,
-                    SUM(degraded_count) AS degraded_count,
-                    SUM(error_count) AS error_count,
-                    CASE
-                        WHEN SUM(heartbeat_count) > 0 THEN
-                            ROUND(
-                                (SUM(healthy_count)::numeric /
-                                 SUM(heartbeat_count)::numeric) * 100,
-                                2
-                            )
-                        ELSE NULL
-                    END AS uptime_pct
-                FROM connector_stats_hourly
-                WHERE DATE(hour) = $1
-                GROUP BY connector_type, endpoint_identity
-            )
-            INSERT INTO connector_stats_daily (
-                connector_type, endpoint_identity, day,
-                messages_ingested, messages_failed, source_api_calls, dedupe_accepted,
-                heartbeat_count, healthy_count, degraded_count, error_count, uptime_pct
-            )
-            SELECT
-                connector_type, endpoint_identity, $1,
-                messages_ingested, messages_failed, source_api_calls, dedupe_accepted,
-                heartbeat_count::integer, healthy_count::integer,
-                degraded_count::integer, error_count::integer, uptime_pct
-            FROM daily_aggregates
-            """,
-            day,
-        )
-
-        # Verify the daily data
-        row = await pool.fetchrow(
-            """
-            SELECT * FROM connector_stats_daily
-            WHERE connector_type = 'telegram_bot'
-            AND endpoint_identity = 'bot@456'
-            AND day = $1
-            """,
-            day,
-        )
-
-        assert row is not None
-        assert row["messages_ingested"] == 450  # 100 + 150 + 200
-        assert row["messages_failed"] == 15  # 5 + 3 + 7
-        assert row["source_api_calls"] == 225  # 50 + 75 + 100
-        assert row["dedupe_accepted"] == 435  # 95 + 147 + 193
-        assert row["heartbeat_count"] == 37  # 10 + 12 + 15
-        assert row["healthy_count"] == 31  # 9 + 10 + 12
-        # uptime_pct is a Decimal, so compare as Decimal
-        assert row["uptime_pct"] == Decimal("83.78")  # 31/37 * 100
-
-
-async def test_fanout_rollup_parses_dispatch_outcomes(provisioned_postgres_pool):
-    """Test that fanout rollup correctly parses dispatch_outcomes JSONB."""
-    async with provisioned_postgres_pool() as pool:
-        await _create_test_schema(pool)
-
-        day = datetime(2026, 2, 15, tzinfo=UTC).date()
-
-        # Insert message_inbox data with dispatch_outcomes using v2 schema (sw_008+).
-        # source_channel and source_endpoint_identity live inside request_context JSONB.
-        tg_ctx = json.dumps(
-            {"source_channel": "telegram_bot", "source_endpoint_identity": "telegram_bot.bot@789"}
-        )
-        email_ctx = json.dumps(
-            {"source_channel": "email", "source_endpoint_identity": "email.user@example.com"}
-        )
-        health_outcome = json.dumps({"health": {"status": "success"}})
-        relationship_outcome = json.dumps({"relationship": {"status": "success"}})
-        general_outcome = json.dumps({"general": {"status": "success"}})
-
-        for ctx, outcome, ts in [
-            (tg_ctx, health_outcome, datetime(2026, 2, 15, 10, 30, 0, tzinfo=UTC)),
-            (tg_ctx, health_outcome, datetime(2026, 2, 15, 11, 30, 0, tzinfo=UTC)),
-            (tg_ctx, relationship_outcome, datetime(2026, 2, 15, 12, 30, 0, tzinfo=UTC)),
-            (email_ctx, general_outcome, datetime(2026, 2, 15, 13, 30, 0, tzinfo=UTC)),
-        ]:
-            await pool.execute(
-                """
-                INSERT INTO message_inbox (request_context, dispatch_outcomes, received_at)
-                VALUES ($1::jsonb, $2::jsonb, $3)
-                """,
-                ctx,
-                outcome,
-                ts,
+            result = await mod.get_ingestion_fanout(
+                period="24h",
+                db=_FakeDB(),
             )
 
-        # Run fanout rollup SQL (matching the production query in connector_stats.py).
-        # source_channel and source_endpoint_identity are extracted from request_context JSONB.
-        await pool.execute(
-            """
-            WITH fanout_aggregates AS (
-                SELECT
-                    request_context ->> 'source_channel' AS source_channel,
-                    request_context ->> 'source_endpoint_identity' AS source_endpoint_identity,
-                    jsonb_object_keys(dispatch_outcomes) AS target_butler,
-                    COUNT(*) AS message_count
-                FROM message_inbox
-                WHERE DATE(received_at) = $1
-                AND dispatch_outcomes IS NOT NULL
-                GROUP BY
-                    request_context ->> 'source_channel',
-                    request_context ->> 'source_endpoint_identity',
-                    target_butler
+    assert result.data is not None
+    assert len(result.data) == 2
+    # Sorted by connector_type, endpoint_identity, -message_count
+    connectors = [(r.connector_type, r.endpoint_identity, r.target_butler) for r in result.data]
+    assert ("email", "user@example.com", "relationship") in connectors
+    assert ("telegram_bot", "bot@123", "health") in connectors
+
+
+async def test_get_ingestion_fanout_prometheus_error_returns_empty():
+    """When Prometheus returns an error, get_ingestion_fanout returns empty list."""
+    fake_error_result = [{"error": "bad request"}]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=fake_error_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            import importlib
+            from pathlib import Path
+
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_ifanout_err", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            result = await mod.get_ingestion_fanout(
+                period="24h",
+                db=_FakeDB(),
             )
-            INSERT INTO connector_fanout_daily (
-                connector_type, endpoint_identity, target_butler, day, message_count
+
+    assert result.data == []
+
+
+async def test_get_ingestion_fanout_filters_zero_count_rows():
+    """get_ingestion_fanout skips series where count rounds to 0."""
+    fake_instant_result = [
+        {
+            "metric": {
+                "connector_type": "telegram_bot",
+                "endpoint_identity": "bot@123",
+                "target_butler": "health",
+            },
+            "value": [1740000000, "0.4"],  # rounds to 0
+        },
+        {
+            "metric": {
+                "connector_type": "telegram_bot",
+                "endpoint_identity": "bot@123",
+                "target_butler": "memory",
+            },
+            "value": [1740000000, "3.7"],  # rounds to 3
+        },
+    ]
+
+    with patch(
+        "butlers.modules.metrics.prometheus.async_query",
+        new=AsyncMock(return_value=fake_instant_result),
+    ):
+        with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+            sys.modules.pop("switchboard_api_models", None)
+            import importlib
+            from pathlib import Path
+
+            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            spec = importlib.util.spec_from_file_location("_sw_router_ifanout_zero", router_path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            result = await mod.get_ingestion_fanout(
+                period="24h",
+                db=_FakeDB(),
             )
-            SELECT
-                source_channel AS connector_type,
-                source_endpoint_identity AS endpoint_identity,
-                target_butler,
-                $1,
-                message_count
-            FROM fanout_aggregates
-            """,
-            day,
-        )
 
-        # Verify fanout data
-        rows = await pool.fetch(
-            """
-            SELECT * FROM connector_fanout_daily
-            WHERE day = $1
-            ORDER BY connector_type, endpoint_identity, target_butler
-            """,
-            day,
-        )
-
-        assert len(rows) == 3
-
-        # Check all rows without assuming specific order beyond the ORDER BY clause
-        # Email comes before telegram_bot alphabetically
-        assert rows[0]["connector_type"] == "email"
-        assert rows[0]["endpoint_identity"] == "email.user@example.com"
-        assert rows[0]["target_butler"] == "general"
-        assert rows[0]["message_count"] == 1
-
-        # telegram_bot.bot@789 -> health (2 messages)
-        assert rows[1]["connector_type"] == "telegram_bot"
-        assert rows[1]["endpoint_identity"] == "telegram_bot.bot@789"
-        assert rows[1]["target_butler"] == "health"
-        assert rows[1]["message_count"] == 2
-
-        # telegram_bot.bot@789 -> relationship (1 message)
-        assert rows[2]["connector_type"] == "telegram_bot"
-        assert rows[2]["endpoint_identity"] == "telegram_bot.bot@789"
-        assert rows[2]["target_butler"] == "relationship"
-        assert rows[2]["message_count"] == 1
-
-
-# Pruning tests
-
-
-async def test_pruning_removes_old_hourly_and_daily_data(provisioned_postgres_pool):
-    """Test that pruning correctly removes old data."""
-    async with provisioned_postgres_pool() as pool:
-        await _create_test_schema(pool)
-
-        now = datetime.now(UTC)
-
-        # Insert old hourly data (35 days ago)
-        old_hour = now - timedelta(days=35)
-        await pool.execute(
-            """
-            INSERT INTO connector_stats_hourly (
-                connector_type, endpoint_identity, hour, messages_ingested
-            ) VALUES ('telegram_bot', 'bot@old', $1, 100)
-            """,
-            old_hour.replace(minute=0, second=0, microsecond=0),
-        )
-
-        # Insert recent hourly data (25 days ago)
-        recent_hour = now - timedelta(days=25)
-        await pool.execute(
-            """
-            INSERT INTO connector_stats_hourly (
-                connector_type, endpoint_identity, hour, messages_ingested
-            ) VALUES ('telegram_bot', 'bot@recent', $1, 200)
-            """,
-            recent_hour.replace(minute=0, second=0, microsecond=0),
-        )
-
-        # Insert old daily data (400 days ago)
-        old_day = (now - timedelta(days=400)).date()
-        await pool.execute(
-            """
-            INSERT INTO connector_stats_daily (
-                connector_type, endpoint_identity, day, messages_ingested
-            ) VALUES ('telegram_bot', 'bot@old', $1, 1000)
-            """,
-            old_day,
-        )
-
-        # Prune hourly stats (older than 30 days)
-        hourly_cutoff = now - timedelta(days=30)
-        await pool.execute(
-            """
-            DELETE FROM connector_stats_hourly WHERE hour < $1
-            """,
-            hourly_cutoff,
-        )
-
-        # Prune daily stats (older than 1 year)
-        daily_cutoff = (now - timedelta(days=365)).date()
-        await pool.execute(
-            """
-            DELETE FROM connector_stats_daily WHERE day < $1
-            """,
-            daily_cutoff,
-        )
-
-        # Verify old hourly data is gone
-        old_count = await pool.fetchval(
-            "SELECT COUNT(*) FROM connector_stats_hourly WHERE endpoint_identity = 'bot@old'"
-        )
-        assert old_count == 0
-
-        # Verify recent hourly data remains
-        recent_count = await pool.fetchval(
-            """
-            SELECT COUNT(*) FROM connector_stats_hourly
-            WHERE endpoint_identity = 'bot@recent'
-            """
-        )
-        assert recent_count == 1
-
-        # Verify old daily data is gone
-        daily_count = await pool.fetchval(
-            "SELECT COUNT(*) FROM connector_stats_daily WHERE endpoint_identity = 'bot@old'"
-        )
-        assert daily_count == 0
-
-
-async def test_hourly_rollup_handles_counter_reset_with_greatest(provisioned_postgres_pool):
-    """Test that GREATEST(0, delta) prevents negative deltas when connector restarts.
-
-    When a connector process restarts, Prometheus counters reset to 0. The
-    LAG-based delta can then be negative (e.g., prev=200, current=5 -> delta=-195).
-    GREATEST(0, ...) clamps these to 0 so the hourly sum is never negative.
-
-    Regression test for butlers-2cf1.
-    """
-    async with provisioned_postgres_pool() as pool:
-        await _create_test_schema(pool)
-
-        base_time = datetime(2026, 2, 16, 12, 0, 0, tzinfo=UTC)
-        hour_start = datetime(2026, 2, 16, 12, 0, 0, tzinfo=UTC)
-        hour_end = datetime(2026, 2, 16, 13, 0, 0, tzinfo=UTC)
-
-        # Simulate counter reset: counters climb then restart at low values
-        # Row 1: normal reading at 200 ingested
-        # Row 2: counter reset — process restarted, now only 5 ingested since restart
-        # Row 3: normal increment after restart at 20
-        await pool.execute(
-            """
-            INSERT INTO connector_heartbeat_log (
-                connector_type,
-                endpoint_identity,
-                state,
-                counter_messages_ingested,
-                counter_messages_failed,
-                counter_source_api_calls,
-                counter_dedupe_accepted,
-                received_at
-            ) VALUES
-            ('telegram_bot', 'reset_bot', 'healthy', 200, 5, 100, 195, $1),
-            ('telegram_bot', 'reset_bot', 'healthy',   5, 0,   3,   5, $2),
-            ('telegram_bot', 'reset_bot', 'healthy',  20, 0,  10,  20, $3)
-            """,
-            base_time + timedelta(minutes=5),
-            base_time + timedelta(minutes=10),
-            base_time + timedelta(minutes=15),
-        )
-
-        # Run rollup with the GREATEST(0, ...) hardening applied
-        await pool.execute(
-            """
-            WITH heartbeats AS (
-                SELECT
-                    connector_type,
-                    endpoint_identity,
-                    state,
-                    counter_messages_ingested,
-                    counter_messages_failed,
-                    counter_source_api_calls,
-                    counter_dedupe_accepted,
-                    received_at,
-                    LAG(counter_messages_ingested) OVER w AS prev_messages_ingested,
-                    LAG(counter_messages_failed) OVER w AS prev_messages_failed,
-                    LAG(counter_source_api_calls) OVER w AS prev_source_api_calls,
-                    LAG(counter_dedupe_accepted) OVER w AS prev_dedupe_accepted
-                FROM connector_heartbeat_log
-                WHERE received_at >= $1 AND received_at < $2
-                WINDOW w AS (
-                    PARTITION BY connector_type, endpoint_identity
-                    ORDER BY received_at
-                )
-            ),
-            deltas AS (
-                SELECT
-                    connector_type,
-                    endpoint_identity,
-                    GREATEST(0, COALESCE(
-                        counter_messages_ingested - prev_messages_ingested, 0
-                    )) AS delta_messages_ingested,
-                    GREATEST(0, COALESCE(
-                        counter_messages_failed - prev_messages_failed, 0
-                    )) AS delta_messages_failed,
-                    GREATEST(0, COALESCE(
-                        counter_source_api_calls - prev_source_api_calls, 0
-                    )) AS delta_source_api_calls,
-                    GREATEST(0, COALESCE(
-                        counter_dedupe_accepted - prev_dedupe_accepted, 0
-                    )) AS delta_dedupe_accepted,
-                    state
-                FROM heartbeats
-            ),
-            aggregates AS (
-                SELECT
-                    connector_type,
-                    endpoint_identity,
-                    SUM(delta_messages_ingested) AS messages_ingested,
-                    SUM(delta_messages_failed) AS messages_failed,
-                    SUM(delta_source_api_calls) AS source_api_calls,
-                    SUM(delta_dedupe_accepted) AS dedupe_accepted,
-                    COUNT(*) AS heartbeat_count,
-                    SUM(CASE WHEN state = 'healthy' THEN 1 ELSE 0 END) AS healthy_count,
-                    SUM(CASE WHEN state = 'degraded' THEN 1 ELSE 0 END) AS degraded_count,
-                    SUM(CASE WHEN state = 'error' THEN 1 ELSE 0 END) AS error_count
-                FROM deltas
-                GROUP BY connector_type, endpoint_identity
-            )
-            INSERT INTO connector_stats_hourly (
-                connector_type,
-                endpoint_identity,
-                hour,
-                messages_ingested,
-                messages_failed,
-                source_api_calls,
-                dedupe_accepted,
-                heartbeat_count,
-                healthy_count,
-                degraded_count,
-                error_count
-            )
-            SELECT
-                connector_type,
-                endpoint_identity,
-                $1,
-                messages_ingested,
-                messages_failed,
-                source_api_calls,
-                dedupe_accepted,
-                heartbeat_count::integer,
-                healthy_count::integer,
-                degraded_count::integer,
-                error_count::integer
-            FROM aggregates
-            """,
-            hour_start,
-            hour_end,
-        )
-
-        row = await pool.fetchrow(
-            """
-            SELECT * FROM connector_stats_hourly
-            WHERE connector_type = 'telegram_bot'
-            AND endpoint_identity = 'reset_bot'
-            AND hour = $1
-            """,
-            hour_start,
-        )
-
-        assert row is not None
-        # Row 1 (first, no prev): delta = 0 (COALESCE gives 0)
-        # Row 2 (reset): counter went 200 → 5, delta = -195, GREATEST(0,-195) = 0
-        # Row 3 (post-reset): counter went 5 → 20, delta = 15
-        # Total: 0 + 0 + 15 = 15
-        assert row["messages_ingested"] == 15, (
-            f"Expected 15 (counter reset clamped to 0), got {row['messages_ingested']}"
-        )
-        # Source API similarly: 0 + 0 + 7 = 7
-        assert row["source_api_calls"] == 7
-        # messages_failed: 5->0->0; all deltas clamped to 0, total = 0
-        assert row["messages_failed"] == 0
-        # dedupe_accepted: 195->5->20; reset delta clamped to 0, post-reset delta=15, total=15
-        assert row["dedupe_accepted"] == 15
+    assert len(result.data) == 1
+    assert result.data[0].target_butler == "memory"
+    assert result.data[0].message_count == 3

@@ -51,25 +51,6 @@ enable_ingress_dedupe = true
 
 [modules.switchboard]
 
-# Connector statistics rollup and pruning jobs
-[[butler.schedule]]
-name = "connector-stats-hourly-rollup"
-cron = "5 * * * *"
-dispatch_mode = "job"
-job_name = "connector_stats_hourly_rollup"
-
-[[butler.schedule]]
-name = "connector-stats-daily-rollup"
-cron = "15 0 * * *"
-dispatch_mode = "job"
-job_name = "connector_stats_daily_rollup"
-
-[[butler.schedule]]
-name = "connector-stats-pruning"
-cron = "30 1 * * *"
-dispatch_mode = "job"
-job_name = "connector_stats_pruning"
-
 [[butler.schedule]]
 name = "memory-consolidation"
 cron = "0 */6 * * *"

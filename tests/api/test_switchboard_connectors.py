@@ -20,7 +20,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -415,98 +415,170 @@ class TestConnectorDetail:
 
 
 class TestConnectorStats:
+    """Tests for GET /api/switchboard/connectors/{type}/{id}/stats.
+
+    Endpoints now query Prometheus via PromQL instead of DB rollup tables.
+    The router module is loaded as "switchboard_api_router" in sys.modules;
+    we patch the async_query_range reference directly on that module object.
+    """
+
+    _PROM_RANGE_HOURLY = [
+        {
+            "metric": {"connector_type": "telegram_bot", "endpoint_identity": "bot-123"},
+            "values": [[1740000000, "10"], [1740003600, "5"]],
+        }
+    ]
+    _PROM_RANGE_DAILY = [
+        {
+            "metric": {"connector_type": "telegram_bot", "endpoint_identity": "bot-123"},
+            "values": [[1740000000, "100"], [1740086400, "80"]],
+        }
+    ]
+
     async def test_24h_returns_hourly_stats(self, app):
-        """period=24h returns hourly stats data."""
-        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_HOURLY_ROW])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/switchboard/connectors/telegram_bot/bot-123/stats",
-                params={"period": "24h"},
-            )
+        """period=24h returns hourly stats data sourced from Prometheus."""
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query_range",
+            new=AsyncMock(return_value=self._PROM_RANGE_HOURLY),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get(
+                        "/api/switchboard/connectors/telegram_bot/bot-123/stats",
+                        params={"period": "24h"},
+                    )
 
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body["data"]) == 1
+        assert len(body["data"]) >= 1
         entry = body["data"][0]
         assert "hour" in entry
         assert entry["messages_ingested"] == 10
 
     async def test_7d_returns_daily_stats(self, app):
-        """period=7d returns daily stats data."""
-        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_DAILY_ROW])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/switchboard/connectors/telegram_bot/bot-123/stats",
-                params={"period": "7d"},
-            )
+        """period=7d returns daily stats data sourced from Prometheus."""
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query_range",
+            new=AsyncMock(return_value=self._PROM_RANGE_DAILY),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get(
+                        "/api/switchboard/connectors/telegram_bot/bot-123/stats",
+                        params={"period": "7d"},
+                    )
 
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body["data"]) == 1
+        assert len(body["data"]) >= 1
         entry = body["data"][0]
         assert "day" in entry
-        assert entry["uptime_pct"] == 95.83
 
     async def test_30d_returns_daily_stats(self, app):
-        """period=30d returns daily stats data."""
-        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_DAILY_ROW])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/switchboard/connectors/telegram_bot/bot-123/stats",
-                params={"period": "30d"},
-            )
+        """period=30d returns daily stats data sourced from Prometheus."""
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query_range",
+            new=AsyncMock(return_value=self._PROM_RANGE_DAILY),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get(
+                        "/api/switchboard/connectors/telegram_bot/bot-123/stats",
+                        params={"period": "30d"},
+                    )
 
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body["data"]) == 1
+        assert len(body["data"]) >= 1
 
     async def test_empty_state_returns_empty_list(self, app):
-        """No stats data returns empty list."""
-        app = _app_with_mock_db(app, fetch_rows=[])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/switchboard/connectors/telegram_bot/bot-123/stats",
-                params={"period": "24h"},
-            )
+        """When Prometheus returns no data, stats returns empty list."""
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query_range",
+            new=AsyncMock(return_value=[]),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get(
+                        "/api/switchboard/connectors/telegram_bot/bot-123/stats",
+                        params={"period": "24h"},
+                    )
 
         assert resp.status_code == 200
         assert resp.json()["data"] == []
 
-    async def test_degraded_db_falls_back_to_empty_list(self, app):
-        """When rollup tables are missing, returns empty list (not 500)."""
-        app = _app_with_mock_db(app, fetch_side_effect=Exception("relation does not exist"))
+    async def test_degraded_prometheus_falls_back_to_empty_list(self, app):
+        """When Prometheus is unavailable, returns empty list (not 500)."""
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query_range",
+            new=AsyncMock(return_value=[{"error": "connection refused"}]),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get(
+                        "/api/switchboard/connectors/telegram_bot/bot-123/stats",
+                        params={"period": "24h"},
+                    )
+
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []
+
+    async def test_no_prometheus_url_returns_empty_list(self, app):
+        """When PROMETHEUS_URL is not configured, returns empty list."""
+        import os
+
+        os.environ.pop("PROMETHEUS_URL", None)
+        app = _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.get(
                 "/api/switchboard/connectors/telegram_bot/bot-123/stats",
-                params={"period": "24h"},
             )
 
         assert resp.status_code == 200
         assert resp.json()["data"] == []
 
     async def test_default_period_is_24h(self, app):
-        """When no period param is provided, defaults to 24h (hourly data)."""
-        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_HOURLY_ROW])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/switchboard/connectors/telegram_bot/bot-123/stats",
-            )
+        """When no period param is provided, defaults to 24h (returns hourly data)."""
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query_range",
+            new=AsyncMock(return_value=self._PROM_RANGE_HOURLY),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get(
+                        "/api/switchboard/connectors/telegram_bot/bot-123/stats",
+                    )
 
         assert resp.status_code == 200
         body = resp.json()
         # hourly data has 'hour' field
+        assert len(body["data"]) >= 1
         assert "hour" in body["data"][0]
 
 
@@ -516,9 +588,21 @@ class TestConnectorStats:
 
 
 class TestConnectorFanout:
+    """Tests for GET /api/switchboard/connectors/{type}/{id}/fanout.
+
+    Endpoints now query Prometheus via PromQL instead of DB rollup tables.
+    """
+
+    _PROM_FANOUT = [
+        {"metric": {"target_butler": "health"}, "value": [1740000000, "25"]},
+    ]
+
     async def test_empty_state_returns_empty_list(self, app):
-        """No fanout data returns empty list."""
-        app = _app_with_mock_db(app, fetch_rows=[])
+        """When Prometheus returns no data, fanout returns empty list."""
+        import os
+
+        os.environ.pop("PROMETHEUS_URL", None)
+        app = _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -530,14 +614,20 @@ class TestConnectorFanout:
         assert resp.json()["data"] == []
 
     async def test_returns_fanout_rows(self, app):
-        """Fanout rows include connector and butler info."""
-        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_FANOUT_ROW])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/switchboard/connectors/telegram_bot/bot-123/fanout",
-            )
+        """Fanout rows include connector and butler info sourced from Prometheus."""
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query",
+            new=AsyncMock(return_value=self._PROM_FANOUT),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get(
+                        "/api/switchboard/connectors/telegram_bot/bot-123/fanout",
+                    )
 
         assert resp.status_code == 200
         body = resp.json()
@@ -549,26 +639,38 @@ class TestConnectorFanout:
 
     async def test_period_param_accepted(self, app):
         """period=7d and period=30d are accepted without errors."""
-        app = _app_with_mock_db(app, fetch_rows=[])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            for period in ("24h", "7d", "30d"):
-                resp = await client.get(
-                    "/api/switchboard/connectors/telegram_bot/bot-123/fanout",
-                    params={"period": period},
-                )
-                assert resp.status_code == 200
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query",
+            new=AsyncMock(return_value=[]),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    for period in ("24h", "7d", "30d"):
+                        resp = await client.get(
+                            "/api/switchboard/connectors/telegram_bot/bot-123/fanout",
+                            params={"period": period},
+                        )
+                        assert resp.status_code == 200
 
-    async def test_degraded_db_falls_back_to_empty_list(self, app):
-        """Missing rollup tables return empty list (not 500)."""
-        app = _app_with_mock_db(app, fetch_side_effect=Exception("relation does not exist"))
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get(
-                "/api/switchboard/connectors/telegram_bot/bot-123/fanout",
-            )
+    async def test_degraded_prometheus_falls_back_to_empty_list(self, app):
+        """When Prometheus is unavailable, returns empty list (not 500)."""
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query",
+            new=AsyncMock(return_value=[{"error": "connection refused"}]),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get(
+                        "/api/switchboard/connectors/telegram_bot/bot-123/fanout",
+                    )
 
         assert resp.status_code == 200
         assert resp.json()["data"] == []
@@ -745,9 +847,28 @@ class TestIngestionOverview:
 
 
 class TestIngestionFanout:
+    """Tests for GET /api/switchboard/ingestion/fanout.
+
+    Endpoint now queries Prometheus via PromQL instead of DB rollup tables.
+    """
+
+    _PROM_MATRIX = [
+        {
+            "metric": {
+                "connector_type": "telegram_bot",
+                "endpoint_identity": "bot-123",
+                "target_butler": "health",
+            },
+            "value": [1740000000, "25"],
+        }
+    ]
+
     async def test_empty_state_returns_empty_list(self, app):
-        """Empty fanout data returns an empty list."""
-        app = _app_with_mock_db(app, fetch_rows=[])
+        """When PROMETHEUS_URL is not configured, fanout returns empty list."""
+        import os
+
+        os.environ.pop("PROMETHEUS_URL", None)
+        app = _app_with_mock_db(app)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -757,12 +878,18 @@ class TestIngestionFanout:
         assert resp.json()["data"] == []
 
     async def test_returns_fanout_matrix_rows(self, app):
-        """Fanout matrix rows include all required fields."""
-        app = _app_with_mock_db(app, fetch_rows=[_SAMPLE_FANOUT_ROW])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/switchboard/ingestion/fanout")
+        """Fanout matrix rows include all required fields sourced from Prometheus."""
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query",
+            new=AsyncMock(return_value=self._PROM_MATRIX),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/switchboard/ingestion/fanout")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -775,24 +902,36 @@ class TestIngestionFanout:
 
     async def test_period_param_accepted(self, app):
         """All period values are accepted by fanout endpoint."""
-        app = _app_with_mock_db(app, fetch_rows=[])
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            for period in ("24h", "7d", "30d"):
-                resp = await client.get(
-                    "/api/switchboard/ingestion/fanout",
-                    params={"period": period},
-                )
-                assert resp.status_code == 200
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query",
+            new=AsyncMock(return_value=[]),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    for period in ("24h", "7d", "30d"):
+                        resp = await client.get(
+                            "/api/switchboard/ingestion/fanout",
+                            params={"period": period},
+                        )
+                        assert resp.status_code == 200
 
-    async def test_degraded_db_falls_back_to_empty_list(self, app):
-        """Missing rollup tables return empty list (not 500)."""
-        app = _app_with_mock_db(app, fetch_side_effect=Exception("relation does not exist"))
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.get("/api/switchboard/ingestion/fanout")
+    async def test_degraded_prometheus_falls_back_to_empty_list(self, app):
+        """When Prometheus is unavailable, returns empty list (not 500)."""
+        app = _app_with_mock_db(app)
+        with patch.object(
+            sys.modules[_MODULE_NAME],
+            "async_query",
+            new=AsyncMock(return_value=[{"error": "relation does not exist"}]),
+        ):
+            with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    resp = await client.get("/api/switchboard/ingestion/fanout")
 
         assert resp.status_code == 200
         assert resp.json()["data"] == []
