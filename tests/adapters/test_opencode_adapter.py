@@ -7,6 +7,8 @@ Covers:
   returns empty string when neither file exists.
 - build_config_file(): writes valid JSONC with mcp key and remote server entries,
   skips invalid server configs with warnings.
+- _find_opencode_binary(): PATH discovery, FileNotFoundError when missing.
+- invoke(): mocked subprocess, OPENCODE_CONFIG env var, model flag, timeout, error paths.
 - Adapter registration and create_worker().
 """
 
@@ -15,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -23,12 +26,12 @@ from butlers.core.runtimes.opencode import (
     OpenCodeAdapter,
     _extract_opencode_tool_call,
     _extract_usage,
+    _find_opencode_binary,
     _looks_like_tool_call_event,
     _parse_opencode_output,
 )
 
 pytestmark = pytest.mark.unit
-
 
 
 # ---------------------------------------------------------------------------
@@ -277,8 +280,6 @@ def test_build_config_file_is_valid_json(tmp_path: Path):
     # Must parse as valid JSON
     data = json.loads(config_path.read_text())
     assert isinstance(data, dict)
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -937,3 +938,489 @@ def test_extract_usage_non_int_stored_as_none():
     result = _extract_usage({"input_tokens": "lots", "output_tokens": None})
     assert result == {"input_tokens": None, "output_tokens": None}
 
+
+# ---------------------------------------------------------------------------
+# _find_opencode_binary tests
+# ---------------------------------------------------------------------------
+
+_EXEC = "butlers.core.runtimes.opencode.asyncio.create_subprocess_exec"
+
+
+def test_find_opencode_binary_found():
+    """_find_opencode_binary returns path when opencode is on PATH."""
+    with patch(
+        "butlers.core.runtimes.opencode.shutil.which",
+        return_value="/usr/local/bin/opencode",
+    ):
+        assert _find_opencode_binary() == "/usr/local/bin/opencode"
+
+
+def test_find_opencode_binary_not_found():
+    """_find_opencode_binary raises FileNotFoundError when opencode is missing."""
+    with patch(
+        "butlers.core.runtimes.opencode.shutil.which",
+        return_value=None,
+    ):
+        with pytest.raises(FileNotFoundError, match="OpenCode CLI binary not found"):
+            _find_opencode_binary()
+
+
+def test_opencode_adapter_get_binary_uses_custom_path():
+    """_get_binary() returns custom binary path without calling shutil.which."""
+    adapter = OpenCodeAdapter(opencode_binary="/opt/opencode/bin/opencode")
+    with patch("butlers.core.runtimes.opencode.shutil.which") as mock_which:
+        result = adapter._get_binary()
+    assert result == "/opt/opencode/bin/opencode"
+    mock_which.assert_not_called()
+
+
+def test_opencode_adapter_get_binary_auto_detects():
+    """_get_binary() calls _find_opencode_binary when no custom binary is set."""
+    adapter = OpenCodeAdapter()
+    with patch(
+        "butlers.core.runtimes.opencode.shutil.which",
+        return_value="/usr/bin/opencode",
+    ):
+        result = adapter._get_binary()
+    assert result == "/usr/bin/opencode"
+
+
+# ---------------------------------------------------------------------------
+# invoke() tests with mocked subprocess
+# ---------------------------------------------------------------------------
+
+
+async def test_invoke_success():
+    """invoke() calls subprocess and parses JSON output."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    output_lines = "\n".join(
+        [
+            json.dumps({"type": "text", "text": "Task done."}),
+            json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 10, "output_tokens": 20},
+                }
+            ),
+        ]
+    )
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(output_lines.encode(), b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="do something",
+            system_prompt="you are helpful",
+            mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+        )
+
+    assert result_text == "Task done."
+    assert tool_calls == []
+    assert usage == {"input_tokens": 10, "output_tokens": 20}
+
+    call_args = mock_sub.call_args
+    cmd = call_args[0]
+    assert cmd[0] == "/usr/bin/opencode"
+    assert cmd[1] == "run"
+    assert "--format" in cmd
+    assert "json" in cmd
+    assert "do something" in cmd
+
+
+async def test_invoke_sets_opencode_config_env_var():
+    """invoke() injects OPENCODE_CONFIG env var pointing to temp config file."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="do something",
+            system_prompt="",
+            mcp_servers={},
+            env={"PATH": "/usr/bin"},
+        )
+
+    call_kwargs = mock_sub.call_args[1]
+    env = call_kwargs["env"]
+    assert "OPENCODE_CONFIG" in env
+    # The value should be a path ending in opencode.jsonc
+    assert env["OPENCODE_CONFIG"].endswith("opencode.jsonc")
+
+
+async def test_invoke_config_contains_mcp_servers():
+    """invoke() config file written to OPENCODE_CONFIG contains MCP servers.
+
+    We read the config content while subprocess is running (inside the TemporaryDirectory
+    context) by capturing it from the env passed to create_subprocess_exec and reading
+    the file before the context manager cleans up.
+    """
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+    captured_config: list[dict] = []
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 0
+
+    async def communicate_and_capture() -> tuple[bytes, bytes]:
+        return b"ok", b""
+
+    mock_proc.communicate = communicate_and_capture
+
+    def capture_env(*args: object, **kwargs: object) -> AsyncMock:
+        env = kwargs.get("env", {})
+        if "OPENCODE_CONFIG" in env:
+            config_path = env["OPENCODE_CONFIG"]
+            # Read immediately while temp dir still exists
+            try:
+                data = json.loads(Path(config_path).read_text())
+                captured_config.append(data)
+            except Exception:
+                pass
+        return mock_proc
+
+    with patch(_EXEC, side_effect=capture_env):
+        await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={"my-butler": {"url": "http://localhost:9100/mcp"}},
+            env={},
+        )
+
+    assert len(captured_config) == 1
+    config_data = captured_config[0]
+    assert "mcp" in config_data
+    assert "my-butler" in config_data["mcp"]
+    assert config_data["mcp"]["my-butler"]["type"] == "remote"
+    assert config_data["mcp"]["my-butler"]["url"] == "http://localhost:9100/mcp"
+    assert config_data["mcp"]["my-butler"]["enabled"] is True
+    assert "permission" in config_data
+
+
+async def test_invoke_config_includes_instructions_when_system_prompt():
+    """invoke() config includes instructions array when system_prompt is provided."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+    captured_config: list[dict] = []
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 0
+
+    async def communicate_and_capture() -> tuple[bytes, bytes]:
+        return b"ok", b""
+
+    mock_proc.communicate = communicate_and_capture
+
+    def capture_env(*args: object, **kwargs: object) -> AsyncMock:
+        env = kwargs.get("env", {})
+        if "OPENCODE_CONFIG" in env:
+            config_path = env["OPENCODE_CONFIG"]
+            try:
+                data = json.loads(Path(config_path).read_text())
+                captured_config.append(data)
+            except Exception:
+                pass
+        return mock_proc
+
+    with patch(_EXEC, side_effect=capture_env):
+        await adapter.invoke(
+            prompt="test",
+            system_prompt="You are a helpful butler.",
+            mcp_servers={},
+            env={},
+        )
+
+    assert len(captured_config) == 1
+    config_data = captured_config[0]
+    assert "instructions" in config_data
+    assert len(config_data["instructions"]) == 1
+    # The instructions path should point to a _system_prompt.md file
+    assert "_system_prompt.md" in config_data["instructions"][0]
+
+
+async def test_invoke_no_instructions_when_no_system_prompt():
+    """invoke() config has no instructions key when system_prompt is empty."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+    captured_config: list[dict] = []
+
+    mock_proc = AsyncMock()
+    mock_proc.returncode = 0
+
+    async def communicate_and_capture() -> tuple[bytes, bytes]:
+        return b"ok", b""
+
+    mock_proc.communicate = communicate_and_capture
+
+    def capture_env(*args: object, **kwargs: object) -> AsyncMock:
+        env = kwargs.get("env", {})
+        if "OPENCODE_CONFIG" in env:
+            config_path = env["OPENCODE_CONFIG"]
+            try:
+                data = json.loads(Path(config_path).read_text())
+                captured_config.append(data)
+            except Exception:
+                pass
+        return mock_proc
+
+    with patch(_EXEC, side_effect=capture_env):
+        await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
+
+    assert len(captured_config) == 1
+    config_data = captured_config[0]
+    assert "instructions" not in config_data
+
+
+async def test_invoke_passes_model_flag():
+    """invoke() forwards --model flag to OpenCode CLI when provided."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="run",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            model="anthropic/claude-sonnet-4-5",
+        )
+
+    cmd = mock_sub.call_args[0]
+    assert "--model" in cmd
+    model_idx = cmd.index("--model")
+    assert cmd[model_idx + 1] == "anthropic/claude-sonnet-4-5"
+
+
+async def test_invoke_no_model_flag_when_none():
+    """invoke() omits --model flag when model is None."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="run",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            model=None,
+        )
+
+    cmd = mock_sub.call_args[0]
+    assert "--model" not in cmd
+
+
+async def test_invoke_passes_runtime_args():
+    """invoke() forwards configured runtime args to OpenCode CLI."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="do the task",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            runtime_args=["--verbose", "--debug"],
+        )
+
+    cmd = mock_sub.call_args[0]
+    assert "--verbose" in cmd
+    assert "--debug" in cmd
+    # runtime_args come before the prompt
+    verbose_idx = cmd.index("--verbose")
+    prompt_idx = cmd.index("do the task")
+    assert verbose_idx < prompt_idx
+
+
+async def test_invoke_passes_cwd():
+    """invoke() passes working directory to the subprocess."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+            cwd=Path("/tmp/workdir"),
+        )
+
+    call_kwargs = mock_sub.call_args[1]
+    assert call_kwargs["cwd"] == "/tmp/workdir"
+
+
+async def test_invoke_nonzero_exit_raises_runtime_error():
+    """invoke() raises RuntimeError on non-zero exit code."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"rate limit exceeded"))
+    mock_proc.returncode = 1
+
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(
+            RuntimeError,
+            match="OpenCode CLI exited with code 1: rate limit exceeded",
+        ):
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+            )
+
+
+async def test_invoke_nonzero_exit_falls_back_to_stdout_for_error():
+    """invoke() includes stdout in RuntimeError when stderr is empty."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"stdout error detail", b""))
+    mock_proc.returncode = 2
+
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(RuntimeError, match="stdout error detail"):
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+            )
+
+
+async def test_invoke_timeout_kills_process():
+    """invoke() raises TimeoutError and kills process when subprocess times out."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(side_effect=TimeoutError())
+    mock_proc.kill = AsyncMock()
+    mock_proc.wait = AsyncMock()
+
+    with patch(_EXEC, return_value=mock_proc):
+        with pytest.raises(TimeoutError, match="OpenCode CLI timed out"):
+            await adapter.invoke(
+                prompt="slow task",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+                timeout=1,
+            )
+
+    mock_proc.kill.assert_called_once()
+    mock_proc.wait.assert_called_once()
+
+
+async def test_invoke_binary_not_found():
+    """invoke() raises FileNotFoundError if opencode not on PATH."""
+    adapter = OpenCodeAdapter()  # No binary specified, auto-detect
+
+    with patch(
+        "butlers.core.runtimes.opencode.shutil.which",
+        return_value=None,
+    ):
+        with pytest.raises(FileNotFoundError, match="OpenCode CLI binary not found"):
+            await adapter.invoke(
+                prompt="test",
+                system_prompt="",
+                mcp_servers={},
+                env={},
+            )
+
+
+async def test_invoke_passes_env_to_subprocess():
+    """invoke() passes caller env vars (plus OPENCODE_CONFIG) to subprocess."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    caller_env = {"ANTHROPIC_API_KEY": "sk-test", "PATH": "/usr/bin"}
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env=caller_env,
+        )
+
+    call_kwargs = mock_sub.call_args[1]
+    subprocess_env = call_kwargs["env"]
+    assert subprocess_env["ANTHROPIC_API_KEY"] == "sk-test"
+    assert subprocess_env["PATH"] == "/usr/bin"
+    assert "OPENCODE_CONFIG" in subprocess_env
+
+
+async def test_invoke_with_tool_calls():
+    """invoke() captures tool_use tool calls from adapter output."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    output_lines = "\n".join(
+        [
+            json.dumps(
+                {"type": "tool_use", "id": "t1", "name": "state_get", "input": {"key": "foo"}}
+            ),
+            json.dumps({"type": "result", "result": "Done"}),
+        ]
+    )
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(output_lines.encode(), b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc):
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="use tools",
+            system_prompt="helpful",
+            mcp_servers={},
+            env={},
+        )
+
+    assert result_text == "Done"
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "state_get"
+    assert tool_calls[0]["input"] == {"key": "foo"}
+
+
+async def test_invoke_uses_run_subcommand():
+    """invoke() uses 'opencode run' subcommand (not exec or other)."""
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+    mock_proc.returncode = 0
+
+    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+        await adapter.invoke(
+            prompt="test",
+            system_prompt="",
+            mcp_servers={},
+            env={},
+        )
+
+    cmd = mock_sub.call_args[0]
+    assert cmd[0] == "/usr/bin/opencode"
+    assert cmd[1] == "run"
