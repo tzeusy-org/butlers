@@ -1,7 +1,7 @@
 """drop_contacts_roles: drop the roles column from shared.contacts
 
-Revision ID: core_015
-Revises: core_014
+Revision ID: core_016
+Revises: core_015
 Create Date: 2026-03-05 00:00:00.000000
 
 Drops the legacy `roles` column from `shared.contacts` and the associated
@@ -13,7 +13,9 @@ Background:
   roles were the source of truth on `contacts.roles` until core_014 moved them
   to `shared.entities.roles` with a full data migration.  core_014 kept the
   column for backward compatibility and noted that a follow-up migration would
-  drop it.  This is that migration.
+  drop it.  core_015 granted missing butler roles to shared.entities.  This
+  migration (core_016) completes the cleanup by dropping the now-unused roles
+  column from shared.contacts.
 
 Changes applied in upgrade():
 
@@ -35,8 +37,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_015"
-down_revision = "core_014"
+revision = "core_016"
+down_revision = "core_015"
 branch_labels = None
 depends_on = None
 

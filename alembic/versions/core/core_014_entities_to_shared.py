@@ -26,7 +26,7 @@ downgrade() reverses all of the above in reverse order.
 Design notes:
   - All DDL is guarded with IF (NOT) EXISTS / DO blocks for idempotency.
   - contacts.roles column was kept for backward compatibility during the
-    transition period.  core_015 drops it.
+    transition period.  core_016 drops it.
   - The general butler has its own unrelated entities table (collection items);
     search_path ordering (general, shared, public) ensures general.entities
     resolves first for the general butler, so no collision occurs.
@@ -446,7 +446,7 @@ def upgrade() -> None:
 
     # -------------------------------------------------------------------------
     # 7. (no-op here) Drop old owner singleton index from contacts.
-    #    ix_contacts_owner_singleton is dropped by core_015 together with the
+    #    ix_contacts_owner_singleton is dropped by core_016 together with the
     #    contacts.roles column.  Keeping this comment for cross-reference.
     # -------------------------------------------------------------------------
 

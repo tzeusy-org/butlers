@@ -856,7 +856,7 @@ async def _ensure_owner_entity_and_contact(pool: asyncpg.Pool) -> None:
                 """
             )
 
-            # After core_015 the contacts.roles column has been dropped; roles
+            # After core_016 the contacts.roles column has been dropped; roles
             # now live exclusively on shared.entities.roles.  We still insert
             # the owner contact but without the legacy roles column.
             if roles_col_exists:
@@ -879,7 +879,7 @@ async def _ensure_owner_entity_and_contact(pool: asyncpg.Pool) -> None:
                         ["owner"],
                     )
             else:
-                # contacts.roles has been dropped (core_015 applied).
+                # contacts.roles has been dropped (core_016 applied).
                 if owner_entity_id is not None:
                     await conn.execute(
                         """

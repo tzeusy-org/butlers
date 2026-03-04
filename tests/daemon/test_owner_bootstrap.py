@@ -7,8 +7,8 @@ Verifies:
 - Concurrent startups create exactly one owner (relying on ON CONFLICT DO NOTHING).
 - If shared.entities does not exist, falls back to contact-only bootstrap.
 - If shared.contacts does not exist the function skips silently.
-- If roles column on contacts does not exist (post-core_015), inserts contact
-  without roles column (roles live on shared.entities after core_015).
+- If roles column on contacts does not exist (post-core_016), inserts contact
+  without roles column (roles live on shared.entities after core_016).
 - Exceptions from the pool are caught and logged (non-fatal).
 """
 
@@ -171,7 +171,7 @@ class TestEnsureOwnerEntityAndContactTableAbsent:
 
 class TestEnsureOwnerEntityAndContactRolesColumnAbsent:
     async def test_inserts_contact_without_roles_when_column_missing(self) -> None:
-        """After core_015, contacts.roles is gone; contact is inserted without it."""
+        """After core_016, contacts.roles is gone; contact is inserted without it."""
         pool, conn = _make_pool(roles_col_exists=False)
 
         await _ensure_owner_entity_and_contact(pool)
