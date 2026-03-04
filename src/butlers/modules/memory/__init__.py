@@ -509,7 +509,7 @@ class MemoryModule(Module):
         @mcp.tool()
         async def memory_entity_resolve(
             name: str,
-            tenant_id: str = "default",
+            tenant_id: str = "shared",
             entity_type: str | None = None,
             context_hints: dict[str, Any] | None = None,
             enable_fuzzy: bool = False,
