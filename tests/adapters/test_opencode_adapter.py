@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -1600,8 +1601,6 @@ def test_looks_like_tool_call_false_for_no_args():
 
 async def test_invoke_temp_dir_cleaned_up_after_runtime_error():
     """invoke() cleans up the temp directory even when subprocess exits non-zero."""
-    import tempfile
-
     adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
     captured_tmp_dirs: list[str] = []
     original_temp_dir = tempfile.TemporaryDirectory
@@ -1633,6 +1632,4 @@ async def test_invoke_temp_dir_cleaned_up_after_runtime_error():
 
     # The temp dir should have been created and then cleaned up
     assert len(captured_tmp_dirs) == 1
-    from pathlib import Path
-
     assert not Path(captured_tmp_dirs[0]).exists(), "Temp dir should be cleaned up on failure"
