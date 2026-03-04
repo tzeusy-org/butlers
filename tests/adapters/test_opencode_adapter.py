@@ -1,6 +1,8 @@
-"""Tests for OpenCodeAdapter — parse_system_prompt_file() and build_config_file().
+"""Tests for OpenCodeAdapter.
 
 Covers:
+- _parse_opencode_output(): JSON-lines parsing, text extraction, tool call normalization,
+  usage tracking.
 - parse_system_prompt_file(): reads OPENCODE.md, falls back to AGENTS.md,
   returns empty string when neither file exists.
 - build_config_file(): writes valid JSONC with mcp key and remote server entries,
@@ -17,9 +19,16 @@ from pathlib import Path
 import pytest
 
 from butlers.core.runtimes import get_adapter
-from butlers.core.runtimes.opencode import OpenCodeAdapter
+from butlers.core.runtimes.opencode import (
+    OpenCodeAdapter,
+    _extract_opencode_tool_call,
+    _extract_usage,
+    _looks_like_tool_call_event,
+    _parse_opencode_output,
+)
 
 pytestmark = pytest.mark.unit
+
 
 
 # ---------------------------------------------------------------------------
@@ -268,3 +277,663 @@ def test_build_config_file_is_valid_json(tmp_path: Path):
     # Must parse as valid JSON
     data = json.loads(config_path.read_text())
     assert isinstance(data, dict)
+
+
+
+
+# ---------------------------------------------------------------------------
+# _parse_opencode_output — text extraction
+# ---------------------------------------------------------------------------
+
+
+def test_parse_plain_text_fallback():
+    """Plain text stdout is returned as result when no JSON found."""
+    result_text, tool_calls, usage = _parse_opencode_output("Hello, world!", "", 0)
+    assert result_text == "Hello, world!"
+    assert tool_calls == []
+    assert usage is None
+
+
+def test_parse_empty_stdout_returns_none():
+    """Empty stdout yields None result_text."""
+    result_text, tool_calls, usage = _parse_opencode_output("", "", 0)
+    assert result_text is None
+    assert tool_calls == []
+    assert usage is None
+
+
+def test_parse_text_event_single():
+    """Single text event yields its text as result."""
+    line = json.dumps({"type": "text", "text": "Hello from OpenCode"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Hello from OpenCode"
+    assert tool_calls == []
+    assert usage is None
+
+
+def test_parse_text_event_content_field():
+    """text event with 'content' field (not 'text') is extracted."""
+    line = json.dumps({"type": "text", "content": "Content field text"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Content field text"
+
+
+def test_parse_text_event_value_field():
+    """text event with 'value' field is extracted."""
+    line = json.dumps({"type": "text", "value": "Value field text"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Value field text"
+
+
+def test_parse_text_event_delta_field():
+    """text event with 'delta' field is extracted."""
+    line = json.dumps({"type": "text", "delta": "Delta text"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Delta text"
+
+
+def test_parse_multipart_text_events_concatenated():
+    """Multiple text events are concatenated with newlines."""
+    lines = "\n".join(
+        [
+            json.dumps({"type": "text", "text": "Part one"}),
+            json.dumps({"type": "text", "text": "Part two"}),
+            json.dumps({"type": "text", "text": "Part three"}),
+        ]
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(lines, "", 0)
+    assert result_text == "Part one\nPart two\nPart three"
+    assert tool_calls == []
+
+
+def test_parse_message_event_with_string_content():
+    """Message event with string content is extracted."""
+    line = json.dumps({"type": "message", "content": "Assistant reply"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Assistant reply"
+    assert tool_calls == []
+
+
+def test_parse_message_event_with_content_blocks():
+    """Message event with content block list extracts text blocks."""
+    line = json.dumps(
+        {
+            "type": "message",
+            "content": [
+                {"type": "text", "text": "First block"},
+                {"type": "text", "text": "Second block"},
+            ],
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "First block\nSecond block"
+    assert tool_calls == []
+
+
+def test_parse_message_event_tool_use_in_content():
+    """Message event with tool_use block in content yields tool call."""
+    line = json.dumps(
+        {
+            "type": "message",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tu_1",
+                    "name": "state_get",
+                    "input": {"key": "foo"},
+                }
+            ],
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text is None
+    assert len(tool_calls) == 1
+    assert tool_calls[0] == {"id": "tu_1", "name": "state_get", "input": {"key": "foo"}}
+
+
+def test_parse_result_event():
+    """Result event with 'result' key is extracted as text."""
+    line = json.dumps({"type": "result", "result": "Task complete"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Task complete"
+    assert tool_calls == []
+
+
+def test_parse_result_event_text_field():
+    """Result event with 'text' key (not 'result') is extracted."""
+    line = json.dumps({"type": "result", "text": "Result via text field"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Result via text field"
+
+
+def test_parse_assistant_event_with_message():
+    """Assistant event with nested message dict extracts content."""
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Done!"},
+                ]
+            },
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Done!"
+    assert tool_calls == []
+
+
+def test_parse_assistant_event_with_string_content():
+    """Assistant event with direct string content is extracted."""
+    line = json.dumps({"type": "assistant", "content": "Direct content"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Direct content"
+
+
+def test_parse_item_completed_agent_message():
+    """item.completed event with agent_message item type is extracted."""
+    line = json.dumps(
+        {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": "Agent says hello"},
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Agent says hello"
+    assert tool_calls == []
+
+
+def test_parse_response_output_item_done_text():
+    """response.output_item.done with text item type extracts content."""
+    line = json.dumps(
+        {
+            "type": "response.output_item.done",
+            "item": {"type": "text", "content": "Item text"},
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Item text"
+
+
+def test_parse_ignores_non_json_lines_when_json_present():
+    """Non-JSON diagnostics mixed with JSON lines are ignored."""
+    lines = "\n".join(
+        [
+            "2026-01-01T00:00:00Z INFO opencode starting",
+            json.dumps({"type": "text", "text": "Hello"}),
+        ]
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(lines, "", 0)
+    assert result_text == "Hello"
+
+
+def test_parse_pure_non_json_fallback():
+    """When all lines are non-JSON, they are treated as plain text."""
+    stdout = "line one\nline two\nline three"
+    result_text, tool_calls, usage = _parse_opencode_output(stdout, "", 0)
+    assert result_text == "line one\nline two\nline three"
+
+
+def test_parse_unknown_event_type_skipped_gracefully():
+    """Unknown event types log and skip without crashing."""
+    lines = "\n".join(
+        [
+            json.dumps({"type": "some_future_event", "data": "value"}),
+            json.dumps({"type": "text", "text": "After unknown"}),
+        ]
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(lines, "", 0)
+    assert result_text == "After unknown"
+    assert tool_calls == []
+
+
+def test_parse_malformed_json_line_skipped():
+    """Malformed JSON lines are skipped without crashing."""
+    lines = "\n".join(
+        [
+            "{invalid json",
+            json.dumps({"type": "text", "text": "Valid line"}),
+        ]
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(lines, "", 0)
+    assert result_text == "Valid line"
+
+
+# ---------------------------------------------------------------------------
+# _parse_opencode_output — tool call extraction
+# ---------------------------------------------------------------------------
+
+
+def test_parse_tool_use_event():
+    """Standard tool_use event is normalized to {id, name, input}."""
+    line = json.dumps(
+        {
+            "type": "tool_use",
+            "id": "tu_abc",
+            "name": "state_set",
+            "input": {"key": "x", "value": 42},
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert len(tool_calls) == 1
+    assert tool_calls[0] == {
+        "id": "tu_abc",
+        "name": "state_set",
+        "input": {"key": "x", "value": 42},
+    }
+    assert result_text is None
+
+
+def test_parse_tool_call_event():
+    """tool_call event (alternative shape) is normalized."""
+    line = json.dumps(
+        {
+            "type": "tool_call",
+            "id": "tc_1",
+            "name": "notify",
+            "input": {"message": "hello"},
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "notify"
+    assert tool_calls[0]["id"] == "tc_1"
+
+
+def test_parse_function_call_event():
+    """function_call event with nested function container is normalized."""
+    line = json.dumps(
+        {
+            "type": "function_call",
+            "id": "fc_1",
+            "function": {
+                "name": "route_to_butler",
+                "arguments": {"butler": "general", "prompt": "Do something"},
+            },
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "fc_1"
+    assert tool_calls[0]["name"] == "route_to_butler"
+    assert tool_calls[0]["input"] == {"butler": "general", "prompt": "Do something"}
+
+
+def test_parse_mcp_tool_call_event_with_nested_call():
+    """mcp_tool_call event with nested call container is normalized."""
+    line = json.dumps(
+        {
+            "type": "mcp_tool_call",
+            "id": "mcp_1",
+            "call": {
+                "name": "schedule_task",
+                "arguments": {"cron": "0 9 * * *", "task": "morning_digest"},
+            },
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "mcp_1"
+    assert tool_calls[0]["name"] == "schedule_task"
+    assert tool_calls[0]["input"] == {"cron": "0 9 * * *", "task": "morning_digest"}
+
+
+def test_parse_multiple_tool_calls():
+    """Multiple tool call events are all collected."""
+    lines = "\n".join(
+        [
+            json.dumps({"type": "tool_use", "id": "t1", "name": "tool_a", "input": {"a": 1}}),
+            json.dumps({"type": "tool_use", "id": "t2", "name": "tool_b", "input": {"b": 2}}),
+            json.dumps({"type": "text", "text": "Done"}),
+        ]
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(lines, "", 0)
+    assert len(tool_calls) == 2
+    assert tool_calls[0]["name"] == "tool_a"
+    assert tool_calls[1]["name"] == "tool_b"
+    assert result_text == "Done"
+
+
+def test_parse_item_completed_with_tool_call():
+    """item.completed with nested tool call item is extracted."""
+    line = json.dumps(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "tool_use",
+                "id": "nested_t1",
+                "name": "send_notification",
+                "input": {"to": "user", "msg": "hi"},
+            },
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "nested_t1"
+    assert tool_calls[0]["name"] == "send_notification"
+
+
+def test_parse_response_output_item_done_with_function_call():
+    """response.output_item.done with function_call item is extracted."""
+    line = json.dumps(
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "id": "fc_nested",
+                "function": {
+                    "name": "route_to_butler",
+                    "arguments": {"butler": "health", "prompt": "Log meal"},
+                },
+            },
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "route_to_butler"
+    assert tool_calls[0]["input"] == {"butler": "health", "prompt": "Log meal"}
+
+
+# ---------------------------------------------------------------------------
+# _parse_opencode_output — token usage extraction
+# ---------------------------------------------------------------------------
+
+
+def test_parse_usage_event():
+    """Standalone usage event extracts input_tokens and output_tokens."""
+    line = json.dumps({"type": "usage", "input_tokens": 100, "output_tokens": 50})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert usage == {"input_tokens": 100, "output_tokens": 50}
+    assert result_text is None
+    assert tool_calls == []
+
+
+def test_parse_turn_completed_with_usage():
+    """turn.completed event extracts usage from top-level."""
+    line = json.dumps(
+        {"type": "turn.completed", "usage": {"input_tokens": 200, "output_tokens": 80}}
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert usage == {"input_tokens": 200, "output_tokens": 80}
+
+
+def test_parse_response_completed_with_nested_usage():
+    """response.completed with response.usage is extracted."""
+    line = json.dumps(
+        {
+            "type": "response.completed",
+            "response": {"usage": {"input_tokens": 300, "output_tokens": 120}},
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert usage == {"input_tokens": 300, "output_tokens": 120}
+
+
+def test_parse_usage_openai_token_format():
+    """prompt_tokens/completion_tokens (OpenAI format) are accepted."""
+    line = json.dumps({"type": "usage", "prompt_tokens": 150, "completion_tokens": 60})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert usage == {"input_tokens": 150, "output_tokens": 60}
+
+
+def test_parse_no_usage_returns_none():
+    """When no usage events appear, usage is None."""
+    line = json.dumps({"type": "text", "text": "hello"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert usage is None
+
+
+def test_parse_usage_non_int_tokens_none():
+    """Non-integer token counts are stored as None."""
+    line = json.dumps({"type": "usage", "input_tokens": "many", "output_tokens": None})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert usage == {"input_tokens": None, "output_tokens": None}
+
+
+# ---------------------------------------------------------------------------
+# _parse_opencode_output — non-zero exit code
+# ---------------------------------------------------------------------------
+
+
+def test_parse_nonzero_exit_returns_error_from_stderr():
+    """Non-zero exit code returns error detail from stderr."""
+    result_text, tool_calls, usage = _parse_opencode_output("", "rate limit exceeded", 1)
+    assert result_text == "Error: rate limit exceeded"
+    assert tool_calls == []
+    assert usage is None
+
+
+def test_parse_nonzero_exit_falls_back_to_stdout():
+    """Non-zero exit uses stdout when stderr is empty."""
+    result_text, tool_calls, usage = _parse_opencode_output("some stdout error", "", 2)
+    assert result_text == "Error: some stdout error"
+
+
+def test_parse_nonzero_exit_generic_message():
+    """Non-zero exit with no output returns generic exit code message."""
+    result_text, tool_calls, usage = _parse_opencode_output("", "", 127)
+    assert result_text == "Error: exit code 127"
+
+
+# ---------------------------------------------------------------------------
+# _parse_opencode_output — combined scenarios
+# ---------------------------------------------------------------------------
+
+
+def test_parse_full_conversation_flow():
+    """Full event stream with text, tool calls, and usage is parsed correctly."""
+    lines = "\n".join(
+        [
+            json.dumps({"type": "text", "text": "I'll help you with that."}),
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "id": "tu_1",
+                    "name": "state_get",
+                    "input": {"key": "user_pref"},
+                }
+            ),
+            json.dumps({"type": "text", "text": "Task complete."}),
+            json.dumps(
+                {"type": "turn.completed", "usage": {"input_tokens": 512, "output_tokens": 256}}
+            ),
+        ]
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(lines, "", 0)
+    assert result_text == "I'll help you with that.\nTask complete."
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "state_get"
+    assert usage == {"input_tokens": 512, "output_tokens": 256}
+
+
+# ---------------------------------------------------------------------------
+# _extract_opencode_tool_call — unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_extract_tool_call_standard_tool_use():
+    """Standard tool_use format with id, name, input is normalized."""
+    tc = _extract_opencode_tool_call(
+        {"id": "t1", "name": "schedule_task", "input": {"cron": "0 9 * * *"}}
+    )
+    assert tc == {"id": "t1", "name": "schedule_task", "input": {"cron": "0 9 * * *"}}
+
+
+def test_extract_tool_call_function_container():
+    """function container with arguments is normalized."""
+    tc = _extract_opencode_tool_call(
+        {
+            "id": "fc1",
+            "function": {"name": "my_tool", "arguments": {"x": 1}},
+        }
+    )
+    assert tc["id"] == "fc1"
+    assert tc["name"] == "my_tool"
+    assert tc["input"] == {"x": 1}
+
+
+def test_extract_tool_call_call_container():
+    """call container (MCP style) with arguments is normalized."""
+    tc = _extract_opencode_tool_call(
+        {
+            "id": "mcp_1",
+            "call": {"name": "route_to_butler", "arguments": {"butler": "general"}},
+        }
+    )
+    assert tc["id"] == "mcp_1"
+    assert tc["name"] == "route_to_butler"
+    assert tc["input"] == {"butler": "general"}
+
+
+def test_extract_tool_call_nested_call_id():
+    """call_id at top level is used as tool id when 'id' is absent."""
+    tc = _extract_opencode_tool_call(
+        {
+            "type": "mcp_tool_call",
+            "call_id": "call_xyz",
+            "call": {"name": "do_thing", "arguments": {}},
+        }
+    )
+    assert tc["id"] == "call_xyz"
+    assert tc["name"] == "do_thing"
+
+
+def test_extract_tool_call_args_field():
+    """args field (not input or arguments) is used as input."""
+    tc = _extract_opencode_tool_call({"id": "t2", "name": "my_fn", "args": {"a": "b"}})
+    assert tc["input"] == {"a": "b"}
+
+
+def test_extract_tool_call_stringified_json_arguments():
+    """Stringified JSON arguments are parsed into dict."""
+    tc = _extract_opencode_tool_call(
+        {
+            "id": "t3",
+            "name": "route_to_butler",
+            "arguments": '{"butler":"health","prompt":"Track meal"}',
+        }
+    )
+    assert tc["input"] == {"butler": "health", "prompt": "Track meal"}
+
+
+def test_extract_tool_call_non_json_string_arguments_preserved():
+    """Non-JSON string arguments are kept as-is (not parsed)."""
+    tc = _extract_opencode_tool_call({"id": "t4", "name": "cmd", "arguments": "not json"})
+    assert tc["input"] == "not json"
+
+
+def test_extract_tool_call_missing_id_defaults_empty():
+    """Missing id defaults to empty string."""
+    tc = _extract_opencode_tool_call({"name": "some_tool", "input": {}})
+    assert tc["id"] == ""
+
+
+def test_extract_tool_call_missing_name_defaults_empty():
+    """Missing name defaults to empty string."""
+    tc = _extract_opencode_tool_call({"id": "t5", "input": {"k": "v"}})
+    assert tc["name"] == ""
+
+
+def test_extract_tool_call_no_input_defaults_empty_dict():
+    """Missing input/args/arguments defaults to empty dict."""
+    tc = _extract_opencode_tool_call({"id": "t6", "name": "empty_tool"})
+    assert tc["input"] == {}
+
+
+def test_extract_tool_call_tool_container():
+    """tool container with arguments is normalized."""
+    tc = _extract_opencode_tool_call(
+        {
+            "id": "t7",
+            "tool": {"name": "another_tool", "arguments": {"key": "val"}},
+        }
+    )
+    assert tc["name"] == "another_tool"
+    assert tc["input"] == {"key": "val"}
+
+
+# ---------------------------------------------------------------------------
+# _looks_like_tool_call_event — unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_looks_like_tool_call_known_type():
+    """Known tool call type strings are detected."""
+    for type_str in (
+        "tool_use",
+        "tool_call",
+        "function_call",
+        "mcp_tool_call",
+        "mcp_tool_use",
+        "custom_tool_call",
+        "command_execution",
+    ):
+        assert _looks_like_tool_call_event({"type": type_str}) is True
+
+
+def test_looks_like_tool_call_name_and_input():
+    """Object with name + input is detected heuristically."""
+    assert _looks_like_tool_call_event({"name": "my_tool", "input": {"a": 1}}) is True
+
+
+def test_looks_like_tool_call_name_and_arguments():
+    """Object with name + arguments is detected heuristically."""
+    assert _looks_like_tool_call_event({"name": "my_tool", "arguments": {"a": 1}}) is True
+
+
+def test_looks_like_tool_call_false_for_text_event():
+    """Text events are not detected as tool calls."""
+    assert _looks_like_tool_call_event({"type": "text", "text": "hello"}) is False
+
+
+def test_looks_like_tool_call_false_for_empty_name():
+    """Object with empty name string is not detected as tool call."""
+    assert _looks_like_tool_call_event({"name": "", "input": {"a": 1}}) is False
+
+
+def test_looks_like_tool_call_nested_function_container():
+    """Nested function container with name + arguments is detected."""
+    obj = {"function": {"name": "my_fn", "arguments": {"x": 1}}}
+    assert _looks_like_tool_call_event(obj) is True
+
+
+# ---------------------------------------------------------------------------
+# _extract_usage — unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_extract_usage_from_direct_fields():
+    """input_tokens/output_tokens extracted from direct fields."""
+    result = _extract_usage({"input_tokens": 100, "output_tokens": 50})
+    assert result == {"input_tokens": 100, "output_tokens": 50}
+
+
+def test_extract_usage_from_nested_usage_key():
+    """usage sub-key is checked when direct fields are absent."""
+    result = _extract_usage({"usage": {"input_tokens": 200, "output_tokens": 80}})
+    assert result == {"input_tokens": 200, "output_tokens": 80}
+
+
+def test_extract_usage_openai_format():
+    """prompt_tokens/completion_tokens (OpenAI format) are mapped."""
+    result = _extract_usage({"prompt_tokens": 150, "completion_tokens": 60})
+    assert result == {"input_tokens": 150, "output_tokens": 60}
+
+
+def test_extract_usage_returns_none_when_no_usage_fields():
+    """None returned when no recognizable usage fields exist."""
+    result = _extract_usage({"type": "text", "text": "hello"})
+    assert result is None
+
+
+def test_extract_usage_returns_none_for_non_dict():
+    """None returned for non-dict input."""
+    assert _extract_usage(None) is None  # type: ignore[arg-type]
+    assert _extract_usage("string") is None  # type: ignore[arg-type]
+
+
+def test_extract_usage_non_int_stored_as_none():
+    """Non-integer token counts are stored as None."""
+    result = _extract_usage({"input_tokens": "lots", "output_tokens": None})
+    assert result == {"input_tokens": None, "output_tokens": None}
+
