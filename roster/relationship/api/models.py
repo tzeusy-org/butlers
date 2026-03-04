@@ -252,3 +252,72 @@ class ContactsSyncTriggerResponse(BaseModel):
     deleted: int | None = None
     summary: dict[str, Any] = Field(default_factory=dict)
     message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Unlinked contacts / entity disambiguation
+# ---------------------------------------------------------------------------
+
+
+class EntitySuggestion(BaseModel):
+    """A candidate entity that might match an unlinked contact."""
+
+    entity_id: UUID
+    canonical_name: str
+    entity_type: str
+    score: float
+    name_match: str
+    aliases: list[str] = Field(default_factory=list)
+
+
+class UnlinkedContactSummary(BaseModel):
+    """Compact view of a contact that has no entity_id linked."""
+
+    id: UUID
+    full_name: str
+    first_name: str | None = None
+    last_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    company: str | None = None
+    suggestions: list[EntitySuggestion] = Field(default_factory=list)
+
+
+class UnlinkedContactsResponse(BaseModel):
+    """Paginated list of unlinked contacts with pre-computed suggestions."""
+
+    contacts: list[UnlinkedContactSummary]
+    total: int
+
+
+class LinkEntityRequest(BaseModel):
+    """Request body for POST /contacts/{id}/link-entity."""
+
+    entity_id: UUID
+
+
+class LinkEntityResponse(BaseModel):
+    """Response for POST /contacts/{id}/link-entity."""
+
+    contact_id: UUID
+    entity_id: UUID
+
+
+class CreateAndLinkEntityRequest(BaseModel):
+    """Request body for POST /contacts/{id}/create-entity.
+
+    All fields are optional — defaults are inferred from the contact record.
+    """
+
+    canonical_name: str | None = None
+    entity_type: str = "person"
+    aliases: list[str] | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class CreateAndLinkEntityResponse(BaseModel):
+    """Response for POST /contacts/{id}/create-entity."""
+
+    contact_id: UUID
+    entity_id: UUID
+    canonical_name: str

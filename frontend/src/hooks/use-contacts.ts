@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import {
   confirmContact,
+  createAndLinkEntity,
   createContactInfo,
   deleteContact,
   deleteContactInfo,
@@ -17,17 +18,29 @@ import {
   getContactLoans,
   getContactNotes,
   getContacts,
+  getEntitySuggestions,
   getGroups,
   getLabels,
   getOwnerSetupStatus,
   getPendingContacts,
+  getUnlinkedContacts,
+  linkEntity,
   mergeContact,
   patchContact,
   patchContactInfo,
   revealContactSecret,
   getUpcomingDates,
 } from "@/api/index.ts";
-import type { ContactMergeRequest, ContactPatchRequest, CreateContactInfoRequest, PatchContactInfoRequest, ContactParams, GroupParams } from "@/api/index.ts";
+import type {
+  ContactMergeRequest,
+  ContactPatchRequest,
+  CreateAndLinkEntityRequest,
+  CreateContactInfoRequest,
+  LinkEntityRequest,
+  PatchContactInfoRequest,
+  ContactParams,
+  GroupParams,
+} from "@/api/index.ts";
 
 /** Fetch a paginated list of contacts. */
 export function useContacts(params?: ContactParams) {
@@ -245,6 +258,66 @@ export function usePatchContactInfo() {
     onSuccess: (_, { contactId }) => {
       void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Unlinked contacts / entity disambiguation
+// ---------------------------------------------------------------------------
+
+/** Fetch paginated unlinked contacts with entity suggestions. */
+export function useUnlinkedContacts(params?: { offset?: number; limit?: number }) {
+  return useQuery({
+    queryKey: ["unlinked-contacts", params],
+    queryFn: () => getUnlinkedContacts(params),
+  });
+}
+
+/** Fetch on-demand entity suggestions for a contact. */
+export function useEntitySuggestions(contactId: string | undefined, q?: string) {
+  return useQuery({
+    queryKey: ["entity-suggestions", contactId, q],
+    queryFn: () => getEntitySuggestions(contactId!, q),
+    enabled: !!contactId,
+  });
+}
+
+/** Link an existing entity to a contact. */
+export function useLinkEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contactId, request }: { contactId: string; request: LinkEntityRequest }) =>
+      linkEntity(contactId, request),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["unlinked-contacts"] });
+      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      toast.success("Entity linked successfully");
+    },
+    onError: (err) => {
+      toast.error(`Link failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    },
+  });
+}
+
+/** Create a new entity from contact data and link it. */
+export function useCreateAndLinkEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      contactId,
+      request,
+    }: {
+      contactId: string;
+      request: CreateAndLinkEntityRequest;
+    }) => createAndLinkEntity(contactId, request),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["unlinked-contacts"] });
+      void queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      toast.success("Entity created and linked");
+    },
+    onError: (err) => {
+      toast.error(`Create failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     },
   });
 }

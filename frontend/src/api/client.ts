@@ -117,6 +117,12 @@ import type {
   CreateContactInfoResponse,
   PatchContactInfoRequest,
   OwnerSetupStatus,
+  UnlinkedContactsResponse,
+  EntityLinkSuggestion,
+  LinkEntityRequest,
+  LinkEntityResponse,
+  CreateAndLinkEntityRequest,
+  CreateAndLinkEntityResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------
@@ -792,6 +798,53 @@ export function confirmContact(contactId: string): Promise<ContactDetail> {
 /** Get owner identity setup status. */
 export function getOwnerSetupStatus(): Promise<OwnerSetupStatus> {
   return apiFetch<OwnerSetupStatus>("/relationship/owner/setup-status");
+}
+
+/** Fetch paginated unlinked contacts with entity suggestions. */
+export function getUnlinkedContacts(params?: {
+  offset?: number;
+  limit?: number;
+}): Promise<UnlinkedContactsResponse> {
+  const qs = new URLSearchParams();
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return apiFetch<UnlinkedContactsResponse>(
+    `/relationship/contacts/unlinked${suffix}`,
+  );
+}
+
+/** Fetch on-demand entity suggestions for a specific contact. */
+export function getEntitySuggestions(
+  contactId: string,
+  q?: string,
+): Promise<EntityLinkSuggestion[]> {
+  const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+  return apiFetch<EntityLinkSuggestion[]>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/entity-suggestions${qs}`,
+  );
+}
+
+/** Link an existing memory entity to a contact. */
+export function linkEntity(
+  contactId: string,
+  request: LinkEntityRequest,
+): Promise<LinkEntityResponse> {
+  return apiFetch<LinkEntityResponse>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/link-entity`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+/** Create a new memory entity from contact data and link it. */
+export function createAndLinkEntity(
+  contactId: string,
+  request: CreateAndLinkEntityRequest,
+): Promise<CreateAndLinkEntityResponse> {
+  return apiFetch<CreateAndLinkEntityResponse>(
+    `/relationship/contacts/${encodeURIComponent(contactId)}/create-entity`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
 }
 
 /** Add a contact_info entry (email, telegram, etc.) to a contact. */

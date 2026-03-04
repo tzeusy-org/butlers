@@ -5,6 +5,7 @@ import { triggerContactsSync } from "@/api/index.ts";
 import type { ContactParams } from "@/api/types";
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { PendingIdentitiesSection } from "@/components/relationship/PendingIdentitiesSection";
+import { UnlinkedEntitiesSection } from "@/components/relationship/UnlinkedEntitiesSection";
 import ContactTable from "@/components/relationship/ContactTable";
 import { Button } from "@/components/ui/button";
 import {
@@ -110,6 +111,9 @@ export default function ContactsPage() {
 
       {/* Pending identities — shown when temp contacts exist */}
       <PendingIdentitiesSection />
+
+      {/* Unlinked entities — shown when contacts without entity_id exist */}
+      <UnlinkedEntitiesSection />
 
       {/* Contact table */}
       <Card>

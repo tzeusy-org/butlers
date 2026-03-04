@@ -61,6 +61,13 @@ if _models_path.exists():
         CreateContactInfoResponse = _models_module.CreateContactInfoResponse
         PatchContactInfoRequest = _models_module.PatchContactInfoRequest
         OwnerSetupStatus = _models_module.OwnerSetupStatus
+        EntitySuggestion = _models_module.EntitySuggestion
+        UnlinkedContactSummary = _models_module.UnlinkedContactSummary
+        UnlinkedContactsResponse = _models_module.UnlinkedContactsResponse
+        LinkEntityRequest = _models_module.LinkEntityRequest
+        LinkEntityResponse = _models_module.LinkEntityResponse
+        CreateAndLinkEntityRequest = _models_module.CreateAndLinkEntityRequest
+        CreateAndLinkEntityResponse = _models_module.CreateAndLinkEntityResponse
 
 logger = logging.getLogger(__name__)
 
@@ -479,6 +486,367 @@ async def list_pending_contacts(
         )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Helpers: memory pool discovery & entity suggestion scoring
+# ---------------------------------------------------------------------------
+
+
+async def _get_memory_pool(db: DatabaseManager):
+    """Find the first butler pool that has an ``entities`` table.
+
+    Returns the asyncpg Pool or None if no memory-capable butler is available.
+    """
+    for butler_name in db.butler_names:
+        try:
+            candidate_pool = db.pool(butler_name)
+            has_entities = await candidate_pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'entities')"
+            )
+            if has_entities:
+                return candidate_pool
+        except KeyError:
+            continue
+    return None
+
+
+async def _suggest_entities(
+    rel_pool,
+    memory_pool,
+    contact_row: dict,
+    *,
+    search_override: str | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    """Score and rank entity suggestions for an unlinked contact.
+
+    Three scoring layers:
+    1. Name match via entity_resolve (exact=100, alias=80, prefix=50, fuzzy=20)
+    2. Contact info email/phone match against entity aliases/metadata (email=70, phone=50)
+    3. Company/org match via entity_resolve with 0.3x multiplier
+
+    Returns a list of dicts ready for EntitySuggestion construction.
+    """
+    from butlers.modules.memory.tools.entities import entity_resolve
+
+    candidates: dict[str, dict] = {}  # entity_id -> best candidate dict
+
+    def _merge(entity_id: str, candidate: dict):
+        if entity_id in candidates:
+            if candidate["score"] > candidates[entity_id]["score"]:
+                candidates[entity_id] = candidate
+        else:
+            candidates[entity_id] = candidate
+
+    name = search_override or contact_row.get("full_name") or ""
+    if name.strip():
+        results = await entity_resolve(
+            memory_pool,
+            name,
+            tenant_id="shared",
+            entity_type="person",
+            enable_fuzzy=True,
+        )
+        for r in results:
+            _merge(r["entity_id"], r)
+
+    # Layer 2: contact info matching
+    contact_id = contact_row.get("id")
+    if contact_id is not None:
+        info_rows = await rel_pool.fetch(
+            "SELECT type, value FROM shared.contact_info WHERE contact_id = $1",
+            contact_id,
+        )
+        for info in info_rows:
+            ci_type = info["type"]
+            ci_value = info["value"]
+            if not ci_value:
+                continue
+            if ci_type in ("email", "phone"):
+                try:
+                    matches = await entity_resolve(
+                        memory_pool,
+                        ci_value,
+                        tenant_id="shared",
+                        enable_fuzzy=False,
+                    )
+                except Exception:  # noqa: BLE001
+                    matches = []
+                score = 70.0 if ci_type == "email" else 50.0
+                for m in matches:
+                    _merge(
+                        m["entity_id"],
+                        {**m, "score": score},
+                    )
+
+    # Layer 3: company/org match
+    company = contact_row.get("company")
+    if company and company.strip():
+        try:
+            org_results = await entity_resolve(
+                memory_pool,
+                company,
+                tenant_id="shared",
+                entity_type="organization",
+                enable_fuzzy=False,
+            )
+        except Exception:  # noqa: BLE001
+            org_results = []
+        for r in org_results:
+            _merge(
+                r["entity_id"],
+                {**r, "score": r["score"] * 0.3},
+            )
+
+    sorted_candidates = sorted(candidates.values(), key=lambda c: -c["score"])
+    return sorted_candidates[:limit]
+
+
+# ---------------------------------------------------------------------------
+# GET /contacts/unlinked — paginated unlinked contacts with suggestions
+# ---------------------------------------------------------------------------
+
+
+@router.get("/contacts/unlinked", response_model=UnlinkedContactsResponse)
+async def list_unlinked_contacts(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> UnlinkedContactsResponse:
+    """Return contacts that have no entity_id, excluding pending/archived ones."""
+    pool = _pool(db)
+
+    total = (
+        await pool.fetchval(
+            """
+        SELECT count(*)
+        FROM contacts
+        WHERE entity_id IS NULL
+          AND archived_at IS NULL
+          AND (metadata->>'needs_disambiguation')::boolean IS NOT TRUE
+        """,
+        )
+        or 0
+    )
+
+    rows = await pool.fetch(
+        """
+        SELECT c.id, c.full_name, c.first_name, c.last_name, c.company,
+               (SELECT ci.value FROM shared.contact_info ci
+                WHERE ci.contact_id = c.id AND ci.type = 'email'
+                  AND ci.is_primary = true LIMIT 1) AS email,
+               (SELECT ci.value FROM shared.contact_info ci
+                WHERE ci.contact_id = c.id AND ci.type = 'phone'
+                  AND ci.is_primary = true LIMIT 1) AS phone
+        FROM contacts c
+        WHERE c.entity_id IS NULL
+          AND c.archived_at IS NULL
+          AND (c.metadata->>'needs_disambiguation')::boolean IS NOT TRUE
+        ORDER BY c.full_name
+        OFFSET $1 LIMIT $2
+        """,
+        offset,
+        limit,
+    )
+
+    memory_pool = await _get_memory_pool(db)
+
+    contacts = []
+    for r in rows:
+        suggestions = []
+        if memory_pool is not None:
+            try:
+                raw = await _suggest_entities(pool, memory_pool, dict(r))
+                suggestions = [
+                    EntitySuggestion(
+                        entity_id=s["entity_id"],
+                        canonical_name=s["canonical_name"],
+                        entity_type=s["entity_type"],
+                        score=s["score"],
+                        name_match=s.get("name_match", "unknown"),
+                        aliases=s.get("aliases", []),
+                    )
+                    for s in raw
+                ]
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Failed to compute suggestions for contact %s", r["id"], exc_info=True
+                )
+
+        contacts.append(
+            UnlinkedContactSummary(
+                id=r["id"],
+                full_name=r["full_name"],
+                first_name=r["first_name"],
+                last_name=r["last_name"],
+                email=r["email"],
+                phone=r["phone"],
+                company=r["company"],
+                suggestions=suggestions,
+            )
+        )
+
+    return UnlinkedContactsResponse(contacts=contacts, total=total)
+
+
+# ---------------------------------------------------------------------------
+# GET /contacts/{contact_id}/entity-suggestions
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/contacts/{contact_id}/entity-suggestions",
+    response_model=list[EntitySuggestion],
+)
+async def get_entity_suggestions(
+    contact_id: UUID,
+    q: str | None = Query(None, description="Override search term"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> list[EntitySuggestion]:
+    """On-demand entity suggestions for a specific contact, optionally with search override."""
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        "SELECT id, full_name, first_name, last_name, company FROM contacts WHERE id = $1",
+        contact_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    memory_pool = await _get_memory_pool(db)
+    if memory_pool is None:
+        return []
+
+    raw = await _suggest_entities(pool, memory_pool, dict(row), search_override=q)
+    return [
+        EntitySuggestion(
+            entity_id=s["entity_id"],
+            canonical_name=s["canonical_name"],
+            entity_type=s["entity_type"],
+            score=s["score"],
+            name_match=s.get("name_match", "unknown"),
+            aliases=s.get("aliases", []),
+        )
+        for s in raw
+    ]
+
+
+# ---------------------------------------------------------------------------
+# POST /contacts/{contact_id}/link-entity
+# ---------------------------------------------------------------------------
+
+
+@router.post("/contacts/{contact_id}/link-entity", response_model=LinkEntityResponse)
+async def link_entity(
+    contact_id: UUID,
+    request: LinkEntityRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> LinkEntityResponse:
+    """Set entity_id on a contact, linking it to a memory entity."""
+    pool = _pool(db)
+
+    contact = await pool.fetchrow(
+        "SELECT id FROM contacts WHERE id = $1 AND archived_at IS NULL",
+        contact_id,
+    )
+    if contact is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    # Validate entity exists
+    memory_pool = await _get_memory_pool(db)
+    if memory_pool is None:
+        raise HTTPException(status_code=503, detail="Memory module not available")
+
+    from butlers.modules.memory.tools.entities import entity_get
+
+    entity = await entity_get(memory_pool, str(request.entity_id), tenant_id="shared")
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    await pool.execute(
+        "UPDATE contacts SET entity_id = $1, updated_at = now() WHERE id = $2",
+        request.entity_id,
+        contact_id,
+    )
+
+    return LinkEntityResponse(contact_id=contact_id, entity_id=request.entity_id)
+
+
+# ---------------------------------------------------------------------------
+# POST /contacts/{contact_id}/create-entity
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/contacts/{contact_id}/create-entity",
+    response_model=CreateAndLinkEntityResponse,
+    status_code=201,
+)
+async def create_and_link_entity(
+    contact_id: UUID,
+    request: CreateAndLinkEntityRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CreateAndLinkEntityResponse:
+    """Create a new memory entity from contact data and link it."""
+    pool = _pool(db)
+
+    contact = await pool.fetchrow(
+        "SELECT id, full_name, first_name, nickname, company FROM contacts "
+        "WHERE id = $1 AND archived_at IS NULL",
+        contact_id,
+    )
+    if contact is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    memory_pool = await _get_memory_pool(db)
+    if memory_pool is None:
+        raise HTTPException(status_code=503, detail="Memory module not available")
+
+    from butlers.modules.memory.tools.entities import entity_create
+
+    canonical_name = request.canonical_name or contact["full_name"]
+
+    # Auto-generate aliases from first_name and nickname
+    aliases = list(request.aliases) if request.aliases else []
+    if not aliases:
+        if contact["first_name"] and contact["first_name"] != canonical_name:
+            aliases.append(contact["first_name"])
+        if contact["nickname"] and contact["nickname"] not in aliases:
+            aliases.append(contact["nickname"])
+
+    meta = dict(request.metadata) if request.metadata else {}
+    if contact["company"] and "company" not in meta:
+        meta["company"] = contact["company"]
+
+    try:
+        result = await entity_create(
+            memory_pool,
+            canonical_name,
+            request.entity_type,
+            tenant_id="shared",
+            aliases=aliases or None,
+            metadata=meta or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    import uuid as _uuid
+
+    entity_id = _uuid.UUID(result["entity_id"])
+
+    await pool.execute(
+        "UPDATE contacts SET entity_id = $1, updated_at = now() WHERE id = $2",
+        entity_id,
+        contact_id,
+    )
+
+    return CreateAndLinkEntityResponse(
+        contact_id=contact_id,
+        entity_id=entity_id,
+        canonical_name=canonical_name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -948,20 +1316,7 @@ async def merge_contact(
         try:
             from butlers.modules.memory.tools.entities import entity_merge
 
-            # Find a memory pool that has the entities table
-            memory_pool = None
-            for butler_name in db.butler_names:
-                try:
-                    candidate_pool = db.pool(butler_name)
-                    has_entities = await candidate_pool.fetchval(
-                        "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-                        "WHERE table_name = 'entities')"
-                    )
-                    if has_entities:
-                        memory_pool = candidate_pool
-                        break
-                except KeyError:
-                    continue
+            memory_pool = await _get_memory_pool(db)
 
             if memory_pool is not None:
                 await entity_merge(

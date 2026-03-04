@@ -862,6 +862,64 @@ export interface ContactListResponse {
   total: number;
 }
 
+// ---------------------------------------------------------------------------
+// Unlinked contacts / entity disambiguation
+// ---------------------------------------------------------------------------
+
+/** A candidate entity that might match an unlinked contact. */
+export interface EntityLinkSuggestion {
+  entity_id: string;
+  canonical_name: string;
+  entity_type: string;
+  score: number;
+  name_match: string;
+  aliases: string[];
+}
+
+/** Compact view of a contact that has no entity_id linked. */
+export interface UnlinkedContactSummary {
+  id: string;
+  full_name: string;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+  phone: string | null;
+  company: string | null;
+  suggestions: EntityLinkSuggestion[];
+}
+
+/** Paginated list of unlinked contacts with pre-computed suggestions. */
+export interface UnlinkedContactsResponse {
+  contacts: UnlinkedContactSummary[];
+  total: number;
+}
+
+/** Request body for POST /contacts/{id}/link-entity. */
+export interface LinkEntityRequest {
+  entity_id: string;
+}
+
+/** Response for POST /contacts/{id}/link-entity. */
+export interface LinkEntityResponse {
+  contact_id: string;
+  entity_id: string;
+}
+
+/** Request body for POST /contacts/{id}/create-entity. */
+export interface CreateAndLinkEntityRequest {
+  canonical_name?: string;
+  entity_type?: string;
+  aliases?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+/** Response for POST /contacts/{id}/create-entity. */
+export interface CreateAndLinkEntityResponse {
+  contact_id: string;
+  entity_id: string;
+  canonical_name: string;
+}
+
 /** Response payload for a manual contacts sync trigger. */
 export interface ContactsSyncTriggerResponse {
   provider: string;
