@@ -19,8 +19,11 @@ FileNotFoundError.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +34,28 @@ logger = logging.getLogger(__name__)
 # Default timeout for OpenCode CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
 
+
+def _find_opencode_binary() -> str:
+    """Locate the opencode binary on PATH.
+
+    Returns
+    -------
+    str
+        Absolute path to the opencode binary.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the opencode binary is not found on PATH.
+    """
+    path = shutil.which("opencode")
+    if path is None:
+        raise FileNotFoundError(
+            "OpenCode CLI binary not found on PATH. "
+            "Install it with: npm install -g opencode-ai "
+            "or see https://opencode.ai/docs"
+        )
+    return path
 
 
 def _parse_opencode_output(
@@ -420,6 +445,7 @@ def _extract_opencode_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
         "input": input_payload,
     }
 
+
 def parse_system_prompt_file(config_dir: Path) -> str:
     """Read system prompt from the butler's config directory.
 
@@ -449,6 +475,7 @@ def parse_system_prompt_file(config_dir: Path) -> str:
 def build_config_file(
     mcp_servers: dict[str, Any],
     tmp_dir: Path,
+    instructions_path: Path | None = None,
 ) -> Path:
     """Write MCP config in OpenCode-compatible JSONC format.
 
@@ -463,6 +490,9 @@ def build_config_file(
         Dict mapping server name to config (must include 'url' key).
     tmp_dir:
         Temporary directory to write the config file into.
+    instructions_path:
+        Optional path to a system prompt file to include in the
+        ``instructions`` array. The absolute path string is used directly.
 
     Returns
     -------
@@ -496,6 +526,9 @@ def build_config_file(
         "permission": {},
     }
 
+    if instructions_path is not None:
+        config["instructions"] = [str(instructions_path)]
+
     config_path = tmp_dir / "opencode.jsonc"
     config_path.write_text(json.dumps(config, indent=2))
     return config_path
@@ -528,6 +561,12 @@ class OpenCodeAdapter(RuntimeAdapter):
     @property
     def binary_name(self) -> str:
         return "opencode"
+
+    def _get_binary(self) -> str:
+        """Get the opencode binary path, auto-detecting if needed."""
+        if self._opencode_binary is not None:
+            return self._opencode_binary
+        return _find_opencode_binary()
 
     def parse_system_prompt_file(self, config_dir: Path) -> str:
         """Read system prompt from the butler's config directory.
@@ -587,9 +626,10 @@ class OpenCodeAdapter(RuntimeAdapter):
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Invoke the OpenCode CLI with the given prompt and configuration.
 
-        NOTE: This is a stub implementation. The full invoke() logic
-        (subprocess launch, temp config, output parsing) is implemented
-        in a separate task (butlers-n3fr.2).
+        Builds the command line for ``opencode run --format json``, writes a
+        temporary JSONC config with MCP servers and system prompt instructions,
+        passes the config path via ``OPENCODE_CONFIG`` env var, and parses the
+        JSON-line output events.
 
         Parameters
         ----------
@@ -602,11 +642,12 @@ class OpenCodeAdapter(RuntimeAdapter):
         env:
             Environment variables for the subprocess.
         max_turns:
-            Maximum number of turns (not used by OpenCode CLI).
+            Maximum number of turns (not used by OpenCode CLI directly).
         model:
-            Model to use in provider/model format (e.g. anthropic/claude-sonnet-4-5).
+            Model to use in provider/model format
+            (e.g. ``anthropic/claude-sonnet-4-5``).
         runtime_args:
-            Optional additional CLI arguments.
+            Optional additional CLI arguments appended before the prompt.
         cwd:
             Working directory for the OpenCode process.
         timeout:
@@ -619,13 +660,95 @@ class OpenCodeAdapter(RuntimeAdapter):
 
         Raises
         ------
-        NotImplementedError
-            Full invoke() implementation is a separate task.
+        FileNotFoundError
+            If the opencode binary is not found on PATH.
+        TimeoutError
+            If the OpenCode process exceeds the timeout.
+        RuntimeError
+            If the OpenCode process exits with a non-zero exit code.
         """
-        raise NotImplementedError(
-            "OpenCodeAdapter.invoke() is not yet implemented. "
-            "This is a stub — the full implementation is in butlers-n3fr.2."
-        )
+        binary = self._get_binary()
+        effective_timeout = timeout or _DEFAULT_TIMEOUT_SECONDS
+
+        with tempfile.TemporaryDirectory() as tmp_dir_str:
+            tmp_dir = Path(tmp_dir_str)
+
+            # Write system prompt to a temp file if provided, then reference it
+            # in the config's instructions array
+            instructions_path: Path | None = None
+            if system_prompt:
+                instructions_path = tmp_dir / "_system_prompt.md"
+                instructions_path.write_text(system_prompt)
+
+            # Build OpenCode JSONC config with MCP servers and instructions
+            config_path = build_config_file(
+                mcp_servers=mcp_servers,
+                tmp_dir=tmp_dir,
+                instructions_path=instructions_path,
+            )
+
+            # Build command: opencode run --format json [--model <model>] [runtime_args] <prompt>
+            cmd = [
+                binary,
+                "run",
+                "--format",
+                "json",
+            ]
+
+            if isinstance(model, str) and model.strip():
+                cmd.extend(["--model", model.strip()])
+
+            if runtime_args:
+                cmd.extend(runtime_args)
+
+            cmd.append(prompt)
+
+            # Inject OPENCODE_CONFIG into subprocess env
+            subprocess_env = dict(env) if env else {}
+            subprocess_env["OPENCODE_CONFIG"] = str(config_path)
+
+            logger.debug("Invoking OpenCode CLI: %s", " ".join(cmd[:4]) + " ...")
+
+            proc: asyncio.subprocess.Process | None = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=subprocess_env,
+                    cwd=str(cwd) if cwd else None,
+                )
+
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=effective_timeout,
+                )
+
+                stdout = stdout_bytes.decode("utf-8", errors="replace")
+                stderr = stderr_bytes.decode("utf-8", errors="replace")
+
+                if stderr:
+                    logger.debug("OpenCode stderr: %s", stderr[:500])
+
+                returncode = proc.returncode if proc.returncode is not None else 0
+                if returncode != 0:
+                    error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                    logger.error("OpenCode CLI exited with code %d: %s", returncode, error_detail)
+                    raise RuntimeError(
+                        f"OpenCode CLI exited with code {returncode}: {error_detail}"
+                    )
+
+                result_text, tool_calls, usage = _parse_opencode_output(stdout, stderr, returncode)
+                return result_text, tool_calls, usage
+
+            except TimeoutError:
+                logger.error("OpenCode CLI timed out after %ds", effective_timeout)
+                if proc is not None:
+                    proc.kill()
+                    await proc.wait()
+                raise TimeoutError(
+                    f"OpenCode CLI timed out after {effective_timeout} seconds"
+                ) from None
 
 
 # Register the OpenCode adapter
