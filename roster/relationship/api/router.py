@@ -633,7 +633,7 @@ async def list_unlinked_contacts(
 
     rows = await pool.fetch(
         """
-        SELECT c.id, c.full_name, c.first_name, c.last_name, c.company,
+        SELECT c.id, c.name AS full_name, c.first_name, c.last_name, c.company,
                (SELECT ci.value FROM shared.contact_info ci
                 WHERE ci.contact_id = c.id AND ci.type = 'email'
                   AND ci.is_primary = true LIMIT 1) AS email,
@@ -644,7 +644,7 @@ async def list_unlinked_contacts(
         WHERE c.entity_id IS NULL
           AND c.archived_at IS NULL
           AND (c.metadata->>'needs_disambiguation')::boolean IS NOT TRUE
-        ORDER BY c.full_name
+        ORDER BY c.name
         OFFSET $1 LIMIT $2
         """,
         offset,
@@ -709,7 +709,7 @@ async def get_entity_suggestions(
     pool = _pool(db)
 
     row = await pool.fetchrow(
-        "SELECT id, full_name, first_name, last_name, company FROM contacts WHERE id = $1",
+        "SELECT id, name AS full_name, first_name, last_name, company FROM contacts WHERE id = $1",
         contact_id,
     )
     if row is None:
@@ -793,7 +793,7 @@ async def create_and_link_entity(
     pool = _pool(db)
 
     contact = await pool.fetchrow(
-        "SELECT id, full_name, first_name, nickname, company FROM contacts "
+        "SELECT id, name AS full_name, first_name, nickname, company FROM contacts "
         "WHERE id = $1 AND archived_at IS NULL",
         contact_id,
     )
