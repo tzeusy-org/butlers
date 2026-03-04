@@ -43,12 +43,19 @@ branch_labels = None
 depends_on = None
 
 # All butler roles that need access to shared.entities.
+# NOTE: education, finance, home, and travel were added after this migration was written.
+# core_015 grants those roles the same privileges on shared.entities.
 _ALL_BUTLER_ROLES = (
     "butler_switchboard_rw",
     "butler_general_rw",
     "butler_health_rw",
     "butler_relationship_rw",
     "butler_messenger_rw",
+    # Added in core_015 (missing from initial implementation):
+    # "butler_education_rw",
+    # "butler_finance_rw",
+    # "butler_home_rw",
+    # "butler_travel_rw",
 )
 
 _ENTITIES_TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE"
