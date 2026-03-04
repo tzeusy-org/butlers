@@ -66,10 +66,10 @@ export default function ContactsPage() {
       const result = await triggerContactsSync("incremental");
       await refetch();
       const stats = [
-        result.created != null ? `${result.created} created` : null,
-        result.updated != null ? `${result.updated} updated` : null,
+        result.fetched != null ? `${result.fetched} fetched` : null,
+        result.applied != null ? `${result.applied} applied` : null,
         result.skipped != null ? `${result.skipped} skipped` : null,
-        result.errors != null ? `${result.errors} errors` : null,
+        result.deleted != null ? `${result.deleted} deleted` : null,
       ]
         .filter(Boolean)
         .join(", ");

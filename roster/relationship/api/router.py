@@ -363,10 +363,10 @@ async def trigger_contacts_sync(
         raise HTTPException(status_code=502, detail=f"Contacts sync failed: {detail}")
 
     summary = _extract_sync_summary(payload)
-    created = _coerce_count(summary.get("created")) if isinstance(summary, dict) else None
-    updated = _coerce_count(summary.get("updated")) if isinstance(summary, dict) else None
+    fetched = _coerce_count(summary.get("fetched")) if isinstance(summary, dict) else None
+    applied = _coerce_count(summary.get("applied")) if isinstance(summary, dict) else None
     skipped = _coerce_count(summary.get("skipped")) if isinstance(summary, dict) else None
-    errors = _coerce_count(summary.get("errors")) if isinstance(summary, dict) else None
+    deleted = _coerce_count(summary.get("deleted")) if isinstance(summary, dict) else None
     message = summary.get("message") if isinstance(summary, dict) else None
     if not isinstance(message, str):
         message = None
@@ -374,10 +374,10 @@ async def trigger_contacts_sync(
     return ContactsSyncTriggerResponse(
         provider="google",
         mode=mode,
-        created=created,
-        updated=updated,
+        fetched=fetched,
+        applied=applied,
         skipped=skipped,
-        errors=errors,
+        deleted=deleted,
         summary=summary if isinstance(summary, dict) else {},
         message=message,
     )

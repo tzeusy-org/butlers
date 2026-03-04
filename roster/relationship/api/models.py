@@ -246,9 +246,9 @@ class ContactsSyncTriggerResponse(BaseModel):
 
     provider: str = "google"
     mode: str
-    created: int | None = None
-    updated: int | None = None
+    fetched: int | None = None
+    applied: int | None = None
     skipped: int | None = None
-    errors: int | None = None
+    deleted: int | None = None
     summary: dict[str, Any] = Field(default_factory=dict)
     message: str | None = None

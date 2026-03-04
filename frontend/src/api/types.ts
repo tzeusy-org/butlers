@@ -852,10 +852,10 @@ export interface ContactListResponse {
 export interface ContactsSyncTriggerResponse {
   provider: string;
   mode: "incremental" | "full";
-  created: number | null;
-  updated: number | null;
+  fetched: number | null;
+  applied: number | null;
   skipped: number | null;
-  errors: number | null;
+  deleted: number | null;
   summary: Record<string, unknown>;
   message: string | null;
 }
