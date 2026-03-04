@@ -1424,3 +1424,215 @@ async def test_invoke_uses_run_subcommand():
     cmd = mock_sub.call_args[0]
     assert cmd[0] == "/usr/bin/opencode"
     assert cmd[1] == "run"
+
+
+# ---------------------------------------------------------------------------
+# Gap coverage: unknown event type text/content harvesting
+# ---------------------------------------------------------------------------
+
+
+def test_parse_unknown_event_type_with_text_field_harvested():
+    """Unknown event type with a 'text' field has its text harvested."""
+    line = json.dumps({"type": "some_future_event", "text": "Harvested text"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Harvested text"
+    assert tool_calls == []
+
+
+def test_parse_unknown_event_type_with_content_field_harvested():
+    """Unknown event type with a 'content' string field has its content harvested."""
+    line = json.dumps({"type": "exotic_event", "content": "Content from unknown event"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Content from unknown event"
+    assert tool_calls == []
+
+
+def test_parse_unknown_event_type_text_takes_priority_over_content():
+    """For unknown event types, 'text' field takes priority over 'content'."""
+    line = json.dumps({"type": "dual_field_event", "text": "From text", "content": "From content"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "From text"
+
+
+# ---------------------------------------------------------------------------
+# Gap coverage: item.started and response.output_item.added event types
+# ---------------------------------------------------------------------------
+
+
+def test_parse_item_started_with_agent_message():
+    """item.started event with agent_message item type extracts text."""
+    line = json.dumps(
+        {
+            "type": "item.started",
+            "item": {"type": "agent_message", "text": "Starting agent message"},
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Starting agent message"
+    assert tool_calls == []
+
+
+def test_parse_response_output_item_added_with_text():
+    """response.output_item.added event with text item type extracts content."""
+    line = json.dumps(
+        {
+            "type": "response.output_item.added",
+            "item": {"type": "text", "content": "Added item text"},
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text == "Added item text"
+
+
+def test_parse_item_started_with_tool_call():
+    """item.started with a nested tool call item is extracted."""
+    line = json.dumps(
+        {
+            "type": "item.started",
+            "item": {
+                "type": "tool_use",
+                "id": "ts_1",
+                "name": "state_set",
+                "input": {"key": "x", "value": 1},
+            },
+        }
+    )
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["name"] == "state_set"
+    assert tool_calls[0]["id"] == "ts_1"
+
+
+def test_parse_item_started_no_item_key():
+    """item.started with no 'item' key is skipped gracefully."""
+    line = json.dumps({"type": "item.started"})
+    result_text, tool_calls, usage = _parse_opencode_output(line, "", 0)
+    assert result_text is None
+    assert tool_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Gap coverage: _extract_opencode_tool_call — camelCase and extra fields
+# ---------------------------------------------------------------------------
+
+
+def test_extract_tool_call_toolcall_camelcase_container():
+    """toolCall (camelCase) container is normalized."""
+    tc = _extract_opencode_tool_call(
+        {
+            "id": "cc_1",
+            "toolCall": {"name": "camel_tool", "arguments": {"k": "v"}},
+        }
+    )
+    assert tc["id"] == "cc_1"
+    assert tc["name"] == "camel_tool"
+    assert tc["input"] == {"k": "v"}
+
+
+def test_extract_tool_call_tool_call_snake_case_container():
+    """tool_call (snake_case) nested container is normalized."""
+    tc = _extract_opencode_tool_call(
+        {
+            "id": "sc_1",
+            "tool_call": {"name": "snake_tool", "arguments": {"x": 42}},
+        }
+    )
+    assert tc["id"] == "sc_1"
+    assert tc["name"] == "snake_tool"
+    assert tc["input"] == {"x": 42}
+
+
+def test_extract_tool_call_parameters_field():
+    """parameters field (not input/args/arguments) is used as input."""
+    tc = _extract_opencode_tool_call({"id": "p1", "name": "param_tool", "parameters": {"a": 1}})
+    assert tc["input"] == {"a": 1}
+
+
+def test_extract_tool_call_tool_name_field():
+    """tool_name field is used when 'name' is absent."""
+    tc = _extract_opencode_tool_call({"id": "tn_1", "tool_name": "alt_name", "input": {"x": 1}})
+    assert tc["name"] == "alt_name"
+
+
+def test_extract_tool_call_toolname_camelcase_field():
+    """toolName (camelCase) field is used when 'name' and 'tool_name' are absent."""
+    tc = _extract_opencode_tool_call({"id": "tN_1", "toolName": "CamelTool", "input": {}})
+    assert tc["name"] == "CamelTool"
+
+
+def test_extract_tool_call_nested_call_id_from_container():
+    """call_id inside a nested container is used as id when top-level id/call_id absent."""
+    tc = _extract_opencode_tool_call(
+        {
+            "call": {"name": "nested_id_tool", "call_id": "inner_id", "arguments": {}},
+        }
+    )
+    assert tc["id"] == "inner_id"
+    assert tc["name"] == "nested_id_tool"
+
+
+# ---------------------------------------------------------------------------
+# Gap coverage: _looks_like_tool_call_event — camelCase and additional containers
+# ---------------------------------------------------------------------------
+
+
+def test_looks_like_tool_call_toolcall_camelcase_container():
+    """toolCall (camelCase) nested container with name is detected."""
+    obj = {"toolCall": {"name": "my_tool", "arguments": {"x": 1}}}
+    assert _looks_like_tool_call_event(obj) is True
+
+
+def test_looks_like_tool_call_tool_call_snake_container():
+    """tool_call (snake_case) nested container with name is detected."""
+    obj = {"tool_call": {"name": "my_tool", "input": {"x": 1}}}
+    assert _looks_like_tool_call_event(obj) is True
+
+
+def test_looks_like_tool_call_false_for_no_args():
+    """Object with name but no args/input is not detected as tool call."""
+    assert _looks_like_tool_call_event({"name": "lonely_tool"}) is False
+
+
+# ---------------------------------------------------------------------------
+# Gap coverage: invoke() temp directory cleanup on RuntimeError
+# ---------------------------------------------------------------------------
+
+
+async def test_invoke_temp_dir_cleaned_up_after_runtime_error():
+    """invoke() cleans up the temp directory even when subprocess exits non-zero."""
+    import tempfile
+
+    adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+    captured_tmp_dirs: list[str] = []
+    original_temp_dir = tempfile.TemporaryDirectory
+
+    class CapturingTempDir:
+        def __init__(self):
+            self._inner = original_temp_dir()
+            captured_tmp_dirs.append(self._inner.name)
+
+        def __enter__(self):
+            return self._inner.__enter__()
+
+        def __exit__(self, *args):
+            return self._inner.__exit__(*args)
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"some error"))
+    mock_proc.returncode = 1
+
+    with patch(_EXEC, return_value=mock_proc):
+        with patch("butlers.core.runtimes.opencode.tempfile.TemporaryDirectory", CapturingTempDir):
+            with pytest.raises(RuntimeError):
+                await adapter.invoke(
+                    prompt="test",
+                    system_prompt="",
+                    mcp_servers={},
+                    env={},
+                )
+
+    # The temp dir should have been created and then cleaned up
+    assert len(captured_tmp_dirs) == 1
+    from pathlib import Path
+
+    assert not Path(captured_tmp_dirs[0]).exists(), "Temp dir should be cleaned up on failure"
