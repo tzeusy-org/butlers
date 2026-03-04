@@ -27,6 +27,7 @@ import {
   useCalendarWorkspaceMeta,
   useMutateCalendarWorkspaceButlerEvent,
   useMutateCalendarWorkspaceUserEvent,
+  useSetPrimaryCalendar,
   useSyncCalendarWorkspace,
 } from "@/hooks/use-calendar-workspace";
 import { Badge } from "@/components/ui/badge";
@@ -559,6 +560,7 @@ export default function CalendarWorkspacePage() {
   const connectedSources = metaQuery.data?.data.connected_sources ?? [];
   const writableCalendars = metaQuery.data?.data.writable_calendars ?? [];
   const defaultTimezone = metaQuery.data?.data.default_timezone || timezone;
+  const primaryCalendarId = metaQuery.data?.data.primary_calendar_id ?? null;
 
   const userSources = useMemo(
     () => connectedSources.filter((source) => source.lane === "user"),
@@ -592,6 +594,7 @@ export default function CalendarWorkspacePage() {
   const syncMutation = useSyncCalendarWorkspace();
   const butlerMutation = useMutateCalendarWorkspaceButlerEvent();
   const userEventMutation = useMutateCalendarWorkspaceUserEvent();
+  const primaryMutation = useSetPrimaryCalendar();
 
   const [syncingSourceKey, setSyncingSourceKey] = useState<string | null>(null);
   const [userEventDialogOpen, setUserEventDialogOpen] = useState(false);
@@ -1723,16 +1726,30 @@ export default function CalendarWorkspacePage() {
                 <p className="text-sm text-muted-foreground">No connected sources reported.</p>
               ) : (
                 <div className="space-y-2">
-                  {visibleSources.map((source) => (
+                  {visibleSources.map((source) => {
+                    const isPrimary =
+                      source.lane === "user" &&
+                      source.calendar_id != null &&
+                      source.calendar_id === primaryCalendarId;
+                    const canSetPrimary =
+                      source.lane === "user" &&
+                      source.writable &&
+                      source.calendar_id != null &&
+                      source.calendar_id !== primaryCalendarId &&
+                      source.butler_name != null;
+                    return (
                     <div key={source.source_key} className="rounded-md border border-border p-2">
                       <div className="flex items-center justify-between gap-2">
                         <p className="truncate text-sm font-medium" title={sourceName(source)}>
                           {sourceName(source)}
                         </p>
-                        <Badge variant={syncBadgeVariant(source.sync_state)}>{source.sync_state}</Badge>
+                        <div className="flex items-center gap-1">
+                          {isPrimary ? <Badge variant="default">Primary</Badge> : null}
+                          <Badge variant={syncBadgeVariant(source.sync_state)}>{source.sync_state}</Badge>
+                        </div>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        <span className="font-medium">({source.lane})</span> {source.provider ?? source.source_kind}
+                        <span className="font-medium">({source.lane})</span> {source.calendar_id ?? source.provider ?? source.source_kind}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {formatStaleness(source.staleness_ms)}
@@ -1743,7 +1760,30 @@ export default function CalendarWorkspacePage() {
                       {source.last_error ? (
                         <p className="mt-1 text-xs text-destructive">{source.last_error}</p>
                       ) : null}
-                      <div className="mt-2 flex justify-end">
+                      <div className="mt-2 flex justify-end gap-2">
+                        {canSetPrimary ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              primaryMutation.mutate(
+                                {
+                                  butler_name: source.butler_name!,
+                                  calendar_id: source.calendar_id!,
+                                },
+                                {
+                                  onSuccess: () => toast.success("Primary calendar updated"),
+                                  onError: (err) =>
+                                    toast.error(`Failed to set primary: ${err.message}`),
+                                },
+                              );
+                            }}
+                            disabled={primaryMutation.isPending}
+                          >
+                            Set as primary
+                          </Button>
+                        ) : null}
                         <Button
                           type="button"
                           size="sm"
@@ -1755,7 +1795,8 @@ export default function CalendarWorkspacePage() {
                         </Button>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </CardContent>

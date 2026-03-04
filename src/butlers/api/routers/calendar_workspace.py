@@ -31,6 +31,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarWorkspaceSyncResponse,
     CalendarWorkspaceSyncTarget,
     CalendarWorkspaceWritableCalendar,
+    SetPrimaryCalendarRequest,
+    SetPrimaryCalendarResponse,
     UnifiedCalendarEntry,
 )
 from butlers.api.routers.audit import log_audit_entry
@@ -650,7 +652,17 @@ async def get_workspace(
             }
         source_rows = list(deduped.values())
 
-    source_freshness = [_to_source_freshness(row) for row in source_rows]
+    # Dedup sources by source_key — fan_out across butler schemas can return
+    # the same provider source from multiple schemas.
+    seen_source_keys: set[str] = set()
+    deduped_source_rows: list[dict[str, Any]] = []
+    for row in source_rows:
+        sk = row.get("source_key")
+        if sk in seen_source_keys:
+            continue
+        seen_source_keys.add(sk)
+        deduped_source_rows.append(row)
+    source_freshness = [_to_source_freshness(row) for row in deduped_source_rows]
     entries: list[UnifiedCalendarEntry] = []
     for row in workspace_rows:
         try:
@@ -680,6 +692,7 @@ async def get_workspace(
 @router.get("/meta", response_model=ApiResponse[CalendarWorkspaceMetaResponse])
 async def get_workspace_meta(
     db: DatabaseManager = Depends(_get_db_manager),
+    mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[CalendarWorkspaceMetaResponse]:
     """Return workspace metadata: capabilities, sources, lanes, writable calendars."""
     source_rows = await _fetch_sources(db)
@@ -730,13 +743,51 @@ async def get_workspace_meta(
             )
         )
 
+    # Resolve primary calendar ID from the first calendar-enabled butler.
+    primary_calendar_id: str | None = None
+    calendar_butlers = db.butlers_with_module("calendar")
+    if calendar_butlers:
+        try:
+            status = await _call_mcp_tool(mgr, calendar_butlers[0], "calendar_sync_status", {})
+            primary_calendar_id = status.get("calendar_id")
+        except Exception:
+            logger.debug("Unable to resolve primary calendar ID from MCP", exc_info=True)
+
     data = CalendarWorkspaceMetaResponse(
         connected_sources=deduped_sources,
         writable_calendars=writable_calendars,
         lane_definitions=_build_lane_definitions(deduped_sources),
         default_timezone="Asia/Singapore",
+        primary_calendar_id=primary_calendar_id,
     )
     return ApiResponse[CalendarWorkspaceMetaResponse](data=data)
+
+
+@router.put("/primary", response_model=ApiResponse[SetPrimaryCalendarResponse])
+async def set_primary_calendar(
+    body: SetPrimaryCalendarRequest,
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[SetPrimaryCalendarResponse]:
+    """Set the primary calendar for a butler via the calendar_set_primary MCP tool."""
+    result = await _call_mcp_tool(
+        mgr, body.butler_name, "calendar_set_primary", {"calendar_id": body.calendar_id}
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("error", "Unknown error"))
+
+    response = SetPrimaryCalendarResponse(
+        old_calendar_id=result.get("old_calendar_id"),
+        new_calendar_id=result.get("new_calendar_id", body.calendar_id),
+        persisted=bool(result.get("persisted")),
+    )
+    await log_audit_entry(
+        db,
+        body.butler_name,
+        "calendar.workspace.set_primary",
+        {"old": response.old_calendar_id, "new": response.new_calendar_id},
+    )
+    return ApiResponse[SetPrimaryCalendarResponse](data=response)
 
 
 @router.post("/sync", response_model=ApiResponse[CalendarWorkspaceSyncResponse])

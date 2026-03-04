@@ -2380,6 +2380,7 @@ class CalendarModule(Module):
         self._butler_name: str = DEFAULT_BUTLER_NAME
         self._approval_enqueuer: ApprovalEnqueuer | None = None
         self._db: Any = None
+        self._credential_store: Any = None
         self._sync_task: asyncio.Task[None] | None = None
         self._internal_projection_task: asyncio.Task[None] | None = None
         # In-memory sync state cache (calendar_id → CalendarSyncState).
@@ -4054,6 +4055,55 @@ class CalendarModule(Module):
                 "projection_freshness": await module._projection_freshness_metadata(),
             }
 
+        @mcp.tool()
+        async def calendar_set_primary(
+            calendar_id: str,
+        ) -> dict[str, Any]:
+            """Set the primary calendar used when no explicit calendar_id is passed.
+
+            The calendar_id must be one of the discovered provider calendars.
+            Updates both the in-memory default and the credential store so the
+            choice persists across restarts.
+            """
+            normalized = calendar_id.strip()
+            if not normalized:
+                raise ValueError("calendar_id must be a non-empty string")
+
+            if normalized not in module._all_provider_calendar_ids:
+                return {
+                    "status": "error",
+                    "error": f"Unknown calendar_id: {normalized}",
+                    "known_calendars": module._all_provider_calendar_ids,
+                }
+
+            old_id = module._resolved_calendar_id
+            module._resolved_calendar_id = normalized
+            module._calendar_is_butler_specific = True
+
+            persisted = False
+            if module._credential_store is not None:
+                try:
+                    await module._credential_store.store(
+                        _CREDENTIAL_KEY_CALENDAR_ID,
+                        normalized,
+                        category="google",
+                        description="Primary Google Calendar ID (set via dashboard)",
+                        is_sensitive=False,
+                    )
+                    persisted = True
+                except Exception as exc:
+                    logger.warning(
+                        "calendar_set_primary: failed to persist to credential store: %s",
+                        exc,
+                    )
+
+            return {
+                "status": "ok",
+                "old_calendar_id": old_id,
+                "new_calendar_id": normalized,
+                "persisted": persisted,
+            }
+
     async def _resolve_credentials(
         self,
         *,
@@ -4524,6 +4574,7 @@ class CalendarModule(Module):
         """
         self._config = self._coerce_config(config)
         self._db = db
+        self._credential_store = credential_store
 
         provider_cls = self._PROVIDER_CLASSES.get(self._config.provider)
         if provider_cls is None:

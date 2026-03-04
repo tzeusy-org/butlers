@@ -9,6 +9,7 @@ import {
   getCalendarWorkspaceMeta,
   mutateCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
+  setPrimaryCalendar,
   syncCalendarWorkspace,
 } from "@/api/index.ts";
 import type {
@@ -16,6 +17,7 @@ import type {
   CalendarWorkspaceParams,
   CalendarWorkspaceSyncRequest,
   CalendarWorkspaceUserMutationRequest,
+  SetPrimaryCalendarRequest,
 } from "@/api/types.ts";
 
 interface CalendarWorkspaceQueryOptions {
@@ -80,6 +82,17 @@ export function useMutateCalendarWorkspaceButlerEvent() {
       mutateCalendarWorkspaceButlerEvent(body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
+    },
+  });
+}
+
+/** Set the primary calendar and refresh workspace metadata. */
+export function useSetPrimaryCalendar() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SetPrimaryCalendarRequest) => setPrimaryCalendar(body),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
     },
   });

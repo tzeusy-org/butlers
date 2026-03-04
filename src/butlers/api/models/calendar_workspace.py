@@ -128,6 +128,7 @@ class CalendarWorkspaceMetaResponse(BaseModel):
     writable_calendars: list[CalendarWorkspaceWritableCalendar] = Field(default_factory=list)
     lane_definitions: list[CalendarWorkspaceLaneDefinition] = Field(default_factory=list)
     default_timezone: str = "UTC"
+    primary_calendar_id: str | None = None
 
 
 class CalendarWorkspaceSyncRequest(BaseModel):
@@ -166,3 +167,18 @@ class CalendarWorkspaceSyncResponse(BaseModel):
     requested_source_id: UUID | None = None
     targets: list[CalendarWorkspaceSyncTarget] = Field(default_factory=list)
     triggered_count: int = 0
+
+
+class SetPrimaryCalendarRequest(BaseModel):
+    """Request payload for PUT /api/calendar/workspace/primary."""
+
+    butler_name: str
+    calendar_id: str
+
+
+class SetPrimaryCalendarResponse(BaseModel):
+    """Response payload for PUT /api/calendar/workspace/primary."""
+
+    old_calendar_id: str | None = None
+    new_calendar_id: str
+    persisted: bool = False
