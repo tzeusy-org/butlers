@@ -222,9 +222,13 @@ def _make_mock_mcp(tools: dict[str, Any] | None = None) -> MagicMock:
             self.name = name
             self.fn = fn
 
+    async def get_tool(name: str):
+        return _tools_dict.get(name)
+
     async def get_tools():
         return _tools_dict
 
+    mock_mcp.get_tool = get_tool
     mock_mcp._tool_manager.get_tools = get_tools
 
     def tool_decorator(*_decorator_args, **decorator_kwargs):
@@ -240,6 +244,37 @@ def _make_mock_mcp(tools: dict[str, Any] | None = None) -> MagicMock:
 
     mock_mcp.tool = tool_decorator
     return mock_mcp
+
+
+def _make_public_api_only_mcp(tools: dict[str, Any] | None = None) -> Any:
+    """Create a minimal MCP-like object exposing only public tool APIs."""
+    if tools is None:
+        tools = {}
+
+    class FakeTool:
+        def __init__(self, name: str, fn: Any):
+            self.name = name
+            self.fn = fn
+
+    class PublicOnlyMCP:
+        def __init__(self) -> None:
+            self._tools_dict: dict[str, Any] = {}
+
+        def tool(self, *_decorator_args, **decorator_kwargs):
+            declared_name = decorator_kwargs.get("name")
+
+            def decorator(fn):
+                tool_name = declared_name or fn.__name__
+                self._tools_dict[tool_name] = FakeTool(tool_name, fn)
+                tools[tool_name] = fn
+                return fn
+
+            return decorator
+
+        async def get_tool(self, name: str) -> Any | None:
+            return self._tools_dict.get(name)
+
+    return PublicOnlyMCP()
 
 
 def _make_approval_config(
@@ -492,6 +527,26 @@ class TestMatchStandingRule:
 
 class TestApplyApprovalGates:
     """Test that apply_approval_gates correctly wraps gated tools on the MCP."""
+
+    async def test_gated_tool_wrapped_with_public_get_tool_api(self):
+        """Gating should work when MCP exposes only public get_tool API."""
+        tools: dict[str, Any] = {}
+        mcp = _make_public_api_only_mcp(tools)
+        pool = MockPool()
+
+        @mcp.tool()
+        async def notify(channel: str, message: str) -> dict:
+            return {"status": "sent", "channel": channel, "message": message}
+
+        config = _make_approval_config(gated_tools={"notify": GatedToolConfig()})
+        original_fn = tools["notify"]
+
+        originals = await apply_approval_gates(mcp, config, pool)
+
+        assert originals["notify"] is original_fn
+        wrapped_tool = await mcp.get_tool("notify")
+        assert wrapped_tool is not None
+        assert wrapped_tool.fn is not original_fn
 
     async def test_non_gated_tool_unaffected(self):
         """A tool not in gated_tools should not be wrapped."""

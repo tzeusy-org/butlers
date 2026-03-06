@@ -273,7 +273,11 @@ def _make_mock_mcp() -> MagicMock:
     async def get_tools():
         return _tools_dict
 
+    async def get_tool(name: str):
+        return _tools_dict.get(name)
+
     mock_mcp._tool_manager.get_tools = get_tools
+    mock_mcp.get_tool = get_tool
 
     def tool_decorator(*_args, **_kwargs):
         def decorator(fn):

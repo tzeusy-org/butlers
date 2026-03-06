@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import json
 import logging
 import os
@@ -238,6 +239,21 @@ def _build_route_runtime_context(
 def _wrap_routed_message(prompt: str) -> str:
     """Fence routed content as untrusted payload for downstream runtime sessions."""
     return f"<routed_message>\n{prompt}\n</routed_message>"
+
+
+async def _resolve_mcp_tool(mcp: Any, tool_name: str) -> Any | None:
+    """Resolve a tool by name via FastMCP public API."""
+    get_tool = getattr(mcp, "get_tool", None)
+    if not callable(get_tool):
+        raise RuntimeError("FastMCP instance does not expose required get_tool(name) API")
+
+    try:
+        tool_obj = get_tool(tool_name)
+        if inspect.isawaitable(tool_obj):
+            tool_obj = await tool_obj
+    except KeyError:
+        return None
+    return tool_obj
 
 
 type _DeterministicScheduleJobHandler = Callable[
@@ -4442,7 +4458,7 @@ class ButlerDaemon:
                     ) -> dict[str, Any]:
                         original_fn = _originals.get(tool_name)
                         if original_fn is None:
-                            tool_obj = (await self.mcp._tool_manager.get_tools()).get(tool_name)
+                            tool_obj = await _resolve_mcp_tool(self.mcp, tool_name)
                             if tool_obj is None:
                                 return {"error": f"No handler for tool: {tool_name}"}
                             original_fn = tool_obj.fn

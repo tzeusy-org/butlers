@@ -19,6 +19,7 @@ be invoked directly after post-approval (by task clc.7).
 from __future__ import annotations
 
 import json
+import inspect
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -32,6 +33,21 @@ from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.rules import match_rules_from_list
 
 logger = logging.getLogger(__name__)
+
+
+async def _resolve_registered_tool(mcp: Any, tool_name: str) -> Any | None:
+    """Resolve a registered tool by name via FastMCP public API."""
+    get_tool = getattr(mcp, "get_tool", None)
+    if not callable(get_tool):
+        raise RuntimeError("FastMCP instance does not expose required get_tool(name) API")
+
+    try:
+        tool_obj = get_tool(tool_name)
+        if inspect.isawaitable(tool_obj):
+            tool_obj = await tool_obj
+    except KeyError:
+        return None
+    return tool_obj
 
 
 def match_standing_rule(
@@ -243,20 +259,17 @@ async def apply_approval_gates(
     if not gated_tools:
         return {}
 
-    # Get the registered tools dict from FastMCP's tool manager
-    registered_tools = await mcp._tool_manager.get_tools()
-
     originals: dict[str, Any] = {}
 
     for tool_name, tool_config in gated_tools.items():
-        if tool_name not in registered_tools:
+        tool_obj = await _resolve_registered_tool(mcp, tool_name)
+        if tool_obj is None:
             logger.warning(
                 "Gated tool %r not found in registered tools; skipping gate wrapping",
                 tool_name,
             )
             continue
 
-        tool_obj = registered_tools[tool_name]
         original_fn = tool_obj.fn
         originals[tool_name] = original_fn
 
