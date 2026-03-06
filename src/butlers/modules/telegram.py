@@ -142,7 +142,7 @@ class TelegramModule(Module):
         self._config: TelegramConfig = TelegramConfig()
         self._client: httpx.AsyncClient | None = None
         self._db: Any = None
-        # Credentials cached at startup: user-scope from owner contact_info,
+        # Credentials cached at startup: user-scope from owner entity_info,
         # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
 
@@ -164,7 +164,7 @@ class TelegramModule(Module):
         envs: list[str] = []
         if self._config.bot.enabled:
             envs.append(self._config.bot.token_env)
-        # User-scope credentials come from owner contact_info, not butler_secrets.
+        # User-scope credentials come from owner entity_info, not butler_secrets.
         return envs
 
     def migration_revisions(self) -> str | None:
@@ -173,7 +173,7 @@ class TelegramModule(Module):
     def _get_bot_token(self) -> str:
         """Resolve Telegram bot token from startup-cached credentials.
 
-        The token is pre-resolved at startup: user-scope from owner contact_info,
+        The token is pre-resolved at startup: user-scope from owner entity_info,
         bot-scope from CredentialStore.
         """
         if not self._config.bot.enabled:
@@ -241,7 +241,7 @@ class TelegramModule(Module):
         self._db = db
         self._resolved_credentials = {}
 
-        # --- User-scope: resolve exclusively from owner contact_info ----------
+        # --- User-scope: resolve exclusively from owner entity_info ----------
         pool = getattr(db, "pool", None) if db is not None else None
         if pool is not None and self._config.user.enabled:
             user_token_env = self._config.user.token_env

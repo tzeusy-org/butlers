@@ -4,6 +4,7 @@ import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import type { EntityInfoEntry } from "@/api/types";
+import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { Badge } from "@/components/ui/badge";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Button } from "@/components/ui/button";
@@ -37,25 +38,55 @@ import {
 // ---------------------------------------------------------------------------
 
 const ENTITY_INFO_TYPES = [
+  "email",
+  "telegram",
+  "telegram_chat_id",
   "api_key",
   "api_secret",
   "token",
   "password",
   "username",
   "url",
+  "telegram_api_id",
+  "telegram_api_hash",
+  "telegram_user_session",
+  "home_assistant_url",
+  "home_assistant_token",
+  "google_oauth_refresh",
+  "email_password",
   "other",
 ] as const;
 
-const SECURED_TYPES = new Set<string>(["api_key", "api_secret", "token", "password"]);
+const SECURED_TYPES = new Set<string>([
+  "api_key",
+  "api_secret",
+  "token",
+  "password",
+  "telegram_api_hash",
+  "telegram_user_session",
+  "home_assistant_token",
+  "google_oauth_refresh",
+  "email_password",
+]);
 
 function entityInfoTypeLabel(type: string): string {
   switch (type) {
+    case "email": return "Email";
+    case "telegram": return "Telegram Handle";
+    case "telegram_chat_id": return "Telegram Chat ID";
     case "api_key": return "API Key";
     case "api_secret": return "API Secret";
     case "token": return "Token";
     case "password": return "Password";
     case "username": return "Username";
     case "url": return "URL";
+    case "telegram_api_id": return "Telegram API ID";
+    case "telegram_api_hash": return "Telegram API Hash";
+    case "telegram_user_session": return "Telegram User Session";
+    case "home_assistant_url": return "Home Assistant URL";
+    case "home_assistant_token": return "Home Assistant Token";
+    case "google_oauth_refresh": return "Google OAuth Refresh";
+    case "email_password": return "Email Password";
     case "other": return "Other";
     default: return type;
   }
@@ -582,6 +613,9 @@ export default function EntityDetailPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Owner setup banner — shown when identity not fully configured */}
+          <OwnerSetupBanner entity={entity} />
 
           {/* Entity info (credentials) */}
           <EntityInfoSection

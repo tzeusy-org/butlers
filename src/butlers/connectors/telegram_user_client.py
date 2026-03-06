@@ -26,9 +26,9 @@ Environment variables (see `docs/connectors/telegram_user_client.md` section 4):
 - CONNECTOR_BACKFILL_WINDOW_H (optional, bounded startup replay in hours)
 - CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
 - BUTLER_SHARED_DB_NAME (optional; shared credential DB, defaults to 'butlers')
-- TELEGRAM_API_ID (required; resolved from owner contact_info only; from my.telegram.org)
-- TELEGRAM_API_HASH (required; resolved from owner contact_info only; from my.telegram.org)
-- TELEGRAM_USER_SESSION (required; resolved from owner contact_info only; session string or
+- TELEGRAM_API_ID (required; resolved from owner entity_info only; from my.telegram.org)
+- TELEGRAM_API_HASH (required; resolved from owner entity_info only; from my.telegram.org)
+- TELEGRAM_USER_SESSION (required; resolved from owner entity_info only; session string or
   encrypted file path)
 
 Security requirements:
@@ -108,7 +108,7 @@ class TelegramUserClientConnectorConfig:
         """Load non-credential configuration from environment variables.
 
         Telegram user credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH,
-        TELEGRAM_USER_SESSION) are resolved exclusively from owner contact_info
+        TELEGRAM_USER_SESSION) are resolved exclusively from owner entity_info
         via ``_resolve_telegram_user_credentials_from_db()``.  They are not
         read from environment variables.
         """
@@ -620,16 +620,16 @@ class TelegramUserClientConnector:
 
 
 async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
-    """Resolve Telegram user-client credentials from owner contact_info.
+    """Resolve Telegram user-client credentials from owner entity_info.
 
-    Credentials are resolved exclusively from ``shared.contact_info`` entries
-    on the owner contact (types ``telegram_api_id``, ``telegram_api_hash``,
+    Credentials are resolved exclusively from ``shared.entity_info`` entries
+    on the owner entity (types ``telegram_api_id``, ``telegram_api_hash``,
     ``telegram_user_session``).
 
     Returns a dict with keys ``TELEGRAM_API_ID``, ``TELEGRAM_API_HASH``,
     ``TELEGRAM_USER_SESSION`` if all three are found, or ``None`` if:
     - No DB connection parameters are configured.
-    - The DB is reachable but one or more entries are missing from contact_info.
+    - The DB is reachable but one or more entries are missing from entity_info.
     """
     import asyncpg
 
@@ -697,7 +697,7 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
         expected_keys = {k for _, k in _CI_MAP}
         if expected_keys <= result.keys():
             logger.info(
-                "Telegram user-client connector: resolved credentials from owner contact_info "
+                "Telegram user-client connector: resolved credentials from owner entity_info "
                 "(primary_db=%s)",
                 primary_db_name,
             )
@@ -705,7 +705,7 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
 
         missing = sorted(expected_keys - result.keys())
         logger.warning(
-            "Telegram user-client connector: missing credential types in owner contact_info "
+            "Telegram user-client connector: missing credential types in owner entity_info "
             "(primary_db=%s): %s",
             primary_db_name,
             missing,
@@ -723,7 +723,7 @@ async def run_telegram_user_client_connector() -> None:
     """CLI entry point for running Telegram user-client connector.
 
     Telegram user credentials (TELEGRAM_API_ID, TELEGRAM_API_HASH,
-    TELEGRAM_USER_SESSION) are resolved exclusively from owner contact_info
+    TELEGRAM_USER_SESSION) are resolved exclusively from owner entity_info
     in the database.  Non-credential configuration (SWITCHBOARD_MCP_URL,
     CONNECTOR_* env vars) is read from environment variables.
     """
@@ -732,15 +732,15 @@ async def run_telegram_user_client_connector() -> None:
     # Step 1: Load non-credential config from env vars.
     config = TelegramUserClientConnectorConfig.from_env()
 
-    # Step 2: Resolve credentials from owner contact_info (DB-only).
+    # Step 2: Resolve credentials from owner entity_info (DB-only).
     # Always attempt — db_params_from_env() has sensible defaults (localhost).
     db_creds = await _resolve_telegram_user_credentials_from_db()
 
     if db_creds is None:
         raise RuntimeError(
             "Telegram user-client connector: could not resolve credentials from "
-            "owner contact_info. Configure telegram_api_id, telegram_api_hash, "
-            "and telegram_user_session on the owner contact via the dashboard."
+            "owner entity_info. Configure telegram_api_id, telegram_api_hash, "
+            "and telegram_user_session on the owner entity via the dashboard."
         )
 
     try:

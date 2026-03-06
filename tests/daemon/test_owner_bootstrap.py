@@ -1,14 +1,11 @@
-"""Tests for _ensure_owner_entity_and_contact() owner bootstrap logic.
+"""Tests for _ensure_owner_entity() owner bootstrap logic.
 
 Verifies:
-- First startup creates owner entity in shared.entities, then owner contact
-  in shared.contacts linked via entity_id.
+- First startup creates owner entity in shared.entities.
 - Subsequent startups are no-ops (idempotent via ON CONFLICT).
-- Concurrent startups create exactly one owner (relying on ON CONFLICT DO NOTHING).
-- If shared.entities does not exist, falls back to contact-only bootstrap.
-- If shared.contacts does not exist the function skips silently.
-- If roles column on contacts does not exist (post-core_016), inserts contact
-  without roles column (roles live on shared.entities after core_016).
+- If shared.entities does not exist, skips entity creation.
+- Legacy owner contact in shared.contacts is deleted on startup.
+- If shared.contacts does not exist, deletion is skipped silently.
 - Exceptions from the pool are caught and logged (non-fatal).
 """
 
@@ -20,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.daemon import _ensure_owner_entity_and_contact
+from butlers.daemon import _ensure_owner_entity
 
 pytestmark = pytest.mark.unit
 
@@ -32,9 +29,9 @@ def _make_pool(
     entities_table_exists: bool = True,
     roles_on_entities: bool = True,
     contacts_table_exists: bool = True,
-    roles_col_exists: bool = True,
     entity_insert_returns: uuid.UUID | None = _OWNER_ENTITY_ID,
     entity_select_returns: uuid.UUID | None = None,
+    legacy_contact_id: uuid.UUID | None = None,
 ) -> tuple[MagicMock, AsyncMock]:
     """Build a mock asyncpg pool that simulates shared.entities + shared.contacts state."""
     conn = AsyncMock()
@@ -45,7 +42,7 @@ def _make_pool(
     # 3. (if roles on entities) INSERT RETURNING id (entity)
     # 4. (if insert returned None) SELECT id (entity)
     # 5. to_regclass('shared.contacts') IS NOT NULL
-    # 6. (if contacts exist) information_schema check for roles on contacts
+    # 6. (if contacts exist) DELETE ... RETURNING id
     fetchval_results: list = []
 
     fetchval_results.append(entities_table_exists)
@@ -59,10 +56,9 @@ def _make_pool(
 
     fetchval_results.append(contacts_table_exists)
     if contacts_table_exists:
-        fetchval_results.append(roles_col_exists)
+        fetchval_results.append(legacy_contact_id)
 
     conn.fetchval = AsyncMock(side_effect=fetchval_results)
-    conn.execute = AsyncMock()
 
     pool = MagicMock()
     pool.acquire = MagicMock()
@@ -74,37 +70,14 @@ def _make_pool(
     return pool, conn
 
 
-class TestEnsureOwnerEntityAndContactFirstBoot:
-    async def test_creates_entity_then_contact(self) -> None:
-        """First startup creates entity in shared.entities, then contact linked to it."""
+class TestEnsureOwnerEntityCreation:
+    async def test_creates_entity(self) -> None:
+        """First startup creates entity in shared.entities."""
         pool, conn = _make_pool()
 
-        await _ensure_owner_entity_and_contact(pool)
+        await _ensure_owner_entity(pool)
 
-        conn.execute.assert_awaited_once()
-        call_sql = conn.execute.call_args[0][0]
-        assert "INSERT INTO shared.contacts" in call_sql
-        assert "entity_id" in call_sql
-        # Verify entity_id is passed as parameter
-        call_args = conn.execute.call_args[0]
-        assert _OWNER_ENTITY_ID in call_args
-
-    async def test_insert_uses_on_conflict_do_nothing(self) -> None:
-        """Contact INSERT uses ON CONFLICT DO NOTHING for idempotency."""
-        pool, conn = _make_pool()
-
-        await _ensure_owner_entity_and_contact(pool)
-
-        call_sql = conn.execute.call_args[0][0]
-        assert "ON CONFLICT DO NOTHING" in call_sql
-
-    async def test_entity_insert_includes_owner_role(self) -> None:
-        """Entity INSERT includes 'owner' in the roles array."""
-        pool, conn = _make_pool()
-
-        await _ensure_owner_entity_and_contact(pool)
-
-        # Check fetchval calls — the entity INSERT should have ['owner'] as param
+        # Entity INSERT should have been called with ['owner'] role
         for call in conn.fetchval.call_args_list:
             sql = call[0][0] if call[0] else ""
             if "INSERT INTO shared.entities" in sql:
@@ -120,92 +93,88 @@ class TestEnsureOwnerEntityAndContactFirstBoot:
             entity_select_returns=_OWNER_ENTITY_ID,
         )
 
-        await _ensure_owner_entity_and_contact(pool)
+        await _ensure_owner_entity(pool)
 
-        conn.execute.assert_awaited_once()
-        call_args = conn.execute.call_args[0]
-        assert _OWNER_ENTITY_ID in call_args
+        # SELECT fallback should have been called
+        select_found = False
+        for call in conn.fetchval.call_args_list:
+            sql = call[0][0] if call[0] else ""
+            if "SELECT id FROM shared.entities" in sql:
+                select_found = True
+                break
+        assert select_found, "Entity SELECT fallback not found"
 
+    async def test_no_contact_insert(self) -> None:
+        """No INSERT INTO shared.contacts is issued."""
+        pool, conn = _make_pool()
 
-class TestEnsureOwnerEntityAndContactFallback:
-    async def test_falls_back_without_entities_table(self) -> None:
-        """When shared.entities doesn't exist, creates contact without entity_id."""
-        pool, conn = _make_pool(entities_table_exists=False)
+        await _ensure_owner_entity(pool)
 
-        await _ensure_owner_entity_and_contact(pool)
-
-        conn.execute.assert_awaited_once()
-        call_sql = conn.execute.call_args[0][0]
-        assert "INSERT INTO shared.contacts" in call_sql
-        assert "entity_id" not in call_sql
-        # Roles still passed to contact
-        call_args = list(conn.execute.call_args[0])
-        assert any("owner" in str(arg) for arg in call_args)
-
-    async def test_falls_back_without_roles_on_entities(self) -> None:
-        """When entities.roles column doesn't exist, creates contact without entity_id."""
-        pool, conn = _make_pool(roles_on_entities=False)
-
-        await _ensure_owner_entity_and_contact(pool)
-
-        conn.execute.assert_awaited_once()
-        call_sql = conn.execute.call_args[0][0]
-        assert "INSERT INTO shared.contacts" in call_sql
-
-
-class TestEnsureOwnerEntityAndContactTableAbsent:
-    async def test_skips_when_shared_contacts_missing(self) -> None:
-        """Function does nothing when shared.contacts table does not exist."""
-        pool, conn = _make_pool(contacts_table_exists=False)
-
-        await _ensure_owner_entity_and_contact(pool)
-
+        for call in conn.fetchval.call_args_list:
+            sql = call[0][0] if call[0] else ""
+            assert "INSERT INTO shared.contacts" not in sql
+        # conn.execute should not be called at all (no contact insert)
         conn.execute.assert_not_awaited()
 
-    async def test_no_error_when_table_missing(self) -> None:
-        """Function completes without raising when table is absent."""
+
+class TestLegacyOwnerContactDeletion:
+    async def test_deletes_legacy_owner_contact(self) -> None:
+        """Legacy owner contact is deleted from shared.contacts."""
+        legacy_id = uuid.uuid4()
+        pool, conn = _make_pool(legacy_contact_id=legacy_id)
+
+        await _ensure_owner_entity(pool)
+
+        # The DELETE query should be in the fetchval calls
+        delete_found = False
+        for call in conn.fetchval.call_args_list:
+            sql = call[0][0] if call[0] else ""
+            if "DELETE FROM shared.contacts" in sql and "Owner" in sql:
+                delete_found = True
+                break
+        assert delete_found, "DELETE of legacy owner contact not found"
+
+    async def test_no_error_when_no_legacy_contact(self) -> None:
+        """No error when no legacy owner contact exists (DELETE returns None)."""
+        pool, conn = _make_pool(legacy_contact_id=None)
+
+        await _ensure_owner_entity(pool)  # should not raise
+
+    async def test_skips_when_shared_contacts_missing(self) -> None:
+        """Deletion is skipped when shared.contacts table does not exist."""
         pool, conn = _make_pool(contacts_table_exists=False)
 
-        await _ensure_owner_entity_and_contact(pool)
+        await _ensure_owner_entity(pool)
+
+        # No DELETE should appear in fetchval calls
+        for call in conn.fetchval.call_args_list:
+            sql = call[0][0] if call[0] else ""
+            assert "DELETE FROM shared.contacts" not in sql
 
 
-class TestEnsureOwnerEntityAndContactRolesColumnAbsent:
-    async def test_inserts_contact_without_roles_when_column_missing(self) -> None:
-        """After core_016, contacts.roles is gone; contact is inserted without it."""
-        pool, conn = _make_pool(roles_col_exists=False)
+class TestEnsureOwnerEntityFallback:
+    async def test_skips_entity_without_entities_table(self) -> None:
+        """When shared.entities doesn't exist, entity creation is skipped."""
+        pool, conn = _make_pool(entities_table_exists=False)
 
-        await _ensure_owner_entity_and_contact(pool)
+        await _ensure_owner_entity(pool)
 
-        conn.execute.assert_awaited_once()
-        call_sql = conn.execute.call_args[0][0]
-        assert "INSERT INTO shared.contacts" in call_sql
-        assert "roles" not in call_sql
+        for call in conn.fetchval.call_args_list:
+            sql = call[0][0] if call[0] else ""
+            assert "INSERT INTO shared.entities" not in sql
 
-    async def test_inserts_contact_with_entity_id_when_roles_column_missing(self) -> None:
-        """When contacts.roles is absent but entity exists, inserts contact with entity_id."""
-        pool, conn = _make_pool(roles_col_exists=False)
+    async def test_skips_entity_without_roles_column(self) -> None:
+        """When entities.roles column doesn't exist, entity creation is skipped."""
+        pool, conn = _make_pool(roles_on_entities=False)
 
-        await _ensure_owner_entity_and_contact(pool)
+        await _ensure_owner_entity(pool)
 
-        call_sql = conn.execute.call_args[0][0]
-        assert "entity_id" in call_sql
-        call_args = conn.execute.call_args[0]
-        assert _OWNER_ENTITY_ID in call_args
-
-    async def test_inserts_contact_name_only_without_entity_or_roles(self) -> None:
-        """When both contacts.roles and shared.entities are absent, inserts contact by name only."""
-        pool, conn = _make_pool(entities_table_exists=False, roles_col_exists=False)
-
-        await _ensure_owner_entity_and_contact(pool)
-
-        conn.execute.assert_awaited_once()
-        call_sql = conn.execute.call_args[0][0]
-        assert "INSERT INTO shared.contacts" in call_sql
-        assert "roles" not in call_sql
-        assert "entity_id" not in call_sql
+        for call in conn.fetchval.call_args_list:
+            sql = call[0][0] if call[0] else ""
+            assert "INSERT INTO shared.entities" not in sql
 
 
-class TestEnsureOwnerEntityAndContactErrorHandling:
+class TestEnsureOwnerEntityErrorHandling:
     async def test_exception_is_caught_and_logged(self) -> None:
         """Pool exception is caught; function is non-fatal."""
         pool = MagicMock()
@@ -215,54 +184,65 @@ class TestEnsureOwnerEntityAndContactErrorHandling:
         pool.acquire = MagicMock(return_value=acquire_ctx)
 
         with patch("butlers.daemon.logger") as mock_logger:
-            await _ensure_owner_entity_and_contact(pool)
+            await _ensure_owner_entity(pool)
 
             mock_logger.warning.assert_called_once()
             warning_msg = mock_logger.warning.call_args[0][0]
             assert "bootstrap" in warning_msg.lower() or "skipped" in warning_msg.lower()
 
-    async def test_execute_exception_is_non_fatal(self) -> None:
-        """DB execute exception during INSERT is caught; function is non-fatal."""
+    async def test_fetchval_exception_is_non_fatal(self) -> None:
+        """DB fetchval exception during DELETE is caught; function is non-fatal."""
         pool, conn = _make_pool()
-        conn.execute = AsyncMock(side_effect=Exception("unique constraint violation"))
+        original_side_effect = conn.fetchval.side_effect
 
-        await _ensure_owner_entity_and_contact(pool)
+        # Make the last fetchval (DELETE) raise
+        call_count = 0
+        has_args = hasattr(original_side_effect, "args")
+        results = list(original_side_effect.args[0]) if has_args else []
+
+        async def failing_on_delete(sql, *args):
+            nonlocal call_count
+            if "DELETE FROM shared.contacts" in sql:
+                raise Exception("constraint violation")
+            idx = call_count
+            call_count += 1
+            return results[idx] if idx < len(results) else None
+
+        conn.fetchval = AsyncMock(side_effect=failing_on_delete)
+
+        await _ensure_owner_entity(pool)
 
 
 class TestConcurrentStartupSafety:
     async def test_concurrent_calls_do_not_raise(self) -> None:
-        """Multiple concurrent calls to _ensure_owner_entity_and_contact complete without error."""
-        insert_calls: list[tuple] = []
-
-        async def recording_execute(sql: str, *args) -> None:
-            insert_calls.append((sql, args))
-
+        """Multiple concurrent calls to _ensure_owner_entity complete without error."""
         pools = []
         for _ in range(5):
-            pool, conn = _make_pool()
-            conn.execute = AsyncMock(side_effect=recording_execute)
+            pool, _conn = _make_pool()
             pools.append(pool)
 
-        await asyncio.gather(*[_ensure_owner_entity_and_contact(p) for p in pools])
+        await asyncio.gather(*[_ensure_owner_entity(p) for p in pools])
 
-        assert len(insert_calls) == 5
-        for sql, _args in insert_calls:
-            assert "ON CONFLICT DO NOTHING" in sql
-
-    async def test_concurrent_calls_all_contain_owner_role(self) -> None:
-        """Every concurrent INSERT attempt includes the 'owner' role value (as parameter)."""
+    async def test_concurrent_calls_all_create_entity_with_owner_role(self) -> None:
+        """Every concurrent call attempts entity INSERT with 'owner' role."""
         insert_calls: list[tuple] = []
-
-        async def capturing_execute(sql: str, *args) -> None:
-            insert_calls.append((sql, args))
 
         pools = []
         for _ in range(3):
             pool, conn = _make_pool()
-            conn.execute = AsyncMock(side_effect=capturing_execute)
+
+            original_fetchval = conn.fetchval
+
+            async def capturing_fetchval(sql, *args, _orig=original_fetchval):
+                if "INSERT INTO shared.entities" in sql:
+                    insert_calls.append((sql, args))
+                return await _orig(sql, *args)
+
+            conn.fetchval = AsyncMock(side_effect=capturing_fetchval)
             pools.append(pool)
 
-        await asyncio.gather(*[_ensure_owner_entity_and_contact(p) for p in pools])
+        await asyncio.gather(*[_ensure_owner_entity(p) for p in pools])
 
+        assert len(insert_calls) == 3
         for sql, args in insert_calls:
             assert any("owner" in str(arg).lower() for arg in args)

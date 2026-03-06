@@ -1375,48 +1375,50 @@ async def merge_contact(
 async def get_owner_setup_status(
     db: DatabaseManager = Depends(_get_db_manager),
 ) -> OwnerSetupStatus:
-    """Return whether the owner contact has telegram or email contact_info configured.
+    """Return whether the owner entity has channel identifiers configured.
 
     Used by the dashboard to show setup prompts when the owner has not yet
     connected their communication channels.
     """
     pool = _pool(db)
 
-    # Find the owner contact (via entity JOIN for roles)
+    # Find the owner entity
     owner_row = await pool.fetchrow(
         """
-        SELECT c.id, c.name
-        FROM contacts c
-        JOIN shared.entities e ON e.id = c.entity_id
-        WHERE 'owner' = ANY(COALESCE(e.roles, '{}'))
+        SELECT id, canonical_name
+        FROM shared.entities
+        WHERE 'owner' = ANY(COALESCE(roles, '{}'))
         LIMIT 1
         """,
     )
-    owner_id = owner_row["id"] if owner_row else None
+    if owner_row is None:
+        return OwnerSetupStatus(
+            entity_id=None,
+            has_name=False,
+            has_telegram=False,
+            has_telegram_chat_id=False,
+            has_email=False,
+        )
+
+    owner_entity_id = owner_row["id"]
     # The bootstrap name "Owner" is a placeholder — treat it as not yet set
-    owner_name: str | None = None
-    if owner_row is not None:
-        try:
-            owner_name = owner_row["name"]
-        except KeyError:
-            owner_name = None
-    has_name = bool(owner_name and owner_name.strip().lower() != "owner")
+    canonical = owner_row["canonical_name"] or ""
+    has_name = bool(canonical.strip() and canonical.strip().lower() != "owner")
 
     rows = await pool.fetch(
         """
-        SELECT ci.type
-        FROM shared.contact_info ci
-        JOIN contacts c ON c.id = ci.contact_id
-        JOIN shared.entities e ON e.id = c.entity_id
-        WHERE 'owner' = ANY(COALESCE(e.roles, '{}'))
-          AND ci.type IN ('telegram', 'telegram_chat_id', 'email')
+        SELECT ei.type
+        FROM shared.entity_info ei
+        WHERE ei.entity_id = $1
+          AND ei.type IN ('telegram', 'telegram_chat_id', 'email')
         """,
+        owner_entity_id,
     )
 
     found_types = {r["type"] for r in rows}
 
     return OwnerSetupStatus(
-        contact_id=owner_id,
+        entity_id=owner_entity_id,
         has_name=has_name,
         has_telegram="telegram" in found_types,
         has_telegram_chat_id="telegram_chat_id" in found_types,

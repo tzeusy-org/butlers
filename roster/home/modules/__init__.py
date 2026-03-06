@@ -1,7 +1,7 @@
 """Home Assistant module — MCP tools for smart-home control via Home Assistant.
 
 Provides tools for querying entity state, calling HA services, fetching history,
-and logging all issued commands. Token is resolved from owner contact_info at
+and logging all issued commands. Token is resolved from owner entity_info at
 startup (type='home_assistant_token'). Credentials are never logged in full.
 
 Transport layer:
@@ -138,7 +138,7 @@ class HomeAssistantConfig(BaseModel):
     ----------
     url:
         Optional base URL of the Home Assistant instance.  Ignored at
-        runtime — the URL is resolved from owner contact_info
+        runtime — the URL is resolved from owner entity_info
         (type ``'home_assistant_url'``) at startup.
     verify_ssl:
         Whether to verify SSL certificates when using HTTPS. Defaults to
@@ -288,7 +288,7 @@ class HomeAssistantModule(Module):
         self._db = db
         self._shutdown = False
 
-        # --- Resolve URL and token from owner contact_info ---
+        # --- Resolve URL and token from owner entity_info ---
         pool = getattr(db, "pool", None) if db is not None else None
         url: str | None = None
         token: str | None = None
@@ -301,13 +301,13 @@ class HomeAssistantModule(Module):
             raise RuntimeError(
                 "Home Assistant URL is not configured. "
                 "Add a 'home_assistant_url' entry (e.g. http://homeassistant.local:8123) "
-                "to the owner contact's contact_info via the dashboard."
+                "to the owner entity's entity_info via the dashboard."
             )
 
         if not token:
             raise RuntimeError(
                 "Home Assistant token is not configured. "
-                "Add a 'home_assistant_token' entry to the owner contact's contact_info "
+                "Add a 'home_assistant_token' entry to the owner entity's entity_info "
                 "via the dashboard."
             )
 
@@ -708,7 +708,7 @@ class HomeAssistantModule(Module):
             if msg_type == "auth_invalid":
                 raise RuntimeError(
                     "HomeAssistantModule: WebSocket authentication failed (auth_invalid). "
-                    "Check the home_assistant_token in owner contact_info."
+                    "Check the home_assistant_token in owner entity_info."
                 )
             if msg_type != "auth_ok":
                 raise RuntimeError(

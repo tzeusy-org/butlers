@@ -657,15 +657,15 @@ class ContactsModule(Module):
         )
 
     async def _create_telegram_provider(self, pool: Any) -> TelegramContactsProvider:
-        """Create and validate a TelegramContactsProvider from owner contact_info.
+        """Create and validate a TelegramContactsProvider from owner entity_info.
 
         Resolves telegram_api_id, telegram_api_hash, and telegram_user_session
-        from the owner contact's shared.contact_info entries.
+        from the owner entity's shared.entity_info entries.
         """
         if pool is None:
             raise RuntimeError(
                 "ContactsModule: Telegram provider requires a database connection "
-                "to resolve credentials from owner contact_info."
+                "to resolve credentials from owner entity_info."
             )
 
         from butlers.credential_store import resolve_owner_entity_info
@@ -685,9 +685,9 @@ class ContactsModule(Module):
         missing = [label for ci_type, label in _TELEGRAM_CI_TYPES.items() if ci_type not in creds]
         if missing:
             raise RuntimeError(
-                f"ContactsModule: Telegram credentials missing from owner contact_info: "
+                f"ContactsModule: Telegram credentials missing from owner entity_info: "
                 f"{', '.join(missing)}. Configure telegram_api_id, telegram_api_hash, "
-                f"and telegram_user_session on the owner contact via the dashboard."
+                f"and telegram_user_session on the owner entity via the dashboard."
             )
 
         try:

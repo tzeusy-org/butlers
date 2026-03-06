@@ -1,20 +1,20 @@
 /**
  * OwnerSetupBanner
  *
- * Shown at the top of the /contacts/ page when the owner contact is missing
- * key identity fields (name, email, or telegram handle). Prompts the user
+ * Shown on the entity detail page when the owner entity is missing key
+ * identity fields (name, email, or telegram handle). Prompts the user
  * to fill them in via an inline dialog so that external syncs (e.g. Google
  * Contacts) can match the owner correctly instead of creating duplicates.
  *
  * An expandable "Credentials" section lets the user optionally set secrets
- * (email password, Telegram API hash/ID) that were previously stored in
- * butler_secrets but now live on the owner contact_info.
+ * (email password, Telegram API hash/ID) stored as entity_info entries.
  */
 
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
+import type { EntityDetail } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -28,19 +28,24 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  useCreateContactInfo,
-  useOwnerSetupStatus,
-  usePatchContact,
-} from "@/hooks/use-contacts";
+  useCreateEntityInfo,
+  useUpdateEntity,
+} from "@/hooks/use-memory";
 
-export function OwnerSetupBanner() {
-  const { data: status, isLoading } = useOwnerSetupStatus();
-  const createInfo = useCreateContactInfo();
-  const patchContact = usePatchContact();
+interface OwnerSetupBannerProps {
+  entity: EntityDetail;
+}
+
+function hasInfoType(entity: EntityDetail, type: string): boolean {
+  return (entity.entity_info ?? []).some((e) => e.type === type);
+}
+
+export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
+  const createInfo = useCreateEntityInfo();
+  const updateEntity = useUpdateEntity();
 
   const [open, setOpen] = useState(false);
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
+  const [canonicalName, setCanonicalName] = useState("");
   const [email, setEmail] = useState("");
   const [telegram, setTelegram] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
@@ -51,31 +56,34 @@ export function OwnerSetupBanner() {
   const [telegramApiHash, setTelegramApiHash] = useState("");
   const [telegramApiId, setTelegramApiId] = useState("");
 
-  // Don't render if loading or if all core identity fields are configured
-  if (isLoading) return null;
-  if (!status) return null;
-  if (
-    status.has_name &&
-    status.has_telegram &&
-    status.has_telegram_chat_id &&
-    status.has_email
-  )
-    return null;
-  if (!status.contact_id) return null;
+  // Don't render if not the owner entity
+  if (!entity.roles?.includes("owner")) return null;
 
-  const contactId = status.contact_id;
-  const isSaving = createInfo.isPending || patchContact.isPending;
+  // Check what's missing
+  const nameIsPlaceholder =
+    !entity.canonical_name?.trim() ||
+    entity.canonical_name.trim().toLowerCase() === "owner";
+  const hasEmail = hasInfoType(entity, "email");
+  const hasTelegram = hasInfoType(entity, "telegram");
+  const hasTelegramChatId = hasInfoType(entity, "telegram_chat_id");
+
+  // Don't render if all core identity fields are configured
+  if (!nameIsPlaceholder && hasEmail && hasTelegram && hasTelegramChatId) {
+    return null;
+  }
+
+  const entityId = entity.id;
+  const isSaving = createInfo.isPending || updateEntity.isPending;
 
   // Build a human-readable list of what's missing
   const missing: string[] = [];
-  if (!status.has_name) missing.push("name");
-  if (!status.has_email) missing.push("email");
-  if (!status.has_telegram) missing.push("Telegram handle");
-  if (!status.has_telegram_chat_id) missing.push("Telegram chat ID");
+  if (nameIsPlaceholder) missing.push("name");
+  if (!hasEmail) missing.push("email");
+  if (!hasTelegram) missing.push("Telegram handle");
+  if (!hasTelegramChatId) missing.push("Telegram chat ID");
 
   async function handleSave() {
-    const trimmedFirst = firstName.trim();
-    const trimmedLast = lastName.trim();
+    const trimmedName = canonicalName.trim();
     const trimmedEmail = email.trim();
     const trimmedTelegram = telegram.trim();
     const trimmedChatId = telegramChatId.trim();
@@ -84,8 +92,7 @@ export function OwnerSetupBanner() {
     const trimmedApiId = telegramApiId.trim();
 
     if (
-      !trimmedFirst &&
-      !trimmedLast &&
+      !trimmedName &&
       !trimmedEmail &&
       !trimmedTelegram &&
       !trimmedChatId &&
@@ -93,31 +100,28 @@ export function OwnerSetupBanner() {
       !trimmedApiHash &&
       !trimmedApiId
     ) {
-      toast.error("Please fill in at least your first name.");
+      toast.error("Please fill in at least one field.");
       return;
     }
 
     try {
       const promises: Promise<unknown>[] = [];
 
-      if (trimmedFirst || trimmedLast) {
+      if (trimmedName) {
         promises.push(
-          patchContact.mutateAsync({
-            contactId,
-            request: {
-              first_name: trimmedFirst || null,
-              last_name: trimmedLast || null,
-            },
+          updateEntity.mutateAsync({
+            entityId,
+            request: { canonical_name: trimmedName },
           }),
         );
       }
 
-      // --- Identity fields ---
+      // --- Identity fields (entity_info) ---
 
       if (trimmedEmail) {
         promises.push(
           createInfo.mutateAsync({
-            contactId,
+            entityId,
             request: { type: "email", value: trimmedEmail, is_primary: true },
           }),
         );
@@ -126,7 +130,7 @@ export function OwnerSetupBanner() {
       if (trimmedTelegram) {
         promises.push(
           createInfo.mutateAsync({
-            contactId,
+            entityId,
             request: { type: "telegram", value: trimmedTelegram, is_primary: true },
           }),
         );
@@ -135,7 +139,7 @@ export function OwnerSetupBanner() {
       if (trimmedChatId) {
         promises.push(
           createInfo.mutateAsync({
-            contactId,
+            entityId,
             request: { type: "telegram_chat_id", value: trimmedChatId, is_primary: true },
           }),
         );
@@ -146,7 +150,7 @@ export function OwnerSetupBanner() {
       if (trimmedEmailPw) {
         promises.push(
           createInfo.mutateAsync({
-            contactId,
+            entityId,
             request: {
               type: "email_password",
               value: trimmedEmailPw,
@@ -160,7 +164,7 @@ export function OwnerSetupBanner() {
       if (trimmedApiHash) {
         promises.push(
           createInfo.mutateAsync({
-            contactId,
+            entityId,
             request: {
               type: "telegram_api_hash",
               value: trimmedApiHash,
@@ -174,7 +178,7 @@ export function OwnerSetupBanner() {
       if (trimmedApiId) {
         promises.push(
           createInfo.mutateAsync({
-            contactId,
+            entityId,
             request: {
               type: "telegram_api_id",
               value: trimmedApiId,
@@ -188,8 +192,7 @@ export function OwnerSetupBanner() {
       await Promise.all(promises);
       toast.success("Owner identity updated.");
       setOpen(false);
-      setFirstName("");
-      setLastName("");
+      setCanonicalName("");
       setEmail("");
       setTelegram("");
       setTelegramChatId("");
@@ -233,34 +236,21 @@ export function OwnerSetupBanner() {
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-2">
-              {!status.has_name && (
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-2">
-                    <Label htmlFor="owner-first-name">First name</Label>
-                    <Input
-                      id="owner-first-name"
-                      type="text"
-                      placeholder="Jane"
-                      value={firstName}
-                      onChange={(e) => setFirstName(e.target.value)}
-                      disabled={isSaving}
-                      autoFocus
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="owner-last-name">Last name</Label>
-                    <Input
-                      id="owner-last-name"
-                      type="text"
-                      placeholder="Doe"
-                      value={lastName}
-                      onChange={(e) => setLastName(e.target.value)}
-                      disabled={isSaving}
-                    />
-                  </div>
+              {nameIsPlaceholder && (
+                <div className="space-y-2">
+                  <Label htmlFor="owner-name">Name</Label>
+                  <Input
+                    id="owner-name"
+                    type="text"
+                    placeholder="Jane Doe"
+                    value={canonicalName}
+                    onChange={(e) => setCanonicalName(e.target.value)}
+                    disabled={isSaving}
+                    autoFocus
+                  />
                 </div>
               )}
-              {!status.has_email && (
+              {!hasEmail && (
                 <div className="space-y-2">
                   <Label htmlFor="owner-email">Email</Label>
                   <Input
@@ -273,7 +263,7 @@ export function OwnerSetupBanner() {
                   />
                 </div>
               )}
-              {!status.has_telegram && (
+              {!hasTelegram && (
                 <div className="space-y-2">
                   <Label htmlFor="owner-telegram">Telegram handle</Label>
                   <Input
@@ -286,7 +276,7 @@ export function OwnerSetupBanner() {
                   />
                 </div>
               )}
-              {!status.has_telegram_chat_id && (
+              {!hasTelegramChatId && (
                 <div className="space-y-2">
                   <Label htmlFor="owner-telegram-chat-id">Telegram chat ID</Label>
                   <Input
@@ -321,8 +311,7 @@ export function OwnerSetupBanner() {
                 {showCredentials && (
                   <div className="mt-3 space-y-4">
                     <p className="text-xs text-muted-foreground">
-                      These were previously stored in /secrets. They are now managed as
-                      secured entries on your owner identity.
+                      These are stored as secured entries on your owner entity.
                     </p>
                     <div className="space-y-2">
                       <Label htmlFor="owner-email-pw">Email password / app password</Label>

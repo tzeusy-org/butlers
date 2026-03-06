@@ -649,8 +649,10 @@ def test_merge_contact_400_when_same_contact(app):
 
 def test_owner_setup_status_has_both(app):
     """GET /owner/setup-status returns true for both when owner has telegram and email."""
+    owner_id = uuid4()
     app, _, mock_pool = _app_with_mock_pool(
         app,
+        fetchrow_result={"id": owner_id, "canonical_name": "Jane"},
         fetch_rows=[
             {"type": "telegram"},
             {"type": "email"},
@@ -668,7 +670,12 @@ def test_owner_setup_status_has_both(app):
 
 def test_owner_setup_status_has_telegram_only(app):
     """GET /owner/setup-status returns has_telegram=true, has_email=false."""
-    app, _, mock_pool = _app_with_mock_pool(app, fetch_rows=[{"type": "telegram"}])
+    owner_id = uuid4()
+    app, _, mock_pool = _app_with_mock_pool(
+        app,
+        fetchrow_result={"id": owner_id, "canonical_name": "Jane"},
+        fetch_rows=[{"type": "telegram"}],
+    )
 
     with TestClient(app=app) as client:
         resp = client.get("/api/relationship/owner/setup-status")
@@ -681,7 +688,12 @@ def test_owner_setup_status_has_telegram_only(app):
 
 def test_owner_setup_status_has_neither(app):
     """GET /owner/setup-status returns false for both when owner has no channels."""
-    app, _, mock_pool = _app_with_mock_pool(app, fetch_rows=[])
+    owner_id = uuid4()
+    app, _, mock_pool = _app_with_mock_pool(
+        app,
+        fetchrow_result={"id": owner_id, "canonical_name": "Jane"},
+        fetch_rows=[],
+    )
 
     with TestClient(app=app) as client:
         resp = client.get("/api/relationship/owner/setup-status")
@@ -692,12 +704,12 @@ def test_owner_setup_status_has_neither(app):
     assert data["has_email"] is False
 
 
-def test_owner_setup_status_includes_contact_id(app):
-    """GET /owner/setup-status includes the owner contact_id when found."""
+def test_owner_setup_status_includes_entity_id(app):
+    """GET /owner/setup-status includes the owner entity_id when found."""
     owner_id = uuid4()
     app, _, mock_pool = _app_with_mock_pool(
         app,
-        fetchrow_result={"id": owner_id},
+        fetchrow_result={"id": owner_id, "canonical_name": "Jane"},
         fetch_rows=[{"type": "email"}],
     )
 
@@ -706,12 +718,12 @@ def test_owner_setup_status_includes_contact_id(app):
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["contact_id"] == str(owner_id)
+    assert data["entity_id"] == str(owner_id)
     assert data["has_email"] is True
 
 
-def test_owner_setup_status_contact_id_null_when_no_owner(app):
-    """GET /owner/setup-status returns null contact_id when no owner contact exists."""
+def test_owner_setup_status_entity_id_null_when_no_owner(app):
+    """GET /owner/setup-status returns null entity_id when no owner entity exists."""
     app, _, mock_pool = _app_with_mock_pool(app, fetch_rows=[])
 
     with TestClient(app=app) as client:
@@ -719,7 +731,7 @@ def test_owner_setup_status_contact_id_null_when_no_owner(app):
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["contact_id"] is None
+    assert data["entity_id"] is None
 
 
 # ---------------------------------------------------------------------------

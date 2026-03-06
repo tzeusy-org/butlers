@@ -3,7 +3,6 @@ import { toast } from "sonner";
 
 import { triggerContactsSync } from "@/api/index.ts";
 import type { ContactParams } from "@/api/types";
-import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { PendingIdentitiesSection } from "@/components/relationship/PendingIdentitiesSection";
 import { UnlinkedEntitiesSection } from "@/components/relationship/UnlinkedEntitiesSection";
 import ContactTable from "@/components/relationship/ContactTable";
@@ -105,9 +104,6 @@ export default function ContactsPage() {
           {isSyncing ? "Syncing..." : "Sync From Google"}
         </Button>
       </div>
-
-      {/* Owner setup banner — shown when identity not configured */}
-      <OwnerSetupBanner />
 
       {/* Pending identities — shown when temp contacts exist */}
       <PendingIdentitiesSection />

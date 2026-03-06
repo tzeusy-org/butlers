@@ -160,7 +160,7 @@ CORE_TOOL_NAMES: frozenset[str] = frozenset(
 _DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE = "telegram_chat_id"
 _NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
     "No bot <-> user telegram chat has been configured - please add a "
-    "telegram_chat_id contact_info entry on the owner contact via the dashboard"
+    "telegram_chat_id entity_info entry on the owner entity via the dashboard"
 )
 
 
@@ -583,7 +583,7 @@ def _extract_identity_scope_credentials(
         return {}
 
     scoped_credentials: dict[str, list[str]] = {}
-    for scope_name in ("bot",):  # user-scope excluded: resolved from owner contact_info
+    for scope_name in ("bot",):  # user-scope excluded: resolved from owner entity_info
         scope_cfg = config_dict.get(scope_name)
         if not isinstance(scope_cfg, dict):
             continue
@@ -779,19 +779,16 @@ class _ToolCallLoggingMCP:
         return getattr(self._mcp, name)
 
 
-async def _ensure_owner_entity_and_contact(pool: asyncpg.Pool) -> None:
-    """Bootstrap the owner entity and contact (idempotent).
+async def _ensure_owner_entity(pool: asyncpg.Pool) -> None:
+    """Bootstrap the owner entity (idempotent) and clean up legacy owner contact.
 
-    Entity-first bootstrap:
-    1. Create owner entity in shared.entities with roles=[''owner''] (if table exists).
-    2. Create owner contact in shared.contacts linked to the entity via entity_id.
-
-    The partial unique indexes ix_entities_owner_singleton and
-    ix_contacts_owner_singleton prevent duplicates under concurrent startup.
+    1. Create owner entity in shared.entities with roles=['owner'] (if table exists).
+    2. Delete legacy owner contact from shared.contacts if one exists.
+       (contact_info rows cascade-delete via FK.)
 
     Safe to call if:
     - shared.entities or shared.contacts do not yet exist (skips silently)
-    - owner entity/contact already exist (ON CONFLICT DO NOTHING)
+    - owner entity already exists (ON CONFLICT DO NOTHING)
     - migration has not yet run (graceful no-op)
     """
     try:
@@ -803,7 +800,6 @@ async def _ensure_owner_entity_and_contact(pool: asyncpg.Pool) -> None:
                 "SELECT to_regclass('shared.entities') IS NOT NULL"
             )
 
-            owner_entity_id = None
             if entities_table_exists:
                 roles_on_entities = await conn.fetchval(
                     """
@@ -827,7 +823,7 @@ async def _ensure_owner_entity_and_contact(pool: asyncpg.Pool) -> None:
                         ["owner"],
                     )
                     if owner_entity_id is None:
-                        owner_entity_id = await conn.fetchval(
+                        await conn.fetchval(
                             """
                             SELECT id FROM shared.entities
                             WHERE tenant_id = 'shared'
@@ -837,7 +833,7 @@ async def _ensure_owner_entity_and_contact(pool: asyncpg.Pool) -> None:
                         )
 
             # ------------------------------------------------------------------
-            # Phase 2: Ensure owner contact in shared.contacts
+            # Phase 2: Delete legacy owner contact from shared.contacts
             # ------------------------------------------------------------------
             contacts_table_exists = await conn.fetchval(
                 "SELECT to_regclass('shared.contacts') IS NOT NULL"
@@ -845,58 +841,16 @@ async def _ensure_owner_entity_and_contact(pool: asyncpg.Pool) -> None:
             if not contacts_table_exists:
                 return
 
-            roles_col_exists = await conn.fetchval(
-                """
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = 'shared'
-                      AND table_name = 'contacts'
-                      AND column_name = 'roles'
-                )
-                """
+            # Delete by name='Owner'.  The FK on shared.contact_info has
+            # ON DELETE CASCADE, so any linked contact_info rows are removed
+            # automatically.
+            deleted = await conn.fetchval(
+                "DELETE FROM shared.contacts WHERE name = 'Owner' RETURNING id"
             )
-
-            # After core_016 the contacts.roles column has been dropped; roles
-            # now live exclusively on shared.entities.roles.  We still insert
-            # the owner contact but without the legacy roles column.
-            if roles_col_exists:
-                if owner_entity_id is not None:
-                    await conn.execute(
-                        """
-                        INSERT INTO shared.contacts (name, roles, entity_id)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT DO NOTHING
-                        """,
-                        "Owner",
-                        ["owner"],
-                        owner_entity_id,
-                    )
-                else:
-                    await conn.execute(
-                        "INSERT INTO shared.contacts (name, roles) "
-                        "VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                        "Owner",
-                        ["owner"],
-                    )
-            else:
-                # contacts.roles has been dropped (core_016 applied).
-                if owner_entity_id is not None:
-                    await conn.execute(
-                        """
-                        INSERT INTO shared.contacts (name, entity_id)
-                        VALUES ($1, $2)
-                        ON CONFLICT DO NOTHING
-                        """,
-                        "Owner",
-                        owner_entity_id,
-                    )
-                else:
-                    await conn.execute(
-                        "INSERT INTO shared.contacts (name) VALUES ($1) ON CONFLICT DO NOTHING",
-                        "Owner",
-                    )
+            if deleted is not None:
+                logger.info("Deleted legacy owner contact %s from shared.contacts", deleted)
     except Exception:  # noqa: BLE001
-        logger.warning("Owner entity/contact bootstrap skipped (non-fatal)", exc_info=True)
+        logger.warning("Owner entity bootstrap skipped (non-fatal)", exc_info=True)
 
 
 class RuntimeBinaryNotFoundError(RuntimeError):
@@ -1255,11 +1209,10 @@ class ButlerDaemon:
             or self._module_statuses[k.split(".")[0]].status == "active"
         }
 
-        # 8d. Bootstrap owner contact (idempotent; non-fatal).
-        #     Ensures exactly one contact with roles=[''owner''] exists in shared.contacts.
-        #     This is safe to call concurrently — the partial unique index + ON CONFLICT
-        #     prevent double-insertion even under race conditions.
-        await _ensure_owner_entity_and_contact(pool)
+        # 8d. Bootstrap owner entity (idempotent; non-fatal).
+        #     Ensures owner entity exists in shared.entities and removes any
+        #     legacy owner contact from shared.contacts.
+        await _ensure_owner_entity(pool)
 
         # 9. Call module on_startup (non-fatal per-module)
         started_modules: list[Module] = []
@@ -1843,8 +1796,8 @@ class ButlerDaemon:
     ) -> str | None:
         """Resolve notify recipient, including schedule-safe Telegram default chat mapping.
 
-        For Telegram send without an explicit recipient, looks up the owner contact's
-        ``contact_info`` entry with ``type='telegram_chat_id'`` in ``shared.contact_info``.
+        For Telegram send without an explicit recipient, looks up the owner entity's
+        ``entity_info`` entry with ``type='telegram_chat_id'`` in ``shared.entity_info``.
         """
         resolved_recipient = recipient.strip() if isinstance(recipient, str) else None
         if resolved_recipient:
@@ -3943,7 +3896,7 @@ class ButlerDaemon:
             Recipient resolution priority:
             1. `contact_id` provided → look up channel identifier from shared.contact_info
             2. `recipient` string provided → use as-is
-            3. Neither → resolve owner contact's channel identifier (default)
+            3. Neither → resolve owner entity's channel identifier (default)
 
             Valid JSON example:
             {
@@ -4033,7 +3986,7 @@ class ButlerDaemon:
             # Resolution priority:
             # (1) contact_id → query shared.contact_info WHERE contact_id = X AND type = channel
             # (2) recipient string → use as-is (inside _resolve_default_notify_recipient)
-            # (3) neither → resolve owner contact's channel identifier (default path)
+            # (3) neither → resolve owner entity's channel identifier (default path)
             if contact_id is not None:
                 contact_identifier = await daemon._resolve_contact_channel_identifier(
                     contact_id=contact_id,

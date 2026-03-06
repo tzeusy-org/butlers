@@ -21,7 +21,6 @@ import {
   getEntitySuggestions,
   getGroups,
   getLabels,
-  getOwnerSetupStatus,
   getPendingContacts,
   getUnlinkedContacts,
   linkEntity,
@@ -136,13 +135,6 @@ export function usePendingContacts() {
   });
 }
 
-/** Fetch owner setup status. */
-export function useOwnerSetupStatus() {
-  return useQuery({
-    queryKey: ["owner-setup-status"],
-    queryFn: () => getOwnerSetupStatus(),
-  });
-}
 
 /** Reveal a secured contact_info entry value. */
 export function useRevealContactSecret() {
@@ -212,7 +204,6 @@ export function useCreateContactInfo() {
     onSuccess: (_, { contactId }) => {
       void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-      void queryClient.invalidateQueries({ queryKey: ["owner-setup-status"] });
     },
   });
 }
@@ -237,7 +228,6 @@ export function useDeleteContactInfo() {
     onSuccess: (_, { contactId }) => {
       void queryClient.invalidateQueries({ queryKey: ["contact", contactId] });
       void queryClient.invalidateQueries({ queryKey: ["contacts"] });
-      void queryClient.invalidateQueries({ queryKey: ["owner-setup-status"] });
     },
   });
 }

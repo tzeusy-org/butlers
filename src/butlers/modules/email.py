@@ -112,7 +112,7 @@ class EmailModule(Module):
         self._config: EmailConfig = EmailConfig()
         self._pipeline: MessagePipeline | None = None
         self._routed_messages: list[RoutingResult] = []
-        # Credentials cached at startup: user-scope from owner contact_info,
+        # Credentials cached at startup: user-scope from owner entity_info,
         # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
 
@@ -134,7 +134,7 @@ class EmailModule(Module):
         envs: list[str] = []
         if self._config.bot.enabled:
             envs.extend([self._config.bot.address_env, self._config.bot.password_env])
-        # User-scope credentials come from owner contact_info, not butler_secrets.
+        # User-scope credentials come from owner entity_info, not butler_secrets.
         return envs
 
     def migration_revisions(self) -> str | None:
@@ -187,7 +187,7 @@ class EmailModule(Module):
         """Initialize email config and resolve credentials.
 
         User-scope credentials (USER_EMAIL_ADDRESS, USER_EMAIL_PASSWORD) are
-        resolved exclusively from the owner contact's ``shared.contact_info``
+        resolved exclusively from the owner entity's ``shared.entity_info``
         entries (types ``email`` and ``email_password``).  Bot-scope credentials
         are resolved via :class:`~butlers.credential_store.CredentialStore`.
 
@@ -199,7 +199,7 @@ class EmailModule(Module):
         self._config = config if isinstance(config, EmailConfig) else EmailConfig(**(config or {}))
         self._resolved_credentials = {}
 
-        # --- User-scope: resolve exclusively from owner contact_info ----------
+        # --- User-scope: resolve exclusively from owner entity_info ----------
         pool = getattr(db, "pool", None) if db is not None else None
         if pool is not None:
             user_cfg = self._config.user
@@ -403,7 +403,7 @@ class EmailModule(Module):
         if not address or not password:
             raise RuntimeError(
                 f"Missing email credentials for modules.email.{scope}: "
-                f"configure via owner contact_info (user-scope) "
+                f"configure via owner entity_info (user-scope) "
                 f"or butler_secrets (bot-scope)"
             )
         return address, password

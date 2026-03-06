@@ -4140,7 +4140,7 @@ class CalendarModule(Module):
                 "GOOGLE_OAUTH_CLIENT_SECRET", env_fallback=False
             )
 
-            # Step 2: Refresh token from shared.contact_info (exclusively).
+            # Step 2: Refresh token from shared.entity_info (exclusively).
             refresh_token: str | None = None
             pool = getattr(db, "pool", None)
             if pool is not None:

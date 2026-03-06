@@ -8,7 +8,7 @@ consumed by both the Gmail connector and the Calendar module.
 - ``GOOGLE_OAUTH_CLIENT_ID``, ``GOOGLE_OAUTH_CLIENT_SECRET``,
   ``GOOGLE_OAUTH_SCOPES`` → ``butler_secrets`` table via
   :class:`~butlers.credential_store.CredentialStore` (app config).
-- ``GOOGLE_REFRESH_TOKEN`` → ``shared.contact_info`` on the owner contact
+- ``GOOGLE_REFRESH_TOKEN`` → ``shared.entity_info`` on the owner entity
   (type ``google_oauth_refresh``, ``secured=true``).
 
 Secret material (client_secret, refresh_token) is never logged in plaintext.
@@ -159,7 +159,7 @@ async def store_google_credentials(
 
     App credentials (client_id, client_secret, scopes) are stored in
     ``butler_secrets`` via *store*.  The refresh token is stored in
-    ``shared.contact_info`` on the owner contact via *pool*.
+    ``shared.entity_info`` on the owner entity via *pool*.
 
     Secret material (client_secret, refresh_token) is never logged.
 
@@ -211,7 +211,7 @@ async def store_google_credentials(
             is_sensitive=False,
         )
 
-    # Refresh token → shared.contact_info
+    # Refresh token → shared.entity_info
     if pool is not None:
         await upsert_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN, validated.refresh_token)
 
@@ -244,7 +244,7 @@ async def load_google_credentials(
     client_secret = await store.load(KEY_CLIENT_SECRET)
     scope = await store.load(KEY_SCOPES)
 
-    # Refresh token from owner contact_info (exclusively)
+    # Refresh token from owner entity_info (exclusively)
     refresh_token: str | None = None
     if pool is not None:
         refresh_token = await resolve_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN)
@@ -352,7 +352,7 @@ async def load_app_credentials(
     if not client_id or not client_secret:
         return None
 
-    # Refresh token from owner contact_info (exclusively)
+    # Refresh token from owner entity_info (exclusively)
     refresh_token: str | None = None
     if pool is not None:
         refresh_token = await resolve_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN)
