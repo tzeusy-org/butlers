@@ -33,7 +33,7 @@ policy = "suggest"
 
 [[butler.schedule]]
 name = "upcoming-travel-check"
-cron = "0 8 * * *"
+cron = "30 21 * * 0"
 dispatch_mode = "prompt"
 prompt = """
 Daily pre-trip scan. Check for upcoming departures and check-ins within the next 48 hours.

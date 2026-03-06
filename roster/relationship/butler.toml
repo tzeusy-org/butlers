@@ -23,7 +23,7 @@ route_contract_max = "route.v1"
 
 [[butler.schedule]]
 name = "upcoming-dates-check"
-cron = "0 8 * * *"
+cron = "25 21 * * 0"
 prompt = """
 Check for important dates in the next 7 days (birthdays, anniversaries).
 For each, draft a reminder message. If any dates are upcoming, deliver the

@@ -35,7 +35,7 @@ policy = "suggest"
 
 [[butler.schedule]]
 name = "upcoming-bills-check"
-cron = "0 8 * * *"
+cron = "15 21 * * 0"
 prompt = """
 Daily bills check. Use upcoming_bills(days_ahead=14, include_overdue=true) to surface bills due
 in the next two weeks, ranked by urgency:
@@ -50,7 +50,7 @@ If no bills are upcoming or overdue, do not send a message.
 
 [[butler.schedule]]
 name = "subscription-renewal-alerts"
-cron = "30 8 * * *"
+cron = "20 21 * * 0"
 prompt = """
 Daily subscription renewal scan. Check for subscriptions renewing within the next 7 days.
 For each upcoming renewal, include the service name, amount, and renewal date.
