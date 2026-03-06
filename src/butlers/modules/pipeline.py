@@ -14,9 +14,7 @@ import hashlib
 import json
 import logging
 import re
-import secrets
 import time
-import uuid
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -31,6 +29,7 @@ from butlers.tools.switchboard.routing.telemetry import (
     get_switchboard_telemetry,
     normalize_error_class,
 )
+from butlers.utils.ids import generate_uuid7_str
 
 logger = logging.getLogger(__name__)
 
@@ -44,24 +43,6 @@ _TELEGRAM_CHAT_MESSAGE_RE = re.compile(r"^(?P<chat_id>-?\d+):(?P<message_id>\d+)
 _routing_ctx_var: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "_routing_ctx_var", default=None
 )
-
-
-def _generate_uuid7_string() -> str:
-    """Generate a UUIDv7 string with stdlib support and deterministic fallback."""
-    uuid7_fn = getattr(uuid, "uuid7", None)
-    if callable(uuid7_fn):
-        return str(uuid7_fn())
-
-    timestamp_ms = int(datetime.now(UTC).timestamp() * 1000) & ((1 << 48) - 1)
-    rand_a = secrets.randbits(12)
-    rand_b = secrets.randbits(62)
-
-    value = timestamp_ms << 80
-    value |= 0x7 << 76
-    value |= rand_a << 64
-    value |= 0b10 << 62
-    value |= rand_b
-    return str(uuid.UUID(int=value))
 
 
 # ---------------------------------------------------------------------------
@@ -697,16 +678,16 @@ class MessagePipeline:
     @staticmethod
     def _coerce_request_id(raw_request_id: Any) -> str:
         if raw_request_id in (None, ""):
-            return _generate_uuid7_string()
+            return generate_uuid7_str()
         text = str(raw_request_id).strip()
         if not text:
-            return _generate_uuid7_string()
+            return generate_uuid7_str()
         try:
             parsed = UUID(text)
         except ValueError:
-            return _generate_uuid7_string()
+            return generate_uuid7_str()
         if parsed.version != 7:
-            return _generate_uuid7_string()
+            return generate_uuid7_str()
         return str(parsed)
 
     @staticmethod

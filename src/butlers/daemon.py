@@ -124,6 +124,7 @@ from butlers.modules.registry import ModuleRegistry, default_registry
 from butlers.storage import BlobNotFoundError, LocalBlobStore
 from butlers.tools.attachments import get_attachment as _get_attachment
 from butlers.tools.switchboard.routing.contracts import parse_notify_request, parse_route_envelope
+from butlers.utils.ids import generate_uuid7, generate_uuid7_str
 
 logger = logging.getLogger(__name__)
 
@@ -619,7 +620,7 @@ def _extract_delivery_id(
 
     if fallback_request_id:
         return f"{channel}:{fallback_request_id}"
-    return f"{channel}:{uuid.uuid4()}"
+    return f"{channel}:{generate_uuid7_str()}"
 
 
 def _flatten_config_for_secret_scan(config: ButlerConfig) -> dict[str, Any]:
@@ -3620,7 +3621,7 @@ class ButlerDaemon:
             until_at = target + timedelta(minutes=1)
             task_id = await _schedule_create(
                 pool,
-                f"remind-{target.strftime('%Y%m%dT%H%M')}-{str(uuid.uuid4())[:8]}",
+                f"remind-{target.strftime('%Y%m%dT%H%M')}-{generate_uuid7_str()[:8]}",
                 cron,
                 prompt,
                 until_at=until_at,
@@ -4000,7 +4001,7 @@ class ButlerDaemon:
 
                         from butlers.modules.approvals.models import ActionStatus
 
-                        action_id = uuid.uuid4()
+                        action_id = generate_uuid7()
                         now = _dt.datetime.now(_dt.UTC)
                         expires_at = now + _dt.timedelta(hours=72)
                         info_type = daemon._CHANNEL_TO_CONTACT_INFO_TYPE.get(channel, channel)
@@ -4510,7 +4511,6 @@ class ButlerDaemon:
             agent_summary: str,
         ) -> str:
             """Insert a pending_actions row for a calendar overlap override."""
-            import uuid as _uuid
             from datetime import UTC as _UTC
             from datetime import datetime as _dt
             from datetime import timedelta as _td
@@ -4521,7 +4521,7 @@ class ButlerDaemon:
             )
             from butlers.modules.approvals.models import ActionStatus
 
-            action_id = _uuid.uuid4()
+            action_id = generate_uuid7_str()
             now = _dt.now(_UTC)
             expires_at = now + _td(hours=expiry_hours)
 

@@ -9,14 +9,14 @@ any test context, including roster-local test trees.
 
 from __future__ import annotations
 
-import uuid
-
 from sqlalchemy import create_engine, text
+
+from butlers.utils.ids import generate_uuid7
 
 
 def migration_db_name() -> str:
     """Return a unique database name suitable for one migration test run."""
-    return f"test_{uuid.uuid4().hex[:12]}"
+    return f"test_{generate_uuid7().hex[:12]}"
 
 
 def create_migration_db(postgres_container: object, db_name: str) -> str:

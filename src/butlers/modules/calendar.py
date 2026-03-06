@@ -31,6 +31,7 @@ from butlers.core.scheduler import schedule_update as _schedule_update
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
 from butlers.modules.base import Module
+from butlers.utils.ids import generate_uuid7, generate_uuid7_str
 
 logger = logging.getLogger(__name__)
 
@@ -3311,7 +3312,7 @@ class CalendarModule(Module):
             )
 
             try:
-                event_link_id = uuid.uuid4()
+                event_link_id = generate_uuid7()
                 if source_kind == BUTLER_EVENT_SOURCE_REMINDER:
                     reminder = await module._create_reminder_event(
                         title=normalized_title,
@@ -3346,7 +3347,7 @@ class CalendarModule(Module):
                     if dispatch_mode not in {"prompt", "job"}:
                         raise ValueError("dispatch_mode must be 'prompt' or 'job'")
                     schedule_name = str(
-                        args.get("name") or f"calendar-event-{uuid.uuid4().hex[:8]}"
+                        args.get("name") or f"calendar-event-{generate_uuid7().hex[:8]}"
                     )
                     if dispatch_mode == "job":
                         job_name = str(args.get("job_name") or action).strip()
@@ -6202,7 +6203,7 @@ class CalendarModule(Module):
         normalized_request_id = CalendarModule._normalize_request_id(request_id)
         if normalized_request_id is not None:
             return f"{action_type}:request:{normalized_request_id}"
-        return f"{action_type}:generated:{uuid.uuid4()}"
+        return f"{action_type}:generated:{generate_uuid7_str()}"
 
     async def _table_columns(self, table_name: str) -> set[str]:
         pool = getattr(self._db, "pool", None) if self._db is not None else None

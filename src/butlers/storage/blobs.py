@@ -5,10 +5,11 @@ Start with local filesystem for dev, designed to support S3/MinIO later.
 """
 
 import mimetypes
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple, Protocol
+
+from butlers.utils.ids import generate_uuid7
 
 
 class BlobRef(NamedTuple):
@@ -131,7 +132,7 @@ class LocalBlobStore:
         """
         now = datetime.now(UTC)
         date_prefix = now.strftime("%Y/%m/%d")
-        unique_id = uuid.uuid4()
+        unique_id = generate_uuid7()
 
         # Determine file extension
         ext = ""

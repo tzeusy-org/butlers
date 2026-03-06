@@ -21,7 +21,6 @@ from __future__ import annotations
 import inspect
 import json
 import logging
-import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -31,6 +30,7 @@ from butlers.modules.approvals.events import ApprovalEventType, record_approval_
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.rules import match_rules_from_list
+from butlers.utils.ids import generate_uuid7
 
 logger = logging.getLogger(__name__)
 
@@ -316,7 +316,7 @@ def _make_gate_wrapper(
 
     async def gate_wrapper(**kwargs: Any) -> dict[str, Any]:
         tool_args = dict(kwargs)
-        action_id = uuid.uuid4()
+        action_id = generate_uuid7()
         now = datetime.now(UTC)
         expires_at = now + timedelta(hours=expiry_hours)
 

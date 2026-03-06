@@ -15,6 +15,8 @@ import {
 import { toast } from "sonner";
 import { useSearchParams } from "react-router";
 
+import { uuidv7 } from "@/lib/ids.ts";
+
 import type {
   CalendarWorkspaceSourceFreshness,
   CalendarWorkspaceUserMutationAction,
@@ -391,10 +393,7 @@ function maybeText(value: unknown): string {
 }
 
 function buildRequestId(action: CalendarWorkspaceUserMutationAction): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `calendar-${action}-${crypto.randomUUID()}`;
-  }
-  return `calendar-${action}-${Date.now()}`;
+  return `calendar-${action}-${uuidv7()}`;
 }
 
 function defaultFormWindow(anchor: Date): { startAtLocal: string; endAtLocal: string } {

@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import sys
-import uuid
 from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
@@ -32,6 +31,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.config import load_config
 from butlers.modules.metrics.prometheus import async_query, async_query_range
+from butlers.utils.ids import generate_uuid7_str
 
 # Dynamically load models module from the same directory
 _models_path = Path(__file__).parent / "models.py"
@@ -1454,7 +1454,7 @@ async def create_backfill_job(
     """
     pool = _pool(db)
 
-    job_id = str(uuid.uuid4())
+    job_id = generate_uuid7_str()
     now = datetime.datetime.now(datetime.UTC)
     target_categories_json = json.dumps(body.target_categories)
 

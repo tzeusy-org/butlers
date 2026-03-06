@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import { triggerButler } from "@/api/index.ts";
+import { uuidv7 } from "@/lib/ids.ts";
 import { ApiError } from "@/api/client.ts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -80,7 +81,7 @@ export default function ButlerTriggerTab({ butlerName }: ButlerTriggerTabProps) 
       // Add to history
       setHistory((prev) => [
         {
-          id: crypto.randomUUID(),
+          id: uuidv7(),
           prompt: prompt.trim(),
           success: response.success,
           sessionId: response.session_id,
@@ -106,7 +107,7 @@ export default function ButlerTriggerTab({ butlerName }: ButlerTriggerTabProps) 
 
       setHistory((prev) => [
         {
-          id: crypto.randomUUID(),
+          id: uuidv7(),
           prompt: prompt.trim(),
           success: false,
           sessionId: null,

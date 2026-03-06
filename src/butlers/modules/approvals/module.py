@@ -38,6 +38,7 @@ from butlers.modules.approvals.executor import (
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
 from butlers.modules.base import Module
+from butlers.utils.ids import generate_uuid7
 
 logger = logging.getLogger(__name__)
 _HIGH_RISK_TIERS: frozenset[ApprovalRiskTier] = frozenset(
@@ -589,7 +590,7 @@ class ApprovalsModule(Module):
                 result["created_rule_error"] = constraint_error
                 return result
 
-            rule_id = uuid.uuid4()
+            rule_id = generate_uuid7()
             rule = ApprovalRule(
                 id=rule_id,
                 tool_name=action.tool_name,
@@ -781,7 +782,7 @@ class ApprovalsModule(Module):
         if isinstance(actor_result, dict):
             return actor_result
 
-        rule_id = uuid.uuid4()
+        rule_id = generate_uuid7()
         now = datetime.now(UTC)
 
         # Parse expires_at if provided
@@ -882,7 +883,7 @@ class ApprovalsModule(Module):
         if constraint_error is not None:
             return {"error": constraint_error}
 
-        rule_id = uuid.uuid4()
+        rule_id = generate_uuid7()
         now = datetime.now(UTC)
 
         rule = ApprovalRule(

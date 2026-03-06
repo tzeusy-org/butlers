@@ -8,6 +8,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.utils.ids import generate_uuid7
+
 
 async def replay_dead_letter_request(
     conn: asyncpg.Connection,
@@ -74,7 +76,7 @@ async def replay_dead_letter_request(
     # Re-ingest with original request_id preserved in request_context
     try:
         # Insert into message_inbox with replay metadata
-        new_request_id = uuid.uuid4()
+        new_request_id = generate_uuid7()
         # Parse JSONB fields (asyncpg returns them as strings)
         request_context_raw = dead_letter["request_context"]
         original_payload_raw = dead_letter["original_payload"]

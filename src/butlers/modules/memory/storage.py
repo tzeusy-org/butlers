@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from butlers.utils.ids import generate_uuid7
+
 if TYPE_CHECKING:
     from asyncpg import Pool
 
@@ -129,7 +131,7 @@ async def store_episode(
     Returns:
         The UUID of the newly created episode row.
     """
-    episode_id = uuid.uuid4()
+    episode_id = generate_uuid7()
     embedding = embedding_engine.embed(content)
     search_text = preprocess_text(content)
     expires_at = datetime.now(UTC) + timedelta(days=_DEFAULT_EPISODE_TTL_DAYS)
@@ -205,7 +207,7 @@ async def store_fact(
     Returns:
         The UUID of the newly created fact.
     """
-    fact_id = uuid.uuid4()
+    fact_id = generate_uuid7()
     searchable = f"{subject} {predicate} {content}"
     embedding = embedding_engine.embed(searchable)
     search_text = preprocess_text(searchable)
@@ -372,7 +374,7 @@ async def store_rule(
     Returns:
         The UUID of the newly created rule.
     """
-    rule_id = uuid.uuid4()
+    rule_id = generate_uuid7()
     embedding = embedding_engine.embed(content)
     search_text = preprocess_text(content)
     now = datetime.now(UTC)

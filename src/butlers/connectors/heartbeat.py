@@ -27,7 +27,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from uuid import UUID, uuid4
+from uuid import UUID
+
+from butlers.utils.ids import generate_uuid7
 
 if TYPE_CHECKING:
     from butlers.connectors.mcp_client import CachedMCPClient
@@ -141,7 +143,7 @@ class ConnectorHeartbeat:
         self._get_capabilities = get_capabilities
 
         # Generate stable instance_id for this process
-        self._instance_id = uuid4()
+        self._instance_id = generate_uuid7()
 
         # Track process start time for uptime calculation
         self._start_time = time.time()

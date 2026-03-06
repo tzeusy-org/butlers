@@ -21,6 +21,7 @@ from typing import Any
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
+from butlers.utils.ids import generate_uuid7
 
 logger = logging.getLogger(__name__)
 
@@ -270,7 +271,7 @@ async def create_approval_rule(
     if max_uses is not None and max_uses <= 0:
         return {"error": "max_uses must be greater than 0"}
 
-    rule_id = uuid.uuid4()
+    rule_id = generate_uuid7()
     now = datetime.now(UTC)
 
     parsed_expires: datetime | None = None
@@ -365,7 +366,7 @@ async def create_rule_from_action(
         for key, override in constraint_overrides.items():
             suggested[key] = override
 
-    rule_id = uuid.uuid4()
+    rule_id = generate_uuid7()
     now = datetime.now(UTC)
 
     rule = ApprovalRule(

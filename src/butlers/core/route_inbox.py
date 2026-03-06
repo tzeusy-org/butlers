@@ -25,6 +25,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.utils.ids import generate_uuid7
+
 logger = logging.getLogger(__name__)
 
 # Lifecycle states
@@ -58,7 +60,7 @@ async def route_inbox_insert(
     uuid.UUID
         The newly created row id.
     """
-    row_id = uuid.uuid4()
+    row_id = generate_uuid7()
     envelope_json = json.dumps(route_envelope)
     async with pool.acquire() as conn:
         await conn.execute(
