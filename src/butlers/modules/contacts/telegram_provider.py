@@ -80,7 +80,7 @@ def _user_to_canonical(user: Any) -> CanonicalContact | None:
     }
 
     return CanonicalContact(
-        external_id=user_id,
+        external_id=f"telegram:{user_id}",
         display_name=display_name,
         first_name=first_name,
         last_name=last_name,
