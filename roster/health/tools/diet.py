@@ -9,7 +9,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _row_to_dict
+from butlers.tools.health._helpers import _normalize_end_date, _row_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ async def meal_history(
 
     if end_date is not None:
         conditions.append(f"eaten_at <= ${idx}")
-        params.append(end_date)
+        params.append(_normalize_end_date(end_date))
         idx += 1
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -88,13 +88,14 @@ async def nutrition_summary(
     Returns total and daily average calories, protein, carbs, and fat from meals
     with non-null nutrition JSONB. Meals without nutrition data are excluded.
     """
+    normalized_end = _normalize_end_date(end_date)
     rows = await pool.fetch(
         """
         SELECT nutrition FROM meals
         WHERE eaten_at >= $1 AND eaten_at <= $2 AND nutrition IS NOT NULL
         """,
         start_date,
-        end_date,
+        normalized_end,
     )
 
     total_calories: float = 0.0

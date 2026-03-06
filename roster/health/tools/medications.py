@@ -10,7 +10,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _row_to_dict
+from butlers.tools.health._helpers import _normalize_end_date, _row_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ async def medication_history(
 
     if end_date is not None:
         conditions.append(f"taken_at <= ${idx}")
-        params.append(end_date)
+        params.append(_normalize_end_date(end_date))
         idx += 1
 
     where = " AND ".join(conditions)

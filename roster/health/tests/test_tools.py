@@ -753,6 +753,28 @@ async def test_meal_history_with_date_range(pool):
     assert "DateRange_new" not in descriptions
 
 
+async def test_meal_history_date_only_range(pool):
+    """meal_history finds meals when start_date and end_date are the same date (midnight).
+
+    Regression: when LLM passes "2026-03-18" for both start and end, Pydantic
+    parses them as midnight. Without normalization, the query becomes
+    eaten_at >= midnight AND eaten_at <= midnight, missing all meals after 00:00.
+    """
+    from butlers.tools.health import meal_history, meal_log
+
+    # Simulate a meal logged at noon UTC on a specific date
+    target = datetime(2026, 3, 18, 12, 0, 0)
+    await meal_log(pool, "lunch", "BBQ Beef Bites", eaten_at=target)
+
+    # Query with date-only bounds (midnight) — the way the LLM calls it
+    start = datetime(2026, 3, 18, 0, 0, 0)
+    end = datetime(2026, 3, 18, 0, 0, 0)
+
+    history = await meal_history(pool, type="lunch", start_date=start, end_date=end)
+    descriptions = [m["description"] for m in history]
+    assert "BBQ Beef Bites" in descriptions
+
+
 async def test_nutrition_summary(pool):
     """nutrition_summary aggregates totals and daily averages from nutrition JSONB."""
     from butlers.tools.health import meal_log, nutrition_summary
