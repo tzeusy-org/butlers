@@ -354,6 +354,10 @@ make test-qg
 
 ### Contacts-identity model contracts
 
+#### Owner contact bootstrap drift
+- Legacy `src/butlers/daemon.py::_ensure_owner_entity_and_contact` inserted `shared.contacts(name='Owner')` with `ON CONFLICT DO NOTHING`; after `core_016` dropped `ix_contacts_owner_singleton`, repeated startup could create duplicate `Owner` contacts.
+- Current startup contract is entity-only bootstrap (`_ensure_owner_entity`) with no automatic `shared.contacts` insert/delete side effects.
+
 #### Identity schema (shared)
 - `shared.contacts` and `shared.contact_info` are the canonical identity store in PostgreSQL; all channel-to-person resolution goes through this shared schema.
 - `shared.contacts.roles` (text[]) encodes contact relationship: `owner` marks the single human operator. A partial unique index (`ix_contacts_owner_singleton`) enforces owner singleton.
@@ -836,3 +840,7 @@ make test-qg
 - `memory_store_fact.tags` and `memory_search.types` metadata must explicitly describe list-only JSON input shapes (not plain strings), with concrete valid/invalid examples (`tags=["x"]`, `types=["fact"]`, invalid `types="facts"`).
 - `memory_search.types` should be modeled as `list[Literal["episode","fact","rule"]] | None` and `memory_search.mode` as `Literal["hybrid","semantic","keyword"]` so MCP schemas expose enforceable enums.
 - `notify.request_context` metadata must explicitly say it requires an object/dict value (not JSON strings or quoted placeholders), because placeholder examples in skills/docs can cause repeated runtime validation failures.
+
+### Switchboard message-triage delegation contract
+- `src/butlers/modules/pipeline.py::_build_routing_prompt` should keep the ingestion preamble minimal and explicitly instruct: `Please use the /message-triage skill ...`.
+- Routing/safety behavior details (untrusted-input handling, `<user_message>` wrapping, fallback to `general`, and mandatory `route_to_butler` call) are maintained in `roster/switchboard/.agents/skills/message-triage/SKILL.md` under `Execution Contract`.
