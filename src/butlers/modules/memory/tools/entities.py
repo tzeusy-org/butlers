@@ -529,6 +529,142 @@ def _tokenize(text: str) -> set[str]:
     return set(tokens)
 
 
+async def entity_neighbors(
+    pool: Pool,
+    entity_id: str,
+    *,
+    tenant_id: str,
+    max_depth: int = 2,
+    predicate_filter: list[str] | None = None,
+    direction: Literal["outgoing", "incoming", "both"] = "outgoing",
+) -> list[dict[str, Any]]:
+    """Traverse the entity graph via edge-facts and return neighboring entities.
+
+    Uses a recursive CTE to follow facts where ``object_entity_id IS NOT NULL``,
+    treating them as directed edges from ``entity_id`` (subject) to
+    ``object_entity_id`` (object).
+
+    Args:
+        pool: asyncpg connection pool.
+        entity_id: UUID string of the starting entity.
+        tenant_id: Tenant scope for isolation.
+        max_depth: Maximum traversal depth (1–5, default 2).
+        predicate_filter: Optional list of predicates to restrict traversal.
+        direction: Edge direction to follow: outgoing, incoming, or both.
+
+    Returns:
+        List of neighbor dicts ordered by depth then canonical_name, each with:
+          - entity: ``{id, canonical_name, entity_type}``
+          - predicate: the edge predicate at this hop
+          - depth: hop distance from start entity
+          - path: list of entity ID strings along the traversal path
+    """
+    max_depth = max(1, min(max_depth, 5))
+    eid = uuid.UUID(entity_id)
+
+    params: list[Any] = [eid, tenant_id, max_depth]
+    pred_clause = ""
+    if predicate_filter:
+        params.append(predicate_filter)
+        pred_clause = f"\n          AND f.predicate = ANY(${len(params)})"
+
+    if direction == "outgoing":
+        base_sql = f"""
+        SELECT f.object_entity_id AS neighbor_id, f.predicate,
+               1 AS depth, ARRAY[$1::uuid, f.object_entity_id] AS path
+        FROM facts f
+        WHERE f.entity_id = $1 AND f.object_entity_id IS NOT NULL
+          AND f.validity = 'active'{pred_clause}"""
+        rec_sql = f"""
+        SELECT f.object_entity_id AS neighbor_id, f.predicate,
+               n.depth + 1, n.path || f.object_entity_id
+        FROM neighbors n
+        JOIN facts f ON f.entity_id = n.neighbor_id
+        WHERE f.object_entity_id IS NOT NULL
+          AND f.validity = 'active'
+          AND f.object_entity_id != ALL(n.path)
+          AND n.depth < $3{pred_clause}"""
+    elif direction == "incoming":
+        base_sql = f"""
+        SELECT f.entity_id AS neighbor_id, f.predicate,
+               1 AS depth, ARRAY[$1::uuid, f.entity_id] AS path
+        FROM facts f
+        WHERE f.object_entity_id = $1
+          AND f.validity = 'active'{pred_clause}"""
+        rec_sql = f"""
+        SELECT f.entity_id AS neighbor_id, f.predicate,
+               n.depth + 1, n.path || f.entity_id
+        FROM neighbors n
+        JOIN facts f ON f.object_entity_id = n.neighbor_id
+        WHERE f.validity = 'active'
+          AND f.entity_id != ALL(n.path)
+          AND n.depth < $3{pred_clause}"""
+    else:  # both
+        base_sql = f"""
+        SELECT f.object_entity_id AS neighbor_id, f.predicate,
+               1 AS depth, ARRAY[$1::uuid, f.object_entity_id] AS path
+        FROM facts f
+        WHERE f.entity_id = $1 AND f.object_entity_id IS NOT NULL
+          AND f.validity = 'active'{pred_clause}
+        UNION ALL
+        SELECT f.entity_id AS neighbor_id, f.predicate,
+               1 AS depth, ARRAY[$1::uuid, f.entity_id] AS path
+        FROM facts f
+        WHERE f.object_entity_id = $1
+          AND f.validity = 'active'{pred_clause}"""
+        rec_sql = f"""
+        SELECT f.object_entity_id AS neighbor_id, f.predicate,
+               n.depth + 1, n.path || f.object_entity_id
+        FROM neighbors n
+        JOIN facts f ON f.entity_id = n.neighbor_id
+        WHERE f.object_entity_id IS NOT NULL
+          AND f.validity = 'active'
+          AND f.object_entity_id != ALL(n.path)
+          AND n.depth < $3{pred_clause}
+        UNION ALL
+        SELECT f.entity_id AS neighbor_id, f.predicate,
+               n.depth + 1, n.path || f.entity_id
+        FROM neighbors n
+        JOIN facts f ON f.object_entity_id = n.neighbor_id
+        WHERE f.validity = 'active'
+          AND f.entity_id != ALL(n.path)
+          AND n.depth < $3{pred_clause}"""
+
+    sql = f"""
+    WITH RECURSIVE neighbors AS (
+        {base_sql}
+        UNION ALL
+        {rec_sql}
+    )
+    SELECT
+        n.neighbor_id AS entity_id,
+        e.canonical_name,
+        e.entity_type,
+        n.predicate,
+        n.depth,
+        n.path
+    FROM neighbors n
+    JOIN entities e ON e.id = n.neighbor_id AND e.tenant_id = $2
+    ORDER BY n.depth, e.canonical_name
+    """
+
+    rows = await pool.fetch(sql, *params)
+
+    return [
+        {
+            "entity": {
+                "id": str(row["entity_id"]),
+                "canonical_name": row["canonical_name"],
+                "entity_type": row["entity_type"],
+            },
+            "predicate": row["predicate"],
+            "depth": row["depth"],
+            "path": [str(uid) for uid in row["path"]],
+        }
+        for row in rows
+    ]
+
+
 async def entity_merge(
     pool: Pool,
     source_entity_id: str,

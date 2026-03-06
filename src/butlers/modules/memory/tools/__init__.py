@@ -16,6 +16,7 @@ from butlers.modules.memory.tools.entities import (
     entity_create,
     entity_get,
     entity_merge,
+    entity_neighbors,
     entity_resolve,
     entity_update,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "entity_create",
     "entity_get",
     "entity_merge",
+    "entity_neighbors",
     "entity_resolve",
     "entity_update",
     "memory_confirm",

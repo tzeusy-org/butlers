@@ -551,6 +551,43 @@ class MemoryModule(Module):
             )
 
         @mcp.tool()
+        async def memory_entity_neighbors(
+            entity_id: Annotated[str, Field(description="UUID string of the starting entity.")],
+            tenant_id: Annotated[str, Field(description="Tenant scope for isolation.")],
+            max_depth: Annotated[
+                int,
+                Field(description="Maximum traversal depth (1–5, default 2)."),
+            ] = 2,
+            predicate_filter: Annotated[
+                list[str] | None,
+                Field(description="Optional list of predicates to restrict traversal."),
+            ] = None,
+            direction: Annotated[
+                Literal["outgoing", "incoming", "both"],
+                Field(description="Edge direction: outgoing (default), incoming, or both."),
+            ] = "outgoing",
+        ) -> list[dict[str, Any]]:
+            """Traverse the entity graph and return neighboring entities.
+
+            Follows edge-facts (facts where object_entity_id is set) using a
+            recursive CTE.  Returns neighbors with their edge predicate, hop
+            depth, and traversal path.
+
+            Direction controls which edges to follow:
+            - outgoing: entity_id → object_entity_id (default)
+            - incoming: object_entity_id → entity_id
+            - both: traverse in both directions
+            """
+            return await _entities.entity_neighbors(
+                module._get_pool(),
+                entity_id,
+                tenant_id=tenant_id,
+                max_depth=max_depth,
+                predicate_filter=predicate_filter,
+                direction=direction,
+            )
+
+        @mcp.tool()
         async def memory_entity_resolve(
             name: str,
             tenant_id: str = "shared",
