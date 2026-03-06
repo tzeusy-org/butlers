@@ -1,6 +1,7 @@
 {"created_at":"2026-03-06T12:16:26Z","created_by":"mayor","depends_on_id":"bu-47d","issue_id":"bu-47d.1","type":"parent-child"}
 {"created_at":"2026-03-06T12:16:34Z","created_by":"mayor","depends_on_id":"bu-47d","issue_id":"bu-47d.2","type":"parent-child"}
 {"created_at":"2026-03-06T12:16:47Z","created_by":"mayor","depends_on_id":"bu-47d","issue_id":"bu-47d.3","type":"parent-child"}
+{"created_at":"2026-03-06T12:27:00Z","created_by":"mayor","depends_on_id":"bu-wisp-xhol","issue_id":"bu-47d.3","type":"blocks"}
 {"created_at":"2026-03-06T12:17:11Z","created_by":"mayor","depends_on_id":"bu-47d","issue_id":"bu-47d.4","type":"parent-child"}
 {"created_at":"2026-03-06T12:17:30Z","created_by":"mayor","depends_on_id":"bu-47d.3","issue_id":"bu-47d.4","type":"blocks"}
 {"created_at":"2026-03-06T12:17:12Z","created_by":"mayor","depends_on_id":"bu-47d","issue_id":"bu-47d.5","type":"parent-child"}
@@ -19,6 +20,12 @@
 {"created_at":"2026-03-06T12:17:31Z","created_by":"mayor","depends_on_id":"bu-47d.6","issue_id":"bu-47d.9","type":"blocks"}
 {"created_at":"2026-03-06T12:17:32Z","created_by":"mayor","depends_on_id":"bu-47d.7","issue_id":"bu-47d.9","type":"blocks"}
 {"created_at":"2026-03-06T12:17:32Z","created_by":"mayor","depends_on_id":"bu-47d.8","issue_id":"bu-47d.9","type":"blocks"}
+{"created_at":"2026-03-06T12:18:43Z","created_by":"mayor","depends_on_id":"bu-87r","issue_id":"bu-87r.1","type":"parent-child"}
+{"created_at":"2026-03-06T12:18:53Z","created_by":"mayor","depends_on_id":"bu-87r","issue_id":"bu-87r.2","type":"parent-child"}
+{"created_at":"2026-03-06T12:18:58Z","created_by":"mayor","depends_on_id":"bu-87r.1","issue_id":"bu-87r.2","type":"blocks"}
+{"created_at":"2026-03-06T12:19:06Z","created_by":"mayor","depends_on_id":"bu-87r","issue_id":"bu-87r.3","type":"parent-child"}
+{"created_at":"2026-03-06T12:19:07Z","created_by":"mayor","depends_on_id":"bu-87r.1","issue_id":"bu-87r.3","type":"blocks"}
+{"created_at":"2026-03-06T12:19:08Z","created_by":"mayor","depends_on_id":"bu-87r.2","issue_id":"bu-87r.3","type":"blocks"}
 {"created_at":"2026-03-06T12:16:49Z","created_by":"butlers/polecats/obsidian","depends_on_id":"bu-s21","issue_id":"bu-a6o","type":"parent"}
 {"created_at":"2026-03-06T12:16:49Z","created_by":"butlers/polecats/obsidian","depends_on_id":"bu-s21","issue_id":"bu-fxu","type":"parent"}
 {"created_at":"2026-03-06T12:16:50Z","created_by":"butlers/polecats/obsidian","depends_on_id":"bu-s21","issue_id":"bu-j4t","type":"parent"}
