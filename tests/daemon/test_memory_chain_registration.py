@@ -102,6 +102,8 @@ class TestBaselineRevisionChain:
         ("001_memory_baseline.py", "mem_001", None),
         ("002_entities.py", "mem_002", "mem_001"),
         ("003_memory_events.py", "mem_003", "mem_002"),
+        ("004_object_entity_id.py", "mem_004", "mem_003"),
+        ("005_predicate_registry.py", "mem_005", "mem_004"),
     ]
 
     @staticmethod
@@ -166,13 +168,13 @@ class TestBaselineRevisionChain:
             chain_map[mod.revision] = mod.down_revision
 
         # Walk from head to root
-        current = "mem_003"
+        current = "mem_005"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
             path.append(current)
 
         path.reverse()
-        assert path == ["mem_001", "mem_002", "mem_003"], (
-            f"Expected linear chain [mem_001 -> mem_002 -> mem_003], got {path}"
+        assert path == ["mem_001", "mem_002", "mem_003", "mem_004", "mem_005"], (
+            f"Expected linear chain [mem_001 -> ... -> mem_005], got {path}"
         )
