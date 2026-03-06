@@ -81,7 +81,7 @@ async def list_collections(
             c.created_at,
             count(e.id) AS entity_count
         FROM collections c
-        LEFT JOIN entities e ON e.collection_id = c.id
+        LEFT JOIN collection_items e ON e.collection_id = c.id
         GROUP BY c.id
         ORDER BY c.name
         OFFSET $1 LIMIT $2
@@ -127,7 +127,7 @@ async def list_collection_entities(
 
     total = (
         await pool.fetchval(
-            "SELECT count(*) FROM entities WHERE collection_id = $1",
+            "SELECT count(*) FROM collection_items WHERE collection_id = $1",
             collection_id,
         )
         or 0
@@ -143,7 +143,7 @@ async def list_collection_entities(
             e.tags,
             e.created_at,
             e.updated_at
-        FROM entities e
+        FROM collection_items e
         JOIN collections c ON c.id = e.collection_id
         WHERE e.collection_id = $1
         ORDER BY e.created_at DESC
@@ -212,14 +212,15 @@ async def list_entities(
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
     count_sql = (
-        f"SELECT count(*) FROM entities e JOIN collections c ON c.id = e.collection_id{where}"
+        "SELECT count(*) FROM collection_items e"
+        f" JOIN collections c ON c.id = e.collection_id{where}"
     )
     total = await pool.fetchval(count_sql, *args) or 0
 
     data_sql = (
         f"SELECT e.id, e.collection_id, c.name AS collection_name,"
         f" e.data, e.tags, e.created_at, e.updated_at"
-        f" FROM entities e"
+        f" FROM collection_items e"
         f" JOIN collections c ON c.id = e.collection_id{where}"
         f" ORDER BY e.created_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}"
@@ -268,7 +269,7 @@ async def get_entity(
             e.tags,
             e.created_at,
             e.updated_at
-        FROM entities e
+        FROM collection_items e
         JOIN collections c ON c.id = e.collection_id
         WHERE e.id = $1
         """,

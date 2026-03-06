@@ -42,7 +42,7 @@ async def collection_export(pool: asyncpg.Pool, collection_name: str) -> list[di
     rows = await pool.fetch(
         """
         SELECT e.id, e.data, e.tags, e.created_at, e.updated_at
-        FROM entities e
+        FROM collection_items e
         JOIN collections c ON e.collection_id = c.id
         WHERE c.name = $1
         ORDER BY e.created_at
