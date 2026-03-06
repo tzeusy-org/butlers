@@ -12,6 +12,7 @@ import json
 import logging
 from datetime import date, timedelta
 
+import anyio
 from fastapi import APIRouter, Depends, Query
 
 from butlers.api.deps import (
@@ -72,7 +73,12 @@ async def _get_butler_session_stats(
                     data.get("total_output_tokens", 0),
                     by_model,
                 )
-    except (ButlerUnreachableError, TimeoutError):
+    except (
+        ButlerUnreachableError,
+        TimeoutError,
+        anyio.ClosedResourceError,
+        anyio.BrokenResourceError,
+    ):
         logger.debug(
             "Cost summary unavailable for butler %s via %s",
             info.name,

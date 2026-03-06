@@ -14,6 +14,7 @@ import logging
 import tomllib
 from pathlib import Path
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
@@ -92,8 +93,8 @@ async def _probe_butler(
     except ButlerUnreachableError:
         logger.debug("Butler %s is unreachable", info.name)
         status = "down"
-    except TimeoutError:
-        logger.debug("Butler %s timed out", info.name)
+    except (TimeoutError, anyio.ClosedResourceError, anyio.BrokenResourceError):
+        logger.debug("Butler %s is unreachable (connection lost or timed out)", info.name)
         status = "down"
     except Exception:
         logger.warning("Unexpected error probing butler %s", info.name, exc_info=True)

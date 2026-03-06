@@ -1,6 +1,6 @@
 """Operator control tools for manual interventions."""
 
-from roster.switchboard.tools.operator.controls import (
+from .controls import (
     abort_request,
     cancel_request,
     force_complete_request,
