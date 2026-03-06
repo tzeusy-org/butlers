@@ -62,11 +62,15 @@ _ENTITIES_TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE"
 
 # Butler schemas that may have a memory-module entities table to migrate from.
 _MEMORY_BUTLER_SCHEMAS = (
+    "education",
+    "finance",
     "general",
     "health",
+    "home",
     "messenger",
     "relationship",
     "switchboard",
+    "travel",
 )
 
 
@@ -413,6 +417,15 @@ def upgrade() -> None:
                     ALTER TABLE shared.contacts
                         DROP CONSTRAINT contacts_entity_id_fkey;
                 END IF;
+
+                -- Nullify orphaned entity_id references before adding FK
+                UPDATE shared.contacts
+                SET entity_id = NULL
+                WHERE entity_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM shared.entities
+                      WHERE id = shared.contacts.entity_id
+                  );
 
                 -- Create FK to shared.entities
                 IF NOT EXISTS (
