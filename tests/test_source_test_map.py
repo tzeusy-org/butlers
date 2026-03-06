@@ -24,6 +24,12 @@ class TestFullSuiteTriggers:
     def test_testing_init_triggers_full_suite(self):
         assert resolve_test_paths(["src/butlers/testing/__init__.py"]) == FULL_SUITE
 
+    def test_tests_conftest_triggers_full_suite(self):
+        assert resolve_test_paths(["tests/conftest.py"]) == FULL_SUITE
+
+    def test_modules_registry_triggers_full_suite(self):
+        assert resolve_test_paths(["src/butlers/modules/registry.py"]) == FULL_SUITE
+
     def test_all_triggers_are_tested(self):
         for trigger in FULL_SUITE_TRIGGERS:
             result = resolve_test_paths([trigger])
