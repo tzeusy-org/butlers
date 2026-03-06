@@ -18,6 +18,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.memory import (
     EntityDetail,
+    EntityInfoEntry,
     EntitySummary,
     Episode,
     Fact,
@@ -756,7 +757,19 @@ async def get_entity(
             eid,
         )
 
-        return row, list(fact_rows)
+        # Fetch entity_info entries (credentials, identifiers, etc.)
+        try:
+            info_rows = await pool.fetch(
+                "SELECT id, type, value, label, is_primary, secured"
+                " FROM shared.entity_info"
+                " WHERE entity_id = $1"
+                " ORDER BY type",
+                eid,
+            )
+        except Exception:
+            info_rows = []
+
+        return row, list(fact_rows), list(info_rows)
 
     results = await _fan_out_memory_queries(
         db,
@@ -766,9 +779,21 @@ async def get_entity(
     if not results:
         raise HTTPException(status_code=404, detail="Entity not found")
 
-    row, fact_rows = results[0]
+    row, fact_rows, info_rows = results[0]
 
     recent_facts = [_row_to_fact(f) for f in fact_rows]
+
+    entity_info = [
+        EntityInfoEntry(
+            id=str(r["id"]),
+            type=r["type"],
+            value=None if r["secured"] else r["value"],
+            label=r["label"],
+            is_primary=r["is_primary"],
+            secured=r["secured"],
+        )
+        for r in info_rows
+    ]
 
     detail = EntityDetail(
         id=str(row["id"]),
@@ -782,6 +807,7 @@ async def get_entity(
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
         recent_facts=recent_facts,
+        entity_info=entity_info,
     )
 
     return ApiResponse[EntityDetail](data=detail)

@@ -92,9 +92,13 @@ import type {
   RoutingLogParams,
   UpcomingDate,
   Episode,
+  CreateEntityInfoRequest,
+  CreateEntityInfoResponse,
   EntityDetail,
+  EntityInfoEntry,
   EntityParams,
   EntitySummary,
+  UpdateEntityInfoRequest,
   EpisodeParams,
   Fact,
   FactParams,
@@ -1189,6 +1193,50 @@ export function getEntity(
 ): Promise<ApiResponse<EntityDetail>> {
   return apiFetch<ApiResponse<EntityDetail>>(
     `/memory/entities/${encodeURIComponent(entityId)}`,
+  );
+}
+
+/** Create an entity_info entry for an entity. */
+export function createEntityInfo(
+  entityId: string,
+  request: CreateEntityInfoRequest,
+): Promise<CreateEntityInfoResponse> {
+  return apiFetch<CreateEntityInfoResponse>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/info`,
+    { method: "POST", body: JSON.stringify(request) },
+  );
+}
+
+/** Update an entity_info entry. */
+export function updateEntityInfo(
+  entityId: string,
+  infoId: string,
+  request: UpdateEntityInfoRequest,
+): Promise<EntityInfoEntry> {
+  return apiFetch<EntityInfoEntry>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/info/${encodeURIComponent(infoId)}`,
+    { method: "PATCH", body: JSON.stringify(request) },
+  );
+}
+
+/** Delete an entity_info entry. */
+export function deleteEntityInfo(
+  entityId: string,
+  infoId: string,
+): Promise<void> {
+  return apiFetch<void>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/info/${encodeURIComponent(infoId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** Reveal the actual value of a secured entity_info entry. */
+export function revealEntitySecret(
+  entityId: string,
+  infoId: string,
+): Promise<EntityInfoEntry> {
+  return apiFetch<EntityInfoEntry>(
+    `/relationship/entities/${encodeURIComponent(entityId)}/secrets/${encodeURIComponent(infoId)}`,
   );
 }
 

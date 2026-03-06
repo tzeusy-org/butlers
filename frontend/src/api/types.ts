@@ -1276,11 +1276,50 @@ export interface EntitySummary {
   updated_at: string;
 }
 
+/** A single entity_info row (credentials, identifiers, etc.). */
+export interface EntityInfoEntry {
+  id: string;
+  type: string;
+  value: string | null; // null when secured=true and not revealed
+  label: string | null;
+  is_primary: boolean;
+  secured: boolean;
+}
+
+/** Request body for creating an entity_info entry. */
+export interface CreateEntityInfoRequest {
+  type: string;
+  value: string;
+  label?: string | null;
+  is_primary?: boolean;
+  secured?: boolean;
+}
+
+/** Response from creating an entity_info entry. */
+export interface CreateEntityInfoResponse {
+  id: string;
+  entity_id: string;
+  type: string;
+  value: string;
+  label: string | null;
+  is_primary: boolean;
+  secured: boolean;
+}
+
+/** Request body for updating an entity_info entry. */
+export interface UpdateEntityInfoRequest {
+  type?: string;
+  value?: string;
+  label?: string | null;
+  is_primary?: boolean;
+}
+
 /** Full entity detail including recent facts and linked contact info. */
 export interface EntityDetail extends EntitySummary {
   metadata: Record<string, unknown>;
   recent_facts: Fact[];
   linked_contact_name: string | null;
+  entity_info: EntityInfoEntry[];
 }
 
 /** Query parameters for entity list endpoints. */

@@ -102,12 +102,24 @@ class EntitySummary(BaseModel):
     updated_at: str
 
 
+class EntityInfoEntry(BaseModel):
+    """A single entity_info row (credential, identifier, etc.)."""
+
+    id: str
+    type: str
+    value: str | None = None  # None when secured=True (masked)
+    label: str | None = None
+    is_primary: bool = False
+    secured: bool = False
+
+
 class EntityDetail(EntitySummary):
     """Full entity detail including recent facts and linked contact info."""
 
     metadata: dict = {}
     recent_facts: list[Fact] = []
     linked_contact_name: str | None = None
+    entity_info: list[EntityInfoEntry] = []
 
 
 class MemoryActivity(BaseModel):
