@@ -232,6 +232,11 @@ async def store_fact(
                         "object_entity_id requires entity_id to be set (edge-facts "
                         "need both subject and object entities)"
                     )
+                if entity_id == object_entity_id:
+                    raise ValueError(
+                        "Self-referencing edges are not allowed: "
+                        "entity_id and object_entity_id must differ"
+                    )
                 obj_exists = await conn.fetchval(
                     "SELECT 1 FROM entities WHERE id = $1",
                     object_entity_id,

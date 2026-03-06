@@ -29,7 +29,15 @@ ENTITY_D = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000004")
 
 @pytest.fixture()
 def mock_pool() -> AsyncMock:
-    return AsyncMock()
+    pool = AsyncMock()
+    # Default: entity exists (fetchval returns 1)
+    pool.fetchval = AsyncMock(return_value=1)
+    return pool
+
+
+FACT_UUID_1 = uuid.UUID("ffffffff-0000-0000-0000-000000000001")
+FACT_UUID_2 = uuid.UUID("ffffffff-0000-0000-0000-000000000002")
+FACT_UUID_3 = uuid.UUID("ffffffff-0000-0000-0000-000000000003")
 
 
 def _neighbor_row(
@@ -39,12 +47,19 @@ def _neighbor_row(
     predicate: str,
     depth: int,
     path: list[uuid.UUID],
+    *,
+    dir: str = "outgoing",
+    content: str = "",
+    fact_id: uuid.UUID = FACT_UUID_1,
 ) -> dict:
     return {
         "entity_id": entity_id,
         "canonical_name": canonical_name,
         "entity_type": entity_type,
         "predicate": predicate,
+        "dir": dir,
+        "content": content,
+        "fact_id": fact_id,
         "depth": depth,
         "path": path,
     }
@@ -328,15 +343,47 @@ class TestResultSerialization:
         assert all(isinstance(p, str) for p in result[0]["path"])
 
     async def test_result_structure(self, mock_pool: AsyncMock) -> None:
-        """Each result dict has entity, predicate, depth, and path keys."""
+        """Result dicts have entity, predicate, direction, content, depth, fact_id, path."""
         mock_pool.fetch = AsyncMock(
             return_value=[
-                _neighbor_row(ENTITY_B, "Bob", "person", "knows", 1, [START_UUID, ENTITY_B]),
+                _neighbor_row(
+                    ENTITY_B, "Bob", "person", "knows", 1, [START_UUID, ENTITY_B],
+                    dir="outgoing", content="friends since college", fact_id=FACT_UUID_1,
+                ),
             ]
         )
 
         result = await entity_neighbors(mock_pool, str(START_UUID), tenant_id=TENANT_ID)
 
         item = result[0]
-        assert set(item.keys()) == {"entity", "predicate", "depth", "path"}
+        assert set(item.keys()) == {
+            "entity", "predicate", "direction", "content", "depth", "fact_id", "path",
+        }
         assert set(item["entity"].keys()) == {"id", "canonical_name", "entity_type"}
+        assert item["direction"] == "outgoing"
+        assert item["content"] == "friends since college"
+        assert item["fact_id"] == str(FACT_UUID_1)
+
+
+# ---------------------------------------------------------------------------
+# Entity existence validation
+# ---------------------------------------------------------------------------
+
+
+class TestEntityExistenceValidation:
+    async def test_raises_for_nonexistent_entity(self, mock_pool: AsyncMock) -> None:
+        """ValueError raised when entity_id does not exist."""
+        mock_pool.fetchval = AsyncMock(return_value=None)
+
+        with pytest.raises(ValueError, match="does not exist"):
+            await entity_neighbors(mock_pool, str(START_UUID), tenant_id=TENANT_ID)
+
+    async def test_validates_entity_before_query(self, mock_pool: AsyncMock) -> None:
+        """Entity existence check happens before the main fetch query."""
+        mock_pool.fetchval = AsyncMock(return_value=None)
+        mock_pool.fetch = AsyncMock(return_value=[])
+
+        with pytest.raises(ValueError):
+            await entity_neighbors(mock_pool, str(START_UUID), tenant_id=TENANT_ID)
+
+        mock_pool.fetch.assert_not_called()

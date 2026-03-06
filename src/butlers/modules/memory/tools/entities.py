@@ -536,7 +536,7 @@ async def entity_neighbors(
     tenant_id: str,
     max_depth: int = 2,
     predicate_filter: list[str] | None = None,
-    direction: Literal["outgoing", "incoming", "both"] = "outgoing",
+    direction: Literal["outgoing", "incoming", "both"] = "both",
 ) -> list[dict[str, Any]]:
     """Traverse the entity graph via edge-facts and return neighboring entities.
 
@@ -556,11 +556,23 @@ async def entity_neighbors(
         List of neighbor dicts ordered by depth then canonical_name, each with:
           - entity: ``{id, canonical_name, entity_type}``
           - predicate: the edge predicate at this hop
+          - direction: ``'outgoing'`` or ``'incoming'`` relative to the source
+          - content: the edge fact's content
           - depth: hop distance from start entity
+          - fact_id: UUID string of the edge fact
           - path: list of entity ID strings along the traversal path
     """
     max_depth = max(1, min(max_depth, 5))
     eid = uuid.UUID(entity_id)
+
+    # Validate entity existence.
+    exists = await pool.fetchval(
+        "SELECT 1 FROM entities WHERE id = $1 AND tenant_id = $2",
+        eid,
+        tenant_id,
+    )
+    if not exists:
+        raise ValueError(f"entity_id {entity_id!r} does not exist")
 
     params: list[Any] = [eid, tenant_id, max_depth]
     pred_clause = ""
@@ -570,13 +582,15 @@ async def entity_neighbors(
 
     if direction == "outgoing":
         base_sql = f"""
-        SELECT f.object_entity_id AS neighbor_id, f.predicate,
+        SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
+               'outgoing'::text AS dir,
                1 AS depth, ARRAY[$1::uuid, f.object_entity_id] AS path
         FROM facts f
         WHERE f.entity_id = $1 AND f.object_entity_id IS NOT NULL
           AND f.validity = 'active'{pred_clause}"""
         rec_sql = f"""
-        SELECT f.object_entity_id AS neighbor_id, f.predicate,
+        SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
+               'outgoing'::text AS dir,
                n.depth + 1, n.path || f.object_entity_id
         FROM neighbors n
         JOIN facts f ON f.entity_id = n.neighbor_id
@@ -586,13 +600,15 @@ async def entity_neighbors(
           AND n.depth < $3{pred_clause}"""
     elif direction == "incoming":
         base_sql = f"""
-        SELECT f.entity_id AS neighbor_id, f.predicate,
+        SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
+               'incoming'::text AS dir,
                1 AS depth, ARRAY[$1::uuid, f.entity_id] AS path
         FROM facts f
         WHERE f.object_entity_id = $1
           AND f.validity = 'active'{pred_clause}"""
         rec_sql = f"""
-        SELECT f.entity_id AS neighbor_id, f.predicate,
+        SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
+               'incoming'::text AS dir,
                n.depth + 1, n.path || f.entity_id
         FROM neighbors n
         JOIN facts f ON f.object_entity_id = n.neighbor_id
@@ -601,19 +617,22 @@ async def entity_neighbors(
           AND n.depth < $3{pred_clause}"""
     else:  # both
         base_sql = f"""
-        SELECT f.object_entity_id AS neighbor_id, f.predicate,
+        SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
+               'outgoing'::text AS dir,
                1 AS depth, ARRAY[$1::uuid, f.object_entity_id] AS path
         FROM facts f
         WHERE f.entity_id = $1 AND f.object_entity_id IS NOT NULL
           AND f.validity = 'active'{pred_clause}
         UNION ALL
-        SELECT f.entity_id AS neighbor_id, f.predicate,
+        SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
+               'incoming'::text AS dir,
                1 AS depth, ARRAY[$1::uuid, f.entity_id] AS path
         FROM facts f
         WHERE f.object_entity_id = $1
           AND f.validity = 'active'{pred_clause}"""
         rec_sql = f"""
-        SELECT f.object_entity_id AS neighbor_id, f.predicate,
+        SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
+               'outgoing'::text AS dir,
                n.depth + 1, n.path || f.object_entity_id
         FROM neighbors n
         JOIN facts f ON f.entity_id = n.neighbor_id
@@ -622,7 +641,8 @@ async def entity_neighbors(
           AND f.object_entity_id != ALL(n.path)
           AND n.depth < $3{pred_clause}
         UNION ALL
-        SELECT f.entity_id AS neighbor_id, f.predicate,
+        SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
+               'incoming'::text AS dir,
                n.depth + 1, n.path || f.entity_id
         FROM neighbors n
         JOIN facts f ON f.object_entity_id = n.neighbor_id
@@ -641,6 +661,9 @@ async def entity_neighbors(
         e.canonical_name,
         e.entity_type,
         n.predicate,
+        n.dir,
+        n.content,
+        n.fact_id,
         n.depth,
         n.path
     FROM neighbors n
@@ -658,7 +681,10 @@ async def entity_neighbors(
                 "entity_type": row["entity_type"],
             },
             "predicate": row["predicate"],
+            "direction": row["dir"],
+            "content": row["content"],
             "depth": row["depth"],
+            "fact_id": str(row["fact_id"]),
             "path": [str(uid) for uid in row["path"]],
         }
         for row in rows

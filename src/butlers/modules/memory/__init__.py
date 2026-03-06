@@ -564,19 +564,19 @@ class MemoryModule(Module):
             ] = None,
             direction: Annotated[
                 Literal["outgoing", "incoming", "both"],
-                Field(description="Edge direction: outgoing (default), incoming, or both."),
-            ] = "outgoing",
+                Field(description="Edge direction: outgoing, incoming, or both (default)."),
+            ] = "both",
         ) -> list[dict[str, Any]]:
             """Traverse the entity graph and return neighboring entities.
 
             Follows edge-facts (facts where object_entity_id is set) using a
-            recursive CTE.  Returns neighbors with their edge predicate, hop
-            depth, and traversal path.
+            recursive CTE.  Returns neighbors with their edge predicate, direction,
+            content, fact_id, hop depth, and traversal path.
 
             Direction controls which edges to follow:
-            - outgoing: entity_id → object_entity_id (default)
+            - outgoing: entity_id → object_entity_id
             - incoming: object_entity_id → entity_id
-            - both: traverse in both directions
+            - both: traverse in both directions (default)
             """
             return await _entities.entity_neighbors(
                 module._get_pool(),

@@ -477,6 +477,24 @@ class TestObjectEntityIdValidation:
                 object_entity_id=obj_eid,
             )
 
+    async def test_self_referencing_edge_raises(self, embedding_engine):
+        """entity_id == object_entity_id raises ValueError."""
+        eid = uuid.uuid4()
+        conn = _make_conn()
+        conn.fetchval = AsyncMock(return_value=1)
+        pool = _make_pool(conn)
+
+        with pytest.raises(ValueError, match="[Ss]elf-referencing"):
+            await store_fact(
+                pool,
+                "Alice",
+                "knows",
+                "herself",
+                embedding_engine,
+                entity_id=eid,
+                object_entity_id=eid,
+            )
+
     async def test_invalid_object_entity_id_raises_value_error(self, embedding_engine):
         """Providing a non-existent object_entity_id raises ValueError."""
         eid = uuid.uuid4()
