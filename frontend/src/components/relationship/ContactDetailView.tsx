@@ -405,25 +405,17 @@ const CONTACT_INFO_TYPES = [
   "other",
 ] as const;
 
-const SECURED_CONTACT_INFO_TYPES = [
-  "email_password",
-  "telegram_api_id",
-  "telegram_api_hash",
-  "telegram_user_session",
-  "home_assistant_token",
-] as const;
+// Entity-level credential types (telegram_api_id, telegram_api_hash,
+// telegram_user_session, email_password, home_assistant_token) are now managed
+// as entity_info entries on the owner entity. They no longer appear here.
 
-const ALL_CONTACT_INFO_TYPES = [...CONTACT_INFO_TYPES, ...SECURED_CONTACT_INFO_TYPES] as const;
+const ALL_CONTACT_INFO_TYPES = CONTACT_INFO_TYPES;
 
-const SECURED_TYPES = new Set<string>(SECURED_CONTACT_INFO_TYPES);
+const SECURED_TYPES = new Set<string>();
 
-/** Maps credential types to their expected parent type. */
+/** Maps child contact_info types to their expected parent type. */
 const CHILD_TO_PARENT_TYPE: Record<string, string> = {
-  email_password: "email",
   telegram: "telegram_chat_id",
-  telegram_api_id: "telegram_chat_id",
-  telegram_api_hash: "telegram_chat_id",
-  telegram_user_session: "telegram_chat_id",
 };
 
 const CREDENTIAL_TYPES = new Set(Object.keys(CHILD_TO_PARENT_TYPE));
@@ -490,13 +482,8 @@ function contactInfoTypeLabel(type: string): string {
     case "telegram": return "Telegram";
     case "telegram_chat_id": return "Telegram Chat ID";
     case "website": return "Website";
-    case "other": return "Other";
-    case "email_password": return "Email Password";
-    case "telegram_api_id": return "Telegram API ID";
-    case "telegram_api_hash": return "Telegram API Hash";
-    case "telegram_user_session": return "Telegram User Session";
     case "home_assistant_url": return "Home Assistant URL";
-    case "home_assistant_token": return "Home Assistant Token";
+    case "other": return "Other";
     default: return type;
   }
 }
@@ -506,12 +493,7 @@ function inputPlaceholder(type: string): string {
     case "email": return "you@example.com";
     case "telegram": return "@handle";
     case "telegram_chat_id": return "123456789";
-    case "email_password": return "••••••••";
-    case "telegram_api_id": return "12345678";
-    case "telegram_api_hash": return "••••••••";
-    case "telegram_user_session": return "••••••••";
     case "home_assistant_url": return "http://homeassistant.local:8123";
-    case "home_assistant_token": return "eyJ...";
     default: return "";
   }
 }

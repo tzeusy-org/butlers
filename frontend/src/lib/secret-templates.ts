@@ -30,15 +30,13 @@ export const SECRET_TEMPLATES: SecretTemplate[] = [
 ];
 
 /**
- * Owner identity credentials (email, telegram handle, API keys, etc.) are now
- * managed as secured contact_info entries on the owner contact. Configure them
- * at /contacts/{owner_id} via "Add contact info".
+ * Owner identity credentials (Telegram API keys, user session, HA token,
+ * Google OAuth refresh, email password) are now managed as entity_info entries
+ * on the owner entity. Configure them at /entities/{owner_entity_id} via the
+ * "Credentials & Info" section.
  *
- * Home Assistant token setup:
- *   Add a secured contact_info entry with:
- *   - type: "home_assistant_token"
- *   - value: HA long-lived access token from Home Assistant profile page
- *   - secured: true
+ * Contact-level channel identifiers (Telegram chat ID, email address, phone)
+ * remain on the contact at /contacts/{owner_id}.
  *
  * Migrated keys (no longer shown here):
  *   TELEGRAM_CHAT_ID, USER_TELEGRAM_TOKEN, TELEGRAM_API_ID, TELEGRAM_API_HASH,

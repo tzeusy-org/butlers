@@ -143,12 +143,22 @@ export default function EntitiesPage() {
                       className="border-b last:border-0 hover:bg-muted/50"
                     >
                       <td className="py-2 pr-4">
-                        <Link
-                          to={`/entities/${entity.id}`}
-                          className="font-medium text-primary hover:underline"
-                        >
-                          {entity.canonical_name}
-                        </Link>
+                        <span className="inline-flex items-center gap-2">
+                          <Link
+                            to={`/entities/${entity.id}`}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {entity.canonical_name}
+                          </Link>
+                          {entity.roles?.includes("owner") && (
+                            <Badge
+                              style={{ backgroundColor: "#7c3aed", color: "#fff" }}
+                              className="text-xs"
+                            >
+                              Owner
+                            </Badge>
+                          )}
+                        </span>
                       </td>
                       <td className="py-2 pr-4">
                         <Badge variant={entityTypeBadgeVariant(entity.entity_type)}>

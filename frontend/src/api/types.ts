@@ -1270,6 +1270,7 @@ export interface EntitySummary {
   canonical_name: string;
   entity_type: string;
   aliases: string[];
+  roles: string[];
   fact_count: number;
   linked_contact_id: string | null;
   created_at: string;

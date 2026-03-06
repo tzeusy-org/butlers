@@ -468,6 +468,14 @@ export default function EntityDetailPage() {
                   {entity.canonical_name}
                 </CardTitle>
                 <Badge>{entity.entity_type}</Badge>
+                {entity.roles?.includes("owner") && (
+                  <Badge
+                    style={{ backgroundColor: "#7c3aed", color: "#fff" }}
+                    className="text-xs"
+                  >
+                    Owner
+                  </Badge>
+                )}
               </div>
             </CardHeader>
             <CardContent className="space-y-3">

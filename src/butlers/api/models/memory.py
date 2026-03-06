@@ -96,6 +96,7 @@ class EntitySummary(BaseModel):
     canonical_name: str
     entity_type: str
     aliases: list[str] = []
+    roles: list[str] = []
     fact_count: int = 0
     linked_contact_id: str | None = None
     created_at: str

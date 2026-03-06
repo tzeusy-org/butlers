@@ -666,7 +666,10 @@ async def list_entities(
             f" ) AS fact_count,"
             f" (SELECT c.id FROM shared.contacts c"
             f"  WHERE c.entity_id = e.id LIMIT 1"
-            f" ) AS linked_contact_id"
+            f" ) AS linked_contact_id,"
+            f" (SELECT c.roles FROM shared.contacts c"
+            f"  WHERE c.entity_id = e.id LIMIT 1"
+            f" ) AS linked_contact_roles"
             f" FROM entities e{where}"
             f" ORDER BY e.canonical_name ASC"
             f" OFFSET ${idx} LIMIT ${idx + 1}",
@@ -695,6 +698,7 @@ async def list_entities(
             canonical_name=r["canonical_name"],
             entity_type=r["entity_type"],
             aliases=list(r["aliases"]) if r["aliases"] else [],
+            roles=list(r["linked_contact_roles"]) if r["linked_contact_roles"] else [],
             fact_count=r["fact_count"],
             linked_contact_id=str(r["linked_contact_id"]) if r["linked_contact_id"] else None,
             created_at=str(r["created_at"]),
@@ -739,7 +743,10 @@ async def get_entity(
             " ) AS linked_contact_id,"
             " (SELECT c.name FROM shared.contacts c"
             "  WHERE c.entity_id = e.id LIMIT 1"
-            " ) AS linked_contact_name"
+            " ) AS linked_contact_name,"
+            " (SELECT c.roles FROM shared.contacts c"
+            "  WHERE c.entity_id = e.id LIMIT 1"
+            " ) AS linked_contact_roles"
             " FROM entities e"
             " WHERE e.id = $1 AND e.tenant_id IN ('default', 'shared')",
             eid,
@@ -800,6 +807,7 @@ async def get_entity(
         canonical_name=row["canonical_name"],
         entity_type=row["entity_type"],
         aliases=list(row["aliases"]) if row["aliases"] else [],
+        roles=list(row["linked_contact_roles"]) if row["linked_contact_roles"] else [],
         metadata=_parse_jsonb(row["metadata"]),
         fact_count=row["fact_count"],
         linked_contact_id=str(row["linked_contact_id"]) if row["linked_contact_id"] else None,
