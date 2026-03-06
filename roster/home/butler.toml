@@ -39,7 +39,7 @@ full_sync_interval_days = 6
 
 [[butler.schedule]]
 name = "weekly-energy-digest"
-cron = "0 9 * * 0"
+cron = "0 21 * * 0"
 dispatch_mode = "prompt"
 prompt = """
 Generate and send a weekly energy efficiency digest for the user. Analyze device usage patterns,
@@ -52,7 +52,7 @@ notify(channel="telegram", intent="send", message=<digest>).
 
 [[butler.schedule]]
 name = "daily-environment-report"
-cron = "0 8 * * *"
+cron = "5 21 * * 0"
 dispatch_mode = "prompt"
 prompt = """
 Generate and send a daily home environment report for the user. Check current temperature,
@@ -64,7 +64,7 @@ notify(channel="telegram", intent="send", message=<report>).
 
 [[butler.schedule]]
 name = "device-health-check"
-cron = "0 4 * * *"
+cron = "10 21 * * 0"
 dispatch_mode = "prompt"
 prompt = """
 Perform a nightly device health check. Query all connected devices for status, battery levels,
