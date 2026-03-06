@@ -107,6 +107,7 @@ EXPECTED_TOOL_NAMES = {
     "memory_entity_create",
     "memory_entity_get",
     "memory_entity_update",
+    "memory_entity_neighbors",
     "memory_entity_resolve",
     "memory_entity_merge",
     "memory_predicate_list",
@@ -149,9 +150,9 @@ class TestRegisterTools:
 
         return registered_tools
 
-    async def test_registers_nineteen_tools(self):
+    async def test_registers_expected_tool_count(self):
         registered = await self._register_and_capture()
-        assert len(registered) == 20
+        assert len(registered) == 21
 
     async def test_tool_names_match(self):
         registered = await self._register_and_capture()
