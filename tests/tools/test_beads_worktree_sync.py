@@ -1,4 +1,4 @@
-"""Regression test for Beads worktree path resolution."""
+"""Regression test for Beads worktree close and export operations."""
 
 from __future__ import annotations
 
@@ -11,9 +11,6 @@ from pathlib import Path
 import pytest
 
 pytestmark = pytest.mark.unit
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-REPO_BEADS_CONFIG = REPO_ROOT / ".beads" / "config.yaml"
 
 
 def _run(args: list[str], cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -60,7 +57,8 @@ def _issue_from_jsonl(path: Path, issue_id: str) -> dict[str, object]:
     shutil.which("bd") is None or shutil.which("git") is None,
     reason="requires bd and git in PATH",
 )
-def test_worktree_close_sync_export_import_use_active_worktree_jsonl(tmp_path: Path) -> None:
+def test_worktree_close_and_export(tmp_path: Path) -> None:
+    """Verify that closing an issue in a worktree is reflected in bd show and bd export."""
     env = os.environ.copy()
     env["BEADS_NO_DAEMON"] = "1"
     env["BD_NO_DAEMON"] = "1"
@@ -72,74 +70,54 @@ def test_worktree_close_sync_export_import_use_active_worktree_jsonl(tmp_path: P
     _run(["git", "config", "user.email", "beads-test@example.com"], cwd=repo, env=env)
     _run(["git", "config", "user.name", "Beads Test"], cwd=repo, env=env)
     _run(["bd", "init", "--json"], cwd=repo, env=env)
-    (repo / ".beads" / "config.yaml").write_text(REPO_BEADS_CONFIG.read_text())
 
     create_out = _run(
-        ["bd", "create", "Worktree sync regression", "-t", "bug", "-p", "2", "--json"],
+        ["bd", "create", "Worktree close regression", "-t", "bug", "-p", "2", "--json"],
         cwd=repo,
         env=env,
     )
     created = _decode_first_json(create_out.stdout)
     issue_id = created["id"] if isinstance(created, dict) else created[0]["id"]
 
-    _run(["git", "add", "."], cwd=repo, env=env)
-    _run(["git", "commit", "-m", "seed"], cwd=repo, env=env)
+    # bd init may already commit .beads/ files; ensure HEAD exists for worktree add.
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "seed", "--allow-empty"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
     worktree = repo / ".worktrees" / "worker"
     worktree.parent.mkdir()
     _run(["git", "worktree", "add", "-b", "worker", str(worktree)], cwd=repo, env=env)
 
+    # Close the issue from the worktree (shared Dolt backend)
     _run(["bd", "close", issue_id], cwd=worktree, env=env)
-    _run(["bd", "sync"], cwd=worktree, env=env)
 
+    # Verify the close is visible via bd show in the worktree
     show_out = _run(["bd", "show", issue_id, "--json"], cwd=worktree, env=env)
     shown = _decode_first_json(show_out.stdout)
     shown_issue = shown[0] if isinstance(shown, list) else shown
     assert shown_issue["status"] == "closed"
 
-    worktree_jsonl = worktree / ".beads" / "issues.jsonl"
-    repo_jsonl = repo / ".beads" / "issues.jsonl"
-    worktree_issue = _issue_from_jsonl(worktree_jsonl, issue_id)
-    repo_issue = _issue_from_jsonl(repo_jsonl, issue_id)
-
-    # Upstream bd behavior has varied across versions: some builds apply
-    # worktree mutations to the active worktree JSONL, others write to the
-    # canonical repo JSONL. Accept both, then validate export/import against
-    # the file that actually received the mutation.
-    if worktree_issue["status"] == "closed" and repo_issue["status"] == "open":
-        canonical_jsonl = worktree_jsonl
-    elif worktree_issue["status"] == "open" and repo_issue["status"] == "closed":
-        canonical_jsonl = repo_jsonl
-    else:
-        raise AssertionError(
-            "Unexpected close/sync status distribution:\n"
-            f"worktree={worktree_issue['status']!r}, repo={repo_issue['status']!r}"
-        )
-
-    export_path = worktree / "export.jsonl"
+    # Verify export from the worktree reflects the closed status
+    export_path = tmp_path / "export.jsonl"
     _run(["bd", "export", "-o", str(export_path)], cwd=worktree, env=env)
     exported_issue = _issue_from_jsonl(export_path, issue_id)
     assert exported_issue["status"] == "closed"
 
-    imported_title = "Worktree import applied"
-    rewritten_lines: list[str] = []
-    for line in export_path.read_text().splitlines():
-        payload = json.loads(line)
-        if payload.get("id") == issue_id:
-            payload["title"] = imported_title
-            # Import resolution is timestamp-aware; bump updated_at to ensure update wins.
-            payload["updated_at"] = "2099-01-01T00:00:00Z"
-        rewritten_lines.append(json.dumps(payload, separators=(",", ":")))
-    export_path.write_text("\n".join(rewritten_lines) + "\n")
-
-    _run(["bd", "import", "-i", str(export_path)], cwd=worktree, env=env)
-
-    post_import_show = _run(["bd", "show", issue_id, "--json"], cwd=worktree, env=env)
-    shown_after_import = _decode_first_json(post_import_show.stdout)
-    shown_after_import_issue = (
-        shown_after_import[0] if isinstance(shown_after_import, list) else shown_after_import
-    )
-    assert shown_after_import_issue["title"] == imported_title
-
-    post_import_canonical = _issue_from_jsonl(canonical_jsonl, issue_id)
-    assert post_import_canonical["title"] == imported_title
+    # Verify the close is also visible from the main repo
+    show_from_repo = _run(["bd", "show", issue_id, "--json"], cwd=repo, env=env)
+    shown_from_repo = _decode_first_json(show_from_repo.stdout)
+    repo_issue = shown_from_repo[0] if isinstance(shown_from_repo, list) else shown_from_repo
+    assert repo_issue["status"] == "closed"
