@@ -205,7 +205,7 @@ def test_list_contacts_search(app):
 def test_contacts_sync_incremental_dispatch(app):
     """POST /contacts/sync dispatches incremental mode to MCP tool."""
     result = _mock_contacts_sync_result(
-        {"created": 2, "updated": 1, "skipped": 5, "errors": 0, "message": "ok"}
+        {"fetched": 2, "applied": 1, "skipped": 5, "deleted": 0, "message": "ok"}
     )
     mcp_manager = _mock_mcp_manager(call_result=result)
     app = _app_with_mock_db(
@@ -221,10 +221,10 @@ def test_contacts_sync_incremental_dispatch(app):
     data = resp.json()
     assert data["provider"] == "google"
     assert data["mode"] == "incremental"
-    assert data["created"] == 2
-    assert data["updated"] == 1
+    assert data["fetched"] == 2
+    assert data["applied"] == 1
     assert data["skipped"] == 5
-    assert data["errors"] == 0
+    assert data["deleted"] == 0
 
     mock_client = mcp_manager.get_client.return_value
     mock_client.call_tool.assert_awaited_once_with(
@@ -236,7 +236,7 @@ def test_contacts_sync_incremental_dispatch(app):
 def test_contacts_sync_full_dispatch(app):
     """POST /contacts/sync dispatches full mode to MCP tool."""
     result = _mock_contacts_sync_result(
-        {"summary": {"created": 7, "updated": 4, "skipped": 0, "errors": 0}}
+        {"summary": {"fetched": 7, "applied": 4, "skipped": 0, "deleted": 0}}
     )
     mcp_manager = _mock_mcp_manager(call_result=result)
     app = _app_with_mock_db(
@@ -251,9 +251,9 @@ def test_contacts_sync_full_dispatch(app):
     assert resp.status_code == 200
     data = resp.json()
     assert data["mode"] == "full"
-    assert data["created"] == 7
-    assert data["updated"] == 4
-    assert data["errors"] == 0
+    assert data["fetched"] == 7
+    assert data["applied"] == 4
+    assert data["deleted"] == 0
 
     mock_client = mcp_manager.get_client.return_value
     mock_client.call_tool.assert_awaited_once_with(

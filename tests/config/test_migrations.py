@@ -19,7 +19,7 @@ pytestmark = [
 ]
 
 REQUIRED_SCHEMAS = ("shared", "general", "health", "messenger", "relationship", "switchboard")
-CORE_HEAD_REVISION = "core_016"
+CORE_HEAD_REVISION = "core_018"
 RUNTIME_ROLES = {
     "general": "butler_general_rw",
     "health": "butler_health_rw",
@@ -472,6 +472,8 @@ def test_core_002_adds_dispatch_mode_to_existing_table(postgres_container):
     try:
         with engine.connect() as conn:
             conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'))
+            # core_014+ expects the shared schema (normally created by core_001).
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS shared"))
             conn.execute(
                 text(
                     """
