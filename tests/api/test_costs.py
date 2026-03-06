@@ -420,9 +420,7 @@ class TestCostSummary:
             },
         }
 
-        mgr = _make_manager_with_responses(
-            configs, {"test": _make_tool_result(data)}
-        )
+        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(data)})
         _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
@@ -453,9 +451,7 @@ class TestCostSummary:
             },
         }
 
-        mgr = _make_manager_with_responses(
-            configs, {"test": _make_tool_result(data)}
-        )
+        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(data)})
         _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
@@ -485,9 +481,7 @@ class TestCostSummary:
             },
         }
 
-        mgr = _make_manager_with_responses(
-            configs, {"test": _make_tool_result(data)}
-        )
+        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(data)})
         _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
@@ -516,9 +510,7 @@ class TestCostSummary:
             },
         }
 
-        mgr = _make_manager_with_responses(
-            configs, {"test": _make_tool_result(data)}
-        )
+        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(data)})
         _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
@@ -893,9 +885,7 @@ class TestDailyCosts:
             ]
         }
 
-        mgr = _make_manager_with_responses(
-            configs, {"test": _make_tool_result(daily_data)}
-        )
+        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(daily_data)})
         _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
@@ -935,9 +925,7 @@ class TestDailyCosts:
             ]
         }
 
-        mgr = _make_manager_with_responses(
-            configs, {"test": _make_tool_result(daily_data)}
-        )
+        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(daily_data)})
         _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
@@ -1317,9 +1305,7 @@ class TestTopSessions:
             ],
         }
 
-        mgr = _make_manager_with_responses(
-            configs, {"test": _make_tool_result(data)}
-        )
+        mgr = _make_manager_with_responses(configs, {"test": _make_tool_result(data)})
         _app_with_overrides(app, mgr, configs, pricing)
 
         async with httpx.AsyncClient(
