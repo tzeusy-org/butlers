@@ -4,7 +4,7 @@ Provides MCP tools for connector liveness tracking, heartbeat ingestion,
 and operational statistics.
 """
 
-from roster.switchboard.tools.connector.heartbeat import (
+from .heartbeat import (
     ConnectorHeartbeatV1,
     HeartbeatAcceptedResponse,
     heartbeat,
