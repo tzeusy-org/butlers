@@ -24,7 +24,7 @@ from butlers.modules.memory.tools.feedback import (
     memory_mark_harmful,
     memory_mark_helpful,
 )
-from butlers.modules.memory.tools.management import memory_forget, memory_stats
+from butlers.modules.memory.tools.management import memory_forget, memory_stats, predicate_list
 from butlers.modules.memory.tools.reading import memory_get, memory_recall, memory_search
 from butlers.modules.memory.tools.writing import (
     memory_store_episode,
@@ -52,6 +52,7 @@ __all__ = [
     "memory_recall",
     "memory_search",
     "memory_stats",
+    "predicate_list",
     "memory_store_episode",
     "memory_store_fact",
     "memory_store_rule",

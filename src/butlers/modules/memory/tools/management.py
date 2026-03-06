@@ -1,4 +1,4 @@
-"""Memory management tools — forget and stats."""
+"""Memory management tools — forget, stats, and predicate registry."""
 
 from __future__ import annotations
 
@@ -135,3 +135,31 @@ async def memory_stats(
             "forgotten": rules_forgotten,
         },
     }
+
+
+async def predicate_list(
+    pool: Pool,
+    *,
+    edges_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Return all registered predicates from the predicate_registry table.
+
+    Args:
+        pool: asyncpg connection pool.
+        edges_only: If True, return only edge predicates (is_edge = true).
+
+    Returns:
+        List of dicts with keys: name, expected_subject_type,
+        expected_object_type, is_edge, description.
+    """
+    query = (
+        "SELECT name, expected_subject_type, expected_object_type,"
+        " is_edge, description FROM predicate_registry"
+    )
+    params: list[Any] = []
+    if edges_only:
+        query += " WHERE is_edge = true"
+    query += " ORDER BY is_edge, name"
+
+    rows = await pool.fetch(query, *params)
+    return [dict(row) for row in rows]

@@ -1,6 +1,6 @@
 """Memory module — wires memory domain tools into the butler's MCP server.
 
-Registers 17 MCP tools that delegate to the existing implementations in
+Registers 18 MCP tools that delegate to the existing implementations in
 ``butlers.modules.memory.tools``. The tool closures strip ``pool`` and
 ``embedding_engine`` from the MCP-visible signature and inject them from
 module state at call time.
@@ -40,7 +40,7 @@ class MemoryModuleConfig(BaseModel):
 
 
 class MemoryModule(Module):
-    """Memory module providing 17 MCP tools for memory CRUD and retrieval."""
+    """Memory module providing 18 MCP tools for memory CRUD and retrieval."""
 
     def __init__(self) -> None:
         self._db: Any = None
@@ -353,6 +353,26 @@ class MemoryModule(Module):
             return await _management.memory_stats(
                 module._get_pool(),
                 scope=scope,
+            )
+
+        # --- Predicate registry tool ---
+
+        @mcp.tool()
+        async def memory_predicate_list(
+            edges_only: Annotated[
+                bool,
+                Field(description="If true, return only edge predicates."),
+            ] = False,
+        ) -> list[dict[str, Any]]:
+            """List all registered predicates from the predicate registry.
+
+            Returns known predicates with their expected subject/object types,
+            edge flag, and description. Use this to discover consistent predicate
+            names before storing facts.
+            """
+            return await _management.predicate_list(
+                module._get_pool(),
+                edges_only=edges_only,
             )
 
         # --- Context tool ---
