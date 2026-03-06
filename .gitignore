@@ -423,6 +423,7 @@ butlers-ufzc worktree
 .worktrees/parallel-agents/butlers-t3pi/
 
 # Gas Town runtime artifacts
+.beads/backup/
 .runtime/
 .claude/commands/
 .logs/
