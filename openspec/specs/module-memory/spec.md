@@ -18,7 +18,7 @@ The module SHALL support three primary memory types: episodes (high-volume, shor
 #### Scenario: Fact schema and defaults
 
 - **WHEN** a fact is stored
-- **THEN** the `facts` table row MUST contain: `id` (UUID PK), `subject` (TEXT NOT NULL), `predicate` (TEXT NOT NULL), `content` (TEXT NOT NULL), `embedding` (vector(384)), `search_vector` (tsvector), `importance` (FLOAT, default 5.0), `confidence` (FLOAT, default 1.0), `decay_rate` (FLOAT, default 0.008), `permanence` (TEXT, default 'standard'), `source_butler` (TEXT nullable), `source_episode_id` (UUID FK to episodes, ON DELETE SET NULL), `supersedes_id` (UUID self-FK, ON DELETE SET NULL), `entity_id` (UUID FK to shared.entities, ON DELETE RESTRICT, nullable), `object_entity_id` (UUID FK to shared.entities, ON DELETE RESTRICT, nullable), `validity` (TEXT, default 'active'), `scope` (TEXT, default 'global'), `reference_count` (INTEGER, default 0), `created_at` (TIMESTAMPTZ), `last_referenced_at` (TIMESTAMPTZ nullable), `last_confirmed_at` (TIMESTAMPTZ nullable), `tags` (JSONB, default '[]'), `metadata` (JSONB, default '{}')
+- **THEN** the `facts` table row MUST contain: `id` (UUID PK), `subject` (TEXT NOT NULL), `predicate` (TEXT NOT NULL), `content` (TEXT NOT NULL), `embedding` (vector(384)), `search_vector` (tsvector), `importance` (FLOAT, default 5.0), `confidence` (FLOAT, default 1.0), `decay_rate` (FLOAT, default 0.008), `permanence` (TEXT, default 'standard'), `source_butler` (TEXT nullable), `source_episode_id` (UUID FK to episodes, ON DELETE SET NULL), `supersedes_id` (UUID self-FK, ON DELETE SET NULL), `entity_id` (UUID FK to shared.entities, ON DELETE RESTRICT, nullable), `object_entity_id` (UUID FK to shared.entities, ON DELETE RESTRICT, nullable), `validity` (TEXT, default 'active'), `scope` (TEXT, default 'global'), `valid_at` (TIMESTAMPTZ nullable, default NULL), `reference_count` (INTEGER, default 0), `created_at` (TIMESTAMPTZ), `last_referenced_at` (TIMESTAMPTZ nullable), `last_confirmed_at` (TIMESTAMPTZ nullable), `tags` (JSONB, default '[]'), `metadata` (JSONB, default '{}')
 
 #### Scenario: Rule schema and defaults
 
@@ -50,6 +50,22 @@ Facts SHALL progress through validity lifecycle states: `active`, `fading` (trac
 - **THEN** the existing edge fact's `validity` MUST be set to `'superseded'`
 - **AND** the new fact's `supersedes_id` MUST reference the old fact's `id`
 - **AND** a `memory_links` row with `relation='supersedes'` MUST be created
+
+#### Scenario: Temporal fact storage (multi-valued properties with history)
+
+- **WHEN** a fact is stored with `valid_at` set to a non-NULL TIMESTAMPTZ value
+- **THEN** the fact is treated as a temporal fact representing the state at that specific point in time
+- **AND** multiple temporal facts with the same `(subject, predicate)` or `(entity_id, scope, predicate)` key but different `valid_at` values MAY coexist as active facts
+- **AND** temporal facts MUST NOT supersede each other based solely on the uniqueness key — they form a temporal sequence
+
+#### Scenario: Temporal vs property fact supersession distinction
+
+- **WHEN** a new property fact (with `valid_at IS NULL`) is stored with the same uniqueness key as an existing active property fact (also with `valid_at IS NULL`)
+- **THEN** the old property fact is superseded (current behavior applies)
+- **AND** if a new property fact (valid_at IS NULL) is stored and an active temporal fact (valid_at IS NOT NULL) exists with the same uniqueness key
+- **THEN** the temporal fact MUST remain active (not superseded) — property and temporal facts coexist
+- **AND** if a new temporal fact (valid_at = T1) is stored and an active temporal fact (valid_at = T2, T2 ≠ T1) exists with the same uniqueness key
+- **THEN** both facts remain active — temporal facts do not supersede based on valid_at differences
 
 #### Scenario: Fact transitions to retracted via forget
 
@@ -620,7 +636,7 @@ The Memory module SHALL register 21 MCP tools on the hosting butler's MCP server
 - **WHEN** the memory module registers tools
 - **THEN** tools `memory_store_episode`, `memory_store_fact`, and `memory_store_rule` MUST be available
 - **AND** `memory_store_episode` MUST accept `content` (required), `butler` (required), `session_id` (optional), `importance` (optional, default 5.0)
-- **AND** `memory_store_fact` MUST accept `subject`, `predicate`, `content` (required), `importance` (default 5.0), `permanence` (default 'standard'), `scope` (default 'global'), `tags` (optional list), `entity_id` (optional UUID), `object_entity_id` (optional UUID — when set, creates an edge fact linking two entities)
+- **AND** `memory_store_fact` MUST accept `subject`, `predicate`, `content` (required), `importance` (default 5.0), `permanence` (default 'standard'), `scope` (default 'global'), `valid_at` (optional TIMESTAMPTZ, default NULL for non-temporal facts), `tags` (optional list), `entity_id` (optional UUID), `object_entity_id` (optional UUID — when set, creates an edge fact linking two entities)
 - **AND** `memory_store_rule` MUST accept `content` (required), `scope` (default 'global'), `tags` (optional list)
 
 #### Scenario: Reading tools registered
@@ -970,6 +986,7 @@ The module MAY maintain a `predicate_registry` table that guides consistent pred
   - `expected_subject_type` (TEXT, nullable) — suggested entity_type for subject
   - `expected_object_type` (TEXT, nullable) — suggested entity_type for object (NULL for property-facts)
   - `is_edge` (BOOLEAN, default false) — whether this predicate is intended for edge facts
+  - `is_temporal` (BOOLEAN, default false) — whether this predicate is typically used with `valid_at` timestamps to represent temporal sequences
   - `description` (TEXT, nullable) — human-readable description of the predicate
   - `created_at` (TIMESTAMPTZ, default now())
 
@@ -979,12 +996,20 @@ The module MAY maintain a `predicate_registry` table that guides consistent pred
 - **THEN** it SHOULD be seeded with existing property predicates from the fact-extraction taxonomy (e.g., `birthday`, `occupation`, `preference`, `allergy`)
 - **AND** edge predicates SHOULD be seeded: `knows`, `works_at`, `lives_with`, `manages`, `parent_of`, `sibling_of`, `lives_in`, `member_of`
 - **AND** edge predicates MUST have `is_edge = true` and appropriate `expected_subject_type`/`expected_object_type` values
+- **AND** temporal predicates SHOULD be seeded with `is_temporal = true` to indicate predicates that form time series (e.g., `meal_breakfast`, `meal_lunch`, `meal_dinner`, `meal_snack` for meal facts with nutrition metadata at different times)
+
+#### Scenario: Temporal predicates guidance
+
+- **WHEN** a predicate is marked with `is_temporal = true` in the registry
+- **THEN** this indicates the predicate is typically used with `valid_at` timestamps to represent historical sequences
+- **AND** LLM extractors SHOULD use `valid_at` when storing facts with temporal predicates
+- **AND** multiple facts with the same subject/predicate but different `valid_at` values represent a temporal sequence and MUST NOT supersede each other
 
 #### Scenario: predicate_list tool
 
 - **WHEN** the `predicate_list` MCP tool is called
 - **THEN** all rows from `predicate_registry` MUST be returned
-- **AND** each row MUST include: `name`, `expected_subject_type`, `expected_object_type`, `is_edge`, `description`
+- **AND** each row MUST include: `name`, `expected_subject_type`, `expected_object_type`, `is_edge`, `is_temporal`, `description`
 - **AND** results MUST be ordered by `name ASC`
 
 #### Scenario: predicate_list with edge filter

@@ -54,3 +54,27 @@ The health butler uses a clinical memory taxonomy with permanence based on condi
 #### Scenario: Memory classification
 - **WHEN** the health butler extracts facts
 - **THEN** it uses subjects like medication names, condition names, or "user"; predicates like `medication`, `medication_frequency`, `condition_status`, `symptom_pattern`, `dietary_restriction`, `allergy`; permanence `stable` for chronic conditions and allergies, `standard` for current medications and symptoms, `volatile` for acute symptoms
+
+### Requirement: Meal tracking as bitemporal facts
+The health butler stores meal observations using the memory module's meal-specific temporal predicates and nutrition metadata, enabling historical meal querying and pattern analysis.
+
+#### Scenario: Meal predicates and temporal facts
+- **WHEN** the health butler logs a meal via `meal_log`
+- **THEN** the meal data MUST be stored as temporal facts using predicates: `meal_breakfast`, `meal_lunch`, `meal_dinner`, or `meal_snack` (depending on meal type)
+- **AND** each meal fact MUST have `valid_at` set to the meal's timestamp (when the meal was consumed)
+- **AND** multiple meals of the same type on different days represent separate temporal facts with different `valid_at` values and MUST NOT supersede each other
+- **AND** the subject MUST be "user" or the entity ID of the person
+- **AND** the `scope` MUST be "health" to isolate meal facts
+
+#### Scenario: Meal nutrition metadata
+- **WHEN** a meal fact is stored
+- **THEN** the meal `content` field MUST contain a human-readable description of the meal (e.g., "Grilled chicken salad with olive oil dressing")
+- **AND** the fact's `metadata` JSONB MUST contain: `estimated_calories` (NUMBER), `macros` (OBJECT with `protein_g`, `carbs_g`, `fat_g`), `logged_at` (ISO 8601 timestamp), `meal_items` (ARRAY of food items with optional allergen tags)
+- **AND** metadata MUST support optional fields: `mood_before` (1-10), `satisfaction` (1-10), `symptom_notes` (TEXT), `tags` (ARRAY of dietary markers like "low-carb", "vegetarian", "spicy")
+
+#### Scenario: Meal tools as fact-query wrappers
+- **WHEN** `meal_log` is called to record a meal
+- **THEN** it MUST internally call `memory_store_fact` with the appropriate meal predicate, `valid_at`, and nutrition metadata
+- **AND** when `meal_history` is called to retrieve meal observations
+- **THEN** it MUST internally call `memory_search` or `memory_recall` with `scope='health'` and predicate filters for `meal_breakfast`, `meal_lunch`, `meal_dinner`, `meal_snack`
+- **AND** `nutrition_summary` MUST aggregate nutrition metadata across multiple meal facts in a date range by sum of calories and macros
