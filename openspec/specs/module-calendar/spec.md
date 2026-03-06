@@ -220,6 +220,43 @@ Provider sync with incremental/full modes and a unified projection table for fas
 - **WHEN** the butler has scheduled tasks with cron expressions
 - **THEN** a periodic background task projects them as `SOURCE_KIND_INTERNAL_SCHEDULER` entries
 
+### Requirement: Dual-Lane Ownership and Authoritativeness
+
+The projection uses a dual-lane model to separate event authority. Each `calendar_sources` row has a `lane` field: `"user"` or `"butler"`. The lane determines which system is authoritative for an event's state.
+
+- **`lane="user"`** — Provider-synced external events (meetings, appointments created by humans on Google Calendar). Google is the source of truth. The local projection faithfully mirrors whatever the provider reports on each sync cycle.
+- **`lane="butler"`** — Internal scheduled tasks and reminders managed by the butler. The butler's database (`scheduled_tasks`, `reminders`) is the source of truth. These are pushed outbound to Google for visibility but Google is never read back as authoritative for them.
+
+#### Scenario: Butler-generated events are excluded from provider sync projection
+
+- **WHEN** `_project_provider_changes` processes events returned by an incremental or full sync
+- **THEN** events with `butler_generated=True` (detected via `extendedProperties.private.butler_generated`) are skipped
+- **AND** any previously projected butler-generated rows under the provider source (`lane="user"`) are purged
+- **BECAUSE** butler events already have their own `lane="butler"` source via the internal scheduler/reminder projection
+
+#### Scenario: Butler overwrites external edits to butler-owned events
+
+- **WHEN** a user manually moves or edits a butler-generated event directly on Google Calendar
+- **AND** the next sync cycle runs
+- **THEN** the provider sync skips the modified event (butler-generated filter)
+- **AND** `_push_internal_events_to_provider` overwrites the Google event with the butler's local state (title, start/end from `scheduled_tasks` or `reminders`)
+- **BECAUSE** the butler's database is authoritative for butler-owned events; Google is a read-only mirror for them
+
+#### Scenario: External events faithfully track provider state
+
+- **WHEN** a non-butler event is created or modified on Google Calendar
+- **AND** the next sync cycle runs
+- **THEN** the event is upserted into the `lane="user"` projection via `_project_provider_changes`
+- **AND** cancelled events are marked cancelled in the projection
+- **AND** events no longer returned by a full sync are marked stale/cancelled via `_mark_projection_source_stale_events_cancelled`
+
+#### Scenario: Modifying butler events requires the butler
+
+- **WHEN** a user wants to reschedule or edit a butler-managed event
+- **THEN** they must use butler MCP tools (`calendar_update_butler_event`, `calendar_update_event` with the event ID)
+- **AND** the butler updates both its local state and the Google Calendar event atomically
+- **AND** direct Google Calendar edits will be silently reverted on the next sync cycle
+
 ### Requirement: [TARGET-STATE] Unified Calendar View
 
 A dashboard page at `/butlers/calendar` with a view toggle between user events and butler-managed schedules/reminders, backed by an in-app projection table.

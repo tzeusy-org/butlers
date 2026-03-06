@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import UTC
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -651,6 +652,7 @@ async def list_entities(
 
     conditions: list[str] = [
         "(e.metadata->>'merged_into') IS NULL",
+        "(e.metadata->>'deleted_at') IS NULL",
         "e.tenant_id IN ('default', 'shared')",
     ]
     args: list[object] = []
@@ -660,7 +662,8 @@ async def list_entities(
         conditions.append(
             f"(LOWER(e.canonical_name) LIKE '%' || ${idx} || '%'"
             f" OR EXISTS (SELECT 1 FROM UNNEST(e.aliases) AS a"
-            f" WHERE LOWER(a) LIKE '%' || ${idx} || '%'))"
+            f" WHERE LOWER(a) LIKE '%' || ${idx} || '%')"
+            f" OR e.id::text LIKE '%' || ${idx} || '%')"
         )
         args.append(q.lower())
         idx += 1
@@ -689,7 +692,8 @@ async def list_entities(
         f" (SELECT c.id FROM shared.contacts c"
         f"  WHERE c.entity_id = e.id LIMIT 1"
         f" ) AS linked_contact_id,"
-        f" e.roles AS linked_contact_roles"
+        f" e.roles AS linked_contact_roles,"
+        f" COALESCE((e.metadata->>'unidentified')::boolean, false) AS unidentified"
         f" FROM shared.entities e{where}"
         f" ORDER BY e.canonical_name ASC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
@@ -707,6 +711,7 @@ async def list_entities(
             roles=list(r["linked_contact_roles"]) if r["linked_contact_roles"] else [],
             fact_count=r["fact_count"],
             linked_contact_id=str(r["linked_contact_id"]) if r["linked_contact_id"] else None,
+            unidentified=r["unidentified"],
             created_at=str(r["created_at"]),
             updated_at=str(r["updated_at"]),
         )
@@ -911,6 +916,124 @@ async def set_linked_contact(
     )
 
     return {"entity_id": str(eid), "contact_id": str(cid)}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/entities/{entity_id}/merge
+# ---------------------------------------------------------------------------
+
+
+class _MergeEntityRequest(BaseModel):
+    source_entity_id: str
+
+
+class _MergeEntityResponse(BaseModel):
+    target_entity_id: str
+    source_entity_id: str
+    facts_repointed: int
+
+
+@router.post("/entities/{entity_id}/merge", response_model=_MergeEntityResponse)
+async def merge_entity(
+    entity_id: str,
+    body: _MergeEntityRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> _MergeEntityResponse:
+    """Merge source entity into target entity (this entity).
+
+    Re-points all facts from source to target, unions aliases/metadata/roles,
+    tombstones the source entity, and re-links any contacts.
+    """
+    import uuid as _uuid
+
+    from butlers.modules.memory.tools.entities import entity_merge
+
+    pool = _any_pool(db)
+    target_id = str(_uuid.UUID(entity_id))
+    source_id = str(_uuid.UUID(body.source_entity_id))
+
+    if target_id == source_id:
+        raise HTTPException(status_code=400, detail="Cannot merge entity into itself")
+
+    # Count facts on source before merge for the response
+    facts_count = (
+        await pool.fetchval(
+            "SELECT count(*) FROM facts WHERE entity_id = $1 AND validity = 'active'",
+            _uuid.UUID(source_id),
+        )
+        or 0
+    )
+
+    try:
+        result = await entity_merge(pool, source_id, target_id, tenant_id="shared")
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if result is None:
+        raise HTTPException(status_code=404, detail="Target entity not found")
+
+    # Re-link contacts from source entity to target entity
+    await pool.execute(
+        "UPDATE shared.contacts SET entity_id = $1, updated_at = now() WHERE entity_id = $2",
+        _uuid.UUID(target_id),
+        _uuid.UUID(source_id),
+    )
+
+    return _MergeEntityResponse(
+        target_entity_id=target_id,
+        source_entity_id=source_id,
+        facts_repointed=facts_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/memory/entities/{entity_id}
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/entities/{entity_id}", status_code=204)
+async def delete_entity(
+    entity_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Soft-delete an entity by setting metadata.deleted_at.
+
+    Unlinks any contacts pointing to this entity.  Owner entities cannot be
+    deleted (returns 403).
+    """
+    import uuid as _uuid
+    from datetime import datetime
+
+    pool = _any_pool(db)
+    eid = _uuid.UUID(entity_id)
+
+    row = await pool.fetchrow(
+        "SELECT id, roles FROM shared.entities"
+        " WHERE id = $1 AND tenant_id IN ('default', 'shared')",
+        eid,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    roles = list(row["roles"]) if row["roles"] else []
+    if "owner" in roles:
+        raise HTTPException(status_code=403, detail="Cannot delete owner entity")
+
+    deleted_at = datetime.now(UTC).isoformat()
+    await pool.execute(
+        "UPDATE shared.entities"
+        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,"
+        " updated_at = now()"
+        " WHERE id = $1",
+        eid,
+        json.dumps({"deleted_at": deleted_at}),
+    )
+
+    # Unlink any contacts referencing this entity
+    await pool.execute(
+        "UPDATE shared.contacts SET entity_id = NULL, updated_at = now() WHERE entity_id = $1",
+        eid,
+    )
 
 
 # ---------------------------------------------------------------------------

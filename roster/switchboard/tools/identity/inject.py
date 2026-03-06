@@ -13,7 +13,7 @@ For each incoming message:
 
 The preamble formats are:
 
-* Owner:        ``[Source: Owner, via {channel}]``
+* Owner:        ``[Source: Owner (contact_id: {cid}, entity_id: {eid}), via {channel}]``
 * Known:        ``[Source: {name} (contact_id: {cid}, entity_id: {eid}), via {channel}]``
 * Unknown:      ``[Source: Unknown sender (contact_id: {cid}), via {channel}
   -- pending disambiguation]``

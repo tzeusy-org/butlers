@@ -137,17 +137,21 @@ def _make_mock_db(state_store: dict | None = None) -> MagicMock:
 
 def _make_credential_store() -> AsyncMock:
     store = AsyncMock()
+    _secrets = {
+        "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
+        "GOOGLE_CALENDAR_ID": "primary",
+    }
 
     async def _resolve(key: str, env_fallback: bool = False) -> str | None:
         assert env_fallback is False
-        values = {
-            "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
-            "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
-            "GOOGLE_CALENDAR_ID": "primary",
-        }
-        return values.get(key)
+        return _secrets.get(key)
+
+    async def _load_shared(key: str) -> str | None:
+        return _secrets.get(key)
 
     store.resolve.side_effect = _resolve
+    store.load_shared.side_effect = _load_shared
     return store
 
 

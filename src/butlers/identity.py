@@ -146,12 +146,13 @@ async def create_temp_contact(
     channel_value: str,
     display_name: str | None = None,
 ) -> ResolvedContact | None:
-    """Create a temporary contact for an unknown sender.
+    """Create a temporary contact and entity for an unknown sender.
 
-    Creates a contact with ``metadata.needs_disambiguation = true`` plus a
-    linked ``contact_info`` entry.  If a contact_info entry for (type, value)
-    already exists (due to concurrent creation or a race), the existing
-    contact is returned instead.
+    Creates a ``shared.entities`` entry with ``metadata.unidentified = true``
+    and a ``shared.contacts`` entry linked to it (with
+    ``metadata.needs_disambiguation = true``), plus a ``contact_info`` entry.
+    If a contact_info entry for (type, value) already exists (due to
+    concurrent creation or a race), the existing contact is returned instead.
 
     Parameters
     ----------
@@ -214,20 +215,38 @@ async def create_temp_contact(
                         entity_id=eid,
                     )
 
-                # Create the contact.
-                metadata: dict[str, Any] = {
+                # Create an unidentified entity so facts can be anchored.
+                entity_metadata: dict[str, Any] = {
+                    "unidentified": True,
+                    "source_channel": channel_type,
+                    "source_value": channel_value,
+                }
+                entity_id: UUID = await conn.fetchval(
+                    """
+                    INSERT INTO shared.entities
+                        (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
+                    VALUES ('shared', $1, 'person', '{}', $2::jsonb, '{}')
+                    RETURNING id
+                    """,
+                    name,
+                    json.dumps(entity_metadata),
+                )
+
+                # Create the contact linked to the entity.
+                contact_metadata: dict[str, Any] = {
                     "needs_disambiguation": True,
                     "source_channel": channel_type,
                     "source_value": channel_value,
                 }
                 contact_row: asyncpg.Record = await conn.fetchrow(
                     """
-                    INSERT INTO shared.contacts (name, metadata)
-                    VALUES ($1, $2::jsonb)
+                    INSERT INTO shared.contacts (name, entity_id, metadata)
+                    VALUES ($1, $2, $3::jsonb)
                     RETURNING id, name, entity_id
                     """,
                     name,
-                    json.dumps(metadata),
+                    entity_id,
+                    json.dumps(contact_metadata),
                 )
                 contact_id: UUID = contact_row["id"]
 
@@ -247,7 +266,7 @@ async def create_temp_contact(
             contact_id=contact_id,
             name=name,
             roles=[],
-            entity_id=None,
+            entity_id=entity_id,
         )
 
     except Exception:  # noqa: BLE001
@@ -283,14 +302,18 @@ def build_identity_preamble(
     -------
     str
         A formatted preamble line, e.g.:
-        - ``"[Source: Owner, via telegram]"``
+        - ``"[Source: Owner (contact_id: <uuid>, entity_id: <uuid>), via telegram]"``
         - ``"[Source: Chloe (contact_id: <uuid>, entity_id: <uuid>), via telegram]"``
         - ``"[Source: Unknown sender (contact_id: <uuid>), via telegram --
           pending disambiguation]"``
     """
     if resolved is not None:
         if "owner" in resolved.roles:
-            return f"[Source: Owner, via {channel}]"
+            cid = resolved.contact_id
+            eid = resolved.entity_id
+            if eid is not None:
+                return f"[Source: Owner (contact_id: {cid}, entity_id: {eid}), via {channel}]"
+            return f"[Source: Owner (contact_id: {cid}), via {channel}]"
         # Known non-owner
         name = resolved.name or "Unknown Contact"
         cid = resolved.contact_id

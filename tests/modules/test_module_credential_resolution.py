@@ -38,7 +38,11 @@ def _make_credential_store(**resolved: str) -> CredentialStore:
             return os.environ.get(key)
         return None
 
+    async def _load_shared(key: str) -> str | None:
+        return resolved.get(key)
+
     store.resolve = AsyncMock(side_effect=_resolve)
+    store.load_shared = AsyncMock(side_effect=_load_shared)
     return store
 
 

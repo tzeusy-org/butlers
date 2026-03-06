@@ -175,16 +175,20 @@ class TestModuleStartup:
 
     async def test_startup_accepts_supported_provider(self):
         store = AsyncMock()
+        _secrets = {
+            "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
+            "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
+            "GOOGLE_CALENDAR_ID": "test-calendar-id",
+        }
 
         async def _resolve(key: str, env_fallback: bool = False):
-            values = {
-                "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
-                "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
-                "GOOGLE_CALENDAR_ID": "test-calendar-id",
-            }
-            return values.get(key)
+            return _secrets.get(key)
+
+        async def _load_shared(key: str):
+            return _secrets.get(key)
 
         store.resolve.side_effect = _resolve
+        store.load_shared.side_effect = _load_shared
         db = MagicMock()
         db.pool = MagicMock()
         mod = CalendarModule()

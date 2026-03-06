@@ -99,6 +99,7 @@ class EntitySummary(BaseModel):
     roles: list[str] = []
     fact_count: int = 0
     linked_contact_id: str | None = None
+    unidentified: bool = False
     created_at: str
     updated_at: str
 

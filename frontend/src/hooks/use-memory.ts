@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   createEntityInfo,
+  deleteEntity,
   deleteEntityInfo,
   getEntities,
   getEntity,
@@ -17,6 +18,7 @@ import {
   getMemoryStats,
   getRule,
   getRules,
+  mergeEntity,
   revealEntitySecret,
   setEntityLinkedContact,
   unlinkEntityContact,
@@ -140,6 +142,35 @@ export function useUpdateEntity() {
     }) => updateEntity(entityId, request),
     onSuccess: (_, { entityId }) => {
       void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+    },
+  });
+}
+
+/** Merge source entity into target entity. */
+export function useMergeEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      targetEntityId,
+      sourceEntityId,
+    }: {
+      targetEntityId: string;
+      sourceEntityId: string;
+    }) => mergeEntity(targetEntityId, sourceEntityId),
+    onSuccess: (_, { targetEntityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", targetEntityId] });
+    },
+  });
+}
+
+/** Soft-delete an entity. */
+export function useDeleteEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entityId: string) => deleteEntity(entityId),
+    onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
     },
   });

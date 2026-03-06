@@ -36,9 +36,10 @@ After resolving the sender's identity, the Switchboard MUST inject a structured 
 
 #### Scenario: Owner message prompt injection
 
-- **WHEN** the sender is resolved as the owner contact
-- **THEN** the routed prompt MUST be prefixed with `[Source: Owner, via {channel}]`
+- **WHEN** the sender is resolved as the owner contact with `contact_id = 'abc-123'` and `entity_id = 'def-456'`
+- **THEN** the routed prompt MUST be prefixed with `[Source: Owner (contact_id: abc-123, entity_id: def-456), via {channel}]`
 - **AND** the original message text MUST follow the preamble
+- **AND** downstream butlers MUST use `entity_id` as the anchor when storing facts about the owner
 
 #### Scenario: Known non-owner message prompt injection
 

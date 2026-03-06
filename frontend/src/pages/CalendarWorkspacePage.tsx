@@ -57,6 +57,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 
 type CalendarRange = "month" | "week" | "day" | "list";
@@ -193,18 +194,21 @@ function syncBadgeVariant(syncState: string): SyncBadgeVariant {
   return "outline";
 }
 
-/** Titleize a raw identifier: replace separators, capitalize words. */
+/** Titleize a raw identifier: replace separators, capitalize words. Skip email addresses. */
 function titleize(value: string): string {
+  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) return value;
   const result = value.replace(/[_-]/g, " ");
   return result === result.toLowerCase()
     ? result.replace(/\b\w/g, (s) => s.toUpperCase())
     : result;
 }
 
-/** Truncate hashed Google Calendar IDs (e.g. ae06dba...@group.calendar.google.com). */
+/** Truncate hashed Google Calendar IDs (e.g. 07fd80d3…10b@group.calendar.google.com). */
 function truncateCalendarId(value: string): string {
-  if (/^[a-f0-9]{20,}@group\.calendar\.google\.com$/i.test(value)) {
-    return value.slice(0, 8) + "\u2026";
+  const match = value.match(/^([a-f0-9]{20,})@(group\.calendar\.google\.com)$/i);
+  if (match) {
+    const hash = match[1];
+    return `${hash.slice(0, 8)}\u2026${hash.slice(-3)}@${match[2]}`;
   }
   return value;
 }
@@ -567,6 +571,30 @@ export default function CalendarWorkspacePage() {
     [connectedSources],
   );
 
+  const [sourcesDialogOpen, setSourcesDialogOpen] = useState(false);
+  const [disabledSources, setDisabledSources] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem("calendar-disabled-sources");
+      if (stored) return new Set(JSON.parse(stored) as string[]);
+    } catch { /* ignore */ }
+    return new Set<string>();
+  });
+
+  function toggleSourceEnabled(sourceKey: string) {
+    setDisabledSources((prev) => {
+      const next = new Set(prev);
+      if (next.has(sourceKey)) {
+        next.delete(sourceKey);
+      } else {
+        next.add(sourceKey);
+      }
+      try {
+        localStorage.setItem("calendar-disabled-sources", JSON.stringify([...next]));
+      } catch { /* ignore */ }
+      return next;
+    });
+  }
+
   const sourceFilters = useMemo(() => {
     let filtered = userSources;
     if (selectedCalendarId !== "all") {
@@ -578,10 +606,16 @@ export default function CalendarWorkspacePage() {
     return filtered.map((source) => source.source_key);
   }, [selectedCalendarId, selectedSourceKey, userSources]);
 
-  const sourcesForQuery =
-    view === "user" && (selectedSourceKey !== "all" || selectedCalendarId !== "all")
-      ? sourceFilters
-      : undefined;
+  const sourcesForQuery = useMemo(() => {
+    const hasCalendarFilter = selectedSourceKey !== "all" || selectedCalendarId !== "all";
+    const hasDisabled = disabledSources.size > 0;
+
+    if (view === "user" && (hasCalendarFilter || hasDisabled)) {
+      const base = hasCalendarFilter ? sourceFilters : userSources.map((s) => s.source_key);
+      return base.filter((key) => !disabledSources.has(key));
+    }
+    return undefined;
+  }, [disabledSources, selectedCalendarId, selectedSourceKey, sourceFilters, userSources, view]);
 
   const workspaceQuery = useCalendarWorkspace({
     view,
@@ -717,22 +751,19 @@ export default function CalendarWorkspacePage() {
     return [] as Date[];
   }, [range, start]);
 
-  const userEditableEntries = useMemo(
-    () =>
-      entries.filter(
-        (entry) =>
-          entry.view === "user" &&
-          entry.source_type === "provider_event" &&
-          !!entry.provider_event_id &&
-          entry.editable,
-      ),
-    [entries],
-  );
 
-  const upcomingEntries = useMemo(
-    () => userEditableEntries.slice(0, 8),
-    [userEditableEntries],
-  );
+  // Collect the set of Google account emails from source metadata.
+  // The backend stores `account_email` on each source during calendar discovery.
+  const googleAccountEmails = useMemo(() => {
+    const emails = new Set<string>();
+    for (const source of connectedSources) {
+      const email = source.metadata?.account_email;
+      if (typeof email === "string" && email) {
+        emails.add(email);
+      }
+    }
+    return emails;
+  }, [connectedSources]);
 
   const calendarFilterOptions = useMemo(() => {
     const deduped = new Map<string, string>();
@@ -1299,6 +1330,20 @@ export default function CalendarWorkspacePage() {
           >
             {syncButtonLabel}
           </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => setSourcesDialogOpen(true)}
+            aria-label="Configure sources"
+          >
+            Configure Sources
+            {disabledSources.size > 0 ? (
+              <Badge variant="secondary" className="ml-1.5">
+                {disabledSources.size} hidden
+              </Badge>
+            ) : null}
+          </Button>
           {view === "user" ? (
             <Button
               type="button"
@@ -1426,8 +1471,7 @@ export default function CalendarWorkspacePage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
-        <Card>
+      <Card>
           <CardHeader>
             <CardTitle>{windowLabel(range, start, end)}</CardTitle>
             <CardDescription>
@@ -1713,162 +1757,153 @@ export default function CalendarWorkspacePage() {
           </CardContent>
         </Card>
 
-        <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Sources</CardTitle>
-              <CardDescription>Provider metadata, staleness, and sync controls</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {metaQuery.isLoading && visibleSources.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Loading source metadata...</p>
-              ) : visibleSources.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No connected sources reported.</p>
-              ) : (
-                <div className="space-y-2">
-                  {visibleSources.map((source) => {
-                    const isPrimary =
-                      source.lane === "user" &&
-                      source.calendar_id != null &&
-                      source.calendar_id === primaryCalendarId;
-                    const canSetPrimary =
-                      source.lane === "user" &&
-                      source.writable &&
-                      source.calendar_id != null &&
-                      source.calendar_id !== primaryCalendarId &&
-                      source.butler_name != null;
-                    return (
-                    <div key={source.source_key} className="rounded-md border border-border p-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="truncate text-sm font-medium" title={sourceName(source)}>
+      <Dialog open={sourcesDialogOpen} onOpenChange={setSourcesDialogOpen}>
+        <DialogContent className="w-[90vw] max-w-[90vw] sm:w-[80vw] sm:max-w-[80vw] max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Configure Sources</DialogTitle>
+            <DialogDescription>
+              Toggle sources to include or exclude them from the calendar view. Per-source sync and primary calendar controls.
+            </DialogDescription>
+          </DialogHeader>
+          {metaQuery.isLoading && connectedSources.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Loading source metadata...</p>
+          ) : connectedSources.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No connected sources reported.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-10">On</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Account / Calendar ID</TableHead>
+                  <TableHead>Lane</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Freshness</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {[...connectedSources].sort((a, b) => {
+                  // Sort: primary first, then user-email calendars, then enabled, then disabled
+                  const aPrimary = (a.lane === "user" && a.calendar_id === primaryCalendarId) ? 1 : 0;
+                  const bPrimary = (b.lane === "user" && b.calendar_id === primaryCalendarId) ? 1 : 0;
+                  if (aPrimary !== bPrimary) return bPrimary - aPrimary;
+
+                  const aIsAcct = (a.provider === "google" && a.calendar_id && googleAccountEmails.has(a.calendar_id)) ? 1 : 0;
+                  const bIsAcct = (b.provider === "google" && b.calendar_id && googleAccountEmails.has(b.calendar_id)) ? 1 : 0;
+                  if (aIsAcct !== bIsAcct) return bIsAcct - aIsAcct;
+
+                  const aOff = disabledSources.has(a.source_key) ? 1 : 0;
+                  const bOff = disabledSources.has(b.source_key) ? 1 : 0;
+                  return aOff - bOff;
+                }).map((source) => {
+                  const isPrimary =
+                    source.lane === "user" &&
+                    source.calendar_id != null &&
+                    source.calendar_id === primaryCalendarId;
+                  const canSetPrimary =
+                    source.lane === "user" &&
+                    source.writable &&
+                    source.calendar_id != null &&
+                    source.calendar_id !== primaryCalendarId &&
+                    source.butler_name != null;
+                  const isEnabled = !disabledSources.has(source.source_key);
+                  const acctEmail = typeof source.metadata?.account_email === "string" ? source.metadata.account_email : undefined;
+                  const calIdDisplay = (() => {
+                    if (acctEmail && source.calendar_id && source.calendar_id !== acctEmail) {
+                      return `${acctEmail} ${truncateCalendarId(source.calendar_id)}`;
+                    }
+                    return truncateCalendarId(source.calendar_id ?? source.provider ?? source.source_kind);
+                  })();
+
+                  return (
+                    <TableRow key={source.source_key} className={cn(!isEnabled && "opacity-50")}>
+                      <TableCell>
+                        <Checkbox
+                          checked={isEnabled}
+                          onCheckedChange={() => toggleSourceEnabled(source.source_key)}
+                          aria-label={`Toggle ${sourceName(source)}`}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-sm font-medium" title={sourceName(source)}>
                           {sourceName(source)}
-                        </p>
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-xs text-muted-foreground" title={source.calendar_id ?? undefined}>
+                          {calIdDisplay}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-xs">{source.lane}</span>
+                      </TableCell>
+                      <TableCell>
                         <div className="flex items-center gap-1">
                           {isPrimary ? <Badge variant="default">Primary</Badge> : null}
                           <Badge variant={syncBadgeVariant(source.sync_state)}>{source.sync_state}</Badge>
                         </div>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        <span className="font-medium">({source.lane})</span> {source.calendar_id ?? source.provider ?? source.source_kind}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatStaleness(source.staleness_ms)}
-                        {formatOptionalTimestamp(source.last_success_at)
-                          ? ` • last success ${formatOptionalTimestamp(source.last_success_at)}`
-                          : ""}
-                      </p>
-                      {source.last_error ? (
-                        <p className="mt-1 text-xs text-destructive">{source.last_error}</p>
-                      ) : null}
-                      <div className="mt-2 flex justify-end gap-2">
-                        {canSetPrimary ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => {
-                              primaryMutation.mutate(
-                                {
-                                  butler_name: source.butler_name!,
-                                  calendar_id: source.calendar_id!,
-                                },
-                                {
-                                  onSuccess: () => toast.success("Primary calendar updated"),
-                                  onError: (err) =>
-                                    toast.error(`Failed to set primary: ${err.message}`),
-                                },
-                              );
-                            }}
-                            disabled={primaryMutation.isPending}
-                          >
-                            Set as primary
-                          </Button>
+                        {source.last_error ? (
+                          <p className="mt-1 max-w-48 truncate text-xs text-destructive" title={source.last_error}>{source.last_error}</p>
                         ) : null}
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleSyncSource(source)}
-                          disabled={syncMutation.isPending || !source.butler_name}
-                        >
-                          {syncingSourceKey === source.source_key ? "Syncing..." : "Sync now"}
-                        </Button>
-                      </div>
-                    </div>
-                    );
-                  })}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {view === "user" ? (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Upcoming Events</CardTitle>
-                <CardDescription>Editable provider events in this window</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {upcomingEntries.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No editable provider events found.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {upcomingEntries.map((entry) => (
-                      <div key={`upcoming-${entry.entry_id}`} className="rounded-md border border-border p-2">
-                        <p className="text-sm font-medium">{entry.title}</p>
-                        <p className="text-xs text-muted-foreground">{formatEntryWindow(entry)}</p>
-                        <div className="mt-2 flex justify-end gap-2">
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-xs text-muted-foreground">
+                          {formatStaleness(source.staleness_ms)}
+                          {formatOptionalTimestamp(source.last_success_at)
+                            ? ` \u2022 ${formatOptionalTimestamp(source.last_success_at)}`
+                            : ""}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          {canSetPrimary ? (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                primaryMutation.mutate(
+                                  {
+                                    butler_name: source.butler_name!,
+                                    calendar_id: source.calendar_id!,
+                                  },
+                                  {
+                                    onSuccess: () => toast.success("Primary calendar updated"),
+                                    onError: (err) =>
+                                      toast.error(`Failed to set primary: ${err.message}`),
+                                  },
+                                );
+                              }}
+                              disabled={primaryMutation.isPending}
+                            >
+                              Set as primary
+                            </Button>
+                          ) : null}
                           <Button
                             type="button"
                             size="sm"
                             variant="outline"
-                            onClick={() => openUserEditDialog(entry)}
-                            disabled={userEventMutation.isPending}
+                            onClick={() => handleSyncSource(source)}
+                            disabled={syncMutation.isPending || !source.butler_name}
                           >
-                            Edit
-                          </Button>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setDeleteCandidate(entry)}
-                            disabled={userEventMutation.isPending}
-                          >
-                            Delete
+                            {syncingSourceKey === source.source_key ? "Syncing..." : "Sync now"}
                           </Button>
                         </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          ) : (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Butler Lanes</CardTitle>
-                <CardDescription>Lane metadata for butler-view grouping</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {butlerLaneRows.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No lane metadata available.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {butlerLaneRows.map((lane) => (
-                      <div key={lane.laneId} className="rounded-md border border-border p-2">
-                        <p className="text-sm font-medium">{lane.title}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {lane.entries.length} event{lane.entries.length === 1 ? "" : "s"}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
           )}
-        </div>
-      </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setSourcesDialogOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={userEventDialogOpen}

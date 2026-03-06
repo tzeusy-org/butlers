@@ -146,6 +146,11 @@ class CredentialStore:
             p for p in (fallback_pools or ()) if p is not pool
         )
 
+    @property
+    def shared_pool(self) -> asyncpg.Pool | None:
+        """Return the first fallback (shared) pool, or ``None``."""
+        return self._fallback_pools[0] if self._fallback_pools else None
+
     # ------------------------------------------------------------------
     # Write operations
     # ------------------------------------------------------------------
@@ -225,9 +230,78 @@ class CredentialStore:
             is_sensitive,
         )
 
+    async def store_shared(
+        self,
+        key: str,
+        value: str,
+        *,
+        category: str = "general",
+        description: str | None = None,
+        is_sensitive: bool = True,
+    ) -> bool:
+        """Persist a secret to the **shared** (fallback) credential store.
+
+        Returns ``True`` if the write succeeded, ``False`` if no shared pool
+        is available (falls back to local store in that case).
+        """
+        pool = self.shared_pool
+        if pool is None:
+            await self.store(
+                key, value, category=category, description=description, is_sensitive=is_sensitive
+            )
+            return False
+
+        key = key.strip()
+        if not key:
+            raise ValueError("key must be a non-empty string")
+        if value == "":
+            raise ValueError("value must be a non-empty string")
+
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f"""
+                INSERT INTO {_TABLE}
+                    (secret_key, secret_value, category, description,
+                     is_sensitive)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (secret_key) DO UPDATE SET
+                    secret_value = EXCLUDED.secret_value,
+                    category     = EXCLUDED.category,
+                    description  = EXCLUDED.description,
+                    is_sensitive = EXCLUDED.is_sensitive,
+                    updated_at   = now()
+                """,
+                key,
+                value,
+                category,
+                description,
+                is_sensitive,
+            )
+        logger.info(
+            "Secret stored (shared): key=%r category=%r is_sensitive=%r",
+            key,
+            category,
+            is_sensitive,
+        )
+        return True
+
     # ------------------------------------------------------------------
     # Read operations
     # ------------------------------------------------------------------
+
+    async def load_shared(self, key: str) -> str | None:
+        """Load a secret from only the shared (fallback) pool.
+
+        Returns ``None`` if the shared pool is unavailable or the key does
+        not exist there.
+        """
+        pool = self.shared_pool
+        if pool is None:
+            return None
+        row = await _safe_fetch_secret_row(pool, key, source_name="shared")
+        if row is None:
+            return None
+        return row["secret_value"]
 
     async def load(self, key: str) -> str | None:
         """Load a secret value directly from the database.

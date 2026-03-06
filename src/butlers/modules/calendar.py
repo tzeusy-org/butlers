@@ -4083,7 +4083,7 @@ class CalendarModule(Module):
             persisted = False
             if module._credential_store is not None:
                 try:
-                    await module._credential_store.store(
+                    await module._credential_store.store_shared(
                         _CREDENTIAL_KEY_CALENDAR_ID,
                         normalized,
                         category="google",
@@ -4162,24 +4162,25 @@ class CalendarModule(Module):
         )
 
     async def _resolve_startup_calendar_id(self, credential_store: Any) -> str:
-        """Resolve the primary calendar ID from the credential store or auto-discovery.
+        """Resolve the primary calendar ID from the shared credential store or auto-discovery.
 
         Resolution order:
-        1. ``GOOGLE_CALENDAR_ID`` in the credential store.
+        1. ``GOOGLE_CALENDAR_ID`` in the **shared** credential store (single
+           source of truth for all butlers).
         2. Auto-discover a calendar named "Butlers" via the Google Calendar API.
            If it does not exist, create it.
-        3. Persist the discovered/created ID back to the credential store.
+        3. Persist the discovered/created ID back to the **shared** store.
 
         Side-effect: sets ``_calendar_is_butler_specific`` so downstream code
         can distinguish butler-owned calendars from the shared project calendar.
         """
-        # 1. Try credential store.
+        # 1. Try shared credential store (all butlers share one Butlers calendar).
         if credential_store is not None:
-            stored_id = await credential_store.resolve(
-                _CREDENTIAL_KEY_CALENDAR_ID, env_fallback=False
+            stored_id = await credential_store.load_shared(
+                _CREDENTIAL_KEY_CALENDAR_ID,
             )
             if stored_id:
-                logger.debug("CalendarModule: resolved calendar ID from credential store")
+                logger.debug("CalendarModule: resolved calendar ID from shared credential store")
                 self._calendar_is_butler_specific = True
                 return stored_id
 
@@ -4192,16 +4193,18 @@ class CalendarModule(Module):
         discovered_id = await self._provider.discover_or_create_calendar(_CALENDAR_DISCOVERY_NAME)
         self._calendar_is_butler_specific = False
 
-        # 3. Persist for future restarts.
+        # 3. Persist to the shared store so subsequent butlers skip discovery.
         if credential_store is not None:
-            await credential_store.store(
+            await credential_store.store_shared(
                 _CREDENTIAL_KEY_CALENDAR_ID,
                 discovered_id,
                 category="google",
                 description="Auto-discovered Google Calendar ID for the Butlers calendar",
                 is_sensitive=False,
             )
-            logger.debug("CalendarModule: persisted discovered calendar ID to credential store")
+            logger.info(
+                "CalendarModule: persisted discovered calendar ID to shared credential store"
+            )
 
         return discovered_id
 
@@ -4222,6 +4225,17 @@ class CalendarModule(Module):
             resolved = self._resolved_calendar_id
             return [resolved] if resolved else []
 
+        # The Google calendarList entry with "primary": true has the user's
+        # email as its "id".  Store it on every source so the frontend can
+        # show which account each calendar belongs to.
+        account_email: str | None = None
+        for cal in calendars:
+            if cal.get("primary") is True:
+                candidate = cal.get("id")
+                if isinstance(candidate, str) and "@" in candidate:
+                    account_email = candidate
+                break
+
         calendar_ids: list[str] = []
         for cal in calendars:
             cal_id = cal.get("id")
@@ -4231,6 +4245,12 @@ class CalendarModule(Module):
             source_key = f"provider:{provider.name}:{cal_id}"
             is_butlers_cal = cal_id == self._resolved_calendar_id
             writable = cal.get("accessRole") in ("owner", "writer")
+            metadata: dict[str, Any] = {
+                "projection": "provider_sync",
+                "butler_specific": is_butlers_cal,
+            }
+            if account_email:
+                metadata["account_email"] = account_email
             try:
                 await self._ensure_calendar_source(
                     source_key=source_key,
@@ -4241,15 +4261,51 @@ class CalendarModule(Module):
                     butler_name=self._butler_name if is_butlers_cal else None,
                     display_name=display_name,
                     writable=writable,
-                    metadata={
-                        "projection": "provider_sync",
-                        "butler_specific": is_butlers_cal,
-                    },
+                    metadata=metadata,
                 )
             except Exception as exc:
                 logger.debug("Failed to register calendar source '%s': %s", source_key, exc)
                 continue
             calendar_ids.append(cal_id)
+
+        # If the resolved (Butlers) calendar wasn't among the discovered
+        # calendars (e.g. freshly created and not yet in calendarList), register
+        # it explicitly so sync and projection can target it.
+        if self._resolved_calendar_id and self._resolved_calendar_id not in calendar_ids:
+            butlers_source_key = f"provider:{provider.name}:{self._resolved_calendar_id}"
+            butlers_display = _CALENDAR_DISCOVERY_NAME
+            if hasattr(provider, "get_calendar_summary"):
+                try:
+                    summary = await provider.get_calendar_summary(self._resolved_calendar_id)
+                    if summary:
+                        butlers_display = summary
+                except Exception:
+                    pass
+            butlers_meta: dict[str, Any] = {
+                "projection": "provider_sync",
+                "butler_specific": True,
+            }
+            if account_email:
+                butlers_meta["account_email"] = account_email
+            try:
+                await self._ensure_calendar_source(
+                    source_key=butlers_source_key,
+                    source_kind=SOURCE_KIND_PROVIDER,
+                    lane="butler",
+                    provider=provider.name,
+                    calendar_id=self._resolved_calendar_id,
+                    butler_name=self._butler_name,
+                    display_name=butlers_display,
+                    writable=True,
+                    metadata=butlers_meta,
+                )
+                calendar_ids.append(self._resolved_calendar_id)
+                logger.info(
+                    "Registered Butlers calendar '%s' as source (not in calendarList)",
+                    self._resolved_calendar_id,
+                )
+            except Exception as exc:
+                logger.warning("Failed to register Butlers calendar source: %s", exc)
 
         logger.info(
             "Discovered %d calendar(s) for butler '%s'",
@@ -4591,6 +4647,32 @@ class CalendarModule(Module):
 
         # Discover all user calendars and register them as sources for pull-all.
         self._all_provider_calendar_ids = await self._discover_and_register_all_calendars()
+
+        # If the stored calendar ID is stale (e.g. created under a previous Google
+        # account), it won't appear in the discovered list.  Re-discover so a new
+        # "Butlers" calendar is created under the current account.
+        if (
+            self._resolved_calendar_id
+            and self._resolved_calendar_id not in self._all_provider_calendar_ids
+        ):
+            logger.warning(
+                "CalendarModule: stored calendar ID %s not found in current account's "
+                "calendars — re-discovering",
+                self._resolved_calendar_id,
+            )
+            self._resolved_calendar_id = await self._resolve_startup_calendar_id(None)
+            # Re-run discovery to register the new calendar as a source.
+            self._all_provider_calendar_ids = await self._discover_and_register_all_calendars()
+            # Persist the new ID to shared store.
+            if credential_store is not None and self._resolved_calendar_id:
+                await credential_store.store_shared(
+                    _CREDENTIAL_KEY_CALENDAR_ID,
+                    self._resolved_calendar_id,
+                    category="google",
+                    description="Auto-discovered Google Calendar ID for the Butlers calendar",
+                    is_sensitive=False,
+                )
+
         if not self._all_provider_calendar_ids and self._resolved_calendar_id:
             self._all_provider_calendar_ids = [self._resolved_calendar_id]
 
@@ -6259,6 +6341,7 @@ class CalendarModule(Module):
                 lane="user",
                 provider=provider.name,
                 calendar_id=resolved_calendar,
+                butler_name=self._butler_name,
                 display_name=display_name,
                 writable=True,
                 metadata={"projection": "provider_sync"},

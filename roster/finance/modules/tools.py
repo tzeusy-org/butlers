@@ -7,8 +7,16 @@ startup via ``register_tools(mcp, module)``.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
+
+
+def _parse_metadata(metadata: str | None) -> dict[str, Any] | None:
+    """Parse a JSON string into a dict, passthrough None."""
+    if metadata is None:
+        return None
+    return json.loads(metadata)
 
 
 def register_tools(mcp: Any, module: Any) -> None:
@@ -37,7 +45,7 @@ def register_tools(mcp: Any, module: Any) -> None:
         receipt_url: str | None = None,
         external_ref: str | None = None,
         source_message_id: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: str | None = None,
     ) -> dict[str, Any]:
         """Record a transaction in the finance ledger."""
         return await _transactions.record_transaction(
@@ -53,7 +61,7 @@ def register_tools(mcp: Any, module: Any) -> None:
             receipt_url=receipt_url,
             external_ref=external_ref,
             source_message_id=source_message_id,
-            metadata=metadata,
+            metadata=_parse_metadata(metadata),
         )
 
     @mcp.tool()
@@ -98,7 +106,7 @@ def register_tools(mcp: Any, module: Any) -> None:
         payment_method: str | None = None,
         account_id: str | None = None,
         source_message_id: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: str | None = None,
     ) -> dict[str, Any]:
         """Create or update a subscription lifecycle record."""
         return await _subscriptions.track_subscription(
@@ -113,7 +121,7 @@ def register_tools(mcp: Any, module: Any) -> None:
             payment_method=payment_method,
             account_id=account_id,
             source_message_id=source_message_id,
-            metadata=metadata,
+            metadata=_parse_metadata(metadata),
         )
 
     # =================================================================
@@ -134,7 +142,7 @@ def register_tools(mcp: Any, module: Any) -> None:
         statement_period_end: str | None = None,
         paid_at: str | None = None,
         source_message_id: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: str | None = None,
     ) -> dict[str, Any]:
         """Create or update a bill obligation."""
         return await _bills.track_bill(
@@ -151,7 +159,7 @@ def register_tools(mcp: Any, module: Any) -> None:
             statement_period_end=statement_period_end,
             paid_at=paid_at,
             source_message_id=source_message_id,
-            metadata=metadata,
+            metadata=_parse_metadata(metadata),
         )
 
     @mcp.tool()

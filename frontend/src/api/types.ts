@@ -1273,8 +1273,16 @@ export interface EntitySummary {
   roles: string[];
   fact_count: number;
   linked_contact_id: string | null;
+  unidentified: boolean;
   created_at: string;
   updated_at: string;
+}
+
+/** Response for POST /memory/entities/{id}/merge. */
+export interface MergeEntityResponse {
+  target_entity_id: string;
+  source_entity_id: string;
+  facts_repointed: number;
 }
 
 /** A single entity_info row (credentials, identifiers, etc.). */

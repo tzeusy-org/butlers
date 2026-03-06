@@ -47,12 +47,15 @@ def _resolved_known() -> ResolvedContact:
     )
 
 
+_TEMP_ENTITY_ID = uuid.uuid4()
+
+
 def _temp_contact() -> ResolvedContact:
     return ResolvedContact(
         contact_id=_TEMP_ID,
         name="Unknown (telegram 12345)",
         roles=[],
-        entity_id=None,
+        entity_id=_TEMP_ENTITY_ID,
     )
 
 
@@ -68,7 +71,7 @@ async def test_owner_message_gets_owner_preamble():
     ):
         result = await resolve_and_inject_identity(pool, "telegram", "12345")
 
-    assert result.preamble == "[Source: Owner, via telegram]"
+    assert result.preamble == f"[Source: Owner (contact_id: {_OWNER_ID}), via telegram]"
     assert result.is_owner is True
     assert result.is_known is True
     assert result.is_unknown is False

@@ -10,9 +10,15 @@ Extract facts from conversational messages and store them using the butler's dom
 
 **Critical: Resolve before storing.** Every fact about a person MUST be anchored to a resolved entity via `entity_id`. Never store facts using only a raw `subject` string. This ensures that facts about "Tze", "TzeHow Lee", and "Tze How" all resolve to the same identity and are retrievable together.
 
-### Entity Resolution Before Fact Storage
+### Sender Entity Resolution
 
-Before calling `memory_store_fact` for any person mention:
+When the identity preamble contains an `entity_id` (e.g., `[Source: Owner (contact_id: ..., entity_id: <uuid>), via telegram]`), use that `entity_id` for facts **about the sender** — their preferences, health, habits, etc. Do not store `subject="user"` as a string; anchor to the sender's entity.
+
+For unidentified senders (`[Source: Unknown sender (contact_id: ..., entity_id: <uuid>), via telegram -- pending disambiguation]`), an entity is auto-created. Use that `entity_id` to anchor facts. The entity will appear in the dashboard for the owner to identify later.
+
+### Entity Resolution for Mentioned People
+
+Before calling `memory_store_fact` for any person mention (someone *other than* the sender):
 
 1. Call `memory_entity_resolve(name, entity_type="person", context_hints={...})` to get ranked candidates.
 2. Apply the disambiguation policy:

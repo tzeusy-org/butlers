@@ -204,7 +204,7 @@ class TestRegisterTools:
 
         description = fact_tool["description"] or ""
         assert "required fields" in description.lower()
-        assert '"subject": "user"' in description
+        assert '"subject": "Owner"' in description
         assert '"tags": [' in description
         assert "JSON array of strings" in description
 
@@ -353,6 +353,7 @@ class TestToolDelegation:
             permanence="standard",
             scope="global",
             tags=None,
+            entity_id=None,
             object_entity_id=None,
         )
 

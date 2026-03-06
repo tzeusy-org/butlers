@@ -1208,6 +1208,25 @@ export function updateEntity(
   );
 }
 
+/** Merge source entity into target entity. */
+export function mergeEntity(
+  targetEntityId: string,
+  sourceEntityId: string,
+): Promise<MergeEntityResponse> {
+  return apiFetch<MergeEntityResponse>(
+    `/memory/entities/${encodeURIComponent(targetEntityId)}/merge`,
+    { method: "POST", body: JSON.stringify({ source_entity_id: sourceEntityId }) },
+  );
+}
+
+/** Delete (soft-delete) an entity. */
+export function deleteEntity(entityId: string): Promise<void> {
+  return apiFetch<void>(
+    `/memory/entities/${encodeURIComponent(entityId)}`,
+    { method: "DELETE" },
+  );
+}
+
 /** Create an entity_info entry for an entity. */
 export function createEntityInfo(
   entityId: string,

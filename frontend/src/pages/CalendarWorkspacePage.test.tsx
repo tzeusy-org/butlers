@@ -11,6 +11,7 @@ import {
   useCalendarWorkspaceMeta,
   useMutateCalendarWorkspaceButlerEvent,
   useMutateCalendarWorkspaceUserEvent,
+  useSetPrimaryCalendar,
   useSyncCalendarWorkspace,
 } from "@/hooks/use-calendar-workspace";
 
@@ -20,6 +21,7 @@ vi.mock("@/hooks/use-calendar-workspace", () => ({
   useMutateCalendarWorkspaceButlerEvent: vi.fn(),
   useSyncCalendarWorkspace: vi.fn(),
   useMutateCalendarWorkspaceUserEvent: vi.fn(),
+  useSetPrimaryCalendar: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
@@ -239,6 +241,16 @@ function setUserMutationState(state?: Partial<UseUserMutationResult>) {
   } as unknown as UseUserMutationResult);
 }
 
+type UsePrimaryMutationResult = ReturnType<typeof useSetPrimaryCalendar>;
+
+function setPrimaryCalendarState(state?: Partial<UsePrimaryMutationResult>) {
+  vi.mocked(useSetPrimaryCalendar).mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+    ...state,
+  } as unknown as UsePrimaryMutationResult);
+}
+
 function setButlerWorkspaceFixtures() {
   setWorkspaceState({
     data: {
@@ -445,6 +457,7 @@ describe("CalendarWorkspacePage", () => {
     setButlerMutationState();
     setSyncState();
     setUserMutationState();
+    setPrimaryCalendarState();
     vi.stubGlobal("confirm", vi.fn(() => true));
 
     container = document.createElement("div");

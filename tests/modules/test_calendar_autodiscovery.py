@@ -40,7 +40,14 @@ def _make_credential_store(
             values[_CREDENTIAL_KEY_CALENDAR_ID] = calendar_id
         return values.get(key)
 
+    async def _load_shared(key: str) -> str | None:
+        values: dict[str, str] = {}
+        if calendar_id is not None:
+            values[_CREDENTIAL_KEY_CALENDAR_ID] = calendar_id
+        return values.get(key)
+
     store.resolve.side_effect = _resolve
+    store.load_shared.side_effect = _load_shared
     return store
 
 
@@ -79,7 +86,7 @@ class TestResolveFromCredentialStore:
 
         await mod._resolve_startup_calendar_id(store)
 
-        store.store.assert_not_called()
+        store.store_shared.assert_not_called()
 
 
 class TestDiscoverExistingCalendar:
@@ -105,7 +112,7 @@ class TestPersistsToCredentialStore:
 
         await mod._resolve_startup_calendar_id(store)
 
-        store.store.assert_awaited_once_with(
+        store.store_shared.assert_awaited_once_with(
             _CREDENTIAL_KEY_CALENDAR_ID,
             DISCOVERED_CALENDAR_ID,
             category="google",

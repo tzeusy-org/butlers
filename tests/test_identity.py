@@ -123,7 +123,7 @@ async def test_resolve_contact_by_channel_string_uuid_coercion():
 # ---------------------------------------------------------------------------
 
 
-def test_preamble_owner():
+def test_preamble_owner_without_entity_id():
     resolved = ResolvedContact(
         contact_id=_OWNER_ID,
         name="Owner",
@@ -131,7 +131,20 @@ def test_preamble_owner():
         entity_id=None,
     )
     preamble = build_identity_preamble(resolved, "telegram")
-    assert preamble == "[Source: Owner, via telegram]"
+    assert preamble == f"[Source: Owner (contact_id: {_OWNER_ID}), via telegram]"
+
+
+def test_preamble_owner_with_entity_id():
+    resolved = ResolvedContact(
+        contact_id=_OWNER_ID,
+        name="Owner",
+        roles=["owner"],
+        entity_id=_ENTITY_ID,
+    )
+    preamble = build_identity_preamble(resolved, "telegram")
+    assert preamble == (
+        f"[Source: Owner (contact_id: {_OWNER_ID}, entity_id: {_ENTITY_ID}), via telegram]"
+    )
 
 
 def test_preamble_known_non_owner_with_entity_id():
@@ -201,21 +214,24 @@ def test_preamble_known_null_name_fallback():
 
 
 async def test_create_temp_contact_creates_new():
-    """create_temp_contact inserts a contact and contact_info row."""
-    new_id = uuid.uuid4()
+    """create_temp_contact inserts entity, contact, and contact_info rows."""
+    new_contact_id = uuid.uuid4()
+    new_entity_id = uuid.uuid4()
 
     # Mock the DB interaction
     mock_conn = AsyncMock()
-    # First fetchrow (re-check inside transaction) returns None → no existing
-    # Second fetchrow (INSERT RETURNING) returns the new contact
+    # 1st call: fetchrow (re-check inside transaction) → None (no existing)
+    # 2nd call: fetchval (entity INSERT RETURNING id) → entity UUID
+    # 3rd call: fetchrow (contact INSERT RETURNING) → contact row
     mock_contact_row = MagicMock()
     mock_contact_row.__getitem__ = lambda self, k: {
-        "id": new_id,
+        "id": new_contact_id,
         "name": "Unknown (telegram 555)",
-        "entity_id": None,
+        "entity_id": new_entity_id,
     }[k]
 
     mock_conn.fetchrow = AsyncMock(side_effect=[None, mock_contact_row])
+    mock_conn.fetchval = AsyncMock(return_value=new_entity_id)
     mock_conn.execute = AsyncMock()
 
     mock_transaction = AsyncMock()
@@ -231,6 +247,7 @@ async def test_create_temp_contact_creates_new():
     result = await create_temp_contact(pool, "telegram", "555")
     assert result is not None
     assert result.roles == []
+    assert result.entity_id == new_entity_id
     assert result.name == "Unknown (telegram 555)"
 
 

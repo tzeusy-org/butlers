@@ -153,6 +153,18 @@ class MemoryModule(Module):
                     )
                 ),
             ] = None,
+            entity_id: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional UUID of a resolved entity to anchor this fact. "
+                        "When provided, uniqueness is enforced via "
+                        "(entity_id, scope, predicate) instead of (subject, predicate). "
+                        "Use the entity_id from the identity preamble when available "
+                        "(e.g. from [Source: Owner (contact_id: ..., entity_id: ...)])."
+                    )
+                ),
+            ] = None,
             object_entity_id: Annotated[
                 str | None,
                 Field(
@@ -167,6 +179,9 @@ class MemoryModule(Module):
             """Store a fact and supersede any active match.
 
             Property facts use `(subject, predicate)` for uniqueness.
+            When `entity_id` is provided, uniqueness uses
+            `(entity_id, scope, predicate)` instead — the `subject` field
+            becomes a human-readable label only.
             Edge-facts (when `object_entity_id` is set) use
             `(entity_id, object_entity_id, scope, predicate)`.
 
@@ -182,16 +197,16 @@ class MemoryModule(Module):
             - `tags` (array[string]) — must be a JSON array of strings (a list)
               and NOT a JSON-encoded string.
               A single string is invalid and will fail validation.
+            - `entity_id` (string, UUID) — anchor fact to a resolved entity
             - `object_entity_id` (string, UUID) — target entity for edge-facts
 
-            Valid JSON example (property fact):
+            Valid JSON example (entity-anchored property fact):
             {
-              "subject": "user",
+              "subject": "Owner",
               "predicate": "favorite_coffee",
               "content": "drinks espresso",
-              "importance": 6.5,
-              "permanence": "standard",
-              "scope": "global",
+              "entity_id": "550e8400-e29b-41d4-a716-446655440000",
+              "permanence": "stable",
               "tags": ["preferences", "coffee"]
             }
 
@@ -200,7 +215,8 @@ class MemoryModule(Module):
               "subject": "Alice",
               "predicate": "works_at",
               "content": "software engineer",
-              "object_entity_id": "550e8400-e29b-41d4-a716-446655440000"
+              "entity_id": "550e8400-e29b-41d4-a716-446655440000",
+              "object_entity_id": "660e8400-e29b-41d4-a716-446655440001"
             }
             """
             return await _writing.memory_store_fact(
@@ -213,6 +229,7 @@ class MemoryModule(Module):
                 permanence=permanence,
                 scope=scope,
                 tags=tags,
+                entity_id=entity_id,
                 object_entity_id=object_entity_id,
             )
 

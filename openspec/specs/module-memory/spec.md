@@ -937,6 +937,60 @@ The `facts` table SHALL support an optional `object_entity_id` column (UUID, nul
 
 ---
 
+### Requirement: Mandatory entity anchoring for person facts (no generic identities)
+
+All facts about a person MUST be anchored to a resolved `entity_id`. Storing facts with generic subject strings like `"user"`, `"owner"`, `"sender"`, or `"the person"` without an `entity_id` is a spec violation. The `subject` field is a human-readable label only when `entity_id` is provided; it MUST NOT serve as the primary identity key.
+
+This rule applies to all butlers with the memory module enabled, not just the relationship butler. Health, finance, education, travel, home, and general butlers MUST all follow this contract.
+
+#### Scenario: Sender fact uses entity_id from identity preamble
+
+- **WHEN** a butler receives a routed message with preamble `[Source: Owner (contact_id: abc, entity_id: def), via telegram]`
+- **AND** the message contains a preference or attribute of the sender (e.g., "I liked that meal")
+- **THEN** the butler MUST call `memory_store_fact` with `entity_id="def"` (from the preamble)
+- **AND** `subject` MUST be a human-readable label (e.g., `"Owner"`, the sender's name)
+- **AND** the butler MUST NOT store the fact with `subject="user"` and no `entity_id`
+
+#### Scenario: Unidentified sender fact uses auto-created entity_id
+
+- **WHEN** a butler receives a routed message with preamble `[Source: Unknown sender (contact_id: abc, entity_id: def), via telegram -- pending disambiguation]`
+- **AND** the message contains information about the sender
+- **THEN** the butler MUST call `memory_store_fact` with `entity_id="def"` (the auto-created entity)
+- **AND** the fact is retrievable later even after the entity is merged into a known entity
+
+#### Scenario: Unidentified entity lifecycle
+
+- **WHEN** a temporary contact is created for an unknown sender
+- **THEN** the system auto-creates a `shared.entities` entry with `metadata.unidentified = true`
+- **AND** the entity appears in the dashboard entities list (`/butlers/entities`) with an "Unidentified" badge
+- **AND** the owner MAY:
+  1. **Flesh out**: Update the entity's `canonical_name` and `aliases` via the entity detail page
+  2. **Merge into**: Merge the unidentified entity into an existing entity via contact merge (`POST /contacts/{id}/merge`) or the `memory_entity_merge` MCP tool — all facts are re-pointed to the target entity
+  3. **Delete**: Retract the entity if the sender was spam or irrelevant
+
+#### Scenario: Entity merge re-points all facts
+
+- **WHEN** the owner merges unidentified entity U into known entity K via `memory_entity_merge(source=U, target=K)`
+- **THEN** all facts with `entity_id = U` MUST be re-pointed to `entity_id = K`
+- **AND** uniqueness conflicts (same `(entity_id, scope, predicate)`) MUST be resolved via supersession (higher-confidence fact wins)
+- **AND** entity U MUST be tombstoned (`metadata.merged_into = K`)
+
+#### Scenario: Mentioned person fact uses resolved entity_id
+
+- **WHEN** a message mentions a person other than the sender (e.g., "Sarah likes coffee")
+- **THEN** the butler MUST call `memory_entity_resolve("Sarah")` before storing the fact
+- **AND** if resolved, MUST pass the resolved `entity_id` to `memory_store_fact`
+- **AND** if unresolved (zero candidates), MUST call `memory_entity_create` first, then use the new `entity_id`
+
+#### Scenario: Fact stored without entity_id is a spec violation
+
+- **WHEN** a butler calls `memory_store_fact` with a person-related fact
+- **AND** `entity_id` is `None`
+- **THEN** this is a spec violation — facts about people MUST always be entity-anchored
+- **AND** the shared `butler-memory` skill instructs all runtime instances to follow this rule
+
+---
+
 ### Requirement: Entity neighbors graph traversal
 
 The `entity_neighbors` tool SHALL traverse the entity graph by following edge facts (facts where `object_entity_id IS NOT NULL`). The implementation uses recursive CTEs on PostgreSQL. No external graph database is required.
