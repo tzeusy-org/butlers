@@ -219,7 +219,7 @@ async def store_fact(
             # Validate entity_id when provided.
             if entity_id is not None:
                 entity_exists = await conn.fetchval(
-                    "SELECT 1 FROM entities WHERE id = $1",
+                    "SELECT 1 FROM shared.entities WHERE id = $1",
                     entity_id,
                 )
                 if not entity_exists:
@@ -238,7 +238,7 @@ async def store_fact(
                         "entity_id and object_entity_id must differ"
                     )
                 obj_exists = await conn.fetchval(
-                    "SELECT 1 FROM entities WHERE id = $1",
+                    "SELECT 1 FROM shared.entities WHERE id = $1",
                     object_entity_id,
                 )
                 if not obj_exists:

@@ -208,7 +208,7 @@ class TestEntityMergeBasic:
         update_entity_calls = [
             c
             for c in execute_calls
-            if "UPDATE entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
+            if "UPDATE shared.entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
         ]
         assert len(update_entity_calls) == 1
         aliases_arg = update_entity_calls[0][0][1]
@@ -233,7 +233,7 @@ class TestEntityMergeBasic:
         update_entity_calls = [
             c
             for c in execute_calls
-            if "UPDATE entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
+            if "UPDATE shared.entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
         ]
         assert len(update_entity_calls) == 1
         aliases_arg = update_entity_calls[0][0][1]
@@ -256,7 +256,7 @@ class TestEntityMergeBasic:
         update_entity_calls = [
             c
             for c in execute_calls
-            if "UPDATE entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
+            if "UPDATE shared.entities SET aliases" in c[0][0] and TARGET_UUID in c[0]
         ]
         assert len(update_entity_calls) == 1
         metadata_json_arg = update_entity_calls[0][0][2]
@@ -282,7 +282,7 @@ class TestEntityMergeBasic:
         tombstone_calls = [
             c
             for c in execute_calls
-            if "UPDATE entities SET metadata" in c[0][0] and SOURCE_UUID in c[0]
+            if "UPDATE shared.entities SET metadata" in c[0][0] and SOURCE_UUID in c[0]
         ]
         assert len(tombstone_calls) == 1
         tombstone_meta = json.loads(tombstone_calls[0][0][1])

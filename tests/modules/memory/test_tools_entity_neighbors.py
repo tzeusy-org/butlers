@@ -309,7 +309,7 @@ class TestParameterPassing:
         await entity_neighbors(mock_pool, str(START_UUID), tenant_id=TENANT_ID)
 
         sql = mock_pool.fetch.call_args[0][0]
-        assert "JOIN entities e" in sql
+        assert "JOIN shared.entities e" in sql
         assert "e.canonical_name" in sql
         assert "e.entity_type" in sql
 

@@ -75,7 +75,8 @@ async def entity_create(
     try:
         entity_id = await pool.fetchval(
             """
-            INSERT INTO entities (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
+            INSERT INTO shared.entities
+                (tenant_id, canonical_name, entity_type, aliases, metadata, roles)
             VALUES ($1, $2, $3, $4, $5::jsonb, $6)
             RETURNING id
             """,
@@ -118,7 +119,7 @@ async def entity_get(
         """
         SELECT id, tenant_id, canonical_name, entity_type, aliases, metadata,
                roles, created_at, updated_at
-        FROM entities
+        FROM shared.entities
         WHERE id = $1 AND tenant_id = $2
         """,
         uuid.UUID(entity_id),
@@ -160,7 +161,7 @@ async def entity_update(
     eid = uuid.UUID(entity_id)
 
     current = await pool.fetchrow(
-        "SELECT id, metadata FROM entities WHERE id = $1 AND tenant_id = $2",
+        "SELECT id, metadata FROM shared.entities WHERE id = $1 AND tenant_id = $2",
         eid,
         tenant_id,
     )
@@ -195,7 +196,7 @@ async def entity_update(
 
     row = await pool.fetchrow(
         f"""
-        UPDATE entities
+        UPDATE shared.entities
         SET {", ".join(set_clauses)}
         WHERE id = ${where_id_idx} AND tenant_id = ${where_tenant_idx}
         RETURNING id, tenant_id, canonical_name, entity_type, aliases, metadata,
@@ -271,7 +272,7 @@ async def entity_resolve(
         FROM (
             -- Tier 1: exact canonical_name match (case-insensitive)
             SELECT id, canonical_name, entity_type, aliases, 1 AS tier, 'exact' AS match_type
-            FROM entities
+            FROM shared.entities
             WHERE tenant_id = $1
               AND LOWER(canonical_name) = $2
               AND (metadata->>'merged_into') IS NULL
@@ -281,7 +282,7 @@ async def entity_resolve(
 
             -- Tier 2: exact alias match (case-insensitive)
             SELECT id, canonical_name, entity_type, aliases, 2 AS tier, 'alias' AS match_type
-            FROM entities
+            FROM shared.entities
             WHERE tenant_id = $1
               AND $2 = ANY(SELECT LOWER(a) FROM UNNEST(aliases) AS a)
               AND (metadata->>'merged_into') IS NULL
@@ -291,7 +292,7 @@ async def entity_resolve(
 
             -- Tier 3: prefix/substring match on canonical_name and aliases
             SELECT id, canonical_name, entity_type, aliases, 3 AS tier, 'prefix' AS match_type
-            FROM entities
+            FROM shared.entities
             WHERE tenant_id = $1
               AND (
                   LOWER(canonical_name) LIKE ($2 || '%')
@@ -431,7 +432,7 @@ async def _fetch_fuzzy_candidates(
         rows = await pool.fetch(
             f"""
             SELECT id, canonical_name, entity_type, aliases
-            FROM entities
+            FROM shared.entities
             WHERE tenant_id = $1
               AND (
                   similarity(canonical_name, $2) > 0.3
@@ -567,7 +568,7 @@ async def entity_neighbors(
 
     # Validate entity existence.
     exists = await pool.fetchval(
-        "SELECT 1 FROM entities WHERE id = $1 AND tenant_id = $2",
+        "SELECT 1 FROM shared.entities WHERE id = $1 AND tenant_id = $2",
         eid,
         tenant_id,
     )
@@ -667,7 +668,7 @@ async def entity_neighbors(
         n.depth,
         n.path
     FROM neighbors n
-    JOIN entities e ON e.id = n.neighbor_id AND e.tenant_id = $2
+    JOIN shared.entities e ON e.id = n.neighbor_id AND e.tenant_id = $2
     ORDER BY n.depth, e.canonical_name
     """
 
@@ -742,7 +743,7 @@ async def entity_merge(
             # ---------------------------------------------------------------
             src_row = await conn.fetchrow(
                 "SELECT id, canonical_name, aliases, metadata, roles "
-                "FROM entities WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                "FROM shared.entities WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                 src_uuid,
                 tenant_id,
             )
@@ -753,7 +754,7 @@ async def entity_merge(
 
             tgt_row = await conn.fetchrow(
                 "SELECT id, canonical_name, aliases, metadata, roles "
-                "FROM entities WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
+                "FROM shared.entities WHERE id = $1 AND tenant_id = $2 FOR UPDATE",
                 tgt_uuid,
                 tenant_id,
             )
@@ -864,7 +865,7 @@ async def entity_merge(
             merged_metadata = {**src_metadata, **tgt_metadata}
 
             await conn.execute(
-                "UPDATE entities SET aliases = $1, metadata = $2::jsonb, roles = $3, "
+                "UPDATE shared.entities SET aliases = $1, metadata = $2::jsonb, roles = $3, "
                 "updated_at = now() WHERE id = $4",
                 new_aliases,
                 json.dumps(merged_metadata),
@@ -877,7 +878,7 @@ async def entity_merge(
             # ---------------------------------------------------------------
             src_metadata_tombstoned = {**src_metadata, "merged_into": target_entity_id}
             await conn.execute(
-                "UPDATE entities SET metadata = $1::jsonb, updated_at = now() WHERE id = $2",
+                "UPDATE shared.entities SET metadata = $1::jsonb, updated_at = now() WHERE id = $2",
                 json.dumps(src_metadata_tombstoned),
                 src_uuid,
             )

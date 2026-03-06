@@ -733,9 +733,11 @@ class TestEntityMerge:
             str(ENTITY_UUID2),
             tenant_id="relationship",
         )
-        # entity_merge calls UPDATE entities SET aliases for the target entity
+        # entity_merge calls UPDATE shared.entities SET aliases for the target entity
         execute_calls = mock_conn.execute.call_args_list
-        update_entity_calls = [c for c in execute_calls if "UPDATE entities SET aliases" in c[0][0]]
+        update_entity_calls = [
+            c for c in execute_calls if "UPDATE shared.entities SET aliases" in c[0][0]
+        ]
         assert len(update_entity_calls) >= 1
         merged_aliases = update_entity_calls[0][0][1]
         assert "Ali" in merged_aliases
@@ -757,7 +759,7 @@ class TestEntityMerge:
         tombstone_calls = [
             c
             for c in execute_calls
-            if "UPDATE entities SET metadata" in c[0][0] and ENTITY_UUID in c[0]
+            if "UPDATE shared.entities SET metadata" in c[0][0] and ENTITY_UUID in c[0]
         ]
         assert len(tombstone_calls) == 1, f"Tombstone call not found in: {execute_calls}"
         tombstone_meta = json.loads(tombstone_calls[0][0][1])

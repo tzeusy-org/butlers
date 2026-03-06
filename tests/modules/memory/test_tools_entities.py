@@ -73,7 +73,7 @@ class TestEntityCreate:
         assert result == {"entity_id": SAMPLE_UUID_STR}
         mock_pool.fetchval.assert_awaited_once()
         sql, *params = mock_pool.fetchval.call_args[0]
-        assert "INSERT INTO entities" in sql
+        assert "INSERT INTO shared.entities" in sql
         assert TENANT_ID in params
         assert "Alice Smith" in params
         assert "person" in params
@@ -288,7 +288,7 @@ class TestEntityUpdate:
         assert result["canonical_name"] == "New Name"
         # Confirm UPDATE SQL was issued (second fetchrow call)
         second_call_sql = mock_pool.fetchrow.call_args_list[1][0][0]
-        assert "UPDATE entities" in second_call_sql
+        assert "UPDATE shared.entities" in second_call_sql
         assert "canonical_name" in second_call_sql
 
     async def test_updates_aliases_with_replace_all(self, mock_pool: AsyncMock) -> None:
