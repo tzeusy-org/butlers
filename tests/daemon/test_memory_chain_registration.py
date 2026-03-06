@@ -69,6 +69,7 @@ class TestMemoryChainRegistration:
             "003_memory_events.py",
             "004_object_entity_id.py",
             "005_predicate_registry.py",
+            "006_drop_shadow_entities.py",
         ], f"Unexpected migration files: {migration_files}"
 
     def test_core_also_in_shared_chains(self) -> None:
