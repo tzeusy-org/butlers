@@ -31,7 +31,7 @@ export const SECRET_TEMPLATES: SecretTemplate[] = [
 
 /**
  * Owner identity credentials (Telegram API keys, user session, HA token,
- * Google OAuth refresh, email password) are now managed as entity_info entries
+ * Google OAuth refresh) are now managed as entity_info entries
  * on the owner entity. Configure them at /entities/{owner_entity_id} via the
  * "Credentials & Info" section.
  *

@@ -41,55 +41,34 @@ import {
 // ---------------------------------------------------------------------------
 
 const ENTITY_INFO_TYPES = [
-  "email",
   "telegram",
   "telegram_chat_id",
-  "api_key",
-  "api_secret",
-  "token",
-  "password",
-  "username",
-  "url",
   "telegram_api_id",
   "telegram_api_hash",
   "telegram_user_session",
   "home_assistant_url",
   "home_assistant_token",
   "google_oauth_refresh",
-  "email_password",
   "other",
 ] as const;
 
 const SECURED_TYPES = new Set<string>([
-  "api_key",
-  "api_secret",
-  "token",
-  "password",
   "telegram_api_hash",
   "telegram_user_session",
   "home_assistant_token",
   "google_oauth_refresh",
-  "email_password",
 ]);
 
 function entityInfoTypeLabel(type: string): string {
   switch (type) {
-    case "email": return "Email";
     case "telegram": return "Telegram Handle";
     case "telegram_chat_id": return "Telegram Chat ID";
-    case "api_key": return "API Key";
-    case "api_secret": return "API Secret";
-    case "token": return "Token";
-    case "password": return "Password";
-    case "username": return "Username";
-    case "url": return "URL";
     case "telegram_api_id": return "Telegram API ID";
     case "telegram_api_hash": return "Telegram API Hash";
     case "telegram_user_session": return "Telegram User Session";
     case "home_assistant_url": return "Home Assistant URL";
     case "home_assistant_token": return "Home Assistant Token";
     case "google_oauth_refresh": return "Google OAuth Refresh";
-    case "email_password": return "Email Password";
     case "other": return "Other";
     default: return type;
   }
@@ -618,6 +597,42 @@ export default function EntityDetailPage() {
     );
   };
 
+  const [addingAlias, setAddingAlias] = useState(false);
+  const [draftAlias, setDraftAlias] = useState("");
+
+  const handleRemoveAlias = (alias: string) => {
+    if (!entityId || !entity) return;
+    const updated = entity.aliases.filter((a) => a !== alias);
+    updateEntity.mutate(
+      { entityId, request: { aliases: updated } },
+      {
+        onSuccess: () => toast.success(`Removed alias "${alias}"`),
+        onError: (err) => toast.error(`Failed to remove alias: ${(err as Error).message}`),
+      },
+    );
+  };
+
+  const handleAddAlias = () => {
+    const trimmed = draftAlias.trim();
+    if (!entityId || !entity || !trimmed) return;
+    if (entity.aliases.includes(trimmed)) {
+      toast.error("Alias already exists.");
+      return;
+    }
+    const updated = [...entity.aliases, trimmed];
+    updateEntity.mutate(
+      { entityId, request: { aliases: updated } },
+      {
+        onSuccess: () => {
+          toast.success(`Added alias "${trimmed}"`);
+          setDraftAlias("");
+          setAddingAlias(false);
+        },
+        onError: (err) => toast.error(`Failed to add alias: ${(err as Error).message}`),
+      },
+    );
+  };
+
   return (
     <div className="space-y-6">
       {/* Breadcrumbs */}
@@ -707,20 +722,67 @@ export default function EntityDetailPage() {
             </CardHeader>
             <CardContent className="space-y-3">
               {/* Aliases */}
-              {entity.aliases.length > 0 && (
-                <div>
-                  <p className="text-muted-foreground mb-1 text-sm font-medium">
-                    Aliases
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {entity.aliases.map((alias) => (
-                      <Badge key={alias} variant="secondary">
-                        {alias}
-                      </Badge>
-                    ))}
-                  </div>
+              <div>
+                <p className="text-muted-foreground mb-1 text-sm font-medium">
+                  Aliases
+                </p>
+                <div className="flex flex-wrap gap-1.5 items-center">
+                  {entity.aliases.map((alias) => (
+                    <Badge key={alias} variant="secondary" className="group/alias">
+                      {alias}
+                      <button
+                        type="button"
+                        className="ml-1 opacity-0 group-hover/alias:opacity-100 transition-opacity"
+                        onClick={() => handleRemoveAlias(alias)}
+                        title="Remove alias"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </Badge>
+                  ))}
+                  {addingAlias ? (
+                    <div className="flex items-center gap-1">
+                      <Input
+                        className="h-6 w-32 text-xs"
+                        value={draftAlias}
+                        onChange={(e) => setDraftAlias(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleAddAlias();
+                          if (e.key === "Escape") setAddingAlias(false);
+                        }}
+                        autoFocus
+                        placeholder="New alias..."
+                      />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        onClick={handleAddAlias}
+                      >
+                        <Check className="h-3 w-3" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 w-6 p-0"
+                        onClick={() => setAddingAlias(false)}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs text-muted-foreground"
+                      onClick={() => setAddingAlias(true)}
+                    >
+                      <Plus className="mr-0.5 h-3 w-3" />
+                      Add
+                    </Button>
+                  )}
                 </div>
-              )}
+              </div>
 
               {/* Metadata */}
               {Object.keys(entity.metadata).length > 0 && (

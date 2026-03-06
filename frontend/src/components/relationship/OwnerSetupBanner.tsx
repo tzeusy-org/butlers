@@ -7,7 +7,7 @@
  * Contacts) can match the owner correctly instead of creating duplicates.
  *
  * An expandable "Credentials" section lets the user optionally set credentials
- * (email password, Telegram API hash/ID/session, Home Assistant URL/token)
+ * (Telegram API hash/ID/session, Home Assistant URL/token)
  * stored as entity_info entries.
  */
 
@@ -47,13 +47,11 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
 
   const [open, setOpen] = useState(false);
   const [canonicalName, setCanonicalName] = useState("");
-  const [email, setEmail] = useState("");
   const [telegram, setTelegram] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
 
   // Credential fields (collapsible)
   const [showCredentials, setShowCredentials] = useState(false);
-  const [emailPassword, setEmailPassword] = useState("");
   const [telegramApiHash, setTelegramApiHash] = useState("");
   const [telegramApiId, setTelegramApiId] = useState("");
   const [telegramUserSession, setTelegramUserSession] = useState("");
@@ -67,12 +65,11 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   const nameIsPlaceholder =
     !entity.canonical_name?.trim() ||
     entity.canonical_name.trim().toLowerCase() === "owner";
-  const hasEmail = hasInfoType(entity, "email");
   const hasTelegram = hasInfoType(entity, "telegram");
   const hasTelegramChatId = hasInfoType(entity, "telegram_chat_id");
 
   // Don't render if all core identity fields are configured
-  if (!nameIsPlaceholder && hasEmail && hasTelegram && hasTelegramChatId) {
+  if (!nameIsPlaceholder && hasTelegram && hasTelegramChatId) {
     return null;
   }
 
@@ -82,16 +79,13 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   // Build a human-readable list of what's missing
   const missing: string[] = [];
   if (nameIsPlaceholder) missing.push("name");
-  if (!hasEmail) missing.push("email");
   if (!hasTelegram) missing.push("Telegram handle");
   if (!hasTelegramChatId) missing.push("Telegram chat ID");
 
   async function handleSave() {
     const trimmedName = canonicalName.trim();
-    const trimmedEmail = email.trim();
     const trimmedTelegram = telegram.trim();
     const trimmedChatId = telegramChatId.trim();
-    const trimmedEmailPw = emailPassword.trim();
     const trimmedApiHash = telegramApiHash.trim();
     const trimmedApiId = telegramApiId.trim();
     const trimmedTelegramUserSession = telegramUserSession.trim();
@@ -100,10 +94,8 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
 
     if (
       !trimmedName &&
-      !trimmedEmail &&
       !trimmedTelegram &&
       !trimmedChatId &&
-      !trimmedEmailPw &&
       !trimmedApiHash &&
       !trimmedApiId &&
       !trimmedTelegramUserSession &&
@@ -128,15 +120,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
 
       // --- Identity fields (entity_info) ---
 
-      if (trimmedEmail) {
-        promises.push(
-          createInfo.mutateAsync({
-            entityId,
-            request: { type: "email", value: trimmedEmail, is_primary: true },
-          }),
-        );
-      }
-
       if (trimmedTelegram) {
         promises.push(
           createInfo.mutateAsync({
@@ -156,20 +139,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
       }
 
       // --- Secured credential fields ---
-
-      if (trimmedEmailPw) {
-        promises.push(
-          createInfo.mutateAsync({
-            entityId,
-            request: {
-              type: "email_password",
-              value: trimmedEmailPw,
-              is_primary: true,
-              secured: true,
-            },
-          }),
-        );
-      }
 
       if (trimmedApiHash) {
         promises.push(
@@ -244,10 +213,8 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
       toast.success("Owner identity updated.");
       setOpen(false);
       setCanonicalName("");
-      setEmail("");
       setTelegram("");
       setTelegramChatId("");
-      setEmailPassword("");
       setTelegramApiHash("");
       setTelegramApiId("");
       setTelegramUserSession("");
@@ -304,19 +271,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
                   />
                 </div>
               )}
-              {!hasEmail && (
-                <div className="space-y-2">
-                  <Label htmlFor="owner-email">Email</Label>
-                  <Input
-                    id="owner-email"
-                    type="email"
-                    placeholder="you@example.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    disabled={isSaving}
-                  />
-                </div>
-              )}
               {!hasTelegram && (
                 <div className="space-y-2">
                   <Label htmlFor="owner-telegram">Telegram handle</Label>
@@ -367,17 +321,6 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
                     <p className="text-xs text-muted-foreground">
                       These are stored on your owner entity; sensitive values are secured.
                     </p>
-                    <div className="space-y-2">
-                      <Label htmlFor="owner-email-pw">Email password / app password</Label>
-                      <Input
-                        id="owner-email-pw"
-                        type="password"
-                        placeholder="••••••••"
-                        value={emailPassword}
-                        onChange={(e) => setEmailPassword(e.target.value)}
-                        disabled={isSaving}
-                      />
-                    </div>
                     <div className="space-y-2">
                       <Label htmlFor="owner-tg-api-id">Telegram API ID</Label>
                       <Input

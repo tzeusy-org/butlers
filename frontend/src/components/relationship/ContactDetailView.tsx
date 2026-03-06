@@ -406,7 +406,7 @@ const CONTACT_INFO_TYPES = [
 ] as const;
 
 // Entity-level credential types (telegram_api_id, telegram_api_hash,
-// telegram_user_session, email_password, home_assistant_token) are now managed
+// telegram_user_session, home_assistant_token) are now managed
 // as entity_info entries on the owner entity. They no longer appear here.
 
 const ALL_CONTACT_INFO_TYPES = CONTACT_INFO_TYPES;
