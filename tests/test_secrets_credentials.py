@@ -147,7 +147,7 @@ class TestLoadAppCredentials:
             }
         )
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             return_value="test-refresh",
         ):
             pool = MagicMock()

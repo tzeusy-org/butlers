@@ -45,9 +45,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.credential_store import (
     CredentialStore,
-    delete_owner_contact_info,
-    resolve_owner_contact_info,
-    upsert_owner_contact_info,
+    delete_owner_entity_info,
+    resolve_owner_entity_info,
+    upsert_owner_entity_info,
 )
 
 if TYPE_CHECKING:
@@ -213,7 +213,7 @@ async def store_google_credentials(
 
     # Refresh token → shared.contact_info
     if pool is not None:
-        await upsert_owner_contact_info(pool, CONTACT_INFO_REFRESH_TOKEN, validated.refresh_token)
+        await upsert_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN, validated.refresh_token)
 
     logger.info(
         "Google OAuth credentials stored in database (client_id=%s, scope=%s)",
@@ -247,7 +247,7 @@ async def load_google_credentials(
     # Refresh token from owner contact_info (exclusively)
     refresh_token: str | None = None
     if pool is not None:
-        refresh_token = await resolve_owner_contact_info(pool, CONTACT_INFO_REFRESH_TOKEN)
+        refresh_token = await resolve_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN)
 
     missing = [
         field
@@ -355,7 +355,7 @@ async def load_app_credentials(
     # Refresh token from owner contact_info (exclusively)
     refresh_token: str | None = None
     if pool is not None:
-        refresh_token = await resolve_owner_contact_info(pool, CONTACT_INFO_REFRESH_TOKEN)
+        refresh_token = await resolve_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN)
 
     scope = await store.load(KEY_SCOPES)
 
@@ -398,7 +398,7 @@ async def delete_google_credentials(
 
     # Refresh token lives in contact_info
     if pool is not None:
-        ci_deleted = await delete_owner_contact_info(pool, CONTACT_INFO_REFRESH_TOKEN)
+        ci_deleted = await delete_owner_entity_info(pool, CONTACT_INFO_REFRESH_TOKEN)
         results.append(ci_deleted)
 
     deleted = any(results)

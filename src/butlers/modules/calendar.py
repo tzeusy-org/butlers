@@ -4144,9 +4144,9 @@ class CalendarModule(Module):
             refresh_token: str | None = None
             pool = getattr(db, "pool", None)
             if pool is not None:
-                from butlers.credential_store import resolve_owner_contact_info
+                from butlers.credential_store import resolve_owner_entity_info
 
-                refresh_token = await resolve_owner_contact_info(pool, "google_oauth_refresh")
+                refresh_token = await resolve_owner_entity_info(pool, "google_oauth_refresh")
 
             if client_id and client_secret and refresh_token:
                 logger.debug("CalendarModule: resolved Google credentials from CredentialStore")

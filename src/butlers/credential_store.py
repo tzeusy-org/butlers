@@ -429,20 +429,20 @@ async def ensure_secrets_schema(pool: asyncpg.Pool) -> None:
         await conn.execute(_SECRETS_CATEGORY_INDEX_DDL)
 
 
-async def resolve_owner_contact_info(pool: asyncpg.Pool, info_type: str) -> str | None:
-    """Resolve a credential value from the owner contact's ``shared.contact_info``.
+async def resolve_owner_entity_info(pool: asyncpg.Pool, info_type: str) -> str | None:
+    """Resolve a credential value from the owner entity's ``shared.entity_info``.
 
-    Queries ``shared.contacts`` for the owner contact (``'owner' = ANY(roles)``)
-    and returns the ``value`` from the matching ``shared.contact_info`` row for
+    Queries ``shared.entities`` for the owner entity (``'owner' = ANY(roles)``)
+    and returns the ``value`` from the matching ``shared.entity_info`` row for
     the given *info_type*.  Primary entries (``is_primary = true``) are preferred
     over non-primary entries.  Returns ``None`` when:
 
-    - ``shared.contacts`` or ``shared.contact_info`` do not exist.
-    - No owner contact is found.
-    - No ``contact_info`` row exists for the given type on the owner contact.
+    - ``shared.entities`` or ``shared.entity_info`` do not exist.
+    - No owner entity is found.
+    - No ``entity_info`` row exists for the given type on the owner entity.
 
     This function is the DB-side counterpart to ``credential_store.resolve()``
-    for identity-bound credentials that have been migrated to ``contact_info``
+    for identity-bound credentials that have been migrated to ``entity_info``
     (e.g. ``TELEGRAM_CHAT_ID`` → ``type='telegram'``).
 
     Parameters
@@ -462,13 +462,12 @@ async def resolve_owner_contact_info(pool: asyncpg.Pool, info_type: str) -> str 
         async with _acquire_conn(pool) as conn:
             row = await conn.fetchrow(
                 """
-                SELECT ci.value
-                FROM shared.contact_info ci
-                JOIN shared.contacts c ON c.id = ci.contact_id
-                JOIN shared.entities e ON e.id = c.entity_id
+                SELECT ei.value
+                FROM shared.entity_info ei
+                JOIN shared.entities e ON e.id = ei.entity_id
                 WHERE 'owner' = ANY(e.roles)
-                  AND ci.type = $1
-                ORDER BY ci.is_primary DESC NULLS LAST, ci.created_at ASC
+                  AND ei.type = $1
+                ORDER BY ei.is_primary DESC NULLS LAST, ei.created_at ASC
                 LIMIT 1
                 """,
                 info_type,
@@ -481,12 +480,12 @@ async def resolve_owner_contact_info(pool: asyncpg.Pool, info_type: str) -> str 
             stripped = value.strip()
             if not stripped:
                 return None
-            logger.debug("Resolved owner contact_info type=%r from DB", info_type)
+            logger.debug("Resolved owner entity_info type=%r from DB", info_type)
             return stripped
     except Exception as exc:  # noqa: BLE001
         if _is_missing_table_error(exc) or _is_missing_column_or_schema_error(exc):
             logger.debug(
-                "resolve_owner_contact_info skipped for type=%r; table/column not available: %s",
+                "resolve_owner_entity_info skipped for type=%r; table/column not available: %s",
                 info_type,
                 exc,
             )
@@ -494,18 +493,18 @@ async def resolve_owner_contact_info(pool: asyncpg.Pool, info_type: str) -> str 
         raise
 
 
-async def upsert_owner_contact_info(
+async def upsert_owner_entity_info(
     pool: asyncpg.Pool,
     info_type: str,
     value: str,
     *,
     secured: bool = True,
 ) -> bool:
-    """Upsert a ``shared.contact_info`` row on the owner contact.
+    """Upsert a ``shared.entity_info`` row on the owner entity.
 
-    Finds the owner contact (via entity JOIN, ``'owner' = ANY(e.roles)``),
-    then in a single transaction deletes any existing row for
-    ``(contact_id, type)`` and inserts a new one.
+    Finds the owner entity (``'owner' = ANY(e.roles)``), then inserts or
+    updates the ``entity_info`` row for ``(entity_id, type)`` using the
+    UNIQUE constraint for conflict resolution.
 
     Parameters
     ----------
@@ -521,45 +520,43 @@ async def upsert_owner_contact_info(
     Returns
     -------
     bool
-        ``True`` if the row was upserted, ``False`` if the owner contact
+        ``True`` if the row was upserted, ``False`` if the owner entity
         or required tables do not exist.
     """
     try:
         async with _acquire_conn(pool) as conn:
             owner = await conn.fetchrow(
                 """
-                SELECT c.id
-                FROM shared.contacts c
-                JOIN shared.entities e ON e.id = c.entity_id
+                SELECT e.id
+                FROM shared.entities e
                 WHERE 'owner' = ANY(e.roles)
                 LIMIT 1
                 """,
             )
             if owner is None:
-                logger.debug("upsert_owner_contact_info: no owner contact found")
+                logger.debug("upsert_owner_entity_info: no owner entity found")
                 return False
-            contact_id = owner["id"]
-            await conn.execute(
-                "DELETE FROM shared.contact_info WHERE contact_id = $1 AND type = $2",
-                contact_id,
-                info_type,
-            )
+            entity_id = owner["id"]
             await conn.execute(
                 """
-                INSERT INTO shared.contact_info (contact_id, type, value, secured, is_primary)
+                INSERT INTO shared.entity_info (entity_id, type, value, secured, is_primary)
                 VALUES ($1, $2, $3, $4, true)
+                ON CONFLICT (entity_id, type) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    secured = EXCLUDED.secured,
+                    is_primary = EXCLUDED.is_primary
                 """,
-                contact_id,
+                entity_id,
                 info_type,
                 value,
                 secured,
             )
-            logger.info("Upserted owner contact_info type=%r (secured=%s)", info_type, secured)
+            logger.info("Upserted owner entity_info type=%r (secured=%s)", info_type, secured)
             return True
     except Exception as exc:  # noqa: BLE001
         if _is_missing_table_error(exc) or _is_missing_column_or_schema_error(exc):
             logger.debug(
-                "upsert_owner_contact_info skipped for type=%r; table/column not available: %s",
+                "upsert_owner_entity_info skipped for type=%r; table/column not available: %s",
                 info_type,
                 exc,
             )
@@ -567,11 +564,11 @@ async def upsert_owner_contact_info(
         raise
 
 
-async def delete_owner_contact_info(
+async def delete_owner_entity_info(
     pool: asyncpg.Pool,
     info_type: str,
 ) -> bool:
-    """Delete a ``shared.contact_info`` row from the owner contact.
+    """Delete a ``shared.entity_info`` row from the owner entity.
 
     Parameters
     ----------
@@ -589,34 +586,39 @@ async def delete_owner_contact_info(
         async with _acquire_conn(pool) as conn:
             owner = await conn.fetchrow(
                 """
-                SELECT c.id
-                FROM shared.contacts c
-                JOIN shared.entities e ON e.id = c.entity_id
+                SELECT e.id
+                FROM shared.entities e
                 WHERE 'owner' = ANY(e.roles)
                 LIMIT 1
                 """,
             )
             if owner is None:
-                logger.debug("delete_owner_contact_info: no owner contact found")
+                logger.debug("delete_owner_entity_info: no owner entity found")
                 return False
             result = await conn.execute(
-                "DELETE FROM shared.contact_info WHERE contact_id = $1 AND type = $2",
+                "DELETE FROM shared.entity_info WHERE entity_id = $1 AND type = $2",
                 owner["id"],
                 info_type,
             )
             deleted = result.split()[-1] != "0" if result else False
             if deleted:
-                logger.info("Deleted owner contact_info type=%r", info_type)
+                logger.info("Deleted owner entity_info type=%r", info_type)
             return deleted
     except Exception as exc:  # noqa: BLE001
         if _is_missing_table_error(exc) or _is_missing_column_or_schema_error(exc):
             logger.debug(
-                "delete_owner_contact_info skipped for type=%r; table/column not available: %s",
+                "delete_owner_entity_info skipped for type=%r; table/column not available: %s",
                 info_type,
                 exc,
             )
             return False
         raise
+
+
+# Backward-compat aliases during transition
+resolve_owner_contact_info = resolve_owner_entity_info
+upsert_owner_contact_info = upsert_owner_entity_info
+delete_owner_contact_info = delete_owner_entity_info
 
 
 def _is_missing_column_or_schema_error(exc: Exception) -> bool:

@@ -106,7 +106,7 @@ from butlers.core.tool_call_capture import (
 from butlers.credential_store import (
     CredentialStore,
     ensure_secrets_schema,
-    resolve_owner_contact_info,
+    resolve_owner_entity_info,
     shared_db_name_from_env,
 )
 from butlers.credentials import (
@@ -1855,7 +1855,7 @@ class ButlerDaemon:
 
         pool = self.db.pool if self.db is not None else None
         if pool is not None:
-            chat_id = await resolve_owner_contact_info(
+            chat_id = await resolve_owner_entity_info(
                 pool, _DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE
             )
             if chat_id:

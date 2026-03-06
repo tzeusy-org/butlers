@@ -194,7 +194,7 @@ class EmailModule(Module):
         All resolved values are cached in ``self._resolved_credentials`` so
         that sync IO helpers can use them without needing to be async.
         """
-        from butlers.credential_store import resolve_owner_contact_info
+        from butlers.credential_store import resolve_owner_entity_info
 
         self._config = config if isinstance(config, EmailConfig) else EmailConfig(**(config or {}))
         self._resolved_credentials = {}
@@ -209,7 +209,7 @@ class EmailModule(Module):
                 "email_password": user_cfg.password_env,
             }
             for ci_type, env_key in _CI_MAP.items():
-                value = await resolve_owner_contact_info(pool, ci_type)
+                value = await resolve_owner_entity_info(pool, ci_type)
                 if value is not None:
                     self._resolved_credentials[env_key] = value
 

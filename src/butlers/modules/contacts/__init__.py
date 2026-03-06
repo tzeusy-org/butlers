@@ -491,9 +491,9 @@ class ContactsModule(Module):
             refresh_token: str | None = None
             pool = getattr(self._db, "pool", None)
             if pool is not None:
-                from butlers.credential_store import resolve_owner_contact_info
+                from butlers.credential_store import resolve_owner_entity_info
 
-                refresh_token = await resolve_owner_contact_info(
+                refresh_token = await resolve_owner_entity_info(
                     pool, _GOOGLE_CONTACT_INFO_REFRESH_TYPE
                 )
 
@@ -520,7 +520,7 @@ class ContactsModule(Module):
                 "to resolve credentials from owner contact_info."
             )
 
-        from butlers.credential_store import resolve_owner_contact_info
+        from butlers.credential_store import resolve_owner_entity_info
 
         _TELEGRAM_CI_TYPES = {
             "telegram_api_id": "API ID",
@@ -530,7 +530,7 @@ class ContactsModule(Module):
 
         creds: dict[str, str] = {}
         for ci_type, label in _TELEGRAM_CI_TYPES.items():
-            value = await resolve_owner_contact_info(pool, ci_type)
+            value = await resolve_owner_entity_info(pool, ci_type)
             if value:
                 creds[ci_type] = value
 

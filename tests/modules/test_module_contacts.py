@@ -146,7 +146,7 @@ class TestModuleStartup:
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock) as mock_start,
             patch(
-                "butlers.credential_store.resolve_owner_contact_info",
+                "butlers.credential_store.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value="rtoken",
             ),
@@ -220,7 +220,7 @@ class TestModuleShutdown:
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
             patch(
-                "butlers.credential_store.resolve_owner_contact_info",
+                "butlers.credential_store.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value="rtoken",
             ),
@@ -249,7 +249,7 @@ class TestModuleShutdown:
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
             patch(
-                "butlers.credential_store.resolve_owner_contact_info",
+                "butlers.credential_store.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value="rtoken",
             ),
@@ -308,7 +308,7 @@ class TestRuntimeAccessibility:
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
             patch(
-                "butlers.credential_store.resolve_owner_contact_info",
+                "butlers.credential_store.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value="rtoken",
             ),
@@ -331,7 +331,7 @@ class TestRuntimeAccessibility:
         with (
             patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
             patch(
-                "butlers.credential_store.resolve_owner_contact_info",
+                "butlers.credential_store.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value="rtoken",
             ),

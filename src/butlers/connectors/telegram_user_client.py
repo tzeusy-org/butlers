@@ -57,7 +57,7 @@ from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
-    resolve_owner_contact_info,
+    resolve_owner_entity_info,
     shared_db_name_from_env,
 )
 from butlers.db import db_params_from_env
@@ -690,7 +690,7 @@ async def _resolve_telegram_user_credentials_from_db() -> dict[str, str] | None:
         result: dict[str, str] = {}
 
         for ci_type, result_key in _CI_MAP:
-            value = await resolve_owner_contact_info(primary_pool, ci_type)
+            value = await resolve_owner_entity_info(primary_pool, ci_type)
             if value:
                 result[result_key] = value
 

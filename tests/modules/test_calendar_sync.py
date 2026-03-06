@@ -55,10 +55,10 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture(autouse=True)
-def _mock_resolve_owner_contact_info():
-    """Patch resolve_owner_contact_info so CalendarModule gets a refresh token."""
+def _mock_resolve_owner_entity_info():
+    """Patch resolve_owner_entity_info so CalendarModule gets a refresh token."""
     with patch(
-        "butlers.credential_store.resolve_owner_contact_info",
+        "butlers.credential_store.resolve_owner_entity_info",
         new_callable=AsyncMock,
         return_value="test-refresh-token",
     ):

@@ -303,7 +303,7 @@ class TestResolveGoogleCredentialsIsDbOnly:
         with (
             mock.patch.dict("os.environ", different_env, clear=True),
             mock.patch(
-                "butlers.google_credentials.resolve_owner_contact_info",
+                "butlers.google_credentials.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=_SHARED_CREDS["refresh_token"],
             ),
@@ -344,12 +344,12 @@ class TestStoreAndLoadRoundTrip:
 
         with (
             patch(
-                "butlers.google_credentials.upsert_owner_contact_info",
+                "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
             patch(
-                "butlers.google_credentials.resolve_owner_contact_info",
+                "butlers.google_credentials.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=_SHARED_CREDS["refresh_token"],
             ),
@@ -389,12 +389,12 @@ class TestStoreAndLoadRoundTrip:
 
         with (
             patch(
-                "butlers.google_credentials.upsert_owner_contact_info",
+                "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
             patch(
-                "butlers.google_credentials.resolve_owner_contact_info",
+                "butlers.google_credentials.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=_SHARED_CREDS["refresh_token"],
             ),
@@ -431,12 +431,12 @@ class TestStoreAndLoadRoundTrip:
 
         with (
             patch(
-                "butlers.google_credentials.upsert_owner_contact_info",
+                "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
             patch(
-                "butlers.google_credentials.resolve_owner_contact_info",
+                "butlers.google_credentials.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=_SHARED_CREDS["refresh_token"],
             ),

@@ -1,11 +1,11 @@
-"""Tests for resolve_owner_contact_info() in credential_store.
+"""Tests for resolve_owner_entity_info() in credential_store.
 
 Verifies:
-- Owner contact with a telegram contact_info entry resolves the value.
+- Owner entity with an entity_info entry resolves the value.
 - Primary entry is preferred over non-primary entries.
 - Unknown type returns None.
-- Missing owner contact returns None.
-- Missing tables (shared.contacts / shared.contact_info) return None gracefully.
+- Missing owner entity returns None.
+- Missing tables (shared.entities / shared.entity_info) return None gracefully.
 - Unique constraint violations (duplicate type values) are handled gracefully.
 """
 
@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from butlers.credential_store import resolve_owner_contact_info
+from butlers.credential_store import resolve_owner_entity_info
 
 pytestmark = pytest.mark.unit
 
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.unit
 
 
 def _make_pool(*, fetchrow_return=None, raises: Exception | None = None) -> MagicMock:
-    """Build an asyncpg pool mock for resolve_owner_contact_info tests."""
+    """Build an asyncpg pool mock for resolve_owner_entity_info tests."""
     conn = AsyncMock()
 
     if raises is not None:
@@ -56,11 +56,11 @@ def _make_row(value: str) -> MagicMock:
 
 class TestResolveOwnerContactInfoSuccess:
     async def test_returns_value_for_known_type(self) -> None:
-        """resolve_owner_contact_info returns the contact_info value for a known type."""
+        """resolve_owner_entity_info returns the entity_info value for a known type."""
         row = _make_row("123456789")
         pool, conn = _make_pool(fetchrow_return=row)
 
-        result = await resolve_owner_contact_info(pool, "telegram")
+        result = await resolve_owner_entity_info(pool, "telegram")
 
         assert result == "123456789"
 
@@ -69,7 +69,7 @@ class TestResolveOwnerContactInfoSuccess:
         row = _make_row("user@example.com")
         pool, conn = _make_pool(fetchrow_return=row)
 
-        await resolve_owner_contact_info(pool, "email")
+        await resolve_owner_entity_info(pool, "email")
 
         conn.fetchrow.assert_awaited_once()
         call_args = conn.fetchrow.await_args
@@ -81,12 +81,11 @@ class TestResolveOwnerContactInfoSuccess:
         row = _make_row("bot_token_value")
         pool, conn = _make_pool(fetchrow_return=row)
 
-        await resolve_owner_contact_info(pool, "telegram_bot_token")
+        await resolve_owner_entity_info(pool, "telegram_bot_token")
 
         query = conn.fetchrow.await_args.args[0]
         assert "owner" in query
-        assert "shared.contact_info" in query
-        assert "shared.contacts" in query
+        assert "shared.entity_info" in query
         assert "shared.entities" in query
         assert "e.roles" in query
 
@@ -95,7 +94,7 @@ class TestResolveOwnerContactInfoSuccess:
         row = _make_row("primary_value")
         pool, conn = _make_pool(fetchrow_return=row)
 
-        await resolve_owner_contact_info(pool, "telegram")
+        await resolve_owner_entity_info(pool, "telegram")
 
         query = conn.fetchrow.await_args.args[0]
         assert "is_primary" in query
@@ -105,7 +104,7 @@ class TestResolveOwnerContactInfoSuccess:
         row = _make_row("  987654321  ")
         pool, conn = _make_pool(fetchrow_return=row)
 
-        result = await resolve_owner_contact_info(pool, "telegram")
+        result = await resolve_owner_entity_info(pool, "telegram")
 
         assert result == "987654321"
 
@@ -117,10 +116,10 @@ class TestResolveOwnerContactInfoSuccess:
 
 class TestResolveOwnerContactInfoNoneReturned:
     async def test_returns_none_when_no_row(self) -> None:
-        """Returns None when no contact_info row is found for the type."""
+        """Returns None when no entity_info row is found for the type."""
         pool, _conn = _make_pool(fetchrow_return=None)
 
-        result = await resolve_owner_contact_info(pool, "telegram")
+        result = await resolve_owner_entity_info(pool, "telegram")
 
         assert result is None
 
@@ -129,7 +128,7 @@ class TestResolveOwnerContactInfoNoneReturned:
         row = _make_row("")
         pool, _conn = _make_pool(fetchrow_return=row)
 
-        result = await resolve_owner_contact_info(pool, "email")
+        result = await resolve_owner_entity_info(pool, "email")
 
         assert result is None
 
@@ -138,7 +137,7 @@ class TestResolveOwnerContactInfoNoneReturned:
         row = _make_row("   ")
         pool, _conn = _make_pool(fetchrow_return=row)
 
-        result = await resolve_owner_contact_info(pool, "telegram")
+        result = await resolve_owner_entity_info(pool, "telegram")
 
         assert result is None
 
@@ -150,22 +149,22 @@ class TestResolveOwnerContactInfoNoneReturned:
 
 class TestResolveOwnerContactInfoMissingTable:
     async def test_returns_none_on_undefined_table_error(self) -> None:
-        """Returns None (does not raise) when shared.contact_info is missing."""
+        """Returns None (does not raise) when shared.entity_info is missing."""
 
         class UndefinedTableError(Exception):
             pass
 
         pool, _conn = _make_pool(raises=UndefinedTableError("relation does not exist"))
 
-        result = await resolve_owner_contact_info(pool, "telegram")
+        result = await resolve_owner_entity_info(pool, "telegram")
 
         assert result is None
 
     async def test_returns_none_when_table_message_in_error(self) -> None:
         """Returns None when error message contains 'does not exist'."""
-        pool, _conn = _make_pool(raises=Exception("relation shared.contact_info does not exist"))
+        pool, _conn = _make_pool(raises=Exception("relation shared.entity_info does not exist"))
 
-        result = await resolve_owner_contact_info(pool, "telegram")
+        result = await resolve_owner_entity_info(pool, "telegram")
 
         assert result is None
 
@@ -174,20 +173,18 @@ class TestResolveOwnerContactInfoMissingTable:
         pool, _conn = _make_pool(raises=RuntimeError("DB connection timeout"))
 
         with pytest.raises(RuntimeError, match="DB connection timeout"):
-            await resolve_owner_contact_info(pool, "telegram")
+            await resolve_owner_entity_info(pool, "telegram")
 
     async def test_reraises_not_null_constraint_violation(self) -> None:
         """NOT NULL constraint errors are re-raised (not swallowed as 'missing table')."""
-        # asyncpg NOT NULL violations mention 'column' in their message;
-        # _is_missing_column_or_schema_error must NOT match them.
         err = Exception(
-            'null value in column "contact_id" of relation "shared.contact_info" '
+            'null value in column "entity_id" of relation "shared.entity_info" '
             "violates not-null constraint"
         )
         pool, _conn = _make_pool(raises=err)
 
         with pytest.raises(Exception, match="not-null constraint"):
-            await resolve_owner_contact_info(pool, "telegram")
+            await resolve_owner_entity_info(pool, "telegram")
 
     async def test_reraises_permission_denied_for_schema(self) -> None:
         """Schema permission errors are re-raised (not swallowed as 'missing schema')."""
@@ -195,7 +192,7 @@ class TestResolveOwnerContactInfoMissingTable:
         pool, _conn = _make_pool(raises=err)
 
         with pytest.raises(Exception, match="permission denied"):
-            await resolve_owner_contact_info(pool, "telegram")
+            await resolve_owner_entity_info(pool, "telegram")
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +209,7 @@ class TestResolveOwnerContactInfoLogging:
         pool, _conn = _make_pool(fetchrow_return=row)
 
         with caplog.at_level(logging.DEBUG, logger="butlers.credential_store"):
-            await resolve_owner_contact_info(pool, "telegram")
+            await resolve_owner_entity_info(pool, "telegram")
 
         assert any("telegram" in record.message for record in caplog.records)
 
@@ -220,9 +217,9 @@ class TestResolveOwnerContactInfoLogging:
         """A debug-level message is emitted when the table is absent."""
         import logging
 
-        pool, _conn = _make_pool(raises=Exception("relation shared.contact_info does not exist"))
+        pool, _conn = _make_pool(raises=Exception("relation shared.entity_info does not exist"))
 
         with caplog.at_level(logging.DEBUG, logger="butlers.credential_store"):
-            await resolve_owner_contact_info(pool, "telegram")
+            await resolve_owner_entity_info(pool, "telegram")
 
         assert any("skipped" in record.message.lower() for record in caplog.records)

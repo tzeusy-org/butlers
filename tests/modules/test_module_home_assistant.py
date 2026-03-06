@@ -237,7 +237,7 @@ def _patch_startup(
     """Context manager stack that patches on_startup's external dependencies.
 
     Patches:
-    - ``resolve_owner_contact_info`` to return ``url`` or ``token`` depending on type arg
+    - ``resolve_owner_entity_info`` to return ``url`` or ``token`` depending on type arg
     - ``httpx.AsyncClient`` to a MagicMock
     - ``HomeAssistantModule._ws_connect_and_seed`` to a no-op async
     """
@@ -259,7 +259,7 @@ def _patch_startup(
 
         async def __aenter__(self) -> _Stack:
             self._p1 = patch(
-                "butlers.credential_store.resolve_owner_contact_info",
+                "butlers.credential_store.resolve_owner_entity_info",
                 new=AsyncMock(side_effect=_resolve_side_effect),
             )
             self._p2 = patch("httpx.AsyncClient", return_value=MagicMock())
@@ -284,7 +284,7 @@ class TestOnStartupCredentialResolution:
     async def test_startup_resolves_url_and_token_from_contact_info(
         self, ha_module: HomeAssistantModule
     ) -> None:
-        """on_startup calls resolve_owner_contact_info for both URL and token."""
+        """on_startup calls resolve_owner_entity_info for both URL and token."""
         mock_pool = MagicMock()
         mock_db = MagicMock()
         mock_db.pool = mock_pool
@@ -297,7 +297,7 @@ class TestOnStartupCredentialResolution:
             return None
 
         with patch(
-            "butlers.credential_store.resolve_owner_contact_info",
+            "butlers.credential_store.resolve_owner_entity_info",
             new=AsyncMock(side_effect=_resolve),
         ) as mock_resolve:
             with patch("httpx.AsyncClient", return_value=MagicMock()):
@@ -315,7 +315,7 @@ class TestOnStartupCredentialResolution:
         mock_db.pool = MagicMock()
 
         with patch(
-            "butlers.credential_store.resolve_owner_contact_info",
+            "butlers.credential_store.resolve_owner_entity_info",
             new=AsyncMock(return_value=None),
         ):
             with pytest.raises(RuntimeError, match="home_assistant_url"):
@@ -332,7 +332,7 @@ class TestOnStartupCredentialResolution:
             return None
 
         with patch(
-            "butlers.credential_store.resolve_owner_contact_info",
+            "butlers.credential_store.resolve_owner_entity_info",
             new=AsyncMock(side_effect=_resolve),
         ):
             with pytest.raises(RuntimeError, match="home_assistant_token"):
@@ -358,7 +358,7 @@ class TestOnStartupCredentialResolution:
             return None
 
         with patch(
-            "butlers.credential_store.resolve_owner_contact_info",
+            "butlers.credential_store.resolve_owner_entity_info",
             new=AsyncMock(side_effect=_resolve),
         ):
             with patch("httpx.AsyncClient", return_value=MagicMock()) as mock_client_cls:
@@ -386,7 +386,7 @@ class TestOnStartupCredentialResolution:
             return None
 
         with patch(
-            "butlers.credential_store.resolve_owner_contact_info",
+            "butlers.credential_store.resolve_owner_entity_info",
             new=AsyncMock(side_effect=_resolve),
         ):
             with patch("httpx.AsyncClient", return_value=MagicMock()) as mock_client_cls:
@@ -411,7 +411,7 @@ class TestOnStartupCredentialResolution:
             return None
 
         with patch(
-            "butlers.credential_store.resolve_owner_contact_info",
+            "butlers.credential_store.resolve_owner_entity_info",
             new=AsyncMock(side_effect=_resolve),
         ):
             with patch("httpx.AsyncClient", return_value=MagicMock()):

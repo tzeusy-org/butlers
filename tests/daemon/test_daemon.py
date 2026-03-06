@@ -2807,7 +2807,7 @@ class TestNotifyTool:
 
         # contact_info returns the chat ID — credential_store fallback is not needed
         with patch(
-            "butlers.daemon.resolve_owner_contact_info",
+            "butlers.daemon.resolve_owner_entity_info",
             new=AsyncMock(return_value="123456789"),
         ):
             result = await notify_fn(channel="telegram", message="Scheduled update", intent="send")
@@ -2828,7 +2828,7 @@ class TestNotifyTool:
         daemon.switchboard_client = mock_client
 
         with patch(
-            "butlers.daemon.resolve_owner_contact_info",
+            "butlers.daemon.resolve_owner_entity_info",
             new=AsyncMock(return_value=None),
         ):
             result = await notify_fn(channel="telegram", message="Scheduled update", intent="send")

@@ -79,7 +79,7 @@ def _make_empty_pool() -> MagicMock:
 
 
 def _make_contact_info_pool(value: str | None = None) -> MagicMock:
-    """Build a pool mock for resolve_owner_contact_info calls."""
+    """Build a pool mock for resolve_owner_entity_info calls."""
     return MagicMock()
 
 
@@ -119,7 +119,7 @@ class TestStoreGoogleCredentialsWithCredentialStore:
         with (
             patch.object(store, "store", new_callable=AsyncMock) as mock_store,
             patch(
-                "butlers.google_credentials.upsert_owner_contact_info",
+                "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=True,
             ) as mock_upsert,
@@ -149,7 +149,7 @@ class TestStoreGoogleCredentialsWithCredentialStore:
         with (
             patch.object(store, "store", new_callable=AsyncMock) as mock_store,
             patch(
-                "butlers.google_credentials.upsert_owner_contact_info",
+                "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
@@ -171,7 +171,7 @@ class TestStoreGoogleCredentialsWithCredentialStore:
         with (
             patch.object(store, "store", new_callable=AsyncMock) as mock_store,
             patch(
-                "butlers.google_credentials.upsert_owner_contact_info",
+                "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
@@ -193,7 +193,7 @@ class TestStoreGoogleCredentialsWithCredentialStore:
         with (
             patch.object(store, "store", new_callable=AsyncMock) as mock_store,
             patch(
-                "butlers.google_credentials.upsert_owner_contact_info",
+                "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
@@ -216,7 +216,7 @@ class TestStoreGoogleCredentialsWithCredentialStore:
         with (
             patch.object(store, "store", new_callable=AsyncMock) as mock_store,
             patch(
-                "butlers.google_credentials.upsert_owner_contact_info",
+                "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
@@ -247,7 +247,7 @@ class TestStoreGoogleCredentialsWithCredentialStore:
         with (
             patch.object(store, "store", new_callable=AsyncMock),
             patch(
-                "butlers.google_credentials.upsert_owner_contact_info",
+                "butlers.google_credentials.upsert_owner_entity_info",
                 new_callable=AsyncMock,
             ) as mock_upsert,
         ):
@@ -286,7 +286,7 @@ class TestLoadGoogleCredentialsWithCredentialStore:
         ci_pool = MagicMock()
 
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="rtoken-from-ci",
         ):
@@ -310,7 +310,7 @@ class TestLoadGoogleCredentialsWithCredentialStore:
         ci_pool = MagicMock()
 
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -328,7 +328,7 @@ class TestLoadGoogleCredentialsWithCredentialStore:
         ci_pool = MagicMock()
 
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="rtoken",
         ):
@@ -360,7 +360,7 @@ class TestLoadGoogleCredentialsWithCredentialStore:
         ci_pool = MagicMock()
 
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="ALSO-NEVER-REVEAL",
         ):
@@ -450,7 +450,7 @@ class TestLoadAppCredentialsWithCredentialStore:
         ci_pool = MagicMock()
 
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="rtoken-ci",
         ):
@@ -472,7 +472,7 @@ class TestLoadAppCredentialsWithCredentialStore:
         ci_pool = MagicMock()
 
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -496,7 +496,7 @@ class TestDeleteGoogleCredentialsWithCredentialStore:
         with (
             patch.object(store, "delete", new_callable=AsyncMock, return_value=True) as mock_del,
             patch(
-                "butlers.google_credentials.delete_owner_contact_info",
+                "butlers.google_credentials.delete_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=True,
             ) as mock_ci_del,
@@ -522,7 +522,7 @@ class TestDeleteGoogleCredentialsWithCredentialStore:
         with (
             patch.object(store, "delete", side_effect=_delete),
             patch(
-                "butlers.google_credentials.delete_owner_contact_info",
+                "butlers.google_credentials.delete_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=False,
             ),
@@ -538,7 +538,7 @@ class TestDeleteGoogleCredentialsWithCredentialStore:
         with (
             patch.object(store, "delete", new_callable=AsyncMock, return_value=False),
             patch(
-                "butlers.google_credentials.delete_owner_contact_info",
+                "butlers.google_credentials.delete_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=False,
             ),
@@ -565,7 +565,7 @@ class TestResolveGoogleCredentialsWithCredentialStore:
         ci_pool = MagicMock()
 
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="db-rtoken",
         ):
@@ -603,7 +603,7 @@ class TestResolveGoogleCredentialsWithCredentialStore:
         ci_pool = MagicMock()
 
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="ci-rtoken",
         ):

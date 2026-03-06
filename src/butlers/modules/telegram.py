@@ -232,7 +232,7 @@ class TelegramModule(Module):
             When provided, tokens are resolved DB-first with env fallback.
             When ``None`` (e.g. tests), resolution falls back to env vars only.
         """
-        from butlers.credential_store import resolve_owner_contact_info
+        from butlers.credential_store import resolve_owner_entity_info
 
         self._config = (
             config if isinstance(config, TelegramConfig) else TelegramConfig(**(config or {}))
@@ -245,7 +245,7 @@ class TelegramModule(Module):
         pool = getattr(db, "pool", None) if db is not None else None
         if pool is not None and self._config.user.enabled:
             user_token_env = self._config.user.token_env
-            value = await resolve_owner_contact_info(pool, "telegram_bot_token")
+            value = await resolve_owner_entity_info(pool, "telegram_bot_token")
             if value is not None:
                 self._resolved_credentials[user_token_env] = value
 

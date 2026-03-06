@@ -1677,7 +1677,7 @@ class TestResolveGmailCredentialsFromDb:
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="db-refresh-token",
         ):
@@ -1727,7 +1727,7 @@ class TestResolveGmailCredentialsFromDb:
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="db-refresh-token",
         ):
@@ -1775,7 +1775,7 @@ class TestResolveGmailCredentialsFromDb:
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="db-refresh-token",
         ):
@@ -1845,7 +1845,7 @@ class TestResolveGmailCredentialsFromDb:
 
         monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
         with patch(
-            "butlers.google_credentials.resolve_owner_contact_info",
+            "butlers.google_credentials.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="db-refresh-token",
         ):

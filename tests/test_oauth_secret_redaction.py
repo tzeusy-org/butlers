@@ -78,7 +78,7 @@ def _make_app(
         "GOOGLE_OAUTH_CLIENT_SECRET": db_client_secret,
     }
 
-    # Refresh token lives in shared.contact_info, not butler_secrets
+    # Refresh token lives in shared.entity_info, not butler_secrets
     contact_info: dict[str, str] = {}
     if db_refresh_token is not None:
         contact_info["google_oauth_refresh"] = db_refresh_token
@@ -87,14 +87,14 @@ def _make_app(
 
     async def _fetchrow(_query: str, key: str | None = None):
         if key is None:
-            # Query from upsert_owner_contact_info (owner lookup)
-            if "shared.contacts" in _query:
+            # Query from upsert_owner_entity_info (owner lookup)
+            if "shared.entities" in _query:
                 owner_row = MagicMock()
                 owner_row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
                 return owner_row
             return None
-        # resolve_owner_contact_info queries shared.contact_info
-        if "shared.contact_info" in _query or "contact_info" in _query:
+        # resolve_owner_entity_info queries shared.entity_info
+        if "shared.entity_info" in _query or "entity_info" in _query:
             value = contact_info.get(key)
             if not value:
                 return None
@@ -218,7 +218,7 @@ class TestLoadCredentialsLogRedaction:
         with (
             caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"),
             patch(
-                "butlers.google_credentials.resolve_owner_contact_info",
+                "butlers.google_credentials.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=_SECRET_VALUE,
             ),
@@ -245,7 +245,7 @@ class TestLoadCredentialsLogRedaction:
         with (
             caplog.at_level(logging.DEBUG, logger="butlers.google_credentials"),
             patch(
-                "butlers.google_credentials.resolve_owner_contact_info",
+                "butlers.google_credentials.resolve_owner_entity_info",
                 new_callable=AsyncMock,
                 return_value=_SECRET_VALUE,
             ),

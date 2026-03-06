@@ -267,7 +267,7 @@ class HomeAssistantModule(Module):
         credential_store:
             Optional :class:`~butlers.credential_store.CredentialStore`.
             Not used directly — the HA token is resolved exclusively from
-            owner contact_info via ``resolve_owner_contact_info()``.
+            owner entity_info via ``resolve_owner_entity_info()``.
 
         Raises
         ------
@@ -278,7 +278,7 @@ class HomeAssistantModule(Module):
         """
         import httpx
 
-        from butlers.credential_store import resolve_owner_contact_info
+        from butlers.credential_store import resolve_owner_entity_info
 
         self._config = (
             config
@@ -294,8 +294,8 @@ class HomeAssistantModule(Module):
         token: str | None = None
 
         if pool is not None:
-            url = await resolve_owner_contact_info(pool, "home_assistant_url")
-            token = await resolve_owner_contact_info(pool, "home_assistant_token")
+            url = await resolve_owner_entity_info(pool, "home_assistant_url")
+            token = await resolve_owner_entity_info(pool, "home_assistant_token")
 
         if not url:
             raise RuntimeError(

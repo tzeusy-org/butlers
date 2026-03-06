@@ -87,13 +87,13 @@ def _make_app(
 
     async def _fetchrow(_query: str, key: str | None = None):
         if key is None:
-            if "shared.contacts" in _query:
+            if "shared.entities" in _query:
                 owner_row = MagicMock()
                 owner_row.__getitem__ = lambda self, k: "owner-uuid" if k == "id" else None
                 return owner_row
             return None
-        # resolve_owner_contact_info queries shared.contact_info with type as $1
-        if "shared.contact_info" in _query:
+        # resolve_owner_entity_info queries shared.entity_info with type as $1
+        if "shared.entity_info" in _query:
             value = contact_info.get(key)
             if not value:
                 return None

@@ -304,7 +304,7 @@ class TestCalendarModuleCredentialStore:
         db.pool = MagicMock()
         mod = CalendarModule()
         with patch(
-            "butlers.credential_store.resolve_owner_contact_info",
+            "butlers.credential_store.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="cs-refresh-token",
         ):
@@ -343,7 +343,7 @@ class TestCalendarModuleCredentialStore:
         db.pool = MagicMock()
         mod = CalendarModule()
         with patch(
-            "butlers.credential_store.resolve_owner_contact_info",
+            "butlers.credential_store.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="db-refresh-token",
         ):
