@@ -26,6 +26,7 @@ from butlers.testing.changed_files import get_changed_files
 from butlers.testing.source_test_map import FULL_SUITE, resolve_test_paths
 
 DEFAULT_IGNORES: list[str] = ["tests/test_db.py", "tests/test_migrations.py"]
+DEFAULT_EXTRA_ARGS: list[str] = ["-n", "auto"]
 
 # ---------------------------------------------------------------------------
 # Full-suite fallback allowlist
@@ -182,6 +183,8 @@ def build_pytest_command(
 
     for ignore in ignores:
         cmd.extend(["--ignore", ignore])
+
+    cmd.extend(DEFAULT_EXTRA_ARGS)
 
     if extra_args:
         cmd.extend(extra_args)

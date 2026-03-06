@@ -8,6 +8,7 @@ import pytest
 
 from butlers.testing.changed_files import ChangedFiles
 from butlers.testing.scoped_runner import (
+    DEFAULT_EXTRA_ARGS,
     DEFAULT_IGNORES,
     FULL_SUITE_FALLBACK_ALLOWLIST,
     ScopedTestPlan,
@@ -393,7 +394,7 @@ class TestBuildPytestCommand:
             assert ignore in cmd
 
     def test_command_order(self):
-        """Test paths come before ignores, ignores before extra args."""
+        """Test paths come before ignores, ignores before default extra args, before extra args."""
         plan = ScopedTestPlan(
             scope="scoped",
             test_paths=["tests/api/"],
@@ -403,8 +404,25 @@ class TestBuildPytestCommand:
         cmd = build_pytest_command(plan, extra_args=["-v"])
         path_idx = cmd.index("tests/api/")
         ignore_idx = cmd.index("--ignore")
+        n_idx = cmd.index("-n")
         v_idx = cmd.index("-v")
-        assert path_idx < ignore_idx < v_idx
+        assert path_idx < ignore_idx < n_idx < v_idx
+
+    def test_default_xdist_args(self):
+        """Default extra args include -n auto for parallel execution."""
+        plan = ScopedTestPlan(
+            scope="scoped",
+            test_paths=["tests/api/"],
+            changed_files=[],
+            reason="test",
+        )
+        cmd = build_pytest_command(plan)
+        assert "-n" in cmd
+        n_idx = cmd.index("-n")
+        assert cmd[n_idx + 1] == "auto"
+
+    def test_default_extra_args_constant(self):
+        assert DEFAULT_EXTRA_ARGS == ["-n", "auto"]
 
 
 # ---------------------------------------------------------------------------
