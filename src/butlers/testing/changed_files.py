@@ -68,9 +68,7 @@ def get_changed_files(
     )
 
     if result.returncode != 0:
-        raise RuntimeError(
-            f"git diff failed (exit {result.returncode}): {result.stderr.strip()}"
-        )
+        raise RuntimeError(f"git diff failed (exit {result.returncode}): {result.stderr.strip()}")
 
     files = [f for f in result.stdout.strip().splitlines() if f]
     return ChangedFiles(
