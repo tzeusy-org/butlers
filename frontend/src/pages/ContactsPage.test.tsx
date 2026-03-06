@@ -10,10 +10,21 @@ import { useContacts, useLabels } from "@/hooks/use-contacts";
 import { triggerContactsSync } from "@/api/index.ts";
 import { toast } from "sonner";
 
-vi.mock("@/hooks/use-contacts", () => ({
-  useContacts: vi.fn(),
-  useLabels: vi.fn(),
-}));
+vi.mock("@/hooks/use-contacts", () => {
+  const mut = () => ({ mutateAsync: vi.fn(), isPending: false });
+  return {
+    useContacts: vi.fn(),
+    useLabels: vi.fn(),
+    usePendingContacts: vi.fn(() => ({ data: [], isLoading: false })),
+    useUnlinkedContacts: vi.fn(() => ({ data: { contacts: [], total: 0 }, isLoading: false })),
+    useDeleteContact: vi.fn(mut),
+    useMergeContact: vi.fn(mut),
+    useConfirmContact: vi.fn(mut),
+    useLinkEntity: vi.fn(mut),
+    useCreateAndLinkEntity: vi.fn(mut),
+    useEntitySuggestions: vi.fn(() => ({ data: [] })),
+  };
+});
 
 vi.mock("@/api/index.ts", () => ({
   triggerContactsSync: vi.fn(),
