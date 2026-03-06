@@ -199,6 +199,92 @@ Owner channel identifiers and credentials currently stored in `butler_secrets` S
 
 ---
 
+### Requirement: Telegram-specific contact_info types
+
+The `shared.contact_info` table supports Telegram-specific channel identifiers alongside existing types (email, phone, telegram). These types enable identity resolution for contacts sourced from both the Telegram user-client connector (message routing) and the Contacts module's TelegramContactsProvider (address book sync).
+
+| contact_info type | Description | Example value | Stable? |
+|---|---|---|---|
+| `telegram_user_id` | Numeric Telegram user ID | `"123456789"` | Yes (permanent, survives username changes) |
+| `telegram_username` | Telegram @handle (without `@` prefix) | `"alice"` | No (user can change username) |
+| `telegram_chat_id` | Private chat ID for DMs with this contact | `"987654321"` | Yes (stable for a given DM pair) |
+
+#### Scenario: Telegram user ID stored as contact_info
+
+- **WHEN** a contact is synced from Telegram with user ID `123456789`
+- **THEN** a `contact_info` entry is created with `type = 'telegram_user_id'` and `value = '123456789'`
+- **AND** this entry is the stable identifier for cross-provider resolution (survives username changes)
+
+#### Scenario: Telegram username stored as contact_info
+
+- **WHEN** a Telegram contact has username `@alice`
+- **THEN** a `contact_info` entry is created with `type = 'telegram_username'` and `value = 'alice'` (without `@` prefix)
+- **AND** this entry is updated on subsequent syncs if the username changes
+
+#### Scenario: Telegram chat ID stored as contact_info
+
+- **WHEN** a private DM chat exists with a Telegram contact
+- **THEN** a `contact_info` entry is created with `type = 'telegram_chat_id'` and `value = '<chat_id>'`
+- **AND** this is used by the Switchboard for reverse-lookup routing of inbound Telegram messages
+
+#### Scenario: Reverse-lookup by telegram_user_id
+
+- **WHEN** `resolve_contact_by_channel('telegram_user_id', '123456789')` is called
+- **AND** a `contact_info` entry exists with that type and value
+- **THEN** the function returns the linked contact with roles resolved from the entity
+
+#### Scenario: Uniqueness constraint applies to Telegram types
+
+- **WHEN** a `contact_info` entry with `type = 'telegram_user_id'` and `value = '123456789'` exists for contact A
+- **AND** an attempt is made to insert the same type and value for contact B
+- **THEN** the insert fails with a unique constraint violation (same as all contact_info types)
+
+#### Scenario: Relationship between telegram and telegram_chat_id types
+
+- **WHEN** the existing `type = 'telegram'` contact_info entry stores a chat ID (legacy from `BUTLER_TELEGRAM_CHAT_ID` migration)
+- **THEN** the legacy `telegram` type is equivalent to `telegram_chat_id` for reverse-lookup purposes
+- **AND** new Telegram contact syncs use the more specific `telegram_chat_id` type
+- **AND** the legacy `telegram` type remains valid for backward compatibility
+
+---
+
+### Requirement: Cross-provider contact disambiguation
+
+When contacts arrive from multiple providers (e.g., Google Contacts and Telegram), the identity resolution pipeline in `ContactBackfillResolver` determines whether they represent the same person. The resolution order (`source_link → email → phone → name`) already supports multi-provider merging. This section documents the specific cross-provider scenarios.
+
+#### Scenario: Google and Telegram contact merge by phone number
+
+- **WHEN** a Google-sourced contact "Alice Smith" has phone `+15550100` in `shared.contact_info`
+- **AND** a Telegram contact "Alice" has the same phone number `+15550100`
+- **THEN** the resolver matches them via phone strategy (step 3)
+- **AND** the Telegram sync adds `telegram_user_id`, `telegram_username`, and `telegram_chat_id` entries to the existing contact's `contact_info`
+- **AND** the existing Google-sourced fields (email, address, etc.) are preserved
+- **AND** a second `contacts_source_links` row is created with `provider = "telegram"`
+
+#### Scenario: Cross-provider merge does not overwrite provider-owned fields
+
+- **WHEN** a CRM contact has `display_name = "Alice Smith"` sourced from Google (provenance: `{"source": "google"}`)
+- **AND** Telegram sync provides `display_name = "Alice"` for the same contact
+- **THEN** the display name is NOT overwritten (Google owns the field)
+- **AND** the Telegram-provided name is recorded in metadata for reference but does not replace the canonical value
+
+#### Scenario: Ambiguous name match skips auto-merge
+
+- **WHEN** a Telegram contact named "John" has no phone or email
+- **AND** three existing CRM contacts have names matching "John" (from Google or manual entry)
+- **THEN** auto-merge is skipped (ambiguous name returns multiple candidates)
+- **AND** the Telegram contact is created as a new CRM record
+- **AND** the dashboard shows a disambiguation prompt for the owner to manually resolve
+
+#### Scenario: Email-based cross-provider match
+
+- **WHEN** a future provider (e.g., Apple Contacts) provides a contact with email `alice@example.com`
+- **AND** an existing CRM contact (from Google) has the same email in `shared.contact_info`
+- **THEN** the resolver matches them via email strategy (step 2)
+- **AND** provider-specific contact_info entries are added alongside existing entries
+
+---
+
 ### Requirement: Temporary contact for unknown senders
 
 When a message arrives from an unknown channel identifier (reverse-lookup returns null), the system SHALL create a temporary contact with `metadata` containing `{"needs_disambiguation": true, "source_channel": "<type>", "source_value": "<value>"}` and a corresponding `contact_info` entry linking the channel identifier.

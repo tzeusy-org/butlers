@@ -25,6 +25,12 @@ The user client connector exists to give butlers passive awareness of the user's
 - **AND** the user client connector provides passive, readonly ingestion of the user's broader Telegram activity
 - **AND** each has a distinct `endpoint_identity` (e.g., `"telegram:bot:mybot"` vs `"telegram:user:123456"`)
 
+#### Scenario: Relationship to TelegramContactsProvider
+- **WHEN** the Contacts module is configured with a Telegram provider
+- **THEN** the `TelegramContactsProvider` uses the same Telethon credentials (`telegram_api_id`, `telegram_api_hash`, `telegram_user_session`) as this connector
+- **AND** the contacts provider syncs the user's Telegram address book (contact list), while this connector ingests message streams
+- **AND** both operate independently — the contacts provider runs periodic sync via the Contacts module's polling loop, while this connector maintains a persistent live session
+
 ### Requirement: Live-Stream First Ingestion
 The user client connector maintains a persistent Telegram session for near-real-time message ingestion.
 
