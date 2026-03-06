@@ -1073,6 +1073,15 @@ class TestMetricsEmit:
 # Storage layer — integration tests with a real state store
 # ---------------------------------------------------------------------------
 
+_STATE_TABLE_DDL = """
+    CREATE TABLE IF NOT EXISTS state (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL DEFAULT '{}',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        version INTEGER NOT NULL DEFAULT 1
+    )
+"""
+
 
 @pytest.mark.integration
 class TestStorageIntegration:
@@ -1084,6 +1093,7 @@ class TestStorageIntegration:
     async def test_save_and_load_round_trip(self, provisioned_postgres_pool):
         """save_definition + load_all_definitions round-trip."""
         async with provisioned_postgres_pool() as pool:
+            await pool.execute(_STATE_TABLE_DDL)
             defn = {
                 "name": "email_count",
                 "type": "counter",
@@ -1103,6 +1113,7 @@ class TestStorageIntegration:
     async def test_save_multiple_and_count(self, provisioned_postgres_pool):
         """count_definitions returns correct count after multiple saves."""
         async with provisioned_postgres_pool() as pool:
+            await pool.execute(_STATE_TABLE_DDL)
             from butlers.modules.metrics.storage import (
                 count_definitions,
                 save_definition,
@@ -1119,6 +1130,7 @@ class TestStorageIntegration:
     async def test_save_overwrites_existing(self, provisioned_postgres_pool):
         """Saving a definition with the same name overwrites the old one."""
         async with provisioned_postgres_pool() as pool:
+            await pool.execute(_STATE_TABLE_DDL)
             from butlers.modules.metrics.storage import (
                 load_all_definitions,
                 save_definition,
@@ -1133,6 +1145,7 @@ class TestStorageIntegration:
 
     async def test_load_all_returns_empty_list_when_no_definitions(self, provisioned_postgres_pool):
         async with provisioned_postgres_pool() as pool:
+            await pool.execute(_STATE_TABLE_DDL)
             from butlers.modules.metrics.storage import load_all_definitions
 
             results = await load_all_definitions(pool)
@@ -1140,6 +1153,7 @@ class TestStorageIntegration:
 
     async def test_count_returns_zero_when_no_definitions(self, provisioned_postgres_pool):
         async with provisioned_postgres_pool() as pool:
+            await pool.execute(_STATE_TABLE_DDL)
             from butlers.modules.metrics.storage import count_definitions
 
             assert await count_definitions(pool) == 0
