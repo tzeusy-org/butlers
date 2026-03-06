@@ -9,7 +9,12 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from butlers.modules.base import Module
-from butlers.modules.contacts import ContactsConfig, ContactsModule, ContactsSyncConfig
+from butlers.modules.contacts import (
+    ContactsConfig,
+    ContactsModule,
+    ContactsSyncConfig,
+    ProviderEntry,
+)
 from butlers.modules.contacts.sync import (
     ContactsSyncError,
     ContactsSyncResult,
@@ -69,9 +74,32 @@ class TestContactsConfig:
         assert config.sync.interval_minutes == 15
         assert config.sync.full_sync_interval_days == 6
 
+    def test_legacy_provider_creates_providers_list(self) -> None:
+        config = ContactsConfig(provider="google")
+        assert config.providers == [ProviderEntry(type="google")]
+        assert config.provider_types == ["google"]
+
+    def test_providers_list_accepted(self) -> None:
+        config = ContactsConfig(providers=[{"type": "google"}, {"type": "telegram"}])
+        assert config.provider is None
+        assert len(config.providers) == 2
+        assert config.provider_types == ["google", "telegram"]
+
+    def test_both_provider_and_providers_raises(self) -> None:
+        with pytest.raises(ValidationError, match="Cannot specify both"):
+            ContactsConfig(provider="google", providers=[{"type": "google"}])
+
+    def test_duplicate_provider_types_raises(self) -> None:
+        with pytest.raises(ValidationError, match="Duplicate provider types"):
+            ContactsConfig(providers=[{"type": "google"}, {"type": "google"}])
+
     def test_provider_normalization(self) -> None:
         config = ContactsConfig(provider="  GOOGLE  ")
         assert config.provider == "google"
+
+    def test_providers_type_normalization(self) -> None:
+        config = ContactsConfig(providers=[{"type": "  GOOGLE  "}])
+        assert config.providers[0].type == "google"
 
     def test_provider_non_empty_error(self) -> None:
         with pytest.raises(ValidationError, match="provider must be a non-empty string"):
@@ -88,6 +116,12 @@ class TestContactsConfig:
             ContactsConfig(provider="google", sync={"interval_minutes": 15, "bogus": 1})
         assert error.value.errors()[0]["loc"] == ("sync", "bogus")
         assert error.value.errors()[0]["type"] == "extra_forbidden"
+
+    def test_provider_types_property_empty_when_neither_set(self) -> None:
+        """provider_types returns empty list if somehow providers is None."""
+        # Can't construct this normally (validator prevents it), but test the property
+        config = ContactsConfig(provider="google")
+        assert config.provider_types == ["google"]
 
 
 def _make_credential_store(
@@ -135,7 +169,7 @@ class TestModuleStartup:
         config = getattr(mod, "_config")
         assert isinstance(config, ContactsConfig)
         assert config.provider == "google"
-        assert getattr(mod, "_runtime") is None
+        assert getattr(mod, "_runtimes") == {}
 
     async def test_startup_creates_runtime_when_credentials_present(self) -> None:
         """on_startup() creates and starts ContactsSyncRuntime when sync.enabled=True."""
@@ -158,8 +192,9 @@ class TestModuleStartup:
             )
             mock_start.assert_awaited_once()
 
-        runtime = getattr(mod, "_runtime")
-        assert isinstance(runtime, ContactsSyncRuntime)
+        runtimes = getattr(mod, "_runtimes")
+        assert "google" in runtimes
+        assert isinstance(runtimes["google"], ContactsSyncRuntime)
 
     async def test_startup_missing_credentials_raises_actionable_error(self) -> None:
         """Missing credentials produce an actionable RuntimeError message."""
@@ -207,6 +242,71 @@ class TestModuleStartup:
         assert isinstance(stored, ContactsConfig)
         assert stored.provider == "google"
 
+    async def test_startup_multi_provider_creates_multiple_runtimes(self) -> None:
+        """on_startup() with providers list creates one runtime per provider."""
+        mod = ContactsModule()
+        credential_store = _make_credential_store()
+        db = _make_db_with_pool()
+
+        mock_tg_provider = AsyncMock()
+        mock_tg_provider.name = "telegram"
+
+        with (
+            patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock) as mock_start,
+            patch(
+                "butlers.credential_store.resolve_owner_entity_info",
+                new_callable=AsyncMock,
+                return_value="rtoken",
+            ),
+            patch.object(
+                ContactsModule,
+                "_create_telegram_provider",
+                new_callable=AsyncMock,
+                return_value=mock_tg_provider,
+            ),
+        ):
+            await mod.on_startup(
+                {"providers": [{"type": "google"}, {"type": "telegram"}]},
+                db=db,
+                credential_store=credential_store,
+            )
+            assert mock_start.await_count == 2
+
+        runtimes = getattr(mod, "_runtimes")
+        assert "google" in runtimes
+        assert "telegram" in runtimes
+
+    async def test_startup_multi_provider_isolates_failure(self) -> None:
+        """If one provider fails in multi-provider config, others still start."""
+        mod = ContactsModule()
+        credential_store = _make_credential_store()
+        db = _make_db_with_pool()
+
+        with (
+            patch.object(ContactsSyncRuntime, "start", new_callable=AsyncMock),
+            patch(
+                "butlers.credential_store.resolve_owner_entity_info",
+                new_callable=AsyncMock,
+                return_value="rtoken",
+            ),
+            patch.object(
+                ContactsModule,
+                "_create_telegram_provider",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("Telegram creds missing"),
+            ),
+        ):
+            await mod.on_startup(
+                {"providers": [{"type": "telegram"}, {"type": "google"}]},
+                db=db,
+                credential_store=credential_store,
+            )
+
+        runtimes = getattr(mod, "_runtimes")
+        # Telegram failed, Google succeeded
+        assert "telegram" not in runtimes
+        assert "google" in runtimes
+
 
 class TestModuleShutdown:
     """Verify shutdown lifecycle stops runtime and releases provider."""
@@ -231,14 +331,15 @@ class TestModuleShutdown:
                 credential_store=credential_store,
             )
 
-        runtime = getattr(mod, "_runtime")
-        assert runtime is not None
+        runtimes = getattr(mod, "_runtimes")
+        assert "google" in runtimes
+        runtime = runtimes["google"]
 
         with patch.object(runtime, "stop", new_callable=AsyncMock) as mock_stop:
             await mod.on_shutdown()
             mock_stop.assert_awaited_once()
 
-        assert getattr(mod, "_runtime") is None
+        assert getattr(mod, "_runtimes") == {}
 
     async def test_shutdown_releases_provider(self) -> None:
         """on_shutdown() calls provider.shutdown()."""
@@ -260,8 +361,9 @@ class TestModuleShutdown:
                 credential_store=credential_store,
             )
 
-        provider = getattr(mod, "_provider")
-        assert provider is not None
+        providers = getattr(mod, "_providers")
+        assert "google" in providers
+        provider = providers["google"]
 
         with (
             patch.object(ContactsSyncRuntime, "stop", new_callable=AsyncMock),
@@ -270,7 +372,7 @@ class TestModuleShutdown:
             await mod.on_shutdown()
             mock_shutdown.assert_awaited_once()
 
-        assert getattr(mod, "_provider") is None
+        assert getattr(mod, "_providers") == {}
 
     async def test_shutdown_clears_config_and_db(self) -> None:
         """on_shutdown() clears _config and _db references."""
@@ -286,8 +388,8 @@ class TestModuleShutdown:
         """on_shutdown() is safe to call without a prior on_startup()."""
         mod = ContactsModule()
         await mod.on_shutdown()  # Must not raise
-        assert getattr(mod, "_runtime") is None
-        assert getattr(mod, "_provider") is None
+        assert getattr(mod, "_runtimes") == {}
+        assert getattr(mod, "_providers") == {}
 
     async def test_shutdown_noop_when_sync_disabled(self) -> None:
         """on_shutdown() is safe when sync was disabled and runtime was never created."""
@@ -297,10 +399,10 @@ class TestModuleShutdown:
 
 
 class TestRuntimeAccessibility:
-    """Verify that _runtime is accessible for MCP tool registration."""
+    """Verify that _runtimes are accessible for MCP tool registration."""
 
     async def test_runtime_accessible_after_startup(self) -> None:
-        """After on_startup(), _runtime is a ContactsSyncRuntime instance."""
+        """After on_startup(), _runtimes contains the provider's runtime."""
         mod = ContactsModule()
         credential_store = _make_credential_store()
         db = _make_db_with_pool()
@@ -319,11 +421,12 @@ class TestRuntimeAccessibility:
                 credential_store=credential_store,
             )
 
-        runtime = getattr(mod, "_runtime")
-        assert isinstance(runtime, ContactsSyncRuntime)
+        runtimes = getattr(mod, "_runtimes")
+        assert "google" in runtimes
+        assert isinstance(runtimes["google"], ContactsSyncRuntime)
 
-    async def test_runtime_is_none_after_shutdown(self) -> None:
-        """After on_shutdown(), _runtime is None."""
+    async def test_runtime_is_empty_after_shutdown(self) -> None:
+        """After on_shutdown(), _runtimes is empty."""
         mod = ContactsModule()
         credential_store = _make_credential_store()
         db = _make_db_with_pool()
@@ -345,12 +448,12 @@ class TestRuntimeAccessibility:
         with patch.object(ContactsSyncRuntime, "stop", new_callable=AsyncMock):
             await mod.on_shutdown()
 
-        assert getattr(mod, "_runtime") is None
+        assert getattr(mod, "_runtimes") == {}
 
-    def test_runtime_none_before_startup(self) -> None:
-        """Before on_startup(), _runtime is None."""
+    def test_runtimes_empty_before_startup(self) -> None:
+        """Before on_startup(), _runtimes is empty."""
         mod = ContactsModule()
-        assert getattr(mod, "_runtime") is None
+        assert getattr(mod, "_runtimes") == {}
 
 
 class _StubMCP:
@@ -415,7 +518,7 @@ def _make_runtime_mock(
 class TestContactsSyncNowTool:
     """Unit tests for the contacts_sync_now MCP tool."""
 
-    async def test_sync_now_returns_error_when_runtime_none(self) -> None:
+    async def test_sync_now_returns_error_when_no_runtimes(self) -> None:
         mod = ContactsModule()
         mcp = _CapturingMCP()
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
@@ -430,8 +533,7 @@ class TestContactsSyncNowTool:
         mcp = _CapturingMCP()
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
 
-        # Simulate runtime being active
-        mod._runtime = _make_runtime_mock(provider_name="google")
+        mod._runtimes = {"google": _make_runtime_mock(provider_name="google")}
 
         result = await mcp["contacts_sync_now"](provider="outlook", mode="incremental")
 
@@ -454,7 +556,7 @@ class TestContactsSyncNowTool:
         )
         runtime = _make_runtime_mock(provider_name="google")
         runtime._sync_engine.sync = AsyncMock(return_value=sync_result)
-        mod._runtime = runtime
+        mod._runtimes = {"google": runtime}
 
         result = await mcp["contacts_sync_now"](provider="google", mode="incremental")
 
@@ -474,7 +576,7 @@ class TestContactsSyncNowTool:
 
         runtime = _make_runtime_mock(provider_name="google")
         runtime._sync_engine.sync = AsyncMock(side_effect=ContactsSyncError("token expired"))
-        mod._runtime = runtime
+        mod._runtimes = {"google": runtime}
 
         result = await mcp["contacts_sync_now"](provider="google", mode="incremental")
 
@@ -497,7 +599,7 @@ class TestContactsSyncNowTool:
         )
         runtime = _make_runtime_mock(provider_name="google")
         runtime._sync_engine.sync = AsyncMock(return_value=sync_result)
-        mod._runtime = runtime
+        mod._runtimes = {"google": runtime}
 
         result = await mcp["contacts_sync_now"](provider="google", mode="full")
 
@@ -505,11 +607,65 @@ class TestContactsSyncNowTool:
         assert result["mode"] == "full"
         assert result["summary"]["fetched"] == 200
 
+    async def test_sync_now_all_providers_single_returns_flat(self) -> None:
+        """When provider=None and only one runtime, returns flat result."""
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        sync_result = ContactsSyncResult(
+            mode="incremental",
+            fetched_contacts=10,
+            applied_contacts=10,
+            skipped_contacts=0,
+            deleted_contacts=0,
+            next_sync_cursor="c1",
+        )
+        runtime = _make_runtime_mock(provider_name="google")
+        runtime._sync_engine.sync = AsyncMock(return_value=sync_result)
+        mod._runtimes = {"google": runtime}
+
+        result = await mcp["contacts_sync_now"]()
+
+        assert result["provider"] == "google"
+        assert "results" not in result
+
+    async def test_sync_now_all_providers_multi_returns_aggregated(self) -> None:
+        """When provider=None and multiple runtimes, returns aggregated results."""
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={"providers": [{"type": "google"}, {"type": "telegram"}]},
+            db=None,
+        )
+
+        for prov_name in ("google", "telegram"):
+            sync_result = ContactsSyncResult(
+                mode="incremental",
+                fetched_contacts=5,
+                applied_contacts=5,
+                skipped_contacts=0,
+                deleted_contacts=0,
+                next_sync_cursor=f"c-{prov_name}",
+            )
+            runtime = _make_runtime_mock(provider_name=prov_name)
+            runtime._sync_engine.sync = AsyncMock(return_value=sync_result)
+            mod._runtimes[prov_name] = runtime
+
+        result = await mcp["contacts_sync_now"]()
+
+        assert "results" in result
+        assert "google" in result["results"]
+        assert "telegram" in result["results"]
+        assert result["results"]["google"]["provider"] == "google"
+        assert result["results"]["telegram"]["provider"] == "telegram"
+
 
 class TestContactsSyncStatusTool:
     """Unit tests for the contacts_sync_status MCP tool."""
 
-    async def test_sync_status_returns_error_when_runtime_none(self) -> None:
+    async def test_sync_status_returns_error_when_no_runtimes(self) -> None:
         mod = ContactsModule()
         mcp = _CapturingMCP()
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
@@ -534,7 +690,7 @@ class TestContactsSyncStatusTool:
             last_error=None,
             contact_versions={"c1": "v1", "c2": "v2"},
         )
-        mod._runtime = _make_runtime_mock(provider_name="google", state=state)
+        mod._runtimes = {"google": _make_runtime_mock(provider_name="google", state=state)}
 
         result = await mcp["contacts_sync_status"](provider="google")
 
@@ -554,7 +710,7 @@ class TestContactsSyncStatusTool:
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
 
         state = ContactsSyncState(last_error="401 Unauthorized")
-        mod._runtime = _make_runtime_mock(state=state)
+        mod._runtimes = {"google": _make_runtime_mock(state=state)}
 
         result = await mcp["contacts_sync_status"](provider="google")
 
@@ -568,7 +724,7 @@ class TestContactsSyncStatusTool:
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
 
         state = ContactsSyncState()  # empty state
-        mod._runtime = _make_runtime_mock(state=state)
+        mod._runtimes = {"google": _make_runtime_mock(state=state)}
 
         result = await mcp["contacts_sync_status"](provider="google")
 
@@ -580,9 +736,8 @@ class TestContactsSyncStatusTool:
         mcp = _CapturingMCP()
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
 
-        # Simulate runtime being active with google provider
         state = ContactsSyncState(last_success_at="2026-01-01T00:00:00+00:00")
-        mod._runtime = _make_runtime_mock(provider_name="google", state=state)
+        mod._runtimes = {"google": _make_runtime_mock(provider_name="google", state=state)}
 
         result = await mcp["contacts_sync_status"](provider="outlook")
 
@@ -590,11 +745,45 @@ class TestContactsSyncStatusTool:
         assert "outlook" in result["error"]
         assert "google" in result["error"]
 
+    async def test_sync_status_all_providers_single_returns_flat(self) -> None:
+        """When provider=None and one runtime, returns flat result."""
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
+
+        state = ContactsSyncState(last_success_at="2026-01-01T00:00:00+00:00")
+        mod._runtimes = {"google": _make_runtime_mock(provider_name="google", state=state)}
+
+        result = await mcp["contacts_sync_status"]()
+
+        assert result["provider"] == "google"
+        assert "providers" not in result
+
+    async def test_sync_status_all_providers_multi_returns_aggregated(self) -> None:
+        """When provider=None and multiple runtimes, returns aggregated results."""
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={"providers": [{"type": "google"}, {"type": "telegram"}]},
+            db=None,
+        )
+
+        for prov_name in ("google", "telegram"):
+            state = ContactsSyncState(last_success_at="2026-01-01T00:00:00+00:00")
+            mod._runtimes[prov_name] = _make_runtime_mock(provider_name=prov_name, state=state)
+
+        result = await mcp["contacts_sync_status"]()
+
+        assert "providers" in result
+        assert "google" in result["providers"]
+        assert "telegram" in result["providers"]
+
 
 class TestContactsSourceListTool:
     """Unit tests for the contacts_source_list MCP tool."""
 
-    async def test_source_list_returns_disabled_when_runtime_none(self) -> None:
+    async def test_source_list_returns_disabled_when_no_runtimes(self) -> None:
         mod = ContactsModule()
         mcp = _CapturingMCP()
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
@@ -617,7 +806,9 @@ class TestContactsSourceListTool:
             last_success_at="2026-01-01T00:00:00+00:00",
             last_error=None,
         )
-        mod._runtime = _make_runtime_mock(provider_name="google", account_id="default", state=state)
+        mod._runtimes = {
+            "google": _make_runtime_mock(provider_name="google", account_id="default", state=state)
+        }
 
         result = await mcp["contacts_source_list"]()
 
@@ -637,7 +828,7 @@ class TestContactsSourceListTool:
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
 
         state = ContactsSyncState(last_success_at="2026-01-01T00:00:00+00:00")
-        mod._runtime = _make_runtime_mock(provider_name="google", state=state)
+        mod._runtimes = {"google": _make_runtime_mock(provider_name="google", state=state)}
 
         # Filtering by the configured provider returns the source.
         result_google = await mcp["contacts_source_list"](provider="google")
@@ -655,7 +846,7 @@ class TestContactsSourceListTool:
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
 
         state = ContactsSyncState()  # no last_success_at
-        mod._runtime = _make_runtime_mock(state=state)
+        mod._runtimes = {"google": _make_runtime_mock(state=state)}
 
         result = await mcp["contacts_source_list"]()
 
@@ -672,18 +863,38 @@ class TestContactsSourceListTool:
             last_success_at="2026-01-01T00:00:00+00:00",
             last_error="Connection refused",
         )
-        mod._runtime = _make_runtime_mock(state=state)
+        mod._runtimes = {"google": _make_runtime_mock(state=state)}
 
         result = await mcp["contacts_source_list"]()
 
         assert result[0]["status"] == "error"
         assert result[0]["last_error"] == "Connection refused"
 
+    async def test_source_list_multi_provider(self) -> None:
+        """Multi-provider config returns one entry per configured provider."""
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={"providers": [{"type": "google"}, {"type": "telegram"}]},
+            db=None,
+        )
+
+        for prov_name in ("google", "telegram"):
+            state = ContactsSyncState(last_success_at="2026-01-01T00:00:00+00:00")
+            mod._runtimes[prov_name] = _make_runtime_mock(provider_name=prov_name, state=state)
+
+        result = await mcp["contacts_source_list"]()
+
+        assert len(result) == 2
+        providers = {s["provider"] for s in result}
+        assert providers == {"google", "telegram"}
+
 
 class TestContactsSourceReconcileTool:
     """Unit tests for the contacts_source_reconcile MCP tool."""
 
-    async def test_reconcile_returns_error_when_runtime_none(self) -> None:
+    async def test_reconcile_returns_error_when_no_runtimes(self) -> None:
         mod = ContactsModule()
         mcp = _CapturingMCP()
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
@@ -699,7 +910,7 @@ class TestContactsSourceReconcileTool:
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
 
         runtime = _make_runtime_mock()
-        mod._runtime = runtime
+        mod._runtimes = {"google": runtime}
 
         result = await mcp["contacts_source_reconcile"]()
 
@@ -714,7 +925,7 @@ class TestContactsSourceReconcileTool:
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
 
         runtime = _make_runtime_mock()
-        mod._runtime = runtime
+        mod._runtimes = {"google": runtime}
 
         result = await mcp["contacts_source_reconcile"](contact_id="abc-123")
 
@@ -729,7 +940,7 @@ class TestContactsSourceReconcileTool:
         await mod.register_tools(mcp=mcp, config={"provider": "google"}, db=None)
 
         runtime = _make_runtime_mock()
-        mod._runtime = runtime
+        mod._runtimes = {"google": runtime}
 
         result_all = await mcp["contacts_source_reconcile"]()
         runtime.trigger_immediate_sync.reset_mock()
@@ -739,3 +950,24 @@ class TestContactsSourceReconcileTool:
         assert result_all["queued"] is True
         assert result_specific["queued"] is True
         assert result_all["message"] != result_specific["message"]
+
+    async def test_reconcile_triggers_all_runtimes_in_multi_provider(self) -> None:
+        """Reconcile triggers immediate sync on ALL configured runtimes."""
+        mod = ContactsModule()
+        mcp = _CapturingMCP()
+        await mod.register_tools(
+            mcp=mcp,
+            config={"providers": [{"type": "google"}, {"type": "telegram"}]},
+            db=None,
+        )
+
+        rt_google = _make_runtime_mock(provider_name="google")
+        rt_telegram = _make_runtime_mock(provider_name="telegram")
+        mod._runtimes = {"google": rt_google, "telegram": rt_telegram}
+
+        result = await mcp["contacts_source_reconcile"]()
+
+        rt_google.trigger_immediate_sync.assert_called_once()
+        rt_telegram.trigger_immediate_sync.assert_called_once()
+        assert result["queued"] is True
+        assert sorted(result["providers_triggered"]) == ["google", "telegram"]
