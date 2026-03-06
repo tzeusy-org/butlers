@@ -268,6 +268,16 @@ def upgrade() -> None:
                 RETURN;
             END IF;
 
+            -- Guard: roles column may already have been dropped (idempotency)
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'shared'
+                  AND table_name = 'contacts'
+                  AND column_name = 'roles'
+            ) THEN
+                RETURN;
+            END IF;
+
             -- Check for owner contact without entity_id
             SELECT id INTO v_owner_contact_id
             FROM shared.contacts

@@ -687,9 +687,7 @@ async def list_entities(
         f" (SELECT c.id FROM shared.contacts c"
         f"  WHERE c.entity_id = e.id LIMIT 1"
         f" ) AS linked_contact_id,"
-        f" (SELECT c.roles FROM shared.contacts c"
-        f"  WHERE c.entity_id = e.id LIMIT 1"
-        f" ) AS linked_contact_roles"
+        f" e.roles AS linked_contact_roles"
         f" FROM shared.entities e{where}"
         f" ORDER BY e.canonical_name ASC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
@@ -749,9 +747,7 @@ async def get_entity(
         " (SELECT c.name FROM shared.contacts c"
         "  WHERE c.entity_id = e.id LIMIT 1"
         " ) AS linked_contact_name,"
-        " (SELECT c.roles FROM shared.contacts c"
-        "  WHERE c.entity_id = e.id LIMIT 1"
-        " ) AS linked_contact_roles"
+        " e.roles AS linked_contact_roles"
         " FROM shared.entities e"
         " WHERE e.id = $1 AND e.tenant_id IN ('default', 'shared')",
         eid,
