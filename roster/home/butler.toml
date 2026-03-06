@@ -51,7 +51,7 @@ notify(channel="telegram", intent="send", message=<digest>).
 """
 
 [[butler.schedule]]
-name = "daily-environment-report"
+name = "environment-report"
 cron = "5 21 * * 0"
 dispatch_mode = "prompt"
 prompt = """

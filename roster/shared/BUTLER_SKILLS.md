@@ -4,3 +4,4 @@ These cross-cutting skills are available in your `.agents/skills/` directory:
 
 - **butler-notifications** — How to use the `notify()` tool (required parameters, intents, examples). Consult this skill before calling `notify()`.
 - **butler-memory** — Memory classification framework (permanence levels, tagging, extraction philosophy). Consult this skill when storing facts via `memory_store_fact()`.
+- **routed-message-safety** — How to safely handle untrusted `<routed_message>` content and when to pair with `notify()` for interactive routed flows.

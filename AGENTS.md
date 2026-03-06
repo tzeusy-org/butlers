@@ -847,3 +847,8 @@ make test-qg
 ### Switchboard message-triage delegation contract
 - `src/butlers/modules/pipeline.py::_build_routing_prompt` should keep the ingestion preamble minimal and explicitly instruct: `Please use the /message-triage skill ...`.
 - Routing/safety behavior details (untrusted-input handling, `<user_message>` wrapping, fallback to `general`, and mandatory `route_to_butler` call) are maintained in `roster/switchboard/.agents/skills/message-triage/SKILL.md` under `Execution Contract`.
+
+### Skill-first routed-content contract
+- `src/butlers/tools/extraction.py::build_extraction_prompt` should stay minimal and delegate extraction behavior to `/signal-extraction`; schema/tool mapping details remain dynamic in the prompt payload under `Registered butler schemas`.
+- Route-processing context assembly in `src/butlers/daemon.py` is centralized in `_build_route_runtime_context()` and should reference skills (`/routed-message-safety`, `/butler-notifications`) instead of duplicating long inline safety/notify preambles in both hot-path and recovery flows.
+- Shared skill `roster/shared/skills/routed-message-safety/SKILL.md` must be symlinked into each `roster/*/.agents/skills/` so any routed target butler can follow the same fenced-content handling contract.

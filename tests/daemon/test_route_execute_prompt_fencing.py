@@ -241,6 +241,7 @@ class TestRouteExecutePromptFencing:
         assert context_arg is not None
         assert "CONTENT SAFETY" in context_arg
         assert "<routed_message>" in context_arg
+        assert "/routed-message-safety" in context_arg
 
     async def test_no_content_safety_preamble_for_interactive_channel(self, tmp_path: Path) -> None:
         """Interactive channels (telegram) do NOT get the safety preamble."""

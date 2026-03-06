@@ -438,6 +438,7 @@ class TestRouteExecuteRequestContextInjection:
         assert 'channel="telegram"' in context_arg
         assert 'intent="reply"' in context_arg
         assert "notify()" in context_arg
+        assert "/butler-notifications" in context_arg
 
     async def test_interactive_channel_guidance_requires_request_context_for_notify(
         self, tmp_path: Path
@@ -468,6 +469,7 @@ class TestRouteExecuteRequestContextInjection:
         assert 'channel="telegram"' in context_arg
         assert 'intent="reply"' in context_arg
         assert "notify()" in context_arg
+        assert "/routed-message-safety" in context_arg
         assert "Pass the request_context" in context_arg
         assert "telegram only" in context_arg
         assert "request_id" in context_arg

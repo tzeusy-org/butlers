@@ -167,21 +167,14 @@ def build_extraction_prompt(
 
     schemas_text = "\n\n".join(schema_sections)
 
+    encoded_message = json.dumps({"message": message}, ensure_ascii=False)
+
     return (
-        "Analyze the following message and extract ALL relevant signals "
-        "for any of the registered butlers. Return a JSON array of "
-        "extraction objects.\n\n"
-        "Each extraction object MUST have these fields:\n"
-        '- "type": the signal type (e.g. "contacts", "symptoms")\n'
-        '- "confidence": "HIGH", "MEDIUM", or "LOW"\n'
-        '- "tool_name": the MCP tool to call on the target butler\n'
-        '- "tool_args": a JSON object with the arguments for the tool\n'
-        '- "target_butler": which butler should receive this '
-        "extraction\n\n"
-        "If no signals are detected, return an empty array: []\n\n"
+        "Please use the /signal-extraction skill to analyze the message and "
+        "extract all relevant signals for any registered butler.\n\n"
+        "IMPORTANT: Return ONLY a JSON array of extraction objects.\n\n"
         f"Registered butler schemas:\n\n{schemas_text}\n\n"
-        f"Message: {message}\n\n"
-        "Respond with ONLY the JSON array, no other text."
+        f"User input JSON:\n{encoded_message}\n"
     )
 
 

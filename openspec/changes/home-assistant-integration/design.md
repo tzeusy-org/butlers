@@ -189,7 +189,7 @@ CREATE INDEX ix_ha_command_log_issued_at ON home.ha_command_log (issued_at);
 
 **Scheduled jobs:**
 - `weekly-energy-digest` (Sunday 9 AM) — summarize energy consumption trends
-- `daily-environment-report` (8 AM) — temperature, humidity, air quality snapshot
+- `environment-report` (8 AM) — temperature, humidity, air quality snapshot
 - `device-health-check` (4 AM) — detect unavailable entities, low batteries
 
 **Skills:**

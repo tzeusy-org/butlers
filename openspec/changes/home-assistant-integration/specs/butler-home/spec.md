@@ -40,7 +40,7 @@ The home butler runs periodic monitoring and reporting jobs.
 - **WHEN** the home butler daemon is running
 - **THEN** it SHALL execute:
   - `weekly-energy-digest` (0 9 * * 0, prompt-based): summarize weekly energy consumption trends using `ha_get_statistics`, identify anomalies, compare to previous weeks, and notify the owner via `notify(channel="telegram", intent="send")`
-  - `daily-environment-report` (0 8 * * *, prompt-based): snapshot temperature, humidity, and air quality across all areas using `ha_list_entities` and `ha_get_entity_state`, flag any readings outside comfortable ranges, and notify the owner
+  - `environment-report` (0 8 * * *, prompt-based): snapshot temperature, humidity, and air quality across all areas using `ha_list_entities` and `ha_get_entity_state`, flag any readings outside comfortable ranges, and notify the owner
   - `device-health-check` (0 4 * * *, prompt-based): detect entities in `unavailable` or `unknown` state using `ha_list_entities`, check for low battery sensors, and notify the owner of any issues found
   - `memory-consolidation` (0 */6 * * *, job-based)
   - `memory-episode-cleanup` (0 4 * * *, job-based)

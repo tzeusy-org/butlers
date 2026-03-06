@@ -252,7 +252,7 @@ memory_store_fact(
 The following scheduled tasks each have a dedicated skill defining their step-by-step workflow:
 
 - **`weekly-energy-digest`** (Sun 9am) — see `.agents/skills/weekly-energy-digest/SKILL.md`
-- **`daily-environment-report`** (Daily 8am) — see `.agents/skills/daily-environment-report/SKILL.md`
+- **`environment-report`** (Daily 8am) — see `.agents/skills/environment-report/SKILL.md`
 - **`device-health-check`** (Nightly 4am) — see `.agents/skills/device-health-check/SKILL.md`
 
 ## Multi-Turn Conversation Skills

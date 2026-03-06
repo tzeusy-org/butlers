@@ -271,6 +271,16 @@ class TestBuildExtractionPrompt:
         assert "symptom_log" in prompt
         assert "medication_add" in prompt
 
+    def test_prompt_includes_signal_extraction_skill_instruction(self):
+        from butlers.tools.extraction import (
+            RELATIONSHIP_SCHEMA,
+            build_extraction_prompt,
+        )
+
+        prompt = build_extraction_prompt("hello", [RELATIONSHIP_SCHEMA])
+        assert "/signal-extraction" in prompt
+        assert "Return ONLY a JSON array" in prompt
+
 
 # ------------------------------------------------------------------
 # parse_extractions

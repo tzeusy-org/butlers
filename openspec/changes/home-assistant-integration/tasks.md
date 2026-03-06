@@ -45,7 +45,7 @@
 
 ## 7. Butler Roster
 
-- [ ] 7.1 Create `roster/home/butler.toml`: name=home, port=40108, schema=home, codex runtime, max_concurrent_sessions=3, switchboard registration, modules (home_assistant with URL, memory, contacts with Google sync, approvals), scheduled jobs (weekly-energy-digest, daily-environment-report, device-health-check, memory-consolidation, memory-episode-cleanup)
+- [ ] 7.1 Create `roster/home/butler.toml`: name=home, port=40108, schema=home, codex runtime, max_concurrent_sessions=3, switchboard registration, modules (home_assistant with URL, memory, contacts with Google sync, approvals), scheduled jobs (weekly-energy-digest, environment-report, device-health-check, memory-consolidation, memory-episode-cleanup)
 - [ ] 7.2 Create `roster/home/MANIFESTO.md`: home automation orchestrator identity, value proposition (comfort, energy awareness, device management, scene orchestration)
 - [ ] 7.3 Create `roster/home/CLAUDE.md`: system prompt with Interactive Response Mode, home-context awareness, safety-first confirmation for destructive actions, Memory Classification taxonomy (comfort_preference, scene_preference, schedule_pattern, device_issue, energy_baseline)
 - [ ] 7.4 Create `roster/home/AGENTS.md`: initialize with "# Notes to self" header

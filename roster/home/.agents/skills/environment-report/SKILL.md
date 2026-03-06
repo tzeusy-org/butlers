@@ -1,4 +1,4 @@
-# Skill: Daily Environment Report
+# Skill: Environment Report
 
 ## Purpose
 
@@ -10,7 +10,7 @@ Deliver via `notify(channel="telegram", intent="send")`.
 ## When to Use
 
 Use this skill when:
-- The `daily-environment-report` scheduled task fires (cron: `0 8 * * *`, daily at 08:00)
+- The `environment-report` scheduled task fires (cron: `0 8 * * *`, daily at 08:00)
 - User requests "send me the morning home report" or similar
 
 ## Workflow
