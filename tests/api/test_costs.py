@@ -23,7 +23,7 @@ from butlers.api.deps import (
     get_pricing,
 )
 from butlers.api.models import CostSummary, DailyCost, TopSession
-from butlers.api.pricing import ModelPricing, PricingConfig
+from butlers.api.pricing import ModelPricing, PricingConfig, PricingTier, TieredModelPricing
 
 pytestmark = pytest.mark.unit
 
@@ -52,6 +52,30 @@ def _make_pricing() -> PricingConfig:
             "claude-haiku-35-20241022": ModelPricing(
                 input_price_per_token=0.0000008,
                 output_price_per_token=0.000004,
+            ),
+        }
+    )
+
+
+def _make_tiered_pricing() -> PricingConfig:
+    """Create a PricingConfig with a tiered model (GPT-5.4 style)."""
+    return PricingConfig(
+        models={
+            "gpt-5.4": TieredModelPricing(
+                tiers=(
+                    PricingTier(
+                        context_threshold=0,
+                        input_price_per_token=0.0000025,
+                        output_price_per_token=0.000015,
+                        cached_input_price_per_token=0.00000025,
+                    ),
+                    PricingTier(
+                        context_threshold=272_000,
+                        input_price_per_token=0.000005,
+                        output_price_per_token=0.0000225,
+                        cached_input_price_per_token=0.0000005,
+                    ),
+                )
             ),
         }
     )
@@ -376,6 +400,135 @@ class TestCostSummary:
         assert resp_data["total_sessions"] == 1
         assert resp_data["total_input_tokens"] == 5000
         assert "test" not in resp_data["by_butler"]
+
+    async def test_summary_uses_tiered_pricing_low_tier(self, app):
+        """Summary uses low tier when context_tokens is below threshold."""
+        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        pricing = _make_tiered_pricing()
+
+        data = {
+            "total_sessions": 1,
+            "total_input_tokens": 1_000_000,
+            "total_output_tokens": 1_000_000,
+            "by_model": {
+                "gpt-5.4": {
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 1_000_000,
+                    "cached_input_tokens": 0,
+                    "context_tokens": 100_000,
+                },
+            },
+        }
+
+        mgr = _make_manager_with_responses(
+            configs, {"test": _make_tool_result(data)}
+        )
+        _app_with_overrides(app, mgr, configs, pricing)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/costs/summary")
+
+        assert response.status_code == 200
+        # Low tier: 1M * $2.50/1M + 1M * $15/1M = $17.50
+        assert response.json()["data"]["total_cost_usd"] == pytest.approx(17.50, abs=1e-4)
+
+    async def test_summary_uses_tiered_pricing_high_tier(self, app):
+        """Summary uses high tier when context_tokens exceeds threshold."""
+        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        pricing = _make_tiered_pricing()
+
+        data = {
+            "total_sessions": 1,
+            "total_input_tokens": 1_000_000,
+            "total_output_tokens": 1_000_000,
+            "by_model": {
+                "gpt-5.4": {
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 1_000_000,
+                    "cached_input_tokens": 0,
+                    "context_tokens": 300_000,
+                },
+            },
+        }
+
+        mgr = _make_manager_with_responses(
+            configs, {"test": _make_tool_result(data)}
+        )
+        _app_with_overrides(app, mgr, configs, pricing)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/costs/summary")
+
+        assert response.status_code == 200
+        # High tier: 1M * $5/1M + 1M * $22.50/1M = $27.50
+        assert response.json()["data"]["total_cost_usd"] == pytest.approx(27.50, abs=1e-4)
+
+    async def test_summary_includes_cached_input_tokens(self, app):
+        """Summary accounts for cached_input_tokens in tiered pricing."""
+        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        pricing = _make_tiered_pricing()
+
+        data = {
+            "total_sessions": 1,
+            "total_input_tokens": 500_000,
+            "total_output_tokens": 0,
+            "by_model": {
+                "gpt-5.4": {
+                    "input_tokens": 500_000,
+                    "output_tokens": 0,
+                    "cached_input_tokens": 500_000,
+                },
+            },
+        }
+
+        mgr = _make_manager_with_responses(
+            configs, {"test": _make_tool_result(data)}
+        )
+        _app_with_overrides(app, mgr, configs, pricing)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/costs/summary")
+
+        assert response.status_code == 200
+        # Low tier: 500K * $2.50/1M + 500K * $0.25/1M = $1.25 + $0.125 = $1.375
+        assert response.json()["data"]["total_cost_usd"] == pytest.approx(1.375, abs=1e-4)
+
+    async def test_summary_falls_back_without_context_tokens(self, app):
+        """Without context_tokens, tiered model defaults to lowest tier."""
+        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        pricing = _make_tiered_pricing()
+
+        data = {
+            "total_sessions": 1,
+            "total_input_tokens": 1_000_000,
+            "total_output_tokens": 1_000_000,
+            "by_model": {
+                "gpt-5.4": {
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 1_000_000,
+                },
+            },
+        }
+
+        mgr = _make_manager_with_responses(
+            configs, {"test": _make_tool_result(data)}
+        )
+        _app_with_overrides(app, mgr, configs, pricing)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/costs/summary")
+
+        assert response.status_code == 200
+        # Falls back to low tier: 1M * $2.50/1M + 1M * $15/1M = $17.50
+        assert response.json()["data"]["total_cost_usd"] == pytest.approx(17.50, abs=1e-4)
 
     async def test_summary_logs_tool_contract_failures(self, app, caplog):
         """Unexpected fan-out failures should emit a warning with butler/tool context."""
@@ -716,6 +869,90 @@ class TestDailyCosts:
         assert data[0]["sessions"] == 1
         assert data[0]["input_tokens"] == 5000
 
+    async def test_daily_uses_tiered_pricing_with_context(self, app):
+        """Daily costs apply tiered pricing when context_tokens is present."""
+        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        pricing = _make_tiered_pricing()
+
+        daily_data = {
+            "days": [
+                {
+                    "date": "2026-03-06",
+                    "sessions": 1,
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 1_000_000,
+                    "by_model": {
+                        "gpt-5.4": {
+                            "input_tokens": 1_000_000,
+                            "output_tokens": 1_000_000,
+                            "cached_input_tokens": 0,
+                            "context_tokens": 300_000,
+                        },
+                    },
+                },
+            ]
+        }
+
+        mgr = _make_manager_with_responses(
+            configs, {"test": _make_tool_result(daily_data)}
+        )
+        _app_with_overrides(app, mgr, configs, pricing)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(
+                "/api/costs/daily",
+                params={"from": "2026-03-06", "to": "2026-03-06"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert len(data) == 1
+        # High tier: 1M * $5/1M + 1M * $22.50/1M = $27.50
+        assert data[0]["cost_usd"] == pytest.approx(27.50, abs=1e-4)
+
+    async def test_daily_includes_cached_input_tokens(self, app):
+        """Daily costs account for cached_input_tokens."""
+        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        pricing = _make_tiered_pricing()
+
+        daily_data = {
+            "days": [
+                {
+                    "date": "2026-03-06",
+                    "sessions": 1,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "by_model": {
+                        "gpt-5.4": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cached_input_tokens": 1_000_000,
+                        },
+                    },
+                },
+            ]
+        }
+
+        mgr = _make_manager_with_responses(
+            configs, {"test": _make_tool_result(daily_data)}
+        )
+        _app_with_overrides(app, mgr, configs, pricing)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(
+                "/api/costs/daily",
+                params={"from": "2026-03-06", "to": "2026-03-06"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()["data"]
+        # Low tier: 1M cached * $0.25/1M = $0.25
+        assert data[0]["cost_usd"] == pytest.approx(0.25, abs=1e-4)
+
     async def test_daily_response_validates_as_model(self, app):
         """Daily response items can be parsed as DailyCost models."""
         configs = [ButlerConnectionInfo(name="test", port=40100)]
@@ -1051,6 +1288,56 @@ class TestTopSessions:
         assert resp_data[0]["cost_usd"] == 0.0
         assert resp_data[0]["model"] == "unknown-model-v9"
         assert resp_data[0]["butler"] == "test"
+
+    async def test_top_sessions_uses_tiered_pricing(self, app):
+        """Top sessions apply tiered pricing with context and cached tokens."""
+        configs = [ButlerConnectionInfo(name="test", port=40100)]
+        pricing = _make_tiered_pricing()
+
+        data = {
+            "sessions": [
+                {
+                    "session_id": "high-ctx",
+                    "model": "gpt-5.4",
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 1_000_000,
+                    "cached_input_tokens": 500_000,
+                    "context_tokens": 300_000,
+                    "started_at": "2026-03-06T10:00:00Z",
+                },
+                {
+                    "session_id": "low-ctx",
+                    "model": "gpt-5.4",
+                    "input_tokens": 1_000_000,
+                    "output_tokens": 1_000_000,
+                    "cached_input_tokens": 0,
+                    "context_tokens": 100_000,
+                    "started_at": "2026-03-06T11:00:00Z",
+                },
+            ],
+        }
+
+        mgr = _make_manager_with_responses(
+            configs, {"test": _make_tool_result(data)}
+        )
+        _app_with_overrides(app, mgr, configs, pricing)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/costs/top-sessions")
+
+        assert response.status_code == 200
+        sessions = response.json()["data"]
+        assert len(sessions) == 2
+
+        # high-ctx (high tier): 1M*$5/1M + 500K*$0.50/1M + 1M*$22.50/1M = $27.75
+        # low-ctx (low tier): 1M*$2.50/1M + 1M*$15/1M = $17.50
+        # Sorted by cost descending
+        assert sessions[0]["session_id"] == "high-ctx"
+        assert sessions[0]["cost_usd"] == pytest.approx(27.75, abs=1e-4)
+        assert sessions[1]["session_id"] == "low-ctx"
+        assert sessions[1]["cost_usd"] == pytest.approx(17.50, abs=1e-4)
 
     async def test_top_sessions_response_validates_as_model(self, app):
         """Top-sessions response data can be parsed as TopSession models."""
