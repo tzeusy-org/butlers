@@ -40,7 +40,24 @@ def upgrade() -> None:
 
     # 2. Drop the per-butler entities table (shadow of shared.entities).
     #    Use CASCADE to also drop indexes created by mem_002.
-    op.execute("DROP TABLE IF EXISTS entities CASCADE")
+    #    IMPORTANT: Only drop if the entities table lives in the butler's own
+    #    schema, NOT in shared.  An unqualified DROP resolves via search_path
+    #    and would destroy shared.entities for schemas that have no local shadow.
+    op.execute("""
+        DO $$
+        DECLARE
+            v_schema TEXT;
+        BEGIN
+            SELECT schemaname INTO v_schema
+            FROM pg_tables
+            WHERE tablename = 'entities'
+              AND schemaname = current_schema();
+            IF v_schema IS NOT NULL THEN
+                EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(v_schema) || '.entities CASCADE';
+            END IF;
+        END
+        $$;
+    """)
 
     # 3. Re-add FK from facts.entity_id to shared.entities.
     op.execute("""
