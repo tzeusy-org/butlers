@@ -443,7 +443,18 @@ class ContactBackfillWriter:
 
         for username in contact.usernames:
             service = username.service
-            entries.append(("other", username.value, service, False))
+            # Telegram usernames use a dedicated type for identity resolution
+            if service == "telegram":
+                # Strip leading '@' if present (canonical form is without)
+                value = username.value.lstrip("@") if username.value else username.value
+                entries.append(("telegram_username", value, service, False))
+            else:
+                entries.append(("other", username.value, service, False))
+
+        # For telegram provider, create telegram_user_id from external_id
+        # so reverse-lookup by telegram_user_id works
+        if self._provider == "telegram" and contact.external_id:
+            entries.append(("telegram_user_id", contact.external_id, None, False))
 
         for type_, value, label, primary in entries:
             # Check if this value already exists for this contact.

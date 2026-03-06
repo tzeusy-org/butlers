@@ -1379,6 +1379,7 @@ class ContactsSyncRuntime:
         incremental_interval: timedelta | None = None,
         forced_full_interval: timedelta | None = None,
         now_fn: Callable[[], datetime] | None = None,
+        on_cycle_complete: Callable[[ContactsSyncResult], Any] | None = None,
     ) -> None:
         self._sync_engine = sync_engine
         self._state_store = state_store
@@ -1391,6 +1392,7 @@ class ContactsSyncRuntime:
             days=DEFAULT_FORCED_FULL_SYNC_DAYS
         )
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
+        self._on_cycle_complete = on_cycle_complete
         self._force_sync_event = asyncio.Event()
         self._stopping = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -1423,7 +1425,13 @@ class ContactsSyncRuntime:
     async def run_sync_cycle(self) -> ContactsSyncResult:
         """Run one sync cycle with mode selected from persisted sync state."""
         mode = await self._next_mode()
-        return await self._sync_engine.sync(account_id=self._account_id, mode=mode)
+        result = await self._sync_engine.sync(account_id=self._account_id, mode=mode)
+        if self._on_cycle_complete is not None:
+            try:
+                await self._on_cycle_complete(result)
+            except Exception as exc:
+                logger.warning("Post-sync callback failed: %s", exc, exc_info=True)
+        return result
 
     async def _run_loop(self) -> None:
         interval_seconds = max(self._incremental_interval.total_seconds(), 1.0)

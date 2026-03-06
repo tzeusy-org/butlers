@@ -68,7 +68,7 @@ def _user_to_canonical(user: Any) -> CanonicalContact | None:
 
     usernames: list[ContactUsername] = []
     if username:
-        usernames.append(ContactUsername(value=f"@{username}", service="telegram"))
+        usernames.append(ContactUsername(value=username, service="telegram"))
 
     # Build raw payload for hash-based versioning (no etag from Telegram)
     raw: dict[str, Any] = {
