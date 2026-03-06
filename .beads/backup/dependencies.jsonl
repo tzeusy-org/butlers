@@ -17,6 +17,7 @@
 {"created_at":"2026-03-06T12:17:13Z","created_by":"mayor","depends_on_id":"bu-47d","issue_id":"bu-47d.8","type":"parent-child"}
 {"created_at":"2026-03-06T12:17:30Z","created_by":"mayor","depends_on_id":"bu-47d.4","issue_id":"bu-47d.8","type":"blocks"}
 {"created_at":"2026-03-06T12:17:30Z","created_by":"mayor","depends_on_id":"bu-47d.7","issue_id":"bu-47d.8","type":"blocks"}
+{"created_at":"2026-03-06T13:42:38Z","created_by":"mayor","depends_on_id":"bu-wisp-w10z3","issue_id":"bu-47d.8","type":"blocks"}
 {"created_at":"2026-03-06T12:17:22Z","created_by":"mayor","depends_on_id":"bu-47d","issue_id":"bu-47d.9","type":"parent-child"}
 {"created_at":"2026-03-06T12:17:31Z","created_by":"mayor","depends_on_id":"bu-47d.3","issue_id":"bu-47d.9","type":"blocks"}
 {"created_at":"2026-03-06T12:17:31Z","created_by":"mayor","depends_on_id":"bu-47d.4","issue_id":"bu-47d.9","type":"blocks"}
@@ -39,6 +40,7 @@
 {"created_at":"2026-03-06T12:16:50Z","created_by":"butlers/polecats/obsidian","depends_on_id":"bu-s21","issue_id":"bu-j4t","type":"parent"}
 {"created_at":"2026-03-06T13:09:14Z","created_by":"mayor","depends_on_id":"bu-wisp-a0mr","issue_id":"bu-j4t","type":"blocks"}
 {"created_at":"2026-03-06T12:16:50Z","created_by":"butlers/polecats/obsidian","depends_on_id":"bu-s21","issue_id":"bu-p4g","type":"parent"}
+{"created_at":"2026-03-06T13:43:45Z","created_by":"mayor","depends_on_id":"bu-wisp-yzslp","issue_id":"bu-p4g","type":"blocks"}
 {"created_at":"2026-03-06T11:46:34Z","created_by":"mayor","depends_on_id":"bu-s21","issue_id":"bu-s21.1","type":"parent-child"}
 {"created_at":"2026-03-06T11:47:00Z","created_by":"mayor","depends_on_id":"bu-s21","issue_id":"bu-s21.2","type":"parent-child"}
 {"created_at":"2026-03-06T11:47:06Z","created_by":"mayor","depends_on_id":"bu-s21.1","issue_id":"bu-s21.2","type":"blocks"}
@@ -53,6 +55,7 @@
 {"created_at":"2026-03-06T12:12:15Z","created_by":"deacon","depends_on_id":"bu-wisp-85u5","issue_id":"bu-s21.3","type":"blocks"}
 {"created_at":"2026-03-06T13:08:49Z","created_by":"mayor","depends_on_id":"bu-wisp-0z6w","issue_id":"bu-xd2.1","type":"blocks"}
 {"created_at":"2026-03-06T12:42:47Z","created_by":"mayor","depends_on_id":"bu-xd2","issue_id":"bu-xd2.1","type":"parent-child"}
+{"created_at":"2026-03-06T13:43:05Z","created_by":"mayor","depends_on_id":"bu-wisp-9wpa8","issue_id":"bu-xd2.2","type":"blocks"}
 {"created_at":"2026-03-06T12:42:53Z","created_by":"mayor","depends_on_id":"bu-xd2","issue_id":"bu-xd2.2","type":"parent-child"}
 {"created_at":"2026-03-06T12:43:31Z","created_by":"mayor","depends_on_id":"bu-xd2.1","issue_id":"bu-xd2.2","type":"blocks"}
 {"created_at":"2026-03-06T12:43:03Z","created_by":"mayor","depends_on_id":"bu-xd2","issue_id":"bu-xd2.3","type":"parent-child"}
@@ -61,6 +64,7 @@
 {"created_at":"2026-03-06T12:43:32Z","created_by":"mayor","depends_on_id":"bu-xd2.2","issue_id":"bu-xd2.4","type":"blocks"}
 {"created_at":"2026-03-06T12:43:16Z","created_by":"mayor","depends_on_id":"bu-xd2","issue_id":"bu-xd2.5","type":"parent-child"}
 {"created_at":"2026-03-06T12:43:32Z","created_by":"mayor","depends_on_id":"bu-xd2.3","issue_id":"bu-xd2.5","type":"blocks"}
+{"created_at":"2026-03-06T13:43:34Z","created_by":"mayor","depends_on_id":"bu-wisp-85dm7","issue_id":"bu-xd2.6","type":"blocks"}
 {"created_at":"2026-03-06T12:43:17Z","created_by":"mayor","depends_on_id":"bu-xd2","issue_id":"bu-xd2.6","type":"parent-child"}
 {"created_at":"2026-03-06T12:43:32Z","created_by":"mayor","depends_on_id":"bu-xd2.1","issue_id":"bu-xd2.6","type":"blocks"}
 {"created_at":"2026-03-06T12:43:25Z","created_by":"mayor","depends_on_id":"bu-xd2","issue_id":"bu-xd2.7","type":"parent-child"}
