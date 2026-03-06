@@ -8,6 +8,8 @@ from butlers.api.pricing import (
     ModelPricing,
     PricingConfig,
     PricingError,
+    PricingTier,
+    TieredModelPricing,
     estimate_session_cost,
     load_pricing,
 )
@@ -30,6 +32,28 @@ input_price_per_token = 0.0000008
 output_price_per_token = 0.000004
 """
 
+TIERED_TOML = """\
+[models]
+
+[models."flat-model"]
+input_price_per_token = 0.000001
+output_price_per_token = 0.000002
+
+[models."gpt-5.4"]
+
+[[models."gpt-5.4".tiers]]
+context_threshold = 0
+input_price_per_token = 0.0000025
+cached_input_price_per_token = 0.00000025
+output_price_per_token = 0.000015
+
+[[models."gpt-5.4".tiers]]
+context_threshold = 272000
+input_price_per_token = 0.000005
+cached_input_price_per_token = 0.0000005
+output_price_per_token = 0.0000225
+"""
+
 
 @pytest.fixture()
 def pricing_file(tmp_path):
@@ -43,6 +67,20 @@ def pricing_file(tmp_path):
 def config(pricing_file):
     """Load a PricingConfig from the valid fixture file."""
     return load_pricing(pricing_file)
+
+
+@pytest.fixture()
+def tiered_file(tmp_path):
+    """Write a tiered pricing.toml and return its path."""
+    p = tmp_path / "pricing.toml"
+    p.write_text(TIERED_TOML)
+    return p
+
+
+@pytest.fixture()
+def tiered_config(tiered_file):
+    """Load a PricingConfig with tiered entries."""
+    return load_pricing(tiered_file)
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +150,93 @@ class TestLoadPricing:
 
 
 # ---------------------------------------------------------------------------
+# Loading tiered entries
+# ---------------------------------------------------------------------------
+
+
+class TestLoadTieredPricing:
+    def test_loads_tiered_model(self, tiered_config):
+        pricing = tiered_config.get_model_pricing("gpt-5.4")
+        assert isinstance(pricing, TieredModelPricing)
+        assert len(pricing.tiers) == 2
+
+    def test_tiered_and_flat_coexist(self, tiered_config):
+        assert isinstance(tiered_config.get_model_pricing("flat-model"), ModelPricing)
+        assert isinstance(tiered_config.get_model_pricing("gpt-5.4"), TieredModelPricing)
+
+    def test_tiers_sorted_by_threshold(self, tiered_config):
+        pricing = tiered_config.get_model_pricing("gpt-5.4")
+        thresholds = [t.context_threshold for t in pricing.tiers]
+        assert thresholds == sorted(thresholds)
+
+    def test_tier_values_parsed(self, tiered_config):
+        pricing = tiered_config.get_model_pricing("gpt-5.4")
+        low = pricing.tiers[0]
+        assert low.context_threshold == 0
+        assert low.input_price_per_token == pytest.approx(0.0000025)
+        assert low.cached_input_price_per_token == pytest.approx(0.00000025)
+        assert low.output_price_per_token == pytest.approx(0.000015)
+        high = pricing.tiers[1]
+        assert high.context_threshold == 272_000
+        assert high.input_price_per_token == pytest.approx(0.000005)
+
+    def test_cached_input_defaults_to_zero(self, tmp_path):
+        p = tmp_path / "pricing.toml"
+        p.write_text(
+            '[models]\n[models."m"]\n'
+            '[[models."m".tiers]]\n'
+            "context_threshold = 0\n"
+            "input_price_per_token = 0.001\n"
+            "output_price_per_token = 0.002\n"
+        )
+        cfg = load_pricing(p)
+        pricing = cfg.get_model_pricing("m")
+        assert pricing.tiers[0].cached_input_price_per_token == 0.0
+
+    def test_empty_tiers_raises(self, tmp_path):
+        p = tmp_path / "pricing.toml"
+        p.write_text('[models]\n[models."m"]\ntiers = []\n')
+        with pytest.raises(PricingError, match="non-empty array"):
+            load_pricing(p)
+
+    def test_tier_not_table_raises(self, tmp_path):
+        p = tmp_path / "pricing.toml"
+        p.write_text('[models]\n[models."m"]\ntiers = [42]\n')
+        with pytest.raises(PricingError, match="must be a table"):
+            load_pricing(p)
+
+    def test_tier_missing_required_field_raises(self, tmp_path):
+        p = tmp_path / "pricing.toml"
+        p.write_text(
+            '[models]\n[models."m"]\n'
+            '[[models."m".tiers]]\n'
+            "context_threshold = 0\n"
+            "input_price_per_token = 0.001\n"
+            # missing output_price_per_token
+        )
+        with pytest.raises(PricingError, match="Missing required field.*tier 0"):
+            load_pricing(p)
+
+    def test_tier_invalid_value_raises(self, tmp_path):
+        p = tmp_path / "pricing.toml"
+        p.write_text(
+            '[models]\n[models."m"]\n'
+            '[[models."m".tiers]]\n'
+            'context_threshold = "not-a-number"\n'
+            "input_price_per_token = 0.001\n"
+            "output_price_per_token = 0.002\n"
+        )
+        with pytest.raises(PricingError, match="Invalid value in tier 0"):
+            load_pricing(p)
+
+    def test_tiers_string_not_array_raises(self, tmp_path):
+        p = tmp_path / "pricing.toml"
+        p.write_text('[models]\n[models."m"]\ntiers = "bad"\n')
+        with pytest.raises(PricingError, match="non-empty array"):
+            load_pricing(p)
+
+
+# ---------------------------------------------------------------------------
 # get_model_pricing
 # ---------------------------------------------------------------------------
 
@@ -135,6 +260,35 @@ class TestGetModelPricing:
         mp = ModelPricing(0.000003, 0.000015)
         cfg = PricingConfig({"claude-sonnet": mp})
         assert cfg.get_model_pricing("claude-sonnet") is mp
+
+
+# ---------------------------------------------------------------------------
+# TieredModelPricing.tier_for_context
+# ---------------------------------------------------------------------------
+
+
+class TestTierForContext:
+    @pytest.fixture()
+    def tiered(self):
+        return TieredModelPricing(
+            tiers=(
+                PricingTier(0, 0.001, 0.002, 0.0001),
+                PricingTier(100_000, 0.002, 0.004, 0.0002),
+                PricingTier(500_000, 0.004, 0.008, 0.0004),
+            )
+        )
+
+    def test_below_all_thresholds_returns_first(self, tiered):
+        assert tiered.tier_for_context(0).context_threshold == 0
+
+    def test_exact_threshold_returns_that_tier(self, tiered):
+        assert tiered.tier_for_context(100_000).context_threshold == 100_000
+
+    def test_between_thresholds(self, tiered):
+        assert tiered.tier_for_context(200_000).context_threshold == 100_000
+
+    def test_above_all_thresholds(self, tiered):
+        assert tiered.tier_for_context(1_000_000).context_threshold == 500_000
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +335,39 @@ class TestEstimateCost:
         assert cost == pytest.approx(4.80)
 
 
+class TestEstimateCostTiered:
+    def test_low_tier_default(self, tiered_config):
+        # No context_tokens → defaults to tier 0 (<272K)
+        # 1M input * $2.50/1M + 1M output * $15/1M = $2.50 + $15.00 = $17.50
+        cost = tiered_config.estimate_cost("gpt-5.4", 1_000_000, 1_000_000)
+        assert cost == pytest.approx(17.50)
+
+    def test_high_tier_selected(self, tiered_config):
+        # context >= 272K → tier 1
+        # 1M input * $5/1M + 1M output * $22.50/1M = $5 + $22.50 = $27.50
+        cost = tiered_config.estimate_cost("gpt-5.4", 1_000_000, 1_000_000, context_tokens=300_000)
+        assert cost == pytest.approx(27.50)
+
+    def test_cached_input_tokens(self, tiered_config):
+        # Low tier: 1M cached * $0.25/1M = $0.25 (no regular input or output)
+        cost = tiered_config.estimate_cost("gpt-5.4", 0, 0, cached_input_tokens=1_000_000)
+        assert cost == pytest.approx(0.25)
+
+    def test_mixed_input_cached_output(self, tiered_config):
+        # Low tier: 500K input * $2.50/1M + 500K cached * $0.25/1M + 200K output * $15/1M
+        # = $1.25 + $0.125 + $3.00 = $4.375
+        cost = tiered_config.estimate_cost("gpt-5.4", 500_000, 200_000, cached_input_tokens=500_000)
+        assert cost == pytest.approx(4.375)
+
+    def test_flat_model_ignores_context_tokens(self, tiered_config):
+        # Flat model cost should be the same regardless of context_tokens
+        cost_a = tiered_config.estimate_cost("flat-model", 1_000_000, 1_000_000, context_tokens=0)
+        cost_b = tiered_config.estimate_cost(
+            "flat-model", 1_000_000, 1_000_000, context_tokens=999_999
+        )
+        assert cost_a == cost_b == pytest.approx(3.0)  # 1M*0.001 + 1M*0.002
+
+
 # ---------------------------------------------------------------------------
 # estimate_session_cost helper
 # ---------------------------------------------------------------------------
@@ -220,6 +407,26 @@ class TestEstimateSessionCost:
         helper = estimate_session_cost(config, "claude-sonnet-4-5-20250929", 1000, 500)
         assert direct == helper
 
+    def test_tiered_with_context(self, tiered_config):
+        cost = estimate_session_cost(
+            tiered_config,
+            "gpt-5.4",
+            1_000_000,
+            1_000_000,
+            context_tokens=300_000,
+        )
+        assert cost == pytest.approx(27.50)
+
+    def test_tiered_with_cached_input(self, tiered_config):
+        cost = estimate_session_cost(
+            tiered_config,
+            "gpt-5.4",
+            0,
+            0,
+            cached_input_tokens=1_000_000,
+        )
+        assert cost == pytest.approx(0.25)
+
 
 # ---------------------------------------------------------------------------
 # Default path (integration-level)
@@ -231,6 +438,13 @@ class TestDefaultPath:
         """Verify the actual pricing.toml at the repo root loads correctly."""
         cfg = load_pricing()  # uses default path
         assert len(cfg.model_ids) >= 1
+
+    def test_repo_toml_includes_tiered_model(self):
+        """Verify the actual pricing.toml includes the tiered GPT-5.4 entry."""
+        cfg = load_pricing()
+        pricing = cfg.get_model_pricing("gpt-5.4")
+        assert isinstance(pricing, TieredModelPricing)
+        assert len(pricing.tiers) == 2
 
 
 # ---------------------------------------------------------------------------

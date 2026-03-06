@@ -31,3 +31,19 @@ output_price_per_token = 0.00000175 # $1.75 / 1M tokens
 [models."gpt-5.3-codex-spark"]
 input_price_per_token = 0.00000175  # $1.75 / 1M tokens
 output_price_per_token = 0.00000175 # $1.75 / 1M tokens
+
+# GPT-5.4 — context-tiered pricing (official OpenAI rates).
+# Tier selection is based on total context size in tokens.
+[models."gpt-5.4"]
+
+[[models."gpt-5.4".tiers]]
+context_threshold = 0                      # <272K context
+input_price_per_token = 0.0000025          # $2.50 / 1M tokens
+cached_input_price_per_token = 0.00000025  # $0.25 / 1M tokens
+output_price_per_token = 0.000015          # $15.00 / 1M tokens
+
+[[models."gpt-5.4".tiers]]
+context_threshold = 272000                 # ≥272K context
+input_price_per_token = 0.000005           # $5.00 / 1M tokens
+cached_input_price_per_token = 0.0000005   # $0.50 / 1M tokens
+output_price_per_token = 0.0000225         # $22.50 / 1M tokens
