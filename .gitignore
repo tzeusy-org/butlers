@@ -427,3 +427,7 @@ butlers-ufzc worktree
 .runtime/
 .claude/commands/
 .logs/
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
