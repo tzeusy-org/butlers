@@ -12,7 +12,8 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
@@ -868,6 +869,74 @@ async def update_entity(
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
+    )
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/memory/entities/{entity_id}/linked-contact
+# ---------------------------------------------------------------------------
+
+
+class _LinkContactRequest(BaseModel):
+    contact_id: str
+
+
+@router.put("/entities/{entity_id}/linked-contact")
+async def set_linked_contact(
+    entity_id: str,
+    body: _LinkContactRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> dict:
+    """Link a contact to this entity by setting entity_id on the contact."""
+    import uuid as _uuid
+
+    pool = _any_pool(db)
+    eid = _uuid.UUID(entity_id)
+    cid = _uuid.UUID(body.contact_id)
+
+    # Verify entity exists
+    entity = await pool.fetchval(
+        "SELECT id FROM shared.entities WHERE id = $1", eid
+    )
+    if entity is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    # Verify contact exists
+    contact = await pool.fetchval(
+        "SELECT id FROM shared.contacts WHERE id = $1", cid
+    )
+    if contact is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    await pool.execute(
+        "UPDATE shared.contacts SET entity_id = $1, updated_at = now() WHERE id = $2",
+        eid,
+        cid,
+    )
+
+    return {"entity_id": str(eid), "contact_id": str(cid)}
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/memory/entities/{entity_id}/linked-contact
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/entities/{entity_id}/linked-contact", status_code=204)
+async def unlink_contact(
+    entity_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Unlink the contact from this entity by clearing entity_id on the contact."""
+    import uuid as _uuid
+
+    pool = _any_pool(db)
+    eid = _uuid.UUID(entity_id)
+
+    await pool.execute(
+        "UPDATE shared.contacts SET entity_id = NULL, updated_at = now()"
+        " WHERE entity_id = $1",
+        eid,
     )
 
 

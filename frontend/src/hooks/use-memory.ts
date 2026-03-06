@@ -18,6 +18,8 @@ import {
   getRule,
   getRules,
   revealEntitySecret,
+  setEntityLinkedContact,
+  unlinkEntityContact,
   updateEntity,
   updateEntityInfo,
 } from "@/api/index.ts";
@@ -203,5 +205,34 @@ export function useRevealEntitySecret() {
   return useMutation({
     mutationFn: ({ entityId, infoId }: { entityId: string; infoId: string }) =>
       revealEntitySecret(entityId, infoId),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Entity linked-contact mutations
+// ---------------------------------------------------------------------------
+
+/** Link a contact to an entity. */
+export function useSetLinkedContact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ entityId, contactId }: { entityId: string; contactId: string }) =>
+      setEntityLinkedContact(entityId, contactId),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+    },
+  });
+}
+
+/** Unlink the contact from an entity. */
+export function useUnlinkContact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (entityId: string) => unlinkEntityContact(entityId),
+    onSuccess: (_, entityId) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+    },
   });
 }

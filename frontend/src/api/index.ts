@@ -36,6 +36,8 @@ export {
   getEntities,
   getEntity,
   revealEntitySecret,
+  setEntityLinkedContact,
+  unlinkEntityContact,
   updateEntity,
   updateEntityInfo,
   getEpisode,

@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router";
 import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
-import type { EntityInfoEntry } from "@/api/types";
+import type { ContactSummary, EntityInfoEntry } from "@/api/types";
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
 import { Badge } from "@/components/ui/badge";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
@@ -24,11 +24,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useContacts } from "@/hooks/use-contacts";
 import {
   useCreateEntityInfo,
   useDeleteEntityInfo,
   useEntity,
   useRevealEntitySecret,
+  useSetLinkedContact,
+  useUnlinkContact,
   useUpdateEntity,
   useUpdateEntityInfo,
 } from "@/hooks/use-memory";
@@ -455,6 +458,135 @@ function EntityInfoSection({
 }
 
 // ---------------------------------------------------------------------------
+// Linked contact section with unlink / link
+// ---------------------------------------------------------------------------
+
+function LinkedContactSection({
+  entityId,
+  entity,
+}: {
+  entityId: string;
+  entity: { linked_contact_id: string | null; linked_contact_name: string | null };
+}) {
+  const unlinkContact = useUnlinkContact();
+  const setLinkedContact = useSetLinkedContact();
+  const [linking, setLinking] = useState(false);
+  const [search, setSearch] = useState("");
+  const { data: contactsData } = useContacts(
+    linking ? { q: search || undefined, limit: 10 } : undefined,
+  );
+  const contacts: ContactSummary[] = contactsData?.contacts ?? [];
+
+  function handleUnlink() {
+    if (!window.confirm("Unlink this contact from the entity?")) return;
+    unlinkContact.mutate(entityId, {
+      onSuccess: () => toast.success("Contact unlinked."),
+      onError: (err) =>
+        toast.error(`Failed to unlink: ${err instanceof Error ? err.message : "Unknown"}`),
+    });
+  }
+
+  function handleLink(contactId: string) {
+    setLinkedContact.mutate(
+      { entityId, contactId },
+      {
+        onSuccess: () => {
+          toast.success("Contact linked.");
+          setLinking(false);
+          setSearch("");
+        },
+        onError: (err) =>
+          toast.error(`Failed to link: ${err instanceof Error ? err.message : "Unknown"}`),
+      },
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle>Linked Contact</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {entity.linked_contact_id ? (
+          <div className="flex items-center gap-3">
+            <Link
+              to={`/contacts/${entity.linked_contact_id}`}
+              className="text-primary hover:underline"
+            >
+              {entity.linked_contact_name ?? entity.linked_contact_id}
+            </Link>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs text-destructive hover:text-destructive"
+              onClick={handleUnlink}
+              disabled={unlinkContact.isPending}
+            >
+              <Trash2 className="mr-1 h-3 w-3" />
+              Unlink
+            </Button>
+          </div>
+        ) : linking ? (
+          <div className="space-y-2">
+            <Input
+              placeholder="Search contacts..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              autoFocus
+              className="h-8 text-sm"
+            />
+            {contacts.length > 0 ? (
+              <div className="max-h-48 overflow-y-auto rounded border">
+                {contacts.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-sm
+                      hover:bg-muted text-left"
+                    onClick={() => handleLink(c.id)}
+                    disabled={setLinkedContact.isPending}
+                  >
+                    <span className="font-medium">{c.full_name}</span>
+                    {c.email && (
+                      <span className="text-muted-foreground text-xs">{c.email}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            ) : search ? (
+              <p className="text-muted-foreground text-xs py-2">No contacts found.</p>
+            ) : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => { setLinking(false); setSearch(""); }}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-3">
+            <p className="text-muted-foreground text-sm">No linked contact.</p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs text-muted-foreground"
+              onClick={() => setLinking(true)}
+            >
+              <Plus className="mr-1 h-3 w-3" />
+              Link contact
+            </Button>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // EntityDetailPage
 // ---------------------------------------------------------------------------
 
@@ -680,25 +812,7 @@ export default function EntityDetailPage() {
           </Card>
 
           {/* Contact link */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Linked Contact</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {entity.linked_contact_id ? (
-                <Link
-                  to={`/contacts/${entity.linked_contact_id}`}
-                  className="text-primary hover:underline"
-                >
-                  {entity.linked_contact_name ?? entity.linked_contact_id}
-                </Link>
-              ) : (
-                <p className="text-muted-foreground text-sm">
-                  No linked contact.
-                </p>
-              )}
-            </CardContent>
-          </Card>
+          <LinkedContactSection entityId={entity.id} entity={entity} />
         </>
       )}
     </div>

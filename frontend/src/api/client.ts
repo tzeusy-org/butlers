@@ -1252,6 +1252,27 @@ export function revealEntitySecret(
   );
 }
 
+/** Link a contact to an entity. */
+export function setEntityLinkedContact(
+  entityId: string,
+  contactId: string,
+): Promise<{ entity_id: string; contact_id: string }> {
+  return apiFetch<{ entity_id: string; contact_id: string }>(
+    `/memory/entities/${encodeURIComponent(entityId)}/linked-contact`,
+    { method: "PUT", body: JSON.stringify({ contact_id: contactId }) },
+  );
+}
+
+/** Unlink the contact from an entity. */
+export function unlinkEntityContact(
+  entityId: string,
+): Promise<void> {
+  return apiFetch<void>(
+    `/memory/entities/${encodeURIComponent(entityId)}/linked-contact`,
+    { method: "DELETE" },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Approvals
 // ---------------------------------------------------------------------------
