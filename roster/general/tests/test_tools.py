@@ -22,7 +22,7 @@ async def pool(provisioned_postgres_pool):
             )
         """)
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS entities (
+            CREATE TABLE IF NOT EXISTS collection_items (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
                 data JSONB NOT NULL DEFAULT '{}',
@@ -32,13 +32,13 @@ async def pool(provisioned_postgres_pool):
             )
         """)
         await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_entities_data_gin ON entities USING GIN (data)
+            CREATE INDEX IF NOT EXISTS idx_collection_items_data_gin ON collection_items USING GIN (data)
         """)
         await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_entities_collection_id ON entities (collection_id)
+            CREATE INDEX IF NOT EXISTS idx_collection_items_collection_id ON collection_items (collection_id)
         """)
         await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_entities_tags_gin ON entities USING GIN (tags)
+            CREATE INDEX IF NOT EXISTS idx_collection_items_tags_gin ON collection_items USING GIN (tags)
         """)
 
         yield p
