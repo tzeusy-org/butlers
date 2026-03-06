@@ -206,3 +206,109 @@ ALTER TABLE {schema}.facts
 - **WHEN** a fact has `entity_id = <uuid>`
 - **THEN** that UUID MUST exist in `shared.entities`
 - **AND** attempting to delete the entity while facts reference it MUST fail (ON DELETE RESTRICT)
+
+---
+
+### Requirement: Dual-mode facts (property facts and edge facts)
+
+Facts SHALL operate in two modes determined by the presence of `object_entity_id`:
+
+1. **Property fact** (`object_entity_id IS NULL`): Describes an attribute of a single entity. The fact is anchored by `entity_id` (the subject entity) and expresses `predicate → content` about that entity. This is the existing behavior.
+2. **Edge fact** (`object_entity_id IS NOT NULL`): Represents a typed, directed relationship between two entities. The fact is anchored by `entity_id` (the subject/source entity) and `object_entity_id` (the object/target entity), with `predicate` naming the relationship type and `content` providing optional descriptive detail.
+
+Both modes use the same `facts` table row structure. The `object_entity_id` column is nullable — existing facts with `object_entity_id = NULL` remain valid property facts with no migration required.
+
+**Implementation note:** The `object_entity_id` column is added by a memory module migration (see module-memory spec). It is a nullable UUID FK to `shared.entities(id)` with `ON DELETE RESTRICT`.
+
+#### Scenario: Property fact has no object entity
+
+- **WHEN** a fact describes an attribute of an entity (e.g., "Alice's birthday is March 5")
+- **THEN** `entity_id` MUST reference the subject entity (Alice)
+- **AND** `object_entity_id` MUST be `NULL`
+- **AND** the fact MUST behave identically to pre-KG facts
+
+#### Scenario: Edge fact links two entities
+
+- **WHEN** a fact represents a relationship between two entities (e.g., "Alice works at Acme Corp")
+- **THEN** `entity_id` MUST reference the subject entity (Alice)
+- **AND** `object_entity_id` MUST reference the object entity (Acme Corp)
+- **AND** `predicate` MUST name the relationship type (e.g., `works_at`)
+- **AND** `content` MAY provide additional detail (e.g., "Senior Engineer since 2024")
+
+#### Scenario: Edge fact backward compatibility
+
+- **WHEN** code queries facts without filtering on `object_entity_id`
+- **THEN** both property facts and edge facts MUST be returned
+- **AND** existing queries that do not reference `object_entity_id` MUST continue to work unchanged
+
+---
+
+### Requirement: Typed relationships between entities via edge facts
+
+Edge facts SHALL enable typed, directed relationships between entities. The relationship type is encoded in the `predicate` field. Common relationship predicates include but are not limited to: `knows`, `works_at`, `lives_with`, `manages`, `parent_of`, `sibling_of`, `lives_in`, `member_of`.
+
+No formal ontology or schema enforcement is applied to predicates — they are free-form text strings, consistent with the existing fact model. An optional `predicate_registry` table (see module-memory spec) MAY guide consistent predicate usage but does not enforce it.
+
+#### Scenario: Create a relationship between two people
+
+- **GIVEN** entity "Alice" (person) and entity "Bob" (person) exist
+- **WHEN** `store_fact` is called with `entity_id=Alice.id`, `object_entity_id=Bob.id`, `predicate='knows'`, `content='Met at university in 2020'`
+- **THEN** an edge fact MUST be created linking Alice → Bob with predicate `knows`
+
+#### Scenario: Create an employment relationship
+
+- **GIVEN** entity "Alice" (person) and entity "Acme Corp" (organization) exist
+- **WHEN** `store_fact` is called with `entity_id=Alice.id`, `object_entity_id=AcmeCorp.id`, `predicate='works_at'`, `content='Senior Engineer, started 2024'`
+- **THEN** an edge fact MUST be created linking Alice → Acme Corp with predicate `works_at`
+
+#### Scenario: Relationship directionality
+
+- **WHEN** an edge fact exists with `entity_id=A` and `object_entity_id=B` and `predicate='manages'`
+- **THEN** the relationship is directed: A manages B
+- **AND** this does NOT imply B manages A
+- **AND** to express the reverse, a separate edge fact with `entity_id=B` and `object_entity_id=A` MUST be created
+
+---
+
+### Requirement: Entity neighbors traversal via edge facts
+
+An `entity_neighbors` tool SHALL provide multi-hop graph traversal starting from a given entity, following edge facts (facts where `object_entity_id IS NOT NULL`). Traversal uses recursive CTEs on PostgreSQL — no external graph database is required.
+
+#### Scenario: Single-hop neighbor discovery
+
+- **WHEN** `entity_neighbors` is called with `entity_id=X` and `max_depth=1`
+- **THEN** all entities directly connected to X via edge facts MUST be returned
+- **AND** both outgoing edges (X as `entity_id`) and incoming edges (X as `object_entity_id`) MUST be included by default
+- **AND** each result MUST include: the neighbor entity's `id`, `canonical_name`, `entity_type`, the connecting `predicate`, the edge `direction` (`outgoing` or `incoming`), and the edge fact's `content`
+
+#### Scenario: Multi-hop traversal with depth limit
+
+- **WHEN** `entity_neighbors` is called with `entity_id=X` and `max_depth=3`
+- **THEN** traversal MUST follow edge facts up to 3 hops from X
+- **AND** each result MUST include a `depth` field (1-indexed) indicating the hop distance from X
+- **AND** cycles MUST be detected and broken (an entity already visited at a shallower depth MUST NOT be revisited)
+- **AND** results MUST be ordered by `depth ASC`, then `canonical_name ASC`
+
+#### Scenario: Predicate filter narrows traversal
+
+- **WHEN** `entity_neighbors` is called with `predicate_filter=['works_at', 'manages']`
+- **THEN** only edge facts whose `predicate` is in the filter list MUST be traversed
+- **AND** edge facts with other predicates MUST be ignored during traversal
+
+#### Scenario: Direction filter controls edge traversal
+
+- **WHEN** `entity_neighbors` is called with `direction='outgoing'`
+- **THEN** only edges where the current entity is `entity_id` (subject) MUST be followed
+- **AND** `direction='incoming'` MUST follow only edges where the current entity is `object_entity_id`
+- **AND** `direction='both'` (default) MUST follow edges in both directions
+
+#### Scenario: Empty neighborhood
+
+- **WHEN** `entity_neighbors` is called for an entity with no edge facts
+- **THEN** an empty list MUST be returned
+
+#### Scenario: Traversal respects fact validity
+
+- **WHEN** `entity_neighbors` traverses edge facts
+- **THEN** only facts with `validity = 'active'` MUST be followed
+- **AND** superseded, expired, and retracted edge facts MUST be excluded

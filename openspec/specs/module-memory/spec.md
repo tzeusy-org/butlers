@@ -18,7 +18,7 @@ The module SHALL support three primary memory types: episodes (high-volume, shor
 #### Scenario: Fact schema and defaults
 
 - **WHEN** a fact is stored
-- **THEN** the `facts` table row MUST contain: `id` (UUID PK), `subject` (TEXT NOT NULL), `predicate` (TEXT NOT NULL), `content` (TEXT NOT NULL), `embedding` (vector(384)), `search_vector` (tsvector), `importance` (FLOAT, default 5.0), `confidence` (FLOAT, default 1.0), `decay_rate` (FLOAT, default 0.008), `permanence` (TEXT, default 'standard'), `source_butler` (TEXT nullable), `source_episode_id` (UUID FK to episodes, ON DELETE SET NULL), `supersedes_id` (UUID self-FK, ON DELETE SET NULL), `entity_id` (UUID FK to entities, ON DELETE RESTRICT, nullable), `validity` (TEXT, default 'active'), `scope` (TEXT, default 'global'), `reference_count` (INTEGER, default 0), `created_at` (TIMESTAMPTZ), `last_referenced_at` (TIMESTAMPTZ nullable), `last_confirmed_at` (TIMESTAMPTZ nullable), `tags` (JSONB, default '[]'), `metadata` (JSONB, default '{}')
+- **THEN** the `facts` table row MUST contain: `id` (UUID PK), `subject` (TEXT NOT NULL), `predicate` (TEXT NOT NULL), `content` (TEXT NOT NULL), `embedding` (vector(384)), `search_vector` (tsvector), `importance` (FLOAT, default 5.0), `confidence` (FLOAT, default 1.0), `decay_rate` (FLOAT, default 0.008), `permanence` (TEXT, default 'standard'), `source_butler` (TEXT nullable), `source_episode_id` (UUID FK to episodes, ON DELETE SET NULL), `supersedes_id` (UUID self-FK, ON DELETE SET NULL), `entity_id` (UUID FK to shared.entities, ON DELETE RESTRICT, nullable), `object_entity_id` (UUID FK to shared.entities, ON DELETE RESTRICT, nullable), `validity` (TEXT, default 'active'), `scope` (TEXT, default 'global'), `reference_count` (INTEGER, default 0), `created_at` (TIMESTAMPTZ), `last_referenced_at` (TIMESTAMPTZ nullable), `last_confirmed_at` (TIMESTAMPTZ nullable), `tags` (JSONB, default '[]'), `metadata` (JSONB, default '{}')
 
 #### Scenario: Rule schema and defaults
 
@@ -37,10 +37,17 @@ Facts SHALL progress through validity lifecycle states: `active`, `fading` (trac
 - **THEN** the fact's `validity` MUST be `'active'`
 - **AND** the fact's `confidence` MUST be `1.0`
 
-#### Scenario: Fact transitions to superseded
+#### Scenario: Fact transitions to superseded (property fact)
 
-- **WHEN** a new fact is stored with the same `(subject, predicate)` key as an existing active fact (when `entity_id` is NULL), or the same `(entity_id, scope, predicate)` key (when `entity_id` is set)
+- **WHEN** a new property fact (with `object_entity_id IS NULL`) is stored with the same `(subject, predicate)` key as an existing active property fact (when `entity_id` is NULL), or the same `(entity_id, scope, predicate)` key (when `entity_id` is set and `object_entity_id` is NULL)
 - **THEN** the existing fact's `validity` MUST be set to `'superseded'`
+- **AND** the new fact's `supersedes_id` MUST reference the old fact's `id`
+- **AND** a `memory_links` row with `relation='supersedes'` MUST be created
+
+#### Scenario: Fact transitions to superseded (edge fact)
+
+- **WHEN** a new edge fact (with `object_entity_id IS NOT NULL`) is stored with the same `(entity_id, object_entity_id, scope, predicate)` key as an existing active edge fact
+- **THEN** the existing edge fact's `validity` MUST be set to `'superseded'`
 - **AND** the new fact's `supersedes_id` MUST reference the old fact's `id`
 - **AND** a `memory_links` row with `relation='supersedes'` MUST be created
 
@@ -139,6 +146,21 @@ The storage layer SHALL provide async functions for creating episodes, facts, ru
 
 - **WHEN** `store_fact` is called with an `entity_id` that does not exist in the `entities` table
 - **THEN** a `ValueError` MUST be raised stating the entity does not exist
+
+#### Scenario: Store edge fact with object_entity_id validation
+
+- **WHEN** `store_fact` is called with an `object_entity_id` that does not exist in the `entities` table
+- **THEN** a `ValueError` MUST be raised stating the object entity does not exist
+
+#### Scenario: Store edge fact with self-referencing edge rejected
+
+- **WHEN** `store_fact` is called with `entity_id` equal to `object_entity_id`
+- **THEN** a `ValueError` MUST be raised stating that self-referencing edges are not allowed
+
+#### Scenario: Store edge fact requires entity_id
+
+- **WHEN** `store_fact` is called with `object_entity_id` set but `entity_id` is NULL
+- **THEN** a `ValueError` MUST be raised stating that edge facts require a subject entity (`entity_id`)
 
 #### Scenario: Store rule as candidate
 
@@ -591,14 +613,14 @@ The `entity_merge` tool SHALL merge a source entity into a target entity within 
 
 ### Requirement: MCP tool registration surface
 
-The Memory module SHALL register 19 MCP tools on the hosting butler's MCP server when the module is enabled. Tool closures SHALL inject `pool` and `embedding_engine` from module state so these are not visible in the MCP tool signature.
+The Memory module SHALL register 21 MCP tools on the hosting butler's MCP server when the module is enabled. Tool closures SHALL inject `pool` and `embedding_engine` from module state so these are not visible in the MCP tool signature.
 
 #### Scenario: Writing tools registered
 
 - **WHEN** the memory module registers tools
 - **THEN** tools `memory_store_episode`, `memory_store_fact`, and `memory_store_rule` MUST be available
 - **AND** `memory_store_episode` MUST accept `content` (required), `butler` (required), `session_id` (optional), `importance` (optional, default 5.0)
-- **AND** `memory_store_fact` MUST accept `subject`, `predicate`, `content` (required), `importance` (default 5.0), `permanence` (default 'standard'), `scope` (default 'global'), `tags` (optional list)
+- **AND** `memory_store_fact` MUST accept `subject`, `predicate`, `content` (required), `importance` (default 5.0), `permanence` (default 'standard'), `scope` (default 'global'), `tags` (optional list), `entity_id` (optional UUID), `object_entity_id` (optional UUID — when set, creates an edge fact linking two entities)
 - **AND** `memory_store_rule` MUST accept `content` (required), `scope` (default 'global'), `tags` (optional list)
 
 #### Scenario: Reading tools registered
@@ -633,9 +655,10 @@ The Memory module SHALL register 19 MCP tools on the hosting butler's MCP server
 #### Scenario: Entity tools registered
 
 - **WHEN** the memory module registers tools
-- **THEN** tools `entity_create`, `entity_get`, `entity_update`, `entity_resolve`, and `entity_merge` MUST be available
+- **THEN** tools `entity_create`, `entity_get`, `entity_update`, `entity_resolve`, `entity_merge`, and `entity_neighbors` MUST be available
 - **AND** `entity_create` MUST accept `canonical_name`, `entity_type`, `tenant_id` (all required), `aliases` (optional), `metadata` (optional)
 - **AND** `entity_resolve` MUST accept `name` (required), `tenant_id` (default 'default'), `entity_type` (optional), `context_hints` (optional), `enable_fuzzy` (default False)
+- **AND** `entity_neighbors` MUST accept `entity_id` (required UUID), `max_depth` (default 1, max 5), `predicate_filter` (optional list of predicate strings), `direction` (default 'both', one of 'outgoing', 'incoming', 'both')
 
 #### Scenario: Consolidation and cleanup tools registered
 
@@ -789,14 +812,15 @@ The memory module SHALL manage its database schema through Alembic migrations in
 #### Scenario: Facts table indexes
 
 - **WHEN** the facts table is created
-- **THEN** indexes MUST exist for: `(scope, validity)` WHERE validity='active', `(subject, predicate)`, `search_vector` (GIN), `tags` (GIN), `embedding` (IVFFlat with vector_cosine_ops, lists=20)
+- **THEN** indexes MUST exist for: `(scope, validity)` WHERE validity='active', `(subject, predicate)`, `search_vector` (GIN), `tags` (GIN), `embedding` (IVFFlat with vector_cosine_ops, lists=20), `object_entity_id` (partial, WHERE object_entity_id IS NOT NULL)
 
 #### Scenario: Entity-keyed fact uniqueness (partial unique indexes)
 
 - **WHEN** the entities migration runs
-- **THEN** a partial unique index on `(entity_id, scope, predicate)` WHERE `entity_id IS NOT NULL AND validity = 'active'` MUST be created
-- **AND** a partial unique index on `(scope, subject, predicate)` WHERE `entity_id IS NULL AND validity = 'active'` MUST be created
-- **AND** both constraints MUST coexist
+- **THEN** a partial unique index on `(entity_id, scope, predicate)` WHERE `entity_id IS NOT NULL AND object_entity_id IS NULL AND validity = 'active'` MUST be created (property-fact uniqueness)
+- **AND** a partial unique index on `(scope, subject, predicate)` WHERE `entity_id IS NULL AND validity = 'active'` MUST be created (legacy subject-keyed uniqueness)
+- **AND** a partial unique index on `(entity_id, object_entity_id, scope, predicate)` WHERE `object_entity_id IS NOT NULL AND validity = 'active'` MUST be created (edge-fact uniqueness)
+- **AND** all three constraints MUST coexist
 
 #### Scenario: Memory links table
 
@@ -875,6 +899,104 @@ The Memory module SHALL implement the `Module` abstract base class with proper l
 - **WHEN** a tool requires the embedding engine
 - **THEN** `_get_embedding_engine` MUST lazy-load the engine on first access
 - **AND** the engine MUST be shared across all subsequent tool calls
+
+---
+
+### Requirement: Edge fact storage via object_entity_id
+
+The `facts` table SHALL support an optional `object_entity_id` column (UUID, nullable) that references `shared.entities(id)` with `ON DELETE RESTRICT`. When `object_entity_id` is set, the fact represents a directed edge from `entity_id` (subject) to `object_entity_id` (object). When `object_entity_id` is NULL, the fact is a property fact (existing behavior). The column is added by a memory module migration and is backward compatible — all existing facts retain `object_entity_id = NULL`.
+
+#### Scenario: object_entity_id column definition
+
+- **WHEN** the edge-fact migration runs
+- **THEN** an `object_entity_id UUID` column MUST be added to the `facts` table, nullable, with default NULL
+- **AND** a FK constraint `facts_object_entity_id_shared_fkey` MUST reference `shared.entities(id)` with `ON DELETE RESTRICT`
+- **AND** a partial index on `object_entity_id` WHERE `object_entity_id IS NOT NULL` MUST be created for efficient edge lookups
+
+#### Scenario: Existing facts unaffected
+
+- **WHEN** the migration completes
+- **THEN** all pre-existing facts MUST have `object_entity_id = NULL`
+- **AND** no data migration or backfill is required
+
+---
+
+### Requirement: Entity neighbors graph traversal
+
+The `entity_neighbors` tool SHALL traverse the entity graph by following edge facts (facts where `object_entity_id IS NOT NULL`). The implementation uses recursive CTEs on PostgreSQL. No external graph database is required.
+
+#### Scenario: entity_neighbors tool parameters
+
+- **WHEN** `entity_neighbors` is called
+- **THEN** the following parameters MUST be accepted:
+  - `entity_id` (UUID, required) — the starting entity
+  - `max_depth` (INTEGER, default 1, max 5) — maximum traversal hops
+  - `predicate_filter` (list of TEXT, optional) — restrict traversal to these predicate types
+  - `direction` (TEXT, default 'both') — one of `'outgoing'`, `'incoming'`, `'both'`
+
+#### Scenario: entity_neighbors result schema
+
+- **WHEN** `entity_neighbors` returns results
+- **THEN** each result MUST contain: `entity_id` (UUID string), `canonical_name`, `entity_type`, `predicate` (the edge predicate), `direction` (`'outgoing'` or `'incoming'` relative to the traversal source at that hop), `content` (the edge fact's content), `depth` (1-indexed hop distance from start), `fact_id` (UUID string of the edge fact)
+
+#### Scenario: entity_neighbors cycle detection
+
+- **WHEN** the graph contains cycles
+- **THEN** traversal MUST NOT revisit entities already seen at a shallower depth
+- **AND** the recursive CTE MUST track visited entity IDs to break cycles
+
+#### Scenario: entity_neighbors validates entity existence
+
+- **WHEN** `entity_neighbors` is called with an `entity_id` that does not exist
+- **THEN** a `ValueError` MUST be raised stating the entity was not found
+
+#### Scenario: entity_neighbors max_depth clamping
+
+- **WHEN** `entity_neighbors` is called with `max_depth > 5`
+- **THEN** the depth MUST be clamped to 5
+- **AND** a warning SHOULD be included in the response metadata
+
+---
+
+### Requirement: Optional predicate registry for consistency guidance
+
+The module MAY maintain a `predicate_registry` table that guides consistent predicate usage across fact extraction. The registry is advisory — it does not enforce constraints on fact storage. LLM extractors SHOULD prefer known predicates from the registry but MAY use novel predicates.
+
+#### Scenario: predicate_registry table schema
+
+- **WHEN** the predicate registry migration runs
+- **THEN** the `predicate_registry` table MUST be created with columns:
+  - `name` (TEXT PRIMARY KEY) — the predicate string
+  - `expected_subject_type` (TEXT, nullable) — suggested entity_type for subject
+  - `expected_object_type` (TEXT, nullable) — suggested entity_type for object (NULL for property-facts)
+  - `is_edge` (BOOLEAN, default false) — whether this predicate is intended for edge facts
+  - `description` (TEXT, nullable) — human-readable description of the predicate
+  - `created_at` (TIMESTAMPTZ, default now())
+
+#### Scenario: Seed predicates
+
+- **WHEN** the predicate registry is initialized
+- **THEN** it SHOULD be seeded with existing property predicates from the fact-extraction taxonomy (e.g., `birthday`, `occupation`, `preference`, `allergy`)
+- **AND** edge predicates SHOULD be seeded: `knows`, `works_at`, `lives_with`, `manages`, `parent_of`, `sibling_of`, `lives_in`, `member_of`
+- **AND** edge predicates MUST have `is_edge = true` and appropriate `expected_subject_type`/`expected_object_type` values
+
+#### Scenario: predicate_list tool
+
+- **WHEN** the `predicate_list` MCP tool is called
+- **THEN** all rows from `predicate_registry` MUST be returned
+- **AND** each row MUST include: `name`, `expected_subject_type`, `expected_object_type`, `is_edge`, `description`
+- **AND** results MUST be ordered by `name ASC`
+
+#### Scenario: predicate_list with edge filter
+
+- **WHEN** `predicate_list` is called with `edge_only=true`
+- **THEN** only predicates with `is_edge = true` MUST be returned
+
+#### Scenario: Registry does not enforce constraints
+
+- **WHEN** `store_fact` is called with a predicate NOT in the registry
+- **THEN** the fact MUST still be stored successfully
+- **AND** no error or warning MUST be raised by the storage layer
 
 ---
 
