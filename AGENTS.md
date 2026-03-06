@@ -142,6 +142,9 @@ git push                # Push to remote
 
 ## Notes to self
 
+### Owner entity bootstrap conflict contract
+- `_ensure_owner_entity` in `src/butlers/daemon.py` must first resolve an existing owner via `WHERE 'owner' = ANY(roles)` before attempting insert, and the insert must use `ON CONFLICT DO NOTHING` (no explicit conflict target) so the partial unique index `shared.ix_entities_owner_singleton` cannot raise `UniqueViolationError` during startup.
+
 ### Runtime args passthrough contract
 - `[butler.runtime].args` now accepts an ordered array of non-empty strings and is stored on `RuntimeConfig.args` as a tuple.
 - `Spawner` forwards non-empty runtime args into adapter invocation as `runtime_args`, and `CodexAdapter` appends them to `codex exec` before the `--` prompt delimiter (supports flags like `--config model_reasoning_effort="high"`).
