@@ -68,6 +68,11 @@ if _models_path.exists():
         LinkEntityResponse = _models_module.LinkEntityResponse
         CreateAndLinkEntityRequest = _models_module.CreateAndLinkEntityRequest
         CreateAndLinkEntityResponse = _models_module.CreateAndLinkEntityResponse
+        EntityInfoEntry = _models_module.EntityInfoEntry
+        EntityDetail = _models_module.EntityDetail
+        CreateEntityInfoRequest = _models_module.CreateEntityInfoRequest
+        CreateEntityInfoResponse = _models_module.CreateEntityInfoResponse
+        UpdateEntityInfoRequest = _models_module.UpdateEntityInfoRequest
 
 logger = logging.getLogger(__name__)
 
@@ -1943,3 +1948,283 @@ async def list_upcoming_dates(
 
     upcoming.sort(key=lambda u: u.days_until)
     return upcoming
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/entities/{entity_id}", response_model=EntityDetail)
+async def get_entity(
+    entity_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> EntityDetail:
+    """Get full entity detail including entity_info entries.
+
+    Secured entity_info values are masked (value=None) in the response.
+    Use GET /entities/{id}/secrets/{info_id} to reveal a secured value.
+    """
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        """
+        SELECT id, canonical_name, entity_type, aliases, roles,
+               metadata, created_at, updated_at
+        FROM shared.entities
+        WHERE id = $1
+          AND (metadata->>'merged_into') IS NULL
+        """,
+        entity_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    info_rows = await pool.fetch(
+        """
+        SELECT id, type, value, label, is_primary, secured
+        FROM shared.entity_info
+        WHERE entity_id = $1
+        ORDER BY type
+        """,
+        entity_id,
+    )
+
+    entity_info = [
+        EntityInfoEntry(
+            id=r["id"],
+            type=r["type"],
+            value=None if r["secured"] else r["value"],
+            label=r["label"],
+            is_primary=r["is_primary"],
+            secured=r["secured"],
+        )
+        for r in info_rows
+    ]
+
+    aliases = list(row["aliases"]) if row["aliases"] else []
+    roles = list(row["roles"]) if row["roles"] else []
+    metadata = dict(row["metadata"]) if row["metadata"] else {}
+
+    return EntityDetail(
+        id=row["id"],
+        canonical_name=row["canonical_name"],
+        entity_type=row["entity_type"],
+        aliases=aliases,
+        roles=roles,
+        metadata=metadata,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        entity_info=entity_info,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /entities/{entity_id}/info
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/entities/{entity_id}/info",
+    response_model=CreateEntityInfoResponse,
+    status_code=201,
+)
+async def create_entity_info(
+    entity_id: UUID,
+    request: CreateEntityInfoRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> CreateEntityInfoResponse:
+    """Add an entity_info entry to an entity."""
+    pool = _pool(db)
+
+    # Verify entity exists and is not tombstoned
+    existing = await pool.fetchrow(
+        """
+        SELECT id FROM shared.entities
+        WHERE id = $1 AND (metadata->>'merged_into') IS NULL
+        """,
+        entity_id,
+    )
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    try:
+        row = await pool.fetchrow(
+            """
+            INSERT INTO shared.entity_info
+                (entity_id, type, value, label, is_primary, secured)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, entity_id, type, value, label, is_primary, secured
+            """,
+            entity_id,
+            request.type,
+            request.value,
+            request.label,
+            request.is_primary,
+            request.secured,
+        )
+    except asyncpg.UniqueViolationError:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"An entity_info entry with type '{request.type}' "
+                "already exists for this entity."
+            ),
+        )
+
+    return CreateEntityInfoResponse(
+        id=row["id"],
+        entity_id=row["entity_id"],
+        type=row["type"],
+        value=row["value"],
+        label=row["label"],
+        is_primary=row["is_primary"],
+        secured=row["secured"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /entities/{entity_id}/info/{info_id}
+# ---------------------------------------------------------------------------
+
+
+@router.patch(
+    "/entities/{entity_id}/info/{info_id}",
+    response_model=EntityInfoEntry,
+)
+async def patch_entity_info(
+    entity_id: UUID,
+    info_id: UUID,
+    request: UpdateEntityInfoRequest = Body(...),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> EntityInfoEntry:
+    """Update an entity_info entry (type, value, label, is_primary)."""
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        "SELECT id FROM shared.entity_info WHERE id = $1 AND entity_id = $2",
+        info_id,
+        entity_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Entity info entry not found")
+
+    updates: list[str] = []
+    args: list[Any] = []
+    idx = 1
+
+    if request.type is not None:
+        updates.append(f"type = ${idx}")
+        args.append(request.type)
+        idx += 1
+
+    if request.value is not None:
+        updates.append(f"value = ${idx}")
+        args.append(request.value)
+        idx += 1
+
+    if request.label is not None:
+        updates.append(f"label = ${idx}")
+        args.append(request.label)
+        idx += 1
+
+    if request.is_primary is not None:
+        updates.append(f"is_primary = ${idx}")
+        args.append(request.is_primary)
+        idx += 1
+
+    if updates:
+        set_clause = ", ".join(updates)
+        args.append(info_id)
+        try:
+            await pool.execute(
+                f"UPDATE shared.entity_info SET {set_clause} WHERE id = ${idx}",
+                *args,
+            )
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(
+                status_code=409,
+                detail="An entity_info entry with this type already exists for this entity.",
+            )
+
+    updated = await pool.fetchrow(
+        "SELECT id, type, value, label, is_primary, secured"
+        " FROM shared.entity_info WHERE id = $1",
+        info_id,
+    )
+    return EntityInfoEntry(
+        id=updated["id"],
+        type=updated["type"],
+        value=None if updated["secured"] else updated["value"],
+        label=updated["label"],
+        is_primary=updated["is_primary"],
+        secured=updated["secured"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /entities/{entity_id}/info/{info_id}
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/entities/{entity_id}/info/{info_id}", status_code=204)
+async def delete_entity_info(
+    entity_id: UUID,
+    info_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> None:
+    """Delete a single entity_info entry."""
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        "SELECT id FROM shared.entity_info WHERE id = $1 AND entity_id = $2",
+        info_id,
+        entity_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Entity info entry not found")
+
+    await pool.execute("DELETE FROM shared.entity_info WHERE id = $1", info_id)
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/secrets/{info_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/entities/{entity_id}/secrets/{info_id}")
+async def reveal_entity_secret(
+    entity_id: UUID,
+    info_id: UUID,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> dict[str, Any]:
+    """Reveal the actual value of a secured entity_info entry.
+
+    Returns the real value for a secured entity_info row. Returns 404 if
+    the info_id does not exist OR does not belong to the given entity_id.
+    """
+    pool = _pool(db)
+
+    row = await pool.fetchrow(
+        """
+        SELECT id, type, value, secured
+        FROM shared.entity_info
+        WHERE id = $1 AND entity_id = $2
+        """,
+        info_id,
+        entity_id,
+    )
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Entity info entry not found")
+
+    if not row["secured"]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This entity_info entry is not secured; "
+                "value is available in the entity detail response."
+            ),
+        )
+
+    return {"id": str(row["id"]), "type": row["type"], "value": row["value"]}

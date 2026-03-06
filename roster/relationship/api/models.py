@@ -321,3 +321,72 @@ class CreateAndLinkEntityResponse(BaseModel):
     contact_id: UUID
     entity_id: UUID
     canonical_name: str
+
+
+# ---------------------------------------------------------------------------
+# Entity info models
+# ---------------------------------------------------------------------------
+
+
+class EntityInfoEntry(BaseModel):
+    """A single entity_info row for an entity.
+
+    The ``value`` field is set to ``None`` when ``secured=True`` and the
+    caller has not been granted reveal access (masked in list views).
+    Use GET /entities/{id}/secrets/{info_id} to retrieve the real value.
+    """
+
+    id: UUID
+    type: str
+    value: str | None  # None means masked (secured=True)
+    label: str | None = None
+    is_primary: bool = False
+    secured: bool = False
+
+
+class EntityDetail(BaseModel):
+    """Full entity record with entity_info entries."""
+
+    id: UUID
+    canonical_name: str
+    entity_type: str
+    aliases: list[str] = Field(default_factory=list)
+    roles: list[str] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+    entity_info: list[EntityInfoEntry] = Field(default_factory=list)
+
+
+class CreateEntityInfoRequest(BaseModel):
+    """Request body for POST /entities/{id}/info."""
+
+    type: str
+    value: str
+    label: str | None = None
+    is_primary: bool = False
+    secured: bool = False
+
+
+class UpdateEntityInfoRequest(BaseModel):
+    """Request body for PATCH /entities/{id}/info/{info_id}.
+
+    All fields are optional; only provided fields are updated.
+    """
+
+    type: str | None = None
+    value: str | None = None
+    label: str | None = None
+    is_primary: bool | None = None
+
+
+class CreateEntityInfoResponse(BaseModel):
+    """Response for POST /entities/{id}/info."""
+
+    id: UUID
+    entity_id: UUID
+    type: str
+    value: str
+    label: str | None = None
+    is_primary: bool
+    secured: bool
