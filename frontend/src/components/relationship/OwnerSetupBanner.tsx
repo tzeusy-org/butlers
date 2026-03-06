@@ -6,8 +6,9 @@
  * to fill them in via an inline dialog so that external syncs (e.g. Google
  * Contacts) can match the owner correctly instead of creating duplicates.
  *
- * An expandable "Credentials" section lets the user optionally set secrets
- * (email password, Telegram API hash/ID) stored as entity_info entries.
+ * An expandable "Credentials" section lets the user optionally set credentials
+ * (email password, Telegram API hash/ID/session, Home Assistant URL/token)
+ * stored as entity_info entries.
  */
 
 import { useState } from "react";
@@ -55,6 +56,9 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
   const [emailPassword, setEmailPassword] = useState("");
   const [telegramApiHash, setTelegramApiHash] = useState("");
   const [telegramApiId, setTelegramApiId] = useState("");
+  const [telegramUserSession, setTelegramUserSession] = useState("");
+  const [homeAssistantUrl, setHomeAssistantUrl] = useState("");
+  const [homeAssistantToken, setHomeAssistantToken] = useState("");
 
   // Don't render if not the owner entity
   if (!entity.roles?.includes("owner")) return null;
@@ -90,6 +94,9 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
     const trimmedEmailPw = emailPassword.trim();
     const trimmedApiHash = telegramApiHash.trim();
     const trimmedApiId = telegramApiId.trim();
+    const trimmedTelegramUserSession = telegramUserSession.trim();
+    const trimmedHomeAssistantUrl = homeAssistantUrl.trim();
+    const trimmedHomeAssistantToken = homeAssistantToken.trim();
 
     if (
       !trimmedName &&
@@ -98,7 +105,10 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
       !trimmedChatId &&
       !trimmedEmailPw &&
       !trimmedApiHash &&
-      !trimmedApiId
+      !trimmedApiId &&
+      !trimmedTelegramUserSession &&
+      !trimmedHomeAssistantUrl &&
+      !trimmedHomeAssistantToken
     ) {
       toast.error("Please fill in at least one field.");
       return;
@@ -189,6 +199,47 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
         );
       }
 
+      if (trimmedTelegramUserSession) {
+        promises.push(
+          createInfo.mutateAsync({
+            entityId,
+            request: {
+              type: "telegram_user_session",
+              value: trimmedTelegramUserSession,
+              is_primary: true,
+              secured: true,
+            },
+          }),
+        );
+      }
+
+      if (trimmedHomeAssistantUrl) {
+        promises.push(
+          createInfo.mutateAsync({
+            entityId,
+            request: {
+              type: "home_assistant_url",
+              value: trimmedHomeAssistantUrl,
+              is_primary: true,
+            },
+          }),
+        );
+      }
+
+      if (trimmedHomeAssistantToken) {
+        promises.push(
+          createInfo.mutateAsync({
+            entityId,
+            request: {
+              type: "home_assistant_token",
+              value: trimmedHomeAssistantToken,
+              is_primary: true,
+              secured: true,
+            },
+          }),
+        );
+      }
+
       await Promise.all(promises);
       toast.success("Owner identity updated.");
       setOpen(false);
@@ -199,6 +250,9 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
       setEmailPassword("");
       setTelegramApiHash("");
       setTelegramApiId("");
+      setTelegramUserSession("");
+      setHomeAssistantUrl("");
+      setHomeAssistantToken("");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       toast.error(`Failed to save identity: ${message}`);
@@ -311,7 +365,7 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
                 {showCredentials && (
                   <div className="mt-3 space-y-4">
                     <p className="text-xs text-muted-foreground">
-                      These are stored as secured entries on your owner entity.
+                      These are stored on your owner entity; sensitive values are secured.
                     </p>
                     <div className="space-y-2">
                       <Label htmlFor="owner-email-pw">Email password / app password</Label>
@@ -346,6 +400,39 @@ export function OwnerSetupBanner({ entity }: OwnerSetupBannerProps) {
                         placeholder="••••••••"
                         value={telegramApiHash}
                         onChange={(e) => setTelegramApiHash(e.target.value)}
+                        disabled={isSaving}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="owner-tg-user-session">Telegram user session</Label>
+                      <Input
+                        id="owner-tg-user-session"
+                        type="password"
+                        placeholder="••••••••"
+                        value={telegramUserSession}
+                        onChange={(e) => setTelegramUserSession(e.target.value)}
+                        disabled={isSaving}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="owner-home-assistant-url">Home Assistant URL</Label>
+                      <Input
+                        id="owner-home-assistant-url"
+                        type="url"
+                        placeholder="http://homeassistant.local:8123"
+                        value={homeAssistantUrl}
+                        onChange={(e) => setHomeAssistantUrl(e.target.value)}
+                        disabled={isSaving}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="owner-home-assistant-token">Home Assistant token</Label>
+                      <Input
+                        id="owner-home-assistant-token"
+                        type="password"
+                        placeholder="••••••••"
+                        value={homeAssistantToken}
+                        onChange={(e) => setHomeAssistantToken(e.target.value)}
                         disabled={isSaving}
                       />
                     </div>
