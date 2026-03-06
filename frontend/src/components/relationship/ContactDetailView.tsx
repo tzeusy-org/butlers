@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { format, formatDistanceToNow } from "date-fns";
 import { Pencil, Plus, Trash2, X, Check } from "lucide-react";
 import { toast } from "sonner";
@@ -1136,6 +1136,19 @@ export default function ContactDetailView({ contact }: ContactDetailViewProps) {
         <CardContent>
           <ContactInfoSection contact={contact} />
           <PreferredChannelRow contact={contact} />
+          {contact.entity_id && (
+            <div className="flex gap-2 items-center mt-2">
+              <span className="text-muted-foreground text-sm w-36 shrink-0">
+                Linked Entity
+              </span>
+              <Link
+                to={`/entities/${contact.entity_id}`}
+                className="text-primary text-sm hover:underline"
+              >
+                View entity
+              </Link>
+            </div>
+          )}
           {addingInfo ? (
             <AddContactInfoForm
               contactId={contact.id}
