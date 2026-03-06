@@ -242,15 +242,14 @@ if __name__ == "__main__":
     parser.add_argument("--repo-dir", default=None, help="Repository directory")
     parser.add_argument("--log-file", default=None, help="Write test output to file")
     parser.add_argument("--ignore", action="append", default=None, help="Test paths to ignore")
-    parser.add_argument("extra", nargs="*", help="Extra pytest arguments")
-    args = parser.parse_args()
+    args, extra = parser.parse_known_args()
 
     result = run_scoped_tests(
         args.branch,
         base=args.base,
         repo_dir=args.repo_dir,
         ignores=args.ignore,
-        extra_args=args.extra if args.extra else None,
+        extra_args=extra if extra else None,
         log_file=args.log_file,
     )
     sys.exit(result.returncode)
