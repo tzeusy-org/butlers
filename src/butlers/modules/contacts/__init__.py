@@ -436,6 +436,17 @@ class ContactsModule(Module):
             apply_contact=backfill_engine,
         )
 
+        # For telegram, enrich chat IDs after each sync cycle
+        on_cycle_complete = None
+        if self._config.provider == "telegram":
+            telegram_provider = self._provider
+            telegram_pool = pool
+
+            async def _telegram_post_sync(result: ContactsSyncResult) -> None:
+                await _enrich_telegram_chat_ids(telegram_provider, telegram_pool)
+
+            on_cycle_complete = _telegram_post_sync
+
         self._runtime = ContactsSyncRuntime(
             sync_engine=sync_engine,
             state_store=state_store,
@@ -443,6 +454,7 @@ class ContactsModule(Module):
             account_id=_DEFAULT_ACCOUNT_ID,
             incremental_interval=timedelta(minutes=self._config.sync.interval_minutes),
             forced_full_interval=timedelta(days=self._config.sync.full_sync_interval_days),
+            on_cycle_complete=on_cycle_complete,
         )
 
         await self._runtime.start()
@@ -558,6 +570,55 @@ class ContactsModule(Module):
         await provider.validate_credentials()
         logger.info("ContactsModule: Telegram provider credentials validated")
         return provider
+
+
+async def _enrich_telegram_chat_ids(provider: TelegramContactsProvider, pool: Any) -> None:
+    """Post-sync enrichment: resolve private chat IDs and write to contact_info.
+
+    Calls provider.enrich_chat_ids() to get {user_id: chat_id} mapping from
+    Telegram dialogs, then upserts telegram_chat_id entries in shared.contact_info
+    for each contact matched via contacts_source_links.
+    """
+    try:
+        user_to_chat = await provider.enrich_chat_ids(pool)
+    except Exception as exc:
+        logger.warning("Telegram chat ID enrichment failed: %s", exc, exc_info=True)
+        return
+
+    if not user_to_chat:
+        return
+
+    enriched = 0
+    for user_id, chat_id in user_to_chat.items():
+        # Find the local contact via source link
+        row = await pool.fetchrow(
+            """
+            SELECT sl.local_contact_id FROM contacts_source_links sl
+            WHERE sl.provider = 'telegram' AND sl.external_contact_id = $1
+              AND sl.deleted_at IS NULL
+            """,
+            str(user_id),
+        )
+        if row is None:
+            continue
+
+        local_contact_id = row["local_contact_id"]
+        chat_id_str = str(chat_id)
+
+        # Upsert telegram_chat_id in shared.contact_info
+        await pool.execute(
+            """
+            INSERT INTO shared.contact_info (contact_id, type, value, label, is_primary)
+            VALUES ($1, 'telegram_chat_id', $2, NULL, false)
+            ON CONFLICT DO NOTHING
+            """,
+            local_contact_id,
+            chat_id_str,
+        )
+        enriched += 1
+
+    if enriched:
+        logger.info("Telegram chat ID enrichment: wrote %d entries", enriched)
 
 
 __all__ = [

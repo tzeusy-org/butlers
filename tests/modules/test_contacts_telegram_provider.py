@@ -54,7 +54,7 @@ class TestUserToCanonical:
         assert contact.phones[0].label == "mobile"
         assert contact.phones[0].primary is True
         assert len(contact.usernames) == 1
-        assert contact.usernames[0].value == "@alice"
+        assert contact.usernames[0].value == "alice"
         assert contact.usernames[0].service == "telegram"
 
     def test_phone_already_has_plus(self) -> None:
