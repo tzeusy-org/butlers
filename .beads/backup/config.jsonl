@@ -9,4 +9,6 @@
 {"key":"compaction_enabled","value":"false"}
 {"key":"issue-prefix","value":"bu"}
 {"key":"issue_prefix","value":"bu"}
+{"key":"issue_types","value":"bug,feature,task,epic,chore,decision,convoy,molecule,gate,merge-request"}
 {"key":"schema_version","value":"6"}
+{"key":"types.custom","value":"agent,role,rig,convoy,slot,queue,event,message,molecule,gate,merge-request"}
