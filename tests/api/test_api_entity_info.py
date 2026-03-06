@@ -370,9 +370,7 @@ def test_delete_entity_info_404_when_not_found(app):
     app, _, _ = _app_with_mock_pool(app, fetchrow_result=None)
 
     with TestClient(app=app) as client:
-        resp = client.delete(
-            f"/api/relationship/entities/{uuid4()}/info/{uuid4()}"
-        )
+        resp = client.delete(f"/api/relationship/entities/{uuid4()}/info/{uuid4()}")
 
     assert resp.status_code == 404
 
@@ -412,9 +410,7 @@ def test_reveal_entity_secret_404_when_not_found(app):
     app, _, _ = _app_with_mock_pool(app, fetchrow_result=None)
 
     with TestClient(app=app) as client:
-        resp = client.get(
-            f"/api/relationship/entities/{uuid4()}/secrets/{uuid4()}"
-        )
+        resp = client.get(f"/api/relationship/entities/{uuid4()}/secrets/{uuid4()}")
 
     assert resp.status_code == 404
 

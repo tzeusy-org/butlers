@@ -2067,8 +2067,7 @@ async def create_entity_info(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"An entity_info entry with type '{request.type}' "
-                "already exists for this entity."
+                f"An entity_info entry with type '{request.type}' already exists for this entity."
             ),
         )
 
@@ -2148,8 +2147,7 @@ async def patch_entity_info(
             )
 
     updated = await pool.fetchrow(
-        "SELECT id, type, value, label, is_primary, secured"
-        " FROM shared.entity_info WHERE id = $1",
+        "SELECT id, type, value, label, is_primary, secured FROM shared.entity_info WHERE id = $1",
         info_id,
     )
     return EntityInfoEntry(
