@@ -24,7 +24,8 @@ Respond with a JSON block:
 ```json
 {
   "new_facts": [
-    {"subject": "...", "predicate": "...", "content": "...", "permanence": "...", "importance": 5.0, "tags": []}
+    {"subject": "...", "predicate": "...", "content": "...", "permanence": "...", "importance": 5.0, "tags": []},
+    {"subject": "...", "predicate": "...", "content": "...", "permanence": "...", "importance": 5.0, "tags": [], "object_entity_id": "<uuid of target entity>"}
   ],
   "updated_facts": [
     {"target_id": "uuid-of-existing-fact", "subject": "...", "predicate": "...", "content": "...", "permanence": "..."}
@@ -35,6 +36,23 @@ Respond with a JSON block:
   "confirmations": ["uuid-of-fact-1", "uuid-of-fact-2"]
 }
 ```
+
+## Edge-Facts vs Property-Facts
+
+- **Property-fact** (default): Describes an attribute of a single entity. Omit `object_entity_id`.
+  - Example: `{"subject": "Alice", "predicate": "lives_in", "content": "Seattle"}`
+- **Edge-fact**: Describes a directed relationship between two entities. Include `object_entity_id` set to the UUID of the target entity.
+  - Example: `{"subject": "Alice", "predicate": "works_at", "content": "senior engineer", "object_entity_id": "<uuid of Acme Corp>"}`
+
+**When to emit edge-facts:**
+- The fact describes a relationship between two known entities (person→person, person→organization, etc.)
+- Both the subject entity and the object entity have been resolved to entity IDs
+- Predicates like `works_at`, `friend_of`, `sibling_of`, `married_to`, `member_of`, `reports_to`, `lives_with` are strong signals for edge-facts
+
+**When to emit property-facts:**
+- The fact describes an attribute, preference, or state of a single entity
+- The object is a plain value (a string, date, number) rather than another tracked entity
+- Predicates like `birthday`, `preference`, `current_interest`, `lives_in` (city as string) are typically property-facts
 
 ## Guidelines
 

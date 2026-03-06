@@ -74,6 +74,60 @@ memory_store_fact(
 
 **Never store facts with only a raw subject string.** The `entity_id` ensures facts about "Chloe", "Chloe Wong", and "Chlo" all resolve to the same identity.
 
+## Step 5b: Extract and Store Edge-Facts (Relationship Between Entities)
+
+When the message references a relationship between two people (or a person and an organization), store an **edge-fact** by including `object_entity_id`:
+
+1. Resolve both the subject entity and the object entity using `memory_entity_resolve`
+2. Store the edge-fact with both `entity_id` (subject) and `object_entity_id` (object)
+
+```python
+# "Sarah works at Google"
+# Step 2: memory_entity_resolve("Sarah") → entity_id="uuid-sarah"
+# Step 2: memory_entity_resolve("Google", entity_type="organization") → entity_id="uuid-google"
+memory_store_fact(
+    subject="Sarah",
+    predicate="works_at",
+    content="software engineer",
+    entity_id="uuid-sarah",           # subject entity
+    object_entity_id="uuid-google",   # target entity (edge-fact)
+    permanence="stable",
+    importance=7.0,
+    tags=["work"]
+)
+
+# "John and Lisa are siblings"
+# Both already resolved: uuid-john, uuid-lisa
+memory_store_fact(
+    subject="John",
+    predicate="sibling_of",
+    content="brother",
+    entity_id="uuid-john",
+    object_entity_id="uuid-lisa",
+    permanence="permanent",
+    importance=8.0,
+    tags=["family"]
+)
+
+# "Alex reports to Maria at work"
+memory_store_fact(
+    subject="Alex",
+    predicate="reports_to",
+    content="direct report",
+    entity_id="uuid-alex",
+    object_entity_id="uuid-maria",
+    permanence="stable",
+    importance=6.0,
+    tags=["work"]
+)
+```
+
+**When to use edge-facts vs property-facts:**
+- **Edge-fact** (include `object_entity_id`): The fact describes a typed relationship between two tracked entities — e.g., `works_at`, `friend_of`, `sibling_of`, `married_to`, `lives_with`, `reports_to`, `member_of`
+- **Property-fact** (omit `object_entity_id`): The fact describes an attribute of a single entity where the value is a plain string — e.g., `birthday`, `preference`, `current_interest`, `lives_in` (city as string)
+
+If the object entity doesn't exist yet (e.g., a new organization), create it with `memory_entity_create` first, then store the edge-fact.
+
 ## Step 6: Log Interactions
 
 When the message implies the user interacted with a person (met, called, had lunch, etc.), log the interaction using the resolved `contact_id`:
@@ -109,6 +163,17 @@ When extracted facts map to structured fields, update both memory and domain rec
 - `relationship_status`: "married", "single", "dating"
 - `children`: Names and ages
 - `nickname`: Preferred name or alias
+
+**Edge predicates** (require `object_entity_id` — relationship between two entities):
+- `works_at`: Employment relationship (person → organization)
+- `friend_of`: Friendship link (person → person)
+- `sibling_of`: Sibling relationship (person → person)
+- `married_to`: Spousal relationship (person → person)
+- `parent_of`: Parent-child relationship (person → person)
+- `child_of`: Child-parent relationship (person → person)
+- `reports_to`: Reporting line (person → person)
+- `member_of`: Group membership (person → organization)
+- `lives_with`: Cohabitation (person → person)
 
 **Permanence levels**:
 - `permanent`: Identity facts unlikely to change (e.g., birthday, family relationships)
@@ -155,6 +220,37 @@ memory_store_fact(
     permanence="permanent",
     importance=9.0,
     tags=["important-dates", "family"]
+)
+```
+
+### Example Edge-Facts (with object_entity_id)
+
+```python
+# From: "Sarah just started at Google as a designer"
+# Step 2: memory_entity_resolve("Sarah") → entity_id="uuid-sarah"
+# Step 2: memory_entity_resolve("Google", entity_type="organization") → entity_id="uuid-google"
+memory_store_fact(
+    subject="Sarah",
+    predicate="works_at",
+    content="designer (just started)",
+    entity_id="uuid-sarah",
+    object_entity_id="uuid-google",  # edge-fact → Google entity
+    permanence="stable",
+    importance=7.0,
+    tags=["work"]
+)
+
+# From: "Jake and Emma are engaged"
+# Both resolved: uuid-jake, uuid-emma
+memory_store_fact(
+    subject="Jake",
+    predicate="married_to",
+    content="engaged",
+    entity_id="uuid-jake",
+    object_entity_id="uuid-emma",  # edge-fact → Emma entity
+    permanence="stable",
+    importance=8.0,
+    tags=["family", "major-change"]
 )
 ```
 
@@ -270,6 +366,19 @@ User: "What does Alice like?"
 3. `contact_create(first_name="Marcus", last_name="Webb", job_title="Product Designer", company="Figma")` → store returned `entity_id` on contact
 4. `memory_store_fact(subject="Marcus Webb", predicate="workplace", content="Product designer at Figma", entity_id="<uuid-marcus>", permanence="stable", importance=6.0, tags=["work"])`
 5. `notify(channel="telegram", message="Added Marcus Webb to your contacts — product designer at Figma.", intent="reply", request_context=...)`
+
+### Example 9: Edge-Facts — Relationship Between People
+
+**User message**: "My brother Jake just got hired at the same company as Sarah — they're both at Stripe now"
+
+**Actions**:
+1. `memory_entity_resolve("Jake", entity_type="person", context_hints={"topic": "brother, Stripe, hired"})` → `entity_id="<uuid-jake>"`, single match
+2. `memory_entity_resolve("Sarah", entity_type="person", context_hints={"topic": "Stripe", "mentioned_with": ["Jake"]})` → `entity_id="<uuid-sarah>"`, single match
+3. `memory_entity_resolve("Stripe", entity_type="organization")` → `entity_id="<uuid-stripe>"` (create if new: `memory_entity_create(canonical_name="Stripe", entity_type="organization")`)
+4. `memory_store_fact(subject="Jake", predicate="sibling_of", content="brother", entity_id="<uuid-jake>", object_entity_id="<uuid-user>", permanence="permanent", importance=9.0, tags=["family"])` — edge-fact: Jake → user
+5. `memory_store_fact(subject="Jake", predicate="works_at", content="recently hired", entity_id="<uuid-jake>", object_entity_id="<uuid-stripe>", permanence="stable", importance=7.0, tags=["work"])` — edge-fact: Jake → Stripe
+6. `memory_store_fact(subject="Sarah", predicate="works_at", content="currently employed", entity_id="<uuid-sarah>", object_entity_id="<uuid-stripe>", permanence="stable", importance=7.0, tags=["work"])` — edge-fact: Sarah → Stripe
+7. `notify(channel="telegram", message="Noted! Jake and Sarah are both at Stripe now. I've recorded Jake as your brother.", intent="reply", request_context=...)`
 
 ## Guidelines
 
