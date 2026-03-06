@@ -2,9 +2,11 @@
  * TanStack Query hooks for the memory API.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  createEntityInfo,
+  deleteEntityInfo,
   getEntities,
   getEntity,
   getEpisode,
@@ -15,12 +17,16 @@ import {
   getMemoryStats,
   getRule,
   getRules,
+  revealEntitySecret,
+  updateEntityInfo,
 } from "@/api/index.ts";
 import type {
+  CreateEntityInfoRequest,
   EntityParams,
   EpisodeParams,
   FactParams,
   RuleParams,
+  UpdateEntityInfoRequest,
 } from "@/api/types.ts";
 
 /** Fetch aggregated memory statistics. */
@@ -110,5 +116,68 @@ export function useEntity(entityId: string | undefined) {
     queryKey: ["memory-entity", entityId],
     queryFn: () => getEntity(entityId!),
     enabled: !!entityId,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Entity info mutations
+// ---------------------------------------------------------------------------
+
+/** Create an entity_info entry. */
+export function useCreateEntityInfo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      entityId,
+      request,
+    }: {
+      entityId: string;
+      request: CreateEntityInfoRequest;
+    }) => createEntityInfo(entityId, request),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+    },
+  });
+}
+
+/** Update an entity_info entry. */
+export function useUpdateEntityInfo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      entityId,
+      infoId,
+      request,
+    }: {
+      entityId: string;
+      infoId: string;
+      request: UpdateEntityInfoRequest;
+    }) => updateEntityInfo(entityId, infoId, request),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+    },
+  });
+}
+
+/** Delete an entity_info entry. */
+export function useDeleteEntityInfo() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ entityId, infoId }: { entityId: string; infoId: string }) =>
+      deleteEntityInfo(entityId, infoId),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+    },
+  });
+}
+
+/** Reveal a secured entity_info value. */
+export function useRevealEntitySecret() {
+  return useMutation({
+    mutationFn: ({ entityId, infoId }: { entityId: string; infoId: string }) =>
+      revealEntitySecret(entityId, infoId),
   });
 }
