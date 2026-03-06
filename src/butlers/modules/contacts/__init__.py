@@ -48,6 +48,7 @@ from .sync import (
     ContactUsername,
     GoogleContactsProvider,
 )
+from .telegram_provider import TelegramContactsProvider
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ class ContactsConfig(BaseModel):
 class ContactsModule(Module):
     """Contacts module scaffold with strict config and provider gating."""
 
-    _SUPPORTED_PROVIDERS = {"google"}
+    _SUPPORTED_PROVIDERS = {"google", "telegram"}
 
     def __init__(self) -> None:
         self._config: ContactsConfig | None = None
@@ -156,7 +157,7 @@ class ContactsModule(Module):
                 return {
                     "error": (
                         "Contacts sync runtime is not running. "
-                        "Ensure sync.enabled=true and Google credentials are configured."
+                        "Ensure sync.enabled=true and provider credentials are configured."
                     ),
                     "provider": provider,
                     "mode": mode,
@@ -226,7 +227,7 @@ class ContactsModule(Module):
                 return {
                     "error": (
                         "Contacts sync runtime is not running. "
-                        "Ensure sync.enabled=true and Google credentials are configured."
+                        "Ensure sync.enabled=true and provider credentials are configured."
                     ),
                     "provider": provider,
                     "sync_enabled": False,
@@ -356,7 +357,7 @@ class ContactsModule(Module):
                 return {
                     "error": (
                         "Contacts sync runtime is not running. "
-                        "Ensure sync.enabled=true and Google credentials are configured."
+                        "Ensure sync.enabled=true and provider credentials are configured."
                     ),
                     "queued": False,
                 }
@@ -408,17 +409,19 @@ class ContactsModule(Module):
             logger.info("ContactsModule: sync is disabled; skipping runtime startup")
             return
 
-        client_id, client_secret, refresh_token = await self._resolve_credentials(
-            credential_store=credential_store
-        )
-
-        self._provider = GoogleContactsProvider(
-            client_id=client_id,
-            client_secret=client_secret,
-            refresh_token=refresh_token,
-        )
-
         pool = getattr(db, "pool", None) if db is not None else None
+
+        if self._config.provider == "telegram":
+            self._provider = await self._create_telegram_provider(pool)
+        else:
+            client_id, client_secret, refresh_token = await self._resolve_google_credentials(
+                credential_store=credential_store
+            )
+            self._provider = GoogleContactsProvider(
+                client_id=client_id,
+                client_secret=client_secret,
+                refresh_token=refresh_token,
+            )
         state_store = ContactsSyncStateStore(pool)
 
         backfill_engine = ContactBackfillEngine(
@@ -464,28 +467,17 @@ class ContactsModule(Module):
         self._config = None
         self._db = None
 
-    async def _resolve_credentials(
+    async def _resolve_google_credentials(
         self,
         *,
         credential_store: Any,
     ) -> tuple[str, str, str]:
         """Resolve Google OAuth credentials from DB-backed credential store.
 
-        Parameters
-        ----------
-        credential_store:
-            A :class:`~butlers.credential_store.CredentialStore` instance.
-            When ``None``, an actionable ``RuntimeError`` is raised.
-
         Returns
         -------
         tuple[str, str, str]
             ``(client_id, client_secret, refresh_token)``
-
-        Raises
-        ------
-        RuntimeError
-            If credentials cannot be resolved from the credential store.
         """
         if credential_store is not None:
             client_id = await credential_store.resolve(
@@ -515,6 +507,59 @@ class ContactsModule(Module):
             f"refresh token (contact_info). "
             "Store them via the dashboard OAuth flow (shared credential store)."
         )
+
+    async def _create_telegram_provider(self, pool: Any) -> TelegramContactsProvider:
+        """Create and validate a TelegramContactsProvider from owner contact_info.
+
+        Resolves telegram_api_id, telegram_api_hash, and telegram_user_session
+        from the owner contact's shared.contact_info entries.
+        """
+        if pool is None:
+            raise RuntimeError(
+                "ContactsModule: Telegram provider requires a database connection "
+                "to resolve credentials from owner contact_info."
+            )
+
+        from butlers.credential_store import resolve_owner_contact_info
+
+        _TELEGRAM_CI_TYPES = {
+            "telegram_api_id": "API ID",
+            "telegram_api_hash": "API hash",
+            "telegram_user_session": "user session",
+        }
+
+        creds: dict[str, str] = {}
+        for ci_type, label in _TELEGRAM_CI_TYPES.items():
+            value = await resolve_owner_contact_info(pool, ci_type)
+            if value:
+                creds[ci_type] = value
+
+        missing = [
+            label for ci_type, label in _TELEGRAM_CI_TYPES.items() if ci_type not in creds
+        ]
+        if missing:
+            raise RuntimeError(
+                f"ContactsModule: Telegram credentials missing from owner contact_info: "
+                f"{', '.join(missing)}. Configure telegram_api_id, telegram_api_hash, "
+                f"and telegram_user_session on the owner contact via the dashboard."
+            )
+
+        try:
+            api_id = int(creds["telegram_api_id"])
+        except ValueError as exc:
+            raise RuntimeError(
+                f"ContactsModule: invalid telegram_api_id in contact_info: {exc}"
+            ) from exc
+
+        provider = TelegramContactsProvider(
+            api_id=api_id,
+            api_hash=creds["telegram_api_hash"],
+            session_string=creds["telegram_user_session"],
+        )
+
+        await provider.validate_credentials()
+        logger.info("ContactsModule: Telegram provider credentials validated")
+        return provider
 
 
 __all__ = [
@@ -548,4 +593,5 @@ __all__ = [
     "ContactsSyncStateStore",
     "ContactsSyncTokenExpiredError",
     "GoogleContactsProvider",
+    "TelegramContactsProvider",
 ]
