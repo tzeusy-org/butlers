@@ -41,7 +41,8 @@ class TestMemoryBaselineMigration:
         assert "001_memory_baseline.py" in migration_files
         assert "002_entities.py" in migration_files
         assert "003_memory_events.py" in migration_files
-        assert "004_predicate_registry.py" in migration_files
+        assert "004_object_entity_id.py" in migration_files
+        assert "005_predicate_registry.py" in migration_files
 
     def test_revision_identifiers(self) -> None:
         mod = _load_migration()

@@ -4,8 +4,8 @@ Adds an optional predicate registry table for guiding consistent predicate
 usage across fact extraction.  Not enforced — used for prompt injection so
 LLM extractors prefer known predicates.
 
-Revision ID: mem_004
-Revises: mem_003
+Revision ID: mem_005
+Revises: mem_004
 Create Date: 2026-03-06 00:00:00.000000
 
 """
@@ -15,8 +15,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "mem_004"
-down_revision = "mem_003"
+revision = "mem_005"
+down_revision = "mem_004"
 branch_labels = None
 depends_on = None
 
