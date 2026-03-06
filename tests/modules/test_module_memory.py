@@ -352,6 +352,7 @@ class TestToolDelegation:
             permanence="standard",
             scope="global",
             tags=None,
+            object_entity_id=None,
         )
 
     async def test_memory_context_delegates(self):

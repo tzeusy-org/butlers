@@ -173,12 +173,18 @@ async def store_fact(
     source_episode_id: uuid.UUID | None = None,
     metadata: dict | None = None,
     entity_id: uuid.UUID | None = None,
+    object_entity_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Store a distilled fact with optional supersession.
 
     If ``entity_id`` is provided the fact is anchored to a resolved entity.
     Uniqueness and supersession use ``(entity_id, scope, predicate)``; the
     ``subject`` field is still stored as a human-readable label.
+
+    If ``object_entity_id`` is also provided, the fact represents a directed
+    edge from ``entity_id`` (subject) to ``object_entity_id`` (object).
+    Uniqueness and supersession use
+    ``(entity_id, object_entity_id, scope, predicate)``.
 
     If ``entity_id`` is omitted (backward compatible), uniqueness and
     supersession use ``(subject, predicate)`` as before.
@@ -192,6 +198,9 @@ async def store_fact(
     Args:
         entity_id: Optional UUID of an existing entity row.  When provided
             the entity must exist; a ``ValueError`` is raised otherwise.
+        object_entity_id: Optional UUID of a target entity for edge-facts.
+            When provided the entity must exist; a ``ValueError`` is raised
+            otherwise.  ``entity_id`` must also be set.
 
     Returns:
         The UUID of the newly created fact.
@@ -216,11 +225,41 @@ async def store_fact(
                 if not entity_exists:
                     raise ValueError(f"entity_id {entity_id!r} does not exist in entities table")
 
-            # Check for existing active fact using entity-keyed or subject-keyed lookup.
-            if entity_id is not None:
+            # Validate object_entity_id when provided.
+            if object_entity_id is not None:
+                if entity_id is None:
+                    raise ValueError(
+                        "object_entity_id requires entity_id to be set (edge-facts "
+                        "need both subject and object entities)"
+                    )
+                obj_exists = await conn.fetchval(
+                    "SELECT 1 FROM entities WHERE id = $1",
+                    object_entity_id,
+                )
+                if not obj_exists:
+                    raise ValueError(
+                        f"object_entity_id {object_entity_id!r} does not exist in entities table"
+                    )
+
+            # Check for existing active fact using the appropriate key.
+            if object_entity_id is not None:
+                # Edge-fact: keyed on (entity_id, object_entity_id, scope, predicate)
                 existing = await conn.fetchrow(
                     "SELECT id FROM facts "
-                    "WHERE entity_id = $1 AND scope = $2 AND predicate = $3 "
+                    "WHERE entity_id = $1 AND object_entity_id = $2 "
+                    "AND scope = $3 AND predicate = $4 "
+                    "AND validity = 'active'",
+                    entity_id,
+                    object_entity_id,
+                    scope,
+                    predicate,
+                )
+            elif entity_id is not None:
+                # Property-fact: keyed on (entity_id, scope, predicate)
+                existing = await conn.fetchrow(
+                    "SELECT id FROM facts "
+                    "WHERE entity_id = $1 AND object_entity_id IS NULL "
+                    "AND scope = $2 AND predicate = $3 "
                     "AND validity = 'active'",
                     entity_id,
                     scope,
@@ -251,13 +290,15 @@ async def store_fact(
                     id, subject, predicate, content, embedding, search_vector,
                     importance, confidence, decay_rate, permanence, source_butler,
                     source_episode_id, supersedes_id, validity, scope,
-                    created_at, last_confirmed_at, tags, metadata, entity_id
+                    created_at, last_confirmed_at, tags, metadata, entity_id,
+                    object_entity_id
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, {tsvector_sql("$6")},
                     $7, $8, $9, $10, $11,
                     $12, $13, 'active', $14,
-                    $15, $15, $16, $17, $18
+                    $15, $15, $16, $17, $18,
+                    $19
                 )
             """
             await conn.execute(
@@ -280,6 +321,7 @@ async def store_fact(
                 tags_json,
                 meta_json,
                 entity_id,
+                object_entity_id,
             )
 
             # Create supersedes link if applicable

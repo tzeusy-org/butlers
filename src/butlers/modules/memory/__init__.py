@@ -153,8 +153,22 @@ class MemoryModule(Module):
                     )
                 ),
             ] = None,
+            object_entity_id: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional UUID of the target entity for edge-facts. "
+                        "Creates a directed relationship from subject entity "
+                        "to this object entity. Requires entity_id to also be set."
+                    )
+                ),
+            ] = None,
         ) -> dict[str, Any]:
-            """Store a fact and supersede any active `(subject, predicate)` match.
+            """Store a fact and supersede any active match.
+
+            Property facts use `(subject, predicate)` for uniqueness.
+            Edge-facts (when `object_entity_id` is set) use
+            `(entity_id, object_entity_id, scope, predicate)`.
 
             Required fields:
             - `subject` (string)
@@ -168,8 +182,9 @@ class MemoryModule(Module):
             - `tags` (array[string]) — must be a JSON array of strings (a list)
               and NOT a JSON-encoded string.
               A single string is invalid and will fail validation.
+            - `object_entity_id` (string, UUID) — target entity for edge-facts
 
-            Valid JSON example:
+            Valid JSON example (property fact):
             {
               "subject": "user",
               "predicate": "favorite_coffee",
@@ -178,6 +193,14 @@ class MemoryModule(Module):
               "permanence": "standard",
               "scope": "global",
               "tags": ["preferences", "coffee"]
+            }
+
+            Valid JSON example (edge fact):
+            {
+              "subject": "Alice",
+              "predicate": "works_at",
+              "content": "software engineer",
+              "object_entity_id": "550e8400-e29b-41d4-a716-446655440000"
             }
             """
             return await _writing.memory_store_fact(
@@ -190,6 +213,7 @@ class MemoryModule(Module):
                 permanence=permanence,
                 scope=scope,
                 tags=tags,
+                object_entity_id=object_entity_id,
             )
 
         @mcp.tool()

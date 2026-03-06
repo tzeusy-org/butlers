@@ -70,6 +70,7 @@ async def memory_store_fact(
     scope: str = "global",
     tags: list[str] | None = None,
     entity_id: str | None = None,
+    object_entity_id: str | None = None,
 ) -> dict[str, Any]:
     """Store a distilled fact, automatically superseding any existing match.
 
@@ -79,12 +80,18 @@ async def memory_store_fact(
     a human-readable label only.  When omitted, existing ``(subject, predicate)``
     behaviour is preserved (backward compatible).
 
+    Accepts an optional ``object_entity_id`` (UUID string) to create an edge-fact
+    linking ``entity_id`` (subject) to ``object_entity_id`` (object).  When
+    provided, uniqueness is enforced via
+    ``(entity_id, object_entity_id, scope, predicate)``.
+
     Delegates to the storage layer and returns an MCP-friendly dict with the
     new fact's ID and the superseded fact's ID (if any).
     """
     import uuid as _uuid
 
     parsed_entity_id = _uuid.UUID(entity_id) if entity_id is not None else None
+    parsed_object_entity_id = _uuid.UUID(object_entity_id) if object_entity_id is not None else None
 
     result = await _storage.store_fact(
         pool,
@@ -97,6 +104,7 @@ async def memory_store_fact(
         scope=scope,
         tags=tags,
         entity_id=parsed_entity_id,
+        object_entity_id=parsed_object_entity_id,
     )
 
     # Backward-compatible: older storage variants may return a mapping.
