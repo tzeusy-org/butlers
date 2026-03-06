@@ -545,7 +545,7 @@ _shared_refresh_token_count() {
     -U "${POSTGRES_USER:-butlers}" \
     -d "$db_name" \
     -tAc \
-    "SELECT COUNT(*) FROM ${schema}.contact_info ci JOIN ${schema}.contacts c ON c.id = ci.contact_id WHERE 'owner' = ANY(c.roles) AND ci.type = 'google_oauth_refresh' AND ci.value IS NOT NULL AND length(ci.value) > 0;" \
+    "SELECT COUNT(*) FROM ${schema}.entity_info ei JOIN ${schema}.entities e ON e.id = ei.entity_id WHERE 'owner' = ANY(e.roles) AND ei.type = 'google_oauth_refresh' AND ei.value IS NOT NULL AND length(ei.value) > 0;" \
     2>/dev/null || echo "0"
 }
 

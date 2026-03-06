@@ -25,6 +25,7 @@ from butlers.api.models.memory import (
     MemoryActivity,
     MemoryStats,
     Rule,
+    UpdateEntityRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -807,6 +808,67 @@ async def get_entity(
     )
 
     return ApiResponse[EntityDetail](data=detail)
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/memory/entities/{entity_id}
+# ---------------------------------------------------------------------------
+
+
+@router.patch("/entities/{entity_id}", response_model=ApiResponse[EntitySummary])
+async def update_entity(
+    entity_id: str,
+    body: UpdateEntityRequest,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[EntitySummary]:
+    """Update entity core fields (canonical_name, aliases)."""
+    import uuid as _uuid
+
+    pool = _any_pool(db)
+    eid = _uuid.UUID(entity_id)
+
+    # Build SET clause dynamically from provided fields
+    sets: list[str] = []
+    args: list[object] = [eid]
+    idx = 2
+
+    if body.canonical_name is not None:
+        sets.append(f"canonical_name = ${idx}")
+        args.append(body.canonical_name)
+        idx += 1
+
+    if body.aliases is not None:
+        sets.append(f"aliases = ${idx}")
+        args.append(body.aliases)
+        idx += 1
+
+    if not sets:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    sets.append("updated_at = now()")
+
+    row = await pool.fetchrow(
+        f"UPDATE shared.entities SET {', '.join(sets)}"
+        f" WHERE id = $1 AND tenant_id IN ('default', 'shared')"
+        f" RETURNING id, canonical_name, entity_type, aliases, roles,"
+        f" created_at, updated_at",
+        *args,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    return ApiResponse[EntitySummary](
+        data=EntitySummary(
+            id=str(row["id"]),
+            canonical_name=row["canonical_name"],
+            entity_type=row["entity_type"],
+            aliases=list(row["aliases"]) if row["aliases"] else [],
+            roles=list(row["roles"]) if row["roles"] else [],
+            fact_count=0,
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

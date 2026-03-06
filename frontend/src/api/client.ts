@@ -99,6 +99,7 @@ import type {
   EntityParams,
   EntitySummary,
   UpdateEntityInfoRequest,
+  UpdateEntityRequest,
   EpisodeParams,
   Fact,
   FactParams,
@@ -1193,6 +1194,17 @@ export function getEntity(
 ): Promise<ApiResponse<EntityDetail>> {
   return apiFetch<ApiResponse<EntityDetail>>(
     `/memory/entities/${encodeURIComponent(entityId)}`,
+  );
+}
+
+/** Update entity core fields (name, aliases). */
+export function updateEntity(
+  entityId: string,
+  request: UpdateEntityRequest,
+): Promise<ApiResponse<EntitySummary>> {
+  return apiFetch<ApiResponse<EntitySummary>>(
+    `/memory/entities/${encodeURIComponent(entityId)}`,
+    { method: "PATCH", body: JSON.stringify(request) },
   );
 }
 

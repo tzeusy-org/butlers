@@ -28,6 +28,7 @@ import {
   useDeleteEntityInfo,
   useEntity,
   useRevealEntitySecret,
+  useUpdateEntity,
   useUpdateEntityInfo,
 } from "@/hooks/use-memory";
 
@@ -430,6 +431,29 @@ export default function EntityDetailPage() {
   const { entityId } = useParams<{ entityId: string }>();
   const { data, isLoading, error } = useEntity(entityId);
   const entity = data?.data;
+  const updateEntity = useUpdateEntity();
+
+  const [editingName, setEditingName] = useState(false);
+  const [draftName, setDraftName] = useState("");
+
+  const handleStartEditName = () => {
+    setDraftName(entity?.canonical_name ?? "");
+    setEditingName(true);
+  };
+
+  const handleSaveName = () => {
+    if (!entityId || !draftName.trim()) return;
+    updateEntity.mutate(
+      { entityId, request: { canonical_name: draftName.trim() } },
+      {
+        onSuccess: () => {
+          setEditingName(false);
+          toast.success("Entity name updated");
+        },
+        onError: (err) => toast.error(`Failed to update name: ${(err as Error).message}`),
+      },
+    );
+  };
 
   return (
     <div className="space-y-6">
@@ -464,9 +488,49 @@ export default function EntityDetailPage() {
           <Card>
             <CardHeader>
               <div className="flex flex-wrap items-center gap-3">
-                <CardTitle className="text-2xl">
-                  {entity.canonical_name}
-                </CardTitle>
+                {editingName ? (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={draftName}
+                      onChange={(e) => setDraftName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleSaveName();
+                        if (e.key === "Escape") setEditingName(false);
+                      }}
+                      className="h-9 w-64 text-lg font-semibold"
+                      autoFocus
+                    />
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      onClick={handleSaveName}
+                      disabled={updateEntity.isPending}
+                    >
+                      <Check className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => setEditingName(false)}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <CardTitle className="text-2xl">
+                      {entity.canonical_name}
+                    </CardTitle>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7"
+                      onClick={handleStartEditName}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                )}
                 <Badge>{entity.entity_type}</Badge>
                 {entity.roles?.includes("owner") && (
                   <Badge

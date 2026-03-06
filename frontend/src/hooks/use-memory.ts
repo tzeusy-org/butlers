@@ -18,6 +18,7 @@ import {
   getRule,
   getRules,
   revealEntitySecret,
+  updateEntity,
   updateEntityInfo,
 } from "@/api/index.ts";
 import type {
@@ -27,6 +28,7 @@ import type {
   FactParams,
   RuleParams,
   UpdateEntityInfoRequest,
+  UpdateEntityRequest,
 } from "@/api/types.ts";
 
 /** Fetch aggregated memory statistics. */
@@ -116,6 +118,28 @@ export function useEntity(entityId: string | undefined) {
     queryKey: ["memory-entity", entityId],
     queryFn: () => getEntity(entityId!),
     enabled: !!entityId,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Entity mutations
+// ---------------------------------------------------------------------------
+
+/** Update entity core fields (canonical_name, aliases). */
+export function useUpdateEntity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      entityId,
+      request,
+    }: {
+      entityId: string;
+      request: UpdateEntityRequest;
+    }) => updateEntity(entityId, request),
+    onSuccess: (_, { entityId }) => {
+      void queryClient.invalidateQueries({ queryKey: ["memory-entity", entityId] });
+      void queryClient.invalidateQueries({ queryKey: ["memory-entities"] });
+    },
   });
 }
 

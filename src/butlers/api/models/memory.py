@@ -123,6 +123,13 @@ class EntityDetail(EntitySummary):
     entity_info: list[EntityInfoEntry] = []
 
 
+class UpdateEntityRequest(BaseModel):
+    """Patch request for updating entity core fields."""
+
+    canonical_name: str | None = None
+    aliases: list[str] | None = None
+
+
 class MemoryActivity(BaseModel):
     """A recent memory activity event (new fact, rule, or episode)."""
 

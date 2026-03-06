@@ -1315,6 +1315,12 @@ export interface UpdateEntityInfoRequest {
   is_primary?: boolean;
 }
 
+/** Request body for updating entity core fields. */
+export interface UpdateEntityRequest {
+  canonical_name?: string;
+  aliases?: string[];
+}
+
 /** Full entity detail including recent facts and linked contact info. */
 export interface EntityDetail extends EntitySummary {
   metadata: Record<string, unknown>;
