@@ -45,7 +45,7 @@ class TestUserToCanonical:
         user = _make_user()
         contact = _user_to_canonical(user)
         assert contact is not None
-        assert contact.external_id == "12345"
+        assert contact.external_id == "telegram:12345"
         assert contact.first_name == "Alice"
         assert contact.last_name == "Smith"
         assert contact.display_name == "Alice Smith"
@@ -163,8 +163,8 @@ class TestTelegramContactsProvider:
 
         batch = await provider.full_sync(account_id="default")
         assert len(batch.contacts) == 2
-        assert batch.contacts[0].external_id == "1"
-        assert batch.contacts[1].external_id == "2"
+        assert batch.contacts[0].external_id == "telegram:1"
+        assert batch.contacts[1].external_id == "telegram:2"
         assert batch.next_page_token is None
         assert batch.next_sync_cursor is not None
         assert batch.next_sync_cursor.startswith("telegram:")
@@ -204,7 +204,7 @@ class TestTelegramContactsProvider:
 
         batch = await provider.full_sync(account_id="default")
         assert len(batch.contacts) == 1
-        assert batch.contacts[0].external_id == "1"
+        assert batch.contacts[0].external_id == "telegram:1"
 
     @pytest.mark.asyncio
     async def test_validate_credentials_success(self) -> None:
