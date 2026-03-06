@@ -64,8 +64,15 @@ def _drop_dolt_db(db_name: str) -> None:
     try:
         subprocess.run(
             [
-                "mysql", "-h", "127.0.0.1", "-P", "3307", "-u", "root",
-                "-e", f"DROP DATABASE `{db_name}`;",
+                "mysql",
+                "-h",
+                "127.0.0.1",
+                "-P",
+                "3307",
+                "-u",
+                "root",
+                "-e",
+                f"DROP DATABASE `{db_name}`;",
             ],
             capture_output=True,
             text=True,
