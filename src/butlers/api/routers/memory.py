@@ -265,6 +265,52 @@ async def list_episodes(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/memory/episodes/{episode_id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/episodes/{episode_id}", response_model=ApiResponse[Episode])
+async def get_episode(
+    episode_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[Episode]:
+    """Return a single episode by ID."""
+
+    async def _query_pool(_: str, pool: object):
+        return await pool.fetchrow(
+            "SELECT id, butler, session_id, content, importance, reference_count,"
+            " consolidated, created_at, last_referenced_at, expires_at, metadata"
+            " FROM episodes WHERE id = $1",
+            episode_id,
+        )
+
+    rows = await _fan_out_memory_queries(
+        db,
+        query_name="episode_by_id",
+        query_fn=_query_pool,
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    r = rows[0]
+    return ApiResponse[Episode](
+        data=Episode(
+            id=str(r["id"]),
+            butler=r["butler"],
+            session_id=str(r["session_id"]) if r["session_id"] else None,
+            content=r["content"],
+            importance=float(r["importance"]),
+            reference_count=r["reference_count"],
+            consolidated=r["consolidated"],
+            created_at=str(r["created_at"]),
+            last_referenced_at=str(r["last_referenced_at"]) if r["last_referenced_at"] else None,
+            expires_at=str(r["expires_at"]) if r["expires_at"] else None,
+            metadata=_parse_jsonb(r["metadata"]),
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /api/memory/facts
 # ---------------------------------------------------------------------------
 

@@ -12,6 +12,9 @@ import NotificationsPage from './pages/NotificationsPage.tsx'
 import IssuesPage from './pages/IssuesPage.tsx'
 import CostsPage from './pages/CostsPage.tsx'
 import MemoryPage from './pages/MemoryPage.tsx'
+import FactDetailPage from './pages/FactDetailPage.tsx'
+import RuleDetailPage from './pages/RuleDetailPage.tsx'
+import EpisodeDetailPage from './pages/EpisodeDetailPage.tsx'
 import SettingsPage from './pages/SettingsPage.tsx'
 import AuditLogPage from './pages/AuditLogPage.tsx'
 import ContactsPage from './pages/ContactsPage.tsx'
@@ -76,6 +79,9 @@ export const router = createBrowserRouter(
         { path: '/health/research', element: <ResearchPage /> },
         { path: '/costs', element: <CostsPage /> },
         { path: '/memory', element: <MemoryPage /> },
+        { path: '/memory/facts/:factId', element: <FactDetailPage /> },
+        { path: '/memory/rules/:ruleId', element: <RuleDetailPage /> },
+        { path: '/memory/episodes/:episodeId', element: <EpisodeDetailPage /> },
         { path: '/entities', element: <EntitiesPage /> },
         { path: '/entities/:entityId', element: <EntityDetailPage /> },
         { path: '/settings', element: <SettingsPage /> },

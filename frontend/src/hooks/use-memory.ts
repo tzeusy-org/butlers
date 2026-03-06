@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   getEntities,
   getEntity,
+  getEpisode,
   getEpisodes,
   getFact,
   getFacts,
@@ -37,6 +38,15 @@ export function useEpisodes(params?: EpisodeParams) {
     queryKey: ["memory-episodes", params],
     queryFn: () => getEpisodes(params),
     refetchInterval: 30_000,
+  });
+}
+
+/** Fetch a single episode by ID. */
+export function useEpisode(episodeId: string | undefined) {
+  return useQuery({
+    queryKey: ["memory-episode", episodeId],
+    queryFn: () => getEpisode(episodeId!),
+    enabled: !!episodeId,
   });
 }
 

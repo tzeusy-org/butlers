@@ -1192,13 +1192,17 @@ export interface MemoryRule {
   scope: string;
   maturity: string;
   confidence: number;
+  decay_rate: number;
+  permanence: string;
   effectiveness_score: number;
   applied_count: number;
   success_count: number;
   harmful_count: number;
+  source_episode_id: string | null;
   source_butler: string | null;
   created_at: string;
   last_applied_at: string | null;
+  last_evaluated_at: string | null;
   tags: string[];
   metadata: Record<string, unknown>;
 }

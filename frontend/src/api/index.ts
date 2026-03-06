@@ -33,6 +33,7 @@ export {
   getDailyCosts,
   getEntities,
   getEntity,
+  getEpisode,
   getEpisodes,
   getFact,
   getFacts,

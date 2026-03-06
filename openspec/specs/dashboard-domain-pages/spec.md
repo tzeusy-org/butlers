@@ -442,11 +442,95 @@ The Memory Browser MUST display a tabbed interface with three tabs: Facts, Rules
 
 The Memory Browser MUST accept an optional `butlerScope` prop that filters all queries to a specific butler.
 
+Each row in the Facts, Rules, and Episodes tables MUST be clickable. Clicking a row MUST navigate to the corresponding detail page (`/memory/facts/{id}`, `/memory/rules/{id}`, or `/memory/episodes/{id}`). Rows MUST display a `cursor-pointer` hover style to indicate interactivity.
+
 #### Scenario: Fact confidence bar rendering
 
 - **WHEN** a fact has confidence 0.73
 - **THEN** the progress bar MUST be 73% filled
 - **AND** the label MUST display "73%"
+
+#### Scenario: Clicking a fact row navigates to detail
+
+- **WHEN** the user clicks a fact row in the Memory Browser
+- **THEN** the browser MUST navigate to `/memory/facts/{fact.id}`
+
+#### Scenario: Clicking a rule row navigates to detail
+
+- **WHEN** the user clicks a rule row in the Memory Browser
+- **THEN** the browser MUST navigate to `/memory/rules/{rule.id}`
+
+#### Scenario: Clicking an episode row navigates to detail
+
+- **WHEN** the user clicks an episode row in the Memory Browser
+- **THEN** the browser MUST navigate to `/memory/episodes/{episode.id}`
+
+---
+
+### Requirement: Fact detail page
+
+The dashboard SHALL render a Fact detail page at `/memory/facts/:factId`.
+
+The page MUST display breadcrumb navigation: Memory > Facts > {subject}.
+
+The page MUST display the following fields in a card layout:
+
+- **Header:** Subject as page title, predicate as subtitle
+- **Content:** Full fact content (whitespace-preserved, word-wrapped)
+- **Status row:** Confidence (progress bar with percentage), Permanence (color-coded badge), Validity (color-coded badge), Scope (outline badge)
+- **Metrics:** Decay rate, Reference count
+- **Provenance:** Source butler (outline badge, if present), Source episode ID (link to `/memory/episodes/{id}`, if present), Supersedes ID (link to `/memory/facts/{id}`, if present)
+- **Tags:** Rendered as secondary badges (if non-empty)
+- **Metadata:** Rendered as formatted JSON in a muted code block (if non-empty)
+- **Timestamps:** Created at, Last referenced at, Last confirmed at (formatted via `toLocaleString`)
+
+The page MUST show a loading skeleton while data is fetching and an error message on failure.
+
+#### Scenario: Fact with source episode link
+
+- **WHEN** a fact has `source_episode_id` set
+- **THEN** the source episode field MUST render as a clickable link to `/memory/episodes/{source_episode_id}`
+
+---
+
+### Requirement: Rule detail page
+
+The dashboard SHALL render a Rule detail page at `/memory/rules/:ruleId`.
+
+The page MUST display breadcrumb navigation: Memory > Rules > Rule.
+
+The page MUST display the following fields in a card layout:
+
+- **Header:** "Rule" as page title
+- **Content:** Full rule content (whitespace-preserved, word-wrapped)
+- **Status row:** Maturity (color-coded badge), Scope (outline badge), Permanence (color-coded badge)
+- **Effectiveness:** Effectiveness score (progress bar with percentage), Applied count, Success count, Harmful count
+- **Confidence:** Confidence (progress bar with percentage), Decay rate
+- **Provenance:** Source butler (outline badge, if present), Source episode ID (link to `/memory/episodes/{id}`, if present)
+- **Tags:** Rendered as secondary badges (if non-empty)
+- **Metadata:** Rendered as formatted JSON in a muted code block (if non-empty)
+- **Timestamps:** Created at, Last applied at, Last evaluated at (formatted via `toLocaleString`)
+
+The page MUST show a loading skeleton while data is fetching and an error message on failure.
+
+---
+
+### Requirement: Episode detail page
+
+The dashboard SHALL render an Episode detail page at `/memory/episodes/:episodeId`.
+
+The page MUST display breadcrumb navigation: Memory > Episodes > Episode.
+
+The page MUST display the following fields in a card layout:
+
+- **Header:** "Episode" as page title, butler name as subtitle (outline badge)
+- **Content:** Full episode content (whitespace-preserved, word-wrapped) in a muted card section
+- **Status row:** Importance (numeric, 1 decimal), Consolidated (Yes=green badge / No=secondary badge)
+- **Details:** Session ID (if present), Reference count, Expires at (formatted, if present)
+- **Metadata:** Rendered as formatted JSON in a muted code block (if non-empty)
+- **Timestamps:** Created at, Last referenced at (formatted via `toLocaleString`)
+
+The page MUST show a loading skeleton while data is fetching and an error message on failure.
 
 ---
 
@@ -480,6 +564,7 @@ The memory domain MUST use the following TanStack Query hooks:
 | `useFact(id)` | `memory-fact` | None | `enabled: !!factId` |
 | `useRules(params)` | `memory-rules` | 30s | No |
 | `useRule(id)` | `memory-rule` | None | `enabled: !!ruleId` |
+| `useEpisode(id)` | `memory-episode` | None | `enabled: !!episodeId` |
 | `useMemoryActivity(limit)` | `memory-activity` | 15s | No |
 
 ---

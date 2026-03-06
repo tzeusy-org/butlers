@@ -1111,6 +1111,13 @@ export function getEpisodes(
   );
 }
 
+/** Fetch a single episode by ID. */
+export function getEpisode(episodeId: string): Promise<ApiResponse<Episode>> {
+  return apiFetch<ApiResponse<Episode>>(
+    `/memory/episodes/${encodeURIComponent(episodeId)}`,
+  );
+}
+
 /** Fetch a paginated list of facts. */
 export function getFacts(
   params?: FactParams,

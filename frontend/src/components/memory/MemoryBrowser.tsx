@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react";
+import { useNavigate } from "react-router";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -197,6 +198,7 @@ function TableSkeleton({ cols, rows = 5 }: { cols: number; rows?: number }) {
 // ---------------------------------------------------------------------------
 
 function FactsTab({ butlerScope }: { butlerScope?: string }) {
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
 
@@ -244,7 +246,11 @@ function FactsTab({ butlerScope }: { butlerScope?: string }) {
             </TableHeader>
             <TableBody>
               {facts.map((f) => (
-                <TableRow key={f.id}>
+                <TableRow
+                  key={f.id}
+                  className="cursor-pointer"
+                  onClick={() => navigate(`/memory/facts/${f.id}`)}
+                >
                   <TableCell className="font-medium">{f.subject}</TableCell>
                   <TableCell>{f.predicate}</TableCell>
                   <TableCell className="max-w-xs truncate">
@@ -278,6 +284,7 @@ function FactsTab({ butlerScope }: { butlerScope?: string }) {
 // ---------------------------------------------------------------------------
 
 function RulesTab({ butlerScope }: { butlerScope?: string }) {
+  const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
 
@@ -323,7 +330,11 @@ function RulesTab({ butlerScope }: { butlerScope?: string }) {
             </TableHeader>
             <TableBody>
               {rules.map((r) => (
-                <TableRow key={r.id}>
+                <TableRow
+                  key={r.id}
+                  className="cursor-pointer"
+                  onClick={() => navigate(`/memory/rules/${r.id}`)}
+                >
                   <TableCell className="max-w-sm truncate">
                     {truncate(r.content)}
                   </TableCell>
@@ -357,6 +368,7 @@ function RulesTab({ butlerScope }: { butlerScope?: string }) {
 // ---------------------------------------------------------------------------
 
 function EpisodesTab({ butlerScope }: { butlerScope?: string }) {
+  const navigate = useNavigate();
   const [page, setPage] = useState(0);
   const [expandedEpisodeId, setExpandedEpisodeId] = useState<string | null>(
     null,
@@ -398,7 +410,10 @@ function EpisodesTab({ butlerScope }: { butlerScope?: string }) {
 
                 return (
                   <Fragment key={ep.id}>
-                    <TableRow>
+                    <TableRow
+                      className="cursor-pointer"
+                      onClick={() => navigate(`/memory/episodes/${ep.id}`)}
+                    >
                       <TableCell className="max-w-sm align-top">
                         <div className="space-y-1">
                           <p className="truncate">{truncate(ep.content)}</p>
@@ -407,11 +422,12 @@ function EpisodesTab({ butlerScope }: { butlerScope?: string }) {
                             variant="link"
                             size="xs"
                             className="h-auto px-0 text-xs"
-                            onClick={() =>
+                            onClick={(e) => {
+                              e.stopPropagation();
                               setExpandedEpisodeId((prev) =>
                                 prev === ep.id ? null : ep.id,
-                              )
-                            }
+                              );
+                            }}
                           >
                             {isExpanded ? "Collapse" : "Expand"}
                           </Button>
