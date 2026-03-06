@@ -31,15 +31,18 @@ async def pool(provisioned_postgres_pool):
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_collection_items_data_gin ON collection_items USING GIN (data)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_collection_items_collection_id ON collection_items (collection_id)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_collection_items_tags_gin ON collection_items USING GIN (tags)
-        """)
+        await p.execute(
+            "CREATE INDEX IF NOT EXISTS idx_collection_items_data_gin"
+            " ON collection_items USING GIN (data)"
+        )
+        await p.execute(
+            "CREATE INDEX IF NOT EXISTS idx_collection_items_collection_id"
+            " ON collection_items (collection_id)"
+        )
+        await p.execute(
+            "CREATE INDEX IF NOT EXISTS idx_collection_items_tags_gin"
+            " ON collection_items USING GIN (tags)"
+        )
 
         yield p
 
