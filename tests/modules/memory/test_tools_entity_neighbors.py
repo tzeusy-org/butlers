@@ -347,8 +347,15 @@ class TestResultSerialization:
         mock_pool.fetch = AsyncMock(
             return_value=[
                 _neighbor_row(
-                    ENTITY_B, "Bob", "person", "knows", 1, [START_UUID, ENTITY_B],
-                    dir="outgoing", content="friends since college", fact_id=FACT_UUID_1,
+                    ENTITY_B,
+                    "Bob",
+                    "person",
+                    "knows",
+                    1,
+                    [START_UUID, ENTITY_B],
+                    dir="outgoing",
+                    content="friends since college",
+                    fact_id=FACT_UUID_1,
                 ),
             ]
         )
@@ -357,7 +364,13 @@ class TestResultSerialization:
 
         item = result[0]
         assert set(item.keys()) == {
-            "entity", "predicate", "direction", "content", "depth", "fact_id", "path",
+            "entity",
+            "predicate",
+            "direction",
+            "content",
+            "depth",
+            "fact_id",
+            "path",
         }
         assert set(item["entity"].keys()) == {"id", "canonical_name", "entity_type"}
         assert item["direction"] == "outgoing"
