@@ -895,16 +895,12 @@ async def set_linked_contact(
     cid = _uuid.UUID(body.contact_id)
 
     # Verify entity exists
-    entity = await pool.fetchval(
-        "SELECT id FROM shared.entities WHERE id = $1", eid
-    )
+    entity = await pool.fetchval("SELECT id FROM shared.entities WHERE id = $1", eid)
     if entity is None:
         raise HTTPException(status_code=404, detail="Entity not found")
 
     # Verify contact exists
-    contact = await pool.fetchval(
-        "SELECT id FROM shared.contacts WHERE id = $1", cid
-    )
+    contact = await pool.fetchval("SELECT id FROM shared.contacts WHERE id = $1", cid)
     if contact is None:
         raise HTTPException(status_code=404, detail="Contact not found")
 
@@ -934,8 +930,7 @@ async def unlink_contact(
     eid = _uuid.UUID(entity_id)
 
     await pool.execute(
-        "UPDATE shared.contacts SET entity_id = NULL, updated_at = now()"
-        " WHERE entity_id = $1",
+        "UPDATE shared.contacts SET entity_id = NULL, updated_at = now() WHERE entity_id = $1",
         eid,
     )
 
