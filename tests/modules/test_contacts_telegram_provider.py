@@ -138,7 +138,7 @@ class TestMakeSyncCursor:
         cursor = _make_sync_cursor()
         assert cursor.startswith("telegram:")
         # Should be parseable as ISO timestamp after prefix
-        ts_part = cursor[len("telegram:"):]
+        ts_part = cursor[len("telegram:") :]
         dt = datetime.fromisoformat(ts_part)
         assert dt.tzinfo is not None
 
@@ -146,17 +146,13 @@ class TestMakeSyncCursor:
 class TestTelegramContactsProvider:
     def test_name(self) -> None:
         with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
-            provider = TelegramContactsProvider(
-                api_id=123, api_hash="abc", session_string="sess"
-            )
+            provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
             assert provider.name == "telegram"
 
     @pytest.mark.asyncio
     async def test_full_sync_returns_contacts(self) -> None:
         with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
-            provider = TelegramContactsProvider(
-                api_id=123, api_hash="abc", session_string="sess"
-            )
+            provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
 
         users = [_make_user(user_id=1, first_name="A"), _make_user(user_id=2, first_name="B")]
         mock_client = AsyncMock()
@@ -176,9 +172,7 @@ class TestTelegramContactsProvider:
     @pytest.mark.asyncio
     async def test_incremental_sync_returns_contacts(self) -> None:
         with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
-            provider = TelegramContactsProvider(
-                api_id=123, api_hash="abc", session_string="sess"
-            )
+            provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
 
         users = [_make_user(user_id=3)]
         mock_client = AsyncMock()
@@ -187,18 +181,14 @@ class TestTelegramContactsProvider:
         mock_client.get_contacts = AsyncMock(return_value=users)
         provider._client = mock_client
 
-        batch = await provider.incremental_sync(
-            account_id="default", cursor="telegram:old"
-        )
+        batch = await provider.incremental_sync(account_id="default", cursor="telegram:old")
         assert len(batch.contacts) == 1
         assert batch.next_sync_cursor is not None
 
     @pytest.mark.asyncio
     async def test_full_sync_filters_bots_and_deleted(self) -> None:
         with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
-            provider = TelegramContactsProvider(
-                api_id=123, api_hash="abc", session_string="sess"
-            )
+            provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
 
         users = [
             _make_user(user_id=1, first_name="Real"),
@@ -219,9 +209,7 @@ class TestTelegramContactsProvider:
     @pytest.mark.asyncio
     async def test_validate_credentials_success(self) -> None:
         with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
-            provider = TelegramContactsProvider(
-                api_id=123, api_hash="abc", session_string="sess"
-            )
+            provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
 
         mock_me = MagicMock()
         mock_me.id = 999
@@ -236,9 +224,7 @@ class TestTelegramContactsProvider:
     @pytest.mark.asyncio
     async def test_validate_credentials_not_authorized(self) -> None:
         with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
-            provider = TelegramContactsProvider(
-                api_id=123, api_hash="abc", session_string="sess"
-            )
+            provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
 
         mock_client = AsyncMock()
         mock_client.is_connected.return_value = False
@@ -248,11 +234,14 @@ class TestTelegramContactsProvider:
         # We need to mock _ensure_client to use our mock
         provider._client = None
 
-        with patch(
-            "butlers.modules.contacts.telegram_provider.StringSession", return_value="session"
-        ), patch(
-            "butlers.modules.contacts.telegram_provider.TelegramClient",
-            return_value=mock_client,
+        with (
+            patch(
+                "butlers.modules.contacts.telegram_provider.StringSession", return_value="session"
+            ),
+            patch(
+                "butlers.modules.contacts.telegram_provider.TelegramClient",
+                return_value=mock_client,
+            ),
         ):
             from butlers.modules.contacts.sync import ContactsTokenRefreshError
 
@@ -262,9 +251,7 @@ class TestTelegramContactsProvider:
     @pytest.mark.asyncio
     async def test_list_groups_returns_empty(self) -> None:
         with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
-            provider = TelegramContactsProvider(
-                api_id=123, api_hash="abc", session_string="sess"
-            )
+            provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
 
         batch = await provider.list_groups(account_id="default")
         assert len(batch.groups) == 0
@@ -272,9 +259,7 @@ class TestTelegramContactsProvider:
     @pytest.mark.asyncio
     async def test_shutdown_disconnects_client(self) -> None:
         with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
-            provider = TelegramContactsProvider(
-                api_id=123, api_hash="abc", session_string="sess"
-            )
+            provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
 
         mock_client = AsyncMock()
         provider._client = mock_client
@@ -286,9 +271,7 @@ class TestTelegramContactsProvider:
     @pytest.mark.asyncio
     async def test_shutdown_no_client(self) -> None:
         with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
-            provider = TelegramContactsProvider(
-                api_id=123, api_hash="abc", session_string="sess"
-            )
+            provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
 
         provider._client = None
         await provider.shutdown()  # Should not raise

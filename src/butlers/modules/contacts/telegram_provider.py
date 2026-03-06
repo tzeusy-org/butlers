@@ -137,9 +137,7 @@ class TelegramContactsProvider(ContactsProvider):
 
         return self._client
 
-    async def full_sync(
-        self, *, account_id: str, page_token: str | None = None
-    ) -> ContactBatch:
+    async def full_sync(self, *, account_id: str, page_token: str | None = None) -> ContactBatch:
         """Fetch all Telegram contacts.
 
         Telegram returns the full contact list in one call (no pagination).

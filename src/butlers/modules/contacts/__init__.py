@@ -534,9 +534,7 @@ class ContactsModule(Module):
             if value:
                 creds[ci_type] = value
 
-        missing = [
-            label for ci_type, label in _TELEGRAM_CI_TYPES.items() if ci_type not in creds
-        ]
+        missing = [label for ci_type, label in _TELEGRAM_CI_TYPES.items() if ci_type not in creds]
         if missing:
             raise RuntimeError(
                 f"ContactsModule: Telegram credentials missing from owner contact_info: "
