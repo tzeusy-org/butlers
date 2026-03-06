@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from butlers.modules.contacts.telegram_provider import (
     TelegramContactsProvider,
-    _make_sync_cursor,
+    _compute_contacts_hash,
     _user_to_canonical,
 )
 
@@ -133,14 +132,35 @@ class TestUserToCanonical:
         assert contact.last_name is None
 
 
-class TestMakeSyncCursor:
+class TestComputeContactsHash:
     def test_cursor_format(self) -> None:
-        cursor = _make_sync_cursor()
-        assert cursor.startswith("telegram:")
-        # Should be parseable as ISO timestamp after prefix
-        ts_part = cursor[len("telegram:") :]
-        dt = datetime.fromisoformat(ts_part)
-        assert dt.tzinfo is not None
+        contacts = [_user_to_canonical(_make_user())]
+        cursor = _compute_contacts_hash([c for c in contacts if c is not None])
+        assert cursor.startswith("telegram:hash:")
+
+    def test_deterministic(self) -> None:
+        contacts = [
+            _user_to_canonical(_make_user(user_id=1, first_name="A")),
+            _user_to_canonical(_make_user(user_id=2, first_name="B")),
+        ]
+        valid = [c for c in contacts if c is not None]
+        assert _compute_contacts_hash(valid) == _compute_contacts_hash(valid)
+
+    def test_order_independent(self) -> None:
+        c1 = _user_to_canonical(_make_user(user_id=1, first_name="A"))
+        c2 = _user_to_canonical(_make_user(user_id=2, first_name="B"))
+        assert c1 is not None and c2 is not None
+        assert _compute_contacts_hash([c1, c2]) == _compute_contacts_hash([c2, c1])
+
+    def test_different_contacts_different_hash(self) -> None:
+        c1 = _user_to_canonical(_make_user(user_id=1, first_name="A"))
+        c2 = _user_to_canonical(_make_user(user_id=2, first_name="B"))
+        assert c1 is not None and c2 is not None
+        assert _compute_contacts_hash([c1]) != _compute_contacts_hash([c2])
+
+    def test_empty_list(self) -> None:
+        cursor = _compute_contacts_hash([])
+        assert cursor.startswith("telegram:hash:")
 
 
 class TestTelegramContactsProvider:
@@ -167,10 +187,10 @@ class TestTelegramContactsProvider:
         assert batch.contacts[1].external_id == "telegram:2"
         assert batch.next_page_token is None
         assert batch.next_sync_cursor is not None
-        assert batch.next_sync_cursor.startswith("telegram:")
+        assert batch.next_sync_cursor.startswith("telegram:hash:")
 
     @pytest.mark.asyncio
-    async def test_incremental_sync_returns_contacts(self) -> None:
+    async def test_incremental_sync_returns_contacts_when_changed(self) -> None:
         with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
             provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
 
@@ -184,6 +204,28 @@ class TestTelegramContactsProvider:
         batch = await provider.incremental_sync(account_id="default", cursor="telegram:old")
         assert len(batch.contacts) == 1
         assert batch.next_sync_cursor is not None
+        assert batch.next_sync_cursor.startswith("telegram:hash:")
+
+    @pytest.mark.asyncio
+    async def test_incremental_sync_returns_empty_when_unchanged(self) -> None:
+        with patch("butlers.modules.contacts.telegram_provider.TELETHON_AVAILABLE", True):
+            provider = TelegramContactsProvider(api_id=123, api_hash="abc", session_string="sess")
+
+        users = [_make_user(user_id=1, first_name="A"), _make_user(user_id=2, first_name="B")]
+        mock_client = AsyncMock()
+        mock_client.is_connected.return_value = True
+        mock_client.is_user_authorized = AsyncMock(return_value=True)
+        mock_client.get_contacts = AsyncMock(return_value=users)
+        provider._client = mock_client
+
+        # First do a full sync to get the hash cursor
+        full_batch = await provider.full_sync(account_id="default")
+        cursor = full_batch.next_sync_cursor
+
+        # Incremental sync with same contacts should return empty batch
+        inc_batch = await provider.incremental_sync(account_id="default", cursor=cursor)
+        assert len(inc_batch.contacts) == 0
+        assert inc_batch.next_sync_cursor == cursor
 
     @pytest.mark.asyncio
     async def test_full_sync_filters_bots_and_deleted(self) -> None:

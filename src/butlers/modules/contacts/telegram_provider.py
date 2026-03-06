@@ -1,15 +1,17 @@
 """Telegram contacts sync provider via Telethon.
 
 Implements ContactsProvider for syncing contacts from the user's Telegram
-account. Since Telegram has no incremental sync token API, both full_sync
-and incremental_sync fetch the complete contact list; the sync engine's
-contact_versions hash comparison handles dedup/change detection.
+account. Uses hash-based change detection: both full_sync and incremental_sync
+fetch the contact list from Telegram, but incremental_sync compares the hash
+of the current list against the cursor and returns an empty batch when nothing
+has changed.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 from .sync import (
@@ -94,9 +96,9 @@ class TelegramContactsProvider(ContactsProvider):
     """Telegram contacts provider using Telethon user-client API.
 
     Fetches the user's Telegram contact list via ``client.get_contacts()``.
-    Since Telegram has no incremental sync token, both full and incremental
-    sync fetch the complete contact list. The sync engine's contact_versions
-    hash comparison handles dedup and change detection.
+    Uses hash-based cursor: full_sync computes a hash of the contact list and
+    returns it as the cursor; incremental_sync compares the current hash against
+    the cursor and returns an empty batch when unchanged.
 
     Chat ID enrichment (resolving private chat IDs for each contact) is done
     as a post-sync step by iterating dialogs.
@@ -141,7 +143,7 @@ class TelegramContactsProvider(ContactsProvider):
         """Fetch all Telegram contacts.
 
         Telegram returns the full contact list in one call (no pagination).
-        A timestamp-based cursor is returned for the sync engine to track.
+        A hash-based cursor is returned so incremental_sync can detect changes.
         """
         del page_token  # Telegram doesn't paginate contacts
 
@@ -154,7 +156,7 @@ class TelegramContactsProvider(ContactsProvider):
             if canonical is not None:
                 contacts.append(canonical)
 
-        cursor = _make_sync_cursor()
+        cursor = _compute_contacts_hash(contacts)
 
         logger.info(
             "Telegram full_sync: fetched %d contacts (account=%s)",
@@ -175,13 +177,13 @@ class TelegramContactsProvider(ContactsProvider):
         cursor: str,
         page_token: str | None = None,
     ) -> ContactBatch:
-        """Fetch all contacts for incremental comparison.
+        """Fetch contacts only if the list has changed since the last sync.
 
-        Telegram has no delta/sync token API. We fetch the full list every time
-        and rely on the sync engine's contact_versions hash to detect actual
-        additions, changes, and deletions.
+        Computes a hash of the current contact list and compares it with the
+        incoming cursor. If the hashes match, returns an empty batch (no changes).
+        If they differ, returns the full contact list with the new hash as cursor.
         """
-        del cursor, page_token  # Not used — Telegram has no incremental API
+        del page_token  # Telegram doesn't paginate contacts
 
         client = await self._ensure_client()
         result = await client.get_contacts()
@@ -192,10 +194,21 @@ class TelegramContactsProvider(ContactsProvider):
             if canonical is not None:
                 contacts.append(canonical)
 
-        new_cursor = _make_sync_cursor()
+        new_cursor = _compute_contacts_hash(contacts)
+
+        if new_cursor == cursor:
+            logger.info(
+                "Telegram incremental_sync: no changes detected (account=%s)",
+                account_id,
+            )
+            return ContactBatch(
+                contacts=[],
+                next_page_token=None,
+                next_sync_cursor=new_cursor,
+            )
 
         logger.info(
-            "Telegram incremental_sync: fetched %d contacts (account=%s)",
+            "Telegram incremental_sync: %d contacts changed (account=%s)",
             len(contacts),
             account_id,
         )
@@ -264,11 +277,17 @@ class TelegramContactsProvider(ContactsProvider):
         return user_to_chat
 
 
-def _make_sync_cursor() -> str:
-    """Generate a timestamp-based sync cursor for Telegram.
+def _compute_contacts_hash(contacts: list[CanonicalContact]) -> str:
+    """Compute a stable hash over the sorted contact list.
 
-    Since Telegram has no real sync tokens, we use a timestamp as a cursor
-    marker. The sync engine uses contact_versions hashes for actual change
-    detection — the cursor just satisfies the interface contract.
+    Used as a sync cursor so that incremental_sync can short-circuit when the
+    contact list hasn't changed since the last sync.
     """
-    return f"telegram:{datetime.now(UTC).isoformat()}"
+    # Sort by external_id for determinism, then serialize each contact's raw payload
+    sorted_contacts = sorted(contacts, key=lambda c: c.external_id)
+    payloads = [
+        json.dumps(c.raw if c.raw is not None else {"id": c.external_id}, sort_keys=True)
+        for c in sorted_contacts
+    ]
+    digest = hashlib.sha256("\n".join(payloads).encode("utf-8")).hexdigest()
+    return f"telegram:hash:{digest}"
