@@ -259,6 +259,8 @@ def register_tools(mcp: Any, module: Any) -> None:
         direction: 'debit' (money out) or 'credit' (money in / refund), or None for both.
         Results are sorted by valid_at DESC.
         """
+        if direction is not None and direction not in ("debit", "credit"):
+            raise ValueError("direction must be one of 'debit', 'credit', or None")
         return await _facts.list_transaction_facts(
             module._get_pool(),
             start_date=(datetime.fromisoformat(start_date) if start_date is not None else None),
