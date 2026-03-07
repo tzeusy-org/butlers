@@ -160,7 +160,7 @@ async def test_create_session_request_id_none_raises(pool):
             pool,
             prompt="Scheduled task",
             trigger_source="schedule:daily-report",
-            request_id=None,
+            request_id=None,  # type: ignore[arg-type]
         )
 
 
