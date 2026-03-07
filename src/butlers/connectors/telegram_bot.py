@@ -35,7 +35,10 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Thread
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    import asyncpg
 
 import httpx
 import uvicorn
@@ -46,6 +49,7 @@ from pydantic import BaseModel
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.connectors.source_filter import SourceFilterEvaluator, extract_telegram_filter_key
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
@@ -218,7 +222,11 @@ class TelegramBotConnector:
     - Mint canonical request_id values
     """
 
-    def __init__(self, config: TelegramBotConnectorConfig) -> None:
+    def __init__(
+        self,
+        config: TelegramBotConnectorConfig,
+        db_pool: asyncpg.Pool | None = None,
+    ) -> None:
         self._config = config
         self._http_client = httpx.AsyncClient(timeout=30.0)
         self._mcp_client = CachedMCPClient(config.switchboard_mcp_url, client_name="telegram-bot")
@@ -245,6 +253,14 @@ class TelegramBotConnector:
 
         # Backoff tracking for polling loop
         self._consecutive_failures: int = 0
+
+        # Source filter evaluator (chat_id blacklist/whitelist)
+        # DB-backed with TTL refresh; fail-open on DB error.
+        self._source_filter_evaluator = SourceFilterEvaluator(
+            connector_type="telegram-bot",
+            endpoint_identity=config.endpoint_identity,
+            db_pool=db_pool,
+        )
 
     @property
     def _telegram_api_base(self) -> str:
@@ -389,6 +405,9 @@ class TelegramBotConnector:
         # Load checkpoint
         self._load_checkpoint()
 
+        # Load source filters before entering the ingestion loop.
+        await self._source_filter_evaluator.ensure_loaded()
+
         # Wait for Switchboard to be ready before entering the poll loop.
         # Telegram advances the update offset as soon as getUpdates returns —
         # messages received while the Switchboard is down would be permanently
@@ -469,6 +488,9 @@ class TelegramBotConnector:
 
         # Start heartbeat
         self._start_heartbeat()
+
+        # Load source filters before registering the webhook.
+        await self._source_filter_evaluator.ensure_loaded()
 
         await self._set_webhook(self._config.webhook_url)
         logger.info(
@@ -707,6 +729,21 @@ class TelegramBotConnector:
                 envelope = self._normalize_to_ingest_v1(update)
                 if envelope is None:
                     return  # Nothing to ingest
+
+                # Source filter gate: evaluate chat_id before Switchboard submission.
+                # update_id is already advanced by _get_updates, so blocked updates
+                # are intentionally dropped — this is not an error condition.
+                chat_id_key = extract_telegram_filter_key(update, "chat_id")
+                sf_result = self._source_filter_evaluator.evaluate(chat_id_key)
+                if not sf_result.allowed:
+                    logger.debug(
+                        "Source filter blocked Telegram update %s: reason=%s filter=%s",
+                        update.get("update_id"),
+                        sf_result.reason,
+                        sf_result.filter_name,
+                    )
+                    return
+
                 await self._submit_to_ingest(envelope)
             except ConnectionError:
                 # Switchboard unavailable — propagate so the outer loop

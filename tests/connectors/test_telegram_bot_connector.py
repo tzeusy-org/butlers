@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
@@ -11,6 +12,11 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 
+from butlers.connectors.source_filter import (
+    SourceFilterEvaluator,
+    SourceFilterSpec,
+    extract_telegram_filter_key,
+)
 from butlers.connectors.telegram_bot import (
     TelegramBotConnector,
     TelegramBotConnectorConfig,
@@ -1339,4 +1345,448 @@ async def test_connection_error_prevents_checkpoint_save(
     # Checkpoint must NOT have been saved because delivery failed
     assert checkpoint_saves == [], (
         "Checkpoint was saved despite ConnectionError — messages would be permanently lost"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Source filter gate tests (bu-qbq.8)
+# -----------------------------------------------------------------------------
+
+
+def _make_filter_spec(
+    *,
+    id: str = "aaaaaaaa-0000-0000-0000-000000000001",
+    name: str = "test-filter",
+    filter_mode: str = "blacklist",
+    source_key_type: str = "chat_id",
+    patterns: list[str] | None = None,
+    priority: int = 0,
+) -> SourceFilterSpec:
+    return SourceFilterSpec(
+        id=id,
+        name=name,
+        filter_mode=filter_mode,
+        source_key_type=source_key_type,
+        patterns=patterns or [],
+        priority=priority,
+    )
+
+
+def _evaluator_with_filters(
+    filters: list[SourceFilterSpec],
+    endpoint_identity: str = "test_bot",
+) -> SourceFilterEvaluator:
+    """Create an evaluator with a pre-loaded filter cache (no DB needed)."""
+    ev = SourceFilterEvaluator(
+        connector_type="telegram-bot",
+        endpoint_identity=endpoint_identity,
+        db_pool=None,
+        refresh_interval_s=300,
+    )
+    ev._filters = filters
+    ev._last_loaded_at = time.monotonic()
+    return ev
+
+
+# -- extract_telegram_filter_key helper tests --
+
+
+def test_extract_telegram_filter_key_private_chat() -> None:
+    """chat_id extraction returns str(chat.id) for private messages."""
+    update = {
+        "update_id": 1,
+        "message": {
+            "message_id": 1,
+            "from": {"id": 987654321},
+            "chat": {"id": 987654321, "type": "private"},
+            "text": "hi",
+        },
+    }
+    assert extract_telegram_filter_key(update, "chat_id") == "987654321"
+
+
+def test_extract_telegram_filter_key_group_chat() -> None:
+    """chat_id extraction returns group chat ID (negative) for group messages."""
+    update = {
+        "update_id": 2,
+        "message": {
+            "message_id": 2,
+            "from": {"id": 111},
+            "chat": {"id": -100987654321, "type": "supergroup"},
+            "text": "hello group",
+        },
+    }
+    assert extract_telegram_filter_key(update, "chat_id") == "-100987654321"
+
+
+def test_extract_telegram_filter_key_edited_message() -> None:
+    """chat_id extraction works for edited_message updates."""
+    update = {
+        "update_id": 3,
+        "edited_message": {
+            "message_id": 3,
+            "from": {"id": 222},
+            "chat": {"id": 222, "type": "private"},
+            "text": "edited",
+        },
+    }
+    assert extract_telegram_filter_key(update, "chat_id") == "222"
+
+
+def test_extract_telegram_filter_key_channel_post() -> None:
+    """chat_id extraction works for channel_post updates."""
+    update = {
+        "update_id": 4,
+        "channel_post": {
+            "message_id": 4,
+            "chat": {"id": -1001234567890, "type": "channel"},
+            "text": "announcement",
+        },
+    }
+    assert extract_telegram_filter_key(update, "chat_id") == "-1001234567890"
+
+
+def test_extract_telegram_filter_key_non_message_update() -> None:
+    """chat_id extraction returns empty string when no message key is present."""
+    update = {"update_id": 5, "callback_query": {"id": "cb1", "data": "click"}}
+    assert extract_telegram_filter_key(update, "chat_id") == ""
+
+
+def test_extract_telegram_filter_key_unknown_key_type() -> None:
+    """Non-chat_id key types return empty string (filter will be skipped by evaluator)."""
+    update = {
+        "update_id": 6,
+        "message": {
+            "message_id": 1,
+            "from": {"id": 999},
+            "chat": {"id": 999, "type": "private"},
+            "text": "test",
+        },
+    }
+    assert extract_telegram_filter_key(update, "domain") == ""
+    assert extract_telegram_filter_key(update, "sender_address") == ""
+
+
+# -- SourceFilterEvaluator integration: chat_id blacklist --
+
+
+@pytest.mark.asyncio
+async def test_source_filter_blacklist_blocks_specific_chat(
+    connector: TelegramBotConnector,
+) -> None:
+    """A blacklisted chat_id is blocked; Switchboard is never called."""
+    blocked_chat_id = "987654321"
+    evaluator = _evaluator_with_filters(
+        [
+            _make_filter_spec(
+                filter_mode="blacklist",
+                source_key_type="chat_id",
+                patterns=[blocked_chat_id],
+            )
+        ]
+    )
+    connector._source_filter_evaluator = evaluator
+
+    update = {
+        "update_id": 50001,
+        "message": {
+            "message_id": 100,
+            "from": {"id": int(blocked_chat_id)},
+            "chat": {"id": int(blocked_chat_id), "type": "private"},
+            "text": "Hello — should be blocked",
+        },
+    }
+
+    with patch.object(connector._mcp_client, "call_tool", new_callable=AsyncMock) as mock_call:
+        await connector._process_update(update)
+        mock_call.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_source_filter_blacklist_allows_other_chats(
+    connector: TelegramBotConnector,
+) -> None:
+    """A blacklisted chat_id does not block other chats."""
+    evaluator = _evaluator_with_filters(
+        [
+            _make_filter_spec(
+                filter_mode="blacklist",
+                source_key_type="chat_id",
+                patterns=["111111111"],
+            )
+        ]
+    )
+    connector._source_filter_evaluator = evaluator
+
+    update = {
+        "update_id": 50002,
+        "message": {
+            "message_id": 101,
+            "from": {"id": 987654321},
+            "chat": {"id": 987654321, "type": "private"},
+            "text": "Not blacklisted",
+        },
+    }
+
+    mock_result = {"request_id": "aaa", "status": "accepted", "duplicate": False}
+    with patch.object(
+        connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
+    ) as mock_call:
+        await connector._process_update(update)
+        mock_call.assert_called_once()
+
+
+# -- SourceFilterEvaluator integration: chat_id whitelist --
+
+
+@pytest.mark.asyncio
+async def test_source_filter_whitelist_allows_only_listed_chats(
+    connector: TelegramBotConnector,
+) -> None:
+    """A whitelist allows only specified chat_ids; all others are blocked."""
+    allowed_chat_id = "42424242"
+    evaluator = _evaluator_with_filters(
+        [
+            _make_filter_spec(
+                filter_mode="whitelist",
+                source_key_type="chat_id",
+                patterns=[allowed_chat_id],
+            )
+        ]
+    )
+    connector._source_filter_evaluator = evaluator
+
+    # Allowed update — whitelisted chat
+    allowed_update = {
+        "update_id": 50010,
+        "message": {
+            "message_id": 200,
+            "from": {"id": int(allowed_chat_id)},
+            "chat": {"id": int(allowed_chat_id), "type": "private"},
+            "text": "I am allowed",
+        },
+    }
+    # Blocked update — not on whitelist
+    blocked_update = {
+        "update_id": 50011,
+        "message": {
+            "message_id": 201,
+            "from": {"id": 99999999},
+            "chat": {"id": 99999999, "type": "private"},
+            "text": "I am NOT allowed",
+        },
+    }
+
+    mock_result = {"request_id": "bbb", "status": "accepted", "duplicate": False}
+    with patch.object(
+        connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
+    ) as mock_call:
+        await connector._process_update(allowed_update)
+        assert mock_call.call_count == 1
+
+        mock_call.reset_mock()
+
+        await connector._process_update(blocked_update)
+        mock_call.assert_not_called()
+
+
+# -- SourceFilterEvaluator integration: non-chat_id key type is skipped --
+
+
+@pytest.mark.asyncio
+async def test_source_filter_non_chat_id_key_type_skipped(
+    connector: TelegramBotConnector,
+) -> None:
+    """Filters with non-chat_id source_key_type do not block updates.
+
+    When extract_telegram_filter_key returns '' for non-chat_id key types,
+    known filter types (domain, sender_address, substring) will not match
+    the empty string against their patterns, so the update is allowed through.
+
+    Truly unknown key types (not in the evaluator's known set) emit a one-time
+    WARNING, but standard email-oriented key types (domain, etc.) are known to
+    the evaluator and simply won't produce a match against Telegram's empty key.
+    """
+    evaluator = _evaluator_with_filters(
+        [
+            _make_filter_spec(
+                id="bbbbbbbb-0000-0000-0000-000000000002",
+                filter_mode="blacklist",
+                source_key_type="domain",  # Valid to evaluator, but irrelevant for telegram
+                patterns=["example.com"],
+            )
+        ]
+    )
+    connector._source_filter_evaluator = evaluator
+
+    update = {
+        "update_id": 50020,
+        "message": {
+            "message_id": 300,
+            "from": {"id": 555},
+            "chat": {"id": 555, "type": "private"},
+            "text": "Should pass through",
+        },
+    }
+
+    mock_result = {"request_id": "ccc", "status": "accepted", "duplicate": False}
+    with patch.object(
+        connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
+    ) as mock_call:
+        await connector._process_update(update)
+        # Update goes through: domain filter got '' as key and did not match
+        mock_call.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_source_filter_truly_unknown_key_type_warns_and_allows(
+    connector: TelegramBotConnector,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Filters with truly unknown source_key_type emit a WARNING and are skipped.
+
+    The evaluator emits a WARNING for source_key_type values it doesn't recognise
+    at all (not in domain/sender_address/substring/chat_id), and the update is
+    allowed through.
+    """
+    evaluator = _evaluator_with_filters(
+        [
+            _make_filter_spec(
+                id="cccccccc-0000-0000-0000-000000000003",
+                filter_mode="blacklist",
+                source_key_type="phone_number",  # Truly unknown to evaluator
+                patterns=["123456789"],
+            )
+        ]
+    )
+    connector._source_filter_evaluator = evaluator
+
+    update = {
+        "update_id": 50021,
+        "message": {
+            "message_id": 301,
+            "from": {"id": 777},
+            "chat": {"id": 777, "type": "private"},
+            "text": "Unknown key type — should pass",
+        },
+    }
+
+    mock_result = {"request_id": "ddd", "status": "accepted", "duplicate": False}
+    with caplog.at_level("WARNING", logger="butlers.connectors.source_filter"):
+        with patch.object(
+            connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
+        ) as mock_call:
+            await connector._process_update(update)
+            mock_call.assert_called_once()
+
+    warning_messages = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("phone_number" in msg for msg in warning_messages), (
+        f"Expected WARNING about 'phone_number' key type, got: {warning_messages}"
+    )
+
+
+# -- Source filter: blocked update does not call Switchboard --
+
+
+@pytest.mark.asyncio
+async def test_source_filter_blocked_update_no_switchboard_call(
+    connector: TelegramBotConnector,
+) -> None:
+    """Blocked updates are dropped silently with no Switchboard submission.
+
+    The update_id is already advanced by _get_updates() so Telegram will not
+    re-deliver it.  This is intentional behaviour, not an error condition.
+    """
+    evaluator = _evaluator_with_filters(
+        [
+            _make_filter_spec(
+                filter_mode="blacklist",
+                source_key_type="chat_id",
+                patterns=["12345"],
+            )
+        ]
+    )
+    connector._source_filter_evaluator = evaluator
+
+    blocked_update = {
+        "update_id": 50030,
+        "message": {
+            "message_id": 400,
+            "from": {"id": 12345},
+            "chat": {"id": 12345, "type": "private"},
+            "text": "Block me",
+        },
+    }
+
+    with patch.object(connector._mcp_client, "call_tool", new_callable=AsyncMock) as mock_call:
+        # Must not raise — blocked is not an error
+        await connector._process_update(blocked_update)
+        mock_call.assert_not_called()
+
+
+# -- ensure_loaded called before ingestion loop --
+
+
+@pytest.mark.asyncio
+async def test_source_filter_ensure_loaded_called_before_polling(
+    connector: TelegramBotConnector,
+    mock_config: TelegramBotConnectorConfig,
+) -> None:
+    """ensure_loaded() must be called before the first getUpdates call."""
+    mock_response = Mock()
+    mock_response.json.return_value = {"ok": True, "result": []}
+    mock_response.raise_for_status = Mock()
+
+    ensure_loaded_calls: list[str] = []
+    get_updates_calls: list[str] = []
+
+    original_ensure_loaded = connector._source_filter_evaluator.ensure_loaded
+
+    async def track_ensure_loaded() -> None:
+        ensure_loaded_calls.append("ensure_loaded")
+        await original_ensure_loaded()
+
+    async def stop_after_get_updates() -> list:
+        get_updates_calls.append("get_updates")
+        connector._running = False
+        return []
+
+    connector._running = True
+
+    async def stop_after_sleep(secs: float) -> None:
+        connector._running = False
+
+    with (
+        patch.object(
+            connector._source_filter_evaluator,
+            "ensure_loaded",
+            side_effect=track_ensure_loaded,
+        ),
+        patch.object(connector, "_get_updates", side_effect=stop_after_get_updates),
+        patch("butlers.connectors.telegram_bot.asyncio.sleep", side_effect=stop_after_sleep),
+        patch.object(connector, "_start_health_server"),
+        patch.object(connector, "_start_heartbeat"),
+        patch.object(connector, "_load_checkpoint"),
+        patch(
+            "butlers.connectors.telegram_bot.wait_for_switchboard_ready",
+            new_callable=AsyncMock,
+        ),
+    ):
+        await connector.start_polling()
+
+    assert ensure_loaded_calls == ["ensure_loaded"], "ensure_loaded() was not called"
+
+
+# -- Connector instantiates SourceFilterEvaluator with correct connector_type --
+
+
+def test_connector_instantiates_source_filter_evaluator(
+    connector: TelegramBotConnector,
+) -> None:
+    """TelegramBotConnector must have a SourceFilterEvaluator with connector_type='telegram-bot'."""
+    assert hasattr(connector, "_source_filter_evaluator")
+    assert isinstance(connector._source_filter_evaluator, SourceFilterEvaluator)
+    assert connector._source_filter_evaluator._connector_type == "telegram-bot"
+    assert (
+        connector._source_filter_evaluator._endpoint_identity == connector._config.endpoint_identity
     )
