@@ -124,14 +124,13 @@ async def test_core_tables_exist(butler_ecosystem: ButlerEcosystem) -> None:
 
 @pytest.mark.asyncio
 async def test_health_tables_exist(health_pool: Pool) -> None:
-    """Query health DB for measurements, medications, conditions, symptoms, meals, research."""
+    """Query health DB for measurements, medications, conditions, symptoms, research."""
     expected_tables = {
         "measurements",
         "medications",
         "medication_doses",
         "conditions",
         "symptoms",
-        "meals",
         "research",
     }
 

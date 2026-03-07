@@ -418,6 +418,36 @@ class TestListMeals:
 
         assert resp.status_code == 503
 
+    async def test_facts_row_maps_to_meal_shape(self, app):
+        """A facts row is transformed to the backward-compatible Meal response shape."""
+        import uuid
+
+        fact_id = uuid.uuid4()
+        mock_row = {
+            "id": fact_id,
+            "predicate": "meal_lunch",
+            "content": "Grilled chicken salad",
+            "valid_at": "2026-03-07T12:00:00+00:00",
+            "created_at": "2026-03-07T12:00:00+00:00",
+            "metadata": {"nutrition": {"calories": 450}, "notes": "No dressing"},
+        }
+        _app_with_mock_db(app, fetch_rows=[mock_row], fetchval_result=1)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/health/meals")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["meta"]["total"] == 1
+        meal = body["data"][0]
+        assert meal["id"] == str(fact_id)
+        assert meal["type"] == "lunch"
+        assert meal["description"] == "Grilled chicken salad"
+        assert meal["nutrition"] == {"calories": 450}
+        assert meal["eaten_at"] == "2026-03-07T12:00:00+00:00"
+        assert meal["notes"] == "No dressing"
+
 
 # ---------------------------------------------------------------------------
 # GET /api/health/research

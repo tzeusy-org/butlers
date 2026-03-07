@@ -40,7 +40,6 @@ CHAIN_TABLES: dict[str, set[str]] = {
     "general": {"collections", "collection_items"},
     "health": {
         "conditions",
-        "meals",
         "measurements",
         "medication_doses",
         "medications",

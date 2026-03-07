@@ -352,8 +352,10 @@ async def list_symptoms(
 
 
 # ---------------------------------------------------------------------------
-# GET /meals — list meals
+# GET /meals — list meals (backed by temporal facts)
 # ---------------------------------------------------------------------------
+
+_MEAL_PREDICATES = ["meal_breakfast", "meal_lunch", "meal_dinner", "meal_snack"]
 
 
 @router.get("/meals", response_model=PaginatedResponse[Meal])
@@ -368,51 +370,54 @@ async def list_meals(
     """List meals with optional type and date range filters."""
     pool = _pool(db)
 
-    conditions: list[str] = []
-    args: list[object] = []
-    idx = 1
+    predicates = [f"meal_{type}"] if type is not None else _MEAL_PREDICATES
+    args: list[object] = [predicates]  # $1 = predicate array
+    idx = 2
 
-    if type is not None:
-        conditions.append(f"type = ${idx}")
-        args.append(type)
-        idx += 1
-
+    extra: list[str] = []
     if since is not None:
-        conditions.append(f"eaten_at >= ${idx}")
+        extra.append(f"valid_at >= ${idx}")
         args.append(since)
         idx += 1
 
     if until is not None:
-        conditions.append(f"eaten_at <= ${idx}")
+        extra.append(f"valid_at <= ${idx}")
         args.append(until)
         idx += 1
 
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    where = "predicate = ANY($1) AND validity = 'active'" + (
+        "".join(f" AND {c}" for c in extra)
+    )
 
-    total = await pool.fetchval(f"SELECT count(*) FROM meals{where}", *args) or 0
+    total = await pool.fetchval(f"SELECT count(*) FROM facts WHERE {where}", *args) or 0
 
     rows = await pool.fetch(
-        f"SELECT id, type, description, nutrition, eaten_at, notes, created_at"
-        f" FROM meals{where}"
-        f" ORDER BY eaten_at DESC"
+        f"SELECT id, predicate, content, valid_at, created_at, metadata"
+        f" FROM facts WHERE {where}"
+        f" ORDER BY valid_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
         *args,
         offset,
         limit,
     )
 
-    data = [
-        Meal(
-            id=str(r["id"]),
-            type=r["type"],
-            description=r["description"],
-            nutrition=dict(r["nutrition"]) if r["nutrition"] else None,
-            eaten_at=str(r["eaten_at"]),
-            notes=r["notes"],
-            created_at=str(r["created_at"]),
+    data = []
+    for r in rows:
+        meta = r["metadata"] or {}
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        meal_type = r["predicate"].removeprefix("meal_")
+        data.append(
+            Meal(
+                id=str(r["id"]),
+                type=meal_type,
+                description=r["content"],
+                nutrition=meta.get("nutrition") if isinstance(meta, dict) else None,
+                eaten_at=str(r["valid_at"]),
+                notes=meta.get("notes") if isinstance(meta, dict) else None,
+                created_at=str(r["created_at"]),
+            )
         )
-        for r in rows
-    ]
 
     return PaginatedResponse[Meal](
         data=data,
