@@ -852,3 +852,7 @@ make test-qg
 - `src/butlers/tools/extraction.py::build_extraction_prompt` should stay minimal and delegate extraction behavior to `/signal-extraction`; schema/tool mapping details remain dynamic in the prompt payload under `Registered butler schemas`.
 - Route-processing context assembly in `src/butlers/daemon.py` is centralized in `_build_route_runtime_context()` and should reference skills (`/routed-message-safety`, `/butler-notifications`) instead of duplicating long inline safety/notify preambles in both hot-path and recovery flows.
 - Shared skill `roster/shared/skills/routed-message-safety/SKILL.md` must be symlinked into each `roster/*/.agents/skills/` so any routed target butler can follow the same fenced-content handling contract.
+
+### Refinery patrol hook activation behavior
+- In this rig state, `gt hook`/`gt mol status` can show a hooked `mol-refinery-patrol` bead while also reporting `No molecule attached`; `gt mol attach` rejects hooked wisps because it requires a pinned bead.
+- `gt patrol new` creates and hooks a fresh patrol wisp, but the hook output may still report `No molecule attached`; use `gt mq list <rig>` as operational queue truth and continue processing merge-ready MRs.
