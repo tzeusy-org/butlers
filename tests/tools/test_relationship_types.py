@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import shutil
+import sys
 import uuid
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -45,7 +47,15 @@ async def pool(provisioned_postgres_pool):
             CREATE TABLE IF NOT EXISTS contacts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 name TEXT NOT NULL,
+                first_name TEXT,
+                last_name TEXT,
+                nickname TEXT,
+                company TEXT,
+                job_title TEXT,
+                entity_id UUID,
                 details JSONB DEFAULT '{}',
+                metadata JSONB DEFAULT '{}',
+                listed BOOLEAN NOT NULL DEFAULT true,
                 archived_at TIMESTAMPTZ,
                 created_at TIMESTAMPTZ DEFAULT now(),
                 updated_at TIMESTAMPTZ DEFAULT now()
@@ -99,7 +109,81 @@ async def pool(provisioned_postgres_pool):
             )
         """)
 
+        # SPO facts infrastructure (needed by store_fact called from _log_activity)
+        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS shared.entities (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                name TEXT NOT NULL DEFAULT '',
+                roles TEXT[] NOT NULL DEFAULT '{}'
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS predicate_registry (
+                name TEXT PRIMARY KEY,
+                is_temporal BOOLEAN NOT NULL DEFAULT false,
+                description TEXT
+            )
+        """)
+        await p.execute("""
+            INSERT INTO predicate_registry (name, is_temporal) VALUES
+                ('activity', true)
+            ON CONFLICT (name) DO NOTHING
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS facts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                content TEXT NOT NULL,
+                embedding TEXT,
+                search_vector TSVECTOR,
+                importance FLOAT NOT NULL DEFAULT 5.0,
+                confidence FLOAT NOT NULL DEFAULT 1.0,
+                decay_rate FLOAT NOT NULL DEFAULT 0.008,
+                permanence TEXT NOT NULL DEFAULT 'standard',
+                source_butler TEXT,
+                source_episode_id UUID,
+                supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
+                validity TEXT NOT NULL DEFAULT 'active',
+                scope TEXT NOT NULL DEFAULT 'global',
+                reference_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                last_confirmed_at TIMESTAMPTZ,
+                tags JSONB DEFAULT '[]'::jsonb,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                entity_id UUID REFERENCES shared.entities(id),
+                object_entity_id UUID REFERENCES shared.entities(id),
+                valid_at TIMESTAMPTZ DEFAULT NULL
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS memory_links (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_type TEXT NOT NULL,
+                source_id UUID NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id UUID NOT NULL,
+                relation TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (source_type, source_id, target_type, target_id)
+            )
+        """)
+
         yield p
+
+
+@pytest.fixture(autouse=True, scope="session")
+def patch_embedding_engine():
+    """Patch get_embedding_engine so store_fact does not require a real ML model."""
+    engine = MagicMock()
+    engine.embed.return_value = [0.1] * 384
+    with patch("butlers.modules.memory.tools.get_embedding_engine", return_value=engine):
+        for mod_name in ("butlers.tools.relationship.feed",):
+            mod = sys.modules.get(mod_name)
+            if mod is not None and hasattr(mod, "_embedding_engine"):
+                mod._embedding_engine = None
+        yield engine
 
 
 @pytest.fixture

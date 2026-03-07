@@ -358,10 +358,6 @@ export {
   getIngestionOverview,
   listConnectorSummaries,
   updateConnectorFilters,
-  listIngestionEvents,
-  getIngestionEvent,
-  getIngestionEventSessions,
-  getIngestionEventRollup,
 } from "./client.ts";
 
 export type {
@@ -381,11 +377,6 @@ export type {
   CrossConnectorSummary,
   IngestionOverviewStats,
   IngestionPeriod,
-  IngestionEventSummary,
-  IngestionEventSession,
-  IngestionEventRollup,
-  IngestionEventsParams,
-  ButlerRollupEntry,
 } from "./types.ts";
 
 export {

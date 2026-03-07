@@ -1,7 +1,22 @@
-"""Reminders — create, list, and dismiss reminders for contacts."""
+"""Reminders — create, list, and dismiss reminders for contacts backed by SPO facts.
+
+Each reminder is a property fact in the facts table (supersession by subject key):
+  subject   = contact:{contact_id}:reminder:{reminder_uuid}
+  predicate = 'reminder'
+  content   = message/label
+  metadata  = {reminder_type, cron, due_at, dismissed, timezone, until_at,
+               calendar_event_id, last_triggered_at, next_trigger_at}
+  valid_at  = NULL (property fact — dismiss updates supersede)
+  scope     = 'relationship'
+  entity_id = contact's entity UUID (resolved via contacts.entity_id)
+
+The response shape is backward compatible with the legacy reminders table.
+"""
 
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -9,8 +24,22 @@ from typing import Any
 import asyncpg
 from dateutil.relativedelta import relativedelta
 
-from butlers.tools.relationship._schema import table_columns
+from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 from butlers.tools.relationship.feed import _log_activity
+
+logger = logging.getLogger(__name__)
+
+_embedding_engine: Any = None
+
+
+def _get_embedding_engine() -> Any:
+    """Lazy-load and return the shared EmbeddingEngine singleton."""
+    global _embedding_engine
+    if _embedding_engine is None:
+        from butlers.modules.memory.tools import get_embedding_engine
+
+        _embedding_engine = get_embedding_engine()
+    return _embedding_engine
 
 
 def _legacy_from_new_type(reminder_type: str) -> str:
@@ -25,23 +54,74 @@ def _new_from_legacy_type(reminder_type: str) -> str:
     return reminder_type
 
 
-def _normalize_reminder_row(row: dict[str, Any]) -> dict[str, Any]:
-    result = dict(row)
-    if "message" not in result and "label" in result:
-        result["message"] = result["label"]
-    if "label" not in result and "message" in result:
-        result["label"] = result["message"]
-    if "reminder_type" not in result and "type" in result:
-        result["reminder_type"] = _legacy_from_new_type(result["type"])
-    if "type" not in result and "reminder_type" in result:
-        result["type"] = _new_from_legacy_type(result["reminder_type"])
-    if "due_at" not in result and "next_trigger_at" in result:
-        result["due_at"] = result["next_trigger_at"]
-    if "next_trigger_at" not in result and "due_at" in result:
-        result["next_trigger_at"] = result["due_at"]
-    if "dismissed" not in result:
-        result["dismissed"] = result.get("next_trigger_at") is None
-    return result
+def _fact_to_reminder(row: dict[str, Any]) -> dict[str, Any]:
+    """Convert a facts row to the reminders API shape."""
+    meta = row.get("metadata") or {}
+    if isinstance(meta, str):
+        meta = json.loads(meta)
+
+    next_at_str = meta.get("next_trigger_at") or meta.get("due_at")
+    next_at = None
+    if next_at_str:
+        try:
+            next_at = datetime.fromisoformat(next_at_str)
+        except (ValueError, TypeError):
+            pass
+
+    until_at_str = meta.get("until_at")
+    until_at = None
+    if until_at_str:
+        try:
+            until_at = datetime.fromisoformat(until_at_str)
+        except (ValueError, TypeError):
+            pass
+
+    lta_str = meta.get("last_triggered_at")
+    lta = None
+    if lta_str:
+        try:
+            lta = datetime.fromisoformat(lta_str)
+        except (ValueError, TypeError):
+            pass
+
+    cal_id_str = meta.get("calendar_event_id")
+    cal_id = None
+    if cal_id_str:
+        try:
+            cal_id = uuid.UUID(str(cal_id_str))
+        except (ValueError, AttributeError):
+            pass
+
+    # Extract contact_id from subject (format: contact:{contact_id}:reminder:{uuid})
+    subject = row.get("subject", "")
+    parts = subject.split(":")
+    contact_id = None
+    if len(parts) >= 2 and parts[0] == "contact":
+        try:
+            contact_id = uuid.UUID(parts[1])
+        except (ValueError, AttributeError):
+            pass
+
+    reminder_type = meta.get("reminder_type", "one_time")
+    dismissed = meta.get("dismissed", False)
+
+    return {
+        "id": row["id"],
+        "contact_id": contact_id,
+        "message": row.get("content", ""),
+        "label": row.get("content", ""),
+        "reminder_type": reminder_type,
+        "type": meta.get("type", _new_from_legacy_type(reminder_type)),
+        "cron": meta.get("cron"),
+        "due_at": next_at,
+        "next_trigger_at": next_at,
+        "timezone": meta.get("timezone", "UTC"),
+        "until_at": until_at,
+        "calendar_event_id": cal_id,
+        "dismissed": dismissed,
+        "last_triggered_at": lta,
+        "created_at": row.get("created_at"),
+    }
 
 
 async def reminder_create(
@@ -60,55 +140,73 @@ async def reminder_create(
     calendar_event_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Create a reminder for a contact."""
-    cols = await table_columns(pool, "reminders")
+    from butlers.modules.memory.storage import store_fact
 
     effective_label = label or message or ""
     effective_type = type or _new_from_legacy_type(reminder_type or "one_time")
     effective_next_trigger_at = next_trigger_at if next_trigger_at is not None else due_at
-    effective_message = message or label or ""
     effective_reminder_type = reminder_type or _legacy_from_new_type(effective_type)
     effective_timezone = (timezone or "UTC").strip() or "UTC"
+    now = datetime.now(UTC)
 
-    insert_cols: list[str] = []
-    values: list[Any] = []
+    entity_id = await resolve_contact_entity_id(pool, contact_id) if contact_id else None
+    embedding_engine = _get_embedding_engine()
 
-    def add(col: str, val: Any) -> None:
-        insert_cols.append(col)
-        values.append(val)
-
-    if "contact_id" in cols:
-        add("contact_id", contact_id)
-    if "message" in cols:
-        add("message", effective_message)
-    if "reminder_type" in cols:
-        add("reminder_type", effective_reminder_type)
-    if "cron" in cols:
-        add("cron", cron)
-    if "due_at" in cols:
-        add("due_at", due_at if due_at is not None else effective_next_trigger_at)
-    if "label" in cols:
-        add("label", effective_label)
-    if "type" in cols:
-        add("type", effective_type)
-    if "next_trigger_at" in cols:
-        add("next_trigger_at", effective_next_trigger_at)
-    if "timezone" in cols:
-        add("timezone", effective_timezone)
-    if "until_at" in cols:
-        add("until_at", until_at)
-    if "calendar_event_id" in cols:
-        add("calendar_event_id", calendar_event_id)
-
-    placeholders = [f"${idx}" for idx in range(1, len(values) + 1)]
-    row = await pool.fetchrow(
-        f"""
-        INSERT INTO reminders ({", ".join(insert_cols)})
-        VALUES ({", ".join(placeholders)})
-        RETURNING *
-        """,
-        *values,
+    # Unique reminder subject per creation — reminders don't supersede each other
+    reminder_uuid = uuid.uuid4()
+    subject = (
+        f"contact:{contact_id}:reminder:{reminder_uuid}"
+        if contact_id
+        else f"reminder:{reminder_uuid}"
     )
-    result = _normalize_reminder_row(dict(row))
+
+    fact_metadata: dict[str, Any] = {
+        "reminder_type": effective_reminder_type,
+        "type": effective_type,
+        "dismissed": False,
+        "timezone": effective_timezone,
+    }
+    if cron is not None:
+        fact_metadata["cron"] = cron
+    if effective_next_trigger_at is not None:
+        fact_metadata["next_trigger_at"] = effective_next_trigger_at.isoformat()
+        fact_metadata["due_at"] = effective_next_trigger_at.isoformat()
+    if until_at is not None:
+        fact_metadata["until_at"] = until_at.isoformat()
+    if calendar_event_id is not None:
+        fact_metadata["calendar_event_id"] = str(calendar_event_id)
+
+    fact_id = await store_fact(
+        pool,
+        subject=subject,
+        predicate="reminder",
+        content=effective_label,
+        embedding_engine=embedding_engine,
+        permanence="stable",
+        scope="relationship",
+        entity_id=entity_id,
+        valid_at=None,  # property fact — dismiss updates will supersede
+        metadata=fact_metadata,
+    )
+
+    result: dict[str, Any] = {
+        "id": fact_id,
+        "contact_id": contact_id,
+        "message": effective_label,
+        "label": effective_label,
+        "reminder_type": effective_reminder_type,
+        "type": effective_type,
+        "cron": cron,
+        "due_at": effective_next_trigger_at,
+        "next_trigger_at": effective_next_trigger_at,
+        "timezone": effective_timezone,
+        "until_at": until_at,
+        "calendar_event_id": calendar_event_id,
+        "dismissed": False,
+        "last_triggered_at": None,
+        "created_at": now,
+    }
+
     if contact_id is not None:
         await _log_activity(
             pool,
@@ -116,8 +214,9 @@ async def reminder_create(
             "reminder_created",
             f"Created reminder: '{effective_label}'",
             entity_type="reminder",
-            entity_id=result["id"],
+            entity_id=fact_id,
         )
+
     return result
 
 
@@ -127,109 +226,153 @@ async def reminder_list(
     include_dismissed: bool = False,
 ) -> list[dict[str, Any]]:
     """List reminders, optionally filtered by contact."""
-    cols = await table_columns(pool, "reminders")
-    where: list[str] = []
-    args: list[Any] = []
+    conditions = [
+        "predicate = 'reminder'",
+        "scope = 'relationship'",
+        "validity = 'active'",
+        "valid_at IS NULL",
+    ]
+    params: list[Any] = []
+    idx = 1
 
     if contact_id is not None:
-        args.append(contact_id)
-        where.append(f"contact_id = ${len(args)}")
+        conditions.append(f"subject LIKE ${idx}")
+        params.append(f"contact:{contact_id}:reminder:%")
+        idx += 1
 
     if not include_dismissed:
-        if "dismissed" in cols:
-            where.append("dismissed = false")
-        elif "next_trigger_at" in cols:
-            where.append("next_trigger_at IS NOT NULL")
+        conditions.append(
+            "((metadata->>'dismissed')::boolean = false OR metadata->>'dismissed' IS NULL)"
+        )
 
-    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-    if "next_trigger_at" in cols:
-        order_sql = "ORDER BY next_trigger_at ASC NULLS LAST"
-    else:
-        order_sql = "ORDER BY created_at DESC"
-
+    where = " AND ".join(conditions)
     rows = await pool.fetch(
-        f"SELECT * FROM reminders {where_sql} {order_sql}",
-        *args,
+        f"""
+        SELECT id, subject, content, created_at, metadata
+        FROM facts
+        WHERE {where}
+        ORDER BY created_at DESC
+        """,
+        *params,
     )
-    return [_normalize_reminder_row(dict(row)) for row in rows]
+
+    results = [_fact_to_reminder(dict(r)) for r in rows]
+
+    if not include_dismissed:
+        # Secondary filter: one_time reminders with no next_trigger_at are effectively dismissed
+        results = [r for r in results if not r["dismissed"]]
+
+    return results
 
 
 async def reminder_dismiss(pool: asyncpg.Pool, reminder_id: uuid.UUID) -> dict[str, Any]:
-    """Dismiss a reminder across legacy/spec schemas."""
-    row = await pool.fetchrow("SELECT * FROM reminders WHERE id = $1", reminder_id)
+    """Dismiss a reminder; advance recurring reminders to the next trigger."""
+    from butlers.modules.memory.storage import store_fact
+
+    row = await pool.fetchrow(
+        "SELECT id, subject, content, metadata, entity_id FROM facts WHERE id = $1",
+        reminder_id,
+    )
     if row is None:
         raise ValueError(f"Reminder {reminder_id} not found")
-    cols = await table_columns(pool, "reminders")
-    original = _normalize_reminder_row(dict(row))
 
-    if "dismissed" in cols:
-        if "updated_at" in cols:
-            updated = await pool.fetchrow(
-                """
-                UPDATE reminders
-                SET dismissed = true, updated_at = now()
-                WHERE id = $1
-                RETURNING *
-                """,
-                reminder_id,
-            )
-        else:
-            updated = await pool.fetchrow(
-                """
-                UPDATE reminders SET dismissed = true
-                WHERE id = $1
-                RETURNING *
-                """,
-                reminder_id,
-            )
-        result = _normalize_reminder_row(dict(updated))
+    meta = row["metadata"] or {}
+    if isinstance(meta, str):
+        meta = json.loads(meta)
+
+    now = datetime.now(UTC)
+    reminder_type = meta.get("type", "one_time")
+    next_at_str = meta.get("next_trigger_at")
+    next_at = None
+    if next_at_str:
+        try:
+            next_at = datetime.fromisoformat(next_at_str)
+        except (ValueError, TypeError):
+            pass
+
+    if reminder_type == "one_time" or next_at is None:
+        new_next = None
+    elif reminder_type == "recurring_yearly":
+        new_next = next_at + relativedelta(years=1)
+    elif reminder_type == "recurring_monthly":
+        new_next = next_at + relativedelta(months=1)
     else:
-        now = datetime.now(UTC)
-        reminder_type = original["type"]
-        next_at = original.get("next_trigger_at")
+        new_next = None
 
-        if reminder_type == "one_time" or next_at is None:
-            new_next = None
-        elif reminder_type == "recurring_yearly":
-            new_next = next_at + relativedelta(years=1)
-        elif reminder_type == "recurring_monthly":
-            new_next = next_at + relativedelta(months=1)
-        else:
-            new_next = None
+    entity_id = row["entity_id"]
+    embedding_engine = _get_embedding_engine()
 
-        if "updated_at" in cols:
-            updated = await pool.fetchrow(
-                """
-                UPDATE reminders
-                SET last_triggered_at = $2, next_trigger_at = $3, updated_at = now()
-                WHERE id = $1
-                RETURNING *
-                """,
-                reminder_id,
-                now,
-                new_next,
-            )
-        else:
-            updated = await pool.fetchrow(
-                """
-                UPDATE reminders
-                SET last_triggered_at = $2, next_trigger_at = $3
-                WHERE id = $1
-                RETURNING *
-                """,
-                reminder_id,
-                now,
-                new_next,
-            )
-        result = _normalize_reminder_row(dict(updated))
+    new_metadata = dict(meta)
+    new_metadata["last_triggered_at"] = now.isoformat()
+    new_metadata["next_trigger_at"] = new_next.isoformat() if new_next else None
+    new_metadata["due_at"] = new_next.isoformat() if new_next else None
+    new_metadata["dismissed"] = new_next is None
 
-    if result.get("contact_id") is not None:
+    new_fact_id = await store_fact(
+        pool,
+        subject=row["subject"],
+        predicate="reminder",
+        content=row["content"],
+        embedding_engine=embedding_engine,
+        permanence="stable",
+        scope="relationship",
+        entity_id=entity_id,
+        valid_at=None,  # property fact — supersedes previous
+        metadata=new_metadata,
+    )
+
+    # Extract contact_id from subject
+    subject = row["subject"]
+    parts = subject.split(":")
+    contact_id = None
+    if len(parts) >= 2 and parts[0] == "contact":
+        try:
+            contact_id = uuid.UUID(parts[1])
+        except (ValueError, AttributeError):
+            pass
+
+    until_at_str = new_metadata.get("until_at")
+    until_at = None
+    if until_at_str:
+        try:
+            until_at = datetime.fromisoformat(until_at_str)
+        except (ValueError, TypeError):
+            pass
+
+    cal_id_str = new_metadata.get("calendar_event_id")
+    cal_id = None
+    if cal_id_str:
+        try:
+            cal_id = uuid.UUID(str(cal_id_str))
+        except (ValueError, AttributeError):
+            pass
+
+    result: dict[str, Any] = {
+        "id": new_fact_id,
+        "contact_id": contact_id,
+        "message": row["content"],
+        "label": row["content"],
+        "reminder_type": new_metadata.get("reminder_type", reminder_type),
+        "type": reminder_type,
+        "cron": new_metadata.get("cron"),
+        "due_at": new_next,
+        "next_trigger_at": new_next,
+        "timezone": new_metadata.get("timezone", "UTC"),
+        "until_at": until_at,
+        "calendar_event_id": cal_id,
+        "dismissed": new_next is None,
+        "last_triggered_at": now,
+        "created_at": now,
+    }
+
+    if contact_id is not None:
         await _log_activity(
             pool,
-            result["contact_id"],
+            contact_id,
             "reminder_dismissed",
-            f"Dismissed reminder: '{original['label']}'",
+            f"Dismissed reminder: '{row['content']}'",
             entity_type="reminder",
             entity_id=reminder_id,
         )
+
     return result

@@ -326,10 +326,9 @@ class TestContactResolveThresholds:
         assert result["confidence"] == CONFIDENCE_HIGH
         assert result["contact_id"] == "uuid-1"
 
-    async def test_29_point_gap_is_medium_confidence(self):
-        """A gap of 29 points should return MEDIUM confidence (boundary test)."""
-        # This is harder to control precisely, but we can test the logic
-        # by ensuring gap <30 → MEDIUM
+    async def test_14_point_gap_is_medium_confidence(self):
+        """A gap of 14 points should return MEDIUM confidence (boundary test, threshold=15)."""
+        # We verify that gap < 15 → MEDIUM
         pool = MagicMock()
         pool.fetch = AsyncMock(
             side_effect=[
@@ -354,18 +353,19 @@ class TestContactResolveThresholds:
                         "metadata": {},
                     },
                 ],
-                # contact_data query - give uuid-1 a slight edge (10 points)
+                # contact_data query - give uuid-1 a 14-point edge via stay_in_touch=7 (+10)
+                # plus acquaintance relationship (+2) plus 1 interaction (+2) = 14 total
                 [
                     {"id": "uuid-1", "stay_in_touch_days": 7},
                     {"id": "uuid-2", "stay_in_touch_days": None},
                 ],
-                # relationships query
-                [{"contact_id": "uuid-1", "forward_label": "acquaintance"}],  # +2 points
-                # interactions query
+                # relationships query: acquaintance = +2 points
+                [{"contact_id": "uuid-1", "forward_label": "acquaintance"}],
+                # interactions query: 1 interaction in 90d = +2 points
                 [
                     {
                         "contact_id": "uuid-1",
-                        "count_90d": 8,  # +16 points
+                        "count_90d": 1,
                         "most_recent": None,
                     }
                 ],
@@ -378,9 +378,9 @@ class TestContactResolveThresholds:
 
         result = await contact_resolve(pool, "John Smith")
 
-        # uuid-1: base 90 + stay_in_touch (10) + acquaintance (2) + interactions (16) = 118
+        # uuid-1: base 90 + stay_in_touch (10) + acquaintance (2) + interactions (2) = 104
         # uuid-2: base 90 + 0 = 90
-        # Gap = 28 points (<30) → MEDIUM confidence, no auto-selection
+        # Gap = 14 points (<15) → MEDIUM confidence, no auto-selection
         assert result["confidence"] == CONFIDENCE_MEDIUM
         assert result["contact_id"] is None
 

@@ -5,13 +5,12 @@ import { BackfillHistoryTab } from '@/components/switchboard/BackfillHistoryTab'
 import { FiltersTab } from '@/components/switchboard/FiltersTab'
 import { OverviewTab } from '@/components/ingestion/OverviewTab'
 import { ConnectorsTab } from '@/components/ingestion/ConnectorsTab'
-import { TimelineTab } from '@/components/ingestion/TimelineTab'
 
 // ---------------------------------------------------------------------------
 // Tab value constants
 // ---------------------------------------------------------------------------
 
-const INGESTION_TABS = ['overview', 'connectors', 'filters', 'history', 'timeline'] as const
+const INGESTION_TABS = ['overview', 'connectors', 'filters', 'history'] as const
 type IngestionTab = (typeof INGESTION_TABS)[number]
 
 function isValidTab(value: string | null): value is IngestionTab {
@@ -58,7 +57,6 @@ export default function IngestionPage() {
           <TabsTrigger value="connectors">Connectors</TabsTrigger>
           <TabsTrigger value="filters">Filters</TabsTrigger>
           <TabsTrigger value="history">History</TabsTrigger>
-          <TabsTrigger value="timeline">Timeline</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -75,10 +73,6 @@ export default function IngestionPage() {
 
         <TabsContent value="history">
           <BackfillHistoryTab />
-        </TabsContent>
-
-        <TabsContent value="timeline">
-          <TimelineTab isActive={activeTab === 'timeline'} />
         </TabsContent>
       </Tabs>
     </div>

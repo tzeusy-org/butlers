@@ -52,23 +52,29 @@ async def contacts_overdue(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     Contacts with a cadence but no interactions are always overdue.
     Contacts with no cadence (NULL) are never returned.
     Archived contacts are excluded.
+
+    Interactions are stored as SPO facts (predicate='interaction', valid_at=occurred_at).
     """
     rows = await pool.fetch(
         """
         SELECT
             c.*,
-            MAX(i.occurred_at) AS last_interaction_at,
+            MAX(f.valid_at) AS last_interaction_at,
             CASE
-                WHEN MAX(i.occurred_at) IS NULL THEN NULL
-                ELSE EXTRACT(EPOCH FROM (now() - MAX(i.occurred_at))) / 86400.0
+                WHEN MAX(f.valid_at) IS NULL THEN NULL
+                ELSE EXTRACT(EPOCH FROM (now() - MAX(f.valid_at))) / 86400.0
             END AS days_since_last_interaction
         FROM contacts c
-        LEFT JOIN interactions i ON c.id = i.contact_id
+        LEFT JOIN facts f
+            ON f.subject = 'contact:' || c.id::text
+           AND f.predicate = 'interaction'
+           AND f.scope = 'relationship'
+           AND f.validity = 'active'
         WHERE c.stay_in_touch_days IS NOT NULL
           AND c.listed = true
         GROUP BY c.id
-        HAVING MAX(i.occurred_at) IS NULL
-            OR MAX(i.occurred_at) < now() - make_interval(days => c.stay_in_touch_days)
+        HAVING MAX(f.valid_at) IS NULL
+            OR MAX(f.valid_at) < now() - make_interval(days => c.stay_in_touch_days)
         ORDER BY c.first_name, c.last_name, c.nickname
         """
     )
