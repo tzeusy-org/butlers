@@ -36,6 +36,24 @@ except (ImportError, AttributeError):
     track_bill = None  # type: ignore[assignment]
     upcoming_bills = None  # type: ignore[assignment]
 
+# --- SPO fact-layer (bu-ddb.4) ---
+try:
+    from butlers.tools.finance.facts import (  # type: ignore[attr-defined]
+        list_transaction_facts,
+        record_transaction_fact,
+        spending_summary_facts,
+        track_account_fact,
+        track_bill_fact,
+        track_subscription_fact,
+    )
+except (ImportError, AttributeError):
+    list_transaction_facts = None  # type: ignore[assignment]
+    record_transaction_fact = None  # type: ignore[assignment]
+    spending_summary_facts = None  # type: ignore[assignment]
+    track_account_fact = None  # type: ignore[assignment]
+    track_bill_fact = None  # type: ignore[assignment]
+    track_subscription_fact = None  # type: ignore[assignment]
+
 __all__ = [
     # spending
     "VALID_GROUP_BY_MODES",
@@ -48,4 +66,11 @@ __all__ = [
     # bills (butlers-ee32.6)
     "track_bill",
     "upcoming_bills",
+    # SPO fact-layer (bu-ddb.4)
+    "record_transaction_fact",
+    "list_transaction_facts",
+    "track_account_fact",
+    "track_subscription_fact",
+    "track_bill_fact",
+    "spending_summary_facts",
 ]
