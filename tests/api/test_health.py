@@ -44,6 +44,7 @@ def _app_with_mock_db(
     mock_pool.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_pool.fetchval = AsyncMock(return_value=fetchval_result)
     mock_pool.fetchrow = AsyncMock(return_value=fetchrow_result)
+    app.state.health_test_mock_pool = mock_pool
 
     mock_db = MagicMock(spec=DatabaseManager)
     if pool_available:
@@ -429,7 +430,11 @@ class TestListMeals:
             "content": "Grilled chicken salad",
             "valid_at": "2026-03-07T12:00:00+00:00",
             "created_at": "2026-03-07T12:00:00+00:00",
-            "metadata": {"nutrition": {"calories": 450}, "notes": "No dressing"},
+            "metadata": {
+                "estimated_calories": 450,
+                "macros": {"protein_g": 30, "carbs_g": 20, "fat_g": 10},
+                "notes": "No dressing",
+            },
         }
         _app_with_mock_db(app, fetch_rows=[mock_row], fetchval_result=1)
         async with httpx.AsyncClient(
@@ -444,9 +449,57 @@ class TestListMeals:
         assert meal["id"] == str(fact_id)
         assert meal["type"] == "lunch"
         assert meal["description"] == "Grilled chicken salad"
-        assert meal["nutrition"] == {"calories": 450}
+        assert meal["nutrition"] == {
+            "calories": 450,
+            "protein_g": 30,
+            "carbs_g": 20,
+            "fat_g": 10,
+        }
         assert meal["eaten_at"] == "2026-03-07T12:00:00+00:00"
         assert meal["notes"] == "No dressing"
+
+    async def test_facts_row_without_nutrition_maps_nutrition_to_null(self, app):
+        """When metadata lacks nutrition fields, response nutrition is null."""
+        import uuid
+
+        fact_id = uuid.uuid4()
+        mock_row = {
+            "id": fact_id,
+            "predicate": "meal_snack",
+            "content": "Apple slices",
+            "valid_at": "2026-03-07T15:00:00+00:00",
+            "created_at": "2026-03-07T15:00:00+00:00",
+            "metadata": {"notes": "Post-workout"},
+        }
+        _app_with_mock_db(app, fetch_rows=[mock_row], fetchval_result=1)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/health/meals")
+
+        assert resp.status_code == 200
+        meal = resp.json()["data"][0]
+        assert meal["id"] == str(fact_id)
+        assert meal["nutrition"] is None
+        assert meal["notes"] == "Post-workout"
+
+    async def test_query_enforces_health_scope_and_active_validity(self, app):
+        """Facts query must be constrained to health scope and active validity."""
+        _app_with_mock_db(app)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/health/meals")
+
+        assert resp.status_code == 200
+        fetchval_sql = app.state.health_test_mock_pool.fetchval.call_args.args[0]
+        fetch_sql = app.state.health_test_mock_pool.fetch.call_args.args[0]
+        assert "FROM facts" in fetchval_sql
+        assert "scope = 'health'" in fetchval_sql
+        assert "validity = 'active'" in fetchval_sql
+        assert "FROM facts" in fetch_sql
+        assert "scope = 'health'" in fetch_sql
+        assert "validity = 'active'" in fetch_sql
 
 
 # ---------------------------------------------------------------------------

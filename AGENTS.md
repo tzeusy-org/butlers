@@ -314,6 +314,10 @@ make test-qg
 ### Dashboard health endpoint alias contract
 - `src/butlers/api/app.py` must expose both `GET /api/health` and `GET /health` with the same `{"status":"ok"}` payload so direct infra probes and `/api`-prefixed clients both work.
 
+### Health meals API facts contract
+- `GET /api/health/meals` in `roster/health/api/router.py` must query `facts` with `predicate = ANY(meal predicates)`, `scope = 'health'`, and `validity = 'active'`, applying `since/until` filters to `valid_at`.
+- Response mapping remains backward compatible (`id`, `type`, `description`, `nutrition`, `eaten_at`, `notes`, `created_at`), where `nutrition` is derived from fact metadata (`estimated_calories` + `macros.{protein_g,carbs_g,fat_g}`) and is `null` when those fields are absent.
+
 ### Approvals CAS/idempotency contract
 - `src/butlers/modules/approvals/module.py` decision paths (`_approve_action`, `_reject_action`, `_expire_stale_actions`) must use compare-and-set SQL writes (`... WHERE status='pending'`) so concurrent decision attempts cannot overwrite each other.
 - `src/butlers/modules/approvals/executor.py::execute_approved_action` is idempotent per `action_id`: it serializes execution with a process-local per-action lock, replays stored `execution_result` when status is already `executed`, and only performs the terminal write when status is still `approved`.

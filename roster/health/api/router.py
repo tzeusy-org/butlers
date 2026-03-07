@@ -358,6 +358,33 @@ async def list_symptoms(
 _MEAL_PREDICATES = ["meal_breakfast", "meal_lunch", "meal_dinner", "meal_snack"]
 
 
+def _as_json_object(value: object) -> dict:
+    """Normalize asyncpg JSON/JSONB outputs into a dict."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _meal_nutrition_from_metadata(metadata: dict) -> dict | None:
+    """Build backward-compatible Meal.nutrition from fact metadata fields."""
+    estimated_calories = metadata.get("estimated_calories")
+    macros = _as_json_object(metadata.get("macros"))
+    has_nutrition = estimated_calories is not None or any(
+        macros.get(k) is not None for k in ("protein_g", "carbs_g", "fat_g")
+    )
+    if not has_nutrition:
+        return None
+    return {
+        "calories": estimated_calories,
+        "protein_g": macros.get("protein_g"),
+        "carbs_g": macros.get("carbs_g"),
+        "fat_g": macros.get("fat_g"),
+    }
+
+
 @router.get("/meals", response_model=PaginatedResponse[Meal])
 async def list_meals(
     type: str | None = Query(None, description="Filter by meal type"),
@@ -385,7 +412,9 @@ async def list_meals(
         args.append(until)
         idx += 1
 
-    where = "predicate = ANY($1) AND validity = 'active'" + ("".join(f" AND {c}" for c in extra))
+    where = "predicate = ANY($1) AND scope = 'health' AND validity = 'active'" + (
+        "".join(f" AND {c}" for c in extra)
+    )
 
     total = await pool.fetchval(f"SELECT count(*) FROM facts WHERE {where}", *args) or 0
 
@@ -401,18 +430,16 @@ async def list_meals(
 
     data = []
     for r in rows:
-        meta = r["metadata"] or {}
-        if isinstance(meta, str):
-            meta = json.loads(meta)
+        meta = _as_json_object(r["metadata"])
         meal_type = r["predicate"].removeprefix("meal_")
         data.append(
             Meal(
                 id=str(r["id"]),
                 type=meal_type,
                 description=r["content"],
-                nutrition=meta.get("nutrition") if isinstance(meta, dict) else None,
+                nutrition=_meal_nutrition_from_metadata(meta),
                 eaten_at=str(r["valid_at"]),
-                notes=meta.get("notes") if isinstance(meta, dict) else None,
+                notes=meta.get("notes"),
                 created_at=str(r["created_at"]),
             )
         )
