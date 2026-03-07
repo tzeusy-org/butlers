@@ -207,7 +207,8 @@ async def pool(postgres_container):
             input_tokens INTEGER,
             output_tokens INTEGER,
             parent_session_id UUID REFERENCES sessions(id),
-            request_id TEXT
+            request_id TEXT,
+            ingestion_event_id UUID
         )
     """)
     yield p
@@ -345,6 +346,7 @@ class TestSessionsActive:
             "success",
             "error",
             "request_id",
+            "ingestion_event_id",
             "started_at",
             "completed_at",
         }

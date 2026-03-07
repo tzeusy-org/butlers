@@ -220,7 +220,7 @@ async def sessions_active(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error, request_id,
-               started_at, completed_at
+               ingestion_event_id, started_at, completed_at
         FROM sessions
         WHERE completed_at IS NULL
         ORDER BY started_at DESC

@@ -81,6 +81,7 @@ async def pool(postgres_container):
             output_tokens INTEGER,
             parent_session_id UUID,
             request_id TEXT,
+            ingestion_event_id UUID,
             started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             completed_at TIMESTAMPTZ
         )
