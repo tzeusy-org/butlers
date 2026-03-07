@@ -1843,16 +1843,22 @@ class HomeAssistantModule(Module):
             return
 
     async def _persist_entity_snapshot(self) -> None:
-        """UPSERT the current entity cache into ``ha_entity_snapshot``.
+        """Persist the current entity cache as SPO facts in the memory subsystem.
 
-        Each entity is written as a single row keyed by ``entity_id``.
-        Uses ``ON CONFLICT (entity_id) DO UPDATE`` so that existing rows
-        are refreshed rather than duplicated.
+        Each HA entity is stored as a property fact with predicate ``ha_state``,
+        anchored to a ``shared.entities`` row of type ``other``.  Each snapshot
+        cycle supersedes the previous fact for the same entity so the facts table
+        always contains exactly one active ``ha_state`` fact per HA entity.
 
-        Silently skips when no DB pool is available.
+        Entity resolution (create-or-reuse) is handled inline via an UPSERT on
+        ``shared.entities (tenant_id, canonical_name, entity_type)`` so no
+        external helper is needed.
+
+        Silently skips when no DB pool is available or the entity cache is empty.
+        Errors from individual entities are logged but do not abort the cycle.
         """
-        import json as _json
-        from datetime import datetime as _datetime
+        from butlers.modules.memory.embedding import EmbeddingEngine
+        from butlers.modules.memory.storage import store_fact
 
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
@@ -1863,30 +1869,80 @@ class HomeAssistantModule(Module):
             logger.debug("HomeAssistantModule: entity cache empty; skipping snapshot.")
             return
 
-        # Bulk UPSERT via executemany for efficiency
-        rows = [
-            (
-                e.entity_id,
-                e.state,
-                _json.dumps(e.attributes),
-                _datetime.fromisoformat(e.last_updated) if e.last_updated else None,
-            )
-            for e in entities
-        ]
+        # Lazy-load a no-op embedding engine so we avoid heavyweight model
+        # initialisation in the background snapshot loop.  Snapshots are
+        # machine-generated, high-volume facts; semantic search over them is
+        # not a primary use-case.  If a real engine is available it will be
+        # picked up naturally; otherwise we fall back to a zero-vector stub.
+        try:
+            from butlers.modules.memory.tools import get_embedding_engine
 
-        await pool.executemany(
-            """
-            INSERT INTO ha_entity_snapshot (entity_id, state, attributes, last_updated)
-            VALUES ($1, $2, $3::jsonb, $4::timestamptz)
-            ON CONFLICT (entity_id) DO UPDATE SET
-                state        = EXCLUDED.state,
-                attributes   = EXCLUDED.attributes,
-                last_updated = EXCLUDED.last_updated,
-                captured_at  = now()
-            """,
-            rows,
-        )
+            embedding_engine = get_embedding_engine()
+        except Exception as exc:
+            logger.warning(
+                "HomeAssistantModule: failed to get embedding engine, falling back to no-op: %s",
+                exc,
+            )
+            embedding_engine = EmbeddingEngine()
+
+        tenant_id = "home"
+        persisted = 0
+        errors = 0
+
+        for e in entities:
+            try:
+                # 1. Resolve or create the shared entity for this HA device.
+                #    canonical_name = HA entity ID (e.g. "sensor.living_room_temp")
+                #    entity_type = 'other' (HA entities are devices, not people/places)
+                entity_uuid = await pool.fetchval(
+                    """
+                    INSERT INTO shared.entities
+                        (tenant_id, canonical_name, entity_type, metadata)
+                    VALUES ($1, $2, 'other', $3::jsonb)
+                    ON CONFLICT (tenant_id, canonical_name, entity_type) DO UPDATE
+                        SET updated_at = now()
+                    RETURNING id
+                    """,
+                    tenant_id,
+                    e.entity_id,
+                    '{"source": "home_assistant"}',
+                )
+
+                # 2. Store as a property fact (valid_at=None) so each new snapshot
+                #    supersedes the previous active ha_state fact for this entity.
+                #    HA's last_updated timestamp is preserved in metadata for
+                #    provenance; it is NOT passed as valid_at because temporal
+                #    facts (valid_at IS NOT NULL) never trigger supersession and
+                #    would accumulate unboundedly in the facts table.
+                await store_fact(
+                    pool,
+                    subject=e.entity_id,
+                    predicate="ha_state",
+                    content=e.state,
+                    embedding_engine=embedding_engine,
+                    permanence="volatile",
+                    scope="home",
+                    tags=["ha_device", e.entity_id.split(".")[0]],
+                    source_butler="home",
+                    metadata={
+                        "attributes": e.attributes,
+                        "entity_id_ha": e.entity_id,
+                        "last_updated": e.last_updated or None,
+                    },
+                    entity_id=entity_uuid,
+                    valid_at=None,
+                )
+                persisted += 1
+            except Exception as exc:
+                errors += 1
+                logger.warning(
+                    "HomeAssistantModule: failed to persist snapshot for %s: %s",
+                    e.entity_id,
+                    exc,
+                )
+
         logger.debug(
-            "HomeAssistantModule: persisted snapshot of %d entities.",
-            len(entities),
+            "HomeAssistantModule: persisted snapshot of %d entities (%d errors).",
+            persisted,
+            errors,
         )

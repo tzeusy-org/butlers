@@ -3153,17 +3153,22 @@ class TestActivateScene:
 
 
 class TestSnapshotPersistence:
-    """Verify _persist_entity_snapshot UPSERTs entities into ha_entity_snapshot."""
+    """Verify _persist_entity_snapshot stores entities as SPO facts via store_fact()."""
 
     def _make_mock_db(self) -> MagicMock:
+        import uuid
+
         pool = AsyncMock()
-        pool.executemany = AsyncMock()
+        # fetchval returns a UUID (the resolved shared.entities row id)
+        pool.fetchval = AsyncMock(return_value=uuid.uuid4())
         db = MagicMock()
         db.pool = pool
         return db
 
-    async def test_persist_snapshot_upserts_entities(self, ha_module: HomeAssistantModule) -> None:
-        """_persist_entity_snapshot calls executemany with all cached entities."""
+    async def test_persist_snapshot_stores_facts_for_all_entities(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_persist_entity_snapshot calls store_fact once per cached entity."""
         mock_db = self._make_mock_db()
         ha_module._db = mock_db
         ha_module._entity_cache = {
@@ -3181,42 +3186,18 @@ class TestSnapshotPersistence:
             ),
         }
 
-        await ha_module._persist_entity_snapshot()
+        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()) as mock_store_fact:
+            await ha_module._persist_entity_snapshot()
 
-        mock_db.pool.executemany.assert_awaited_once()
-        call_args = mock_db.pool.executemany.call_args
-        sql = call_args.args[0]
-        rows = call_args.args[1]
-        assert "ha_entity_snapshot" in sql
-        assert "ON CONFLICT" in sql
-        assert len(rows) == 2
-        entity_ids = {row[0] for row in rows}
-        assert "light.kitchen" in entity_ids
-        assert "sensor.temp" in entity_ids
+        assert mock_store_fact.await_count == 2
+        subjects = {call.kwargs["subject"] for call in mock_store_fact.call_args_list}
+        assert "light.kitchen" in subjects
+        assert "sensor.temp" in subjects
 
-    async def test_persist_snapshot_empty_cache_skips(self, ha_module: HomeAssistantModule) -> None:
-        """_persist_entity_snapshot is a no-op when the entity cache is empty."""
-        mock_db = self._make_mock_db()
-        ha_module._db = mock_db
-        ha_module._entity_cache = {}
-
-        await ha_module._persist_entity_snapshot()
-
-        mock_db.pool.executemany.assert_not_awaited()
-
-    async def test_persist_snapshot_no_pool_skips(self, ha_module: HomeAssistantModule) -> None:
-        """_persist_entity_snapshot is a no-op when no DB pool is available."""
-        ha_module._db = None
-        ha_module._entity_cache = {"light.hall": CachedEntity(entity_id="light.hall", state="off")}
-
-        # Should not raise
-        await ha_module._persist_entity_snapshot()
-
-    async def test_persist_snapshot_row_structure(self, ha_module: HomeAssistantModule) -> None:
-        """Each snapshot row contains (entity_id, state, attributes_json, last_updated)."""
-        import json
-        from datetime import datetime
-
+    async def test_persist_snapshot_uses_ha_state_predicate(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_persist_entity_snapshot stores facts with predicate='ha_state'."""
         mock_db = self._make_mock_db()
         ha_module._db = mock_db
         ha_module._entity_cache = {
@@ -3228,21 +3209,65 @@ class TestSnapshotPersistence:
             )
         }
 
-        await ha_module._persist_entity_snapshot()
+        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()) as mock_store_fact:
+            await ha_module._persist_entity_snapshot()
 
-        rows = mock_db.pool.executemany.call_args.args[1]
-        assert len(rows) == 1
-        entity_id, state, attrs_json, last_updated = rows[0]
-        assert entity_id == "switch.fan"
-        assert state == "on"
-        assert json.loads(attrs_json) == {"friendly_name": "Ceiling Fan"}
-        assert isinstance(last_updated, datetime)
-        assert last_updated.isoformat() == "2024-06-01T12:00:00+00:00"
+        assert mock_store_fact.await_count == 1
+        call_kwargs = mock_store_fact.call_args.kwargs
+        assert call_kwargs["predicate"] == "ha_state"
+        assert call_kwargs["content"] == "on"
+        assert call_kwargs["scope"] == "home"
+        assert call_kwargs["permanence"] == "volatile"
+        assert call_kwargs["source_butler"] == "home"
 
-    async def test_persist_snapshot_empty_last_updated_stored_as_none(
+    async def test_persist_snapshot_metadata_contains_attributes_and_entity_id(
         self, ha_module: HomeAssistantModule
     ) -> None:
-        """Entities with empty last_updated have None stored (not empty string)."""
+        """Snapshot metadata stores HA attributes and entity_id_ha."""
+        mock_db = self._make_mock_db()
+        ha_module._db = mock_db
+        ha_module._entity_cache = {
+            "switch.fan": CachedEntity(
+                entity_id="switch.fan",
+                state="on",
+                attributes={"friendly_name": "Ceiling Fan"},
+                last_updated="2024-06-01T12:00:00+00:00",
+            )
+        }
+
+        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()) as mock_store_fact:
+            await ha_module._persist_entity_snapshot()
+
+        meta = mock_store_fact.call_args.kwargs["metadata"]
+        assert meta["entity_id_ha"] == "switch.fan"
+        assert meta["attributes"] == {"friendly_name": "Ceiling Fan"}
+
+    async def test_persist_snapshot_empty_cache_skips(self, ha_module: HomeAssistantModule) -> None:
+        """_persist_entity_snapshot is a no-op when the entity cache is empty."""
+        mock_db = self._make_mock_db()
+        ha_module._db = mock_db
+        ha_module._entity_cache = {}
+
+        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()) as mock_store_fact:
+            await ha_module._persist_entity_snapshot()
+
+        mock_store_fact.assert_not_awaited()
+
+    async def test_persist_snapshot_no_pool_skips(self, ha_module: HomeAssistantModule) -> None:
+        """_persist_entity_snapshot is a no-op when no DB pool is available."""
+        ha_module._db = None
+        ha_module._entity_cache = {"light.hall": CachedEntity(entity_id="light.hall", state="off")}
+
+        # Should not raise
+        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()) as mock_store_fact:
+            await ha_module._persist_entity_snapshot()
+
+        mock_store_fact.assert_not_awaited()
+
+    async def test_persist_snapshot_empty_last_updated_uses_none_valid_at(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Entities with empty last_updated produce valid_at=None in store_fact call."""
         mock_db = self._make_mock_db()
         ha_module._db = mock_db
         ha_module._entity_cache = {
@@ -3253,11 +3278,86 @@ class TestSnapshotPersistence:
             )
         }
 
-        await ha_module._persist_entity_snapshot()
+        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()) as mock_store_fact:
+            await ha_module._persist_entity_snapshot()
 
-        rows = mock_db.pool.executemany.call_args.args[1]
-        _, _, _, last_updated = rows[0]
-        assert last_updated is None
+        call_kwargs = mock_store_fact.call_args.kwargs
+        # valid_at=None means property fact (supersession semantics)
+        assert call_kwargs["valid_at"] is None
+
+    async def test_persist_snapshot_valid_last_updated_uses_none_valid_at(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """Entities with a valid last_updated ISO string still pass valid_at=None.
+
+        Supersession requires property facts (valid_at IS NULL). Passing the
+        HA last_updated timestamp as valid_at would create temporal facts that
+        coexist without superseding, causing unbounded table growth.
+        The last_updated value is preserved in metadata for provenance.
+        """
+        mock_db = self._make_mock_db()
+        ha_module._db = mock_db
+        ha_module._entity_cache = {
+            "light.hall": CachedEntity(
+                entity_id="light.hall",
+                state="on",
+                last_updated="2024-06-01T12:00:00+00:00",
+            )
+        }
+
+        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()) as mock_store_fact:
+            await ha_module._persist_entity_snapshot()
+
+        call_kwargs = mock_store_fact.call_args.kwargs
+        assert call_kwargs["valid_at"] is None
+        # last_updated is still preserved in metadata
+        assert call_kwargs["metadata"]["last_updated"] == "2024-06-01T12:00:00+00:00"
+
+    async def test_persist_snapshot_entity_error_does_not_abort(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """An error for one entity does not prevent others from being persisted."""
+        import uuid
+
+        pool = AsyncMock()
+        # First call raises, second call succeeds
+        pool.fetchval = AsyncMock(side_effect=[RuntimeError("DB error"), uuid.uuid4()])
+        db = MagicMock()
+        db.pool = pool
+        ha_module._db = db
+        ha_module._entity_cache = {
+            "light.bad": CachedEntity(entity_id="light.bad", state="on"),
+            "light.good": CachedEntity(entity_id="light.good", state="off"),
+        }
+
+        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()) as mock_store_fact:
+            # Should not raise
+            await ha_module._persist_entity_snapshot()
+
+        # Only the good entity should have reached store_fact
+        assert mock_store_fact.await_count == 1
+
+    async def test_persist_snapshot_resolves_shared_entity(
+        self, ha_module: HomeAssistantModule
+    ) -> None:
+        """_persist_entity_snapshot UPSERTs a shared.entities row for each HA entity."""
+        mock_db = self._make_mock_db()
+        ha_module._db = mock_db
+        ha_module._entity_cache = {
+            "sensor.temp": CachedEntity(
+                entity_id="sensor.temp",
+                state="22.5",
+            )
+        }
+
+        with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock()):
+            await ha_module._persist_entity_snapshot()
+
+        # fetchval was called to resolve the shared entity
+        mock_db.pool.fetchval.assert_awaited_once()
+        sql_arg = mock_db.pool.fetchval.call_args.args[0]
+        assert "shared.entities" in sql_arg
+        assert "ON CONFLICT" in sql_arg
 
 
 # ---------------------------------------------------------------------------
