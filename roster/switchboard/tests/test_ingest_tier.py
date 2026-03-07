@@ -22,9 +22,17 @@ from butlers.tools.switchboard.ingestion.ingest import (
 
 # Skip all tests if Docker not available
 docker_available = shutil.which("docker") is not None
+
+# All async tests in this file must share the session event loop so that the
+# asyncpg pool (created in the session-scoped fixture loop per
+# asyncio_default_fixture_loop_scope="session") is never used from a different
+# loop.  Without this mark each test function gets a fresh function-scoped loop,
+# which causes "got Future attached to a different loop" / asyncpg
+# InterfaceError failures under pytest-xdist.
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    pytest.mark.asyncio(loop_scope="session"),
 ]
 
 

@@ -33,9 +33,17 @@ from butlers.tools.switchboard.routing.contracts import (
 
 # Skip all tests if Docker not available
 docker_available = shutil.which("docker") is not None
+
+# All async tests in this file must share the session event loop so that the
+# asyncpg pool (created in the session-scoped fixture loop per
+# asyncio_default_fixture_loop_scope="session") is never used from a different
+# loop.  Without this mark each test function gets a fresh function-scoped loop,
+# which causes "got Future attached to a different loop" / asyncpg
+# InterfaceError failures under pytest-xdist.
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    pytest.mark.asyncio(loop_scope="session"),
 ]
 
 
@@ -43,12 +51,12 @@ pytestmark = [
 async def pool(provisioned_postgres_pool):
     """Provision a fresh database with message_inbox table and return a pool.
 
-    WARNING: This fixture duplicates the database schema from the `sw_008`
-    migration. If you update the `message_inbox` table schema, you must
-    manually update this fixture to keep it synchronized.
+    WARNING: This fixture duplicates the database schema from the `sw_008`,
+    `sw_015`, `sw_016`, and `sw_019` migrations. If you update the `message_inbox` table
+    schema, you must manually update this fixture to keep it synchronized.
     """
     async with provisioned_postgres_pool() as p:
-        # Create message_inbox table (partitioned, from sw_008 migration)
+        # Create message_inbox table (partitioned, from sw_008, sw_015, sw_016, and sw_019 migrations)
         await p.execute(
             """
             CREATE TABLE message_inbox (
@@ -68,6 +76,9 @@ async def pool(provisioned_postgres_pool):
                 session_id UUID,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                attachments JSONB DEFAULT NULL,
+                direction TEXT NOT NULL DEFAULT 'inbound',
+                ingestion_tier TEXT NOT NULL DEFAULT 'full',
                 PRIMARY KEY (received_at, id)
             ) PARTITION BY RANGE (received_at)
             """
