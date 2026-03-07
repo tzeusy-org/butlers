@@ -177,4 +177,6 @@ services:
 
 volumes:
   postgres_data:
+    external: true
+    name: butlers_postgres_data
   frontend_node_modules:
