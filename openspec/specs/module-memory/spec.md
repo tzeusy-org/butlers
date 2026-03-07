@@ -1068,7 +1068,7 @@ The module MAY maintain a `predicate_registry` table that guides consistent pred
 
 #### Scenario: predicate_list with edge filter
 
-- **WHEN** `predicate_list` is called with `edge_only=true`
+- **WHEN** `predicate_list` is called with `edges_only=true`
 - **THEN** only predicates with `is_edge = true` MUST be returned
 
 #### Scenario: Registry does not enforce constraints
