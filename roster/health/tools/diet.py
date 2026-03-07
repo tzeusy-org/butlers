@@ -60,6 +60,10 @@ def _fact_to_meal(row: dict[str, Any]) -> dict[str, Any]:
     meal_items = meta.get("meal_items") if isinstance(meta, dict) else None
     logged_at = meta.get("logged_at") if isinstance(meta, dict) else None
     notes = meta.get("notes") if isinstance(meta, dict) else None
+    mood_before = meta.get("mood_before") if isinstance(meta, dict) else None
+    satisfaction = meta.get("satisfaction") if isinstance(meta, dict) else None
+    symptom_notes = meta.get("symptom_notes") if isinstance(meta, dict) else None
+    tags = meta.get("tags") if isinstance(meta, dict) else None
     return {
         "id": str(row["id"]),
         "type": meal_type,
@@ -70,6 +74,10 @@ def _fact_to_meal(row: dict[str, Any]) -> dict[str, Any]:
         "logged_at": logged_at,
         "eaten_at": row.get("valid_at"),
         "notes": notes,
+        "mood_before": mood_before,
+        "satisfaction": satisfaction,
+        "symptom_notes": symptom_notes,
+        "tags": tags,
         "created_at": row.get("created_at"),
     }
 
@@ -81,6 +89,10 @@ async def meal_log(
     nutrition: dict[str, Any] | None = None,
     eaten_at: datetime | None = None,
     notes: str | None = None,
+    mood_before: int | None = None,
+    satisfaction: int | None = None,
+    symptom_notes: str | None = None,
+    tags: list[str] | None = None,
     create_calendar_event_fn: Any = None,
 ) -> dict[str, Any]:
     """Log a meal. Type must be one of: breakfast, lunch, dinner, snack."""
@@ -110,6 +122,14 @@ async def meal_log(
         }
     if notes is not None:
         metadata["notes"] = notes
+    if mood_before is not None:
+        metadata["mood_before"] = mood_before
+    if satisfaction is not None:
+        metadata["satisfaction"] = satisfaction
+    if symptom_notes is not None:
+        metadata["symptom_notes"] = symptom_notes
+    if tags is not None:
+        metadata["tags"] = tags
 
     fact_id = await store_fact(
         pool,
@@ -148,6 +168,10 @@ async def meal_log(
         "logged_at": metadata["logged_at"],
         "eaten_at": valid_at,
         "notes": notes,
+        "mood_before": mood_before,
+        "satisfaction": satisfaction,
+        "symptom_notes": symptom_notes,
+        "tags": tags,
         "created_at": now,
     }
 

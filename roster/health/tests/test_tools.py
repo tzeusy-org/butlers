@@ -997,6 +997,164 @@ async def test_meal_history_returns_correct_shape(pool):
     assert "created_at" in m
 
 
+# ---------------------------------------------------------------------------
+# Meal contextual metadata (mood_before, satisfaction, symptom_notes, tags)
+# ---------------------------------------------------------------------------
+
+
+async def test_meal_log_with_contextual_metadata(pool, mock_embedding_engine):
+    """meal_log persists and returns the optional contextual metadata fields."""
+    from butlers.tools.health import meal_log
+
+    fixed_id = uuid.uuid4()
+    mock_sf = AsyncMock(return_value=fixed_id)
+    with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
+        meal = await meal_log(
+            pool,
+            "lunch",
+            "Grilled salmon",
+            mood_before=7,
+            satisfaction=9,
+            symptom_notes="Felt slightly bloated afterwards",
+            tags=["high-protein", "gluten-free"],
+        )
+
+    assert meal["mood_before"] == 7
+    assert meal["satisfaction"] == 9
+    assert meal["symptom_notes"] == "Felt slightly bloated afterwards"
+    assert meal["tags"] == ["high-protein", "gluten-free"]
+
+
+async def test_meal_log_contextual_metadata_stored_in_fact(pool, mock_embedding_engine):
+    """meal_log passes contextual metadata to store_fact in the metadata dict."""
+    from butlers.tools.health import meal_log
+
+    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
+        await meal_log(
+            pool,
+            "dinner",
+            "Pasta carbonara",
+            mood_before=5,
+            satisfaction=8,
+            symptom_notes="Heartburn",
+            tags=["comfort-food", "high-carb"],
+        )
+
+    mock_sf.assert_called_once()
+    _, kwargs = mock_sf.call_args
+    meta = kwargs["metadata"]
+    assert meta["mood_before"] == 5
+    assert meta["satisfaction"] == 8
+    assert meta["symptom_notes"] == "Heartburn"
+    assert meta["tags"] == ["comfort-food", "high-carb"]
+
+
+async def test_meal_log_omitted_contextual_fields_absent_from_metadata(pool, mock_embedding_engine):
+    """meal_log does NOT inject contextual keys into metadata when not provided."""
+    from butlers.tools.health import meal_log
+
+    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
+        meal = await meal_log(pool, "breakfast", "Oatmeal")
+
+    mock_sf.assert_called_once()
+    _, kwargs = mock_sf.call_args
+    meta = kwargs["metadata"]
+    # Keys must be absent — callers that omit fields must not get spurious nulls stored
+    assert "mood_before" not in meta
+    assert "satisfaction" not in meta
+    assert "symptom_notes" not in meta
+    assert "tags" not in meta
+    # Response also returns None for omitted fields
+    assert meal["mood_before"] is None
+    assert meal["satisfaction"] is None
+    assert meal["symptom_notes"] is None
+    assert meal["tags"] is None
+
+
+async def test_meal_log_partial_contextual_fields(pool, mock_embedding_engine):
+    """meal_log accepts any subset of the optional contextual fields."""
+    from butlers.tools.health import meal_log
+
+    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
+        meal = await meal_log(
+            pool,
+            "snack",
+            "Apple",
+            tags=["fruit", "low-calorie"],
+        )
+
+    assert meal["tags"] == ["fruit", "low-calorie"]
+    assert meal["mood_before"] is None
+    assert meal["satisfaction"] is None
+    assert meal["symptom_notes"] is None
+    _, kwargs = mock_sf.call_args
+    assert kwargs["metadata"]["tags"] == ["fruit", "low-calorie"]
+    assert "mood_before" not in kwargs["metadata"]
+
+
+async def test_meal_history_returns_contextual_metadata(pool):
+    """meal_history surfaces contextual metadata fields from stored facts."""
+    from butlers.tools.health import meal_history
+
+    now = _utcnow()
+    await _insert_fact(
+        pool,
+        "meal_lunch",
+        "CtxMeta_meal",
+        now - timedelta(hours=2),
+        metadata={
+            "estimated_calories": 600,
+            "macros": {"protein_g": 30, "carbs_g": 60, "fat_g": 15},
+            "logged_at": now.isoformat(),
+            "meal_items": [],
+            "mood_before": 6,
+            "satisfaction": 8,
+            "symptom_notes": "Mild nausea",
+            "tags": ["vegetarian", "spicy"],
+        },
+    )
+
+    history = await meal_history(pool, start_date=now - timedelta(hours=3), end_date=now)
+    ctx_meals = [m for m in history if m["description"] == "CtxMeta_meal"]
+    assert len(ctx_meals) == 1
+    m = ctx_meals[0]
+    assert m["mood_before"] == 6
+    assert m["satisfaction"] == 8
+    assert m["symptom_notes"] == "Mild nausea"
+    assert m["tags"] == ["vegetarian", "spicy"]
+
+
+async def test_meal_history_contextual_fields_none_when_absent(pool):
+    """meal_history returns None for contextual fields when not stored in the fact."""
+    from butlers.tools.health import meal_history
+
+    now = _utcnow()
+    await _insert_fact(
+        pool,
+        "meal_breakfast",
+        "PlainMeal_ctx",
+        now - timedelta(hours=1),
+        metadata={
+            "estimated_calories": 300,
+            "macros": {"protein_g": 10, "carbs_g": 40, "fat_g": 5},
+            "logged_at": now.isoformat(),
+            "meal_items": [],
+        },
+    )
+
+    history = await meal_history(pool, start_date=now - timedelta(hours=2), end_date=now)
+    plain = [m for m in history if m["description"] == "PlainMeal_ctx"]
+    assert len(plain) == 1
+    m = plain[0]
+    assert m["mood_before"] is None
+    assert m["satisfaction"] is None
+    assert m["symptom_notes"] is None
+    assert m["tags"] is None
+
+
 async def test_nutrition_summary(pool):
     """nutrition_summary aggregates totals and daily averages from metadata JSONB."""
     from butlers.tools.health import nutrition_summary

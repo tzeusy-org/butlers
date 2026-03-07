@@ -208,8 +208,19 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
         nutrition: dict[str, Any] | None = None,
         eaten_at: datetime | None = None,
         notes: str | None = None,
+        mood_before: int | None = None,
+        satisfaction: int | None = None,
+        symptom_notes: str | None = None,
+        tags: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Log a meal. Type must be one of: breakfast, lunch, dinner, snack."""
+        """Log a meal. Type must be one of: breakfast, lunch, dinner, snack.
+
+        Optional contextual metadata:
+        - mood_before: mood rating before the meal (1-10)
+        - satisfaction: meal satisfaction rating (1-10)
+        - symptom_notes: any symptoms experienced around the meal
+        - tags: dietary markers (e.g. "low-carb", "vegetarian", "spicy")
+        """
         return await _diet.meal_log(
             module._get_pool(),
             type,
@@ -217,6 +228,10 @@ def register_tools(mcp: Any, module: Any) -> None:  # noqa: C901
             nutrition=nutrition,
             eaten_at=eaten_at,
             notes=notes,
+            mood_before=mood_before,
+            satisfaction=satisfaction,
+            symptom_notes=symptom_notes,
+            tags=tags,
             create_calendar_event_fn=module._make_calendar_event_fn(),
         )
 
