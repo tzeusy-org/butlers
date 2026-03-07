@@ -29,12 +29,23 @@ def _get_embedding_engine() -> Any:
 
 
 async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
-    """Resolve the owner contact's entity_id from shared.contacts."""
-    row = await pool.fetchrow(
-        "SELECT entity_id FROM shared.contacts"
-        " WHERE roles @> '[\"owner\"]' AND entity_id IS NOT NULL LIMIT 1"
-    )
-    return row["entity_id"] if row else None
+    """Resolve the owner entity's id from shared.entities.
+
+    Uses the canonical post-core_016 path: ``'owner' = ANY(roles)`` on
+    ``shared.entities``.  Returns ``None`` gracefully when the table does not
+    exist yet (pre-migration databases) or when no owner entity is present.
+    """
+    try:
+        row = await pool.fetchrow(
+            "SELECT id FROM shared.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+        )
+        return row["id"] if row else None
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "_get_owner_entity_id: shared.entities query failed (table may not exist yet)",
+            exc_info=True,
+        )
+        return None
 
 
 def _fact_to_meal(row: dict[str, Any]) -> dict[str, Any]:
