@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
@@ -14,6 +16,22 @@ def _reset_otel_global_state():
     """Fully reset the OpenTelemetry global tracer provider state."""
     trace._TRACER_PROVIDER_SET_ONCE = trace.Once()
     trace._TRACER_PROVIDER = None
+
+
+# Skip all tests if Docker not available
+docker_available = shutil.which("docker") is not None
+
+# All async tests in this file must share the session event loop so that the
+# asyncpg pool (created in the session-scoped fixture loop per
+# asyncio_default_fixture_loop_scope="session") is never used from a different
+# loop.  Without this mark each test function gets a fresh function-scoped loop,
+# which causes "got Future attached to a different loop" / asyncpg
+# InterfaceError failures under pytest-xdist.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    pytest.mark.asyncio(loop_scope="session"),
+]
 
 
 @pytest.fixture
