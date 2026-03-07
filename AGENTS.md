@@ -148,3 +148,12 @@ For more details, see README.md and docs/QUICKSTART.md.
 - If push fails, resolve and retry until it succeeds
 
 <!-- END BEADS INTEGRATION -->
+
+## Notes to self
+
+- Witness patrol wisps created by `gt patrol new` / `gt patrol report` are `hooked` (not `pinned`), so `gt mol attach <wisp> mol-witness-patrol` fails with "not pinned". Run patrol steps directly and roll cycles with `gt patrol report`.
+- `gt patrol report --steps` for witness cycles expects the canonical patrol step keys (`inbox-check`, `process-cleanups`, `check-refinery`, `survey-workers`, `check-timer-gates`, `check-swarm-completion`, `patrol-cleanup`, `context-check`, `loop-or-exit`); custom labels are recorded as `SKIP`.
+- `gt hook --json` may expose the current hooked wisp under `pinned_bead`; rely on each issue `status` field (`hooked` vs `pinned`) for truth.
+- `gt polecat list` can temporarily show stale `working` state after Dolt disturbances; verify with `gt hook show <agent> --json` and `bd show <issue> --json` before taking cleanup action.
+- Witness loop step command to resolve `role_type: witness` agent bead can return zero results in this rig; if no witness agent bead exists, skip `gt mol step await-signal` and continue patrol roll with `gt patrol report` while flagging the missing bead.
+- For polecat hook inspection, use full agent paths like `gt hook show butlers/polecats/<name> --json`; shorthand `butlers/<name>` may incorrectly report `status":"empty"`.
