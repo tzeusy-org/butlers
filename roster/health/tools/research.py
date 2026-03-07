@@ -1,17 +1,58 @@
-"""Health research — save, search, and summarize research notes."""
+"""Health research — save, search, and summarize research notes backed by SPO facts."""
 
 from __future__ import annotations
 
 import json
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _row_to_dict
-
 logger = logging.getLogger(__name__)
+
+_embedding_engine: Any = None
+
+
+def _get_embedding_engine() -> Any:
+    """Lazy-load and return the shared EmbeddingEngine singleton."""
+    global _embedding_engine
+    if _embedding_engine is None:
+        from butlers.modules.memory.tools import get_embedding_engine
+
+        _embedding_engine = get_embedding_engine()
+    return _embedding_engine
+
+
+async def _validate_condition_fact(pool: asyncpg.Pool, condition_id: str) -> None:
+    """Raise ValueError if no condition fact with this id exists."""
+    cond_uuid = uuid.UUID(condition_id) if isinstance(condition_id, str) else condition_id
+    row = await pool.fetchrow(
+        "SELECT id FROM facts WHERE id = $1 AND predicate = 'condition' AND scope = 'health'",
+        cond_uuid,
+    )
+    if row is None:
+        raise ValueError(f"Condition {condition_id} not found")
+
+
+def _fact_to_research(row: dict[str, Any]) -> dict[str, Any]:
+    """Convert a facts row to the research API shape."""
+    meta = row.get("metadata") or {}
+    if isinstance(meta, str):
+        meta = json.loads(meta)
+    cond_id = meta.get("condition_id")
+    cond_uuid = uuid.UUID(cond_id) if cond_id else None
+    return {
+        "id": row["id"],  # UUID — matches old DB row behaviour
+        "title": meta.get("title", ""),
+        "content": row.get("content", ""),
+        "tags": meta.get("tags", []),
+        "source_url": meta.get("source_url"),
+        "condition_id": cond_uuid,
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at") or row.get("created_at"),
+    }
 
 
 async def research_save(
@@ -23,27 +64,49 @@ async def research_save(
     condition_id: str | None = None,
 ) -> dict[str, Any]:
     """Save a research note with optional tags, source URL, and condition link."""
-    cond_uuid = None
     if condition_id is not None:
-        cond_uuid = uuid.UUID(condition_id) if isinstance(condition_id, str) else condition_id
-        # Validate condition exists
-        cond = await pool.fetchrow("SELECT id FROM conditions WHERE id = $1", cond_uuid)
-        if cond is None:
-            raise ValueError(f"Condition {condition_id} not found")
+        await _validate_condition_fact(pool, condition_id)
 
-    row = await pool.fetchrow(
-        """
-        INSERT INTO research (title, content, tags, source_url, condition_id)
-        VALUES ($1, $2, $3::jsonb, $4, $5)
-        RETURNING *
-        """,
-        title,
-        content,
-        json.dumps(tags or []),
-        source_url,
-        cond_uuid,
+    from butlers.modules.memory.storage import store_fact
+
+    embedding_engine = _get_embedding_engine()
+    now = datetime.now(UTC)
+
+    metadata: dict[str, Any] = {
+        "title": title,
+        "tags": tags or [],
+    }
+    if source_url is not None:
+        metadata["source_url"] = source_url
+    if condition_id is not None:
+        metadata["condition_id"] = str(condition_id)
+
+    # Use title-keyed subject so multiple research notes coexist independently.
+    subject = f"research:{title}"
+
+    fact_id = await store_fact(
+        pool,
+        subject=subject,
+        predicate="research",
+        content=content,
+        embedding_engine=embedding_engine,
+        permanence="stable",
+        scope="health",
+        entity_id=None,  # per-title keying via subject
+        valid_at=None,  # property fact — supersedes previous for same title
+        metadata=metadata,
     )
-    return _row_to_dict(row)
+
+    return {
+        "id": fact_id,
+        "title": title,
+        "content": content,
+        "tags": tags or [],
+        "source_url": source_url,
+        "condition_id": uuid.UUID(condition_id) if condition_id else None,
+        "created_at": now,
+        "updated_at": now,
+    }
 
 
 async def research_search(
@@ -55,36 +118,41 @@ async def research_search(
     """Search research notes by text query, tags, and/or condition.
 
     Filters are combined with AND logic. Query performs case-insensitive search
-    against title and content. Tags matches entries containing any of the given tags.
+    against title (metadata) and content. Tags matches entries containing any of
+    the given tags. condition_id matches entries with that condition fact id.
     """
-    conditions: list[str] = []
+    conditions: list[str] = [
+        "predicate = 'research'",
+        "validity = 'active'",
+        "scope = 'health'",
+    ]
     params: list[Any] = []
     idx = 1
 
     if query is not None:
         pattern = f"%{query}%"
-        conditions.append(f"(title ILIKE ${idx} OR content ILIKE ${idx})")
+        conditions.append(f"(content ILIKE ${idx} OR metadata->>'title' ILIKE ${idx})")
         params.append(pattern)
         idx += 1
 
     if tags is not None:
-        # Match entries whose tags array contains any of the provided tags
-        conditions.append(f"tags ?| ${idx}")
+        # Check if metadata->'tags' contains any of the provided tags
+        conditions.append(f"metadata->'tags' ?| ${idx}")
         params.append(tags)
         idx += 1
 
     if condition_id is not None:
-        cond_uuid = uuid.UUID(condition_id) if isinstance(condition_id, str) else condition_id
-        conditions.append(f"condition_id = ${idx}")
-        params.append(cond_uuid)
+        conditions.append(f"metadata->>'condition_id' = ${idx}")
+        params.append(str(condition_id))
         idx += 1
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    where = "WHERE " + " AND ".join(conditions)
     rows = await pool.fetch(
-        f"SELECT * FROM research {where} ORDER BY created_at DESC",
+        f"SELECT id, predicate, content, valid_at, created_at, metadata"
+        f" FROM facts {where} ORDER BY created_at DESC",
         *params,
     )
-    return [_row_to_dict(r) for r in rows]
+    return [_fact_to_research(dict(r)) for r in rows]
 
 
 async def research_summarize(
@@ -96,24 +164,28 @@ async def research_summarize(
 
     Returns count, unique tags across matches, and titles of included articles.
     """
-    conditions: list[str] = []
+    conditions: list[str] = [
+        "predicate = 'research'",
+        "validity = 'active'",
+        "scope = 'health'",
+    ]
     params: list[Any] = []
     idx = 1
 
     if condition_id is not None:
-        cond_uuid = uuid.UUID(condition_id) if isinstance(condition_id, str) else condition_id
-        conditions.append(f"condition_id = ${idx}")
-        params.append(cond_uuid)
+        conditions.append(f"metadata->>'condition_id' = ${idx}")
+        params.append(str(condition_id))
         idx += 1
 
     if tags is not None:
-        conditions.append(f"tags ?| ${idx}")
+        conditions.append(f"metadata->'tags' ?| ${idx}")
         params.append(tags)
         idx += 1
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    where = "WHERE " + " AND ".join(conditions)
     rows = await pool.fetch(
-        f"SELECT title, tags FROM research {where} ORDER BY created_at DESC",
+        f"SELECT metadata->>'title' AS title, metadata->'tags' AS tags"
+        f" FROM facts {where} ORDER BY created_at DESC",
         *params,
     )
 
@@ -121,7 +193,9 @@ async def research_summarize(
     all_tags: set[str] = set()
 
     for row in rows:
-        titles.append(row["title"])
+        title = row["title"]
+        if title:
+            titles.append(title)
         row_tags = row["tags"]
         if isinstance(row_tags, str):
             row_tags = json.loads(row_tags)

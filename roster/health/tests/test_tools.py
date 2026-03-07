@@ -25,61 +25,15 @@ def _utcnow() -> datetime:
 
 @pytest.fixture
 async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with health tables and return a pool."""
+    """Provision a fresh database with facts-based health tables and return a pool."""
     async with provisioned_postgres_pool() as p:
-        # Create health tables matching spec schema
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS measurements (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                type TEXT NOT NULL,
-                value JSONB NOT NULL,
-                measured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                notes TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS medications (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL,
-                dosage TEXT NOT NULL,
-                frequency TEXT NOT NULL,
-                schedule JSONB NOT NULL DEFAULT '[]',
-                active BOOLEAN NOT NULL DEFAULT true,
-                notes TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS medication_doses (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                medication_id UUID NOT NULL REFERENCES medications(id),
-                taken_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                skipped BOOLEAN NOT NULL DEFAULT false,
-                notes TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS conditions (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active',
-                diagnosed_at TIMESTAMPTZ,
-                notes TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # Facts table (simplified — TEXT embedding avoids pgvector dependency in tests)
-        await p.execute("""
-            CREATE SCHEMA IF NOT EXISTS shared
-        """)
+        # Shared schema and entities (owner entity resolution)
+        await p.execute("CREATE SCHEMA IF NOT EXISTS shared")
         await p.execute("""
             CREATE TABLE IF NOT EXISTS shared.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL DEFAULT ''
+                name TEXT NOT NULL DEFAULT '',
+                roles TEXT[] NOT NULL DEFAULT '{}'
             )
         """)
         await p.execute("""
@@ -89,6 +43,8 @@ async def pool(provisioned_postgres_pool):
                 roles JSONB NOT NULL DEFAULT '[]'
             )
         """)
+
+        # Predicate registry (simplified — no expected_subject_type/is_edge columns needed)
         await p.execute("""
             CREATE TABLE IF NOT EXISTS predicate_registry (
                 name TEXT PRIMARY KEY,
@@ -101,9 +57,22 @@ async def pool(provisioned_postgres_pool):
                 ('meal_breakfast', true),
                 ('meal_lunch', true),
                 ('meal_dinner', true),
-                ('meal_snack', true)
+                ('meal_snack', true),
+                ('measurement_weight', true),
+                ('measurement_blood_pressure', true),
+                ('measurement_heart_rate', true),
+                ('measurement_blood_sugar', true),
+                ('measurement_temperature', true),
+                ('symptom', true),
+                ('took_dose', true),
+                ('medication', false),
+                ('condition', false),
+                ('research', false)
             ON CONFLICT (name) DO NOTHING
         """)
+
+        # Facts table (simplified — TEXT embedding avoids pgvector dependency in tests)
+        # valid_at is nullable: NULL = property fact, NOT NULL = temporal fact.
         await p.execute("""
             CREATE TABLE IF NOT EXISTS facts (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -128,48 +97,32 @@ async def pool(provisioned_postgres_pool):
                 metadata JSONB DEFAULT '{}'::jsonb,
                 entity_id UUID REFERENCES shared.entities(id),
                 object_entity_id UUID REFERENCES shared.entities(id),
-                valid_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                valid_at TIMESTAMPTZ DEFAULT NULL
             )
         """)
+
+        # memory_links table (used by store_fact for supersession links)
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS symptoms (
+            CREATE TABLE IF NOT EXISTS memory_links (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                name TEXT NOT NULL,
-                severity INTEGER NOT NULL CHECK (severity BETWEEN 1 AND 10),
-                condition_id UUID REFERENCES conditions(id),
-                occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                notes TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS research (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                title TEXT NOT NULL,
-                content TEXT NOT NULL,
-                tags JSONB NOT NULL DEFAULT '[]',
-                source_url TEXT,
-                condition_id UUID REFERENCES conditions(id),
+                source_type TEXT NOT NULL,
+                source_id UUID NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id UUID NOT NULL,
+                relation TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                UNIQUE (source_type, source_id, target_type, target_id)
             )
         """)
+
         # Indexes
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_measurements_type_measured_at
-                ON measurements (type, measured_at)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_medication_doses_med_taken
-                ON medication_doses (medication_id, taken_at)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_symptoms_name_occurred
-                ON symptoms (name, occurred_at)
-        """)
         await p.execute("""
             CREATE INDEX IF NOT EXISTS idx_facts_predicate_valid_at
                 ON facts (predicate, valid_at)
+        """)
+        await p.execute("""
+            CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate
+                ON facts (subject, predicate)
         """)
 
         yield p
@@ -270,11 +223,20 @@ async def test_measurement_history_with_date_filters(pool):
 
 
 async def test_measurement_history_empty(pool):
-    """measurement_history returns empty list when no measurements exist."""
+    """measurement_history returns empty list when no measurements exist for a valid type."""
     from butlers.tools.health import measurement_history
 
-    result = await measurement_history(pool, "nonexistent_type_hist")
+    # Use a valid type that has no data inserted (each test gets an isolated DB)
+    result = await measurement_history(pool, "heart_rate")
     assert result == []
+
+
+async def test_measurement_history_rejects_invalid_type(pool):
+    """measurement_history raises ValueError for unrecognized measurement types."""
+    from butlers.tools.health import measurement_history
+
+    with pytest.raises(ValueError, match="Unrecognized measurement type"):
+        await measurement_history(pool, "cholesterol_hist")
 
 
 async def test_measurement_latest(pool):
@@ -291,10 +253,10 @@ async def test_measurement_latest(pool):
 
 
 async def test_measurement_latest_no_data(pool):
-    """measurement_latest returns None when no measurements exist."""
+    """measurement_latest returns None when no measurements exist for a valid type."""
     from butlers.tools.health import measurement_latest
 
-    result = await measurement_latest(pool, "nonexistent_type_latest")
+    result = await measurement_latest(pool, "temperature")
     assert result is None
 
 
@@ -337,7 +299,11 @@ async def test_medication_list_active_only(pool):
 
     await medication_add(pool, "ActiveMed_A2", "10mg", "daily")
     med_b = await medication_add(pool, "InactiveMed_B2", "20mg", "daily")
-    await pool.execute("UPDATE medications SET active = false WHERE id = $1", med_b["id"])
+    # Mark the fact's metadata as inactive (SPO model — patch the JSONB field directly)
+    await pool.execute(
+        "UPDATE facts SET metadata = metadata || '{\"active\": false}'::jsonb WHERE id = $1",
+        med_b["id"],  # already a uuid.UUID
+    )
 
     active = await medication_list(pool, active_only=True)
     names = [m["name"] for m in active]
@@ -351,7 +317,11 @@ async def test_medication_list_all(pool):
 
     await medication_add(pool, "AllMed_X2", "5mg", "daily")
     med_y = await medication_add(pool, "AllMed_Y2", "10mg", "daily")
-    await pool.execute("UPDATE medications SET active = false WHERE id = $1", med_y["id"])
+    # Mark one as inactive in the fact metadata
+    await pool.execute(
+        "UPDATE facts SET metadata = metadata || '{\"active\": false}'::jsonb WHERE id = $1",
+        med_y["id"],  # already a uuid.UUID
+    )
 
     all_meds = await medication_list(pool, active_only=False)
     names = [m["name"] for m in all_meds]
@@ -728,22 +698,41 @@ async def _insert_fact(pool, predicate: str, content: str, valid_at: datetime, m
     )
 
 
-@pytest.fixture
-def mock_embedding_engine():
-    """Patch the embedding engine and reset the diet module cache for meal_log tests."""
+@pytest.fixture(autouse=True, scope="session")
+def patch_embedding_engine():
+    """Session-scoped autouse fixture that patches get_embedding_engine for all health tools.
+
+    Health tools (measurements, conditions, medications, research, diet) all call
+    store_fact() which requires an EmbeddingEngine.  In the test environment there
+    is no real model, so we return a deterministic fake that produces a simple
+    list-of-floats embedding.  The facts table in tests stores embedding as TEXT
+    so this is compatible.
+    """
     import sys
 
     engine = MagicMock()
     engine.embed.return_value = [0.1] * 384
+
     with patch("butlers.modules.memory.tools.get_embedding_engine", return_value=engine):
-        diet_mod = sys.modules.get("butlers.tools.health.diet")
-        if diet_mod is not None:
-            old = diet_mod._embedding_engine
-            diet_mod._embedding_engine = None
-            yield engine
-            diet_mod._embedding_engine = old
-        else:
-            yield engine
+        # Reset the module-level _embedding_engine cache in each health tool module
+        # so the patched getter is picked up.
+        for mod_name in (
+            "butlers.tools.health.diet",
+            "butlers.tools.health.measurements",
+            "butlers.tools.health.conditions",
+            "butlers.tools.health.medications",
+            "butlers.tools.health.research",
+        ):
+            mod = sys.modules.get(mod_name)
+            if mod is not None and hasattr(mod, "_embedding_engine"):
+                mod._embedding_engine = None
+        yield engine
+
+
+@pytest.fixture
+def mock_embedding_engine(patch_embedding_engine):
+    """Per-test alias kept for backward compatibility with meal_log tests."""
+    return patch_embedding_engine
 
 
 async def test_meal_log(pool, mock_embedding_engine):
