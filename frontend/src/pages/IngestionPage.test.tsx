@@ -32,6 +32,13 @@ vi.mock("@/components/ingestion/ConnectorsTab", () => ({
 vi.mock("@/components/switchboard/FiltersTab", () => ({
   FiltersTab: () => <div data-testid="filters-tab-stub">Filters stub</div>,
 }));
+vi.mock("@/components/ingestion/TimelineTab", () => ({
+  TimelineTab: ({ isActive }: { isActive: boolean }) => (
+    <div data-testid="timeline-tab-stub" data-active={String(isActive)}>
+      Timeline stub
+    </div>
+  ),
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -70,7 +77,7 @@ describe("IngestionPage", () => {
     expect(container.querySelector("h1")?.textContent).toBe("Ingestion");
   });
 
-  it("renders four tab triggers: Overview, Connectors, Filters, History", () => {
+  it("renders five tab triggers: Overview, Connectors, Filters, History, Timeline", () => {
     render();
     const triggers = container.querySelectorAll('[role="tab"]');
     const labels = Array.from(triggers).map((t) => t.textContent?.trim());
@@ -78,6 +85,7 @@ describe("IngestionPage", () => {
     expect(labels).toContain("Connectors");
     expect(labels).toContain("Filters");
     expect(labels).toContain("History");
+    expect(labels).toContain("Timeline");
   });
 
   it("defaults to Overview tab when no ?tab param is present", () => {
@@ -120,5 +128,23 @@ describe("IngestionPage", () => {
     render("/ingestion?tab=connectors");
     const stub = container.querySelector('[data-testid="connectors-tab-stub"]');
     expect(stub).not.toBeNull();
+  });
+
+  it("activates Timeline tab when ?tab=timeline is in the URL", () => {
+    render("/ingestion?tab=timeline");
+    const activeTab = container.querySelector('[role="tab"][data-state="active"]');
+    expect(activeTab?.textContent?.trim()).toBe("Timeline");
+  });
+
+  it("renders timeline tab stub when ?tab=timeline", () => {
+    render("/ingestion?tab=timeline");
+    const stub = container.querySelector('[data-testid="timeline-tab-stub"]');
+    expect(stub).not.toBeNull();
+  });
+
+  it("passes isActive=true to TimelineTab when timeline tab is active", () => {
+    render("/ingestion?tab=timeline");
+    const stub = container.querySelector('[data-testid="timeline-tab-stub"]');
+    expect(stub?.getAttribute("data-active")).toBe("true");
   });
 });

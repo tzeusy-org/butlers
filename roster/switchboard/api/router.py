@@ -32,6 +32,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from butlers.api.db import DatabaseManager
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.config import load_config
+from butlers.core.ingestion_events import (
+    ingestion_event_get,
+    ingestion_event_rollup,
+    ingestion_event_sessions,
+    ingestion_events_list,
+)
 from butlers.modules.metrics.prometheus import async_query, async_query_range
 
 # Dynamically load models module from the same directory
@@ -80,6 +86,10 @@ if _spec is not None and _spec.loader is not None:
     ConnectorFilterAssignmentItem = _models.ConnectorFilterAssignmentItem
     validate_condition = _models.validate_condition
     validate_action = _models.validate_action
+    IngestionEventSummary = _models.IngestionEventSummary
+    IngestionEventSession = _models.IngestionEventSession
+    IngestionEventRollup = _models.IngestionEventRollup
+    ButlerRollupEntry = _models.ButlerRollupEntry
 else:
     raise RuntimeError("Failed to load switchboard API models")
 
@@ -2884,3 +2894,170 @@ async def replace_connector_filters(
 
     # Return the updated state (re-use the GET logic).
     return await list_connector_filters(connector_type, endpoint_identity, db=db)
+
+
+# ---------------------------------------------------------------------------
+# GET /ingestion/events — paginated ingestion event list
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ingestion/events", response_model=PaginatedResponse[IngestionEventSummary])
+async def list_ingestion_events(
+    limit: int = Query(20, ge=1, le=100, description="Max rows to return"),
+    offset: int = Query(0, ge=0, description="Rows to skip"),
+    source_channel: str | None = Query(None, description="Filter by source channel"),
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> PaginatedResponse[IngestionEventSummary]:
+    """Return a paginated list of ingestion events, newest first.
+
+    Each event corresponds to one accepted ingest envelope.  The ``id`` field
+    is the UUIDv7 ``request_id`` that is propagated to all downstream sessions.
+
+    Falls back gracefully when ``shared.ingestion_events`` is absent.
+    """
+    pool = _pool(db)
+    try:
+        rows = await ingestion_events_list(
+            pool, limit=limit, offset=offset, source_channel=source_channel
+        )
+    except Exception:
+        logger.warning("shared.ingestion_events not available", exc_info=True)
+        return PaginatedResponse[IngestionEventSummary](
+            data=[],
+            meta=PaginationMeta(total=0, offset=offset, limit=limit, has_more=False),
+        )
+
+    # Count total for pagination meta
+    try:
+        if source_channel is not None:
+            total = await pool.fetchval(
+                "SELECT count(*) FROM shared.ingestion_events WHERE source_channel = $1",
+                source_channel,
+            )
+        else:
+            total = await pool.fetchval("SELECT count(*) FROM shared.ingestion_events")
+        total = int(total or 0)
+    except Exception:
+        total = len(rows)
+
+    data = [IngestionEventSummary(**row) for row in rows]
+    return PaginatedResponse[IngestionEventSummary](
+        data=data,
+        meta=PaginationMeta(
+            total=total,
+            offset=offset,
+            limit=limit,
+            has_more=(offset + len(data)) < total,
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /ingestion/events/{request_id} — single ingestion event detail
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ingestion/events/{request_id}", response_model=ApiResponse[IngestionEventSummary])
+async def get_ingestion_event(
+    request_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[IngestionEventSummary]:
+    """Return a single ingestion event by its UUIDv7 request_id.
+
+    Returns 404 if no event with that id exists.
+    """
+    pool = _pool(db)
+    try:
+        row = await ingestion_event_get(pool, request_id)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid request_id: {exc}") from exc
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Ingestion event not found")
+
+    return ApiResponse[IngestionEventSummary](data=IngestionEventSummary(**row))
+
+
+# ---------------------------------------------------------------------------
+# GET /ingestion/events/{request_id}/sessions — fan-out sessions
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/ingestion/events/{request_id}/sessions",
+    response_model=ApiResponse[list[IngestionEventSession]],
+)
+async def get_ingestion_event_sessions(
+    request_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[list[IngestionEventSession]]:
+    """Return all butler sessions linked to a given ingestion event request_id.
+
+    Fans out across all registered butler schemas and returns sessions ordered
+    by ``started_at`` ascending (chronological timeline view).
+    """
+    try:
+        sessions = await ingestion_event_sessions(db, request_id)
+    except Exception:
+        logger.warning("ingestion event sessions fan-out failed for %s", request_id, exc_info=True)
+        sessions = []
+
+    data = []
+    for s in sessions:
+        # Normalise UUID fields to str
+        session_id = str(s.get("id", "")) if s.get("id") is not None else ""
+        data.append(
+            IngestionEventSession(
+                id=session_id,
+                butler_name=s.get("butler_name", ""),
+                trigger_source=s.get("trigger_source"),
+                started_at=s.get("started_at"),
+                completed_at=s.get("completed_at"),
+                success=s.get("success"),
+                input_tokens=s.get("input_tokens"),
+                output_tokens=s.get("output_tokens"),
+                cost=s.get("cost"),
+                trace_id=s.get("trace_id"),
+            )
+        )
+    return ApiResponse[list[IngestionEventSession]](data=data)
+
+
+# ---------------------------------------------------------------------------
+# GET /ingestion/events/{request_id}/rollup — aggregate cost/token totals
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/ingestion/events/{request_id}/rollup",
+    response_model=ApiResponse[IngestionEventRollup],
+)
+async def get_ingestion_event_rollup(
+    request_id: str,
+    db: DatabaseManager = Depends(_get_db_manager),
+) -> ApiResponse[IngestionEventRollup]:
+    """Return aggregate cost and token totals for all sessions under a request_id.
+
+    Fans out across all registered butler schemas, then computes per-butler
+    and overall totals.  Returns zero totals when no sessions are found.
+    """
+    try:
+        sessions = await ingestion_event_sessions(db, request_id)
+    except Exception:
+        logger.warning("ingestion event rollup fan-out failed for %s", request_id, exc_info=True)
+        sessions = []
+
+    rollup_dict = ingestion_event_rollup(request_id, sessions)
+
+    by_butler = {
+        name: ButlerRollupEntry(**entry) for name, entry in rollup_dict.get("by_butler", {}).items()
+    }
+    rollup = IngestionEventRollup(
+        request_id=rollup_dict["request_id"],
+        total_sessions=rollup_dict["total_sessions"],
+        total_input_tokens=rollup_dict["total_input_tokens"],
+        total_output_tokens=rollup_dict["total_output_tokens"],
+        total_cost=rollup_dict["total_cost"],
+        by_butler=by_butler,
+    )
+    return ApiResponse[IngestionEventRollup](data=rollup)
