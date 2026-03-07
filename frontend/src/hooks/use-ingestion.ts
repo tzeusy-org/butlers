@@ -13,17 +13,19 @@
  * keys so switching tabs reuses warm cache.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getCrossConnectorSummary,
   getConnectorDetail,
   getConnectorFanout,
+  getConnectorFilters,
   getConnectorStats,
   getIngestionOverview,
   listConnectorSummaries,
+  updateConnectorFilters,
 } from "@/api/index.ts";
-import type { IngestionPeriod } from "@/api/index.ts";
+import type { ConnectorFilterAssignmentItem, IngestionPeriod } from "@/api/index.ts";
 
 // ---------------------------------------------------------------------------
 // Query key factory
@@ -52,6 +54,8 @@ export const ingestionKeys = {
       endpointIdentity,
       period,
     ] as const,
+  connectorFilters: (connectorType: string, endpointIdentity: string) =>
+    [...ingestionKeys.all, "connector-filters", connectorType, endpointIdentity] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -154,5 +158,45 @@ export function useConnectorStats(
     enabled:
       !!connectorType && !!endpointIdentity && options?.enabled !== false,
     refetchInterval: 60_000,
+  });
+}
+
+/**
+ * All source filter assignments for a connector (enabled and unattached).
+ */
+export function useConnectorFilters(
+  connectorType: string | null,
+  endpointIdentity: string | null,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: ingestionKeys.connectorFilters(
+      connectorType ?? "",
+      endpointIdentity ?? "",
+    ),
+    queryFn: () => getConnectorFilters(connectorType!, endpointIdentity!),
+    enabled:
+      !!connectorType && !!endpointIdentity && options?.enabled !== false,
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * Mutation to atomically replace filter assignments for a connector.
+ * Invalidates the connector-filters query on success.
+ */
+export function useUpdateConnectorFilters(
+  connectorType: string,
+  endpointIdentity: string,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (assignments: ConnectorFilterAssignmentItem[]) =>
+      updateConnectorFilters(connectorType, endpointIdentity, assignments),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ingestionKeys.connectorFilters(connectorType, endpointIdentity),
+      });
+    },
   });
 }

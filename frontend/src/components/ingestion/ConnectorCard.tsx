@@ -18,6 +18,7 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import { LivenessBadge } from "./LivenessBadge";
+import { ConnectorFiltersDialog } from "./ConnectorFiltersDialog";
 import type { ConnectorSummary } from "@/api/index.ts";
 
 interface ConnectorCardProps {
@@ -64,6 +65,11 @@ export function ConnectorCard({
                   backfill active
                 </Badge>
               )}
+              <ConnectorFiltersDialog
+                connectorType={connector.connector_type}
+                endpointIdentity={connector.endpoint_identity}
+                triggerVariant="card"
+              />
             </div>
           </div>
         </CardHeader>

@@ -353,9 +353,11 @@ export {
   getCrossConnectorSummary,
   getConnectorDetail,
   getConnectorFanout,
+  getConnectorFilters,
   getConnectorStats,
   getIngestionOverview,
   listConnectorSummaries,
+  updateConnectorFilters,
 } from "./client.ts";
 
 export type {
@@ -365,6 +367,8 @@ export type {
   ConnectorDetail,
   ConnectorFanout,
   ConnectorFanoutEntry,
+  ConnectorFilterAssignment,
+  ConnectorFilterAssignmentItem,
   ConnectorStats,
   ConnectorStatsBucket,
   ConnectorStatsSummary,

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ConnectorCard } from "./ConnectorCard";
 import type { ConnectorSummary } from "@/api/index.ts";
@@ -24,19 +25,31 @@ const MOCK_CONNECTOR: ConnectorSummary = {
   today: { messages_ingested: 42, messages_failed: 1, uptime_pct: 99.5 },
 };
 
+function makeQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: 0 },
+      mutations: { retry: false },
+    },
+  });
+}
+
 describe("ConnectorCard", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let queryClient: QueryClient;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    queryClient = makeQueryClient();
   });
 
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    queryClient.clear();
   });
 
   function render(
@@ -45,12 +58,14 @@ describe("ConnectorCard", () => {
   ) {
     act(() => {
       root.render(
-        <MemoryRouter>
-          <ConnectorCard
-            connector={connector}
-            hasActiveBackfill={hasActiveBackfill}
-          />
-        </MemoryRouter>,
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <ConnectorCard
+              connector={connector}
+              hasActiveBackfill={hasActiveBackfill}
+            />
+          </MemoryRouter>
+        </QueryClientProvider>,
       );
     });
   }
@@ -84,5 +99,12 @@ describe("ConnectorCard", () => {
   it("renders degraded state badge", () => {
     render({ ...MOCK_CONNECTOR, state: "degraded" });
     expect(container.textContent).toContain("degraded");
+  });
+
+  it("renders the Filters button", () => {
+    render();
+    const btn = container.querySelector('[data-testid="connector-filters-button"]');
+    expect(btn).not.toBeNull();
+    expect(btn!.textContent).toContain("Filters");
   });
 });

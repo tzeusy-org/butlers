@@ -2054,3 +2054,31 @@ export interface QuizResponseParams {
   offset?: number;
   limit?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Connector source filter assignment types
+// ---------------------------------------------------------------------------
+
+/** One named source filter with its assignment state for a specific connector.
+ *
+ * Returned by GET /connectors/{type}/{identity}/filters.
+ * ALL named filters are returned regardless of whether they are attached.
+ * Unattached filters have enabled=false and priority=0.
+ */
+export interface ConnectorFilterAssignment {
+  filter_id: string;
+  name: string;
+  filter_mode: "blacklist" | "whitelist";
+  source_key_type: string;
+  pattern_count: number;
+  enabled: boolean;
+  priority: number;
+  incompatible: boolean;
+}
+
+/** One item in the PUT /connectors/{type}/{identity}/filters request body. */
+export interface ConnectorFilterAssignmentItem {
+  filter_id: string;
+  enabled: boolean;
+  priority?: number;
+}

@@ -31,6 +31,7 @@ import {
 
 import { LivenessBadge } from "@/components/ingestion/LivenessBadge";
 import { VolumeTrendChart } from "@/components/ingestion/VolumeTrendChart";
+import { ConnectorFiltersDialog } from "@/components/ingestion/ConnectorFiltersDialog";
 import { useConnectorDetail, useConnectorStats } from "@/hooks/use-ingestion";
 import type { IngestionPeriod } from "@/api/index.ts";
 
@@ -101,21 +102,32 @@ export default function ConnectorDetailPage() {
       </div>
 
       {/* Header */}
-      <div>
-        {detailLoading ? (
-          <>
-            <Skeleton className="h-7 w-48 mb-1" />
-            <Skeleton className="h-4 w-64" />
-          </>
-        ) : (
-          <>
-            <h1 className="text-2xl font-bold tracking-tight">
-              {connector?.connector_type ?? connectorType}
-            </h1>
-            <p className="text-sm text-muted-foreground font-mono mt-1">
-              {connector?.endpoint_identity ?? endpointIdentity}
-            </p>
-          </>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          {detailLoading ? (
+            <>
+              <Skeleton className="h-7 w-48 mb-1" />
+              <Skeleton className="h-4 w-64" />
+            </>
+          ) : (
+            <>
+              <h1 className="text-2xl font-bold tracking-tight">
+                {connector?.connector_type ?? connectorType}
+              </h1>
+              <p className="text-sm text-muted-foreground font-mono mt-1">
+                {connector?.endpoint_identity ?? endpointIdentity}
+              </p>
+            </>
+          )}
+        </div>
+        {connectorType && endpointIdentity && (
+          <div className="flex-shrink-0 pt-1">
+            <ConnectorFiltersDialog
+              connectorType={connectorType}
+              endpointIdentity={endpointIdentity}
+              triggerVariant="page"
+            />
+          </div>
         )}
       </div>
 
