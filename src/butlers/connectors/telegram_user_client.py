@@ -55,6 +55,7 @@ from typing import Any
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
+from butlers.connectors.source_filter import SourceFilterEvaluator, extract_telethon_filter_key
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     resolve_owner_entity_info,
@@ -174,7 +175,11 @@ class TelegramUserClientConnector:
     - Replace canonical Switchboard ingestion semantics
     """
 
-    def __init__(self, config: TelegramUserClientConnectorConfig) -> None:
+    def __init__(
+        self,
+        config: TelegramUserClientConnectorConfig,
+        db_pool: Any | None = None,
+    ) -> None:
         if not TELETHON_AVAILABLE:
             raise RuntimeError("Telethon is not installed. Install with: uv pip install telethon")
 
@@ -199,6 +204,14 @@ class TelegramUserClientConnector:
         # Heartbeat (started in start(), stopped in stop())
         self._switchboard_heartbeat: ConnectorHeartbeat | None = None
 
+        # Source filter evaluator (chat_id blacklist/whitelist)
+        # DB-backed with TTL refresh; fail-open on DB error.
+        self._source_filter_evaluator = SourceFilterEvaluator(
+            connector_type="telegram-user-client",
+            endpoint_identity=config.endpoint_identity,
+            db_pool=db_pool,
+        )
+
     async def start(self) -> None:
         """Start the Telegram user-client connector in live-stream mode.
 
@@ -222,6 +235,9 @@ class TelegramUserClientConnector:
             self._config.telegram_api_id,
             self._config.telegram_api_hash,
         )
+
+        # Load source filters before entering the ingestion loop.
+        await self._source_filter_evaluator.ensure_loaded()
 
         # Start switchboard heartbeat (runs in background)
         self._start_heartbeat()
@@ -351,6 +367,20 @@ class TelegramUserClientConnector:
                     logger.warning(
                         "Received message without ID, skipping",
                         extra={"endpoint_identity": self._config.endpoint_identity},
+                    )
+                    return
+
+                # Source filter gate: evaluate chat_id before Switchboard submission.
+                # Blocked messages are intentionally dropped — not an error condition.
+                chat_id_key = extract_telethon_filter_key(message, "chat_id")
+                sf_result = self._source_filter_evaluator.evaluate(chat_id_key)
+                if not sf_result.allowed:
+                    logger.debug(
+                        "Source filter blocked Telegram user-client message %s: "
+                        "reason=%s filter=%s",
+                        message_id,
+                        sf_result.reason,
+                        sf_result.filter_name,
                     )
                     return
 
@@ -757,7 +787,7 @@ async def run_telegram_user_client_connector() -> None:
         telegram_user_session=db_creds["TELEGRAM_USER_SESSION"],
     )
 
-    connector = TelegramUserClientConnector(config)
+    connector = TelegramUserClientConnector(config, db_pool=None)
 
     try:
         await connector.start()

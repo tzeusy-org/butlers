@@ -457,10 +457,54 @@ def extract_telegram_filter_key(update: dict, key_type: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Telethon (user-client) filter key extraction helper
+# ---------------------------------------------------------------------------
+
+
+def extract_telethon_filter_key(message: object, key_type: str) -> str:
+    """Extract the filter key from a Telethon message object for the given key_type.
+
+    Parameters
+    ----------
+    message:
+        A Telethon ``Message`` (or any object with a ``chat_id`` attribute),
+        as received from ``events.NewMessage.Event.message`` or
+        ``iter_messages()``.
+    key_type:
+        Only ``'chat_id'`` is valid for the telegram-user-client connector.
+        All other key_types return ``''`` so the evaluator emits its
+        unknown-type WARNING and skips the filter.
+
+    Returns
+    -------
+    str
+        The chat_id as a string (e.g. ``'987654321'`` or ``'-100987654321'``),
+        or ``''`` if the key_type is unsupported or no chat_id is found.
+    """
+    if key_type != "chat_id":
+        return ""
+
+    chat_id = getattr(message, "chat_id", None)
+    if chat_id is not None:
+        return str(chat_id)
+
+    # Fallback: try peer_id (various Telethon peer types)
+    peer_id = getattr(message, "peer_id", None)
+    if peer_id is not None:
+        for attr in ("channel_id", "chat_id", "user_id"):
+            val = getattr(peer_id, attr, None)
+            if val is not None:
+                return str(val)
+
+    return ""
+
+
 __all__ = [
     "SourceFilterSpec",
     "FilterResult",
     "SourceFilterEvaluator",
     "extract_gmail_filter_key",
     "extract_telegram_filter_key",
+    "extract_telethon_filter_key",
 ]
