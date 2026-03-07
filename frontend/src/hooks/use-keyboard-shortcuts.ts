@@ -61,9 +61,6 @@ export function useKeyboardShortcuts() {
           case "t":
             navigate("/timeline");
             break;
-          case "r":
-            navigate("/traces");
-            break;
           case "n":
             navigate("/notifications");
             break;

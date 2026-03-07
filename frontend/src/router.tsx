@@ -5,8 +5,6 @@ import ButlersPage from './pages/ButlersPage.tsx'
 import ButlerDetailPage from './pages/ButlerDetailPage.tsx'
 import SessionsPage from './pages/SessionsPage.tsx'
 import SessionDetailPage from './pages/SessionDetailPage.tsx'
-import TracesPage from './pages/TracesPage.tsx'
-import TraceDetailPage from './pages/TraceDetailPage.tsx'
 import TimelinePage from './pages/TimelinePage.tsx'
 import NotificationsPage from './pages/NotificationsPage.tsx'
 import IssuesPage from './pages/IssuesPage.tsx'
@@ -59,8 +57,8 @@ export const router = createBrowserRouter(
         { path: '/butlers/:name', element: <ButlerDetailPage /> },
         { path: '/sessions', element: <SessionsPage /> },
         { path: '/sessions/:id', element: <SessionDetailPage /> },
-        { path: '/traces', element: <TracesPage /> },
-        { path: '/traces/:traceId', element: <TraceDetailPage /> },
+        { path: '/traces', element: <Navigate to="/ingestion?tab=timeline" replace /> },
+        { path: '/traces/:traceId', element: <Navigate to="/ingestion?tab=timeline" replace /> },
         { path: '/timeline', element: <TimelinePage /> },
         { path: '/notifications', element: <NotificationsPage /> },
         { path: '/issues', element: <IssuesPage /> },

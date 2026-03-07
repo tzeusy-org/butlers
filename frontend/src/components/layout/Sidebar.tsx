@@ -84,7 +84,6 @@ const navSections: NavSection[] = [
     title: 'Telemetry',
     defaultExpanded: false,
     items: [
-      { path: '/traces', label: 'Traces' },
       { path: '/timeline', label: 'Timeline' },
       { path: '/notifications', label: 'Notifications' },
       { path: '/issues', label: 'Issues' },

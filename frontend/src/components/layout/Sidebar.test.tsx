@@ -97,7 +97,7 @@ describe("Sidebar", () => {
       expect(container.textContent).toContain("Dedicated Butlers");
     });
 
-    it("places Overview in Main and Traces in Telemetry", () => {
+    it("places Overview in Main and Timeline in Telemetry", () => {
       render();
 
       const headings = container.querySelectorAll("h3");
@@ -109,7 +109,7 @@ describe("Sidebar", () => {
       // Section container is the button's parent div
       const mainSection = mainHeading!.closest("button")!.parentElement;
       expect(mainSection?.querySelector('a[href="/"]')).toBeTruthy();
-      expect(mainSection?.querySelector('a[href="/traces"]')).toBeNull();
+      expect(mainSection?.querySelector('a[href="/timeline"]')).toBeNull();
 
       // Telemetry starts collapsed — expand it first
       const telemetryButton = telemetryHeading!.closest("button")!;
@@ -118,7 +118,8 @@ describe("Sidebar", () => {
       });
 
       const telemetrySection = telemetryButton.parentElement;
-      expect(telemetrySection?.querySelector('a[href="/traces"]')).toBeTruthy();
+      expect(telemetrySection?.querySelector('a[href="/timeline"]')).toBeTruthy();
+      expect(telemetrySection?.querySelector('a[href="/traces"]')).toBeNull();
       expect(telemetrySection?.querySelector('a[href="/"]')).toBeNull();
     });
   });
