@@ -1852,6 +1852,7 @@ class HomeAssistantModule(Module):
         Silently skips when no DB pool is available.
         """
         import json as _json
+        from datetime import datetime as _datetime
 
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
@@ -1868,7 +1869,7 @@ class HomeAssistantModule(Module):
                 e.entity_id,
                 e.state,
                 _json.dumps(e.attributes),
-                e.last_updated if e.last_updated else None,
+                _datetime.fromisoformat(e.last_updated) if e.last_updated else None,
             )
             for e in entities
         ]
