@@ -150,16 +150,16 @@ async def predicate_list(
 
     Returns:
         List of dicts with keys: name, expected_subject_type,
-        expected_object_type, is_edge, description.
+        expected_object_type, is_edge, is_temporal, description.
     """
     query = (
         "SELECT name, expected_subject_type, expected_object_type,"
-        " is_edge, description FROM predicate_registry"
+        " is_edge, is_temporal, description FROM predicate_registry"
     )
     params: list[Any] = []
     if edges_only:
         query += " WHERE is_edge = true"
-    query += " ORDER BY is_edge, name"
+    query += " ORDER BY name ASC"
 
     rows = await pool.fetch(query, *params)
     return [dict(row) for row in rows]

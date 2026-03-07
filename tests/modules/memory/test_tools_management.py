@@ -18,6 +18,7 @@ from butlers.modules.memory.tools import (
     memory_context,
     memory_forget,
     memory_stats,
+    predicate_list,
 )
 
 pytestmark = pytest.mark.unit
@@ -398,3 +399,116 @@ class TestMemoryContext:
         assert "## Key Facts" in result
         assert "## Active Rules" not in result
         assert "likes coffee" in result
+
+
+# ---------------------------------------------------------------------------
+# predicate_list tests
+# ---------------------------------------------------------------------------
+
+
+def _make_predicate_row(
+    name: str,
+    *,
+    expected_subject_type: str = "entity",
+    expected_object_type: str = "entity",
+    is_edge: bool = False,
+    is_temporal: bool = False,
+    description: str = "A predicate",
+) -> dict:
+    return {
+        "name": name,
+        "expected_subject_type": expected_subject_type,
+        "expected_object_type": expected_object_type,
+        "is_edge": is_edge,
+        "is_temporal": is_temporal,
+        "description": description,
+    }
+
+
+class TestPredicateList:
+    """Tests for predicate_list tool wrapper."""
+
+    async def test_returns_list_of_dicts(self, mock_pool: AsyncMock) -> None:
+        """predicate_list returns a list of dicts."""
+        row = _make_predicate_row("knows")
+        mock_pool.fetch = AsyncMock(return_value=[MagicMock(**row, keys=lambda: row.keys())])
+        mock_pool.fetch.return_value = [row]
+        result = await predicate_list(mock_pool)
+        assert isinstance(result, list)
+
+    async def test_row_shape_includes_is_temporal(self, mock_pool: AsyncMock) -> None:
+        """Every returned row includes is_temporal."""
+        rows = [
+            _make_predicate_row("ate", is_temporal=True),
+            _make_predicate_row("knows", is_edge=True),
+        ]
+        mock_pool.fetch = AsyncMock(return_value=rows)
+        result = await predicate_list(mock_pool)
+        for row in result:
+            assert "is_temporal" in row, f"Row missing is_temporal: {row}"
+
+    async def test_row_shape_includes_all_expected_keys(self, mock_pool: AsyncMock) -> None:
+        """Every returned row includes name, subject/object types, is_edge, is_temporal, description."""  # noqa: E501
+        expected_keys = {
+            "name",
+            "expected_subject_type",
+            "expected_object_type",
+            "is_edge",
+            "is_temporal",
+            "description",
+        }
+        row = _make_predicate_row("prefers")
+        mock_pool.fetch = AsyncMock(return_value=[row])
+        result = await predicate_list(mock_pool)
+        assert len(result) == 1
+        assert set(result[0].keys()) == expected_keys
+
+    async def test_ordered_by_name_asc(self, mock_pool: AsyncMock) -> None:
+        """Query includes ORDER BY name ASC."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await predicate_list(mock_pool)
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        assert "ORDER BY name ASC" in sql
+
+    async def test_edges_only_false_no_where_clause(self, mock_pool: AsyncMock) -> None:
+        """When edges_only=False (default), query has no WHERE clause."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await predicate_list(mock_pool, edges_only=False)
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        assert "WHERE" not in sql
+
+    async def test_edges_only_true_adds_where_clause(self, mock_pool: AsyncMock) -> None:
+        """When edges_only=True, query filters to is_edge = true."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await predicate_list(mock_pool, edges_only=True)
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        assert "WHERE is_edge = true" in sql
+
+    async def test_edges_only_still_has_name_order(self, mock_pool: AsyncMock) -> None:
+        """edges_only=True still orders by name ASC."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        await predicate_list(mock_pool, edges_only=True)
+        call_args = mock_pool.fetch.call_args
+        sql = call_args.args[0]
+        assert "ORDER BY name ASC" in sql
+
+    async def test_is_temporal_value_preserved(self, mock_pool: AsyncMock) -> None:
+        """is_temporal values (True/False) are passed through unchanged."""
+        rows = [
+            _make_predicate_row("ate", is_temporal=True),
+            _make_predicate_row("knows", is_temporal=False),
+        ]
+        mock_pool.fetch = AsyncMock(return_value=rows)
+        result = await predicate_list(mock_pool)
+        by_name = {r["name"]: r for r in result}
+        assert by_name["ate"]["is_temporal"] is True
+        assert by_name["knows"]["is_temporal"] is False
+
+    async def test_empty_registry_returns_empty_list(self, mock_pool: AsyncMock) -> None:
+        """When no predicates are registered, returns an empty list."""
+        mock_pool.fetch = AsyncMock(return_value=[])
+        result = await predicate_list(mock_pool)
+        assert result == []
