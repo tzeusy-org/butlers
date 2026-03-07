@@ -833,10 +833,10 @@ The memory module SHALL manage its database schema through Alembic migrations in
 #### Scenario: Entity-keyed fact uniqueness (partial unique indexes)
 
 - **WHEN** the entities migration runs
-- **THEN** a partial unique index on `(entity_id, scope, predicate)` WHERE `entity_id IS NOT NULL AND object_entity_id IS NULL AND validity = 'active'` MUST be created (property-fact uniqueness)
-- **AND** a partial unique index on `(scope, subject, predicate)` WHERE `entity_id IS NULL AND validity = 'active'` MUST be created (legacy subject-keyed uniqueness)
-- **AND** a partial unique index on `(entity_id, object_entity_id, scope, predicate)` WHERE `object_entity_id IS NOT NULL AND validity = 'active'` MUST be created (edge-fact uniqueness)
-- **AND** all three constraints MUST coexist
+- **THEN** a partial unique index on `(entity_id, scope, predicate)` WHERE `entity_id IS NOT NULL AND object_entity_id IS NULL AND validity = 'active' AND valid_at IS NULL` MUST be created (property-fact uniqueness)
+- **AND** a partial unique index on `(scope, subject, predicate)` WHERE `entity_id IS NULL AND validity = 'active' AND valid_at IS NULL` MUST be created (legacy subject-keyed uniqueness)
+- **AND** a partial unique index on `(entity_id, object_entity_id, scope, predicate)` WHERE `object_entity_id IS NOT NULL AND validity = 'active' AND valid_at IS NULL` MUST be created (edge-fact uniqueness)
+- **AND** all three constraints MUST coexist and apply only to property facts (valid_at IS NULL); temporal facts (valid_at IS NOT NULL) have no DB-level uniqueness constraint and rely on application-layer deduplication
 
 #### Scenario: Memory links table
 

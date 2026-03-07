@@ -71,6 +71,7 @@ class TestMemoryChainRegistration:
             "005_predicate_registry.py",
             "006_drop_shadow_entities.py",
             "007_bitemporal_facts.py",
+            "008_fix_valid_at_null_semantics.py",
         ], f"Unexpected migration files: {migration_files}"
 
     def test_core_also_in_shared_chains(self) -> None:
@@ -108,6 +109,7 @@ class TestBaselineRevisionChain:
         ("005_predicate_registry.py", "mem_005", "mem_004"),
         ("006_drop_shadow_entities.py", "mem_006", "mem_005"),
         ("007_bitemporal_facts.py", "mem_007", "mem_006"),
+        ("008_fix_valid_at_null_semantics.py", "mem_008", "mem_007"),
     ]
 
     @staticmethod
@@ -172,7 +174,7 @@ class TestBaselineRevisionChain:
             chain_map[mod.revision] = mod.down_revision
 
         # Walk from head to root
-        current = "mem_007"
+        current = "mem_008"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
@@ -187,4 +189,5 @@ class TestBaselineRevisionChain:
             "mem_005",
             "mem_006",
             "mem_007",
-        ], f"Expected linear chain [mem_001 -> ... -> mem_007], got {path}"
+            "mem_008",
+        ], f"Expected linear chain [mem_001 -> ... -> mem_008], got {path}"

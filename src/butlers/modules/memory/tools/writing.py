@@ -86,10 +86,12 @@ async def memory_store_fact(
     provided, uniqueness is enforced via
     ``(entity_id, object_entity_id, scope, predicate)``.
 
-    Accepts an optional ``valid_at`` ISO-8601 string for temporal predicates.
-    When provided, the fact records when it was true (rather than when it was
-    stored).  Temporal predicates skip supersession so multiple active facts
-    at different ``valid_at`` timestamps can coexist.
+    Accepts an optional ``valid_at`` ISO-8601 string.  When omitted, the fact
+    is stored as a *property fact* (``valid_at = NULL``) and supersedes any
+    existing active property fact with the same uniqueness key.  When
+    provided, the fact is stored as a *temporal fact* and always coexists with
+    other active facts — temporal facts never supersede each other or property
+    facts.
 
     Delegates to the storage layer and returns an MCP-friendly dict with the
     new fact's ID and the superseded fact's ID (if any).

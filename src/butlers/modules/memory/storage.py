@@ -190,16 +190,19 @@ async def store_fact(
     If ``entity_id`` is omitted (backward compatible), uniqueness and
     supersession use ``(subject, predicate)`` as before.
 
-    If an active fact matching the key already exists **and the predicate is
-    non-temporal**, the old fact is superseded:
+    If an active fact matching the key already exists **and both the new and
+    old facts are property facts** (``valid_at IS NULL``), the old fact is
+    superseded:
 
     1. Set the old fact's ``validity`` to ``'superseded'``.
     2. Link the new fact to the old one via ``supersedes_id``.
     3. Create a ``memory_links`` row with ``relation='supersedes'``.
 
-    For temporal predicates (``is_temporal=true`` in predicate_registry) the
-    supersession check is skipped so multiple active facts with the same
-    entity/predicate but different ``valid_at`` can coexist.
+    Temporal facts (``valid_at IS NOT NULL``) never supersede each other or
+    property facts.  A new temporal fact always coexists as an additional
+    active row.  Similarly, a new property fact (``valid_at IS NULL``) will
+    supersede only another property fact with the same key — it leaves any
+    existing temporal facts untouched.
 
     Args:
         entity_id: Optional UUID of an existing entity row.  When provided
@@ -208,8 +211,9 @@ async def store_fact(
             When provided the entity must exist; a ``ValueError`` is raised
             otherwise.  ``entity_id`` must also be set.
         valid_at: Optional wall-clock time the fact was true.  Defaults to
-            ``now()``.  For temporal predicates this enables multiple active
-            facts at different valid_at values.
+            ``None`` (property fact).  Pass an explicit datetime to create a
+            temporal fact; multiple temporal facts with different ``valid_at``
+            values coexist as active facts without superseding each other.
 
     Returns:
         The UUID of the newly created fact.
@@ -220,7 +224,9 @@ async def store_fact(
     search_text = preprocess_text(searchable)
     decay_rate = validate_permanence(permanence)
     now = datetime.now(UTC)
-    fact_valid_at = valid_at if valid_at is not None else now
+    # valid_at IS NULL means property fact; valid_at IS NOT NULL means temporal fact.
+    # Preserve NULL when omitted — do NOT default to now().
+    fact_valid_at = valid_at  # None → property fact, datetime → temporal fact
     tags_json = json.dumps(tags or [])
     meta_json = json.dumps(metadata or {})
 
@@ -256,23 +262,22 @@ async def store_fact(
                         f"object_entity_id {object_entity_id!r} does not exist in entities table"
                     )
 
-            # Check whether predicate is temporal (skip supersession if so).
-            is_temporal = await conn.fetchval(
-                "SELECT is_temporal FROM predicate_registry WHERE name = $1",
-                predicate,
-            )
-            skip_supersession = bool(is_temporal)
+            # Supersession applies only to property facts (valid_at IS NULL).
+            # Temporal facts (valid_at IS NOT NULL) always coexist as independent
+            # active rows regardless of predicate_registry.is_temporal.
+            skip_supersession = fact_valid_at is not None
 
             supersedes_id = None
             if not skip_supersession:
-                # Check for existing active fact using the appropriate key.
+                # Check for an existing *property* active fact using the appropriate key.
+                # Only consider rows with valid_at IS NULL (property facts).
                 if object_entity_id is not None:
                     # Edge-fact: keyed on (entity_id, object_entity_id, scope, predicate)
                     existing = await conn.fetchrow(
                         "SELECT id FROM facts "
                         "WHERE entity_id = $1 AND object_entity_id = $2 "
                         "AND scope = $3 AND predicate = $4 "
-                        "AND validity = 'active'",
+                        "AND validity = 'active' AND valid_at IS NULL",
                         entity_id,
                         object_entity_id,
                         scope,
@@ -284,7 +289,7 @@ async def store_fact(
                         "SELECT id FROM facts "
                         "WHERE entity_id = $1 AND object_entity_id IS NULL "
                         "AND scope = $2 AND predicate = $3 "
-                        "AND validity = 'active'",
+                        "AND validity = 'active' AND valid_at IS NULL",
                         entity_id,
                         scope,
                         predicate,
@@ -293,7 +298,7 @@ async def store_fact(
                     existing = await conn.fetchrow(
                         "SELECT id FROM facts "
                         "WHERE entity_id IS NULL AND subject = $1 AND predicate = $2 "
-                        "AND validity = 'active'",
+                        "AND validity = 'active' AND valid_at IS NULL",
                         subject,
                         predicate,
                     )

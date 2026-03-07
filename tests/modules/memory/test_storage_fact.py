@@ -82,7 +82,7 @@ def mock_pool():
     conn.transaction() returns an async context manager.
     """
     conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=None)  # predicate not in registry → non-temporal
+    conn.fetchval = AsyncMock(return_value=None)  # entity check (not called when entity_id=None)
     conn.fetchrow = AsyncMock(return_value=None)
     conn.execute = AsyncMock()
     conn.transaction = MagicMock(return_value=_AsyncCM(None))
@@ -248,7 +248,7 @@ class TestSupersession:
 
 
 class TestTemporalFacts:
-    """Temporal facts: valid_at param and temporal supersession skip."""
+    """Temporal facts: valid_at param and NULL-based supersession skip."""
 
     async def test_valid_at_stored_in_insert(self, mock_pool, embedding_engine):
         """valid_at is passed through to the INSERT as the last positional arg."""
@@ -260,39 +260,35 @@ class TestTemporalFacts:
         # valid_at is $20 → last arg
         assert insert_call.args[-1] == ts
 
-    async def test_valid_at_defaults_to_now_when_omitted(self, mock_pool, embedding_engine):
-        """When valid_at is omitted, a datetime near now() is stored."""
+    async def test_valid_at_defaults_to_null_when_omitted(self, mock_pool, embedding_engine):
+        """When valid_at is omitted, NULL is stored (property fact semantics)."""
         pool, conn = mock_pool
-        before = datetime.now(UTC)
         await store_fact(pool, "user", "city", "Berlin", embedding_engine)
-        after = datetime.now(UTC)
 
         insert_call = conn.execute.call_args_list[0]
         stored_valid_at = insert_call.args[-1]
-        assert isinstance(stored_valid_at, datetime)
-        assert before <= stored_valid_at <= after
+        # Property facts must store NULL, not a timestamp
+        assert stored_valid_at is None
 
-    async def test_temporal_predicate_skips_supersession(self, mock_pool, embedding_engine):
-        """When is_temporal=True, no supersession check or UPDATE is performed."""
+    async def test_temporal_fact_skips_supersession(self, mock_pool, embedding_engine):
+        """When valid_at is provided (temporal fact), no supersession check is done."""
         pool, conn = mock_pool
-        # Simulate predicate_registry returning is_temporal=True
-        conn.fetchval = AsyncMock(return_value=True)
+        ts = datetime(2026, 3, 6, 8, 0, 0, tzinfo=UTC)
         # fetchrow would return an existing fact if supersession were attempted
         conn.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
 
-        await store_fact(pool, "user", "meal_breakfast", "oatmeal", embedding_engine)
+        await store_fact(pool, "user", "meal_breakfast", "oatmeal", embedding_engine, valid_at=ts)
 
         # Only INSERT — no UPDATE supersession, no memory_links INSERT
         assert conn.execute.call_count == 1
         assert "INSERT INTO facts" in conn.execute.call_args_list[0].args[0]
-        # fetchrow (supersession check) should never be called
+        # fetchrow (supersession check) should never be called for temporal facts
         conn.fetchrow.assert_not_awaited()
 
-    async def test_non_temporal_predicate_still_supersedes(self, mock_pool, embedding_engine):
-        """When is_temporal=False/None, supersession happens normally."""
+    async def test_property_fact_still_supersedes(self, mock_pool, embedding_engine):
+        """When valid_at is None (property fact), supersession happens normally."""
         pool, conn = mock_pool
         old_id = uuid.uuid4()
-        conn.fetchval = AsyncMock(return_value=None)  # non-temporal
         conn.fetchrow = AsyncMock(return_value={"id": old_id})
 
         await store_fact(pool, "user", "city", "Munich", embedding_engine)
@@ -302,20 +298,31 @@ class TestTemporalFacts:
         update_call = conn.execute.call_args_list[0]
         assert "UPDATE facts SET validity = 'superseded'" in update_call.args[0]
 
-    async def test_temporal_predicate_registry_queried(self, mock_pool, embedding_engine):
-        """fetchval is called with predicate_registry SQL and the predicate name."""
+    async def test_predicate_registry_not_queried_for_supersession(
+        self, mock_pool, embedding_engine
+    ):
+        """fetchval is NOT called for predicate_registry (supersession is now NULL-based)."""
         pool, conn = mock_pool
         await store_fact(pool, "user", "meal_lunch", "salad", embedding_engine)
 
-        conn.fetchval.assert_awaited_once()
-        sql, predicate_arg = conn.fetchval.call_args.args
-        assert "predicate_registry" in sql
-        assert predicate_arg == "meal_lunch"
+        # No fetchval calls expected — entity_id is None so no entity check,
+        # and supersession is determined by valid_at nullness, not registry.
+        conn.fetchval.assert_not_awaited()
+
+    async def test_supersession_sql_filters_valid_at_null(self, mock_pool, embedding_engine):
+        """Supersession lookup SQL includes AND valid_at IS NULL filter."""
+        pool, conn = mock_pool
+        conn.fetchrow = AsyncMock(return_value=None)  # no existing fact
+
+        await store_fact(pool, "user", "city", "Berlin", embedding_engine)
+
+        fetchrow_call = conn.fetchrow.call_args
+        sql = fetchrow_call.args[0]
+        assert "valid_at IS NULL" in sql
 
     async def test_multiple_temporal_facts_coexist(self, mock_pool, embedding_engine):
         """Storing two temporal facts with the same predicate creates two INSERT calls."""
         pool, conn = mock_pool
-        conn.fetchval = AsyncMock(return_value=True)  # is_temporal
 
         ts1 = datetime(2026, 3, 6, 8, 0, tzinfo=UTC)
         ts2 = datetime(2026, 3, 6, 12, 0, tzinfo=UTC)
@@ -332,3 +339,39 @@ class TestTemporalFacts:
         assert conn.execute.call_count == 2
         for call in conn.execute.call_args_list:
             assert "INSERT INTO facts" in call.args[0]
+
+    async def test_property_fact_does_not_supersede_temporal_fact(
+        self, mock_pool, embedding_engine
+    ):
+        """A new property fact (valid_at=None) does NOT supersede existing temporal facts.
+
+        The supersession lookup SQL uses AND valid_at IS NULL, so a temporal fact
+        (valid_at IS NOT NULL) in the DB would not match the query.  We verify
+        that the supersession logic does not trigger if the only fetchrow result
+        that would be returned is a temporal fact row.
+        """
+        pool, conn = mock_pool
+        # fetchrow returns nothing (simulating: only temporal facts exist in DB,
+        # which would NOT be returned by the valid_at IS NULL query)
+        conn.fetchrow = AsyncMock(return_value=None)
+
+        await store_fact(pool, "user", "city", "Berlin", embedding_engine)
+
+        # Only INSERT — no supersession
+        assert conn.execute.call_count == 1
+        assert "INSERT INTO facts" in conn.execute.call_args_list[0].args[0]
+
+    async def test_temporal_fact_does_not_supersede_property_fact(
+        self, mock_pool, embedding_engine
+    ):
+        """A new temporal fact (valid_at=T1) never supersedes any fact."""
+        pool, conn = mock_pool
+        # Even if a property fact exists in DB, temporal facts skip supersession
+        conn.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
+
+        ts = datetime(2026, 3, 6, 8, 0, 0, tzinfo=UTC)
+        await store_fact(pool, "user", "city", "Berlin", embedding_engine, valid_at=ts)
+
+        # Only INSERT — no supersession check, no UPDATE
+        assert conn.execute.call_count == 1
+        conn.fetchrow.assert_not_awaited()
