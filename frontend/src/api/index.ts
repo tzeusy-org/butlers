@@ -336,6 +336,20 @@ export type {
 } from "./types.ts";
 
 export {
+  listSourceFilters,
+  createSourceFilter,
+  updateSourceFilter,
+  deleteSourceFilter,
+} from "./client.ts";
+
+export type {
+  SourceFilter,
+  SourceFilterCreate,
+  SourceFilterMode,
+  SourceFilterUpdate,
+} from "./types.ts";
+
+export {
   getCrossConnectorSummary,
   getConnectorDetail,
   getConnectorFanout,

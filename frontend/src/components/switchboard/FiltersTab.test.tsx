@@ -495,4 +495,23 @@ describe("FiltersTab", () => {
     // Telegram tab should initially be inactive (Email is default)
     expect(telegramTab?.getAttribute("data-state")).toBe("inactive");
   });
+
+  // -------------------------------------------------------------------------
+  // Manage Filters panel button
+  // -------------------------------------------------------------------------
+
+  it("renders the Manage Filters button in the header", () => {
+    render();
+    const btn = container.querySelector('[data-testid="manage-filters-btn"]');
+    expect(btn).not.toBeNull();
+    expect(btn?.textContent).toContain("Manage Filters");
+  });
+
+  it("Manage Filters panel is not visible by default", () => {
+    render();
+    // The panel Sheet starts closed; its content should not be open
+    const panel = document.querySelector('[data-testid="manage-source-filters-panel"]');
+    // Sheet content may exist but not have data-state="open"
+    expect(panel?.getAttribute("data-state")).not.toBe("open");
+  });
 });

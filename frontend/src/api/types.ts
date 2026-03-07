@@ -1743,6 +1743,42 @@ export interface ThreadOverrideUpsert {
 }
 
 // ---------------------------------------------------------------------------
+// Source filter types
+// ---------------------------------------------------------------------------
+
+/** Filter mode — blacklist rejects matched sources; whitelist allows only matched. */
+export type SourceFilterMode = "blacklist" | "whitelist";
+
+/** A persisted source filter returned from the API. */
+export interface SourceFilter {
+  id: string;
+  name: string;
+  description: string | null;
+  filter_mode: SourceFilterMode;
+  /** Open-text type discriminator e.g. "domain", "sender_address", "substring". */
+  source_key_type: string;
+  patterns: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** Request body for POST /api/switchboard/source-filters. */
+export interface SourceFilterCreate {
+  name: string;
+  description?: string | null;
+  filter_mode: SourceFilterMode;
+  source_key_type: string;
+  patterns: string[];
+}
+
+/** Request body for PATCH /api/switchboard/source-filters/:id. */
+export interface SourceFilterUpdate {
+  name?: string;
+  description?: string | null;
+  patterns?: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Connector statistics and analytics types (docs/connectors/statistics.md)
 // ---------------------------------------------------------------------------
 

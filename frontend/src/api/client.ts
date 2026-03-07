@@ -1734,6 +1734,55 @@ export function deleteThreadAffinityOverride(threadId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Source filters API
+// ---------------------------------------------------------------------------
+
+import type {
+  SourceFilter,
+  SourceFilterCreate,
+  SourceFilterUpdate,
+} from "./types.ts";
+
+/** List all persisted source filters. */
+export function listSourceFilters(): Promise<ApiResponse<SourceFilter[]>> {
+  return apiFetch<ApiResponse<SourceFilter[]>>("/switchboard/source-filters");
+}
+
+/** Create a new source filter. */
+export function createSourceFilter(
+  body: SourceFilterCreate,
+): Promise<ApiResponse<SourceFilter>> {
+  return apiFetch<ApiResponse<SourceFilter>>("/switchboard/source-filters", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Partially update a source filter (name, description, patterns). */
+export function updateSourceFilter(
+  filterId: string,
+  body: SourceFilterUpdate,
+): Promise<ApiResponse<SourceFilter>> {
+  return apiFetch<ApiResponse<SourceFilter>>(
+    `/switchboard/source-filters/${encodeURIComponent(filterId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+/** Delete a source filter (assignments cascade via FK). */
+export function deleteSourceFilter(filterId: string): Promise<void> {
+  return apiFetch<void>(
+    `/switchboard/source-filters/${encodeURIComponent(filterId)}`,
+    { method: "DELETE" },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Education
 // ---------------------------------------------------------------------------
 

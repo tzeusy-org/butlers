@@ -11,7 +11,9 @@
  */
 
 import { useState } from "react";
-import { AlertCircle, CheckCircle2, Edit2, FlaskConical, Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Edit2, FlaskConical, Loader2, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+
+import { ManageSourceFiltersPanel } from "@/components/ingestion/ManageSourceFiltersPanel";
 
 import type { TriageRule, TriageRuleCreate, TriageRuleType } from "@/api/types.ts";
 import { Badge } from "@/components/ui/badge";
@@ -1350,6 +1352,8 @@ function EmailFiltersSection() {
 // ---------------------------------------------------------------------------
 
 export function FiltersTab() {
+  const [managePanelOpen, setManagePanelOpen] = useState(false);
+
   return (
     <div className="space-y-4" data-testid="filters-tab">
       <div className="flex items-center justify-between">
@@ -1359,7 +1363,18 @@ export function FiltersTab() {
             Deterministic ingestion policy — triage rules, thread affinity, and label filters.
           </p>
         </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setManagePanelOpen(true)}
+          data-testid="manage-filters-btn"
+        >
+          <SlidersHorizontal className="size-3.5 mr-1.5" />
+          Manage Filters
+        </Button>
       </div>
+
+      <ManageSourceFiltersPanel open={managePanelOpen} onOpenChange={setManagePanelOpen} />
 
       <Tabs defaultValue="email">
         <TabsList>
