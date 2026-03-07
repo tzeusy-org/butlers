@@ -72,9 +72,10 @@ class TestMemoryChainRegistration:
             "006_drop_shadow_entities.py",
             "007_bitemporal_facts.py",
             "008_fix_valid_at_null_semantics.py",
-            "009_finance_predicates.py",
             "009_health_predicates.py",
-            "010_relationship_predicates.py",
+            "010_finance_predicates.py",
+            "011_relationship_predicates.py",
+            "012_facts_gin_indexes.py",
         ], f"Unexpected migration files: {migration_files}"
 
     def test_core_also_in_shared_chains(self) -> None:
@@ -114,7 +115,9 @@ class TestBaselineRevisionChain:
         ("007_bitemporal_facts.py", "mem_007", "mem_006"),
         ("008_fix_valid_at_null_semantics.py", "mem_008", "mem_007"),
         ("009_health_predicates.py", "mem_009", "mem_008"),
-        ("010_relationship_predicates.py", "mem_010", "mem_009"),
+        ("010_finance_predicates.py", "mem_010", "mem_009"),
+        ("011_relationship_predicates.py", "mem_011", "mem_010"),
+        ("012_facts_gin_indexes.py", "mem_012", "mem_011"),
     ]
 
     @staticmethod
@@ -179,7 +182,7 @@ class TestBaselineRevisionChain:
             chain_map[mod.revision] = mod.down_revision
 
         # Walk from head to root
-        current = "mem_010"
+        current = "mem_012"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
@@ -197,4 +200,6 @@ class TestBaselineRevisionChain:
             "mem_008",
             "mem_009",
             "mem_010",
-        ], f"Expected linear chain [mem_001 -> ... -> mem_010], got {path}"
+            "mem_011",
+            "mem_012",
+        ], f"Expected linear chain [mem_001 -> ... -> mem_012], got {path}"

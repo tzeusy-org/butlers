@@ -22,8 +22,8 @@ Dynamic property predicates (quick_facts):
   - quick_facts keys become the predicate name directly at runtime.
     No static registry rows needed; seeded here for documentation only.
 
-Revision ID: mem_010
-Revises: mem_009
+Revision ID: mem_011
+Revises: mem_010
 Create Date: 2026-03-08 00:00:00.000000
 
 """
@@ -33,8 +33,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "mem_010"
-down_revision = "mem_009"
+revision = "mem_011"
+down_revision = "mem_010"
 branch_labels = None
 depends_on = None
 

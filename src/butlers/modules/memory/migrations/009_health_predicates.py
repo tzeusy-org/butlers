@@ -66,12 +66,12 @@ _TEMPORAL_PREDICATES = [
 _PROPERTY_PREDICATES = [
     (
         "medication",
-        "Current medication. Content = '{name} {dosage} {frequency}'. "
+        "Current medication. Content = ''{name} {dosage} {frequency}''. "
         "Metadata: {name, dosage, frequency, schedule, active, notes}.",
     ),
     (
         "condition",
-        "A health condition. Content = '{name}: {status}'. "
+        "A health condition. Content = ''{name}: {status}''. "
         "Metadata: {name, status, diagnosed_at, notes}.",
     ),
     (

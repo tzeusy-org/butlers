@@ -12,8 +12,8 @@ Property predicates (is_temporal=false — supersession):
   - subscription → recurring service subscription
   - bill         → payable obligation
 
-Revision ID: mem_009
-Revises: mem_008
+Revision ID: mem_010
+Revises: mem_009
 Create Date: 2026-03-08 00:00:00.000000
 
 """
@@ -23,8 +23,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "mem_009"
-down_revision = "mem_008"
+revision = "mem_010"
+down_revision = "mem_009"
 branch_labels = None
 depends_on = None
 

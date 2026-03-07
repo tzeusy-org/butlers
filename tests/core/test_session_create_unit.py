@@ -131,7 +131,9 @@ async def test_session_create_passes_request_id_to_insert():
     _, args = pool.fetchval_calls[0]
     # The INSERT args are: prompt, trigger_source, trace_id, model, request_id, ingestion_event_id
     # Index 4 is request_id (0-indexed from args tuple)
-    assert args[4] == request_id, f"request_id {request_id!r} not found at index 4 in INSERT args: {args}"
+    assert args[4] == request_id, (  # noqa: E501
+        f"request_id {request_id!r} not found at index 4 in INSERT args: {args}"
+    )
 
 
 async def test_session_create_passes_none_ingestion_event_id_for_internal():
