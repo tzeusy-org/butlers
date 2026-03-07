@@ -20,6 +20,7 @@ import pytest
 from tests.api.conftest import (
     build_app_missing_switchboard,
     build_notifications_app,
+    build_stats_app,
     make_notification_row,
 )
 
@@ -242,7 +243,49 @@ class TestNotificationsWithoutSwitchboardPool:
 
 
 # ---------------------------------------------------------------------------
-# 5. SQL ordering
+# 5. Missing notifications table — graceful degradation
+# ---------------------------------------------------------------------------
+
+
+class TestNotificationsWithoutInitializedSchema:
+    """Endpoints should stay up when switchboard exists but migrations have not run."""
+
+    async def test_list_returns_empty_payload_when_notifications_table_missing(self):
+        app, mock_pool, _ = build_notifications_app([], total=0)
+        mock_pool.fetchval.side_effect = Exception('relation "notifications" does not exist')
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/notifications", params={"limit": 5, "status": "failed"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"] == []
+        assert body["meta"]["total"] == 0
+        assert body["meta"]["offset"] == 0
+        assert body["meta"]["limit"] == 5
+
+    async def test_stats_returns_zero_payload_when_notifications_table_missing(self):
+        app, mock_pool, _ = build_stats_app(app=None, total=0, sent=0, failed=0)
+        mock_pool.fetchval.side_effect = Exception('relation "notifications" does not exist')
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get("/api/notifications/stats")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["total"] == 0
+        assert data["sent"] == 0
+        assert data["failed"] == 0
+        assert data["by_channel"] == {}
+        assert data["by_butler"] == {}
+
+
+# ---------------------------------------------------------------------------
+# 6. SQL ordering
 # ---------------------------------------------------------------------------
 
 
@@ -279,7 +322,7 @@ class TestListNotificationsOrdering:
 
 
 # ---------------------------------------------------------------------------
-# 6. SQL query construction correctness
+# 7. SQL query construction correctness
 # ---------------------------------------------------------------------------
 
 
@@ -345,7 +388,7 @@ class TestListNotificationsQueryConstruction:
 
 
 # ---------------------------------------------------------------------------
-# 7. Pagination boundary semantics
+# 8. Pagination boundary semantics
 # ---------------------------------------------------------------------------
 
 

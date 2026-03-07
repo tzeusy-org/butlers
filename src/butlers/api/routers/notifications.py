@@ -23,6 +23,7 @@ from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.notification import NotificationStats, NotificationSummary
 
 logger = logging.getLogger(__name__)
+_missing_notifications_table_warnings: set[str] = set()
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 butler_notifications_router = APIRouter(prefix="/api/butlers", tags=["butlers", "notifications"])
@@ -57,6 +58,52 @@ def _normalize_notification_metadata(value: object | None) -> dict | None:
     if isinstance(value, Mapping):
         return dict(value)
     return None
+
+
+def _is_missing_notifications_table_error(exc: Exception) -> bool:
+    """Return whether *exc* indicates an uninitialized ``notifications`` table."""
+    if exc.__class__.__name__ == "UndefinedTableError":
+        return True
+    msg = str(exc).lower()
+    return "relation" in msg and "notifications" in msg and "does not exist" in msg
+
+
+def _log_missing_notifications_table_once(*, operation: str) -> None:
+    """Log the missing-table degradation path once per endpoint operation."""
+    if operation in _missing_notifications_table_warnings:
+        logger.debug(
+            "Notifications table still missing during %s; returning empty payload",
+            operation,
+        )
+        return
+
+    _missing_notifications_table_warnings.add(operation)
+    logger.warning(
+        "Switchboard notifications table is missing during %s; returning empty payload "
+        "until switchboard migrations have run.",
+        operation,
+    )
+
+
+def _empty_notification_page(*, offset: int, limit: int) -> PaginatedResponse[NotificationSummary]:
+    """Return the standard empty paginated notification envelope."""
+    return PaginatedResponse[NotificationSummary](
+        data=[],
+        meta=PaginationMeta(total=0, offset=offset, limit=limit),
+    )
+
+
+def _empty_notification_stats() -> ApiResponse[NotificationStats]:
+    """Return the standard empty notification stats envelope."""
+    return ApiResponse[NotificationStats](
+        data=NotificationStats(
+            total=0,
+            sent=0,
+            failed=0,
+            by_channel={},
+            by_butler={},
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -174,20 +221,23 @@ async def list_notifications(
     """
     pool = _get_switchboard_pool(db)
     if pool is None:
-        return PaginatedResponse[NotificationSummary](
-            data=[],
-            meta=PaginationMeta(total=0, offset=offset, limit=limit),
+        return _empty_notification_page(offset=offset, limit=limit)
+    try:
+        return await _query_notifications(
+            pool,
+            offset=offset,
+            limit=limit,
+            butler=butler,
+            channel=channel,
+            status=status,
+            since=since,
+            until=until,
         )
-    return await _query_notifications(
-        pool,
-        offset=offset,
-        limit=limit,
-        butler=butler,
-        channel=channel,
-        status=status,
-        since=since,
-        until=until,
-    )
+    except Exception as exc:
+        if not _is_missing_notifications_table_error(exc):
+            raise
+        _log_missing_notifications_table_once(operation="list_notifications")
+        return _empty_notification_page(offset=offset, limit=limit)
 
 
 # ---------------------------------------------------------------------------
@@ -216,20 +266,23 @@ async def list_butler_notifications(
     """
     pool = _get_switchboard_pool(db)
     if pool is None:
-        return PaginatedResponse[NotificationSummary](
-            data=[],
-            meta=PaginationMeta(total=0, offset=offset, limit=limit),
+        return _empty_notification_page(offset=offset, limit=limit)
+    try:
+        return await _query_notifications(
+            pool,
+            offset=offset,
+            limit=limit,
+            butler=name,
+            channel=channel,
+            status=status,
+            since=since,
+            until=until,
         )
-    return await _query_notifications(
-        pool,
-        offset=offset,
-        limit=limit,
-        butler=name,
-        channel=channel,
-        status=status,
-        since=since,
-        until=until,
-    )
+    except Exception as exc:
+        if not _is_missing_notifications_table_error(exc):
+            raise
+        _log_missing_notifications_table_once(operation="list_butler_notifications")
+        return _empty_notification_page(offset=offset, limit=limit)
 
 
 @router.get("/stats", response_model=ApiResponse[NotificationStats])
@@ -243,29 +296,29 @@ async def notification_stats(
     """
     pool = _get_switchboard_pool(db)
     if pool is None:
-        return ApiResponse[NotificationStats](
-            data=NotificationStats(
-                total=0,
-                sent=0,
-                failed=0,
-                by_channel={},
-                by_butler={},
-            )
+        return _empty_notification_stats()
+
+    try:
+        total = await pool.fetchval("SELECT count(*) FROM notifications") or 0
+        sent = await pool.fetchval("SELECT count(*) FROM notifications WHERE status = 'sent'") or 0
+        failed = (
+            await pool.fetchval("SELECT count(*) FROM notifications WHERE status = 'failed'") or 0
         )
 
-    total = await pool.fetchval("SELECT count(*) FROM notifications") or 0
-    sent = await pool.fetchval("SELECT count(*) FROM notifications WHERE status = 'sent'") or 0
-    failed = await pool.fetchval("SELECT count(*) FROM notifications WHERE status = 'failed'") or 0
+        channel_rows = await pool.fetch(
+            "SELECT channel, count(*) AS cnt FROM notifications GROUP BY channel"
+        )
+        by_channel = {row["channel"]: row["cnt"] for row in channel_rows}
 
-    channel_rows = await pool.fetch(
-        "SELECT channel, count(*) AS cnt FROM notifications GROUP BY channel"
-    )
-    by_channel = {row["channel"]: row["cnt"] for row in channel_rows}
-
-    butler_rows = await pool.fetch(
-        "SELECT source_butler, count(*) AS cnt FROM notifications GROUP BY source_butler"
-    )
-    by_butler = {row["source_butler"]: row["cnt"] for row in butler_rows}
+        butler_rows = await pool.fetch(
+            "SELECT source_butler, count(*) AS cnt FROM notifications GROUP BY source_butler"
+        )
+        by_butler = {row["source_butler"]: row["cnt"] for row in butler_rows}
+    except Exception as exc:
+        if not _is_missing_notifications_table_error(exc):
+            raise
+        _log_missing_notifications_table_once(operation="notification_stats")
+        return _empty_notification_stats()
 
     return ApiResponse[NotificationStats](
         data=NotificationStats(

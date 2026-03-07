@@ -248,6 +248,29 @@ class TestButlerNotificationsFilters:
         assert "created_at <= $5" in count_sql
 
 
+class TestButlerNotificationsMissingTable:
+    """Butler-scoped notifications should degrade gracefully before migrations run."""
+
+    async def test_returns_empty_payload_when_notifications_table_missing(self):
+        app, mock_pool, _ = build_notifications_app([], total=0)
+        mock_pool.fetchval.side_effect = Exception('relation "notifications" does not exist')
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/butlers/atlas/notifications",
+                params={"limit": 5, "status": "failed"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"] == []
+        assert body["meta"]["total"] == 0
+        assert body["meta"]["offset"] == 0
+        assert body["meta"]["limit"] == 5
+
+
 class TestButlerNotificationsResponseShape:
     """Test the shape of the response data matches cross-butler endpoint."""
 

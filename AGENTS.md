@@ -874,3 +874,6 @@ make test-qg
 
 ### Beads CLI sync drift
 - In this environment (`bd` v0.58.0), the CLI no longer exposes `bd sync`; persistence/inspection flows live under `bd vc` / `bd dolt`, while `bd export -o .beads/issues.jsonl` still flushes SQLite state to JSONL. Any repo docs that prescribe `bd sync` are stale against the installed tool.
+
+### Notifications API startup degradation contract
+- `src/butlers/api/routers/notifications.py` must treat a missing switchboard `notifications` table the same as an unavailable switchboard pool: `GET /api/notifications` and `GET /api/butlers/{name}/notifications` return an empty paginated payload, and `GET /api/notifications/stats` returns zeroed stats instead of bubbling a 500 before switchboard migrations have run.
