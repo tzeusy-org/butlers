@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import UTC, datetime
@@ -11,6 +12,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.connectors.source_filter import (
+    SourceFilterEvaluator,
+    SourceFilterSpec,
+    extract_telethon_filter_key,
+)
 from butlers.connectors.telegram_user_client import (
     TELETHON_AVAILABLE,
     TelegramUserClientConnector,
@@ -732,3 +738,279 @@ async def test_run_telegram_user_client_connector_uses_db_credentials_when_env_m
     assert passed_config.telegram_api_hash == "db-hash"
     assert passed_config.telegram_user_session == "db-session"
     mock_connector.start.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# extract_telethon_filter_key tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtractTelethonFilterKey:
+    """Tests for the extract_telethon_filter_key helper."""
+
+    def test_extracts_chat_id_from_message(self) -> None:
+        """Returns str(message.chat_id) for key_type='chat_id'."""
+        msg = MagicMock()
+        msg.chat_id = 987654321
+        assert extract_telethon_filter_key(msg, "chat_id") == "987654321"
+
+    def test_extracts_negative_chat_id_for_groups(self) -> None:
+        """Returns negative chat_id string for group/channel chats."""
+        msg = MagicMock()
+        msg.chat_id = -100987654321
+        assert extract_telethon_filter_key(msg, "chat_id") == "-100987654321"
+
+    def test_returns_empty_for_non_chat_id_key_type(self) -> None:
+        """Returns '' for key_types other than chat_id."""
+        msg = MagicMock()
+        msg.chat_id = 111
+        assert extract_telethon_filter_key(msg, "domain") == ""
+        assert extract_telethon_filter_key(msg, "sender_address") == ""
+        assert extract_telethon_filter_key(msg, "substring") == ""
+
+    def test_falls_back_to_peer_id_channel_id(self) -> None:
+        """Falls back to peer_id.channel_id when chat_id is absent."""
+        msg = MagicMock(spec=[])  # no attributes
+        peer = MagicMock(spec=["channel_id"])
+        peer.channel_id = 99999
+        object.__setattr__(msg, "peer_id", peer)
+        assert extract_telethon_filter_key(msg, "chat_id") == "99999"
+
+    def test_falls_back_to_peer_id_user_id(self) -> None:
+        """Falls back to peer_id.user_id when chat_id and channel_id are absent."""
+        msg = MagicMock(spec=[])
+        peer = MagicMock(spec=["user_id"])
+        peer.user_id = 22222
+        object.__setattr__(msg, "peer_id", peer)
+        assert extract_telethon_filter_key(msg, "chat_id") == "22222"
+
+    def test_returns_empty_when_no_chat_id_or_peer_id(self) -> None:
+        """Returns '' when neither chat_id nor peer_id is available."""
+        msg = MagicMock(spec=[])  # no attributes at all
+        assert extract_telethon_filter_key(msg, "chat_id") == ""
+
+
+# ---------------------------------------------------------------------------
+# Source filter integration tests for TelegramUserClientConnector
+# ---------------------------------------------------------------------------
+
+
+def _make_spec(
+    *,
+    id: str = "aaaaaaaa-0000-0000-0000-000000000001",
+    name: str = "test-filter",
+    filter_mode: str = "blacklist",
+    source_key_type: str = "chat_id",
+    patterns: list[str] | None = None,
+    priority: int = 0,
+) -> SourceFilterSpec:
+    return SourceFilterSpec(
+        id=id,
+        name=name,
+        filter_mode=filter_mode,
+        source_key_type=source_key_type,
+        patterns=patterns or [],
+        priority=priority,
+    )
+
+
+def _evaluator_with_filters(
+    filters: list[SourceFilterSpec],
+    endpoint_identity: str = "telegram:user:123456",
+) -> SourceFilterEvaluator:
+    """Create an evaluator with a pre-loaded filter cache (no DB needed)."""
+    import time as _time
+
+    ev = SourceFilterEvaluator(
+        connector_type="telegram-user-client",
+        endpoint_identity=endpoint_identity,
+        db_pool=None,
+        refresh_interval_s=300,
+    )
+    ev._filters = filters
+    ev._last_loaded_at = _time.monotonic()
+    return ev
+
+
+class TestSourceFilterIntegration:
+    """Integration tests for source filter gate in TelegramUserClientConnector."""
+
+    def test_connector_initializes_source_filter_evaluator(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Connector creates a SourceFilterEvaluator with connector_type='telegram-user-client'."""
+        connector = TelegramUserClientConnector(config)
+        ev = connector._source_filter_evaluator
+        assert isinstance(ev, SourceFilterEvaluator)
+        assert ev._connector_type == "telegram-user-client"
+        assert ev._endpoint_identity == config.endpoint_identity
+
+    def test_connector_accepts_db_pool(self, config: TelegramUserClientConnectorConfig) -> None:
+        """Connector passes db_pool to SourceFilterEvaluator."""
+        mock_pool = MagicMock()
+        connector = TelegramUserClientConnector(config, db_pool=mock_pool)
+        assert connector._source_filter_evaluator._db_pool is mock_pool
+
+    async def test_process_message_allowed_when_no_filters(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Messages pass through when no source filters are active (fail-open)."""
+        connector = TelegramUserClientConnector(config)
+        # Evaluator has no filters loaded — fail-open
+        connector._source_filter_evaluator._filters = []
+        connector._source_filter_evaluator._last_loaded_at = __import__("time").monotonic()
+
+        mock_message = MagicMock()
+        mock_message.id = 1001
+        mock_message.chat_id = 555555
+        mock_message.sender_id = 111
+        mock_message.message = "Hello"
+        mock_message.to_dict.return_value = {"id": 1001}
+
+        mock_result = {"request_id": "req-1", "duplicate": False, "status": "accepted"}
+        with patch.object(
+            connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
+        ) as mock_call:
+            await connector._process_message(mock_message)
+
+        mock_call.assert_awaited_once()
+        assert connector._last_message_id == 1001
+
+    async def test_process_message_blocked_by_blacklist(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Messages from a blacklisted chat_id are dropped without calling Switchboard."""
+        connector = TelegramUserClientConnector(config)
+        connector._source_filter_evaluator = _evaluator_with_filters(
+            [_make_spec(filter_mode="blacklist", patterns=["555555"])]
+        )
+
+        mock_message = MagicMock()
+        mock_message.id = 1002
+        mock_message.chat_id = 555555
+        mock_message.sender_id = 111
+        mock_message.message = "blocked"
+        mock_message.to_dict.return_value = {"id": 1002}
+
+        with patch.object(connector._mcp_client, "call_tool", new_callable=AsyncMock) as mock_call:
+            await connector._process_message(mock_message)
+
+        mock_call.assert_not_awaited()
+        # Checkpoint must NOT advance for blocked messages
+        assert connector._last_message_id is None
+
+    async def test_process_message_passes_when_not_in_blacklist(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Messages from a non-blacklisted chat_id pass through."""
+        connector = TelegramUserClientConnector(config)
+        connector._source_filter_evaluator = _evaluator_with_filters(
+            [_make_spec(filter_mode="blacklist", patterns=["999999"])]
+        )
+
+        mock_message = MagicMock()
+        mock_message.id = 1003
+        mock_message.chat_id = 555555  # not in blacklist
+        mock_message.sender_id = 111
+        mock_message.message = "allowed"
+        mock_message.to_dict.return_value = {"id": 1003}
+
+        mock_result = {"request_id": "req-3", "duplicate": False, "status": "accepted"}
+        with patch.object(
+            connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
+        ) as mock_call:
+            await connector._process_message(mock_message)
+
+        mock_call.assert_awaited_once()
+
+    async def test_process_message_blocked_by_whitelist(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Messages not matching a whitelist are dropped without calling Switchboard."""
+        connector = TelegramUserClientConnector(config)
+        connector._source_filter_evaluator = _evaluator_with_filters(
+            [_make_spec(filter_mode="whitelist", patterns=["111111"])]
+        )
+
+        mock_message = MagicMock()
+        mock_message.id = 1004
+        mock_message.chat_id = 555555  # not in whitelist
+        mock_message.sender_id = 111
+        mock_message.message = "not whitelisted"
+        mock_message.to_dict.return_value = {"id": 1004}
+
+        with patch.object(connector._mcp_client, "call_tool", new_callable=AsyncMock) as mock_call:
+            await connector._process_message(mock_message)
+
+        mock_call.assert_not_awaited()
+
+    async def test_process_message_passes_when_in_whitelist(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """Messages matching a whitelist chat_id are allowed through."""
+        connector = TelegramUserClientConnector(config)
+        connector._source_filter_evaluator = _evaluator_with_filters(
+            [_make_spec(filter_mode="whitelist", patterns=["555555"])]
+        )
+
+        mock_message = MagicMock()
+        mock_message.id = 1005
+        mock_message.chat_id = 555555
+        mock_message.sender_id = 111
+        mock_message.message = "whitelisted"
+        mock_message.to_dict.return_value = {"id": 1005}
+
+        mock_result = {"request_id": "req-5", "duplicate": False, "status": "accepted"}
+        with patch.object(
+            connector._mcp_client, "call_tool", new_callable=AsyncMock, return_value=mock_result
+        ) as mock_call:
+            await connector._process_message(mock_message)
+
+        mock_call.assert_awaited_once()
+
+    async def test_ensure_loaded_called_before_ingestion_in_start(
+        self, config: TelegramUserClientConnectorConfig
+    ) -> None:
+        """start() calls ensure_loaded() on the source filter evaluator before connecting."""
+        connector = TelegramUserClientConnector(config)
+
+        ensure_loaded_calls: list[str] = []
+        connect_calls: list[str] = []
+
+        original_ensure_loaded = connector._source_filter_evaluator.ensure_loaded
+
+        async def tracking_ensure_loaded() -> None:
+            ensure_loaded_calls.append("ensure_loaded")
+            await original_ensure_loaded()
+
+        connector._source_filter_evaluator.ensure_loaded = tracking_ensure_loaded  # type: ignore[method-assign]
+
+        # Patch TelegramClient to capture the call sequence
+        mock_tg_client = MagicMock()
+
+        async def fake_tg_start() -> None:
+            connect_calls.append("connect")
+
+        mock_tg_client.start = fake_tg_start
+        mock_tg_client.run_until_disconnected = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with (
+            patch(
+                "butlers.connectors.telegram_user_client.TelegramClient",
+                return_value=mock_tg_client,
+            ),
+            patch(
+                "butlers.connectors.telegram_user_client.StringSession",
+                return_value=MagicMock(),
+            ),
+            patch.object(connector, "_start_heartbeat"),
+        ):
+            with pytest.raises((asyncio.CancelledError, Exception)):
+                await connector.start()
+
+        # ensure_loaded must be called before connect
+        assert "ensure_loaded" in ensure_loaded_calls
+        combined = ensure_loaded_calls + connect_calls
+        assert combined.index("ensure_loaded") < combined.index("connect") + len(
+            ensure_loaded_calls
+        )
