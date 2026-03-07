@@ -385,9 +385,7 @@ async def list_meals(
         args.append(until)
         idx += 1
 
-    where = "predicate = ANY($1) AND validity = 'active'" + (
-        "".join(f" AND {c}" for c in extra)
-    )
+    where = "predicate = ANY($1) AND validity = 'active'" + ("".join(f" AND {c}" for c in extra))
 
     total = await pool.fetchval(f"SELECT count(*) FROM facts WHERE {where}", *args) or 0
 

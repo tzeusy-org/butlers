@@ -3215,6 +3215,7 @@ class TestSnapshotPersistence:
     async def test_persist_snapshot_row_structure(self, ha_module: HomeAssistantModule) -> None:
         """Each snapshot row contains (entity_id, state, attributes_json, last_updated)."""
         import json
+        from datetime import datetime
 
         mock_db = self._make_mock_db()
         ha_module._db = mock_db
@@ -3235,7 +3236,8 @@ class TestSnapshotPersistence:
         assert entity_id == "switch.fan"
         assert state == "on"
         assert json.loads(attrs_json) == {"friendly_name": "Ceiling Fan"}
-        assert "2024-06-01" in last_updated
+        assert isinstance(last_updated, datetime)
+        assert last_updated.isoformat() == "2024-06-01T12:00:00+00:00"
 
     async def test_persist_snapshot_empty_last_updated_stored_as_none(
         self, ha_module: HomeAssistantModule
