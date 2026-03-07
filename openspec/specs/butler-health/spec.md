@@ -55,6 +55,51 @@ The health butler uses a clinical memory taxonomy with permanence based on condi
 - **WHEN** the health butler extracts facts
 - **THEN** it uses subjects like medication names, condition names, or "user"; predicates like `medication`, `medication_frequency`, `condition_status`, `symptom_pattern`, `dietary_restriction`, `allergy`; permanence `stable` for chronic conditions and allergies, `standard` for current medications and symptoms, `volatile` for acute symptoms
 
+### Requirement: CRUD-to-SPO migration — health domain (bu-ddb.2)
+The health butler migrates 6 dedicated CRUD tables (measurements, symptoms, medication_doses, medications, conditions, research) to temporal SPO facts using the memory module's facts table. All facts use `scope='health'` and `entity_id = owner_entity_id`. Full predicate taxonomy and metadata schemas are in `openspec/changes/crud-to-spo-migration/specs/predicate-taxonomy.md`.
+
+#### Scenario: Measurement tools as temporal fact wrappers
+- **WHEN** `measurement_log` is called to record a measurement
+- **THEN** it MUST internally call `store_fact` with `predicate='measurement_{type}'`, `valid_at=measured_at`, `entity_id=owner_entity_id`, `scope='health'`, and `metadata={value, unit, notes}`
+- **AND** `content` MUST be a human-readable summary (e.g. `"Weight: 72.5 kg"`)
+- **AND** when `measurement_history` or `measurement_latest` is called
+- **THEN** they MUST query facts with predicate matching `measurement_{type}`, ordered by `valid_at DESC`
+
+#### Scenario: Symptom tools as temporal fact wrappers
+- **WHEN** `symptom_log` is called
+- **THEN** it MUST internally call `store_fact` with `predicate='symptom'`, `valid_at=occurred_at`, `entity_id=owner_entity_id`, `scope='health'`, and `metadata={severity, condition_id, notes}`
+- **AND** `content` MUST be the symptom name
+- **AND** `symptom_history` and `symptom_search` MUST query facts with `predicate='symptom'`
+
+#### Scenario: Medication dose tools as temporal fact wrappers
+- **WHEN** `medication_log_dose` is called
+- **THEN** it MUST internally call `store_fact` with `predicate='took_dose'`, `valid_at=taken_at`, `entity_id=owner_entity_id`, `scope='health'`, and `metadata={medication_id, skipped, notes}`
+- **AND** `medication_history` MUST query facts with `predicate='took_dose'`
+
+#### Scenario: Medication property fact wrappers
+- **WHEN** `medication_add` is called
+- **THEN** it MUST internally call `store_fact` with `predicate='medication'`, `valid_at=NULL` (property fact), `entity_id=owner_entity_id`, `scope='health'`, and `metadata={name, dosage, frequency, schedule, active, notes}`
+- **AND** `content` MUST be `"{name} {dosage} {frequency}"`
+- **AND** `medication_list` MUST query facts with `predicate='medication'` and `validity='active'`
+- **AND** multiple active medications (different names) MUST coexist because content differentiates them
+
+#### Scenario: Condition property fact wrappers
+- **WHEN** `condition_add` or `condition_update` is called
+- **THEN** it MUST internally call `store_fact` with `predicate='condition'`, `valid_at=NULL`, `entity_id=owner_entity_id`, `scope='health'`, and `metadata={name, status, diagnosed_at, notes}`
+- **AND** `content` MUST be `"{name}: {status}"`
+- **AND** `condition_list` MUST query facts with `predicate='condition'` and `validity='active'`
+
+#### Scenario: Research property fact wrappers
+- **WHEN** `research_save` is called
+- **THEN** it MUST internally call `store_fact` with `predicate='research'`, `valid_at=NULL`, `entity_id=owner_entity_id`, `scope='health'`, `content=research_content`, and `metadata={title, tags, source_url, condition_id}`
+- **AND** `research_search` MUST use `memory_search` with `predicate='research'` and `scope='health'`
+
+#### Scenario: health_summary and trend_report query facts
+- **WHEN** `health_summary` is called
+- **THEN** it MUST aggregate across facts with `scope='health'` and `entity_id=owner_entity_id` for all active medications, conditions, recent measurements, and recent symptoms
+- **AND** when `trend_report` is called for a measurement type
+- **THEN** it MUST query facts with `predicate='measurement_{type}'` and `valid_at` in the requested date range, returning the same response shape as before (data_points, trend, min, max, avg)
+
 ### Requirement: Meal tracking as bitemporal facts
 The health butler stores meal observations using the memory module's meal-specific temporal predicates and nutrition metadata, enabling historical meal querying and pattern analysis.
 
