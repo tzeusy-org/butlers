@@ -1081,7 +1081,7 @@ class TestCallButlerTool:
         """
         from butlers.tools.switchboard import _call_butler_tool
 
-        mock_result = SimpleNamespace(is_error=False, data={"ok": True}, content=[])
+        mock_result = SimpleNamespace(isError=False, content=[SimpleNamespace(text='{"ok": true}')])
         mock_client = AsyncMock()
         mock_client.call_tool = AsyncMock(return_value=mock_result)
 
@@ -1109,8 +1109,8 @@ class TestCallButlerTool:
         """Consecutive calls should reuse a healthy cached router client."""
         from butlers.tools.switchboard import _call_butler_tool
 
-        result_one = SimpleNamespace(is_error=False, data={"n": 1}, content=[])
-        result_two = SimpleNamespace(is_error=False, data={"n": 2}, content=[])
+        result_one = SimpleNamespace(isError=False, content=[SimpleNamespace(text='{"n": 1}')])
+        result_two = SimpleNamespace(isError=False, content=[SimpleNamespace(text='{"n": 2}')])
 
         mock_client = AsyncMock()
         mock_client.call_tool = AsyncMock(side_effect=[result_one, result_two])
@@ -1144,11 +1144,15 @@ class TestCallButlerTool:
 
         first_client = AsyncMock()
         first_client.call_tool = AsyncMock(
-            return_value=SimpleNamespace(is_error=False, data={"step": 1}, content=[])
+            return_value=SimpleNamespace(
+                isError=False, content=[SimpleNamespace(text='{"step": 1}')]
+            )
         )
         second_client = AsyncMock()
         second_client.call_tool = AsyncMock(
-            return_value=SimpleNamespace(is_error=False, data={"step": 2}, content=[])
+            return_value=SimpleNamespace(
+                isError=False, content=[SimpleNamespace(text='{"step": 2}')]
+            )
         )
 
         first_ctx = MagicMock()
@@ -1209,8 +1213,7 @@ class TestCallButlerTool:
 
         legacy_tool = "handle" + "_message"
         failed_result = SimpleNamespace(
-            is_error=True,
-            data=None,
+            isError=True,
             content=[SimpleNamespace(text=f"Unknown tool: {legacy_tool}")],
         )
 
