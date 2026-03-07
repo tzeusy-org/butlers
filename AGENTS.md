@@ -856,3 +856,4 @@ make test-qg
 ### Refinery patrol hook activation behavior
 - In this rig state, `gt hook`/`gt mol status` can show a hooked `mol-refinery-patrol` bead while also reporting `No molecule attached`; `gt mol attach` rejects hooked wisps because it requires a pinned bead.
 - `gt patrol new` creates and hooks a fresh patrol wisp, but the hook output may still report `No molecule attached`; use `gt mq list <rig>` as operational queue truth and continue processing merge-ready MRs.
+- Current refinery patrol wisps are root-only molecules: `bd mol show <wisp-id>` reports `Steps: 1` with just the patrol root, and `bd mol current <wisp-id>` shows `0/0 steps complete`; do not block on missing child-step beads before running the patrol loop.
