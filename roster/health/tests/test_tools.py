@@ -717,8 +717,8 @@ async def _insert_fact(pool, predicate: str, content: str, valid_at: datetime, m
     meta = metadata or {}
     await pool.execute(
         """
-        INSERT INTO facts (id, subject, predicate, content, valid_at, metadata, validity)
-        VALUES ($1, 'owner', $2, $3, $4, $5::jsonb, 'active')
+        INSERT INTO facts (id, subject, predicate, content, valid_at, metadata, validity, scope)
+        VALUES ($1, 'owner', $2, $3, $4, $5::jsonb, 'active', 'health')
         """,
         uuid.uuid4(),
         predicate,
@@ -760,19 +760,21 @@ async def test_meal_log(pool, mock_embedding_engine):
         )
     assert meal["type"] == "lunch"
     assert meal["description"] == "Grilled chicken salad"
-    assert meal["nutrition"] == {"calories": 450, "protein_g": 30}
+    assert meal["estimated_calories"] == 450
+    assert meal["macros"]["protein_g"] == 30
     assert meal["id"] == str(fixed_id)
 
 
 async def test_meal_log_without_nutrition(pool, mock_embedding_engine):
-    """meal_log works without nutrition data (returns null nutrition)."""
+    """meal_log works without nutrition data (returns null nutrition fields)."""
     from butlers.tools.health import meal_log
 
     mock_sf = AsyncMock(return_value=uuid.uuid4())
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         meal = await meal_log(pool, "snack", "Apple")
     assert meal["description"] == "Apple"
-    assert meal["nutrition"] is None
+    assert meal["estimated_calories"] is None
+    assert meal["macros"] is None
 
 
 async def test_meal_log_with_notes(pool, mock_embedding_engine):
@@ -828,8 +830,12 @@ async def test_meal_log_store_fact_called_with_correct_predicate(pool, mock_embe
     assert kwargs["content"] == "Oatmeal"
     assert kwargs["valid_at"] == eaten
     assert kwargs["permanence"] == "stable"
-    assert kwargs["metadata"]["nutrition"] == {"calories": 300}
+    assert kwargs["scope"] == "health"
+    assert kwargs["metadata"]["estimated_calories"] == 300
+    assert kwargs["metadata"]["macros"]["protein_g"] is None
     assert kwargs["metadata"]["notes"] == "with berries"
+    assert "logged_at" in kwargs["metadata"]
+    assert kwargs["metadata"]["meal_items"] == []
 
 
 async def test_meal_history_all(pool):
@@ -901,7 +907,13 @@ async def test_meal_history_returns_correct_shape(pool):
         "meal_dinner",
         "Roast chicken",
         now - timedelta(hours=1),
-        metadata={"nutrition": {"calories": 500}, "notes": "crispy"},
+        metadata={
+            "estimated_calories": 500,
+            "macros": {"protein_g": 40, "carbs_g": 10, "fat_g": 20},
+            "notes": "crispy",
+            "logged_at": now.isoformat(),
+            "meal_items": [],
+        },
     )
 
     history = await meal_history(pool, start_date=now - timedelta(hours=2), end_date=now)
@@ -909,7 +921,8 @@ async def test_meal_history_returns_correct_shape(pool):
     m = history[0]
     assert m["type"] == "dinner"
     assert m["description"] == "Roast chicken"
-    assert m["nutrition"] == {"calories": 500}
+    assert m["estimated_calories"] == 500
+    assert m["macros"]["protein_g"] == 40
     assert m["notes"] == "crispy"
     assert "id" in m
     assert "eaten_at" in m
@@ -926,14 +939,20 @@ async def test_nutrition_summary(pool):
         "meal_breakfast",
         "NutrSum_1",
         now - timedelta(days=3),
-        metadata={"nutrition": {"calories": 400, "protein_g": 30, "carbs_g": 50, "fat_g": 10}},
+        metadata={
+            "estimated_calories": 400,
+            "macros": {"protein_g": 30, "carbs_g": 50, "fat_g": 10},
+        },
     )
     await _insert_fact(
         pool,
         "meal_lunch",
         "NutrSum_2",
         now - timedelta(days=1),
-        metadata={"nutrition": {"calories": 600, "protein_g": 25, "carbs_g": 70, "fat_g": 20}},
+        metadata={
+            "estimated_calories": 600,
+            "macros": {"protein_g": 25, "carbs_g": 70, "fat_g": 20},
+        },  # noqa: E501
     )
 
     summary = await nutrition_summary(pool, start_date=now - timedelta(days=7), end_date=now)
@@ -974,7 +993,10 @@ async def test_nutrition_summary_excludes_facts_without_nutrition(pool):
         "meal_lunch",
         "Chicken bowl",
         now - timedelta(hours=1),
-        metadata={"nutrition": {"calories": 300}},
+        metadata={
+            "estimated_calories": 300,
+            "macros": {"protein_g": 25, "carbs_g": 30, "fat_g": 8},
+        },
     )
 
     summary = await nutrition_summary(pool, start_date=now - timedelta(hours=3), end_date=now)

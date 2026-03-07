@@ -44,13 +44,19 @@ def _fact_to_meal(row: dict[str, Any]) -> dict[str, Any]:
     meta = row.get("metadata") or {}
     if isinstance(meta, str):
         meta = json.loads(meta)
-    nutrition = meta.get("nutrition") if isinstance(meta, dict) else None
+    estimated_calories = meta.get("estimated_calories") if isinstance(meta, dict) else None
+    macros = meta.get("macros") if isinstance(meta, dict) else None
+    meal_items = meta.get("meal_items") if isinstance(meta, dict) else None
+    logged_at = meta.get("logged_at") if isinstance(meta, dict) else None
     notes = meta.get("notes") if isinstance(meta, dict) else None
     return {
         "id": str(row["id"]),
         "type": meal_type,
         "description": row.get("content", ""),
-        "nutrition": nutrition,
+        "estimated_calories": estimated_calories,
+        "macros": macros,
+        "meal_items": meal_items,
+        "logged_at": logged_at,
         "eaten_at": row.get("valid_at"),
         "notes": notes,
         "created_at": row.get("created_at"),
@@ -79,9 +85,17 @@ async def meal_log(
     now = datetime.now(UTC)
     valid_at = eaten_at if eaten_at is not None else now
 
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = {
+        "logged_at": now.isoformat(),
+        "meal_items": [],
+    }
     if nutrition is not None:
-        metadata["nutrition"] = nutrition
+        metadata["estimated_calories"] = nutrition.get("calories")
+        metadata["macros"] = {
+            "protein_g": nutrition.get("protein_g"),
+            "carbs_g": nutrition.get("carbs_g"),
+            "fat_g": nutrition.get("fat_g"),
+        }
     if notes is not None:
         metadata["notes"] = notes
 
@@ -92,16 +106,20 @@ async def meal_log(
         content=description,
         embedding_engine=embedding_engine,
         permanence="stable",
+        scope="health",
         entity_id=owner_entity_id,
         valid_at=valid_at,
-        metadata=metadata if metadata else None,
+        metadata=metadata,
     )
 
     return {
         "id": str(fact_id),
         "type": type,
         "description": description,
-        "nutrition": nutrition,
+        "estimated_calories": metadata.get("estimated_calories"),
+        "macros": metadata.get("macros"),
+        "meal_items": metadata["meal_items"],
+        "logged_at": metadata["logged_at"],
         "eaten_at": valid_at,
         "notes": notes,
         "created_at": now,
@@ -121,7 +139,7 @@ async def meal_history(
         )
 
     predicates = [f"meal_{type}"] if type is not None else _MEAL_PREDICATES
-    conditions = ["predicate = ANY($1)", "validity = 'active'"]
+    conditions = ["predicate = ANY($1)", "validity = 'active'", "scope = 'health'"]
     params: list[Any] = [predicates]
     idx = 2
 
@@ -159,8 +177,9 @@ async def nutrition_summary(
         SELECT metadata FROM facts
         WHERE predicate = ANY($1)
           AND validity = 'active'
+          AND scope = 'health'
           AND valid_at >= $2 AND valid_at <= $3
-          AND metadata ? 'nutrition'
+          AND metadata ? 'estimated_calories'
         """,
         _MEAL_PREDICATES,
         start_date,
@@ -179,22 +198,22 @@ async def nutrition_summary(
             meta = json.loads(meta)
         if not isinstance(meta, dict):
             continue
-        nutr = meta.get("nutrition")
-        if nutr is None:
+        estimated_calories = meta.get("estimated_calories")
+        if estimated_calories is None:
             continue
-        if isinstance(nutr, str):
-            nutr = json.loads(nutr)
-        if not isinstance(nutr, dict):
-            continue
+        macros = meta.get("macros") or {}
+        if isinstance(macros, str):
+            macros = json.loads(macros)
         meal_count += 1
-        if "calories" in nutr and isinstance(nutr["calories"], int | float):
-            total_calories += float(nutr["calories"])
-        if "protein_g" in nutr and isinstance(nutr["protein_g"], int | float):
-            total_protein += float(nutr["protein_g"])
-        if "carbs_g" in nutr and isinstance(nutr["carbs_g"], int | float):
-            total_carbs += float(nutr["carbs_g"])
-        if "fat_g" in nutr and isinstance(nutr["fat_g"], int | float):
-            total_fat += float(nutr["fat_g"])
+        if isinstance(estimated_calories, int | float):
+            total_calories += float(estimated_calories)
+        if isinstance(macros, dict):
+            if "protein_g" in macros and isinstance(macros["protein_g"], int | float):
+                total_protein += float(macros["protein_g"])
+            if "carbs_g" in macros and isinstance(macros["carbs_g"], int | float):
+                total_carbs += float(macros["carbs_g"])
+            if "fat_g" in macros and isinstance(macros["fat_g"], int | float):
+                total_fat += float(macros["fat_g"])
 
     days = max((end_date - start_date).days, 1)
 
