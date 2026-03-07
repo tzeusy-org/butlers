@@ -75,6 +75,7 @@ from butlers.connectors.gmail_policy import (
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.connectors.source_filter import SourceFilterEvaluator
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
@@ -505,6 +506,14 @@ class GmailConnectorRuntime:
             known_contacts=known_contacts,
         )
 
+        # Source filter evaluator (sender domain/address blacklist/whitelist)
+        # DB-backed with TTL refresh; fail-open on DB error.
+        self._source_filter_evaluator = SourceFilterEvaluator(
+            connector_type="gmail",
+            endpoint_identity=config.connector_endpoint_identity,
+            db_pool=db_pool,
+        )
+
     async def get_health_status(self) -> HealthStatus:
         """Get current health status for Kubernetes probes."""
         uptime = time.time() - self._start_time
@@ -726,6 +735,9 @@ class GmailConnectorRuntime:
 
         # Ensure cursor file exists
         await self._ensure_cursor_file()
+
+        # Load source filters before starting ingestion loop
+        await self._source_filter_evaluator.ensure_loaded()
 
         # Start backfill polling loop in background (does not block live ingestion)
         if self._config.connector_backfill_enabled:
@@ -1109,17 +1121,30 @@ class GmailConnectorRuntime:
                                     policy_result.filter_reason,
                                 )
                             else:
-                                envelope = await self._build_ingest_envelope(
-                                    message_data,
-                                    policy_result=policy_result,
-                                )
-                                await self._submit_to_ingest_api(envelope)
-                                rows_processed += 1
+                                # Source filter gate (backfill path)
+                                _bf_from = self._get_from_header(message_data)
+                                _bf_sf = self._source_filter_evaluator.evaluate(_bf_from)
+                                if not _bf_sf.allowed:
+                                    rows_skipped += 1
+                                    logger.debug(
+                                        "Backfill: source filter blocked message %s: "
+                                        "reason=%s filter=%s",
+                                        message_id,
+                                        _bf_sf.reason,
+                                        _bf_sf.filter_name,
+                                    )
+                                else:
+                                    envelope = await self._build_ingest_envelope(
+                                        message_data,
+                                        policy_result=policy_result,
+                                    )
+                                    await self._submit_to_ingest_api(envelope)
+                                    rows_processed += 1
 
-                                # Estimate cost: ~0.01 cents per message as conservative proxy
-                                # Actual cost is LLM-side; connector estimates only.
-                                # Per docs/connectors/email_backfill.md section 9.4.
-                                cost_spent_cents += 1
+                                    # Estimate cost: ~0.01 cents per message as conservative proxy
+                                    # Actual cost is LLM-side; connector estimates only.
+                                    # Per docs/connectors/email_backfill.md section 9.4.
+                                    cost_spent_cents += 1
 
                         except Exception as exc:
                             logger.warning(
@@ -1675,6 +1700,19 @@ class GmailConnectorRuntime:
                     )
                     return
 
+                # Source filter gate (runs after label filter, before triage/envelope build)
+                _sf_result = self._source_filter_evaluator.evaluate(
+                    self._get_from_header(message_data)
+                )
+                if not _sf_result.allowed:
+                    logger.debug(
+                        "Source filter blocked message %s: reason=%s filter=%s",
+                        message_id,
+                        _sf_result.reason,
+                        _sf_result.filter_name,
+                    )
+                    return
+
                 # Build ingest.v1 envelope (tier-aware)
                 envelope = await self._build_ingest_envelope(
                     message_data,
@@ -1703,6 +1741,15 @@ class GmailConnectorRuntime:
                 raise
             except Exception as exc:
                 logger.error("Failed to ingest message %s: %s", message_id, exc, exc_info=True)
+
+    @staticmethod
+    def _get_from_header(message_data: dict[str, Any]) -> str:
+        """Extract the raw From header value from a Gmail message payload."""
+        headers = message_data.get("payload", {}).get("headers", [])
+        for header in headers:
+            if isinstance(header, dict) and header.get("name", "").lower() == "from":
+                return header.get("value", "")
+        return ""
 
     async def _fetch_message(self, message_id: str) -> dict[str, Any]:
         """Fetch full message metadata and payload from Gmail API."""
