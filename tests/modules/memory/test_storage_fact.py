@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -81,6 +82,7 @@ def mock_pool():
     conn.transaction() returns an async context manager.
     """
     conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=None)  # predicate not in registry → non-temporal
     conn.fetchrow = AsyncMock(return_value=None)
     conn.execute = AsyncMock()
     conn.transaction = MagicMock(return_value=_AsyncCM(None))
@@ -243,3 +245,90 @@ class TestSupersession:
 
         # Three execute calls: UPDATE old, INSERT new, INSERT link
         assert conn.execute.call_count == 3
+
+
+class TestTemporalFacts:
+    """Temporal facts: valid_at param and temporal supersession skip."""
+
+    async def test_valid_at_stored_in_insert(self, mock_pool, embedding_engine):
+        """valid_at is passed through to the INSERT as the last positional arg."""
+        pool, conn = mock_pool
+        ts = datetime(2026, 3, 6, 8, 0, 0, tzinfo=UTC)
+        await store_fact(pool, "user", "meal_breakfast", "oatmeal", embedding_engine, valid_at=ts)
+
+        insert_call = conn.execute.call_args_list[0]
+        # valid_at is $20 → last arg
+        assert insert_call.args[-1] == ts
+
+    async def test_valid_at_defaults_to_now_when_omitted(self, mock_pool, embedding_engine):
+        """When valid_at is omitted, a datetime near now() is stored."""
+        pool, conn = mock_pool
+        before = datetime.now(UTC)
+        await store_fact(pool, "user", "city", "Berlin", embedding_engine)
+        after = datetime.now(UTC)
+
+        insert_call = conn.execute.call_args_list[0]
+        stored_valid_at = insert_call.args[-1]
+        assert isinstance(stored_valid_at, datetime)
+        assert before <= stored_valid_at <= after
+
+    async def test_temporal_predicate_skips_supersession(self, mock_pool, embedding_engine):
+        """When is_temporal=True, no supersession check or UPDATE is performed."""
+        pool, conn = mock_pool
+        # Simulate predicate_registry returning is_temporal=True
+        conn.fetchval = AsyncMock(return_value=True)
+        # fetchrow would return an existing fact if supersession were attempted
+        conn.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})
+
+        await store_fact(pool, "user", "meal_breakfast", "oatmeal", embedding_engine)
+
+        # Only INSERT — no UPDATE supersession, no memory_links INSERT
+        assert conn.execute.call_count == 1
+        assert "INSERT INTO facts" in conn.execute.call_args_list[0].args[0]
+        # fetchrow (supersession check) should never be called
+        conn.fetchrow.assert_not_awaited()
+
+    async def test_non_temporal_predicate_still_supersedes(self, mock_pool, embedding_engine):
+        """When is_temporal=False/None, supersession happens normally."""
+        pool, conn = mock_pool
+        old_id = uuid.uuid4()
+        conn.fetchval = AsyncMock(return_value=None)  # non-temporal
+        conn.fetchrow = AsyncMock(return_value={"id": old_id})
+
+        await store_fact(pool, "user", "city", "Munich", embedding_engine)
+
+        # Three execute calls: UPDATE, INSERT, INSERT link
+        assert conn.execute.call_count == 3
+        update_call = conn.execute.call_args_list[0]
+        assert "UPDATE facts SET validity = 'superseded'" in update_call.args[0]
+
+    async def test_temporal_predicate_registry_queried(self, mock_pool, embedding_engine):
+        """fetchval is called with predicate_registry SQL and the predicate name."""
+        pool, conn = mock_pool
+        await store_fact(pool, "user", "meal_lunch", "salad", embedding_engine)
+
+        conn.fetchval.assert_awaited_once()
+        sql, predicate_arg = conn.fetchval.call_args.args
+        assert "predicate_registry" in sql
+        assert predicate_arg == "meal_lunch"
+
+    async def test_multiple_temporal_facts_coexist(self, mock_pool, embedding_engine):
+        """Storing two temporal facts with the same predicate creates two INSERT calls."""
+        pool, conn = mock_pool
+        conn.fetchval = AsyncMock(return_value=True)  # is_temporal
+
+        ts1 = datetime(2026, 3, 6, 8, 0, tzinfo=UTC)
+        ts2 = datetime(2026, 3, 6, 12, 0, tzinfo=UTC)
+
+        id1 = await store_fact(
+            pool, "user", "meal_breakfast", "oatmeal", embedding_engine, valid_at=ts1
+        )
+        id2 = await store_fact(pool, "user", "meal_lunch", "salad", embedding_engine, valid_at=ts2)
+
+        assert isinstance(id1, uuid.UUID)
+        assert isinstance(id2, uuid.UUID)
+        assert id1 != id2
+        # Two INSERT calls, no UPDATEs
+        assert conn.execute.call_count == 2
+        for call in conn.execute.call_args_list:
+            assert "INSERT INTO facts" in call.args[0]

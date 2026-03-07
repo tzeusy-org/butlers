@@ -69,10 +69,18 @@ def _make_pool(conn):
     return pool
 
 
-def _make_conn(*, fetchval_return=None, fetchrow_return=None):
-    """Build a mock conn with configurable fetchval/fetchrow returns."""
+def _make_conn(*, fetchval_return=None, fetchrow_return=None, fetchval_side_effect=None):
+    """Build a mock conn with configurable fetchval/fetchrow returns.
+
+    fetchval_side_effect overrides fetchval_return when provided. Use it to
+    supply a sequence of return values for multiple fetchval calls (e.g.
+    [1, None] means entity-valid then non-temporal predicate).
+    """
     conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=fetchval_return)
+    if fetchval_side_effect is not None:
+        conn.fetchval = AsyncMock(side_effect=fetchval_side_effect)
+    else:
+        conn.fetchval = AsyncMock(return_value=fetchval_return)
     conn.fetchrow = AsyncMock(return_value=fetchrow_return)
     conn.execute = AsyncMock()
     conn.transaction = MagicMock(return_value=_AsyncCM(None))
@@ -127,7 +135,8 @@ class TestEntityIdValidation:
     async def test_valid_entity_id_does_not_raise(self, embedding_engine):
         """Valid entity_id (exists in DB) proceeds without error."""
         eid = uuid.uuid4()
-        conn = _make_conn(fetchval_return=1)  # entity found
+        # fetchval returns: entity=1 (exists), is_temporal=None (non-temporal)
+        conn = _make_conn(fetchval_side_effect=[1, None])
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -142,13 +151,19 @@ class TestEntityIdValidation:
         assert isinstance(result, uuid.UUID)
 
     async def test_no_entity_validation_when_entity_id_omitted(self, embedding_engine):
-        """fetchval (entity check) is NOT called when entity_id is None."""
+        """Entity check fetchval is NOT called when entity_id is None.
+
+        Only the is_temporal predicate registry check is called.
+        """
         conn = _make_conn()
         pool = _make_pool(conn)
 
         await store_fact(pool, "user", "color", "blue", embedding_engine)
 
-        conn.fetchval.assert_not_awaited()
+        # is_temporal check is called, but the entity existence check is not
+        conn.fetchval.assert_awaited_once()
+        sql_called = conn.fetchval.call_args.args[0]
+        assert "predicate_registry" in sql_called
 
 
 # ---------------------------------------------------------------------------
@@ -160,9 +175,10 @@ class TestEntityIdStoredInFact:
     """entity_id is persisted in the INSERT statement."""
 
     async def test_entity_id_included_in_insert(self, embedding_engine):
-        """When entity_id is provided, it appears as the last positional arg."""
+        """When entity_id is provided, it appears in the INSERT args."""
         eid = uuid.uuid4()
-        conn = _make_conn(fetchval_return=1)
+        # fetchval returns: entity=1 (exists), is_temporal=None (non-temporal)
+        conn = _make_conn(fetchval_side_effect=[1, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -180,9 +196,11 @@ class TestEntityIdStoredInFact:
         )
         sql = insert_call.args[0]
         assert "entity_id" in sql
-        # entity_id is $18, object_entity_id is $19 (last)
-        assert insert_call.args[-2] == eid
-        assert insert_call.args[-1] is None  # object_entity_id not set
+        # entity_id=$18, object_entity_id=$19, valid_at=$20 (last)
+        assert insert_call.args[-3] == eid
+        assert insert_call.args[-2] is None  # object_entity_id not set
+        # valid_at should be a datetime (not None)
+        assert insert_call.args[-1] is not None
 
     async def test_entity_id_null_in_insert_when_omitted(self, embedding_engine):
         """When entity_id is not provided, NULL is stored."""
@@ -193,8 +211,10 @@ class TestEntityIdStoredInFact:
 
         insert_call = conn.execute.call_args_list[0]
         assert "entity_id" in insert_call.args[0]
-        assert insert_call.args[-2] is None  # entity_id
-        assert insert_call.args[-1] is None  # object_entity_id
+        assert insert_call.args[-3] is None  # entity_id
+        assert insert_call.args[-2] is None  # object_entity_id
+        # valid_at should be a datetime (not None)
+        assert insert_call.args[-1] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +230,8 @@ class TestEntityKeyedSupersession:
         """Pool/conn where an existing entity-keyed fact is found."""
         old_id = uuid.uuid4()
         eid = uuid.uuid4()
-        conn = _make_conn(fetchval_return=1, fetchrow_return={"id": old_id})
+        # fetchval: entity=1 (exists), is_temporal=None (non-temporal → supersession applies)
+        conn = _make_conn(fetchval_side_effect=[1, None], fetchrow_return={"id": old_id})
         pool = _make_pool(conn)
         return pool, conn, old_id, eid
 
@@ -370,8 +391,11 @@ class TestSubjectKeyedSupersessionUnchanged:
         insert_call = next(
             c for c in conn.execute.call_args_list if "INSERT INTO facts" in c.args[0]
         )
-        assert insert_call.args[-2] is None  # entity_id = None
-        assert insert_call.args[-1] is None  # object_entity_id = None
+        # entity_id=$18, object_entity_id=$19, valid_at=$20 (last)
+        assert insert_call.args[-3] is None  # entity_id = None
+        assert insert_call.args[-2] is None  # object_entity_id = None
+        # valid_at should be a datetime (not None)
+        assert insert_call.args[-1] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -519,9 +543,8 @@ class TestObjectEntityIdValidation:
         """Valid object_entity_id (exists in DB) proceeds without error."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        # Both entity checks return 1
-        conn = _make_conn()
-        conn.fetchval = AsyncMock(side_effect=[1, 1])
+        # fetchval returns: entity=1, obj=1, is_temporal=None
+        conn = _make_conn(fetchval_side_effect=[1, 1, None])
         pool = _make_pool(conn)
 
         result = await store_fact(
@@ -536,12 +559,11 @@ class TestObjectEntityIdValidation:
 
         assert isinstance(result, uuid.UUID)
 
-    async def test_object_entity_id_validation_calls_fetchval_twice(self, embedding_engine):
-        """Two fetchval calls: one for entity_id, one for object_entity_id."""
+    async def test_object_entity_id_validation_calls_fetchval_thrice(self, embedding_engine):
+        """Three fetchval calls: entity_id, object_entity_id, then is_temporal."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        conn = _make_conn()
-        conn.fetchval = AsyncMock(side_effect=[1, 1])
+        conn = _make_conn(fetchval_side_effect=[1, 1, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -554,9 +576,11 @@ class TestObjectEntityIdValidation:
             object_entity_id=obj_eid,
         )
 
-        assert conn.fetchval.call_count == 2
+        assert conn.fetchval.call_count == 3
         assert conn.fetchval.call_args_list[0].args[1] == eid
         assert conn.fetchval.call_args_list[1].args[1] == obj_eid
+        # Third call is is_temporal check against predicate_registry
+        assert "predicate_registry" in conn.fetchval.call_args_list[2].args[0]
 
 
 # ---------------------------------------------------------------------------
@@ -568,11 +592,11 @@ class TestObjectEntityIdStoredInFact:
     """object_entity_id is persisted in the INSERT statement."""
 
     async def test_object_entity_id_included_in_insert(self, embedding_engine):
-        """When object_entity_id is provided, it appears as the last positional arg."""
+        """When object_entity_id is provided, it appears in the INSERT args."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        conn = _make_conn()
-        conn.fetchval = AsyncMock(side_effect=[1, 1])
+        # fetchval returns: entity=1, obj=1, is_temporal=None
+        conn = _make_conn(fetchval_side_effect=[1, 1, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -590,8 +614,11 @@ class TestObjectEntityIdStoredInFact:
         )
         sql = insert_call.args[0]
         assert "object_entity_id" in sql
-        assert insert_call.args[-1] == obj_eid
-        assert insert_call.args[-2] == eid
+        # entity_id=$18, object_entity_id=$19, valid_at=$20 (last)
+        assert insert_call.args[-2] == obj_eid
+        assert insert_call.args[-3] == eid
+        # valid_at should be a datetime (not None)
+        assert insert_call.args[-1] is not None
 
     async def test_object_entity_id_null_when_omitted(self, embedding_engine):
         """When object_entity_id is not provided, NULL is stored."""
@@ -602,7 +629,8 @@ class TestObjectEntityIdStoredInFact:
 
         insert_call = conn.execute.call_args_list[0]
         assert "object_entity_id" in insert_call.args[0]
-        assert insert_call.args[-1] is None  # object_entity_id
+        # entity_id=$18, object_entity_id=$19, valid_at=$20 (last)
+        assert insert_call.args[-2] is None  # object_entity_id
 
 
 # ---------------------------------------------------------------------------
@@ -620,9 +648,8 @@ class TestEdgeFactSupersession:
         old_id = uuid.uuid4()
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        conn = _make_conn(fetchrow_return={"id": old_id})
-        # Both entity checks pass
-        conn.fetchval = AsyncMock(side_effect=[1, 1])
+        # fetchval: entity=1, obj=1, is_temporal=None (non-temporal → supersession applies)
+        conn = _make_conn(fetchrow_return={"id": old_id}, fetchval_side_effect=[1, 1, None])
         pool = _make_pool(conn)
         return pool, conn, old_id, eid, obj_eid
 
@@ -738,8 +765,8 @@ class TestEdgeFactSupersession:
         """No supersession when no existing edge-fact found."""
         eid = uuid.uuid4()
         obj_eid = uuid.uuid4()
-        conn = _make_conn(fetchrow_return=None)
-        conn.fetchval = AsyncMock(side_effect=[1, 1])
+        # fetchval: entity=1, obj=1, is_temporal=None (non-temporal, no existing fact)
+        conn = _make_conn(fetchrow_return=None, fetchval_side_effect=[1, 1, None])
         pool = _make_pool(conn)
 
         await store_fact(
@@ -825,3 +852,79 @@ class TestMemoryStoreFactObjectEntityIdTool:
                     "Berlin",
                     object_entity_id="not-a-uuid",
                 )
+
+
+# ---------------------------------------------------------------------------
+# Tests: tool layer — valid_at forwarding
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryStoreFactValidAtTool:
+    """Test valid_at in the MCP tool wrapper (writing.py)."""
+
+    async def test_valid_at_forwarded_as_datetime(self):
+        """valid_at ISO string is parsed to datetime and forwarded to storage."""
+        from unittest.mock import patch
+
+        from butlers.modules.memory.tools import _helpers, memory_store_fact
+
+        pool = AsyncMock()
+        engine = MagicMock()
+        storage_result = {"id": uuid.uuid4()}
+
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as mock_store:
+            mock_store.return_value = storage_result
+            await memory_store_fact(
+                pool,
+                engine,
+                "Owner",
+                "meal_breakfast",
+                "oatmeal",
+                valid_at="2026-03-06T08:00:00Z",
+            )
+            call_kwargs = mock_store.call_args.kwargs
+            assert call_kwargs["valid_at"] is not None
+            assert call_kwargs["valid_at"].tzinfo is not None
+            assert call_kwargs["valid_at"].year == 2026
+            assert call_kwargs["valid_at"].month == 3
+            assert call_kwargs["valid_at"].day == 6
+
+    async def test_valid_at_none_when_omitted(self):
+        """valid_at is None when not supplied."""
+        from unittest.mock import patch
+
+        from butlers.modules.memory.tools import _helpers, memory_store_fact
+
+        pool = AsyncMock()
+        engine = MagicMock()
+        storage_result = {"id": uuid.uuid4()}
+
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as mock_store:
+            mock_store.return_value = storage_result
+            await memory_store_fact(pool, engine, "user", "city", "Berlin")
+            call_kwargs = mock_store.call_args.kwargs
+            assert call_kwargs["valid_at"] is None
+
+    async def test_valid_at_naive_datetime_gets_utc(self):
+        """valid_at without timezone info is assumed UTC."""
+        from datetime import UTC
+        from unittest.mock import patch
+
+        from butlers.modules.memory.tools import _helpers, memory_store_fact
+
+        pool = AsyncMock()
+        engine = MagicMock()
+        storage_result = {"id": uuid.uuid4()}
+
+        with patch.object(_helpers._storage, "store_fact", new_callable=AsyncMock) as mock_store:
+            mock_store.return_value = storage_result
+            await memory_store_fact(
+                pool,
+                engine,
+                "Owner",
+                "meal_dinner",
+                "pasta",
+                valid_at="2026-03-06T19:00:00",  # no timezone
+            )
+            call_kwargs = mock_store.call_args.kwargs
+            assert call_kwargs["valid_at"].tzinfo == UTC

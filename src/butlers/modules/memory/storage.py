@@ -174,6 +174,7 @@ async def store_fact(
     metadata: dict | None = None,
     entity_id: uuid.UUID | None = None,
     object_entity_id: uuid.UUID | None = None,
+    valid_at: datetime | None = None,
 ) -> uuid.UUID:
     """Store a distilled fact with optional supersession.
 
@@ -189,11 +190,16 @@ async def store_fact(
     If ``entity_id`` is omitted (backward compatible), uniqueness and
     supersession use ``(subject, predicate)`` as before.
 
-    If an active fact matching the key already exists:
+    If an active fact matching the key already exists **and the predicate is
+    non-temporal**, the old fact is superseded:
 
     1. Set the old fact's ``validity`` to ``'superseded'``.
     2. Link the new fact to the old one via ``supersedes_id``.
     3. Create a ``memory_links`` row with ``relation='supersedes'``.
+
+    For temporal predicates (``is_temporal=true`` in predicate_registry) the
+    supersession check is skipped so multiple active facts with the same
+    entity/predicate but different ``valid_at`` can coexist.
 
     Args:
         entity_id: Optional UUID of an existing entity row.  When provided
@@ -201,6 +207,9 @@ async def store_fact(
         object_entity_id: Optional UUID of a target entity for edge-facts.
             When provided the entity must exist; a ``ValueError`` is raised
             otherwise.  ``entity_id`` must also be set.
+        valid_at: Optional wall-clock time the fact was true.  Defaults to
+            ``now()``.  For temporal predicates this enables multiple active
+            facts at different valid_at values.
 
     Returns:
         The UUID of the newly created fact.
@@ -211,6 +220,7 @@ async def store_fact(
     search_text = preprocess_text(searchable)
     decay_rate = validate_permanence(permanence)
     now = datetime.now(UTC)
+    fact_valid_at = valid_at if valid_at is not None else now
     tags_json = json.dumps(tags or [])
     meta_json = json.dumps(metadata or {})
 
@@ -246,48 +256,56 @@ async def store_fact(
                         f"object_entity_id {object_entity_id!r} does not exist in entities table"
                     )
 
-            # Check for existing active fact using the appropriate key.
-            if object_entity_id is not None:
-                # Edge-fact: keyed on (entity_id, object_entity_id, scope, predicate)
-                existing = await conn.fetchrow(
-                    "SELECT id FROM facts "
-                    "WHERE entity_id = $1 AND object_entity_id = $2 "
-                    "AND scope = $3 AND predicate = $4 "
-                    "AND validity = 'active'",
-                    entity_id,
-                    object_entity_id,
-                    scope,
-                    predicate,
-                )
-            elif entity_id is not None:
-                # Property-fact: keyed on (entity_id, scope, predicate)
-                existing = await conn.fetchrow(
-                    "SELECT id FROM facts "
-                    "WHERE entity_id = $1 AND object_entity_id IS NULL "
-                    "AND scope = $2 AND predicate = $3 "
-                    "AND validity = 'active'",
-                    entity_id,
-                    scope,
-                    predicate,
-                )
-            else:
-                existing = await conn.fetchrow(
-                    "SELECT id FROM facts "
-                    "WHERE entity_id IS NULL AND subject = $1 AND predicate = $2 "
-                    "AND validity = 'active'",
-                    subject,
-                    predicate,
-                )
+            # Check whether predicate is temporal (skip supersession if so).
+            is_temporal = await conn.fetchval(
+                "SELECT is_temporal FROM predicate_registry WHERE name = $1",
+                predicate,
+            )
+            skip_supersession = bool(is_temporal)
 
             supersedes_id = None
-            if existing:
-                old_id = existing["id"]
-                supersedes_id = old_id
-                # Mark old fact as superseded
-                await conn.execute(
-                    "UPDATE facts SET validity = 'superseded' WHERE id = $1",
-                    old_id,
-                )
+            if not skip_supersession:
+                # Check for existing active fact using the appropriate key.
+                if object_entity_id is not None:
+                    # Edge-fact: keyed on (entity_id, object_entity_id, scope, predicate)
+                    existing = await conn.fetchrow(
+                        "SELECT id FROM facts "
+                        "WHERE entity_id = $1 AND object_entity_id = $2 "
+                        "AND scope = $3 AND predicate = $4 "
+                        "AND validity = 'active'",
+                        entity_id,
+                        object_entity_id,
+                        scope,
+                        predicate,
+                    )
+                elif entity_id is not None:
+                    # Property-fact: keyed on (entity_id, scope, predicate)
+                    existing = await conn.fetchrow(
+                        "SELECT id FROM facts "
+                        "WHERE entity_id = $1 AND object_entity_id IS NULL "
+                        "AND scope = $2 AND predicate = $3 "
+                        "AND validity = 'active'",
+                        entity_id,
+                        scope,
+                        predicate,
+                    )
+                else:
+                    existing = await conn.fetchrow(
+                        "SELECT id FROM facts "
+                        "WHERE entity_id IS NULL AND subject = $1 AND predicate = $2 "
+                        "AND validity = 'active'",
+                        subject,
+                        predicate,
+                    )
+
+                if existing:
+                    old_id = existing["id"]
+                    supersedes_id = old_id
+                    # Mark old fact as superseded
+                    await conn.execute(
+                        "UPDATE facts SET validity = 'superseded' WHERE id = $1",
+                        old_id,
+                    )
 
             # Insert new fact
             sql = f"""
@@ -296,14 +314,14 @@ async def store_fact(
                     importance, confidence, decay_rate, permanence, source_butler,
                     source_episode_id, supersedes_id, validity, scope,
                     created_at, last_confirmed_at, tags, metadata, entity_id,
-                    object_entity_id
+                    object_entity_id, valid_at
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, {tsvector_sql("$6")},
                     $7, $8, $9, $10, $11,
                     $12, $13, 'active', $14,
                     $15, $15, $16, $17, $18,
-                    $19
+                    $19, $20
                 )
             """
             await conn.execute(
@@ -327,6 +345,7 @@ async def store_fact(
                 meta_json,
                 entity_id,
                 object_entity_id,
+                fact_valid_at,
             )
 
             # Create supersedes link if applicable

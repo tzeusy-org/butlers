@@ -71,6 +71,7 @@ async def memory_store_fact(
     tags: list[str] | None = None,
     entity_id: str | None = None,
     object_entity_id: str | None = None,
+    valid_at: str | None = None,
 ) -> dict[str, Any]:
     """Store a distilled fact, automatically superseding any existing match.
 
@@ -85,6 +86,11 @@ async def memory_store_fact(
     provided, uniqueness is enforced via
     ``(entity_id, object_entity_id, scope, predicate)``.
 
+    Accepts an optional ``valid_at`` ISO-8601 string for temporal predicates.
+    When provided, the fact records when it was true (rather than when it was
+    stored).  Temporal predicates skip supersession so multiple active facts
+    at different ``valid_at`` timestamps can coexist.
+
     Delegates to the storage layer and returns an MCP-friendly dict with the
     new fact's ID and the superseded fact's ID (if any).
     """
@@ -92,6 +98,11 @@ async def memory_store_fact(
 
     parsed_entity_id = _uuid.UUID(entity_id) if entity_id is not None else None
     parsed_object_entity_id = _uuid.UUID(object_entity_id) if object_entity_id is not None else None
+    parsed_valid_at: datetime | None = None
+    if valid_at is not None:
+        parsed_valid_at = datetime.fromisoformat(valid_at)
+        if parsed_valid_at.tzinfo is None:
+            parsed_valid_at = parsed_valid_at.replace(tzinfo=UTC)
 
     result = await _storage.store_fact(
         pool,
@@ -105,6 +116,7 @@ async def memory_store_fact(
         tags=tags,
         entity_id=parsed_entity_id,
         object_entity_id=parsed_object_entity_id,
+        valid_at=parsed_valid_at,
     )
 
     # Backward-compatible: older storage variants may return a mapping.

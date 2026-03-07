@@ -182,6 +182,7 @@ class TestMemoryStoreFact:
                 tags=None,
                 entity_id=None,
                 object_entity_id=None,
+                valid_at=None,
             )
 
     async def test_returns_id_as_string(

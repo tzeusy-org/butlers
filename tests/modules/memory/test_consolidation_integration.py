@@ -124,6 +124,7 @@ def _mock_pool_with_connection() -> tuple[AsyncMock, AsyncMock]:
     # Mock connection with async methods
     # Use SyncMock for the connection itself so .transaction() returns immediately
     mock_conn = SyncMock()
+    mock_conn.fetchval = AsyncMock(return_value=None)  # is_temporal=None → non-temporal
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.execute = AsyncMock(return_value="UPDATE 1")
     mock_conn.fetch = AsyncMock(return_value=[])

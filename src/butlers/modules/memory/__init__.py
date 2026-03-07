@@ -175,6 +175,18 @@ class MemoryModule(Module):
                     )
                 ),
             ] = None,
+            valid_at: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Optional ISO-8601 timestamp for when the fact was true "
+                        "(e.g. '2026-03-06T12:30:00Z'). Used for temporal predicates "
+                        "such as meal_breakfast/lunch/dinner/snack. Temporal facts "
+                        "skip supersession so multiple entries at different times can "
+                        "coexist. Defaults to now() when omitted."
+                    )
+                ),
+            ] = None,
         ) -> dict[str, Any]:
             """Store a fact and supersede any active match.
 
@@ -184,6 +196,10 @@ class MemoryModule(Module):
             becomes a human-readable label only.
             Edge-facts (when `object_entity_id` is set) use
             `(entity_id, object_entity_id, scope, predicate)`.
+
+            Temporal predicates (e.g. meal_breakfast, meal_lunch) skip
+            supersession — multiple active facts at different `valid_at`
+            timestamps can coexist for the same entity/predicate.
 
             Required fields:
             - `subject` (string)
@@ -199,6 +215,7 @@ class MemoryModule(Module):
               A single string is invalid and will fail validation.
             - `entity_id` (string, UUID) — anchor fact to a resolved entity
             - `object_entity_id` (string, UUID) — target entity for edge-facts
+            - `valid_at` (string, ISO-8601) — when the fact was true (temporal facts)
 
             Valid JSON example (entity-anchored property fact):
             {
@@ -218,6 +235,16 @@ class MemoryModule(Module):
               "entity_id": "550e8400-e29b-41d4-a716-446655440000",
               "object_entity_id": "660e8400-e29b-41d4-a716-446655440001"
             }
+
+            Valid JSON example (temporal fact):
+            {
+              "subject": "Owner",
+              "predicate": "meal_breakfast",
+              "content": "oatmeal with berries",
+              "entity_id": "550e8400-e29b-41d4-a716-446655440000",
+              "permanence": "stable",
+              "valid_at": "2026-03-06T08:00:00Z"
+            }
             """
             return await _writing.memory_store_fact(
                 module._get_pool(),
@@ -231,6 +258,7 @@ class MemoryModule(Module):
                 tags=tags,
                 entity_id=entity_id,
                 object_entity_id=object_entity_id,
+                valid_at=valid_at,
             )
 
         @mcp.tool()

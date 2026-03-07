@@ -355,6 +355,32 @@ class TestToolDelegation:
             tags=None,
             entity_id=None,
             object_entity_id=None,
+            valid_at=None,
+        )
+
+    async def test_memory_store_fact_delegates_with_valid_at(self):
+        mod, tools, pool, writing, *_ = await self._setup_and_register()
+        mod._embedding_engine = MagicMock(name="embedding")
+        writing.memory_store_fact = AsyncMock(return_value={"id": "abc", "superseded_id": None})
+        await tools["memory_store_fact"](
+            subject="Owner",
+            predicate="meal_breakfast",
+            content="oatmeal",
+            valid_at="2026-03-06T08:00:00Z",
+        )
+        writing.memory_store_fact.assert_called_once_with(
+            pool,
+            mod._embedding_engine,
+            "Owner",
+            "meal_breakfast",
+            "oatmeal",
+            importance=5.0,
+            permanence="standard",
+            scope="global",
+            tags=None,
+            entity_id=None,
+            object_entity_id=None,
+            valid_at="2026-03-06T08:00:00Z",
         )
 
     async def test_memory_context_delegates(self):

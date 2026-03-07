@@ -90,9 +90,11 @@ def simple_pool() -> AsyncMock:
 def fact_pool():
     """Return (pool, conn) mocks wired up for store_fact (pool.acquire/conn.transaction).
 
-    By default conn.fetchrow returns None (no existing fact).
+    By default conn.fetchrow returns None (no existing fact) and
+    conn.fetchval returns None (predicate not in registry → non-temporal).
     """
     conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=None)  # is_temporal=None → non-temporal
     conn.fetchrow = AsyncMock(return_value=None)
     conn.execute = AsyncMock()
     conn.transaction = MagicMock(return_value=_AsyncCM(None))
@@ -276,6 +278,7 @@ class TestFactSupersessionFlow:
         """
         # First store: no existing fact
         conn1 = AsyncMock()
+        conn1.fetchval = AsyncMock(return_value=None)  # is_temporal=None → non-temporal
         conn1.fetchrow = AsyncMock(return_value=None)
         conn1.execute = AsyncMock()
         conn1.transaction = MagicMock(return_value=_AsyncCM(None))
@@ -289,6 +292,7 @@ class TestFactSupersessionFlow:
 
         # Second store: existing fact found
         conn2 = AsyncMock()
+        conn2.fetchval = AsyncMock(return_value=None)  # is_temporal=None → non-temporal
         conn2.fetchrow = AsyncMock(return_value={"id": first_id})
         conn2.execute = AsyncMock()
         conn2.transaction = MagicMock(return_value=_AsyncCM(None))
@@ -339,6 +343,7 @@ class TestFactSupersessionFlow:
         old_id = uuid.uuid4()
 
         conn = AsyncMock()
+        conn.fetchval = AsyncMock(return_value=None)  # is_temporal=None → non-temporal
         conn.fetchrow = AsyncMock(return_value={"id": old_id})
         conn.execute = AsyncMock()
         conn.transaction = MagicMock(return_value=_AsyncCM(None))
