@@ -1051,6 +1051,7 @@ The module MAY maintain a `predicate_registry` table that guides consistent pred
 - **AND** edge predicates SHOULD be seeded: `knows`, `works_at`, `lives_with`, `manages`, `parent_of`, `sibling_of`, `lives_in`, `member_of`
 - **AND** edge predicates MUST have `is_edge = true` and appropriate `expected_subject_type`/`expected_object_type` values
 - **AND** temporal predicates SHOULD be seeded with `is_temporal = true` to indicate predicates that form time series (e.g., `meal_breakfast`, `meal_lunch`, `meal_dinner`, `meal_snack` for meal facts with nutrition metadata at different times)
+- **AND** domain CRUD-to-SPO migration predicates MUST be seeded per the taxonomy defined in `openspec/changes/crud-to-spo-migration/specs/predicate-taxonomy.md` (bu-ddb epic), covering health, relationship, finance, and home domains
 
 #### Scenario: Temporal predicates guidance
 
@@ -1076,6 +1077,57 @@ The module MAY maintain a `predicate_registry` table that guides consistent pred
 - **WHEN** `store_fact` is called with a predicate NOT in the registry
 - **THEN** the fact MUST still be stored successfully
 - **AND** no error or warning MUST be raised by the storage layer
+
+---
+
+### Requirement: CRUD-to-SPO domain predicate taxonomy (bu-ddb)
+
+Domain butlers (health, relationship, finance, home) migrate dedicated CRUD tables to temporal SPO facts. This requires a domain predicate taxonomy, entity resolution contract, and standardized metadata schemas. The full specification is in `openspec/changes/crud-to-spo-migration/specs/predicate-taxonomy.md`.
+
+#### Scenario: Domain scope isolation
+
+- **WHEN** a domain butler stores a fact for a CRUD-migrated table
+- **THEN** the fact MUST use the domain-specific `scope` value: `health` for health butler, `relationship` for relationship butler, `finance` for finance butler, `home` for home butler
+- **AND** the scope MUST prevent predicate collisions across butler domains (e.g. `gift` in relationship scope is distinct from any future `gift` in another scope)
+
+#### Scenario: Entity anchoring — no bare string subjects
+
+- **WHEN** any domain butler stores a CRUD-migrated fact
+- **THEN** the fact MUST carry a resolved `entity_id` UUID — never NULL for domain facts
+- **AND** the `subject` field MAY contain a human-readable label but MUST NOT be the sole identifier
+- **AND** the string `"user"` MUST NOT be used as the `entity_id` value or as a bare subject for any migrated fact
+- **AND** self-data (health, finance) MUST use the owner entity resolved from `shared.contacts WHERE roles @> '["owner"]'`
+- **AND** contact-data (relationship) MUST use the resolved entity for each contact via `shared.contacts.entity_id`
+- **AND** HA device data (home) MUST use an entity created with `entity_type='other'` and `metadata.entity_class='ha_device'` per distinct HA entity ID string
+
+#### Scenario: Temporal vs property fact dispatch by predicate
+
+- **WHEN** a domain wrapper tool stores a fact
+- **THEN** if the predicate has `is_temporal = true` in `predicate_registry`, the fact MUST be stored with `valid_at` set to the source event timestamp (e.g. `measured_at`, `occurred_at`, `posted_at`)
+- **AND** if the predicate has `is_temporal = false`, the fact MUST be stored without `valid_at` (NULL), relying on supersession for updates
+- **AND** temporal facts with the same `(entity_id, scope, predicate)` key but different `valid_at` values MUST coexist as active facts — they MUST NOT supersede each other
+
+#### Scenario: NUMERIC amounts as strings in metadata
+
+- **WHEN** a domain fact carries a monetary amount (finance transactions, loans, subscriptions, bills)
+- **THEN** the amount MUST be stored as a string in `metadata` (e.g. `"1234.99"`) to preserve `NUMERIC(14,2)` precision
+- **AND** aggregation queries MUST cast via `(metadata->>'amount')::NUMERIC` to recover the numeric value
+- **AND** the string representation MUST NOT use scientific notation
+
+#### Scenario: Transaction deduplication in finance wrapper
+
+- **WHEN** `record_transaction` is called to store a finance transaction fact
+- **THEN** the wrapper MUST check for an existing active fact matching `(entity_id, predicate, scope, metadata->>'source_message_id', metadata->>'merchant', metadata->>'amount', valid_at)` before inserting
+- **AND** if a matching fact exists, the insert MUST be skipped and the existing fact ID returned
+- **AND** this check MUST be equivalent in coverage to the original `uq_transactions_dedupe` partial unique index on the deprecated `transactions` table
+
+#### Scenario: Backward-compatible tool response shapes
+
+- **WHEN** a CRUD-migrated MCP tool returns a response
+- **THEN** the response structure MUST be identical to the response structure returned by the original CRUD-table implementation
+- **AND** all field names, types, and optional/required semantics MUST be preserved
+- **AND** callers MUST observe no behavioral difference between the CRUD and fact-wrapper implementations
+- **AND** the mapping from fact fields to legacy response fields MUST follow the wrapper API contract documented in `openspec/changes/crud-to-spo-migration/specs/predicate-taxonomy.md` Part 5
 
 ---
 
