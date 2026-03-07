@@ -59,7 +59,9 @@ async def session_create(
     trigger_source: str,
     trace_id: str | None = None,
     model: str | None = None,
-    request_id: str | None = None,
+    *,
+    request_id: str,
+    ingestion_event_id: str | None = None,
 ) -> uuid.UUID:
     """Insert a new session row and return its UUID.
 
@@ -71,14 +73,24 @@ async def session_create(
             or ``"schedule:<task-name>"``.
         trace_id: Optional OpenTelemetry trace ID for correlation.
         model: Optional model identifier used for this invocation.
-        request_id: Optional request ID from ingestion request_context (UUIDv7 format).
+        request_id: Required request ID for this session (UUIDv7 format).
+            Connector-sourced sessions pass the UUID from the ingestion
+            request_context; internal sessions (tick, schedule) generate a
+            fresh UUID. Must not be None.
+        ingestion_event_id: Optional UUID of the ingestion event that caused
+            this session.  Connector-sourced callers pass the ingestion event
+            UUID; internally-triggered sessions (tick, schedule, trigger) pass
+            None.
 
     Returns:
         The UUID of the newly created session.
 
     Raises:
         ValueError: If ``trigger_source`` is not a recognised value.
+        ValueError: If ``request_id`` is None.
     """
+    if request_id is None:
+        raise ValueError("request_id is required and must not be None")
     if not _is_valid_trigger_source(trigger_source):
         raise ValueError(
             f"Invalid trigger_source {trigger_source!r}; must be 'tick', 'external', "
@@ -87,8 +99,9 @@ async def session_create(
 
     session_id: uuid.UUID = await pool.fetchval(
         """
-        INSERT INTO sessions (prompt, trigger_source, trace_id, model, request_id)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO sessions
+            (prompt, trigger_source, trace_id, model, request_id, ingestion_event_id)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id
         """,
         prompt,
@@ -96,6 +109,7 @@ async def session_create(
         trace_id,
         model,
         request_id,
+        ingestion_event_id,
     )
     logger.info("Session created: %s (trigger=%s, model=%s)", session_id, trigger_source, model)
     return session_id
@@ -188,7 +202,7 @@ async def sessions_list(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error,
-               input_tokens, output_tokens, request_id,
+               input_tokens, output_tokens, request_id, ingestion_event_id,
                started_at, completed_at
         FROM sessions
         ORDER BY started_at DESC
@@ -246,7 +260,7 @@ async def sessions_get(
         """
         SELECT id, prompt, trigger_source, result, tool_calls,
                duration_ms, trace_id, model, cost, success, error,
-               input_tokens, output_tokens, request_id,
+               input_tokens, output_tokens, request_id, ingestion_event_id,
                started_at, completed_at
         FROM sessions
         WHERE id = $1

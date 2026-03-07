@@ -81,6 +81,7 @@ async def pool(postgres_container):
             output_tokens INTEGER,
             parent_session_id UUID,
             request_id TEXT,
+            ingestion_event_id UUID,
             started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             completed_at TIMESTAMPTZ
         )
@@ -98,7 +99,9 @@ async def test_create_session_returns_uuid(pool):
     """session_create returns a valid UUID."""
     from butlers.core.sessions import session_create
 
-    session_id = await session_create(pool, prompt="Hello", trigger_source="schedule:test-task")
+    session_id = await session_create(
+        pool, prompt="Hello", trigger_source="schedule:test-task", request_id=str(uuid.uuid4())
+    )
     assert isinstance(session_id, uuid.UUID)
 
 
@@ -111,6 +114,7 @@ async def test_create_session_persists_fields(pool):
         prompt="Run daily report",
         trigger_source="tick",
         trace_id="abc-123",
+        request_id=str(uuid.uuid4()),
     )
     session = await sessions_get(pool, session_id)
     assert session is not None
@@ -147,18 +151,51 @@ async def test_create_session_with_request_id(pool):
     assert session["trigger_source"] == "trigger"
 
 
-async def test_create_session_without_request_id_defaults_null(pool):
-    """Created session without request_id has NULL for that field."""
+async def test_create_session_request_id_none_raises(pool):
+    """session_create raises ValueError when request_id=None is explicitly passed."""
+    from butlers.core.sessions import session_create
+
+    with pytest.raises(ValueError, match="request_id is required"):
+        await session_create(
+            pool,
+            prompt="Scheduled task",
+            trigger_source="schedule:daily-report",
+            request_id=None,
+        )
+
+
+async def test_create_session_with_ingestion_event_id(pool):
+    """Created session with ingestion_event_id persists the field correctly."""
+    from butlers.core.sessions import session_create, sessions_get
+
+    ingestion_event_id = str(uuid.uuid4())
+    request_id = str(uuid.uuid4())
+    session_id = await session_create(
+        pool,
+        prompt="Connector-sourced session",
+        trigger_source="route",
+        request_id=request_id,
+        ingestion_event_id=ingestion_event_id,
+    )
+    session = await sessions_get(pool, session_id)
+    assert session is not None
+    assert session["ingestion_event_id"] == uuid.UUID(ingestion_event_id)
+    assert session["request_id"] == request_id
+
+
+async def test_create_session_ingestion_event_id_defaults_null(pool):
+    """Created session without ingestion_event_id has NULL for that field."""
     from butlers.core.sessions import session_create, sessions_get
 
     session_id = await session_create(
         pool,
-        prompt="Scheduled task",
-        trigger_source="schedule:daily-report",
+        prompt="Internal session",
+        trigger_source="tick",
+        request_id=str(uuid.uuid4()),
     )
     session = await sessions_get(pool, session_id)
     assert session is not None
-    assert session["request_id"] is None
+    assert session["ingestion_event_id"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +207,9 @@ async def test_complete_session_updates_fields(pool):
     """session_complete sets result, tool_calls, duration_ms, success, and completed_at."""
     from butlers.core.sessions import session_complete, session_create, sessions_get
 
-    session_id = await session_create(pool, prompt="Test", trigger_source="schedule:test-task")
+    session_id = await session_create(
+        pool, prompt="Test", trigger_source="schedule:test-task", request_id=str(uuid.uuid4())
+    )
 
     tool_calls = [{"tool": "state_get", "args": {"key": "foo"}}]
     await session_complete(
@@ -198,7 +237,9 @@ async def test_complete_with_failure(pool):
     """session_complete stores error information with success=false."""
     from butlers.core.sessions import session_complete, session_create, sessions_get
 
-    session_id = await session_create(pool, prompt="Failing task", trigger_source="tick")
+    session_id = await session_create(
+        pool, prompt="Failing task", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
 
     await session_complete(
         pool,
@@ -246,7 +287,9 @@ async def test_duration_ms_stored_correctly(pool):
     from butlers.core.sessions import session_complete, session_create, sessions_get
 
     for ms in (0, 1, 999, 60_000, 3_600_000):
-        sid = await session_create(pool, prompt=f"dur-{ms}", trigger_source="tick")
+        sid = await session_create(
+            pool, prompt=f"dur-{ms}", trigger_source="tick", request_id=str(uuid.uuid4())
+        )
         await session_complete(pool, sid, output="ok", tool_calls=[], duration_ms=ms, success=True)
         session = await sessions_get(pool, sid)
         assert session is not None
@@ -263,7 +306,9 @@ async def test_trigger_source_valid_values(pool):
     from butlers.core.sessions import session_create
 
     for source in ("schedule:daily-task", "trigger", "tick", "external", "route"):
-        sid = await session_create(pool, prompt="test", trigger_source=source)
+        sid = await session_create(
+            pool, prompt="test", trigger_source=source, request_id=str(uuid.uuid4())
+        )
         assert isinstance(sid, uuid.UUID)
 
 
@@ -272,7 +317,9 @@ async def test_trigger_source_invalid_raises(pool):
     from butlers.core.sessions import session_create
 
     with pytest.raises(ValueError, match="Invalid trigger_source"):
-        await session_create(pool, prompt="test", trigger_source="unknown")
+        await session_create(
+            pool, prompt="test", trigger_source="unknown", request_id=str(uuid.uuid4())
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +331,9 @@ async def test_successful_session_has_success_true_error_null(pool):
     """Successful sessions have success=true and error=NULL."""
     from butlers.core.sessions import session_complete, session_create, sessions_get
 
-    sid = await session_create(pool, prompt="success test", trigger_source="tick")
+    sid = await session_create(
+        pool, prompt="success test", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
     await session_complete(pool, sid, output="done", tool_calls=[], duration_ms=100, success=True)
     session = await sessions_get(pool, sid)
     assert session["success"] is True
@@ -296,7 +345,9 @@ async def test_failed_session_has_success_false_error_set_result_null(pool):
     """Failed sessions have success=false, error=<message>, result=NULL."""
     from butlers.core.sessions import session_complete, session_create, sessions_get
 
-    sid = await session_create(pool, prompt="fail test", trigger_source="schedule:test-task")
+    sid = await session_create(
+        pool, prompt="fail test", trigger_source="schedule:test-task", request_id=str(uuid.uuid4())
+    )
     await session_complete(
         pool,
         sid,
@@ -323,7 +374,12 @@ async def test_sessions_list_default(pool):
 
     ids = []
     for i in range(3):
-        sid = await session_create(pool, prompt=f"list-{i}", trigger_source="schedule:test-task")
+        sid = await session_create(
+            pool,
+            prompt=f"list-{i}",
+            trigger_source="schedule:test-task",
+            request_id=str(uuid.uuid4()),
+        )
         ids.append(sid)
         # Insert a small delay so started_at ordering is deterministic
         await asyncio.sleep(0.01)
@@ -343,7 +399,9 @@ async def test_sessions_list_pagination(pool):
 
     created = []
     for i in range(5):
-        sid = await session_create(pool, prompt=f"page-{i}", trigger_source="tick")
+        sid = await session_create(
+            pool, prompt=f"page-{i}", trigger_source="tick", request_id=str(uuid.uuid4())
+        )
         created.append(sid)
         await asyncio.sleep(0.01)
 
@@ -365,7 +423,9 @@ async def test_sessions_list_includes_success_and_error(pool):
     """sessions_list returns success and error columns."""
     from butlers.core.sessions import session_complete, session_create, sessions_list
 
-    sid = await session_create(pool, prompt="list-check", trigger_source="tick")
+    sid = await session_create(
+        pool, prompt="list-check", trigger_source="tick", request_id=str(uuid.uuid4())
+    )
     await session_complete(pool, sid, output="ok", tool_calls=[], duration_ms=10, success=True)
     sessions = await sessions_list(pool, limit=100)
     match = next(s for s in sessions if s["id"] == sid)
@@ -384,7 +444,9 @@ async def test_sessions_get_returns_full_record(pool):
     """sessions_get returns all columns for an existing session."""
     from butlers.core.sessions import session_create, sessions_get
 
-    sid = await session_create(pool, prompt="full", trigger_source="trigger", trace_id="t-1")
+    sid = await session_create(
+        pool, prompt="full", trigger_source="trigger", trace_id="t-1", request_id=str(uuid.uuid4())
+    )
     session = await sessions_get(pool, sid)
     assert session is not None
 
@@ -403,6 +465,7 @@ async def test_sessions_get_returns_full_record(pool):
         "input_tokens",
         "output_tokens",
         "request_id",
+        "ingestion_event_id",
         "started_at",
         "completed_at",
     }
@@ -432,6 +495,7 @@ async def test_sessions_summary_aggregates_totals_and_by_model(pool):
         prompt="sum-a",
         trigger_source="trigger",
         model="claude-sonnet-4-20250514",
+        request_id=str(uuid.uuid4()),
     )
     await session_complete(
         pool,
@@ -449,6 +513,7 @@ async def test_sessions_summary_aggregates_totals_and_by_model(pool):
         prompt="sum-b",
         trigger_source="tick",
         model="claude-haiku-35-20241022",
+        request_id=str(uuid.uuid4()),
     )
     await session_complete(
         pool,
@@ -481,6 +546,7 @@ async def test_sessions_summary_respects_period_filter(pool):
         prompt="old",
         trigger_source="trigger",
         model="claude-sonnet-4-20250514",
+        request_id=str(uuid.uuid4()),
     )
     await session_complete(
         pool,
@@ -502,6 +568,7 @@ async def test_sessions_summary_respects_period_filter(pool):
         prompt="recent",
         trigger_source="trigger",
         model="claude-sonnet-4-20250514",
+        request_id=str(uuid.uuid4()),
     )
     await session_complete(
         pool,

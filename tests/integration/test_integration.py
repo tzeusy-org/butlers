@@ -96,6 +96,7 @@ CORE_TABLES_SQL = """
         output_tokens INTEGER,
         parent_session_id UUID,
         request_id TEXT,
+        ingestion_event_id UUID,
         started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         completed_at TIMESTAMPTZ
     );
@@ -381,7 +382,9 @@ class TestButlerStartupIntegration:
         )
 
         # Create a session
-        session_id = await session_create(pool, "Hello butler", "trigger", trace_id="abc123")
+        session_id = await session_create(
+            pool, "Hello butler", "trigger", trace_id="abc123", request_id=str(uuid.uuid4())
+        )
         assert isinstance(session_id, uuid.UUID)
 
         # List sessions
@@ -427,7 +430,9 @@ class TestButlerStartupIntegration:
         # Use all three subsystems on the same pool
         await state_set(pool, "integration.status", "running")
         task_id = await schedule_create(pool, "integ-task", "0 9 * * *", "integration prompt")
-        session_id = await session_create(pool, "integration test", "trigger")
+        session_id = await session_create(
+            pool, "integration test", "trigger", request_id=str(uuid.uuid4())
+        )
 
         # Verify all operations succeeded
         val = await state_get(pool, "integration.status")
@@ -562,7 +567,9 @@ class TestSchedulerTickIntegration:
         session_ids: list[uuid.UUID] = []
 
         async def dispatch_fn(**kwargs):
-            sid = await session_create(pool, kwargs["prompt"], kwargs["trigger_source"])
+            sid = await session_create(
+                pool, kwargs["prompt"], kwargs["trigger_source"], request_id=str(uuid.uuid4())
+            )
             session_ids.append(sid)
 
         count = await tick(pool, dispatch_fn)
