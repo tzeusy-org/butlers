@@ -225,7 +225,9 @@ class TestSessionsActive:
         """A session created via session_create has completed_at IS NULL and appears in active."""
         from butlers.core.sessions import session_create, sessions_active
 
-        sid = await session_create(pool, prompt="active test", trigger_source="tick")
+        sid = await session_create(
+            pool, prompt="active test", trigger_source="tick", request_id=str(uuid.uuid4())
+        )
         active = await sessions_active(pool)
 
         active_ids = [s["id"] for s in active]
@@ -239,7 +241,9 @@ class TestSessionsActive:
         """After session_complete, the session no longer appears in active list."""
         from butlers.core.sessions import session_complete, session_create, sessions_active
 
-        sid = await session_create(pool, prompt="will complete", trigger_source="tick")
+        sid = await session_create(
+            pool, prompt="will complete", trigger_source="tick", request_id=str(uuid.uuid4())
+        )
 
         # Before completion, should be active
         active_before = await sessions_active(pool)
@@ -258,11 +262,15 @@ class TestSessionsActive:
         """sessions_active returns empty list when all sessions are completed."""
         from butlers.core.sessions import session_complete, session_create, sessions_active
 
-        sid = await session_create(pool, prompt="complete me", trigger_source="external")
+        sid = await session_create(
+            pool, prompt="complete me", trigger_source="external", request_id=str(uuid.uuid4())
+        )
         await session_complete(pool, sid, output="ok", tool_calls=[], duration_ms=50, success=True)
 
         # Create and complete another
-        sid2 = await session_create(pool, prompt="also complete", trigger_source="external")
+        sid2 = await session_create(
+            pool, prompt="also complete", trigger_source="external", request_id=str(uuid.uuid4())
+        )
         await session_complete(
             pool, sid2, output="ok too", tool_calls=[], duration_ms=30, success=True
         )
@@ -277,9 +285,15 @@ class TestSessionsActive:
         from butlers.core.sessions import session_complete, session_create, sessions_active
 
         # Create 3 sessions
-        active_sid = await session_create(pool, prompt="still running", trigger_source="tick")
-        done_sid = await session_create(pool, prompt="finished", trigger_source="external")
-        failed_sid = await session_create(pool, prompt="crashed", trigger_source="trigger")
+        active_sid = await session_create(
+            pool, prompt="still running", trigger_source="tick", request_id=str(uuid.uuid4())
+        )
+        done_sid = await session_create(
+            pool, prompt="finished", trigger_source="external", request_id=str(uuid.uuid4())
+        )
+        failed_sid = await session_create(
+            pool, prompt="crashed", trigger_source="trigger", request_id=str(uuid.uuid4())
+        )
 
         # Complete 2 of them
         await session_complete(
@@ -310,7 +324,9 @@ class TestSessionsActive:
 
         sids = []
         for i in range(3):
-            sid = await session_create(pool, prompt=f"order-{i}", trigger_source="tick")
+            sid = await session_create(
+                pool, prompt=f"order-{i}", trigger_source="tick", request_id=str(uuid.uuid4())
+            )
             sids.append(sid)
             await asyncio.sleep(0.01)  # Ensure distinct started_at
 
@@ -328,7 +344,11 @@ class TestSessionsActive:
         from butlers.core.sessions import session_create, sessions_active
 
         sid = await session_create(
-            pool, prompt="fields test", trigger_source="tick", trace_id="trace-42"
+            pool,
+            prompt="fields test",
+            trigger_source="tick",
+            trace_id="trace-42",
+            request_id=str(uuid.uuid4()),
         )
         active = await sessions_active(pool)
         match = next(s for s in active if s["id"] == sid)
