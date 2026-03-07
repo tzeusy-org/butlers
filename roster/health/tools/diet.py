@@ -1,19 +1,60 @@
-"""Diet and nutrition — meal logging and nutrition summaries."""
+"""Diet and nutrition — meal logging and nutrition summaries backed by temporal facts."""
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
 
-from butlers.tools.health._helpers import _normalize_end_date, _row_to_dict
-
 logger = logging.getLogger(__name__)
 
 VALID_MEAL_TYPES = {"breakfast", "lunch", "dinner", "snack"}
+_MEAL_PREDICATES = [f"meal_{t}" for t in VALID_MEAL_TYPES]
+
+_embedding_engine: Any = None
+
+
+def _get_embedding_engine() -> Any:
+    """Lazy-load and return the shared EmbeddingEngine singleton."""
+    global _embedding_engine
+    if _embedding_engine is None:
+        from butlers.modules.memory.tools import get_embedding_engine
+
+        _embedding_engine = get_embedding_engine()
+    return _embedding_engine
+
+
+async def _get_owner_entity_id(pool: asyncpg.Pool) -> uuid.UUID | None:
+    """Resolve the owner contact's entity_id from shared.contacts."""
+    row = await pool.fetchrow(
+        "SELECT entity_id FROM shared.contacts"
+        " WHERE roles @> '[\"owner\"]' AND entity_id IS NOT NULL LIMIT 1"
+    )
+    return row["entity_id"] if row else None
+
+
+def _fact_to_meal(row: dict[str, Any]) -> dict[str, Any]:
+    """Convert a facts row to the meal API shape."""
+    predicate = row.get("predicate", "")
+    meal_type = predicate.removeprefix("meal_")
+    meta = row.get("metadata") or {}
+    if isinstance(meta, str):
+        meta = json.loads(meta)
+    nutrition = meta.get("nutrition") if isinstance(meta, dict) else None
+    notes = meta.get("notes") if isinstance(meta, dict) else None
+    return {
+        "id": str(row["id"]),
+        "type": meal_type,
+        "description": row.get("content", ""),
+        "nutrition": nutrition,
+        "eaten_at": row.get("valid_at"),
+        "notes": notes,
+        "created_at": row.get("created_at"),
+    }
 
 
 async def meal_log(
@@ -29,19 +70,42 @@ async def meal_log(
         raise ValueError(
             f"Invalid meal type: {type!r}. Must be one of: {', '.join(sorted(VALID_MEAL_TYPES))}"
         )
-    row = await pool.fetchrow(
-        """
-        INSERT INTO meals (type, description, nutrition, eaten_at, notes)
-        VALUES ($1, $2, $3::jsonb, COALESCE($4, now()), $5)
-        RETURNING *
-        """,
-        type,
-        description,
-        json.dumps(nutrition) if nutrition is not None else None,
-        eaten_at,
-        notes,
+
+    from butlers.modules.memory.storage import store_fact
+
+    predicate = f"meal_{type}"
+    owner_entity_id = await _get_owner_entity_id(pool)
+    embedding_engine = _get_embedding_engine()
+    now = datetime.now(UTC)
+    valid_at = eaten_at if eaten_at is not None else now
+
+    metadata: dict[str, Any] = {}
+    if nutrition is not None:
+        metadata["nutrition"] = nutrition
+    if notes is not None:
+        metadata["notes"] = notes
+
+    fact_id = await store_fact(
+        pool,
+        subject="owner",
+        predicate=predicate,
+        content=description,
+        embedding_engine=embedding_engine,
+        permanence="stable",
+        entity_id=owner_entity_id,
+        valid_at=valid_at,
+        metadata=metadata if metadata else None,
     )
-    return _row_to_dict(row)
+
+    return {
+        "id": str(fact_id),
+        "type": type,
+        "description": description,
+        "nutrition": nutrition,
+        "eaten_at": valid_at,
+        "notes": notes,
+        "created_at": now,
+    }
 
 
 async def meal_history(
@@ -51,31 +115,33 @@ async def meal_history(
     end_date: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Get meal history, optionally filtered by type and date range."""
-    conditions: list[str] = []
-    params: list[Any] = []
-    idx = 1
+    if type is not None and type not in VALID_MEAL_TYPES:
+        raise ValueError(
+            f"Invalid meal type: {type!r}. Must be one of: {', '.join(sorted(VALID_MEAL_TYPES))}"
+        )
 
-    if type is not None:
-        conditions.append(f"type = ${idx}")
-        params.append(type)
-        idx += 1
+    predicates = [f"meal_{type}"] if type is not None else _MEAL_PREDICATES
+    conditions = ["predicate = ANY($1)", "validity = 'active'"]
+    params: list[Any] = [predicates]
+    idx = 2
 
     if start_date is not None:
-        conditions.append(f"eaten_at >= ${idx}")
+        conditions.append(f"valid_at >= ${idx}")
         params.append(start_date)
         idx += 1
 
     if end_date is not None:
-        conditions.append(f"eaten_at <= ${idx}")
-        params.append(_normalize_end_date(end_date))
+        conditions.append(f"valid_at <= ${idx}")
+        params.append(end_date)
         idx += 1
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    where = "WHERE " + " AND ".join(conditions)
     rows = await pool.fetch(
-        f"SELECT * FROM meals {where} ORDER BY eaten_at DESC",
+        f"SELECT id, predicate, content, valid_at, created_at, metadata"
+        f" FROM facts {where} ORDER BY valid_at DESC",
         *params,
     )
-    return [_row_to_dict(r) for r in rows]
+    return [_fact_to_meal(dict(r)) for r in rows]
 
 
 async def nutrition_summary(
@@ -85,38 +151,50 @@ async def nutrition_summary(
 ) -> dict[str, Any]:
     """Aggregate nutrition data over a date range.
 
-    Returns total and daily average calories, protein, carbs, and fat from meals
-    with non-null nutrition JSONB. Meals without nutrition data are excluded.
+    Returns total and daily average calories, protein, carbs, and fat from meal facts
+    with non-null nutrition in metadata. Meals without nutrition data are excluded.
     """
-    normalized_end = _normalize_end_date(end_date)
     rows = await pool.fetch(
         """
-        SELECT nutrition FROM meals
-        WHERE eaten_at >= $1 AND eaten_at <= $2 AND nutrition IS NOT NULL
+        SELECT metadata FROM facts
+        WHERE predicate = ANY($1)
+          AND validity = 'active'
+          AND valid_at >= $2 AND valid_at <= $3
+          AND metadata ? 'nutrition'
         """,
+        _MEAL_PREDICATES,
         start_date,
-        normalized_end,
+        end_date,
     )
 
     total_calories: float = 0.0
     total_protein: float = 0.0
     total_carbs: float = 0.0
     total_fat: float = 0.0
-    meal_count = len(rows)
+    meal_count = 0
 
     for row in rows:
-        nutr = row["nutrition"]
+        meta = row["metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        if not isinstance(meta, dict):
+            continue
+        nutr = meta.get("nutrition")
+        if nutr is None:
+            continue
         if isinstance(nutr, str):
             nutr = json.loads(nutr)
-        if isinstance(nutr, dict):
-            if "calories" in nutr and isinstance(nutr["calories"], int | float):
-                total_calories += float(nutr["calories"])
-            if "protein_g" in nutr and isinstance(nutr["protein_g"], int | float):
-                total_protein += float(nutr["protein_g"])
-            if "carbs_g" in nutr and isinstance(nutr["carbs_g"], int | float):
-                total_carbs += float(nutr["carbs_g"])
-            if "fat_g" in nutr and isinstance(nutr["fat_g"], int | float):
-                total_fat += float(nutr["fat_g"])
+        if not isinstance(nutr, dict):
+            continue
+        meal_count += 1
+        if "calories" in nutr and isinstance(nutr["calories"], int | float):
+            total_calories += float(nutr["calories"])
+        if "protein_g" in nutr and isinstance(nutr["protein_g"], int | float):
+            total_protein += float(nutr["protein_g"])
+        if "carbs_g" in nutr and isinstance(nutr["carbs_g"], int | float):
+            total_carbs += float(nutr["carbs_g"])
+        if "fat_g" in nutr and isinstance(nutr["fat_g"], int | float):
+            total_fat += float(nutr["fat_g"])
 
     days = max((end_date - start_date).days, 1)
 

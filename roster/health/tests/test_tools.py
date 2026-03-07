@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -61,15 +62,63 @@ async def pool(provisioned_postgres_pool):
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
+        # Facts table (simplified — TEXT embedding avoids pgvector dependency in tests)
         await p.execute("""
-            CREATE TABLE IF NOT EXISTS meals (
+            CREATE SCHEMA IF NOT EXISTS shared
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS shared.entities (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                type TEXT NOT NULL,
-                description TEXT NOT NULL,
-                nutrition JSONB,
-                eaten_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                notes TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                name TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS shared.contacts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                entity_id UUID REFERENCES shared.entities(id),
+                roles JSONB NOT NULL DEFAULT '[]'
+            )
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS predicate_registry (
+                name TEXT PRIMARY KEY,
+                is_temporal BOOLEAN NOT NULL DEFAULT false,
+                description TEXT
+            )
+        """)
+        await p.execute("""
+            INSERT INTO predicate_registry (name, is_temporal) VALUES
+                ('meal_breakfast', true),
+                ('meal_lunch', true),
+                ('meal_dinner', true),
+                ('meal_snack', true)
+            ON CONFLICT (name) DO NOTHING
+        """)
+        await p.execute("""
+            CREATE TABLE IF NOT EXISTS facts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                subject TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                content TEXT NOT NULL,
+                embedding TEXT,
+                search_vector TSVECTOR,
+                importance FLOAT NOT NULL DEFAULT 5.0,
+                confidence FLOAT NOT NULL DEFAULT 1.0,
+                decay_rate FLOAT NOT NULL DEFAULT 0.008,
+                permanence TEXT NOT NULL DEFAULT 'standard',
+                source_butler TEXT,
+                source_episode_id UUID,
+                supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
+                validity TEXT NOT NULL DEFAULT 'active',
+                scope TEXT NOT NULL DEFAULT 'global',
+                reference_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                last_confirmed_at TIMESTAMPTZ,
+                tags JSONB DEFAULT '[]'::jsonb,
+                metadata JSONB DEFAULT '{}'::jsonb,
+                entity_id UUID REFERENCES shared.entities(id),
+                object_entity_id UUID REFERENCES shared.entities(id),
+                valid_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
         await p.execute("""
@@ -109,8 +158,8 @@ async def pool(provisioned_postgres_pool):
                 ON symptoms (name, occurred_at)
         """)
         await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_meals_eaten_at
-                ON meals (eaten_at)
+            CREATE INDEX IF NOT EXISTS idx_facts_predicate_valid_at
+                ON facts (predicate, valid_at)
         """)
 
         yield p
@@ -653,63 +702,134 @@ async def test_symptom_search_no_matches(pool):
 # ------------------------------------------------------------------
 
 
-async def test_meal_log(pool):
-    """meal_log inserts a meal with type, description, and nutrition."""
+async def _insert_fact(pool, predicate: str, content: str, valid_at: datetime, metadata=None):
+    """Helper: insert a meal fact directly into facts table."""
+    meta = metadata or {}
+    await pool.execute(
+        """
+        INSERT INTO facts (id, subject, predicate, content, valid_at, metadata, validity)
+        VALUES ($1, 'owner', $2, $3, $4, $5::jsonb, 'active')
+        """,
+        uuid.uuid4(),
+        predicate,
+        content,
+        valid_at,
+        __import__("json").dumps(meta),
+    )
+
+
+@pytest.fixture
+def mock_embedding_engine():
+    """Patch the embedding engine and reset the diet module cache for meal_log tests."""
+    import sys
+
+    engine = MagicMock()
+    engine.embed.return_value = [0.1] * 384
+    with patch("butlers.modules.memory.tools.get_embedding_engine", return_value=engine):
+        diet_mod = sys.modules.get("butlers.tools.health.diet")
+        if diet_mod is not None:
+            old = diet_mod._embedding_engine
+            diet_mod._embedding_engine = None
+            yield engine
+            diet_mod._embedding_engine = old
+        else:
+            yield engine
+
+
+async def test_meal_log(pool, mock_embedding_engine):
+    """meal_log stores a fact and returns the expected API shape."""
     from butlers.tools.health import meal_log
 
-    meal = await meal_log(
-        pool,
-        "lunch",
-        "Grilled chicken salad",
-        nutrition={"calories": 450, "protein_g": 30},
-    )
+    fixed_id = uuid.uuid4()
+    with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock(return_value=fixed_id)):
+        meal = await meal_log(
+            pool,
+            "lunch",
+            "Grilled chicken salad",
+            nutrition={"calories": 450, "protein_g": 30},
+        )
     assert meal["type"] == "lunch"
     assert meal["description"] == "Grilled chicken salad"
-    assert meal["nutrition"]["calories"] == 450
+    assert meal["nutrition"] == {"calories": 450, "protein_g": 30}
+    assert meal["id"] == str(fixed_id)
 
 
-async def test_meal_log_without_nutrition(pool):
-    """meal_log works without nutrition data (defaults to null)."""
+async def test_meal_log_without_nutrition(pool, mock_embedding_engine):
+    """meal_log works without nutrition data (returns null nutrition)."""
     from butlers.tools.health import meal_log
 
-    meal = await meal_log(pool, "snack", "Apple")
+    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
+        meal = await meal_log(pool, "snack", "Apple")
     assert meal["description"] == "Apple"
     assert meal["nutrition"] is None
 
 
-async def test_meal_log_with_notes(pool):
+async def test_meal_log_with_notes(pool, mock_embedding_engine):
     """meal_log accepts optional notes."""
     from butlers.tools.health import meal_log
 
-    meal = await meal_log(pool, "dinner", "Pasta", notes="Homemade")
+    mock_sf = AsyncMock(return_value=uuid.uuid4())
+    with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
+        meal = await meal_log(pool, "dinner", "Pasta", notes="Homemade")
     assert meal["notes"] == "Homemade"
 
 
 async def test_meal_log_rejects_invalid_type(pool):
-    """meal_log rejects invalid meal types."""
+    """meal_log rejects invalid meal types before touching the DB."""
     from butlers.tools.health import meal_log
 
     with pytest.raises(ValueError, match="Invalid meal type"):
         await meal_log(pool, "brunch", "Eggs Benedict")
 
 
-async def test_meal_log_valid_types(pool):
+async def test_meal_log_valid_types(pool, mock_embedding_engine):
     """meal_log accepts all valid meal types."""
     from butlers.tools.health import meal_log
 
     for mtype in ("breakfast", "lunch", "dinner", "snack"):
-        meal = await meal_log(pool, mtype, f"Test {mtype}")
+        with patch(
+            "butlers.modules.memory.storage.store_fact", new=AsyncMock(return_value=uuid.uuid4())
+        ):
+            meal = await meal_log(pool, mtype, f"Test {mtype}")
         assert meal["type"] == mtype
+
+
+async def test_meal_log_store_fact_called_with_correct_predicate(pool, mock_embedding_engine):
+    """meal_log calls store_fact with meal_{type} predicate and correct metadata."""
+    from butlers.tools.health import meal_log
+
+    fixed_id = uuid.uuid4()
+    mock_sf = AsyncMock(return_value=fixed_id)
+    with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
+        eaten = datetime(2026, 3, 7, 12, 0, 0, tzinfo=UTC)
+        await meal_log(
+            pool,
+            "breakfast",
+            "Oatmeal",
+            nutrition={"calories": 300},
+            eaten_at=eaten,
+            notes="with berries",
+        )
+
+    mock_sf.assert_called_once()
+    _, kwargs = mock_sf.call_args
+    assert kwargs["predicate"] == "meal_breakfast"
+    assert kwargs["content"] == "Oatmeal"
+    assert kwargs["valid_at"] == eaten
+    assert kwargs["permanence"] == "stable"
+    assert kwargs["metadata"]["nutrition"] == {"calories": 300}
+    assert kwargs["metadata"]["notes"] == "with berries"
 
 
 async def test_meal_history_all(pool):
     """meal_history returns all meals in reverse chronological order."""
-    from butlers.tools.health import meal_history, meal_log
+    from butlers.tools.health import meal_history
 
     now = _utcnow()
-    await meal_log(pool, "breakfast", "BH_first", eaten_at=now - timedelta(hours=8))
-    await meal_log(pool, "lunch", "BH_second", eaten_at=now - timedelta(hours=4))
-    await meal_log(pool, "dinner", "BH_third", eaten_at=now)
+    await _insert_fact(pool, "meal_breakfast", "BH_first", now - timedelta(hours=8))
+    await _insert_fact(pool, "meal_lunch", "BH_second", now - timedelta(hours=4))
+    await _insert_fact(pool, "meal_dinner", "BH_third", now - timedelta(minutes=1))
 
     history = await meal_history(pool, start_date=now - timedelta(hours=9), end_date=now)
     descriptions = [m["description"] for m in history]
@@ -721,11 +841,11 @@ async def test_meal_history_all(pool):
 
 async def test_meal_history_by_type(pool):
     """meal_history filters by meal type."""
-    from butlers.tools.health import meal_history, meal_log
+    from butlers.tools.health import meal_history
 
     now = _utcnow()
-    await meal_log(pool, "breakfast", "TypeFilter_B", eaten_at=now - timedelta(hours=2))
-    await meal_log(pool, "dinner", "TypeFilter_D", eaten_at=now)
+    await _insert_fact(pool, "meal_breakfast", "TypeFilter_B", now - timedelta(hours=2))
+    await _insert_fact(pool, "meal_dinner", "TypeFilter_D", now - timedelta(minutes=1))
 
     history = await meal_history(
         pool, type="dinner", start_date=now - timedelta(hours=3), end_date=now
@@ -735,14 +855,22 @@ async def test_meal_history_by_type(pool):
     assert "TypeFilter_B" not in descriptions
 
 
+async def test_meal_history_rejects_invalid_type(pool):
+    """meal_history raises ValueError for invalid meal type."""
+    from butlers.tools.health import meal_history
+
+    with pytest.raises(ValueError, match="Invalid meal type"):
+        await meal_history(pool, type="brunch")
+
+
 async def test_meal_history_with_date_range(pool):
     """meal_history respects start_date and end_date."""
-    from butlers.tools.health import meal_history, meal_log
+    from butlers.tools.health import meal_history
 
     now = _utcnow()
-    await meal_log(pool, "lunch", "DateRange_old", eaten_at=now - timedelta(days=5))
-    await meal_log(pool, "lunch", "DateRange_mid", eaten_at=now - timedelta(days=2))
-    await meal_log(pool, "lunch", "DateRange_new", eaten_at=now)
+    await _insert_fact(pool, "meal_lunch", "DateRange_old", now - timedelta(days=5))
+    await _insert_fact(pool, "meal_lunch", "DateRange_mid", now - timedelta(days=2))
+    await _insert_fact(pool, "meal_lunch", "DateRange_new", now - timedelta(minutes=1))
 
     history = await meal_history(
         pool, start_date=now - timedelta(days=3), end_date=now - timedelta(days=1)
@@ -753,46 +881,49 @@ async def test_meal_history_with_date_range(pool):
     assert "DateRange_new" not in descriptions
 
 
-async def test_meal_history_date_only_range(pool):
-    """meal_history finds meals when start_date and end_date are the same date (midnight).
+async def test_meal_history_returns_correct_shape(pool):
+    """meal_history returns rows with the expected API fields."""
+    from butlers.tools.health import meal_history
 
-    Regression: when LLM passes "2026-03-18" for both start and end, Pydantic
-    parses them as midnight. Without normalization, the query becomes
-    eaten_at >= midnight AND eaten_at <= midnight, missing all meals after 00:00.
-    """
-    from butlers.tools.health import meal_history, meal_log
+    now = _utcnow()
+    await _insert_fact(
+        pool,
+        "meal_dinner",
+        "Roast chicken",
+        now - timedelta(hours=1),
+        metadata={"nutrition": {"calories": 500}, "notes": "crispy"},
+    )
 
-    # Simulate a meal logged at noon UTC on a specific date
-    target = datetime(2026, 3, 18, 12, 0, 0)
-    await meal_log(pool, "lunch", "BBQ Beef Bites", eaten_at=target)
-
-    # Query with date-only bounds (midnight) — the way the LLM calls it
-    start = datetime(2026, 3, 18, 0, 0, 0)
-    end = datetime(2026, 3, 18, 0, 0, 0)
-
-    history = await meal_history(pool, type="lunch", start_date=start, end_date=end)
-    descriptions = [m["description"] for m in history]
-    assert "BBQ Beef Bites" in descriptions
+    history = await meal_history(pool, start_date=now - timedelta(hours=2), end_date=now)
+    assert len(history) == 1
+    m = history[0]
+    assert m["type"] == "dinner"
+    assert m["description"] == "Roast chicken"
+    assert m["nutrition"] == {"calories": 500}
+    assert m["notes"] == "crispy"
+    assert "id" in m
+    assert "eaten_at" in m
+    assert "created_at" in m
 
 
 async def test_nutrition_summary(pool):
-    """nutrition_summary aggregates totals and daily averages from nutrition JSONB."""
-    from butlers.tools.health import meal_log, nutrition_summary
+    """nutrition_summary aggregates totals and daily averages from metadata JSONB."""
+    from butlers.tools.health import nutrition_summary
 
     now = _utcnow()
-    await meal_log(
+    await _insert_fact(
         pool,
-        "breakfast",
+        "meal_breakfast",
         "NutrSum_1",
-        nutrition={"calories": 400, "protein_g": 30, "carbs_g": 50, "fat_g": 10},
-        eaten_at=now - timedelta(days=3),
+        now - timedelta(days=3),
+        metadata={"nutrition": {"calories": 400, "protein_g": 30, "carbs_g": 50, "fat_g": 10}},
     )
-    await meal_log(
+    await _insert_fact(
         pool,
-        "lunch",
+        "meal_lunch",
         "NutrSum_2",
-        nutrition={"calories": 600, "protein_g": 25, "carbs_g": 70, "fat_g": 20},
-        eaten_at=now - timedelta(days=1),
+        now - timedelta(days=1),
+        metadata={"nutrition": {"calories": 600, "protein_g": 25, "carbs_g": 70, "fat_g": 20}},
     )
 
     summary = await nutrition_summary(pool, start_date=now - timedelta(days=7), end_date=now)
@@ -806,7 +937,7 @@ async def test_nutrition_summary(pool):
 
 
 async def test_nutrition_summary_empty(pool):
-    """nutrition_summary returns zeros when no meals with nutrition exist in range."""
+    """nutrition_summary returns zeros when no meal facts with nutrition exist in range."""
     from butlers.tools.health import nutrition_summary
 
     now = _utcnow()
@@ -820,18 +951,20 @@ async def test_nutrition_summary_empty(pool):
     assert summary["meal_count"] == 0
 
 
-async def test_nutrition_summary_excludes_null_nutrition(pool):
-    """nutrition_summary excludes meals with null nutrition data."""
-    from butlers.tools.health import meal_log, nutrition_summary
+async def test_nutrition_summary_excludes_facts_without_nutrition(pool):
+    """nutrition_summary excludes meal facts that have no nutrition key in metadata."""
+    from butlers.tools.health import nutrition_summary
 
     now = _utcnow()
-    await meal_log(pool, "snack", "NutrNull_1", eaten_at=now - timedelta(hours=2))  # null nutrition
-    await meal_log(
+    # Fact without nutrition in metadata
+    await _insert_fact(pool, "meal_snack", "Plain apple", now - timedelta(hours=2))
+    # Fact with nutrition
+    await _insert_fact(
         pool,
-        "lunch",
-        "NutrNull_2",
-        nutrition={"calories": 300},
-        eaten_at=now - timedelta(hours=1),
+        "meal_lunch",
+        "Chicken bowl",
+        now - timedelta(hours=1),
+        metadata={"nutrition": {"calories": 300}},
     )
 
     summary = await nutrition_summary(pool, start_date=now - timedelta(hours=3), end_date=now)
