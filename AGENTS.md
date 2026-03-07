@@ -859,3 +859,9 @@ make test-qg
 - `gt patrol new` creates and hooks a fresh patrol wisp, but the hook output may still report `No molecule attached`; use `gt mq list <rig>` as operational queue truth and continue processing merge-ready MRs.
 - Current refinery patrol wisps are root-only molecules: `bd mol show <wisp-id>` reports `Steps: 1` with just the patrol root, and `bd mol current <wisp-id>` shows `0/0 steps complete`; do not block on missing child-step beads before running the patrol loop.
 - If `gt prime`/`gt mail check --inject` hang in this rig, check `gt dolt status` first; when the Dolt server is down, `gt` can wedge in auto-start retries, and an explicit `gt dolt start` restores normal command responsiveness.
+
+### Health owner entity resolution contract
+- Post-`core_016`, owner-role resolution must not query `shared.contacts.roles`; that column is gone. Health meal logging and other owner lookups should resolve the owner via `shared.entities.roles` (or the shared owner-entity helper path) and degrade gracefully when no owner entity exists.
+
+### Beads CLI sync drift
+- In this environment (`bd` v0.58.0), the CLI no longer exposes `bd sync`; persistence/inspection flows live under `bd vc` / `bd dolt`, while `bd export -o .beads/issues.jsonl` still flushes SQLite state to JSONL. Any repo docs that prescribe `bd sync` are stale against the installed tool.
