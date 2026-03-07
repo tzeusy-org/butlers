@@ -708,13 +708,6 @@ export default function CalendarWorkspacePage() {
     return [...rows].sort((a, b) => a.start_at.localeCompare(b.start_at));
   }, [workspaceQuery.data?.data.entries]);
 
-  const sourceFreshness = workspaceQuery.data?.data.source_freshness ?? [];
-  const laneSources =
-    sourceFreshness.length > 0
-      ? sourceFreshness
-      : connectedSources;
-  const visibleSources = laneSources;
-
   const sourceByKey = useMemo(() => {
     const lookup = new Map<string, CalendarWorkspaceSourceFreshness>();
     connectedSources.forEach((source) => {
@@ -1348,7 +1341,7 @@ export default function CalendarWorkspacePage() {
             <Button
               type="button"
               size="sm"
-              onClick={openUserCreateDialog}
+              onClick={() => openUserCreateDialog()}
               disabled={!canCreateUserEvents || userEventMutation.isPending}
               aria-label="Create user event"
             >

@@ -47,7 +47,7 @@ export default function MasteryTrendChart({ mindMapId }: MasteryTrendChartProps)
             <XAxis dataKey="date" tick={{ fontSize: 12 }} />
             <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} unit="%" />
             <Tooltip
-              formatter={(value: number) => [`${value}%`, "Mastery"]}
+              formatter={(value: number | undefined) => [`${value ?? 0}%`, "Mastery"]}
             />
             <Area
               type="monotone"

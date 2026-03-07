@@ -1046,6 +1046,25 @@ export interface HealthResearch {
 // General / Switchboard
 // ---------------------------------------------------------------------------
 
+/** A collection in the General butler entity store. */
+export interface GeneralCollection {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+}
+
+/** An entity in the General butler entity store. */
+export interface GeneralEntity {
+  id: string;
+  collection_id: string;
+  collection_name: string | null;
+  tags: string[];
+  data: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Query parameters for measurement endpoints. */
 export interface MeasurementParams {
   type?: string;
@@ -1175,6 +1194,8 @@ export interface Fact {
   decay_rate: number;
   permanence: string;
   source_butler: string | null;
+  source_episode_id: string | null;
+  supersedes_id: string | null;
   validity: string;
   scope: string;
   reference_count: number;

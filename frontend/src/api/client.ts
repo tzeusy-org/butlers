@@ -131,6 +131,7 @@ import type {
   LinkEntityResponse,
   CreateAndLinkEntityRequest,
   CreateAndLinkEntityResponse,
+  MergeEntityResponse,
 } from "./types.ts";
 
 // ---------------------------------------------------------------------------

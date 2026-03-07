@@ -14,6 +14,7 @@ function renderTable(schedules: Schedule[]): string {
       onToggle={noop}
       onEdit={noop}
       onDelete={noop}
+      onTrigger={noop}
     />,
   );
 }
