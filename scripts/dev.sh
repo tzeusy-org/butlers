@@ -507,6 +507,34 @@ _wait_for_postgres() {
 
 _wait_for_postgres 30 || exit 1
 
+# ── Layer 0.5: Database migrations ────────────────────────────────────────
+# Run Alembic migrations for all butler schemas before any service starts.
+# This breaks the circular dependency where butler daemons need their schemas
+# to exist before they can start, but only created those schemas at startup.
+# Like a k8s init container: migrations complete fully before the main
+# containers start, so the dashboard and OAuth gate can query the DB safely.
+
+echo "Layer 0.5: Running database migrations..."
+POSTGRES_PORT=${POSTGRES_PORT} \
+POSTGRES_HOST=${POSTGRES_HOST} \
+POSTGRES_USER=${POSTGRES_USER} \
+POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-butlers}" \
+  uv run butlers db migrate || {
+    echo "" >&2
+    echo "======================================================================" >&2
+    echo "  ERROR: Database migrations failed" >&2
+    echo "======================================================================" >&2
+    echo "" >&2
+    echo "  Check the output above for details." >&2
+    echo "  Common causes:" >&2
+    echo "    - postgres not reachable (check POSTGRES_HOST/PORT)" >&2
+    echo "    - database 'butlers' does not exist yet (run: butlers db provision)" >&2
+    echo "" >&2
+    exit 1
+  }
+echo "Layer 0.5: Migrations complete."
+echo ""
+
 # ── OAuth credential pre-flight check ─────────────────────────────────────
 # Check whether Google credentials are available in the shared DB secrets store.
 # This runs in the *outer* shell before tmux windows are created so that

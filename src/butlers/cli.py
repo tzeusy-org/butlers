@@ -233,6 +233,54 @@ def db() -> None:
     "--only",
     callback=_parse_comma_separated,
     default="",
+    help="Migrate only specific butlers (comma-separated)",
+)
+@click.option(
+    "--dir",
+    "butlers_dir",
+    type=click.Path(exists=True, path_type=Path),
+    default=DEFAULT_BUTLERS_DIR,
+    help="Directory containing butler configs",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what migrations would run without executing them",
+)
+def migrate(only: tuple[str, ...], butlers_dir: Path, dry_run: bool) -> None:
+    """Run Alembic migrations for all (or selected) butler schemas.
+
+    Mirrors the migration sequence each butler daemon performs on startup:
+    core chain → butler-specific chain → enabled module chains. Safe to run
+    repeatedly — all migrations are idempotent.
+
+    This command is the recommended way to bootstrap a fresh database before
+    starting butler daemons for the first time (breaks the circular dependency
+    between daemon startup and schema existence).
+    """
+    configs = _discover_configs(butlers_dir)
+    if not configs:
+        click.echo(f"No butler configs found in {butlers_dir}/")
+        sys.exit(1)
+
+    if only:
+        configs = {name: path for name, path in configs.items() if name in only}
+        missing = set(only) - set(configs.keys())
+        if missing:
+            click.echo(f"Butler(s) not found: {', '.join(sorted(missing))}")
+            sys.exit(1)
+
+    if dry_run:
+        click.echo("Dry run — no migrations will be executed.")
+    asyncio.run(_migrate_all(configs, dry_run=dry_run))
+
+
+@db.command()
+@click.option(
+    "--only",
+    callback=_parse_comma_separated,
+    default="",
     help="Provision only specific butlers (comma-separated)",
 )
 @click.option(
@@ -257,6 +305,88 @@ def provision(only: tuple[str, ...], butlers_dir: Path) -> None:
             sys.exit(1)
 
     asyncio.run(_provision_databases(configs))
+
+
+async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> None:
+    """Run Alembic migrations for each butler config in dependency order.
+
+    Mirrors exactly what each daemon does on startup:
+      1. core chain (schema-scoped)
+      2. butler-specific chain (if it exists)
+      3. enabled module chains (if they have migrations)
+    """
+    from urllib.parse import quote, quote_plus
+
+    from butlers.db import db_params_from_env, schema_search_path
+    from butlers.migrations import (
+        _resolve_chain_dir,
+        get_all_chains,
+        has_butler_chain,
+        run_migrations,
+    )
+
+    all_chains = set(get_all_chains())
+    params = db_params_from_env()
+    failed: list[str] = []
+
+    for name, config_dir in sorted(configs.items()):
+        try:
+            config = load_config(config_dir)
+            db_name = config.db_name or "butlers"
+            schema = config.db_schema
+
+            user = quote(str(params["user"]), safe="")
+            password = quote(str(params["password"]), safe="")
+            host = params["host"]
+            port = params["port"]
+            db_name_enc = quote(db_name, safe="")
+            base_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name_enc}"
+            search_path = schema_search_path(schema)
+            if search_path:
+                db_url = f"{base_url}?options={quote_plus(f'-csearch_path={search_path}')}"
+            else:
+                db_url = base_url
+
+            # Module chains to run: enabled modules that have migrations,
+            # excluding the butler's own name (already covered by butler chain).
+            module_chains = [
+                m
+                for m in config.modules
+                if m != name and m in all_chains and _resolve_chain_dir(m) is not None
+            ]
+
+            if dry_run:
+                chains = ["core"]
+                if has_butler_chain(name):
+                    chains.append(name)
+                chains += module_chains
+                click.echo(f"  {name} (schema={schema}): would run chains: {', '.join(chains)}")
+                continue
+
+            click.echo(f"  {name}: core (schema={schema})...", nl=False)
+            await run_migrations(db_url, chain="core", schema=schema)
+            click.echo(" done")
+
+            if has_butler_chain(name):
+                click.echo(f"  {name}: butler chain...", nl=False)
+                await run_migrations(db_url, chain=name, schema=schema)
+                click.echo(" done")
+
+            for module_name in module_chains:
+                click.echo(f"  {name}/{module_name}: module chain...", nl=False)
+                await run_migrations(db_url, chain=module_name, schema=schema)
+                click.echo(" done")
+
+        except Exception as exc:
+            click.echo(f"  {name}: FAILED — {exc}")
+            failed.append(name)
+
+    if failed:
+        click.echo(f"\nMigration failed for: {', '.join(failed)}", err=True)
+        sys.exit(1)
+
+    if not dry_run:
+        click.echo("All migrations complete.")
 
 
 async def _provision_databases(configs: dict[str, Path]) -> None:

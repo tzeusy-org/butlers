@@ -28,7 +28,7 @@ services:
     environment:
       POSTGRES_USER: butlers
       POSTGRES_PASSWORD: butlers
-      POSTGRES_DB: postgres
+      POSTGRES_DB: butlers
       POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
       - postgres_data:/var/lib/postgresql/data
