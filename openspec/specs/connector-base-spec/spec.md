@@ -10,8 +10,9 @@ A connector is a long-running process (separate from any butler daemon) that bri
 
 #### Scenario: Connector responsibilities boundary
 - **WHEN** a connector processes external events
-- **THEN** it reads source events from the external system, normalizes each to an `ingest.v1` envelope, submits to the Switchboard's canonical ingest API via MCP, persists a crash-safe resume checkpoint, enforces rate limiting against both source API and Switchboard, sends periodic heartbeats for liveness tracking, and exports Prometheus metrics
+- **THEN** it reads source events from the external system, normalizes each to an `ingest.v1` envelope, evaluates active source filters (dropping messages that fail the filter gate before any Switchboard call), submits passing envelopes to the Switchboard's canonical ingest API via MCP, persists a crash-safe resume checkpoint, enforces rate limiting against both source API and Switchboard, sends periodic heartbeats for liveness tracking, and exports Prometheus metrics
 - **AND** the connector does NOT classify messages, route to specialist butlers, mint canonical `request_id` values (Switchboard does this), or bypass the Switchboard ingestion path
+- **AND** a connector with no active source filters MUST pass all messages (opt-in model; the filter gate is a no-op when no filters are configured)
 
 #### Scenario: Connector as standalone process
 - **WHEN** a connector runs
@@ -24,6 +25,39 @@ A connector is a long-running process (separate from any butler daemon) that bri
 - **THEN** it guarantees at-least-once delivery via checkpoint-after-acceptance semantics
 - **AND** the Switchboard's deduplication layer (advisory lock + dedupe key) makes replays idempotent and harmless
 - **AND** duplicate submissions return the same canonical `request_id` (not a new request)
+- **AND** messages blocked by source filters are intentionally dropped and their checkpoints advanced; they are NOT retried
+
+### Requirement: Source Filter Gate (Base Contract)
+All connectors MUST implement the source filter gate as a mandatory pipeline step. After normalizing an event and before submitting to the Switchboard, each connector evaluates the message against its active source filters via `SourceFilterEvaluator`. Messages that fail the filter gate are dropped at the connector and never reach the Switchboard.
+
+#### Scenario: Filter gate position in the connector pipeline
+- **WHEN** a connector processes an incoming message
+- **THEN** the execution order MUST be: (1) fetch/normalize from source → (2) evaluate source filters → (3) if blocked, drop and advance checkpoint → (4) if allowed, submit `ingest.v1` to Switchboard → (5) checkpoint
+- **AND** the filter gate runs BEFORE any Switchboard MCP call for that message
+
+#### Scenario: Blocked message handling
+- **WHEN** a message is blocked by the filter gate
+- **THEN** the connector MUST NOT call the Switchboard ingest API for that message
+- **AND** the connector MUST increment the `butlers_connector_source_filter_total` counter with labels `{endpoint_identity, action="blocked", filter_name, reason}`
+- **AND** the connector MUST advance its checkpoint past the blocked message (it is intentionally dropped, not retried)
+
+#### Scenario: Filter state at startup
+- **WHEN** a connector starts up
+- **THEN** it MUST call `SourceFilterEvaluator.ensure_loaded()` before processing the first message to perform the initial filter load from DB
+- **AND** if the initial filter load fails (e.g. DB unavailable), the evaluator logs a WARNING and proceeds with an empty filter set (fail-open) rather than aborting startup
+- **AND** subsequent cache refreshes are triggered lazily from `evaluate()` via a background task (TTL default 300 seconds, configurable via `CONNECTOR_FILTER_REFRESH_INTERVAL_S`)
+
+#### Scenario: DB error fail-open behavior
+- **WHEN** a DB error occurs during filter loading (initial or TTL refresh)
+- **THEN** the evaluator logs a WARNING and retains the previous cached filter set
+- **AND** the timestamp is updated so that the DB is not hammered on every `evaluate()` call during an outage
+- **AND** the connector continues processing messages with the stale (or empty) filter cache rather than dropping all messages
+
+#### Scenario: SourceFilterEvaluator contract
+- **WHEN** a connector type is implemented
+- **THEN** it MUST instantiate `SourceFilterEvaluator(connector_type=<type>, endpoint_identity=<identity>, db_pool=<pool>)` using the asyncpg pool already established for credential resolution
+- **AND** it MUST call `ensure_loaded()` once at startup before the ingestion loop begins
+- **AND** it MUST call `evaluate(key_value)` for every normalized message before submitting to Switchboard, passing the key appropriate for its source channel
 
 ### Requirement: ingest.v1 Envelope Schema
 The `ingest.v1` envelope is the canonical format for all messages entering the butler ecosystem. It is a Pydantic model (`IngestEnvelopeV1`) with five required sub-models validated at parse time.
